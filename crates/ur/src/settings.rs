@@ -1,6 +1,7 @@
 //! Settings: `~/.config/ur/settings.json`, read once at process startup, and
 //! the workspace settings file `.ur/settings.json`, read when a session becomes
-//! active, whose keys replace the same keys from the first file.
+//! active, whose keys replace the same keys from the first file. Neither file
+//! is required.
 
 use std::{
     io,
@@ -15,8 +16,13 @@ use crate::{
     text_file,
 };
 
+/// The model used when no settings file sets `model`. An OpenRouter alias for
+/// the latest DeepSeek Flash model, so the catalog's release-date filter does
+/// not drop it as a fixed model ID eventually would.
+const BUILT_IN_MODEL: &str = "~deepseek/deepseek-flash-latest";
+
 /// The format of both settings files.
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct SettingsFile {
     model: Option<String>,
     effort: Option<String>,
@@ -40,16 +46,31 @@ pub fn home_dir() -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "HOME is not set"))
 }
 
-/// Reads `~/.config/ur/settings.json`, which must name the default model.
+/// Reads `~/.config/ur/settings.json`. A missing file, or one without `model`,
+/// means the built-in model.
 pub fn load(catalog: &[CatalogModel]) -> io::Result<Settings> {
     load_from(&home_dir()?.join(".config/ur/settings.json"), catalog)
 }
 
 fn load_from(path: &Path, catalog: &[CatalogModel]) -> io::Result<Settings> {
-    let file = read(path, catalog)?;
-    let default_model = file
-        .model
-        .ok_or_else(|| invalid(path, "model must name the default model"))?;
+    let file = match read(path, catalog) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => SettingsFile::default(),
+        Err(error) => return Err(error),
+    };
+    let default_model = match file.model {
+        Some(model) => model,
+        None if catalog.iter().any(|model| model.id == BUILT_IN_MODEL) => BUILT_IN_MODEL.to_owned(),
+        None => {
+            return Err(invalid(
+                path,
+                &format!(
+                    "model must name the default model: the built-in {BUILT_IN_MODEL} is not \
+                     in the OpenRouter model catalog"
+                ),
+            ));
+        }
+    };
     let settings = Settings {
         default_model,
         default_effort: effort(path, file.effort)?,
@@ -193,20 +214,63 @@ fn invalid(path: &Path, message: &str) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{openrouter::fixture::DEFAULT_MODEL, tools::fixture::Workspace};
+    use crate::{
+        openrouter::fixture::{DEFAULT_MODEL, NOW},
+        tools::fixture::Workspace,
+    };
 
     #[test]
-    fn settings_require_a_known_default_model() {
+    fn settings_default_to_the_built_in_model_without_a_file_or_model() {
+        let with_built_in = openrouter::parse_catalog(
+            &format!(
+                r#"{{"data": [{{"id": "{BUILT_IN_MODEL}", "name": "Built In",
+                 "context_length": 1048576, "created": {NOW},
+                 "pricing": {{"prompt": "0", "completion": "0"}},
+                 "architecture": {{"input_modalities": ["text"], "output_modalities": ["text"]}},
+                 "supported_parameters": ["tools"]}}]}}"#
+            ),
+            NOW,
+        )
+        .unwrap();
+        let directory = Workspace::new();
+        let path = directory.0.join("settings.json");
+        for text in [None, Some("{}")] {
+            if let Some(text) = text {
+                std::fs::write(&path, text).unwrap();
+            }
+            let settings = load_from(&path, &with_built_in).unwrap();
+            assert_eq!(settings.default_model, BUILT_IN_MODEL, "{text:?}");
+            assert_eq!(settings.default_effort, EffortLevel::Default, "{text:?}");
+            assert_eq!(settings.default_mode, SessionMode::Ask, "{text:?}");
+        }
+
+        std::fs::remove_file(&path).unwrap();
+        for text in [None, Some("{}")] {
+            if let Some(text) = text {
+                std::fs::write(&path, text).unwrap();
+            }
+            let message = load_from(&path, openrouter::catalog())
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(
+                message.starts_with(&format!("{}: model must name", path.display()))
+                    && message.contains(BUILT_IN_MODEL),
+                "{text:?}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_files_must_be_valid_json_naming_a_known_model() {
         let catalog = openrouter::catalog();
         let directory = Workspace::new();
         let path = directory.0.join("settings.json");
-        assert!(load_from(&path, catalog).is_err());
         for (text, valid) in [
             (r#"{"model":"M"}"#, true),
             (r#"{"model":"a/b"}"#, false),
             (r#"{"model":" "}"#, false),
             (r#"{"model":"M","extra":{}}"#, true),
-            ("{}", false),
             ("", false),
             ("not json", false),
         ] {
