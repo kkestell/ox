@@ -6,7 +6,17 @@ Download the newest release on the
 
 ```sh
 tar -xzf ox-*.tar.gz -C ~/.local/bin
+```
+
+Save your OpenRouter API key:
+
+```sh
 ur auth login
+```
+
+Start ox in a project directory:
+
+```sh
 ox /path/to/project
 ```
 
