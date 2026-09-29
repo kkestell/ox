@@ -6,6 +6,7 @@ Download the newest release on the
 
 ```sh
 tar -xzf ox-*.tar.gz -C ~/.local/bin
+ur auth login
 ox /path/to/project
 ```
 
@@ -24,8 +25,7 @@ By default, `ox` starts `ur`. To use another server, configure servers in
 
 Use your server's actual executable and ACP arguments. Select a server with
 `--server` when more than one is configured. Run `ur` directly to serve an ACP
-client such as Zed; `ur auth login` authenticates it, and `ur run` runs a
-headless prompt.
+client such as Zed, and `ur run` to run a headless prompt.
 
 Type a prompt and press Enter. Paste preserves newlines and waits for Enter; the
 input line shows newlines as `↵`. Long input shows its end. Backspace deletes
