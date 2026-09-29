@@ -412,7 +412,7 @@ impl AgentTurn {
         if self.cancellation.is_cancelled() {
             return Err(PromptOutcome::Cancelled);
         }
-        self.deliver_agent_messages()?;
+        self.deliver_subagent_messages()?;
         let openrouter::Completion { message, stop } = self.request_completion().await?;
         let text = message.text.clone();
         self.process_batch(message).await?;
@@ -421,7 +421,7 @@ impl AgentTurn {
             openrouter::Stop::ToolCalls => Ok(ControlFlow::Continue(())),
             // Messages that arrived by the time the answer committed
             // supersede it. Later ones may be discarded when the run ends.
-            openrouter::Stop::Finished if self.deliver_agent_messages()? => {
+            openrouter::Stop::Finished if self.deliver_subagent_messages()? => {
                 Ok(ControlFlow::Continue(()))
             }
             openrouter::Stop::Finished => Ok(ControlFlow::Break(PromptOutcome::Finished(text))),
@@ -521,7 +521,7 @@ impl AgentTurn {
     /// Saves the subagent messages published since the last model request,
     /// after they fit the model's context limit, and presents them. Returns
     /// whether there were any; a subagent has none.
-    fn deliver_agent_messages(&mut self) -> std::result::Result<bool, PromptOutcome> {
+    fn deliver_subagent_messages(&mut self) -> std::result::Result<bool, PromptOutcome> {
         let Some(subagents) = &self.tools.subagents else {
             return Ok(false);
         };
@@ -530,7 +530,7 @@ impl AgentTurn {
             return Ok(false);
         }
         let mut prospective = self.transcript.clone();
-        prospective.push(TranscriptEntry::AgentMessages(messages.clone()));
+        prospective.push(TranscriptEntry::SubagentMessages(messages.clone()));
         if !compaction::input_fits(&self.parameters, &prospective) {
             return Err(PromptOutcome::OpenRouter(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -538,10 +538,10 @@ impl AgentTurn {
             )));
         }
         self.store
-            .append_agent_messages(&self.summary.id, &messages)
+            .append_subagent_messages(&self.summary.id, &messages)
             .map_err(PromptOutcome::Storage)?;
         self.transcript = prospective;
-        for update in convert::agent_message_updates(&messages) {
+        for update in convert::subagent_message_updates(&messages) {
             self.presentation
                 .send(update)
                 .map_err(PromptOutcome::AcpUpdate)?;
@@ -1889,10 +1889,10 @@ mod tests {
             .expect("a subagent started")
     }
 
-    fn final_answer(subagent_id: &str, text: &str) -> crate::sessions::AgentMessage {
-        crate::sessions::AgentMessage {
+    fn final_answer(subagent_id: &str, text: &str) -> crate::sessions::SubagentMessage {
+        crate::sessions::SubagentMessage {
             subagent_id: subagent_id.to_owned(),
-            content: crate::sessions::AgentMessageContent::FinalAnswer(text.to_owned()),
+            content: crate::sessions::SubagentMessageContent::FinalAnswer(text.to_owned()),
         }
     }
 
@@ -1974,11 +1974,11 @@ mod tests {
         );
         assert_eq!(
             transcript[3],
-            TranscriptEntry::AgentMessages(vec![final_answer(&id_b, "B found it.")])
+            TranscriptEntry::SubagentMessages(vec![final_answer(&id_b, "B found it.")])
         );
         assert_eq!(
             transcript[5],
-            TranscriptEntry::AgentMessages(vec![final_answer(&id_a, "A found it.")])
+            TranscriptEntry::SubagentMessages(vec![final_answer(&id_a, "A found it.")])
         );
         assert_eq!(transcript.len(), 7);
         let main_requests = server.requests_for("Coordinate");
@@ -2085,7 +2085,7 @@ mod tests {
             transcript[3..],
             [
                 answer("Premature answer."),
-                TranscriptEntry::AgentMessages(vec![final_answer(&id, "Child answer.")]),
+                TranscriptEntry::SubagentMessages(vec![final_answer(&id, "Child answer.")]),
                 answer("Final answer."),
             ]
         );

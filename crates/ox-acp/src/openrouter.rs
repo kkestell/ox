@@ -11,8 +11,8 @@ use serde_json::{Value, json};
 
 use crate::{
     sessions::{
-        AgentMessage, AssistantMessage, EffortLevel, ImageAttachment, ModelUsage, SkillInvocation,
-        ToolCall, TranscriptEntry, TurnInput, UserMessage, UserMessagePart,
+        AssistantMessage, EffortLevel, ImageAttachment, ModelUsage, SkillInvocation,
+        SubagentMessage, ToolCall, TranscriptEntry, TurnInput, UserMessage, UserMessagePart,
     },
     tools,
 };
@@ -478,7 +478,7 @@ pub(crate) fn skill_invocation_message(invocation: &SkillInvocation) -> UserMess
 }
 
 /// The user-role text that gives the main agent one subagent message.
-pub(crate) fn agent_message_text(message: &AgentMessage) -> String {
+pub(crate) fn subagent_message_text(message: &SubagentMessage) -> String {
     format!("{}:\n{}", message.label(), message.text())
 }
 
@@ -523,9 +523,9 @@ pub(crate) fn chat_messages(transcript: &[TranscriptEntry]) -> Vec<Value> {
                     user_message(&skill_invocation_message(invocation))
                 }
             },
-            TranscriptEntry::AgentMessages(agent_messages) => {
-                messages.extend(agent_messages.iter().map(
-                    |message| json!({ "role": "user", "content": agent_message_text(message) }),
+            TranscriptEntry::SubagentMessages(subagent_messages) => {
+                messages.extend(subagent_messages.iter().map(
+                    |message| json!({ "role": "user", "content": subagent_message_text(message) }),
                 ));
                 continue;
             }

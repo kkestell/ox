@@ -20,7 +20,7 @@
   from the ACP client.
 - **Subagent**: An agent the main agent starts during a prompt run, working in
   its own child session.
-- **Agent message**: A subagent's answer or failure, delivered to the main
+- **Subagent message**: A subagent's answer or failure, delivered to the main
   agent.
 - **Active session**: A session created or loaded in the current process. Only
   an active session can be prompted.

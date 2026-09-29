@@ -18,9 +18,9 @@ use crate::{
     compaction,
     openrouter::ModelRequestParameters,
     sessions::{
-        self, AgentMessage, AgentMessageContent, AssistantBatch, AssistantMessage, ImageAttachment,
-        ToolCall, ToolContent, ToolOutcome, ToolStatus, TranscriptEntry, TurnInput, UserMessage,
-        UserMessagePart,
+        self, AssistantBatch, AssistantMessage, ImageAttachment, SubagentMessage,
+        SubagentMessageContent, ToolCall, ToolContent, ToolOutcome, ToolStatus, TranscriptEntry,
+        TurnInput, UserMessage, UserMessagePart,
     },
     tools,
 };
@@ -285,17 +285,17 @@ pub fn finished_tool_call_update(call: &ToolCall, outcome: &ToolOutcome) -> Sess
 /// Shows each saved subagent message as a finished tool call attributed to
 /// its subagent, both live and in replay. They are not model tool calls, so
 /// Ox ACP generates their IDs.
-pub fn agent_message_updates(messages: &[AgentMessage]) -> Vec<SessionUpdate> {
+pub fn subagent_message_updates(messages: &[SubagentMessage]) -> Vec<SessionUpdate> {
     messages
         .iter()
         .map(|message| {
             let status = match message.content {
-                AgentMessageContent::FinalAnswer(_) => ToolCallStatus::Completed,
-                AgentMessageContent::Failure(_) => ToolCallStatus::Failed,
+                SubagentMessageContent::FinalAnswer(_) => ToolCallStatus::Completed,
+                SubagentMessageContent::Failure(_) => ToolCallStatus::Failed,
             };
             SessionUpdate::ToolCall(
                 AcpToolCall::new(
-                    ToolCallId::new(format!("agent-message-{}", uuid::Uuid::new_v4())),
+                    ToolCallId::new(format!("subagent-message-{}", uuid::Uuid::new_v4())),
                     message.label(),
                 )
                 .kind(ToolKind::Other)
@@ -329,8 +329,8 @@ pub fn replay_transcript(
                     }
                 }
             },
-            TranscriptEntry::AgentMessages(messages) => {
-                for update in agent_message_updates(messages) {
+            TranscriptEntry::SubagentMessages(messages) => {
+                for update in subagent_message_updates(messages) {
                     send_update(update)?;
                 }
             }
@@ -607,30 +607,34 @@ mod tests {
     #[test]
     fn subagent_messages_are_shown_as_attributed_tool_calls_live_and_in_replay() {
         let messages = vec![
-            AgentMessage {
+            SubagentMessage {
                 subagent_id: "child".to_owned(),
-                content: AgentMessageContent::FinalAnswer("Fixed.".to_owned()),
+                content: SubagentMessageContent::FinalAnswer("Fixed.".to_owned()),
             },
-            AgentMessage {
+            SubagentMessage {
                 subagent_id: "child".to_owned(),
-                content: AgentMessageContent::Failure("The model refused.".to_owned()),
+                content: SubagentMessageContent::Failure("The model refused.".to_owned()),
             },
         ];
         let mut replay = Vec::new();
         replay_transcript(
-            &[TranscriptEntry::AgentMessages(messages.clone())],
+            &[TranscriptEntry::SubagentMessages(messages.clone())],
             |update| {
                 replay.push(update);
                 Ok(())
             },
         )
         .unwrap();
-        for updates in [agent_message_updates(&messages), replay] {
+        for updates in [subagent_message_updates(&messages), replay] {
             let shown: Vec<_> = updates
                 .iter()
                 .map(|update| match update {
                     SessionUpdate::ToolCall(call) => {
-                        assert!(call.tool_call_id.to_string().starts_with("agent-message-"));
+                        assert!(
+                            call.tool_call_id
+                                .to_string()
+                                .starts_with("subagent-message-")
+                        );
                         (call.title.clone(), call.status, call.raw_output.clone())
                     }
                     other => panic!("unexpected update {other:?}"),

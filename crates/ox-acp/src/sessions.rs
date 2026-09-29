@@ -56,47 +56,51 @@ COMMIT;
 
 /// One entry in a session transcript. Every nonempty transcript opens with a
 /// turn start. Each assistant batch contains its message
-/// and one outcome per call, in call order. Agent messages appear only in a
+/// and one outcome per call, in call order. Subagent messages appear only in a
 /// main session's transcript.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TranscriptEntry {
     TurnStart(TurnStart),
     AssistantBatch(AssistantBatch),
     CompactionCheckpoint(CompactionCheckpoint),
-    AgentMessages(Vec<AgentMessage>),
+    SubagentMessages(Vec<SubagentMessage>),
 }
 
 /// A subagent's final answer or failure, published to the main agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AgentMessage {
+pub struct SubagentMessage {
     /// The subagent's child session ID.
     pub subagent_id: String,
-    pub content: AgentMessageContent,
+    pub content: SubagentMessageContent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "text", rename_all = "snake_case")]
-pub enum AgentMessageContent {
+pub enum SubagentMessageContent {
     FinalAnswer(String),
     Failure(String),
 }
 
-impl AgentMessage {
+impl SubagentMessage {
     /// The same attribution in model requests, summarizer material, and ACP
     /// updates.
     pub fn label(&self) -> String {
         match self.content {
-            AgentMessageContent::FinalAnswer(_) => {
+            SubagentMessageContent::FinalAnswer(_) => {
                 format!("Final answer from subagent {}", self.subagent_id)
             }
-            AgentMessageContent::Failure(_) => format!("Failure of subagent {}", self.subagent_id),
+            SubagentMessageContent::Failure(_) => {
+                format!("Failure of subagent {}", self.subagent_id)
+            }
         }
     }
 
     pub fn text(&self) -> &str {
         match &self.content {
-            AgentMessageContent::FinalAnswer(text) | AgentMessageContent::Failure(text) => text,
+            SubagentMessageContent::FinalAnswer(text) | SubagentMessageContent::Failure(text) => {
+                text
+            }
         }
     }
 }
@@ -568,9 +572,9 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
                 previous_prefix = checkpoint.covered_prefix;
             }
             TranscriptEntry::AssistantBatch(batch) => batch.validate()?,
-            TranscriptEntry::AgentMessages(messages) => {
+            TranscriptEntry::SubagentMessages(messages) => {
                 if messages.is_empty() {
-                    return Err(invalid_data("agent messages entry is empty"));
+                    return Err(invalid_data("subagent messages entry is empty"));
                 }
             }
         }
@@ -794,13 +798,13 @@ impl SessionStore {
 
     /// Appends subagent messages to a main session and updates activity in
     /// one transaction.
-    pub fn append_agent_messages(
+    pub fn append_subagent_messages(
         &self,
         id: &SessionId,
-        messages: &[AgentMessage],
+        messages: &[SubagentMessage],
     ) -> io::Result<()> {
         if messages.is_empty() {
-            return Err(invalid_data("agent messages entry is empty"));
+            return Err(invalid_data("subagent messages entry is empty"));
         }
         let mut connection = self.lock();
         let tx = connection.transaction().map_err(io::Error::other)?;
@@ -810,14 +814,14 @@ impl SessionStore {
         {
             return Err(io::Error::new(
                 ErrorKind::InvalidInput,
-                "agent messages belong only in a main session",
+                "subagent messages belong only in a main session",
             ));
         }
         write_entries(
             &tx,
             id,
             None,
-            &[TranscriptEntry::AgentMessages(messages.to_vec())],
+            &[TranscriptEntry::SubagentMessages(messages.to_vec())],
         )?;
         tx.commit().map_err(io::Error::other)
     }
@@ -1006,8 +1010,8 @@ fn encode_entry(entry: &TranscriptEntry) -> (&'static str, String) {
         TranscriptEntry::CompactionCheckpoint(checkpoint) => {
             ("compaction_checkpoint", serde_json::to_string(checkpoint))
         }
-        TranscriptEntry::AgentMessages(messages) => {
-            ("agent_messages", serde_json::to_string(messages))
+        TranscriptEntry::SubagentMessages(messages) => {
+            ("subagent_messages", serde_json::to_string(messages))
         }
     };
     (kind, data.expect("transcript entries serialize"))
@@ -1018,7 +1022,7 @@ fn decode_entry(kind: &str, data: &str) -> io::Result<TranscriptEntry> {
         "turn_start" => TranscriptEntry::TurnStart(decode(kind, data)?),
         "assistant_batch" => TranscriptEntry::AssistantBatch(decode(kind, data)?),
         "compaction_checkpoint" => TranscriptEntry::CompactionCheckpoint(decode(kind, data)?),
-        "agent_messages" => TranscriptEntry::AgentMessages(decode(kind, data)?),
+        "subagent_messages" => TranscriptEntry::SubagentMessages(decode(kind, data)?),
         _ => {
             return Err(invalid_data(format!(
                 "unknown transcript entry kind {kind:?}"
@@ -1647,7 +1651,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_messages_are_saved_only_in_main_transcripts() {
+    fn subagent_messages_are_saved_only_in_main_transcripts() {
         let store = SessionStore::in_memory();
         let main = store.create(workspace()).unwrap().id;
         let child = store.create_child(&main, workspace()).unwrap().id;
@@ -1657,30 +1661,33 @@ mod tests {
                 .unwrap();
         }
         let messages = vec![
-            AgentMessage {
+            SubagentMessage {
                 subagent_id: child.to_string(),
-                content: AgentMessageContent::FinalAnswer("The parser is fixed.".to_owned()),
+                content: SubagentMessageContent::FinalAnswer("The parser is fixed.".to_owned()),
             },
-            AgentMessage {
+            SubagentMessage {
                 subagent_id: child.to_string(),
-                content: AgentMessageContent::Failure("The model refused.".to_owned()),
+                content: SubagentMessageContent::Failure("The model refused.".to_owned()),
             },
         ];
-        store.append_agent_messages(&main, &messages).unwrap();
+        store.append_subagent_messages(&main, &messages).unwrap();
         assert_eq!(
             store.read(&main).unwrap().unwrap().transcript[1],
-            TranscriptEntry::AgentMessages(messages.clone())
+            TranscriptEntry::SubagentMessages(messages.clone())
         );
         assert_eq!(
             store
-                .append_agent_messages(&child, &messages)
+                .append_subagent_messages(&child, &messages)
                 .unwrap_err()
                 .kind(),
             ErrorKind::InvalidInput
         );
-        assert!(store.append_agent_messages(&main, &[]).is_err());
-        let error = read_error(&[user_row(), ("agent_messages", "[]".to_owned())]);
-        assert!(error.ends_with("agent messages entry is empty"), "{error}");
+        assert!(store.append_subagent_messages(&main, &[]).is_err());
+        let error = read_error(&[user_row(), ("subagent_messages", "[]".to_owned())]);
+        assert!(
+            error.ends_with("subagent messages entry is empty"),
+            "{error}"
+        );
     }
 
     #[test]

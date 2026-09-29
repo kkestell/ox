@@ -5,4 +5,4 @@
 - [x] [OX-0003](issues.csv:4): A second prompt silently replaces a queued prompt
 - [x] [OX-0004](issues.csv:5): Joined emoji split across display rows
 - [x] [OX-0005](issues.csv:6): Every draw formats the entire transcript
-- [ ] [OX-0007](issues.csv:8): "Agent message" names two things
+- [x] [OX-0007](issues.csv:8): "Agent message" names two things

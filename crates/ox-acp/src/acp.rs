@@ -1611,7 +1611,7 @@ mod tests {
     #[tokio::test]
     async fn child_sessions_stay_behind_their_main_session_and_count_toward_its_cost() {
         use crate::sessions::{
-            AgentMessage, AgentMessageContent, AssistantBatch, AssistantMessage, ModelUsage,
+            AssistantBatch, AssistantMessage, ModelUsage, SubagentMessage, SubagentMessageContent,
         };
         let workspace = Workspace::new();
         let store = SessionStore::in_memory();
@@ -1641,11 +1641,11 @@ mod tests {
             store.append_batch(session, &answer(cost)).unwrap();
         }
         store
-            .append_agent_messages(
+            .append_subagent_messages(
                 &id,
-                &[AgentMessage {
+                &[SubagentMessage {
                     subagent_id: child.to_string(),
-                    content: AgentMessageContent::FinalAnswer("Done.".to_owned()),
+                    content: SubagentMessageContent::FinalAnswer("Done.".to_owned()),
                 }],
             )
             .unwrap();
@@ -2747,7 +2747,7 @@ mod tests {
                 .transcript
                 .iter()
                 .find_map(|entry| match entry {
-                    TranscriptEntry::AgentMessages(messages) => Some(messages),
+                    TranscriptEntry::SubagentMessages(messages) => Some(messages),
                     _ => None,
                 })
                 .unwrap_or_else(|| panic!("{decision}: the child's answer was delivered"));

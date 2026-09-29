@@ -273,7 +273,7 @@ fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<MaterialFiel
                 push_turn_input(&mut fields, &source, &turn_start.input);
             }
             TranscriptEntry::AssistantBatch(batch) => push_batch(&mut fields, &source, batch),
-            TranscriptEntry::AgentMessages(messages) => {
+            TranscriptEntry::SubagentMessages(messages) => {
                 fields.extend(messages.iter().map(|message| {
                     MaterialField::new(
                         format!("{source} {}", message.label()),
@@ -777,18 +777,18 @@ mod tests {
 
     #[test]
     fn subagent_messages_reach_requests_and_summarizer_material_with_their_attribution() {
-        use crate::sessions::{AgentMessage, AgentMessageContent};
+        use crate::sessions::{SubagentMessage, SubagentMessageContent};
         let transcript = vec![
             TranscriptEntry::turn("Delegate.".to_owned()),
             TranscriptEntry::AssistantBatch(answer("Waiting.")),
-            TranscriptEntry::AgentMessages(vec![
-                AgentMessage {
+            TranscriptEntry::SubagentMessages(vec![
+                SubagentMessage {
                     subagent_id: "child-1".to_owned(),
-                    content: AgentMessageContent::FinalAnswer("Fixed the parser.".to_owned()),
+                    content: SubagentMessageContent::FinalAnswer("Fixed the parser.".to_owned()),
                 },
-                AgentMessage {
+                SubagentMessage {
                     subagent_id: "child-2".to_owned(),
-                    content: AgentMessageContent::Failure("The model refused.".to_owned()),
+                    content: SubagentMessageContent::Failure("The model refused.".to_owned()),
                 },
             ]),
         ];

@@ -19,7 +19,7 @@ use crate::{
     acp::prompt::{self, Presentation, PromptInput, PromptOutput},
     cancellation::PromptCancellation,
     openrouter,
-    sessions::{AgentMessage, AgentMessageContent, SessionSettings, SessionStore, TurnInput},
+    sessions::{SessionSettings, SessionStore, SubagentMessage, SubagentMessageContent, TurnInput},
     shell_processes::ShellProcesses,
     tools,
 };
@@ -74,7 +74,7 @@ struct State {
     /// Live subagents in start order.
     agents: Vec<Agent>,
     /// Messages for the main agent in publication order.
-    messages: VecDeque<AgentMessage>,
+    messages: VecDeque<SubagentMessage>,
 }
 
 struct Agent {
@@ -135,7 +135,7 @@ impl Subagents {
     }
 
     /// Removes and returns the messages published since the last call.
-    pub fn take_messages(&self) -> Vec<AgentMessage> {
+    pub fn take_messages(&self) -> Vec<SubagentMessage> {
         self.0.lock().messages.drain(..).collect()
     }
 
@@ -368,7 +368,7 @@ impl Shared {
             return None;
         }
         let content = match result {
-            Ok(PromptOutput::Finished(answer)) => AgentMessageContent::FinalAnswer(bounded(
+            Ok(PromptOutput::Finished(answer)) => SubagentMessageContent::FinalAnswer(bounded(
                 answer,
                 "the complete answer remains saved in the subagent's session",
             )),
@@ -380,18 +380,18 @@ impl Shared {
                 return None;
             }
             Ok(PromptOutput::TokenLimit) => {
-                AgentMessageContent::Failure("The model reached its token limit.".to_owned())
+                SubagentMessageContent::Failure("The model reached its token limit.".to_owned())
             }
             Ok(PromptOutput::Refused) => {
-                AgentMessageContent::Failure("The model refused.".to_owned())
+                SubagentMessageContent::Failure("The model refused.".to_owned())
             }
-            Err(error) => AgentMessageContent::Failure(bounded(
+            Err(error) => SubagentMessageContent::Failure(bounded(
                 prompt::error_text(&error),
                 "the rest of the error was omitted",
             )),
         };
-        let finished = matches!(content, AgentMessageContent::FinalAnswer(_));
-        state.messages.push_back(AgentMessage {
+        let finished = matches!(content, SubagentMessageContent::FinalAnswer(_));
+        state.messages.push_back(SubagentMessage {
             subagent_id: id.to_string(),
             content,
         });
@@ -419,9 +419,9 @@ impl Shared {
         match self.begin_turn(&id, text, &cancellation) {
             Ok(turn) => Some(turn),
             Err(error) => {
-                state.messages.push_back(AgentMessage {
+                state.messages.push_back(SubagentMessage {
                     subagent_id: id.to_string(),
-                    content: AgentMessageContent::Failure(format!(
+                    content: SubagentMessageContent::Failure(format!(
                         "Its next queued message was rejected: {error}"
                     )),
                 });
