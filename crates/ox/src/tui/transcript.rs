@@ -33,6 +33,8 @@ pub enum Item {
 pub struct TranscriptView {
     items: Vec<Item>,
     tools: HashMap<ToolCallId, usize>,
+    /// Whether the last update was a user message chunk.
+    user_chunk_open: bool,
     /// The manual top row while auto-scroll is off.
     top: Option<usize>,
     pub new_activity: bool,
@@ -40,23 +42,36 @@ pub struct TranscriptView {
 
 impl TranscriptView {
     pub fn user(&mut self, text: String, now: Instant) {
+        self.user_chunk_open = false;
         self.end_thinking(now);
         self.items.push(Item::User(text));
         self.changed();
     }
 
     pub fn notice(&mut self, text: String, color: Color, now: Instant) {
+        self.user_chunk_open = false;
         self.end_thinking(now);
         self.items.push(Item::Notice { text, color });
         self.changed();
     }
 
     pub fn end_turn(&mut self, now: Instant) {
+        self.user_chunk_open = false;
         self.end_thinking(now);
     }
 
     pub fn update(&mut self, update: SessionUpdate, now: Instant) {
+        let continue_user = self.user_chunk_open;
+        self.user_chunk_open = matches!(&update, SessionUpdate::UserMessageChunk(_));
         match update {
+            SessionUpdate::UserMessageChunk(chunk) => {
+                self.end_thinking(now);
+                let text = content(&chunk.content);
+                match self.items.last_mut() {
+                    Some(Item::User(open)) if continue_user => open.push_str(&text),
+                    _ => self.items.push(Item::User(text)),
+                }
+            }
             SessionUpdate::AgentThoughtChunk(chunk) => {
                 let text = content(&chunk.content);
                 match self.items.last_mut() {
@@ -864,6 +879,38 @@ mod tests {
                 "● Thought for 2s",
                 "",
                 "● Thinking..."
+            ]
+        );
+    }
+
+    #[test]
+    fn replay_keeps_user_messages_and_separates_their_responses() {
+        let now = Instant::now();
+        let user = |text: &str| SessionUpdate::UserMessageChunk(ContentChunk::new(text.into()));
+        let view = view(
+            vec![
+                user("title"),
+                SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new().title("saved")),
+                user("first "),
+                user("question"),
+                message("first answer"),
+                user("second question"),
+                message("second answer"),
+            ],
+            now,
+        );
+        assert_eq!(
+            rows(&view, 40, false, now),
+            [
+                "❯ title",
+                "",
+                "❯ first question",
+                "",
+                "● first answer",
+                "",
+                "❯ second question",
+                "",
+                "● second answer",
             ]
         );
     }

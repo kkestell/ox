@@ -1,2 +1,3 @@
 id,created,title,severity,lens,status,review
 OX-0001,2026-09-28 13:56,Picker draws outside the shared margins,low,simplicity,unscheduled,reviews/2026-09-28-002-tui-layout-audit.md
+OX-0002,2026-09-28 19:17,Tall approval blocks hide choices and the composer,medium,correctness,scheduled,reviews/2026-09-28-003-tui-review.md

@@ -204,6 +204,7 @@ fn resume_picker_shows_saved_session_and_replays_on_enter() {
     test.keys(&["Enter"]);
     test.wait_gone("Search");
     test.wait("you said: original transcript");
+    assert!(test.screen().contains("❯ original transcript"));
     test.prompt("after resume");
     test.wait("you said: after resume");
 }
