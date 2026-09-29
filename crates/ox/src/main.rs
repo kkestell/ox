@@ -27,8 +27,8 @@ struct Args {
 enum Command {
     /// Run one prompt and print the final answer.
     Run {
-        #[arg(long)]
-        dir: Option<PathBuf>,
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
         #[arg(long)]
         model: Option<String>,
         #[arg(long, default_value = "default", value_parser = effort)]
@@ -107,7 +107,7 @@ async fn start() -> anyhow::Result<()> {
             effort,
             prompt,
         }) => {
-            let answer = ox_server::run(dir.as_deref(), model, effort, prompt)
+            let answer = ox_server::run(&dir, model, effort, prompt)
                 .await
                 .map_err(|error| anyhow!("{error}"))?;
             println!("{answer}");
@@ -156,13 +156,13 @@ mod tests {
         for (args, expected) in [
             (
                 &["ox", "run", "Hello"][..],
-                (None, None, EffortLevel::Default, "Hello"),
+                (".", None, EffortLevel::Default, "Hello"),
             ),
             (
                 &[
                     "ox", "run", "--dir", "w", "Fix", "--model", "m", "--effort", "xhigh",
                 ],
-                (Some("w"), Some("m"), EffortLevel::XHigh, "Fix"),
+                ("w", Some("m"), EffortLevel::XHigh, "Fix"),
             ),
         ] {
             let Some(Command::Run {
@@ -175,13 +175,8 @@ mod tests {
                 panic!("{args:?} is not a run");
             };
             assert_eq!(
-                (dir.as_deref(), model.as_deref(), effort, prompt.as_str()),
-                (
-                    expected.0.map(Path::new),
-                    expected.1,
-                    expected.2,
-                    expected.3
-                ),
+                (dir.as_path(), model.as_deref(), effort, prompt.as_str()),
+                (Path::new(expected.0), expected.1, expected.2, expected.3),
                 "{args:?}"
             );
         }

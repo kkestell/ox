@@ -13,12 +13,7 @@ mod system_prompt;
 mod text_file;
 mod tools;
 
-use std::{
-    env,
-    error::Error,
-    io,
-    path::{Path, PathBuf},
-};
+use std::{env, error::Error, io, path::Path};
 
 pub use sessions::EffortLevel;
 pub use settings::{global_path, home_dir};
@@ -64,16 +59,6 @@ fn invalid_input(message: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
-fn absolute_dir(dir: Option<&Path>) -> io::Result<PathBuf> {
-    let cwd = env::current_dir()?;
-    let dir = match dir {
-        Some(dir) if dir.is_absolute() => dir.to_path_buf(),
-        Some(dir) => cwd.join(dir),
-        None => cwd,
-    };
-    dir.canonicalize()
-}
-
 /// Fetches and installs the model catalog and returns the settings checked
 /// against it.
 async fn load_settings_and_catalog() -> io::Result<settings::Settings> {
@@ -88,15 +73,16 @@ pub async fn serve() -> Result<(), Box<dyn Error>> {
     acp::serve_stdio(load_settings_and_catalog().await?).await
 }
 
-/// Runs one prompt in `dir`, else the current directory, and returns the
-/// final answer.
+/// Runs one prompt in `dir` and returns the final answer.
 pub async fn run(
-    dir: Option<&Path>,
+    dir: &Path,
     model: Option<String>,
     effort: EffortLevel,
     prompt: String,
 ) -> Result<String, Box<dyn Error>> {
-    let dir = absolute_dir(dir)?;
+    let dir = dir
+        .canonicalize()
+        .map_err(|error| format!("opening {}: {error}", dir.display()))?;
     let settings = load_settings_and_catalog().await?.for_workspace(&dir)?;
     let model = resolve_model(model, settings.default_model)?;
     check_effort(&model, effort)?;

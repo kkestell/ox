@@ -11,3 +11,4 @@ OX-0009,2026-09-29 09:20,"The client's ""resume"" uses the name of a different A
 OX-0010,2026-09-29 09:20,"Server strings, the model persona, and the bundled server's name say ""Ox""",low,naming,unscheduled,reviews/2026-09-29-004-naming-review.md
 OX-0011,2026-09-29 09:20,"The client says ""line"" and ""row"" for the same thing",low,naming,unscheduled,reviews/2026-09-29-004-naming-review.md
 OX-0012,2026-09-29 09:20,"The README calls saved sessions ""history"" and denies the resume command",low,naming,unscheduled,reviews/2026-09-29-004-naming-review.md
+OX-0013,2026-09-29 14:20,AGENTS.md says install targets recreate the database,low,documentation,unscheduled,reviews/2026-09-29-006-single-ox-binary-review.md
