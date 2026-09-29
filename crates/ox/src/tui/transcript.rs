@@ -66,6 +66,7 @@ impl TranscriptView {
     pub fn user(&mut self, text: String, now: Instant) {
         self.user_chunk_open = false;
         self.end_thinking(now);
+        self.tools.clear();
         self.items.push(Item::User(text));
         self.changed();
     }
@@ -80,6 +81,7 @@ impl TranscriptView {
     pub fn end_turn(&mut self, now: Instant) {
         self.user_chunk_open = false;
         self.end_thinking(now);
+        self.tools.clear();
     }
 
     pub fn update(&mut self, update: SessionUpdate, now: Instant) {
@@ -91,7 +93,10 @@ impl TranscriptView {
                 let text = content(&chunk.content);
                 match self.items.last_mut() {
                     Some(Item::User(open)) if continue_user => open.push_str(&text),
-                    _ => self.items.push(Item::User(text)),
+                    _ => {
+                        self.tools.clear();
+                        self.items.push(Item::User(text));
+                    }
                 }
             }
             SessionUpdate::AgentThoughtChunk(chunk) => {
@@ -956,6 +961,51 @@ mod tests {
                 "",
                 "● second answer",
             ]
+        );
+    }
+
+    #[test]
+    fn reused_tool_ids_keep_each_turns_call_in_the_transcript() {
+        let now = Instant::now();
+        let mut view = TranscriptView::default();
+        view.update(
+            SessionUpdate::UserMessageChunk(ContentChunk::new("first".into())),
+            now,
+        );
+        view.update(read("same", "first.txt"), now);
+        view.update(
+            SessionUpdate::UserMessageChunk(ContentChunk::new("second".into())),
+            now,
+        );
+        view.update(read("same", "second.txt"), now);
+        view.update(
+            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                "same",
+                ToolCallUpdateFields::new().status(ToolCallStatus::Failed),
+            )),
+            now,
+        );
+        assert_eq!(
+            rows(&view, 40, false, now),
+            [
+                "❯ first",
+                "",
+                "● Read first.txt",
+                "",
+                "❯ second",
+                "",
+                "● Read second.txt",
+            ]
+        );
+        let lines = view.lines(40, false, ToolOutput::Summary, now);
+        assert_eq!(lines[2].spans[0].style.fg, Some(theme::GREEN));
+        assert_eq!(lines[6].spans[0].style.fg, Some(theme::RED));
+
+        view.end_turn(now);
+        view.update(read("same", "third.txt"), now);
+        assert_eq!(
+            rows(&view, 40, false, now).last().unwrap(),
+            "● Read third.txt"
         );
     }
 
