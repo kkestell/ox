@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use agent_client_protocol::schema::v1::*;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 use similar::{ChangeTag, TextDiff};
@@ -210,20 +210,20 @@ fn item_lines(
     now: Instant,
 ) -> Vec<Line<'static>> {
     match item {
-        Item::User(text) => prefixed(text, width, "❯ ", "  ", Style::new()),
+        Item::User(text) => prefixed(markdown(text, Style::new()), width, "❯ ", "  "),
         Item::Thinking {
             text,
             started,
             ended,
         } => {
             if show_thinking && !text.trim().is_empty() {
-                prefixed(text, width, "● ", "  ", gray())
+                prefixed(markdown(text, gray()), width, "● ", "  ")
             } else {
                 let placeholder = placeholder(*started, *ended, now);
                 vec![Line::styled(format!("● {placeholder}"), gray())]
             }
         }
-        Item::Response(text) => prefixed(text, width, "● ", "  ", Style::new()),
+        Item::Response(text) => prefixed(markdown(text, Style::new()), width, "● ", "  "),
         Item::Tool(call) => {
             let mut lines = vec![
                 shell_line(call, width).unwrap_or_else(|| tool_line(call, &call.title, width)),
@@ -233,7 +233,7 @@ fn item_lines(
             }
             lines
         }
-        Item::Notice { text, color } => styled(wrap(text, width), Style::new().fg(*color)),
+        Item::Notice { text, color } => wrap(plain(text, Style::new().fg(*color)), width),
     }
 }
 
@@ -262,8 +262,9 @@ pub fn described_lines(call: &ToolCall, width: usize, style: Style) -> Vec<Line<
 }
 
 /// A call's content rows: `first` before the first row and `rest`, of the
-/// same width, before the others. Text blocks wrap; diff blocks are unified
-/// hunks, clipped so their indentation survives.
+/// same width, before the others. Text blocks wrap, as Markdown when the call
+/// is nameless, such as a subagent's answer; diff blocks are unified hunks,
+/// clipped so their indentation survives.
 pub fn content_lines(
     call: &ToolCall,
     width: usize,
@@ -271,28 +272,26 @@ pub fn content_lines(
     rest: &str,
     style: Style,
 ) -> Vec<Line<'static>> {
-    let width = width.saturating_sub(first.width());
-    let mut rows = Vec::new();
+    let mut lines = Vec::new();
     for block in &call.content {
         match block {
             ToolCallContent::Content(item) => {
-                rows.extend(
-                    wrap(&content(&item.content), width)
-                        .into_iter()
-                        .map(|row| (row, style)),
-                );
+                let text = content(&item.content);
+                lines.extend(if call.name.is_none() {
+                    markdown(&text, style)
+                } else {
+                    plain(&text, style)
+                });
             }
-            ToolCallContent::Diff(diff) => rows.extend(diff_rows(diff, width, style)),
-            _ => rows.push(("[non-text content]".to_owned(), style)),
+            ToolCallContent::Diff(diff) => lines.extend(
+                diff_rows(diff, width.saturating_sub(first.width()), style)
+                    .into_iter()
+                    .map(|(row, style)| Line::styled(row, style)),
+            ),
+            _ => lines.push(Line::styled("[non-text content]", style)),
         }
     }
-    rows.into_iter()
-        .enumerate()
-        .map(|(index, (row, style))| {
-            let prefix = if index == 0 { first } else { rest };
-            Line::styled(format!("{prefix}{row}"), style)
-        })
-        .collect()
+    prefixed(lines, width, first, rest)
 }
 
 /// The unified hunks of a diff with three rows of context. Hunk headers are
@@ -361,20 +360,218 @@ fn shell_line(call: &ToolCall, width: usize) -> Option<Line<'static>> {
 
 /// Wrapped rows with `first` before the first and `rest`, of the same width,
 /// before the others.
-fn prefixed(text: &str, width: usize, first: &str, rest: &str, style: Style) -> Vec<Line<'static>> {
-    wrap(text, width.saturating_sub(first.width()))
+fn prefixed(
+    lines: Vec<Line<'static>>,
+    width: usize,
+    first: &str,
+    rest: &str,
+) -> Vec<Line<'static>> {
+    wrap(lines, width.saturating_sub(first.width()))
         .into_iter()
         .enumerate()
-        .map(|(index, row)| {
+        .map(|(index, mut row)| {
             let prefix = if index == 0 { first } else { rest };
-            Line::styled(format!("{prefix}{row}"), style)
+            if index == 0 || row.width() > 0 {
+                row.spans.insert(0, Span::raw(prefix.to_owned()));
+            }
+            row
         })
         .collect()
 }
 
-fn styled(rows: Vec<String>, style: Style) -> Vec<Line<'static>> {
+#[derive(Clone)]
+struct Styles;
+
+impl tui_markdown::StyleSheet for Styles {
+    fn heading(&self, _level: u8) -> Style {
+        Style::new().add_modifier(Modifier::BOLD)
+    }
+
+    fn heading_marker(&self, _level: u8) -> &str {
+        ""
+    }
+
+    fn code(&self) -> Style {
+        Style::new().fg(theme::LIGHT_YELLOW)
+    }
+
+    fn code_block_fence(&self) -> &str {
+        ""
+    }
+
+    fn link(&self) -> Style {
+        Style::new().add_modifier(Modifier::UNDERLINED)
+    }
+
+    fn blockquote(&self) -> Style {
+        Style::new().fg(theme::GRAY)
+    }
+
+    fn list_marker(&self) -> Style {
+        Style::new()
+    }
+
+    fn table_header(&self) -> Style {
+        Style::new().add_modifier(Modifier::BOLD)
+    }
+
+    fn table_border(&self) -> Style {
+        Style::new().fg(theme::DIM)
+    }
+}
+
+/// Escaped Markdown as unwrapped rows of styled spans. `style` wins over the
+/// Markdown styles, so dim text stays dim. Every line break is kept: two
+/// trailing spaces make a Markdown line break, so typed and streamed breaks
+/// show as typed instead of joining into one paragraph.
+fn markdown(text: &str, style: Style) -> Vec<Line<'static>> {
+    let text = escape(text).replace('\n', "  \n");
+    let options = tui_markdown::Options::new(Styles);
+    tui_markdown::from_str_with_options(&text, &options)
+        .lines
+        .into_iter()
+        .map(|line| {
+            let spans = line
+                .spans
+                .into_iter()
+                .map(|span| {
+                    let span_style = line.style.patch(span.style).patch(style);
+                    Span::styled(span.content.into_owned(), span_style)
+                })
+                .collect::<Vec<_>>();
+            Line::from(spans).style(style)
+        })
+        .collect()
+}
+
+/// Escaped and trimmed text as unwrapped rows, one per line.
+fn plain(text: &str, style: Style) -> Vec<Line<'static>> {
+    escape(text)
+        .trim()
+        .split('\n')
+        .map(|line| Line::styled(line.to_owned(), style))
+        .collect()
+}
+
+/// A row's hanging prefix: the `>` of a quote and blank space as wide as a list
+/// marker, which the rows after the first of a wrapped row start with.
+fn hanging(line: &Line<'static>) -> Vec<Span<'static>> {
+    let mut hang = Vec::new();
+    let mut spans = line.spans.iter().peekable();
+    while let Some(span) = spans.next_if(|span| span.content == ">" || span.content == " ") {
+        hang.push(span.clone());
+    }
+    if let Some(span) = spans.next() {
+        let marker = span.content.trim_start();
+        let list = marker == "- "
+            || marker.starts_with("- [")
+            || marker
+                .strip_suffix(". ")
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        if list {
+            hang.push(Span::styled(" ".repeat(span.width()), span.style));
+        }
+    }
+    hang
+}
+
+/// Word-wraps rows by display width. The whole text is trimmed, interior
+/// blank rows are kept, tabs are expanded, and words wider than a row are
+/// split. The rows after the first of a wrapped row start with its hanging
+/// prefix.
+pub fn wrap(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let mut rows: Vec<Line<'static>> = lines
+        .iter()
+        .flat_map(|line| wrap_line(line, width))
+        .collect();
+    while rows.last().is_some_and(|row| row.width() == 0) {
+        rows.pop();
+    }
+    let blank = rows.iter().take_while(|row| row.width() == 0).count();
+    rows.drain(..blank);
+    rows
+}
+
+fn wrap_line(line: &Line<'static>, width: usize) -> Vec<Line<'static>> {
+    let hang = hanging(line);
+    let hang_width = hang.iter().map(Span::width).sum::<usize>().min(width - 1);
+    // Every character with its style, tabs expanded, trailing blanks dropped.
+    let mut chars: Vec<(char, Style)> = Vec::new();
+    let mut column = 0;
+    for span in &line.spans {
+        let style = line.style.patch(span.style);
+        for c in span.content.chars() {
+            if c == '\t' {
+                let spaces = 8 - column % 8;
+                chars.extend(std::iter::repeat_n((' ', style), spaces));
+                column += spaces;
+            } else {
+                chars.push((c, style));
+                column += c.width().unwrap_or(0);
+            }
+        }
+    }
+    while chars.last().is_some_and(|(c, _)| c.is_whitespace()) {
+        chars.pop();
+    }
+    let text_width = |chars: &[(char, Style)]| -> usize {
+        chars.iter().map(|(c, _)| c.width().unwrap_or(0)).sum()
+    };
+    let mut rows: Vec<Vec<(char, Style)>> = vec![Vec::new()];
+    let mut column = 0;
+    let mut rest = &chars[..];
+    while !rest.is_empty() {
+        let row_width = if rows.len() == 1 {
+            width
+        } else {
+            width - hang_width
+        };
+        let space_end = rest
+            .iter()
+            .position(|(c, _)| !c.is_whitespace())
+            .unwrap_or(rest.len());
+        let word_end = rest[space_end..]
+            .iter()
+            .position(|(c, _)| c.is_whitespace())
+            .map_or(rest.len(), |end| space_end + end);
+        let (mut space, word) = (&rest[..space_end], &rest[space_end..word_end]);
+        if column > 0 && column + text_width(space) + text_width(word) > row_width {
+            rows.push(Vec::new());
+            column = 0;
+            space = &[];
+        }
+        for &(c, style) in space.iter().chain(word) {
+            let row_width = if rows.len() == 1 {
+                width
+            } else {
+                width - hang_width
+            };
+            let c_width = c.width().unwrap_or(0);
+            if column + c_width > row_width && column > 0 {
+                rows.push(Vec::new());
+                column = 0;
+            }
+            rows.last_mut().unwrap().push((c, style));
+            column += c_width;
+        }
+        rest = &rest[word_end..];
+    }
     rows.into_iter()
-        .map(|row| Line::styled(row, style))
+        .enumerate()
+        .map(|(index, row)| {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            for (c, style) in row {
+                match spans.last_mut() {
+                    Some(last) if last.style == style => last.content.to_mut().push(c),
+                    _ => spans.push(Span::styled(c.to_string(), style)),
+                }
+            }
+            if index > 0 {
+                spans.splice(0..0, hang.iter().cloned());
+            }
+            Line::from(spans).style(line.style)
+        })
         .collect()
 }
 
@@ -400,54 +597,6 @@ fn expand(line: &str) -> String {
         }
     }
     text
-}
-
-/// Word-wraps escaped text by display width. The whole text is trimmed,
-/// interior blank lines are kept, tabs are expanded, and words wider than a
-/// row are split.
-pub fn wrap(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    let text = escape(text);
-    let text = text.trim();
-    if text.is_empty() {
-        return Vec::new();
-    }
-    let mut rows = Vec::new();
-    for line in text.split('\n') {
-        let line = expand(line.trim_end());
-        let mut current = String::new();
-        let mut column = 0;
-        let mut chars = line.chars().peekable();
-        loop {
-            let mut space = String::new();
-            while let Some(c) = chars.next_if(|c| c.is_whitespace()) {
-                space.push(c);
-            }
-            let mut word = String::new();
-            while let Some(c) = chars.next_if(|c| !c.is_whitespace()) {
-                word.push(c);
-            }
-            if space.is_empty() && word.is_empty() {
-                break;
-            }
-            if column > 0 && column + space.width() + word.width() > width {
-                rows.push(std::mem::take(&mut current));
-                column = 0;
-                space.clear();
-            }
-            for c in space.chars().chain(word.chars()) {
-                let c_width = c.width().unwrap_or(0);
-                if column + c_width > width && column > 0 {
-                    rows.push(std::mem::take(&mut current));
-                    column = 0;
-                }
-                current.push(c);
-                column += c_width;
-            }
-        }
-        rows.push(current);
-    }
-    rows
 }
 
 /// Escapes control characters and clips the text with `…`.
@@ -574,7 +723,11 @@ mod tests {
                 vec!["a\\rb \\u{1b}"],
             ),
         ] {
-            assert_eq!(wrap(text, width), expected, "{case}");
+            assert_eq!(
+                self::text(&wrap(plain(text, Style::new()), width)),
+                expected,
+                "{case}"
+            );
         }
         let text = "  first line of text\nsecond  ";
         let mut user = TranscriptView::default();
@@ -587,6 +740,97 @@ mod tests {
         assert_eq!(
             rows(&response, 12, false, now),
             ["● first line", "  of text", "  second"]
+        );
+    }
+
+    #[test]
+    fn messages_render_as_markdown_with_hanging_list_and_quote_rows() {
+        let now = Instant::now();
+        for (case, text, width, expected) in [
+            (
+                "line breaks are kept",
+                "one\ntwo\n\nthree",
+                40,
+                vec!["● one", "  two", "", "  three"],
+            ),
+            (
+                "headings drop their marker",
+                "# Title\n\nbody",
+                40,
+                vec!["● Title", "", "  body"],
+            ),
+            (
+                "wrapped list items hang under the marker",
+                "- one two three four\n  - five six seven\n\n1. eight nine ten",
+                18,
+                vec![
+                    "● - one two three",
+                    "    four",
+                    "      - five six",
+                    "        seven",
+                    "",
+                    "  1. eight nine",
+                    "     ten",
+                ],
+            ),
+            (
+                "wrapped quotes keep their bar",
+                "> one two three four",
+                14,
+                vec!["● > one two", "  > three four"],
+            ),
+            (
+                "code blocks keep their rows without fences",
+                "```\nfn a() {\n    b()\n}\n```",
+                40,
+                vec!["● fn a() {", "      b()", "  }"],
+            ),
+        ] {
+            assert_eq!(
+                rows(&view(vec![message(text)], now), width, false, now),
+                expected,
+                "{case}"
+            );
+        }
+        let lines = view(vec![message("**bold** `code`")], now).lines(40, false, false, now);
+        let spans: Vec<_> = lines[0]
+            .spans
+            .iter()
+            .map(|span| (span.content.as_ref(), span.style))
+            .collect();
+        assert_eq!(
+            spans,
+            [
+                ("● ", Style::new()),
+                ("bold", Style::new().add_modifier(Modifier::BOLD)),
+                (" ", Style::new()),
+                ("code", Style::new().fg(theme::LIGHT_YELLOW)),
+            ]
+        );
+        let dim = view(vec![thought("**bold** `code`")], now).lines(40, true, false, now);
+        for span in &dim[0].spans[1..] {
+            assert_eq!(span.style.fg, Some(theme::DIM), "{:?}", span.content);
+        }
+        let output = ToolCall::new("r", "Read a.md")
+            .name("read_file".to_owned())
+            .status(ToolCallStatus::Completed)
+            .content(vec![ToolCallContent::from(ContentBlock::from(
+                "# not a heading",
+            ))]);
+        let view = self::view(
+            vec![SessionUpdate::ToolCall(output), answer("a", "# heading")],
+            now,
+        );
+        assert_eq!(
+            text(&view.lines(40, false, true, now)),
+            [
+                "● Read a.md",
+                "  └ # not a heading",
+                "",
+                "● Final answer from subagent child-1",
+                "  └ heading",
+            ],
+            "named output stays plain and a nameless answer is Markdown"
         );
     }
 
