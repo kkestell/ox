@@ -4,3 +4,4 @@ OX-0002,2026-09-28 19:17,Tall approval blocks hide choices and the composer,medi
 OX-0003,2026-09-29 05:40,A second prompt silently replaces a queued prompt,high,correctness,fixed,
 OX-0004,2026-09-29 06:56,Joined emoji split across display rows,medium,correctness,fixed,reviews/2026-09-29-002-ratatui-usage-review.md
 OX-0005,2026-09-29 06:56,Every draw formats the entire transcript,medium,performance,fixed,reviews/2026-09-29-002-ratatui-usage-review.md
+OX-0006,2026-09-29 07:39,Cached rows are invalidated by hand at each mutation site,low,readability,unscheduled,reviews/2026-09-29-003-tui-readability-review.md

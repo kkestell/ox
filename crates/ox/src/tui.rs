@@ -534,11 +534,11 @@ fn picker_lines(picker: &Picker, width: usize, rows: usize) -> Vec<Line<'static>
         ]);
     }
     let mut lines = vec![Line::from(search), error];
+    if matches!(&picker.rows, PickerRows::Sessions(sessions) if sessions.is_empty()) {
+        lines.push(Line::raw("No saved sessions"));
+        return lines;
+    }
     let names = match &picker.rows {
-        PickerRows::Sessions(sessions) if sessions.is_empty() => {
-            lines.push(Line::raw("No saved sessions"));
-            return lines;
-        }
         PickerRows::Sessions(sessions) => session_rows(sessions, width),
         PickerRows::Models(models) => model_rows(&models.all, width),
     };
@@ -627,6 +627,8 @@ fn thousands(value: u64) -> String {
     text
 }
 
+/// The approval dialog's rows: the heading, a blank row, the body, a blank row,
+/// and one row per option. `draw` slices the body and the options by position.
 fn approval_lines(view: &TranscriptView, approval: &Approval, width: usize) -> Vec<Line<'static>> {
     let request = approval.request;
     let id = &request.tool_call.tool_call_id;

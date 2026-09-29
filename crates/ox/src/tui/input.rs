@@ -88,6 +88,9 @@ impl Input {
         }
     }
 
+    /// Moves the cursor to the next grapheme boundary. Inserted text can join
+    /// the following cluster, as when a base character lands before a
+    /// combining mark, leaving the cursor inside it.
     fn next_boundary(&mut self) {
         self.cursor = self
             .text
