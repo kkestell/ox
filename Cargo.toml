@@ -31,3 +31,6 @@ codegen-units = 16
 lto = false
 strip = "none"
 incremental = true
+
+[profile.dev]
+split-debuginfo = "packed"
