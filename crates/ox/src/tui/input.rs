@@ -52,9 +52,8 @@ impl Input {
         if word.is_empty() || self.cursor != self.text.len() || word.contains(char::is_whitespace) {
             return None;
         }
-        commands
-            .iter()
-            .find_map(|command| command.strip_prefix(word).filter(|rest| !rest.is_empty()))
+        let command = commands.iter().find(|command| command.starts_with(word))?;
+        command.strip_prefix(word).filter(|rest| !rest.is_empty())
     }
 
     pub fn newline(&mut self) {
@@ -297,6 +296,9 @@ mod tests {
         ] {
             assert_eq!(input.ghost_text(&commands), expected, "{:?}", input.text());
         }
+        let overlapping = ["model", "model-fast"].map(String::from);
+        assert_eq!(typed("/mode").ghost_text(&overlapping), Some("l"));
+        assert_eq!(typed("/model").ghost_text(&overlapping), None);
         let mut input = typed("/mo");
         input.paste(input.ghost_text(&commands).unwrap());
         assert_eq!(input.text(), "/model");

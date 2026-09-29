@@ -438,13 +438,13 @@ pub mod tests {
         .await;
     }
 
-    /// Records the next available commands update.
-    async fn commands(session: &mut Session, events: &mut UnboundedReceiver<Event>) {
+    /// Receives the next available commands update.
+    async fn commands(events: &mut UnboundedReceiver<Event>) -> (SessionId, SessionUpdate) {
         loop {
-            if let Event::Update(_, update @ SessionUpdate::AvailableCommandsUpdate(_)) =
+            if let Event::Update(id, update @ SessionUpdate::AvailableCommandsUpdate(_)) =
                 events.recv().await.unwrap()
             {
-                return session.update(&update);
+                return (id, update);
             }
         }
     }
@@ -454,7 +454,9 @@ pub mod tests {
         with_session(async |mut session, mut events| {
             assert!(session.can_resume());
             assert!(session.commands.is_empty());
-            commands(&mut session, &mut events).await;
+            let (id, update) = commands(&mut events).await;
+            assert_eq!(id, session.id);
+            session.update(&update);
             assert_eq!(session.commands, ["tally"]);
             let old = session.id.clone();
             session.prompt("title".into())?;
@@ -465,6 +467,8 @@ pub mod tests {
                 .block_task()
                 .await?
                 .session_id;
+            let (id, _) = commands(&mut events).await;
+            assert_eq!(id, newer);
             let listed = session.list().await?;
             assert_eq!(listed.len(), 2);
             assert_eq!(listed[0].session_id, old);
@@ -477,7 +481,9 @@ pub mod tests {
             assert!(session.commands.is_empty());
             assert!(session.usage.is_none());
             session.load(newer.clone()).await?;
-            commands(&mut session, &mut events).await;
+            let (id, update) = commands(&mut events).await;
+            assert_eq!(id, newer);
+            session.update(&update);
             assert_eq!(session.commands, ["tally"]);
             assert!(session.active());
             assert_eq!(session.id, newer);
