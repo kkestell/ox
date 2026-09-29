@@ -1,7 +1,8 @@
-//! Settings: `~/.config/ur/settings.json`, read once at process startup, and
-//! the workspace settings file `.ur/settings.json`, read when a session becomes
-//! active, whose keys replace the same keys from the first file. Neither file
-//! is required.
+//! Settings: the global settings file `~/.config/ox/settings.json`, read once
+//! at process startup, and the workspace settings file `.ox/settings.json`, read
+//! when a session becomes active, whose keys replace the same keys from the
+//! first file. Neither file is required. The Ox client reads and writes other
+//! fields of the global settings file.
 
 use std::{
     io,
@@ -38,7 +39,7 @@ pub struct Settings {
     pub default_mode: SessionMode,
 }
 
-/// The home directory in `$HOME`, which holds `~/.config/ur` and the user
+/// The home directory in `$HOME`, which holds `~/.config/ox` and the user
 /// skills directories.
 pub fn home_dir() -> io::Result<PathBuf> {
     std::env::var_os("HOME")
@@ -46,10 +47,15 @@ pub fn home_dir() -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "HOME is not set"))
 }
 
-/// Reads `~/.config/ur/settings.json`. A missing file, or one without `model`,
+/// The global settings file in `home`.
+pub fn global_path(home: &Path) -> PathBuf {
+    home.join(".config/ox/settings.json")
+}
+
+/// Reads the global settings file. A missing file, or one without `model`,
 /// means the built-in model.
 pub fn load(catalog: &[CatalogModel]) -> io::Result<Settings> {
-    load_from(&home_dir()?.join(".config/ur/settings.json"), catalog)
+    load_from(&global_path(&home_dir()?), catalog)
 }
 
 fn load_from(path: &Path, catalog: &[CatalogModel]) -> io::Result<Settings> {
@@ -71,7 +77,7 @@ impl Settings {
     /// These settings with each key set in the workspace settings file of
     /// `workspace_path` replaced. A missing file changes nothing.
     pub fn for_workspace(&self, workspace_path: &Path) -> io::Result<Self> {
-        let path = workspace_path.join(".ur/settings.json");
+        let path = workspace_path.join(".ox/settings.json");
         let file = match read(&path) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(self.clone()),
@@ -140,10 +146,10 @@ fn mode(path: &Path, value: Option<String>) -> io::Result<SessionMode> {
 /// Saves all current session settings in the workspace file when it exists,
 /// otherwise in the global file. Returns whether the global file was written.
 pub fn save(home: &Path, workspace_path: &Path, selected: &SessionSettings) -> io::Result<bool> {
-    let workspace_file = workspace_path.join(".ur/settings.json");
+    let workspace_file = workspace_path.join(".ox/settings.json");
     let global = !workspace_file.try_exists()?;
     let path = if global {
-        home.join(".config/ur/settings.json")
+        global_path(home)
     } else {
         workspace_file
     };
@@ -293,8 +299,8 @@ mod tests {
 
         let chosen = &openrouter::catalog()[1].id;
         assert_ne!(chosen, DEFAULT_MODEL);
-        let path = workspace.0.join(".ur/settings.json");
-        std::fs::create_dir(workspace.0.join(".ur")).unwrap();
+        let path = workspace.0.join(".ox/settings.json");
+        std::fs::create_dir(workspace.0.join(".ox")).unwrap();
         for (text, model) in [
             ("{}", DEFAULT_MODEL),
             (&format!(r#"{{"model":"{chosen}"}}"#), chosen),
@@ -339,8 +345,8 @@ mod tests {
         assert_eq!(settings.default_mode, SessionMode::Auto);
 
         let workspace = Workspace::new();
-        let workspace_file = workspace.0.join(".ur/settings.json");
-        std::fs::create_dir(workspace.0.join(".ur")).unwrap();
+        let workspace_file = workspace.0.join(".ox/settings.json");
+        std::fs::create_dir(workspace.0.join(".ox")).unwrap();
         for (text, expected) in [
             (
                 r#"{"effort":"low","mode":"ask"}"#,
@@ -397,10 +403,14 @@ mod tests {
     fn saving_session_settings_preserves_other_fields_and_uses_the_workspace_file_when_present() {
         let home = Workspace::new();
         let workspace = Workspace::new();
-        let global = home.0.join(".config/ur/settings.json");
-        let local = workspace.0.join(".ur/settings.json");
+        let global = global_path(&home.0);
+        let local = workspace.0.join(".ox/settings.json");
         let selected =
             SessionSettings::new(DEFAULT_MODEL, EffortLevel::Low).with_mode(SessionMode::Auto);
+        std::fs::create_dir_all(global.parent().unwrap()).unwrap();
+        let client_fields =
+            r#"{"servers":[{"name":"Alpha","command":"alpha"}],"favorites":["a/b"]}"#;
+        std::fs::write(&global, client_fields).unwrap();
         assert!(save(&home.0, &workspace.0, &selected).unwrap());
         assert_eq!(
             load_from(&global, openrouter::catalog())
@@ -408,7 +418,11 @@ mod tests {
                 .default_effort,
             EffortLevel::Low
         );
-        std::fs::create_dir(workspace.0.join(".ur")).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&global).unwrap()).unwrap();
+        assert_eq!(saved["servers"][0]["name"], "Alpha");
+        assert_eq!(saved["favorites"], serde_json::json!(["a/b"]));
+        std::fs::create_dir(workspace.0.join(".ox")).unwrap();
         std::fs::write(&local, r#"{"model":"z-ai/glm-5.3-flash","other":42}"#).unwrap();
         assert!(!save(&home.0, &workspace.0, &selected).unwrap());
         let saved: serde_json::Value =

@@ -78,13 +78,13 @@ def main():
         for line in (root / ".env").read_text().splitlines()
         if line.startswith("OPENROUTER_API_KEY=")
     )
-    workspace = tempfile.mkdtemp(prefix="ur-")
+    workspace = tempfile.mkdtemp(prefix="ox-")
     print(workspace, flush=True)
     try:
         if repo:
             subprocess.run(["git", "clone", repo, workspace], check=True)
             subprocess.run(["git", "checkout", commit], cwd=workspace, check=True)
-        command = ["cargo", "run", "-p", "ur", "--", "run", "--dir", workspace]
+        command = ["cargo", "run", "-p", "ox", "--", "run", "--dir", workspace]
         if args.model:
             command.extend(["--model", args.model])
         if args.effort:

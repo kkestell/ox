@@ -21,24 +21,21 @@ format-docs:
 
 PREFIX ?= $(HOME)/.local/bin
 OX_CONFIG_DIR ?= $(HOME)/.config/ox
-UR_CONFIG_DIR ?= $(HOME)/.config/ur
 
 release:
-	cargo build --release -p ox -p ur
+	cargo build --release -p ox
 
 install:
-	cargo build --profile fast -p ox -p ur
+	cargo build --profile fast -p ox
 	$(MAKE) PROFILE_DIR=fast do-install
 
 install-release:
-	cargo build --release -p ox -p ur
+	cargo build --release -p ox
 	$(MAKE) PROFILE_DIR=release do-install
 
 .PHONY: do-install
 do-install:
 	mkdir -p $(PREFIX)
 	install -m 755 target/$(PROFILE_DIR)/ox $(PREFIX)/ox
-	install -m 755 target/$(PROFILE_DIR)/ur $(PREFIX)/ur
-	mkdir -p $(OX_CONFIG_DIR) $(UR_CONFIG_DIR)
-	cp examples/ox/settings.json $(OX_CONFIG_DIR)/settings.json
-	cp examples/ur/settings.json $(UR_CONFIG_DIR)/settings.json
+	mkdir -p $(OX_CONFIG_DIR)
+	cp examples/settings.json $(OX_CONFIG_DIR)/settings.json

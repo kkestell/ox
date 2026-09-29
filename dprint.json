@@ -6,5 +6,5 @@
     "textWrap": "always"
   },
   "includes": ["**/*.{md,markdown}"],
-  "excludes": ["target", "crates/ur/src/prompts"]
+  "excludes": ["target", "crates/ox-server/src/prompts"]
 }

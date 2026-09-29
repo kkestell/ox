@@ -1237,8 +1237,8 @@ mod tests {
         );
 
         let directory =
-            std::env::temp_dir().join(format!("ur-compaction-{}", uuid::Uuid::new_v4()));
-        let database = directory.join("ur.db");
+            std::env::temp_dir().join(format!("ox-compaction-{}", uuid::Uuid::new_v4()));
+        let database = directory.join("ox.db");
         let store = SessionStore::open(&database).unwrap();
         let id = store.create(&harness.workspace.0).unwrap().id;
         store

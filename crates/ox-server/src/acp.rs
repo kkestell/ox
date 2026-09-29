@@ -201,7 +201,7 @@ impl ServerState {
 
     /// Credentials are read on first use, so the process serves listing,
     /// deletion, and terminal login before a key exists, and a key saved by
-    /// `ur auth login` is picked up by the next request without a restart.
+    /// `ox auth login` is picked up by the next request without a restart.
     fn openrouter_client(&self) -> Result<openrouter::Client> {
         let mut slot = self
             .openrouter
@@ -577,7 +577,7 @@ impl ServerState {
     /// Why a session operation could not start.
     fn unavailable(&self) -> Error {
         if self.operations.is_shutting_down() {
-            Error::invalid_request().data("Ur is shutting down")
+            Error::invalid_request().data("Ox is shutting down")
         } else {
             Error::invalid_request().data("session has an operation in progress")
         }
@@ -862,7 +862,7 @@ pub async fn run_headless(
     let api_key = auth::api_key()?.ok_or_else(|| {
         io::Error::new(
             ErrorKind::PermissionDenied,
-            "OpenRouter authentication required; run `ur auth login`",
+            "OpenRouter authentication required; run `ox auth login`",
         )
     })?;
     let system_prompt = system_prompt::for_workspace(workspace_path)?;
@@ -1014,7 +1014,7 @@ async fn serve(
 
     let agent = Agent
         .builder()
-        .name("ur")
+        .name("ox")
         .on_close(async move |_connection| {
             close_state.begin_shutdown();
             close_state.operations.shutdown().await;
@@ -1228,7 +1228,7 @@ mod tests {
     /// A home directory that does not exist, so skills installed on the
     /// developer's machine never enter a test catalog.
     fn no_home() -> PathBuf {
-        std::env::temp_dir().join(format!("ur-no-home-{}", uuid::Uuid::new_v4()))
+        std::env::temp_dir().join(format!("ox-no-home-{}", uuid::Uuid::new_v4()))
     }
 
     /// A server state over `store`, as a later process would open it.
@@ -1412,7 +1412,7 @@ mod tests {
         write_skill(
             &skills_dir,
             "goal",
-            "---\nname: goal\ndescription: \"Work toward an objective: verify it.\"\nargument-hint: \"<objective>\"\nallowed-tools: [shell]\nmetadata:\n  owner: ur\n---\n\nWork toward the objective.\n",
+            "---\nname: goal\ndescription: \"Work toward an objective: verify it.\"\nargument-hint: \"<objective>\"\nallowed-tools: [shell]\nmetadata:\n  owner: ox\n---\n\nWork toward the objective.\n",
         );
         fs::write(skills_dir.join(".DS_Store"), "").unwrap();
         let goal = Skill {
@@ -1498,13 +1498,13 @@ mod tests {
     fn skills_directories_load_in_priority_order() {
         let home = Workspace::new();
         let workspace = Workspace::new();
-        let ur = home.0.join(".config/ur/skills");
+        let ox = home.0.join(".config/ox/skills");
         let agents = home.0.join(".agents/skills");
         let local = workspace.0.join(".agents/skills");
         let skill = |name: &str, description: &str| {
             format!("---\nname: {name}\ndescription: {description}\n---\nBody\n")
         };
-        for directory in [&ur, &agents, &local] {
+        for directory in [&ox, &agents, &local] {
             write_skill(
                 directory,
                 "shared",
@@ -1518,7 +1518,7 @@ mod tests {
                 &skill("personal", &directory.display().to_string()),
             );
         }
-        write_skill(&ur, "ur-only", &skill("ur-only", "Ur."));
+        write_skill(&ox, "ox-only", &skill("ox-only", "Ox."));
         write_skill(&agents, "agents-only", &skill("agents-only", "Agents."));
         write_skill(&local, "local-only", &skill("local-only", "Local."));
         write_skill(&local, "broken", "No frontmatter.\n");
@@ -1535,9 +1535,9 @@ mod tests {
             [
                 ("agents-only", "Agents.".to_owned()),
                 ("local-only", "Local.".to_owned()),
+                ("ox-only", "Ox.".to_owned()),
                 ("personal", agents.display().to_string()),
-                ("shared", ur.display().to_string()),
-                ("ur-only", "Ur.".to_owned()),
+                ("shared", ox.display().to_string()),
             ],
             "each name once, from its highest-priority skills directory, without the broken skill"
         );
@@ -1563,8 +1563,8 @@ mod tests {
     fn new_sessions_use_the_workspace_session_settings() {
         let workspace = Workspace::new();
         let chosen = openrouter::catalog()[1].id.as_str();
-        let path = workspace.0.join(".ur/settings.json");
-        fs::create_dir(workspace.0.join(".ur")).unwrap();
+        let path = workspace.0.join(".ox/settings.json");
+        fs::create_dir(workspace.0.join(".ox")).unwrap();
         fs::write(
             &path,
             format!(r#"{{"model":"{chosen}","effort":"xhigh","mode":"auto"}}"#),
@@ -1858,7 +1858,7 @@ mod tests {
             ),
             "a model without the current effort level resets it"
         );
-        let global_path = state.home.join(".config/ur/settings.json");
+        let global_path = state.home.join(".config/ox/settings.json");
         let saved: serde_json::Value =
             serde_json::from_slice(&fs::read(&global_path).unwrap()).unwrap();
         assert_eq!(saved["model"], openrouter::catalog()[2].id);
@@ -1980,7 +1980,7 @@ mod tests {
         let created = state
             .new_session(&NewSessionRequest::new(&workspace.0))
             .unwrap();
-        let path = workspace.0.join(".ur/settings.json");
+        let path = workspace.0.join(".ox/settings.json");
         fs::create_dir_all(&path).unwrap();
         let error = state
             .set_config_option(&SetSessionConfigOptionRequest::new(
@@ -2938,10 +2938,10 @@ mod tests {
         use crate::tools::fixture::Workspace;
         use rustix::process::{Pid, Signal, kill_process, kill_process_group};
 
-        const FLAG: &str = "UR_HEADLESS_SIGNAL_TEST";
+        const FLAG: &str = "OX_HEADLESS_SIGNAL_TEST";
         if let Some(path) = std::env::var_os(FLAG) {
             let path = Path::new(&path);
-            let store = SessionStore::open(&path.join("ur.db")).unwrap();
+            let store = SessionStore::open(&path.join("ox.db")).unwrap();
             let command = "echo $$ > shell; python3 -c 'import subprocess; p = subprocess.Popen([\"sleep\", \"30\"], start_new_session=True); open(\"detached\", \"w\").write(str(p.pid))'; sleep 30 & echo $! > child; printf started; touch ready; wait";
             let background = |file: &str| {
                 (
@@ -3001,7 +3001,7 @@ mod tests {
             )
             .await
             .unwrap();
-            assert_eq!(answer, "Finished answer.", "ur run prints this answer");
+            assert_eq!(answer, "Finished answer.", "ox run prints this answer");
             assert_process_stopped(&path.join("finished-background"), true).await;
             let failed = store.create(path).unwrap();
             assert!(
@@ -3029,7 +3029,7 @@ mod tests {
             .await;
             assert!(
                 response.unwrap_err().to_string().contains("Cancelled"),
-                "ur run prints no answer"
+                "ox run prints no answer"
             );
             let transcript = store.read(&session.id).unwrap().unwrap().transcript;
             assert_eq!(
@@ -3089,7 +3089,7 @@ mod tests {
         assert_process_stopped(&workspace.0.join("cancelled-background"), true).await;
         assert!(workspace.0.join("saved").exists());
         assert!(!workspace.0.join("wrong").exists());
-        let store = SessionStore::open(&workspace.0.join("ur.db")).unwrap();
+        let store = SessionStore::open(&workspace.0.join("ox.db")).unwrap();
         assert!(store.list(None).unwrap().iter().any(|session| store.read(&session.id).unwrap().unwrap().transcript.iter().any(|entry| matches!(entry,
             TranscriptEntry::AssistantBatch(batch) if batch.outcomes.iter().any(|outcome| outcome.status == ToolStatus::Cancelled && outcome.text.contains("started") && outcome.text.contains("partial changes"))))));
     }
@@ -3596,7 +3596,7 @@ mod tests {
         .await
         .unwrap();
         result.unwrap();
-        assert_eq!(rejected, Some(serde_json::json!("Ur is shutting down")));
+        assert_eq!(rejected, Some(serde_json::json!("Ox is shutting down")));
         assert!(
             operations_idle(&operations),
             "the connection ended after its operations, without incoming EOF"

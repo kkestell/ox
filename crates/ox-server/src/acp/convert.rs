@@ -284,7 +284,7 @@ pub fn finished_tool_call_update(call: &ToolCall, outcome: &ToolOutcome) -> Sess
 
 /// Shows each saved subagent message as a finished tool call attributed to
 /// its subagent, both live and in replay. They are not model tool calls, so
-/// Ur generates their IDs.
+/// Ox generates their IDs.
 pub fn subagent_message_updates(messages: &[SubagentMessage]) -> Vec<SessionUpdate> {
     messages
         .iter()

@@ -1,4 +1,7 @@
 {
+  "model": "deepseek/deepseek-v4.1-flash",
+  "effort": "default",
+  "mode": "ask",
   "favorites": [
     "deepseek/deepseek-v4.1-flash",
     "z-ai/glm-5.3-flash",

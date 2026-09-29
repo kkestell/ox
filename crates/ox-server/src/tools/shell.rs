@@ -123,7 +123,7 @@ pub(super) fn schema() -> Value {
         "type": "function",
         "function": {
             "name": SHELL,
-            "description": "Run a /bin/sh command starting in the session workspace. An ordinary call waits for the command to finish and returns the exit status and tails of stdout and stderr, at most 16 KiB total. Output has a shared 14 KiB budget: 7 KiB per stream, with unused space given to the other stream. Earlier output may be omitted; redirect long logs to a workspace file for later inspection. Each ordinary call starts a fresh shell with stdin connected to /dev/null. Set background to true for a development server, watcher, or long build: the call returns a process ID as soon as the command starts, and the command keeps running across turns until it exits, shell_process stops it, the session is deleted, or Ur exits. Commands run with Ur's permissions and can access paths outside the workspace.",
+            "description": "Run a /bin/sh command starting in the session workspace. An ordinary call waits for the command to finish and returns the exit status and tails of stdout and stderr, at most 16 KiB total. Output has a shared 14 KiB budget: 7 KiB per stream, with unused space given to the other stream. Earlier output may be omitted; redirect long logs to a workspace file for later inspection. Each ordinary call starts a fresh shell with stdin connected to /dev/null. Set background to true for a development server, watcher, or long build: the call returns a process ID as soon as the command starts, and the command keeps running across turns until it exits, shell_process stops it, the session is deleted, or Ox exits. Commands run with Ox's permissions and can access paths outside the workspace.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1102,10 +1102,10 @@ mod tests {
         let unstarted = run(&workspace.0.join("missing"), "true").await;
         assert_eq!(unstarted.status, ToolStatus::Failed);
         assert!(unstarted.text.contains("Could not start /bin/sh"));
-        assert_eq!(run(&workspace.0, "false; false | true; mkdir sub; cd sub; export UR_SHELL_LOCAL=changed; printf saved > ../file").await.status, ToolStatus::Completed);
+        assert_eq!(run(&workspace.0, "false; false | true; mkdir sub; cd sub; export OX_SHELL_LOCAL=changed; printf saved > ../file").await.status, ToolStatus::Completed);
         let read = run(
             &workspace.0,
-            "test -z \"${UR_SHELL_LOCAL+x}\" && test -f file && cat file",
+            "test -z \"${OX_SHELL_LOCAL+x}\" && test -f file && cat file",
         )
         .await;
         assert_eq!(read.status, ToolStatus::Completed);
@@ -1119,11 +1119,11 @@ mod tests {
     #[tokio::test]
     async fn environment_excludes_api_key() {
         // A subprocess sets the dummy environment without mutating the test runner.
-        const FLAG: &str = "UR_SHELL_ENV_TEST";
+        const FLAG: &str = "OX_SHELL_ENV_TEST";
         if std::env::var_os(FLAG).is_some() {
             let workspace = Workspace::new();
             let check =
-                "test -z \"${OPENROUTER_API_KEY+x}\" && test \"$UR_SHELL_ENV_TEST\" = inherited";
+                "test -z \"${OPENROUTER_API_KEY+x}\" && test \"$OX_SHELL_ENV_TEST\" = inherited";
             let outcome = run(&workspace.0, check).await;
             assert_eq!(outcome.status, ToolStatus::Completed, "{outcome:?}");
             let shell_processes = ShellProcesses::default();

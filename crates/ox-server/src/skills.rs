@@ -41,7 +41,7 @@ pub struct Loaded {
 }
 
 /// The skill catalog for a session in `workspace_path`, ordered by name. The
-/// skills directories are `~/.config/ur/skills`, `~/.agents/skills`, and the
+/// skills directories are `~/.config/ox/skills`, `~/.agents/skills`, and the
 /// workspace's `.agents/skills`, highest priority first, and a skill replaces
 /// any lower-priority skill with the same name. A missing skills directory
 /// means no skills from it.
@@ -51,7 +51,7 @@ pub struct Loaded {
 /// name of a broken one.
 pub fn load(home: &Path, workspace_path: &Path) -> Loaded {
     let directories = [
-        (home.join(".config/ur/skills"), "~/.config/ur/skills"),
+        (home.join(".config/ox/skills"), "~/.config/ox/skills"),
         (home.join(".agents/skills"), "~/.agents/skills"),
         (workspace_path.join(".agents/skills"), ".agents/skills"),
     ];
@@ -229,12 +229,12 @@ mod tests {
     fn a_skipped_definition_keeps_its_name_from_lower_priority_skills() {
         let home = Workspace::new();
         let workspace = Workspace::new();
-        let ur = home.0.join(".config/ur/skills");
+        let ox = home.0.join(".config/ox/skills");
         let agents = home.0.join(".agents/skills");
         let local = workspace.0.join(".agents/skills");
         write_skill(&agents, "careful", "No frontmatter.\n");
         write_skill(&local, "careful", &valid("careful"));
-        write_skill(&ur, "goal", &valid("goal"));
+        write_skill(&ox, "goal", &valid("goal"));
         write_skill(&local, "goal", "No frontmatter.\n");
         let loaded = load(&home.0, &workspace.0);
         assert_eq!(

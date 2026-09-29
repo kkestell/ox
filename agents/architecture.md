@@ -1,19 +1,19 @@
 # Ox architecture
 
-Ox is two programs. `ur` is an ACP-native coding agent that works in any
-ACP-compatible client. `ox` is a terminal ACP client that launches an ACP server
-for a workspace and shows its output in the terminal. `ur` sends model requests
-to OpenRouter, runs tools with the user's operating-system permissions, and
-saves sessions in a local SQLite database. One server process serves one ACP
-connection. A headless entry point runs one prompt through the same parts and
-prints the answer.
+Ox is one program with two parts. The Ox server is an ACP-native coding agent
+that works in any ACP-compatible client. The Ox client is a terminal ACP client
+that launches an ACP server for a workspace and shows its output in the
+terminal. The Ox server sends model requests to OpenRouter, runs tools with the
+user's operating-system permissions, and saves sessions in a local SQLite
+database. One server process serves one ACP connection. A headless entry point
+runs one prompt through the same parts and prints the answer.
 
 ## Client boundary
 
 The client launches one configured ACP server and creates one session, then can
 close it and load another saved session in the workspace. It owns terminal
 input, output, permission responses, and cancellation. The server owns saved
-sessions. The client can launch `ur` or another compatible ACP server.
+sessions. The client can launch the Ox server or another compatible ACP server.
 
 ## Components
 
@@ -37,9 +37,9 @@ process execution support these components but take no part in running a turn.
 ## External boundaries
 
 The ACP client, OpenRouter, the workspace, settings and skill files, child
-processes, the keyring, and SQLite are outside `ur`. Their input is untrusted
-and is validated or translated before it becomes server state. Credentials never
-enter a session or a child process.
+processes, the keyring, and SQLite are outside the Ox server. Their input is
+untrusted and is validated or translated before it becomes server state.
+Credentials never enter a session or a child process.
 
 ## Sources of authority
 

@@ -9,6 +9,7 @@ anyhow.workspace = true
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 clap.workspace = true
 futures.workspace = true
+ox-server.workspace = true
 crossterm.workspace = true
 ratatui.workspace = true
 unicode-width.workspace = true

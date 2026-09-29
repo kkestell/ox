@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ox", "crates/ur", "crates/ox-fake-server"]
+members = ["crates/ox", "crates/ox-server", "crates/ox-fake-server"]
 resolver = "3"
 
 [workspace.dependencies]
@@ -17,6 +17,7 @@ tui-markdown = { version = "0.3", default-features = false }
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 unicode-width = "0.2"
 ox-fake-server = { path = "crates/ox-fake-server" }
+ox-server = { path = "crates/ox-server" }
 
 [profile.release]
 codegen-units = 1

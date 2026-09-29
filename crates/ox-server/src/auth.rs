@@ -1,7 +1,7 @@
 use keyring::{Entry, Error};
 use std::{env, io};
 
-const SERVICE: &str = "ur";
+const SERVICE: &str = "ox";
 const ACCOUNT: &str = "OPENROUTER_API_KEY";
 
 fn entry() -> io::Result<Entry> {

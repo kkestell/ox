@@ -226,7 +226,7 @@ pub struct Finished {
 }
 
 /// Sends SIGKILL to a group. An empty group, or one whose remaining members
-/// Ur may not signal, is not an error.
+/// Ox may not signal, is not an error.
 pub fn kill_group(group: Pid) {
     match kill_process_group(group, Signal::KILL) {
         Ok(()) | Err(rustix::io::Errno::SRCH | rustix::io::Errno::PERM) => {}

@@ -329,7 +329,7 @@ pub(crate) mod fixture {
 
     impl Workspace {
         pub fn new() -> Self {
-            let path = std::env::temp_dir().join(format!("ur-patch-{}", uuid::Uuid::new_v4()));
+            let path = std::env::temp_dir().join(format!("ox-patch-{}", uuid::Uuid::new_v4()));
             fs::create_dir(&path).unwrap();
             Self(path)
         }

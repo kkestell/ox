@@ -5,10 +5,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, anyhow};
 use serde::Deserialize;
 
-/// The config file, `$XDG_CONFIG_HOME/ox/settings.json`, else
-/// `~/.config/ox/settings.json`.
+/// The client's fields of the global settings file,
+/// `~/.config/ox/settings.json`. The Ox server reads the other fields.
 #[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub servers: Vec<ServerConfig>,
@@ -29,11 +28,11 @@ pub struct ServerConfig {
 
 impl Config {
     fn bundled_server() -> anyhow::Result<ServerConfig> {
-        let command = std::env::current_exe()?.with_file_name("ur");
+        let command = std::env::current_exe()?;
         Ok(ServerConfig {
-            name: "Ur".into(),
+            name: "Ox".into(),
             command: command.to_string_lossy().into_owned(),
-            args: vec![],
+            args: vec!["acp".into()],
         })
     }
 
@@ -81,8 +80,8 @@ impl Config {
         }
     }
 
-    /// Reads the config file at `path`, or the defaults when there is none
-    /// yet.
+    /// Reads the global settings file at `path`, or the defaults when there is
+    /// none yet.
     pub fn read(path: &Path) -> anyhow::Result<Config> {
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text,
@@ -95,8 +94,8 @@ impl Config {
     }
 }
 
-/// Replaces `favorites` in the config file at `path`, keeping its other
-/// fields.
+/// Replaces `favorites` in the global settings file at `path`, keeping its
+/// other fields.
 pub fn save_favorites(path: &Path, favorites: &[String]) -> anyhow::Result<()> {
     write_favorites(path, favorites).with_context(|| format!("writing {}", path.display()))
 }
@@ -108,14 +107,14 @@ fn write_favorites(path: &Path, favorites: &[String]) -> anyhow::Result<()> {
         Err(error) => return Err(error.into()),
     };
     let Some(fields) = config.as_object_mut() else {
-        anyhow::bail!("the config is not a JSON object");
+        anyhow::bail!("the global settings file is not a JSON object");
     };
     fields.insert("favorites".into(), favorites.into());
     let mut text = serde_json::to_string_pretty(&config)?;
     text.push('\n');
     let directory = path
         .parent()
-        .ok_or_else(|| anyhow!("no config directory"))?;
+        .ok_or_else(|| anyhow!("no global settings directory"))?;
     std::fs::create_dir_all(directory)?;
     let temporary = path.with_extension("json.tmp");
     std::fs::write(&temporary, text)?;
@@ -124,13 +123,7 @@ fn write_favorites(path: &Path, favorites: &[String]) -> anyhow::Result<()> {
 }
 
 pub fn path() -> anyhow::Result<PathBuf> {
-    let config_home = match std::env::var_os("XDG_CONFIG_HOME") {
-        Some(config_home) => PathBuf::from(config_home),
-        None => std::env::home_dir()
-            .ok_or_else(|| anyhow!("no home directory"))?
-            .join(".config"),
-    };
-    Ok(config_home.join("ox/settings.json"))
+    Ok(ox_server::global_path(&ox_server::home_dir()?))
 }
 
 #[cfg(test)]
@@ -169,25 +162,39 @@ mod tests {
 
     #[test]
     fn omitted_servers_mean_the_bundled_server_and_omitted_favorites_are_empty() {
-        for (text, server, favorites) in [
-            ("{}", "ur", vec![]),
-            (r#"{"favorites":["a/b","c/d"]}"#, "ur", vec!["a/b", "c/d"]),
+        let bundled = std::env::current_exe().unwrap();
+        let bundled = bundled.to_str().unwrap();
+        for (text, command, args, favorites) in [
+            ("{}", bundled, vec!["acp"], vec![]),
+            (
+                r#"{"favorites":["a/b","c/d"]}"#,
+                bundled,
+                vec!["acp"],
+                vec!["a/b", "c/d"],
+            ),
+            (
+                r#"{"model":"a/b","effort":"high","mode":"auto","favorites":["a/b"]}"#,
+                bundled,
+                vec!["acp"],
+                vec!["a/b"],
+            ),
             (
                 r#"{"servers":[{"name":"Alpha","command":"alpha"}]}"#,
                 "alpha",
+                vec![],
                 vec![],
             ),
             (
                 r#"{"servers":[{"name":"Alpha","command":"alpha"}],"favorites":["a/b"]}"#,
                 "alpha",
+                vec![],
                 vec!["a/b"],
             ),
         ] {
             let config = Config::parse(text).unwrap();
-            assert!(
-                config.select(None).unwrap().command.ends_with(server),
-                "{text}"
-            );
+            let server = config.select(None).unwrap();
+            assert_eq!(server.command, command, "{text}");
+            assert_eq!(server.args, args, "{text}");
             assert_eq!(config.favorites, favorites, "{text}");
         }
     }

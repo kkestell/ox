@@ -3,8 +3,8 @@
 ## Quick Start
 
 Download the newest release on the
-[releases page](https://github.com/kkestell/ox/releases), then extract `ox` and
-`ur` into a directory on your `PATH`, such as `~/.local/bin`:
+[releases page](https://github.com/kkestell/ox/releases), then extract `ox` into
+a directory on your `PATH`, such as `~/.local/bin`:
 
 ```sh
 tar -xzf ox-*.tar.gz -C ~/.local/bin
@@ -13,28 +13,30 @@ tar -xzf ox-*.tar.gz -C ~/.local/bin
 Save your OpenRouter API key:
 
 ```sh
-ur auth login
+ox auth login
 ```
 
 Start ox in a project directory:
 
 ```sh
-ox /path/to/project
+ox --dir /path/to/project
 ```
 
-Configure Zed to use ur as an external agent by adding the following to `~/.config/zed/settings.json`:
+Configure Zed to use ox as an external agent by adding the following to
+`~/.config/zed/settings.json`:
 
 ```sh
 "agent_servers": {
-  "Ur": {
+  "Ox": {
     "type": "custom",
-    "command": "/Users/username/.local/bin/ur",
+    "command": "/Users/username/.local/bin/ox",
+    "args": ["acp"],
   }
 }
 ```
 
-By default, `ox` starts `ur`. To use another server, configure servers in
-`$XDG_CONFIG_HOME/ox/settings.json`, or `~/.config/ox/settings.json`:
+By default, `ox` starts its own server. To use another server, configure servers
+in `~/.config/ox/settings.json`:
 
 ```json
 {
@@ -45,8 +47,8 @@ By default, `ox` starts `ur`. To use another server, configure servers in
 ```
 
 Use your server's actual executable and ACP arguments. Select a server with
-`--server` when more than one is configured. Run `ur` directly to serve an ACP
-client such as Zed, and `ur run` to run a headless prompt.
+`--server` when more than one is configured. Run `ox acp` to serve an ACP client
+such as Zed, and `ox run` to run a headless prompt.
 
 Type a prompt and press Enter. Paste preserves newlines and waits for Enter; the
 input line shows newlines as `↵`. Long input shows its end. Backspace deletes

@@ -2131,6 +2131,7 @@ dependencies = [
  "crossterm",
  "futures",
  "ox-fake-server",
+ "ox-server",
  "ratatui",
  "serde",
  "serde_json",
@@ -2150,6 +2151,27 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "ox-server"
+version = "0.1.0"
+dependencies = [
+ "agent-client-protocol",
+ "base64 0.22.1",
+ "chrono",
+ "futures",
+ "keyring",
+ "regex",
+ "reqwest",
+ "rpassword",
+ "rusqlite",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+ "yaml_serde",
 ]
 
 [[package]]
@@ -3768,27 +3790,6 @@ name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
-
-[[package]]
-name = "ur"
-version = "0.1.0"
-dependencies = [
- "agent-client-protocol",
- "base64 0.22.1",
- "chrono",
- "futures",
- "keyring",
- "regex",
- "reqwest",
- "rpassword",
- "rusqlite",
- "rustix",
- "serde",
- "serde_json",
- "tokio",
- "uuid",
- "yaml_serde",
-]
 
 [[package]]
 name = "url"
