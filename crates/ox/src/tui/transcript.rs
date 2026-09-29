@@ -221,16 +221,24 @@ impl TranscriptView {
     }
 
     pub fn page_up(&mut self, height: usize, total: usize) {
+        self.scroll_up(height, total, page(height));
+    }
+
+    pub fn scroll_up(&mut self, height: usize, total: usize, rows: usize) {
         if total <= height {
             return;
         }
         let top = self.top.unwrap_or(total - height);
-        self.top = Some(top.saturating_sub(page(height)));
+        self.top = Some(top.saturating_sub(rows));
     }
 
     pub fn page_down(&mut self, height: usize, total: usize) {
+        self.scroll_down(height, total, page(height));
+    }
+
+    pub fn scroll_down(&mut self, height: usize, total: usize, rows: usize) {
         if let Some(top) = self.top {
-            let next = top + page(height);
+            let next = top.saturating_add(rows);
             if next >= total.saturating_sub(height) {
                 self.end();
             } else {

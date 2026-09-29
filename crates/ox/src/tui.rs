@@ -12,8 +12,9 @@ use chrono::DateTime;
 use crossterm::{
     cursor::Show,
     event::{
-        DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange, Event,
-        EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+        DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+        EnableFocusChange, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, KeyboardEnhancementFlags, MouseEvent, MouseEventKind,
         PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
@@ -61,6 +62,7 @@ fn restore() {
         stdout(),
         DisableFocusChange,
         DisableBracketedPaste,
+        DisableMouseCapture,
         LeaveAlternateScreen,
         Show
     );
@@ -98,7 +100,8 @@ impl Terminal {
             stdout(),
             EnterAlternateScreen,
             EnableBracketedPaste,
-            EnableFocusChange
+            EnableFocusChange,
+            EnableMouseCapture
         )?;
         if enhanced {
             execute!(
@@ -979,6 +982,20 @@ async fn key(
     Ok(false)
 }
 
+fn mouse(ui: &mut Ui, event: MouseEvent) {
+    if ui.picker.is_some()
+        || ui.layout.height == 0
+        || usize::from(event.row) >= ui.layout.height + usize::from(MARGIN.vertical) * 2
+    {
+        return;
+    }
+    match event.kind {
+        MouseEventKind::ScrollUp => ui.view.scroll_up(ui.layout.height, ui.layout.lines, 1),
+        MouseEventKind::ScrollDown => ui.view.scroll_down(ui.layout.height, ui.layout.lines, 1),
+        _ => {}
+    }
+}
+
 async fn open_session_picker(ui: &mut Ui, session: &mut Session, now: Instant) {
     match session.list().await {
         Ok(sessions) => {
@@ -1208,6 +1225,7 @@ pub async fn run(
                             return Ok(());
                         }
                     }
+                    Event::Mouse(event) => mouse(&mut ui, event),
                     _ => {}
                 }
             }
@@ -1228,6 +1246,40 @@ mod tests {
             escape("\x1b[2J\r\x07\u{009b}31m\n\t"),
             "\\u{1b}[2J\\r\\u{7}\\u{9b}31m\n\t"
         );
+    }
+
+    #[test]
+    fn mouse_wheel_moves_the_transcript_one_row_at_a_time() {
+        let mut ui = Ui {
+            layout: Layout {
+                height: 10,
+                lines: 35,
+                ..Layout::default()
+            },
+            ..Ui::default()
+        };
+        let wheel = |kind, row| MouseEvent {
+            kind,
+            column: 4,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        mouse(&mut ui, wheel(MouseEventKind::ScrollUp, 3));
+        assert_eq!(ui.view.first_row(10, 35), 24);
+        mouse(&mut ui, wheel(MouseEventKind::ScrollUp, 3));
+        assert_eq!(ui.view.first_row(10, 35), 23);
+        ui.view.changed();
+        assert!(ui.view.new_activity);
+        mouse(&mut ui, wheel(MouseEventKind::ScrollDown, 3));
+        assert_eq!(ui.view.first_row(10, 35), 24);
+        mouse(&mut ui, wheel(MouseEventKind::ScrollDown, 3));
+        assert_eq!(ui.view.first_row(10, 35), 25);
+        assert!(!ui.view.new_activity);
+        mouse(&mut ui, wheel(MouseEventKind::ScrollUp, 12));
+        assert_eq!(ui.view.first_row(10, 35), 25);
+        ui.picker = Some(Picker::new(PickerRows::Sessions(Vec::new())));
+        mouse(&mut ui, wheel(MouseEventKind::ScrollUp, 3));
+        assert_eq!(ui.view.first_row(10, 35), 25);
     }
 
     /// Draws the screen and returns its rows, the cursor, the layout, and

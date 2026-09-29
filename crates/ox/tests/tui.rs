@@ -349,6 +349,55 @@ fn terminal_keys_send_interrupt_approve_scroll_and_restore_the_shell() {
 
 #[test]
 #[ignore = "requires tmux; run make e2e"]
+fn mouse_wheel_scrolls_the_transcript_one_line_per_event() {
+    let test = Tmux::new();
+    test.call(&["resize-window", "-t", "test:0", "-x", "80", "-y", "12"]);
+    test.prompt("render");
+    test.wait("a.tally and b.tally");
+    let before = test.screen();
+    // SGR mouse wheel up at column 5, row 3.
+    test.call(&[
+        "send-keys",
+        "-t",
+        "test:0.0",
+        "-H",
+        "1b",
+        "5b",
+        "3c",
+        "36",
+        "34",
+        "3b",
+        "35",
+        "3b",
+        "33",
+        "4d",
+    ]);
+    test.wait_gone("a.tally and b.tally");
+    let after = test.screen();
+    assert_eq!(before.lines().nth(1), after.lines().nth(2), "{after}");
+    // SGR mouse wheel down at the same position.
+    test.call(&[
+        "send-keys",
+        "-t",
+        "test:0.0",
+        "-H",
+        "1b",
+        "5b",
+        "3c",
+        "36",
+        "35",
+        "3b",
+        "35",
+        "3b",
+        "33",
+        "4d",
+    ]);
+    test.wait("a.tally and b.tally");
+    assert_eq!(test.screen(), before);
+}
+
+#[test]
+#[ignore = "requires tmux; run make e2e"]
 fn the_transcript_view_renders_thinking_tools_and_wrapped_replies() {
     let test = Tmux::new();
     test.call(&["resize-window", "-t", "test:0", "-x", "40", "-y", "40"]);
