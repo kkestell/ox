@@ -284,7 +284,7 @@ pub fn finished_tool_call_update(call: &ToolCall, outcome: &ToolOutcome) -> Sess
 
 /// Shows each saved subagent message as a finished tool call attributed to
 /// its subagent, both live and in replay. They are not model tool calls, so
-/// Ox generates their IDs.
+/// Ox ACP generates their IDs.
 pub fn agent_message_updates(messages: &[AgentMessage]) -> Vec<SessionUpdate> {
     messages
         .iter()
@@ -410,7 +410,7 @@ mod tests {
     use agent_client_protocol::schema::v1::{AudioContent, ErrorCode, ImageContent, ResourceLink};
 
     #[test]
-    fn prompt_to_user_message_keeps_links_and_images_and_rejects_invalid_content() {
+    fn prompt_message_keeps_links_and_images_and_rejects_invalid_content() {
         let message = prompt_message(&[
             ContentBlock::Text(TextContent::new("Review this")),
             ContentBlock::ResourceLink(ResourceLink::new(

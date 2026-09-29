@@ -524,7 +524,7 @@ mod tests {
         SessionId::new("agent")
     }
 
-    /// Runs one shell call with a shell-process owner of its own.
+    /// Runs one shell call with its own `ShellProcesses`.
     async fn execute(
         workspace: &Path,
         arguments: &str,
@@ -658,7 +658,7 @@ mod tests {
 
     #[test]
     fn process_actions_validate_arguments_and_classify_permission() {
-        let owner = ShellProcesses::default();
+        let shell_processes = ShellProcesses::default();
         let write = |text: &str, close_stdin| ProcessAction::Write {
             process_id: "p".to_owned(),
             text: text.to_owned(),
@@ -742,7 +742,7 @@ mod tests {
                     "{arguments}: {parsed:?}"
                 ),
             }
-            let permission = process_permission(&arguments, &owner, &agent());
+            let permission = process_permission(&arguments, &shell_processes, &agent());
             match expected {
                 Ok(ProcessAction::Write {
                     process_id,
@@ -766,12 +766,12 @@ mod tests {
     #[tokio::test]
     async fn a_background_start_reports_an_id_that_later_calls_use() {
         let workspace = Workspace::new();
-        let owner = ShellProcesses::default();
+        let shell_processes = ShellProcesses::default();
         let process = |arguments: serde_json::Value| {
-            let owner = owner.clone();
+            let shell_processes = shell_processes.clone();
             async move {
                 execute_process(
-                    &owner,
+                    &shell_processes,
                     &agent(),
                     &arguments.to_string(),
                     std::future::pending(),
@@ -781,7 +781,7 @@ mod tests {
         };
         let started = super::execute(
             &workspace.0,
-            &owner,
+            &shell_processes,
             &agent(),
             &json!({"command":"printf ready; read line; printf 'got:%s' \"$line\"; touch done", "background":true}).to_string(),
             std::future::pending(),
@@ -791,7 +791,7 @@ mod tests {
         let text = &started.text;
         assert!(text.contains("confirms that it started, not that it finished"));
         assert!(!workspace.0.join("done").exists(), "the start did not wait");
-        let id = owner.list(&agent())[0].id().to_owned();
+        let id = shell_processes.list(&agent())[0].id().to_owned();
         assert!(text.starts_with(&format!("Started shell process {id}.")));
 
         let running = process(json!({"action":"read","process_id":id})).await;
@@ -800,7 +800,7 @@ mod tests {
             "{running:?}"
         );
         let cancelled = execute_process(
-            &owner,
+            &shell_processes,
             &agent(),
             &json!({"action":"read","process_id":id,"wait_seconds":30}).to_string(),
             async {},
@@ -881,18 +881,18 @@ mod tests {
     #[tokio::test]
     async fn a_shell_process_is_visible_only_to_the_agent_that_started_it() {
         let workspace = Workspace::new();
-        let owner = ShellProcesses::default();
+        let shell_processes = ShellProcesses::default();
         let other = SessionId::new("other");
         let started = super::execute(
             &workspace.0,
-            &owner,
+            &shell_processes,
             &agent(),
             &json!({"command":"exec sleep 30", "background":true}).to_string(),
             std::future::pending(),
         )
         .await;
         assert_eq!(started.status, ToolStatus::Completed, "{started:?}");
-        let process = owner.list(&agent()).remove(0);
+        let process = shell_processes.list(&agent()).remove(0);
         let id = process.id();
         let unknown = ToolOutcome::failed(format!(
             "No shell process {id} that you started. Call shell_process with action \"list\" to see the shell processes you started."
@@ -911,7 +911,7 @@ mod tests {
         ] {
             assert_eq!(
                 execute_process(
-                    &owner,
+                    &shell_processes,
                     &other,
                     &arguments.to_string(),
                     std::future::pending()
@@ -923,7 +923,7 @@ mod tests {
             assert_eq!(process.state(), State::Running, "{arguments}");
         }
         let read = execute_process(
-            &owner,
+            &shell_processes,
             &agent(),
             &json!({"action":"read","process_id":id}).to_string(),
             std::future::pending(),
@@ -933,7 +933,7 @@ mod tests {
             read.status == ToolStatus::Completed && read.text.contains("State: running"),
             "{read:?}"
         );
-        owner.shutdown().await;
+        shell_processes.shutdown().await;
     }
 
     #[test]
@@ -1126,19 +1126,19 @@ mod tests {
                 "test -z \"${OPENROUTER_API_KEY+x}\" && test \"$OX_SHELL_ENV_TEST\" = inherited";
             let outcome = run(&workspace.0, check).await;
             assert_eq!(outcome.status, ToolStatus::Completed, "{outcome:?}");
-            let owner = ShellProcesses::default();
+            let shell_processes = ShellProcesses::default();
             let started = super::execute(
                 &workspace.0,
-                &owner,
+                &shell_processes,
                 &agent(),
                 &json!({"command": check, "background": true}).to_string(),
                 std::future::pending(),
             )
             .await;
             assert_eq!(started.status, ToolStatus::Completed, "{started:?}");
-            let process = owner.list(&agent()).remove(0);
+            let process = shell_processes.list(&agent()).remove(0);
             let read = execute_process(
-                &owner,
+                &shell_processes,
                 &agent(),
                 &json!({"action":"read","process_id":process.id(),"wait_seconds":5}).to_string(),
                 std::future::pending(),

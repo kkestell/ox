@@ -28,7 +28,7 @@ struct OperationsState {
     closing: HashMap<SessionId, Option<oneshot::Sender<()>>>,
     drained: Option<oneshot::Sender<()>>,
     /// Set when connection shutdown begins.
-    closed: bool,
+    shutting_down: bool,
 }
 
 /// Keeps one session busy. Dropping it makes the session available again.
@@ -66,7 +66,7 @@ impl SessionOperations {
     pub async fn begin_close(&self, session_id: &SessionId) -> Option<CloseGuard> {
         let wait = {
             let mut state = self.lock();
-            if state.closed || state.closing.contains_key(session_id) {
+            if state.shutting_down || state.closing.contains_key(session_id) {
                 return None;
             }
             if let Some(operation) = state.active.get(session_id) {
@@ -104,9 +104,9 @@ impl SessionOperations {
 
     /// Rejects every later operation and cancels the active prompts.
     /// Repeating it is harmless.
-    pub fn close(&self) {
+    pub fn begin_shutdown(&self) {
         let mut state = self.lock();
-        state.closed = true;
+        state.shutting_down = true;
         for operation in state.active.values() {
             if let Operation::Prompt(cancellation) = operation {
                 cancellation.cancel();
@@ -114,15 +114,15 @@ impl SessionOperations {
         }
     }
 
-    pub fn is_closed(&self) -> bool {
-        self.lock().closed
+    pub fn is_shutting_down(&self) -> bool {
+        self.lock().shutting_down
     }
 
-    /// Closes admission, then waits until every active operation has dropped
-    /// its guard. Called once, while the connection keeps running so active
+    /// Begins shutdown, then waits until every active operation has dropped its
+    /// guard. Called once, while the connection keeps running so active
     /// operations can send their replies.
     pub async fn shutdown(&self) {
-        self.close();
+        self.begin_shutdown();
         let (drained_tx, drained_rx) = oneshot::channel();
         {
             let mut state = self.lock();
@@ -139,7 +139,7 @@ impl SessionOperations {
 
     fn acquire(&self, session_id: &SessionId, operation: Operation) -> Option<OperationGuard> {
         let mut state = self.lock();
-        if state.closed || state.closing.contains_key(session_id) {
+        if state.shutting_down || state.closing.contains_key(session_id) {
             return None;
         }
         match state.active.entry(session_id.clone()) {
@@ -230,7 +230,7 @@ mod tests {
         assert!(cancel_a.is_cancelled());
         assert!(cancel_b.is_cancelled());
         assert!(operations.try_load(&id("a")).is_none());
-        assert!(operations.is_closed());
+        assert!(operations.is_shutting_down());
         assert!(
             operations.try_prompt(&id("idle")).is_none(),
             "shutdown rejects operations for idle sessions"

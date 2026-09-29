@@ -124,13 +124,13 @@ fn write_favorites(path: &Path, favorites: &[String]) -> anyhow::Result<()> {
 }
 
 pub fn path() -> anyhow::Result<PathBuf> {
-    let config = match std::env::var_os("XDG_CONFIG_HOME") {
-        Some(config) => PathBuf::from(config),
+    let config_home = match std::env::var_os("XDG_CONFIG_HOME") {
+        Some(config_home) => PathBuf::from(config_home),
         None => std::env::home_dir()
             .ok_or_else(|| anyhow!("no home directory"))?
             .join(".config"),
     };
-    Ok(config.join("ox/tui.json"))
+    Ok(config_home.join("ox/tui.json"))
 }
 
 #[cfg(test)]

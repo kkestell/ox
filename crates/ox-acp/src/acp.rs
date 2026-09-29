@@ -557,7 +557,7 @@ impl ServerState {
     /// Rejects new session operations, cancels active prompts, and asks every
     /// active session's shell processes to stop, without waiting.
     fn begin_shutdown(&self) {
-        self.operations.close();
+        self.operations.begin_shutdown();
         for shell_processes in self.all_shell_processes() {
             shell_processes.begin_shutdown();
         }
@@ -566,16 +566,17 @@ impl ServerState {
     /// Signals the shell processes of every active session before waiting
     /// for any, so cleanup time does not grow with the number of sessions.
     async fn shutdown_shell_processes(&self) {
-        let owners = self.all_shell_processes();
-        for shell_processes in &owners {
+        let session_shell_processes = self.all_shell_processes();
+        for shell_processes in &session_shell_processes {
             shell_processes.begin_shutdown();
         }
-        futures::future::join_all(owners.iter().map(ShellProcesses::shutdown)).await;
+        futures::future::join_all(session_shell_processes.iter().map(ShellProcesses::shutdown))
+            .await;
     }
 
     /// Why a session operation could not start.
     fn unavailable(&self) -> Error {
-        if self.operations.is_closed() {
+        if self.operations.is_shutting_down() {
             Error::invalid_request().data("Ox is shutting down")
         } else {
             Error::invalid_request().data("session has an operation in progress")
@@ -667,7 +668,7 @@ impl ServerState {
         let Some(active) = self.active_session(&request.session_id) else {
             return responder.respond_with_error(inactive(&request.session_id));
         };
-        let turn = match dispatch(message, &active.skills) {
+        let turn_input = match dispatch(message, &active.skills) {
             Dispatch::Compact => {
                 return self.spawn_compaction(
                     request.session_id,
@@ -683,7 +684,7 @@ impl ServerState {
         self.spawn_prompt_run(
             request.session_id,
             active,
-            turn,
+            turn_input,
             operation,
             responder,
             connection,
@@ -1237,9 +1238,9 @@ mod tests {
         state
     }
 
-    /// Whether every operation guard has been dropped. Admission stays closed
-    /// after connection shutdown, so this waits on no operation rather than
-    /// acquiring one.
+    /// Whether every operation guard has been dropped. New operations stay
+    /// rejected after connection shutdown, so this waits on no operation rather
+    /// than acquiring one.
     fn operations_idle(operations: &SessionOperations) -> bool {
         use futures::FutureExt;
         operations.shutdown().now_or_never().is_some()
@@ -1955,7 +1956,7 @@ mod tests {
         assert_eq!(loaded["configOptions"][0]["currentValue"], chosen);
         assert_eq!(loaded["configOptions"][1]["currentValue"], "high");
         assert_eq!(loaded["configOptions"][2]["currentValue"], "auto");
-        assert_eq!(replayed.len(), 3, "setting entries are not replayed");
+        assert_eq!(replayed.len(), 3, "a turn start replays only its input");
         assert!(matches!(
             replayed.last(),
             Some(SessionUpdate::UsageUpdate(usage))
@@ -3328,8 +3329,8 @@ mod tests {
         )
         .await;
         assert_eq!(output, prompt::PromptOutput::Cancelled);
-        let owner = state.active_session(&id).unwrap().shell_processes;
-        let process = owner.list(&id).remove(0);
+        let shell_processes = state.active_session(&id).unwrap().shell_processes;
+        let process = shell_processes.list(&id).remove(0);
         let process_id = process.id().to_owned();
         assert!(
             matches!(&outcomes[..], [outcome]
@@ -3568,7 +3569,7 @@ mod tests {
                 match message["id"].as_u64() {
                     Some(1) => {
                         signal_tx.take().unwrap().send(()).unwrap();
-                        while !operations.is_closed() {
+                        while !operations.is_shutting_down() {
                             tokio::task::yield_now().await;
                         }
                         incoming_tx

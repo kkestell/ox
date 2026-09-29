@@ -27,7 +27,10 @@ fn workspace(path: &Path) -> anyhow::Result<PathBuf> {
 #[tokio::main]
 async fn main() {
     if let Err(error) = start().await {
-        eprintln!("ox: {}", tui::escape(&format!("{error:#}")));
+        eprintln!(
+            "ox: {}",
+            tui::escape_control_characters(&format!("{error:#}"))
+        );
         std::process::exit(1);
     }
 }
@@ -35,10 +38,10 @@ async fn main() {
 async fn start() -> anyhow::Result<()> {
     let args = Args::parse();
     let directory = workspace(&args.directory)?;
-    let path = config::path()?;
-    let config = config::Config::read(&path)?;
+    let config_path = config::path()?;
+    let config = config::Config::read(&config_path)?;
     let server = config.select(args.server.as_deref())?;
-    acp::start(server, directory, config.favorites.clone(), path).await
+    acp::start(server, directory, config.favorites.clone(), config_path).await
 }
 
 #[cfg(test)]

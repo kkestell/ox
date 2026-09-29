@@ -8,7 +8,7 @@ use serde_json::Value;
 use similar::{ChangeTag, TextDiff};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use super::escape;
+use super::escape_control_characters;
 use super::theme;
 
 /// Seconds before the thinking placeholder starts counting.
@@ -583,12 +583,12 @@ impl tui_markdown::StyleSheet for Styles {
     }
 }
 
-/// Escaped Markdown as unwrapped rows of styled spans. `style` wins over the
-/// Markdown styles, so dim text stays dim. Every line break is kept: two
-/// trailing spaces make a Markdown line break, so typed and streamed breaks
-/// show as typed instead of joining into one paragraph.
+/// Markdown with control characters escaped, as unwrapped rows of styled
+/// spans. `style` wins over the Markdown styles, so dim text stays dim. Every
+/// line break is kept: two trailing spaces make a Markdown line break, so typed
+/// and streamed breaks show as typed instead of joining into one paragraph.
 fn markdown(text: &str, style: Style) -> Vec<Line<'static>> {
-    let text = escape(text).replace('\n', "  \n");
+    let text = escape_control_characters(text).replace('\n', "  \n");
     let options = tui_markdown::Options::new(Styles);
     tui_markdown::from_str_with_options(&text, &options)
         .lines
@@ -607,9 +607,10 @@ fn markdown(text: &str, style: Style) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// Escaped and trimmed text as unwrapped rows, one per line.
+/// Text with control characters escaped and the ends trimmed, as unwrapped
+/// rows, one per line.
 fn plain(text: &str, style: Style) -> Vec<Line<'static>> {
-    escape(text)
+    escape_control_characters(text)
         .trim()
         .split('\n')
         .map(|line| Line::styled(line.to_owned(), style))
@@ -769,7 +770,7 @@ fn expand(line: &str) -> String {
 
 /// Escapes control characters and clips the text with `…`.
 pub fn clip(text: &str, width: usize) -> String {
-    let text = escape(text);
+    let text = escape_control_characters(text);
     if text.width() <= width {
         return text;
     }

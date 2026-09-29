@@ -18,8 +18,8 @@ sessions. The client can launch `ox-acp` or another compatible ACP server.
 
 - **ACP boundary**: owns the connection, translates ACP input and output, and
   runs session operations.
-- **Prompt run**: runs one turn: model requests, tool execution, and transcript
-  commits. The same loop runs the main agent and its subagents.
+- **Prompt run**: runs the turns of one prompt: model requests, tool execution,
+  and transcript commits. The same loop runs the main agent and its subagents.
 - **Compaction**: summarizes older transcript to keep model requests within the
   context limit, both automatically and on request.
 - **OpenRouter client**: encodes model requests and turns a streamed response
@@ -73,11 +73,11 @@ Credentials never enter a session or a child process.
 
 ## Concurrency and cancellation
 
-At most one prompt, load, or delete runs for a session at a time. Different
-sessions run concurrently. No lock or database transaction is held across an
-asynchronous wait. Cancellation stops new work but never claims to undo saved
-state or external effects. A failure in one request does not affect other
-sessions or end the connection.
+At most one prompt, load, close, or delete runs for a session at a time.
+Different sessions run concurrently. No lock or database transaction is held
+across an asynchronous wait. Cancellation stops new work but never claims to
+undo saved state or external effects. A failure in one request does not affect
+other sessions or end the connection.
 
 ## Trust
 

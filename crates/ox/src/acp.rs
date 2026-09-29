@@ -31,7 +31,7 @@ pub struct Session {
     directory: PathBuf,
     can_resume: bool,
     events: UnboundedSender<Event>,
-    pub pending: VecDeque<(
+    pub permission_requests: VecDeque<(
         RequestPermissionRequest,
         Responder<RequestPermissionResponse>,
     )>,
@@ -91,7 +91,7 @@ impl Session {
         self.active = false;
         self.busy = false;
         self.queued = None;
-        self.pending.clear();
+        self.permission_requests.clear();
         self.config_options.clear();
         self.commands.clear();
         self.usage = None;
@@ -143,7 +143,7 @@ impl Session {
     }
 
     /// Sends the prompt, or cancels the running turn and sends it when that
-    /// turn finishes. Returns false while another prompt is already pending.
+    /// turn finishes. Returns false while another prompt is already queued.
     pub fn prompt(&mut self, text: String) -> anyhow::Result<bool> {
         if self.busy {
             if self.queued.is_some() {
@@ -176,13 +176,13 @@ impl Session {
                 RequestPermissionOutcome::Cancelled,
             ))?;
         } else {
-            self.pending.push_back((request, responder));
+            self.permission_requests.push_back((request, responder));
         }
         Ok(())
     }
 
     pub fn answer(&mut self, number: usize) -> anyhow::Result<bool> {
-        let Some((request, _)) = self.pending.front() else {
+        let Some((request, _)) = self.permission_requests.front() else {
             return Ok(false);
         };
         let Some(option) = number
@@ -194,7 +194,7 @@ impl Session {
         let outcome = RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
             option.option_id.clone(),
         ));
-        self.pending
+        self.permission_requests
             .pop_front()
             .unwrap()
             .1
@@ -204,7 +204,7 @@ impl Session {
 
     pub fn cancel(&mut self) -> anyhow::Result<()> {
         self.cancelling = self.busy;
-        while let Some((_, responder)) = self.pending.pop_front() {
+        while let Some((_, responder)) = self.permission_requests.pop_front() {
             responder.respond(RequestPermissionResponse::new(
                 RequestPermissionOutcome::Cancelled,
             ))?;
@@ -219,7 +219,7 @@ impl Session {
     /// Ends the turn and sends the queued prompt, returning its text.
     pub fn finished(&mut self) -> anyhow::Result<Option<String>> {
         // A completed turn cannot leave an unanswered permission behind.
-        while let Some((_, responder)) = self.pending.pop_front() {
+        while let Some((_, responder)) = self.permission_requests.pop_front() {
             responder.respond(RequestPermissionResponse::new(
                 RequestPermissionOutcome::Cancelled,
             ))?;
@@ -280,7 +280,7 @@ pub async fn start(
     server: &ServerConfig,
     directory: PathBuf,
     favorites: Vec<String>,
-    config: PathBuf,
+    config_path: PathBuf,
 ) -> anyhow::Result<()> {
     let (events, receiver) = unbounded_channel();
     let diagnostics = events.clone();
@@ -295,7 +295,7 @@ pub async fn start(
         directory,
         events,
         receiver,
-        async |session, receiver| tui::run(session, receiver, favorites, config).await,
+        async |session, receiver| tui::run(session, receiver, favorites, config_path).await,
     )
     .await
 }
@@ -366,7 +366,7 @@ where
                         && capabilities.session_capabilities.list.is_some()
                         && capabilities.session_capabilities.close.is_some(),
                     events,
-                    pending: VecDeque::new(),
+                    permission_requests: VecDeque::new(),
                     busy: false,
                     cancelling: false,
                     config_options: session.config_options.unwrap_or_default(),
@@ -385,7 +385,7 @@ where
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use ox_fake_server::{Hold, SavedHistory, fake_server};
+    use ox_fake_server::{Hold, SavedSessions, fake_server};
 
     pub async fn with_session<F, Fut>(body: F)
     where
@@ -396,7 +396,7 @@ pub mod tests {
         tokio::time::timeout(
             Duration::from_secs(5),
             run(
-                fake_server(Hold::default(), SavedHistory::default()),
+                fake_server(Hold::default(), SavedSessions::default()),
                 std::env::current_dir().unwrap(),
                 events,
                 receiver,
@@ -561,7 +561,7 @@ pub mod tests {
     async fn resume_requires_advertised_list_load_and_close_capabilities() {
         let (events, receiver) = unbounded_channel();
         run(
-            fake_server(Hold::default(), SavedHistory::unadvertised()),
+            fake_server(Hold::default(), SavedSessions::unadvertised()),
             std::env::current_dir().unwrap(),
             events,
             receiver,
@@ -579,16 +579,16 @@ pub mod tests {
     async fn simultaneous_permissions_keep_their_supplied_option_ids() {
         with_session(async |mut session, mut events| {
             session.prompt("tools".into())?;
-            while session.pending.len() < 2 {
+            while session.permission_requests.len() < 2 {
                 if let Event::Permission(_, request, responder) = events.recv().await.unwrap() {
                     session.permission(request, responder)?;
                 }
             }
             assert!(!session.answer(0)?);
             assert!(!session.answer(3)?);
-            assert_eq!(session.pending.len(), 2);
+            assert_eq!(session.permission_requests.len(), 2);
             assert!(session.answer(2)?);
-            assert_eq!(session.pending.len(), 1);
+            assert_eq!(session.permission_requests.len(), 1);
             assert!(session.answer(1)?);
             let (text, ok) = turn(&mut session, &mut events, &[]).await;
             assert!(ok);
@@ -603,13 +603,13 @@ pub mod tests {
     async fn cancellation_answers_pending_and_late_permissions_before_next_prompt() {
         with_session(async |mut session, mut events| {
             session.prompt("tools".into())?;
-            while session.pending.len() < 2 {
+            while session.permission_requests.len() < 2 {
                 if let Event::Permission(_, request, responder) = events.recv().await.unwrap() {
                     session.permission(request, responder)?;
                 }
             }
             session.cancel()?;
-            assert!(session.pending.is_empty());
+            assert!(session.permission_requests.is_empty());
             let (text, ok) = turn(&mut session, &mut events, &[]).await;
             assert!(ok);
             for id in ["tally-1", "tally-2", "tally-3"] {
@@ -717,7 +717,7 @@ pub mod tests {
     async fn server_exit_releases_pending_work() {
         let (client, server) = agent_client_protocol::Channel::duplex();
         let task =
-            tokio::spawn(fake_server(Hold::default(), SavedHistory::default()).connect_to(server));
+            tokio::spawn(fake_server(Hold::default(), SavedSessions::default()).connect_to(server));
         let (events, receiver) = unbounded_channel();
         let result = tokio::time::timeout(
             Duration::from_secs(5),
@@ -728,7 +728,7 @@ pub mod tests {
                 receiver,
                 async |mut session, mut events| {
                     session.prompt("tools".into())?;
-                    while session.pending.len() < 2 {
+                    while session.permission_requests.len() < 2 {
                         if let Event::Permission(_, request, responder) =
                             events.recv().await.unwrap()
                         {

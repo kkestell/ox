@@ -46,7 +46,7 @@ impl CatalogModel {
     }
 }
 
-/// The fields Ox reads from one entry of OpenRouter's `GET /models`.
+/// The fields Ox ACP reads from one entry of OpenRouter's `GET /models`.
 #[derive(Deserialize)]
 struct OpenRouterModel {
     id: String,
@@ -103,8 +103,8 @@ const RECENT_SECONDS: i64 = 183 * 24 * 60 * 60;
 /// does not serve, and must accept tools, take and produce text, have a context
 /// limit above the 8,000 tokens compaction reserves, have no negative price,
 /// and have been released within `RECENT_SECONDS` of `now`. OpenRouter lists a
-/// router such as `openrouter/auto-beta` at a negative price. Efforts Ox does
-/// not know are dropped. Models are sorted by name.
+/// router such as `openrouter/auto-beta` at a negative price. Efforts Ox ACP
+/// does not know are dropped. Models are sorted by name.
 pub fn parse_catalog(text: &str, now: i64) -> io::Result<Vec<CatalogModel>> {
     let response: ModelsResponse = serde_json::from_str(text).map_err(|error| {
         io::Error::new(

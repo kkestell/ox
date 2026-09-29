@@ -299,7 +299,7 @@ impl SessionMode {
     }
 }
 
-/// How much reasoning Ox asks a model to do, in ascending order. `Default`
+/// How much reasoning Ox ACP asks a model to do, in ascending order. `Default`
 /// leaves the choice to the model; every other level is the OpenRouter effort
 /// of the same id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -452,7 +452,7 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
-/// What Ox knows happened to a tool call: `text` is what the model reads, and
+/// What Ox ACP knows happened to a tool call: `text` is what the model reads, and
 /// `content` is what the ACP client shows. Empty content means the client
 /// shows the text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

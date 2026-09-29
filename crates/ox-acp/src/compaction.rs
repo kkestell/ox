@@ -30,9 +30,9 @@ fn tokens(bytes: usize) -> usize {
 
 /// Request-size limits for one model, in estimated tokens.
 pub struct Budget {
-    /// The largest request estimate Ox admits or sends.
+    /// The largest request estimate Ox ACP admits or sends.
     pub admission: usize,
-    /// The request estimate at which a prompt run compacts before its next
+    /// The request estimate at which a turn compacts before its next
     /// model request.
     pub automatic_threshold: usize,
 }
@@ -164,7 +164,7 @@ fn projected_estimate(
     tokens(estimated_bytes(body))
 }
 
-/// A prospective prompt is rejected only if even the largest complete cut,
+/// A prospective transcript is rejected only if even the largest complete cut,
 /// with room for a new summary, cannot fit the admission budget.
 pub fn input_fits(parameters: &ModelRequestParameters, prospective: &[TranscriptEntry]) -> bool {
     let admission = budget(parameters.model).admission;
@@ -545,7 +545,7 @@ mod tests {
         assert!(
             request_estimate(&parameters(), &transcript)
                 < budget(parameters().model).automatic_threshold,
-            "manual compaction is below the automatic trigger"
+            "manual compaction is below the automatic threshold"
         );
         assert!(
             compact(

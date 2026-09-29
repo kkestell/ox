@@ -52,7 +52,7 @@ pub struct Launch {
 }
 
 /// The prompt-owned guard over one prompt run's subagents. Tasks hold the
-/// shared state, not this guard, so dropping it closes admission, discards
+/// shared state, not this guard, so dropping it stops new work, discards
 /// queued work and unread messages, and cancels every subagent even while
 /// their tasks finish unwinding.
 pub struct Subagents(Arc<Shared>);
@@ -139,7 +139,7 @@ impl Subagents {
         self.0.lock().messages.drain(..).collect()
     }
 
-    /// Closes admission, discards unread messages, cancels every subagent,
+    /// Stops new work, discards unread messages, cancels every subagent,
     /// and waits for their current tasks, so each can attempt to save its
     /// interrupted batch. Then kills every subagent's shell processes and
     /// waits until they are removed. Returns whether any subagent started.
@@ -408,7 +408,7 @@ impl Shared {
     }
 
     /// Begins the subagent's next queued message, or marks it idle. A
-    /// message rejected by input admission ends it with a failure.
+    /// message that exceeds the model's context limit ends it with a failure.
     fn next_turn(&self, state: &mut State, index: usize) -> Option<Turn> {
         let agent = &mut state.agents[index];
         let Some(text) = agent.queued.pop_front() else {
@@ -502,7 +502,7 @@ fn describe(state: &State) -> String {
         .join("\n")
 }
 
-/// Keeps a forwarded message within the tool-result limit, saying what
+/// Keeps a forwarded message within the tool output limit, saying what
 /// happened to the rest.
 fn bounded(mut text: String, rest: &str) -> String {
     if text.len() > tools::OUTPUT_LIMIT {
@@ -638,7 +638,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_owner_admits_at_most_four_subagents_including_idle_ones() {
+    async fn at_most_four_subagents_start_including_idle_ones() {
         let tasks: Vec<_> = (1..=5).map(|n| format!("Task {n}")).collect();
         let owner = Owner::new(
             tasks

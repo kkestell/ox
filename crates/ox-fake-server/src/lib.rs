@@ -67,11 +67,11 @@ impl Pending {
     }
 }
 
-/// The fake server's saved history: every session it created, with its `cwd`,
+/// The fake server's saved sessions: every session it created, with its `cwd`,
 /// session title, and the updates to replay. Clones share it, so saved
 /// sessions outlive one ACP connection.
 #[derive(Clone)]
-pub struct SavedHistory(Arc<Mutex<Saved>>, Arc<RequestHolds>);
+pub struct SavedSessions(Arc<Mutex<Saved>>, Arc<RequestHolds>);
 
 #[derive(Default)]
 struct RequestHolds {
@@ -81,7 +81,7 @@ struct RequestHolds {
 
 #[derive(Serialize, Deserialize)]
 struct Saved {
-    /// The file the saved history is written to after every change, if any.
+    /// The file the saved sessions is written to after every change, if any.
     #[serde(skip)]
     file: Option<PathBuf>,
     /// Whether the fake server advertises saved-session operations.
@@ -178,26 +178,26 @@ fn config_options(pace: &str, mode: &str, model: &str, effort: &str) -> Vec<Sess
     ]
 }
 
-impl Default for SavedHistory {
-    /// Saved history with load, list, close, and delete
+impl Default for SavedSessions {
+    /// Saved sessions with load, list, close, and delete
     /// advertised.
-    fn default() -> SavedHistory {
-        SavedHistory::new(true)
+    fn default() -> SavedSessions {
+        SavedSessions::new(true)
     }
 }
 
-impl SavedHistory {
-    /// Saved history without load, list, close, or delete. Those methods answer
+impl SavedSessions {
+    /// Saved sessions without load, list, close, or delete. Those methods answer
     /// method not found.
-    pub fn unadvertised() -> SavedHistory {
-        SavedHistory::new(false)
+    pub fn unadvertised() -> SavedSessions {
+        SavedSessions::new(false)
     }
 
-    /// Saved history, advertised, read from `file` when it exists and written
+    /// Saved sessions, advertised, read from `file` when it exists and written
     /// to it after every change, so it outlives the fake server process.
-    pub fn file(file: PathBuf) -> SavedHistory {
+    pub fn file(file: PathBuf) -> SavedSessions {
         let mut saved = match std::fs::read(&file) {
-            Ok(json) => serde_json::from_slice(&json).expect("the saved history file is valid"),
+            Ok(json) => serde_json::from_slice(&json).expect("the saved sessions file is valid"),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Saved {
                 file: None,
                 advertised: true,
@@ -209,11 +209,11 @@ impl SavedHistory {
             Err(error) => panic!("reading {}: {error}", file.display()),
         };
         saved.file = Some(file);
-        SavedHistory(Arc::new(Mutex::new(saved)), Arc::default())
+        SavedSessions(Arc::new(Mutex::new(saved)), Arc::default())
     }
 
-    fn new(advertised: bool) -> SavedHistory {
-        SavedHistory(
+    fn new(advertised: bool) -> SavedSessions {
+        SavedSessions(
             Arc::new(Mutex::new(Saved {
                 file: None,
                 advertised,
@@ -235,8 +235,8 @@ impl SavedHistory {
     }
 
     /// Shares saved sessions while giving another connection independent request holds.
-    pub fn with_new_holds(&self) -> SavedHistory {
-        SavedHistory(self.0.clone(), Arc::default())
+    pub fn with_new_holds(&self) -> SavedSessions {
+        SavedSessions(self.0.clone(), Arc::default())
     }
 
     fn advertised(&self) -> bool {
@@ -258,13 +258,13 @@ impl SavedHistory {
         self.0.lock().unwrap().delete
     }
 
-    /// Runs `f` on the saved history, then writes it to its file, if any.
+    /// Runs `f` on the saved sessions, then writes it to its file, if any.
     fn edit<R>(&self, f: impl FnOnce(&mut Saved) -> R) -> R {
         let mut saved = self.0.lock().unwrap();
         let result = f(&mut saved);
         if let Some(file) = &saved.file {
-            let json = serde_json::to_vec(&*saved).expect("the saved history serializes");
-            std::fs::write(file, json).expect("the saved history file is writable");
+            let json = serde_json::to_vec(&*saved).expect("the saved sessions serializes");
+            std::fs::write(file, json).expect("the saved sessions file is writable");
         }
         result
     }
@@ -285,7 +285,7 @@ impl SavedHistory {
 }
 
 /// The fake server. It advertises protocol version 1, image prompts, and,
-/// unless `history` is unadvertised, load, list, close, and delete. It names
+/// unless `saved_sessions` is unadvertised, load, list, close, and delete. It names
 /// sessions `fake-1`, `fake-2`, and so on, and
 /// sends an `available_commands_update` right after each `session/new`
 /// response. Every session has the select config options `pace`, `mode`, and
@@ -294,7 +294,7 @@ impl SavedHistory {
 /// loaded during this ACP connection, and otherwise runs the script its text
 /// blocks name: `hold`, `tool`, `tools`, `reject`, `fail`, `title`,
 /// `unloadable`, `pace`, `options`, `usage`, `render`, or anything else for a reply.
-pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> {
+pub fn fake_server(hold: Hold, saved_sessions: SavedSessions) -> impl ConnectTo<Client> {
     // The sessions created or loaded during this ACP connection.
     let loaded = Arc::new(Mutex::new(HashSet::<SessionId>::new()));
     let cancelled = Arc::new(Mutex::new(HashMap::<SessionId, Arc<Notify>>::new()));
@@ -315,15 +315,16 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
         .name("ox-fake-server")
         .on_receive_request(
             {
-                let history = history.clone();
+                let saved_sessions = saved_sessions.clone();
                 async move |_: InitializeRequest, responder, _connection| {
-                    let mut capabilities = AgentCapabilities::new()
-                        .prompt_capabilities(PromptCapabilities::new().image(history.image()));
-                    if history.advertised() {
+                    let mut capabilities = AgentCapabilities::new().prompt_capabilities(
+                        PromptCapabilities::new().image(saved_sessions.image()),
+                    );
+                    if saved_sessions.advertised() {
                         let mut sessions = SessionCapabilities::new()
                             .list(SessionListCapabilities::new())
                             .close(SessionCloseCapabilities::new());
-                        if history.can_delete() {
+                        if saved_sessions.can_delete() {
                             sessions = sessions.delete(SessionDeleteCapabilities::new());
                         }
                         capabilities = capabilities
@@ -340,12 +341,12 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
         )
         .on_receive_request(
             {
-                let history = history.clone();
+                let saved_sessions = saved_sessions.clone();
                 let loaded = loaded.clone();
                 async move |request: NewSessionRequest,
                             responder,
                             connection: ConnectionTo<Client>| {
-                    let session = history.edit(|saved| {
+                    let session = saved_sessions.edit(|saved| {
                         saved.created += 1;
                         let session = SessionId::from(format!("fake-{}", saved.created));
                         saved.sessions.push(SavedSession {
@@ -375,7 +376,7 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
                         SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(vec![
                             command,
                         ]));
-                    history.save(&session, update.clone());
+                    saved_sessions.save(&session, update.clone());
                     connection.send_notification(SessionNotification::new(session, update))
                 }
             },
@@ -383,13 +384,13 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
         )
         .on_receive_request(
             {
-                let history = history.clone();
+                let saved_sessions = saved_sessions.clone();
                 async move |request: ListSessionsRequest, responder, _connection| {
-                    if !history.advertised() {
+                    if !saved_sessions.advertised() {
                         return responder
                             .respond_with_error(agent_client_protocol::Error::method_not_found());
                     }
-                    let saved = history.0.lock().unwrap();
+                    let saved = saved_sessions.0.lock().unwrap();
                     let matching: Vec<_> = saved
                         .sessions
                         .iter()
@@ -423,18 +424,18 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
         )
         .on_receive_request(
             {
-                let history = history.clone();
+                let saved_sessions = saved_sessions.clone();
                 let loaded = loaded.clone();
                 async move |request: LoadSessionRequest,
                             responder,
                             connection: ConnectionTo<Client>| {
-                    history.1.load.wait_if_paused().await;
-                    if !history.advertised() {
+                    saved_sessions.1.load.wait_if_paused().await;
+                    if !saved_sessions.advertised() {
                         return responder
                             .respond_with_error(agent_client_protocol::Error::method_not_found());
                     }
                     let session = request.session_id;
-                    let replay = history.with_session(&session, |saved| {
+                    let replay = saved_sessions.with_session(&session, |saved| {
                         (
                             saved.unloadable,
                             saved.updates.clone(),
@@ -473,7 +474,7 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
         )
         .on_receive_request(
             {
-                let history = history.clone();
+                let saved_sessions = saved_sessions.clone();
                 async move |request: SetSessionConfigOptionRequest, responder, _connection| {
                     let value = match (&*request.config_id.0, &request.value) {
                         ("pace", SessionConfigOptionValue::ValueId { value })
@@ -502,7 +503,7 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
                             );
                         }
                     };
-                    let set = history.with_session(&request.session_id, |saved| {
+                    let set = saved_sessions.with_session(&request.session_id, |saved| {
                         match &*request.config_id.0 {
                             "pace" => saved.pace = value,
                             "mode" => saved.mode = value,
@@ -531,10 +532,10 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
         )
         .on_receive_request(
             {
-                let history = history.clone();
+                let saved_sessions = saved_sessions.clone();
                 let loaded = loaded.clone();
                 async move |request: CloseSessionRequest, responder, _connection| {
-                    if !history.advertised() {
+                    if !saved_sessions.advertised() {
                         return responder
                             .respond_with_error(agent_client_protocol::Error::method_not_found());
                     }
@@ -551,16 +552,16 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
         )
         .on_receive_request(
             {
-                let history = history.clone();
+                let saved_sessions = saved_sessions.clone();
                 let loaded = loaded.clone();
                 async move |request: DeleteSessionRequest, responder, _connection| {
-                    history.1.delete.wait_if_paused().await;
-                    if !history.advertised() {
+                    saved_sessions.1.delete.wait_if_paused().await;
+                    if !saved_sessions.advertised() {
                         return responder
                             .respond_with_error(agent_client_protocol::Error::method_not_found());
                     }
                     let session = request.session_id;
-                    history.edit(|saved| saved.sessions.retain(|saved| saved.id != session));
+                    saved_sessions.edit(|saved| saved.sessions.retain(|saved| saved.id != session));
                     loaded.lock().unwrap().remove(&session);
                     responder.respond(DeleteSessionResponse::new())
                 }
@@ -589,7 +590,7 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
                 }
                 // Save user content for replay without echoing it to the client.
                 for block in request.prompt {
-                    history.save(
+                    saved_sessions.save(
                         &session,
                         SessionUpdate::UserMessageChunk(ContentChunk::new(block)),
                     );
@@ -605,14 +606,14 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
                 }
                 let cancelled = cancelled.clone();
                 let hold = hold.clone();
-                let history = history.clone();
+                let saved_sessions = saved_sessions.clone();
                 connection.spawn({
                     let connection = connection.clone();
                     async move {
                         let script = Script {
                             connection,
                             session,
-                            history,
+                            saved_sessions,
                         };
                         let stop = match text.as_str() {
                             "running" => {
@@ -666,7 +667,7 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
 struct Script {
     connection: ConnectionTo<Client>,
     session: SessionId,
-    history: SavedHistory,
+    saved_sessions: SavedSessions,
 }
 
 impl Script {
@@ -748,7 +749,7 @@ impl Script {
 
     /// Sets the session title `tallies`.
     fn title(&self) -> agent_client_protocol::Result<StopReason> {
-        self.history.with_session(&self.session, |saved| {
+        self.saved_sessions.with_session(&self.session, |saved| {
             saved.title = Some("tallies".to_string());
         });
         self.update(SessionUpdate::SessionInfoUpdate(
@@ -759,7 +760,7 @@ impl Script {
 
     /// Replies, then makes every later `session/load` of the session fail.
     fn unloadable(&self) -> agent_client_protocol::Result<StopReason> {
-        self.history
+        self.saved_sessions
             .with_session(&self.session, |saved| saved.unloadable = true);
         self.reply("unloadable", 0)
     }
@@ -767,7 +768,7 @@ impl Script {
     /// Sets `pace` to `brisk` with a `config_option_update`.
     fn pace(&self) -> agent_client_protocol::Result<StopReason> {
         let (mode, model, effort) = self
-            .history
+            .saved_sessions
             .with_session(&self.session, |saved| {
                 saved.pace = "brisk".to_string();
                 (
@@ -932,7 +933,7 @@ impl Script {
 
     /// Sends the update and saves it for replay.
     fn update(&self, update: SessionUpdate) -> agent_client_protocol::Result<()> {
-        self.history.save(&self.session, update.clone());
+        self.saved_sessions.save(&self.session, update.clone());
         self.connection
             .send_notification(SessionNotification::new(self.session.clone(), update))
     }

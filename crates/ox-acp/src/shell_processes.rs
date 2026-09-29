@@ -1,7 +1,7 @@
 //! The shell processes of one active session: background commands started by
 //! the shell tool, each belonging to the agent that started it. Each has one
 //! supervisor task that owns its child, process group, and output capture
-//! until the command ends and its group is cleaned up. The owner registers,
+//! until the command ends and its group is cleaned up. `ShellProcesses` registers,
 //! looks up, kills, and shuts down shell processes.
 
 use std::{
@@ -65,8 +65,7 @@ enum Ending {
     None,
     /// An explicit stop: SIGTERM, then SIGKILL after the grace period.
     Stop,
-    /// Owner shutdown or the end of the subagent that started it: SIGKILL at
-    /// once.
+    /// Shutdown or the end of the subagent that started it: SIGKILL at once.
     Kill,
 }
 
@@ -76,10 +75,10 @@ pub enum State {
     Running,
     /// The command exited on its own.
     Exited(ExitStatus),
-    /// The command ended after an explicit stop, owner shutdown, or the end
-    /// of the subagent that started it.
+    /// The command ended after an explicit stop, shutdown, or the end of
+    /// the subagent that started it.
     Stopped(ExitStatus),
-    /// Reading its output failed, so Ox ended the command.
+    /// Reading its output failed, so Ox ACP ended the command.
     Failed {
         error: String,
         status: ExitStatus,
@@ -398,7 +397,7 @@ async fn supervise(
             status.expect("reap owned child");
             Reason::Exited
         }
-        // A dropped owner counts as shutdown.
+        // Dropping every `ShellProcess` handle counts as shutdown.
         _ = requests.wait_for(|ending| *ending != Ending::None) => Reason::Requested,
         error = pipes.read_until_failure() => Reason::Failed(error),
     };
@@ -462,17 +461,17 @@ mod tests {
         shell
     }
 
-    fn start(owner: &ShellProcesses, workspace: &Path, command: &str) -> ShellProcess {
-        start_as(owner, &agent(), workspace, command)
+    fn start(shell_processes: &ShellProcesses, workspace: &Path, command: &str) -> ShellProcess {
+        start_as(shell_processes, &agent(), workspace, command)
     }
 
     fn start_as(
-        owner: &ShellProcesses,
+        shell_processes: &ShellProcesses,
         session_id: &SessionId,
         workspace: &Path,
         command: &str,
     ) -> ShellProcess {
-        owner
+        shell_processes
             .start(session_id, shell(workspace, command), command, LIMIT)
             .unwrap()
     }
@@ -500,7 +499,7 @@ mod tests {
     }
 
     /// Waits until the PID in `file` no longer names a live process; a zombie
-    /// counts as stopped only for a descendant, which Ox does not reap.
+    /// counts as stopped only for a descendant, which Ox ACP does not reap.
     async fn assert_gone(file: &Path, reaped: bool) {
         let pid = std::fs::read_to_string(file).unwrap();
         timeout(Duration::from_secs(3), async {
@@ -524,10 +523,10 @@ mod tests {
     #[tokio::test]
     async fn a_command_keeps_running_and_receives_exact_input() {
         let workspace = Workspace::new();
-        let owner = ShellProcesses::default();
-        let process = start(&owner, &workspace.0, "printf ready; cat");
+        let shell_processes = ShellProcesses::default();
+        let process = start(&shell_processes, &workspace.0, "printf ready; cat");
         printed(&process, "ready").await;
-        let other = start(&owner, &workspace.0, "printf other");
+        let other = start(&shell_processes, &workspace.0, "printf other");
         finished(&other).await;
         assert_eq!(process.state(), State::Running, "other work proceeds");
         for (text, close_stdin) in [("one\ntwo", false), ("", true)] {
@@ -554,7 +553,7 @@ mod tests {
             }
         );
         assert_eq!(
-            owner
+            shell_processes
                 .list(&agent())
                 .iter()
                 .map(ShellProcess::command)
@@ -566,7 +565,7 @@ mod tests {
     #[tokio::test]
     async fn finished_commands_report_their_exit_and_final_output() {
         let workspace = Workspace::new();
-        let owner = ShellProcesses::default();
+        let shell_processes = ShellProcesses::default();
         for (command, status, stdout) in [
             ("printf done", ExitStatus::from_raw(0), "done"),
             (
@@ -580,7 +579,7 @@ mod tests {
                 "last",
             ),
         ] {
-            let output = finished(&start(&owner, &workspace.0, command)).await;
+            let output = finished(&start(&shell_processes, &workspace.0, command)).await;
             assert_eq!(output.state, State::Exited(status), "{command}");
             assert_eq!(output.stdout.clone().decode(), stdout, "{command}");
         }
@@ -589,8 +588,8 @@ mod tests {
     #[tokio::test]
     async fn finished_commands_release_stdin() {
         let workspace = Workspace::new();
-        let owner = ShellProcesses::default();
-        let process = start(&owner, &workspace.0, "true");
+        let shell_processes = ShellProcesses::default();
+        let process = start(&shell_processes, &workspace.0, "true");
         finished(&process).await;
 
         assert!(process.stdin.lock().await.is_none());
@@ -602,7 +601,7 @@ mod tests {
                 interruption: Some(Interruption::Finished),
             }
         );
-        owner.shutdown().await;
+        shell_processes.shutdown().await;
     }
 
     /// Waits until the command's output satisfies `ready`.
@@ -623,10 +622,10 @@ mod tests {
     #[tokio::test]
     async fn output_floods_are_drained_fairly_and_snapshots_repeat() {
         let workspace = Workspace::new();
-        let owner = ShellProcesses::default();
+        let shell_processes = ShellProcesses::default();
         // Each stream has its own producer, so neither waits for the other.
         let process = start(
-            &owner,
+            &shell_processes,
             &workspace.0,
             "(i=0; while [ $i -lt 5000 ]; do printf 'stdout line\\n'; i=$((i+1)); done; printf OUT_END; touch out-flooded) & \
              (i=0; while [ $i -lt 5000 ]; do printf 'stderr line\\n' >&2; i=$((i+1)); done; printf ERR_END >&2; touch err-flooded) & \
@@ -658,7 +657,7 @@ mod tests {
         assert_eq!(first.stderr.bytes, second.stderr.bytes);
 
         let starving = start(
-            &owner,
+            &shell_processes,
             &workspace.0,
             "yes & i=0; while [ $i -lt 100 ]; do printf 'stderr line\\n' >&2; i=$((i+1)); done; printf ERR_END >&2; wait",
         );
@@ -666,32 +665,32 @@ mod tests {
             ends_with(&output.stderr, "ERR_END")
         })
         .await;
-        owner.shutdown().await;
+        shell_processes.shutdown().await;
     }
 
     #[tokio::test]
     async fn the_limit_removes_the_oldest_finished_process_and_never_a_running_one() {
         let workspace = Workspace::new();
-        let owner = ShellProcesses::default();
+        let shell_processes = ShellProcesses::default();
         let other = SessionId::new("other");
-        let other_done = start_as(&owner, &other, &workspace.0, "true");
+        let other_done = start_as(&shell_processes, &other, &workspace.0, "true");
         finished(&other_done).await;
-        let done = start(&owner, &workspace.0, "true");
+        let done = start(&shell_processes, &workspace.0, "true");
         finished(&done).await;
         let running: Vec<_> = (1..MAX_SHELL_PROCESSES)
-            .map(|_| start(&owner, &workspace.0, "exec sleep 30"))
+            .map(|_| start(&shell_processes, &workspace.0, "exec sleep 30"))
             .collect();
-        let replacement = start(&owner, &workspace.0, "exec sleep 30");
+        let replacement = start(&shell_processes, &workspace.0, "exec sleep 30");
         assert!(
-            owner.get(&agent(), done.id()).is_none(),
+            shell_processes.get(&agent(), done.id()).is_none(),
             "the finished process was removed"
         );
         assert!(
-            owner.get(&other, other_done.id()).is_some(),
+            shell_processes.get(&other, other_done.id()).is_some(),
             "another agent's finished process was kept"
         );
-        assert_eq!(owner.list(&agent()).len(), MAX_SHELL_PROCESSES);
-        let refused = owner
+        assert_eq!(shell_processes.list(&agent()).len(), MAX_SHELL_PROCESSES);
+        let refused = shell_processes
             .start(
                 &agent(),
                 shell(&workspace.0, "touch spawned"),
@@ -708,47 +707,53 @@ mod tests {
         assert!(
             running
                 .iter()
-                .all(|process| owner.get(&agent(), process.id()).is_some())
+                .all(|process| shell_processes.get(&agent(), process.id()).is_some())
         );
-        assert!(owner.get(&agent(), replacement.id()).is_some());
-        let unaffected = start_as(&owner, &other, &workspace.0, "exec sleep 30");
+        assert!(shell_processes.get(&agent(), replacement.id()).is_some());
+        let unaffected = start_as(&shell_processes, &other, &workspace.0, "exec sleep 30");
         assert_eq!(unaffected.state(), State::Running);
-        assert_eq!(owner.list(&other).len(), 2);
-        owner.shutdown().await;
+        assert_eq!(shell_processes.list(&other).len(), 2);
+        shell_processes.shutdown().await;
         assert!(!workspace.0.join("spawned").exists(), "nothing was spawned");
     }
 
     #[tokio::test]
     async fn removing_an_agent_session_kills_and_forgets_only_its_shell_processes() {
         let workspace = Workspace::new();
-        let owner = ShellProcesses::default();
+        let shell_processes = ShellProcesses::default();
         let other = SessionId::new("other");
         let removed = start(
-            &owner,
+            &shell_processes,
             &workspace.0,
             &format!("trap '' TERM; {TREE}; printf ready; read line"),
         );
-        let kept = start_as(&owner, &other, &workspace.0, "exec sleep 30");
+        let kept = start_as(&shell_processes, &other, &workspace.0, "exec sleep 30");
         printed(&removed, "ready").await;
         let start_time = Instant::now();
-        owner.remove(&agent()).await;
+        shell_processes.remove(&agent()).await;
         assert!(start_time.elapsed() < STOP_GRACE, "no SIGTERM grace period");
         assert_eq!(removed.state(), State::Stopped(ExitStatus::from_raw(9)));
         assert_gone(&workspace.0.join("shell"), true).await;
         assert_gone(&workspace.0.join("child"), false).await;
-        assert!(owner.list(&agent()).is_empty());
+        assert!(shell_processes.list(&agent()).is_empty());
         assert_eq!(
-            owner.get(&other, kept.id()).map(|process| process.state()),
+            shell_processes
+                .get(&other, kept.id())
+                .map(|process| process.state()),
             Some(State::Running)
         );
-        owner.shutdown().await;
+        shell_processes.shutdown().await;
     }
 
     #[tokio::test]
     async fn writes_are_bounded_and_report_what_was_sent() {
         let workspace = Workspace::new();
-        let owner = ShellProcesses::default();
-        let ignoring = start(&owner, &workspace.0, "printf ready; exec sleep 30");
+        let shell_processes = ShellProcesses::default();
+        let ignoring = start(
+            &shell_processes,
+            &workspace.0,
+            "printf ready; exec sleep 30",
+        );
         printed(&ignoring, "ready").await;
         let flood = vec![b'x'; 1024 * 1024];
         let start_time = Instant::now();
@@ -770,7 +775,7 @@ mod tests {
 
         // The reader takes its input only after the cancelled write stopped.
         let reader = start(
-            &owner,
+            &shell_processes,
             &workspace.0,
             "while [ ! -e go ]; do sleep 0.01; done; wc -c",
         );
@@ -817,7 +822,7 @@ mod tests {
         );
 
         let closed = start(
-            &owner,
+            &shell_processes,
             &workspace.0,
             "exec 0<&-; printf ready; exec sleep 30",
         );
@@ -836,7 +841,7 @@ mod tests {
                 interruption: Some(Interruption::StdinClosed),
             }
         );
-        owner.shutdown().await;
+        shell_processes.shutdown().await;
     }
 
     /// A shell that saves its PID and its descendant's. The command that
@@ -847,7 +852,7 @@ mod tests {
     #[tokio::test]
     async fn stop_terminates_the_group_with_a_grace_period_and_reaps_it() {
         let workspace = Workspace::new();
-        let owner = ShellProcesses::default();
+        let shell_processes = ShellProcesses::default();
         for (trap, grace_used, status) in [
             ("touch terminated; exit 0", false, ExitStatus::from_raw(0)),
             ("", true, ExitStatus::from_raw(9)),
@@ -855,7 +860,7 @@ mod tests {
             // A descendant started before the trap ends on SIGTERM even
             // before it runs `sleep`.
             let process = start(
-                &owner,
+                &shell_processes,
                 &workspace.0,
                 &format!("{TREE}; trap '{trap}' TERM; printf ready; read line"),
             );
@@ -882,9 +887,9 @@ mod tests {
     #[tokio::test]
     async fn natural_exit_stops_remaining_descendants() {
         let workspace = Workspace::new();
-        let owner = ShellProcesses::default();
+        let shell_processes = ShellProcesses::default();
         let process = start(
-            &owner,
+            &shell_processes,
             &workspace.0,
             "echo $$ > shell; sleep 30 & echo $! > child; exit 0",
         );
@@ -901,8 +906,8 @@ mod tests {
     #[tokio::test]
     async fn cancelling_a_waiting_read_leaves_the_command_running() {
         let workspace = Workspace::new();
-        let owner = ShellProcesses::default();
-        let process = start(&owner, &workspace.0, "exec sleep 30");
+        let shell_processes = ShellProcesses::default();
+        let process = start(&shell_processes, &workspace.0, "exec sleep 30");
         let (cancel, cancelled) = futures::channel::oneshot::channel::<()>();
         let wait = process.wait(Duration::from_secs(30), async {
             let _ = cancelled.await;
@@ -913,22 +918,26 @@ mod tests {
         assert!(!wait.await);
         assert!(process.wait(Duration::ZERO, std::future::pending()).await);
         assert_eq!(process.state(), State::Running);
-        owner.shutdown().await;
+        shell_processes.shutdown().await;
         assert_eq!(process.state(), State::Stopped(ExitStatus::from_raw(9)));
     }
 
     #[tokio::test]
     async fn shutdown_kills_at_once_even_during_a_stop_grace_period() {
         let workspace = Workspace::new();
-        let owner = ShellProcesses::default();
+        let shell_processes = ShellProcesses::default();
         // The detached process keeps the output pipes open past the cleanup.
         let stubborn = start(
-            &owner,
+            &shell_processes,
             &workspace.0,
             "python3 -c 'import subprocess; p = subprocess.Popen([\"sleep\", \"30\"], start_new_session=True); open(\"detached\", \"w\").write(str(p.pid))'; \
              trap 'touch terminated' TERM; echo $$ > shell; printf ready; while :; do sleep 1; done",
         );
-        let other = start(&owner, &workspace.0, "trap '' TERM; exec sleep 30");
+        let other = start(
+            &shell_processes,
+            &workspace.0,
+            "trap '' TERM; exec sleep 30",
+        );
         printed(&stubborn, "ready").await;
         let stopping = tokio::spawn({
             let stubborn = stubborn.clone();
@@ -942,7 +951,7 @@ mod tests {
         .await
         .expect("the stop sent SIGTERM");
         let start_time = Instant::now();
-        owner.shutdown().await;
+        shell_processes.shutdown().await;
         let elapsed = start_time.elapsed();
         let detached = std::fs::read_to_string(workspace.0.join("detached")).unwrap();
         rustix::process::kill_process(
@@ -963,7 +972,7 @@ mod tests {
         );
         assert_eq!(other.state(), State::Stopped(ExitStatus::from_raw(9)));
         assert_gone(&workspace.0.join("shell"), true).await;
-        owner.shutdown().await;
+        shell_processes.shutdown().await;
     }
 
     #[tokio::test]
@@ -1040,26 +1049,31 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_start_racing_shutdown_is_refused_or_cleaned_up() {
         let workspace = Workspace::new();
-        let owner = ShellProcesses::default();
+        let shell_processes = ShellProcesses::default();
         let starts: Vec<_> = (0..8)
             .map(|index| {
-                let owner = owner.clone();
+                let shell_processes = shell_processes.clone();
                 let workspace = workspace.0.clone();
                 tokio::spawn(async move {
                     let command = format!("touch started-{index}; exec sleep 30");
                     (
                         index,
-                        owner.start(&agent(), shell(&workspace, &command), &command, LIMIT),
+                        shell_processes.start(
+                            &agent(),
+                            shell(&workspace, &command),
+                            &command,
+                            LIMIT,
+                        ),
                     )
                 })
             })
             .collect();
-        owner.shutdown().await;
+        shell_processes.shutdown().await;
         for start in starts {
             let (index, started) = start.await.unwrap();
             match started {
                 Ok(process) => {
-                    owner.shutdown().await;
+                    shell_processes.shutdown().await;
                     assert_ne!(process.state(), State::Running, "{index} was cleaned up");
                 }
                 Err(error) => {

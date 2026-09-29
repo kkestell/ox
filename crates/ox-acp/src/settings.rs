@@ -23,7 +23,8 @@ struct SettingsFile {
     mode: Option<String>,
 }
 
-/// The effective settings for one workspace.
+/// The default model, effort, and mode: the global settings file's values,
+/// or, after `for_workspace`, with the workspace settings file's keys applied.
 #[derive(Clone)]
 pub struct Settings {
     pub default_model: String,
@@ -122,13 +123,13 @@ fn mode(path: &Path, value: Option<String>) -> io::Result<SessionMode> {
 
 /// Saves all current session settings in the workspace file when it exists,
 /// otherwise in the global file. Returns whether the global file was written.
-pub fn save(home: &Path, workspace: &Path, selected: &SessionSettings) -> io::Result<bool> {
-    let workspace_path = workspace.join(".ox/settings.json");
-    let global = !workspace_path.try_exists()?;
+pub fn save(home: &Path, workspace_path: &Path, selected: &SessionSettings) -> io::Result<bool> {
+    let workspace_file = workspace_path.join(".ox/settings.json");
+    let global = !workspace_file.try_exists()?;
     let path = if global {
         home.join(".config/ox/settings.json")
     } else {
-        workspace_path
+        workspace_file
     };
     write(&path, selected)?;
     Ok(global)
@@ -286,7 +287,7 @@ mod tests {
         assert_eq!(settings.default_mode, SessionMode::Auto);
 
         let workspace = Workspace::new();
-        let workspace_path = workspace.0.join(".ox/settings.json");
+        let workspace_file = workspace.0.join(".ox/settings.json");
         std::fs::create_dir(workspace.0.join(".ox")).unwrap();
         for (text, expected) in [
             (
@@ -295,7 +296,7 @@ mod tests {
             ),
             (r#"{"mode":"ask"}"#, (EffortLevel::High, SessionMode::Ask)),
         ] {
-            std::fs::write(&workspace_path, text).unwrap();
+            std::fs::write(&workspace_file, text).unwrap();
             let effective = settings.for_workspace(&workspace.0).unwrap();
             assert_eq!((effective.default_effort, effective.default_mode), expected);
         }
@@ -310,14 +311,14 @@ mod tests {
                 "effort max is not supported",
             ),
         ] {
-            std::fs::write(&workspace_path, &text).unwrap();
+            std::fs::write(&workspace_file, &text).unwrap();
             let message = settings
                 .for_workspace(&workspace.0)
                 .err()
                 .unwrap()
                 .to_string();
             assert!(
-                message.starts_with(&format!("{}: ", workspace_path.display()))
+                message.starts_with(&format!("{}: ", workspace_file.display()))
                     && message.contains(error),
                 "{text}: {message}"
             );

@@ -37,7 +37,9 @@ use crate::config;
 use input::Input;
 use transcript::{ToolOutput, TranscriptView};
 
-pub fn escape(text: &str) -> String {
+/// The text with each control character except newline and tab written as an
+/// escape sequence, so terminal output cannot move the cursor or change modes.
+pub fn escape_control_characters(text: &str) -> String {
     text.chars()
         .flat_map(|c| {
             if c.is_control() && c != '\n' && c != '\t' {
@@ -144,14 +146,14 @@ pub struct Layout {
     pub height: usize,
     pub lines: usize,
     approval_height: usize,
-    approval_lines: usize,
+    approval_body_lines: usize,
 }
 
 #[derive(Default)]
 struct Ui {
     view: TranscriptView,
     input: Input,
-    selected: usize,
+    approval_selected: usize,
     show_thinking: bool,
     tool_output: ToolOutput,
     layout: Layout,
@@ -161,7 +163,7 @@ struct Ui {
     /// The favorite model IDs, in the order they were added.
     favorites: Vec<String>,
     /// The config file favorites are saved to.
-    config: PathBuf,
+    config_path: PathBuf,
 }
 
 struct Picker {
@@ -257,7 +259,7 @@ impl ModelChoice {
         let meta = |key: &str| choice.meta.as_ref().and_then(|meta| meta.get(key));
         Self {
             value: choice.value.clone(),
-            name: escape(&choice.name),
+            name: escape_control_characters(&choice.name),
             input_price: meta("inputPrice").and_then(serde_json::Value::as_f64),
             output_price: meta("outputPrice").and_then(serde_json::Value::as_f64),
             context_limit: meta("contextLimit").and_then(serde_json::Value::as_u64),
@@ -329,7 +331,7 @@ fn activity(session: &SessionInfo) -> Option<DateTime<chrono::FixedOffset>> {
 }
 
 fn session_title(session: &SessionInfo) -> String {
-    escape(session.title.as_deref().unwrap_or("Untitled session"))
+    escape_control_characters(session.title.as_deref().unwrap_or("Untitled session"))
 }
 
 fn sorted_sessions(mut sessions: Vec<SessionInfo>) -> Vec<SessionInfo> {
@@ -411,14 +413,14 @@ pub fn draw(frame: &mut Frame, screen: &mut Screen) -> Layout {
         };
     }
     let input = screen.input.rows(width);
-    let approval = screen
+    let dialog_lines = screen
         .approval
         .as_ref()
         .map(|approval| approval_lines(screen.view, approval, width));
     // The composer holds the input, a blank row, and the status line.
     let composer_height = input.lines.len() + 4;
     let composer_top = height.saturating_sub(composer_height);
-    let dialog_height = approval
+    let dialog_height = dialog_lines
         .as_ref()
         .map_or(0, |lines| (lines.len() + 2).min(composer_top));
     let space = composer_top - dialog_height;
@@ -455,13 +457,13 @@ pub fn draw(frame: &mut Frame, screen: &mut Screen) -> Layout {
     }
     let dialog = dialog.inner(MARGIN);
     let mut approval_height = 0;
-    let mut approval_lines = 0;
-    if let (Some(lines), Some(request)) = (approval.as_ref(), screen.approval.as_ref()) {
-        let choices = request.request.options.len();
-        let body_end = lines.len() - choices - 1;
+    let mut approval_body_lines = 0;
+    if let (Some(lines), Some(approval)) = (dialog_lines.as_ref(), screen.approval.as_ref()) {
+        let option_count = approval.request.options.len();
+        let body_end = lines.len() - option_count - 1;
         let body = &lines[2..body_end];
-        approval_height = usize::from(dialog.height).saturating_sub(3 + choices);
-        approval_lines = body.len();
+        approval_height = usize::from(dialog.height).saturating_sub(3 + option_count);
+        approval_body_lines = body.len();
         let first = screen
             .approval_scroll
             .min(body.len().saturating_sub(approval_height));
@@ -505,7 +507,7 @@ pub fn draw(frame: &mut Frame, screen: &mut Screen) -> Layout {
         height: view_height,
         lines: total,
         approval_height,
-        approval_lines,
+        approval_body_lines,
     }
 }
 
@@ -673,12 +675,12 @@ fn approval_lines(view: &TranscriptView, approval: &Approval, width: usize) -> V
     lines
 }
 
-/// The select option in the category, with its id.
-fn select_option(
-    options: &[SessionConfigOption],
+/// The select config option in the category, with its id.
+fn select_config_option(
+    config_options: &[SessionConfigOption],
     category: SessionConfigOptionCategory,
 ) -> Option<(&SessionConfigId, &SessionConfigSelect)> {
-    let option = options
+    let option = config_options
         .iter()
         .find(|option| option.category.as_ref() == Some(&category))?;
     match &option.kind {
@@ -701,12 +703,12 @@ fn choices(select: &SessionConfigSelect) -> Vec<&SessionConfigSelectOption> {
 
 /// The status line's left side: the names of the mode, model, and effort in
 /// use.
-pub fn settings(options: &[SessionConfigOption]) -> String {
+pub fn settings(config_options: &[SessionConfigOption]) -> String {
     use SessionConfigOptionCategory::*;
     [Mode, Model, ThoughtLevel]
         .into_iter()
         .filter_map(|category| {
-            select_option(options, category).map(|(_, select)| {
+            select_config_option(config_options, category).map(|(_, select)| {
                 choices(select)
                     .into_iter()
                     .find(|choice| choice.value == select.current_value)
@@ -786,7 +788,7 @@ async fn key(
                         }
                         None => favorites.push(id),
                     }
-                    match config::save_favorites(&ui.config, &favorites) {
+                    match config::save_favorites(&ui.config_path, &favorites) {
                         Ok(()) => {
                             models.set_favorites(&favorites);
                             ui.favorites = favorites;
@@ -820,9 +822,10 @@ async fn key(
                 }
                 (PickerRows::Models(models), Some(&index)) => {
                     let value = models.all[index].value.clone();
-                    let Some((id, _)) =
-                        select_option(&session.config_options, SessionConfigOptionCategory::Model)
-                    else {
+                    let Some((id, _)) = select_config_option(
+                        &session.config_options,
+                        SessionConfigOptionCategory::Model,
+                    ) else {
                         picker.error = Some("Model choice is unavailable".to_owned());
                         return Ok(false);
                     };
@@ -852,8 +855,8 @@ async fn key(
         return Ok(false);
     }
     let control = key.modifiers.contains(KeyModifiers::CONTROL);
-    let options = session
-        .pending
+    let approval_option_count = session
+        .permission_requests
         .front()
         .map(|(request, _)| request.options.len());
     match key.code {
@@ -934,12 +937,12 @@ async fn key(
                 } else {
                     send(ui, session, now)?;
                 }
-            } else if options.is_some() {
-                answer(ui, session, ui.selected)?;
+            } else if approval_option_count.is_some() {
+                answer(ui, session, ui.approval_selected)?;
             }
         }
         KeyCode::Esc => {
-            if let Some((request, _)) = session.pending.front() {
+            if let Some((request, _)) = session.permission_requests.front() {
                 let reject = request
                     .options
                     .iter()
@@ -955,12 +958,14 @@ async fn key(
                 session.cancel()?;
             }
         }
-        KeyCode::Up => match options {
-            Some(_) => ui.selected = ui.selected.saturating_sub(1),
+        KeyCode::Up => match approval_option_count {
+            Some(_) => ui.approval_selected = ui.approval_selected.saturating_sub(1),
             None => ui.input.up(),
         },
-        KeyCode::Down => match options {
-            Some(count) => ui.selected = (ui.selected + 1).min(count.saturating_sub(1)),
+        KeyCode::Down => match approval_option_count {
+            Some(count) => {
+                ui.approval_selected = (ui.approval_selected + 1).min(count.saturating_sub(1))
+            }
             None => ui.input.down(),
         },
         KeyCode::Left => ui.input.left(),
@@ -972,15 +977,15 @@ async fn key(
         }
         KeyCode::Backspace => ui.input.backspace(),
         KeyCode::Delete => ui.input.delete(),
-        KeyCode::PageUp if options.is_some() => {
+        KeyCode::PageUp if approval_option_count.is_some() => {
             let page = ui.layout.approval_height.saturating_sub(1).max(1);
             ui.approval_scroll = ui.approval_scroll.saturating_sub(page);
         }
-        KeyCode::PageDown if options.is_some() => {
+        KeyCode::PageDown if approval_option_count.is_some() => {
             let page = ui.layout.approval_height.saturating_sub(1).max(1);
             let last = ui
                 .layout
-                .approval_lines
+                .approval_body_lines
                 .saturating_sub(ui.layout.approval_height);
             ui.approval_scroll = ui.approval_scroll.saturating_add(page).min(last);
         }
@@ -1028,7 +1033,7 @@ async fn open_session_picker(ui: &mut Ui, session: &mut Session, now: Instant) {
 /// else on All, with the current model selected when it is shown.
 fn open_model_picker(ui: &mut Ui, session: &Session, now: Instant) {
     let Some((_, select)) =
-        select_option(&session.config_options, SessionConfigOptionCategory::Model)
+        select_config_option(&session.config_options, SessionConfigOptionCategory::Model)
     else {
         ui.view
             .notice("Model choice is unavailable".into(), theme::RED, now);
@@ -1049,11 +1054,11 @@ fn open_model_picker(ui: &mut Ui, session: &Session, now: Instant) {
 }
 
 fn next_choice(
-    options: &[SessionConfigOption],
+    config_options: &[SessionConfigOption],
     category: SessionConfigOptionCategory,
     forward: bool,
 ) -> Option<(SessionConfigId, SessionConfigValueId)> {
-    let (id, select) = select_option(options, category)?;
+    let (id, select) = select_config_option(config_options, category)?;
     let choices = choices(select);
     let count = choices.len();
     if count < 2 {
@@ -1085,9 +1090,9 @@ fn send(ui: &mut Ui, session: &mut Session, now: Instant) -> anyhow::Result<()> 
 
 fn answer(ui: &mut Ui, session: &mut Session, index: usize) -> anyhow::Result<()> {
     session.answer(index + 1)?;
-    ui.selected = 0;
+    ui.approval_selected = 0;
     ui.approval_scroll = 0;
-    if !session.pending.is_empty() {
+    if !session.permission_requests.is_empty() {
         ui.view.changed();
     }
     Ok(())
@@ -1115,10 +1120,10 @@ fn handle(
                 ))?;
                 return Ok(());
             }
-            let first = session.pending.is_empty();
+            let first = session.permission_requests.is_empty();
             session.permission(request, responder)?;
-            if first && !session.pending.is_empty() {
-                ui.selected = 0;
+            if first && !session.permission_requests.is_empty() {
+                ui.approval_selected = 0;
                 ui.approval_scroll = 0;
                 ui.view.changed();
                 terminal.bell()?;
@@ -1152,7 +1157,7 @@ pub async fn run(
     mut session: Session,
     mut events: UnboundedReceiver<acp::Event>,
     favorites: Vec<String>,
-    config: PathBuf,
+    config_path: PathBuf,
 ) -> anyhow::Result<()> {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -1163,7 +1168,7 @@ pub async fn run(
     let mut keys = EventStream::new();
     let mut ui = Ui {
         favorites,
-        config,
+        config_path,
         ..Ui::default()
     };
     let mut tick = tokio::time::interval(Duration::from_secs(1));
@@ -1173,7 +1178,7 @@ pub async fn run(
                 PickerRows::Sessions(_) => "resume session",
                 PickerRows::Models(_) => "choose model",
             }
-        } else if !session.pending.is_empty() {
+        } else if !session.permission_requests.is_empty() {
             "needs permission"
         } else if session.busy {
             "working"
@@ -1190,10 +1195,13 @@ pub async fn run(
             view: &mut ui.view,
             input: &ui.input,
             commands: &commands,
-            approval: session.pending.front().map(|(request, _)| Approval {
-                request,
-                selected: ui.selected,
-            }),
+            approval: session
+                .permission_requests
+                .front()
+                .map(|(request, _)| Approval {
+                    request,
+                    selected: ui.approval_selected,
+                }),
             approval_scroll: ui.approval_scroll,
             picker: ui.picker.as_ref(),
             settings: &settings,
@@ -1207,9 +1215,11 @@ pub async fn run(
             .inner
             .draw(|frame| layout = draw(frame, &mut screen))?;
         ui.layout = layout;
-        ui.approval_scroll = ui
-            .approval_scroll
-            .min(layout.approval_lines.saturating_sub(layout.approval_height));
+        ui.approval_scroll = ui.approval_scroll.min(
+            layout
+                .approval_body_lines
+                .saturating_sub(layout.approval_height),
+        );
         tokio::select! {
             biased;
             _ = session.closed() => anyhow::bail!("server closed the ACP connection"),
@@ -1260,7 +1270,7 @@ mod tests {
     #[test]
     fn server_control_characters_are_printed_as_text() {
         assert_eq!(
-            escape("\x1b[2J\r\x07\u{009b}31m\n\t"),
+            escape_control_characters("\x1b[2J\r\x07\u{009b}31m\n\t"),
             "\\u{1b}[2J\\r\\u{7}\\u{9b}31m\n\t"
         );
     }
@@ -1455,7 +1465,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn long_approval_keeps_choices_and_composer_visible_and_pages_through_details() {
+    async fn long_approval_keeps_options_and_composer_visible_and_pages_through_details() {
         with_session(async |mut session, mut events| {
             session.prompt("tools".into())?;
             requests(&mut session, &mut events).await;
@@ -1463,16 +1473,16 @@ mod tests {
                 .map(|line| format!("detail {line:02}"))
                 .collect::<Vec<_>>()
                 .join("\n");
-            session.pending.front_mut().unwrap().0 = request("shell", &details);
+            session.permission_requests.front_mut().unwrap().0 = request("shell", &details);
             let mut ui = Ui::default();
             ui.input.paste("draft");
             let now = Instant::now();
             let show = |ui: &mut Ui, session: &Session| {
-                let request = &session.pending.front().unwrap().0;
+                let request = &session.permission_requests.front().unwrap().0;
                 let mut display = Screen {
                     approval: Some(Approval {
                         request,
-                        selected: ui.selected,
+                        selected: ui.approval_selected,
                     }),
                     approval_scroll: ui.approval_scroll,
                     ..screen(&mut ui.view, &ui.input, now)
@@ -1614,15 +1624,15 @@ mod tests {
             .category(category)
         };
         use SessionConfigOptionCategory::*;
-        let options = vec![
+        let config_options = vec![
             select("model", "deepseek", Some(Model)),
             select("effort", "high", Some(ThoughtLevel)),
             select("pace", "steady", None),
             select("approval", "ask", Some(Mode)),
         ];
-        assert_eq!(settings(&options), "ask • deepseek • high");
-        assert_eq!(settings(&options[..1]), "deepseek");
-        assert_eq!(settings(&options[2..3]), "");
+        assert_eq!(settings(&config_options), "ask • deepseek • high");
+        assert_eq!(settings(&config_options[..1]), "deepseek");
+        assert_eq!(settings(&config_options[2..3]), "");
         assert_eq!(usage(None), "0% • $0.00");
         let update = UsageUpdate::new(1200, 8000).cost(Cost::new(0.25, "USD"));
         assert_eq!(usage(Some(&update)), "15% • $0.25");
@@ -1988,7 +1998,7 @@ mod tests {
             let path = directory.path().join("ox/tui.json");
             let mut ui = Ui {
                 favorites: vec!["missing/model".to_owned()],
-                config: path.clone(),
+                config_path: path.clone(),
                 ..Ui::default()
             };
             let control_f = async |ui: &mut Ui, session: &mut Session| {
@@ -2038,7 +2048,7 @@ mod tests {
                 "the last offered favorite's removal shows All"
             );
             assert!(ui.input.is_empty());
-            ui.config = directory.path().into();
+            ui.config_path = directory.path().into();
             control_f(&mut ui, &mut session).await?;
             let picker = ui.picker.as_ref().unwrap();
             assert!(
@@ -2151,7 +2161,7 @@ mod tests {
 
     /// Collects the `tools` script's two permission requests.
     async fn requests(session: &mut Session, events: &mut UnboundedReceiver<AcpEvent>) {
-        while session.pending.len() < 2 {
+        while session.permission_requests.len() < 2 {
             if let AcpEvent::Permission(_, request, responder) = events.recv().await.unwrap() {
                 session.permission(request, responder).unwrap();
             }
@@ -2295,13 +2305,16 @@ mod tests {
             requests(&mut session, &mut events).await;
             press(&mut ui, &mut session, KeyCode::Down, now).await?;
             press(&mut ui, &mut session, KeyCode::Down, now).await?;
-            assert_eq!(ui.selected, 1);
+            assert_eq!(ui.approval_selected, 1);
             press(&mut ui, &mut session, KeyCode::Esc, now).await?;
-            assert_eq!((session.pending.len(), ui.selected), (1, 0));
+            assert_eq!(
+                (session.permission_requests.len(), ui.approval_selected),
+                (1, 0)
+            );
             press(&mut ui, &mut session, KeyCode::Up, now).await?;
             press(&mut ui, &mut session, KeyCode::Down, now).await?;
             press(&mut ui, &mut session, KeyCode::Enter, now).await?;
-            assert!(session.pending.is_empty());
+            assert!(session.permission_requests.is_empty());
             let (text, ok) = turn(&mut session, &mut events, &[]).await;
             assert!(ok);
             assert_eq!(text, "tally-1: stop, tally-2: stop");
@@ -2310,7 +2323,7 @@ mod tests {
             press(&mut ui, &mut session, KeyCode::Char('h'), now).await?;
             press(&mut ui, &mut session, KeyCode::Char('i'), now).await?;
             press(&mut ui, &mut session, KeyCode::Enter, now).await?;
-            assert!(session.pending.is_empty());
+            assert!(session.permission_requests.is_empty());
             assert_eq!(session.queued.as_deref(), Some("hi"));
             assert!(ui.input.is_empty());
             let queued = loop {

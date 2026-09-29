@@ -5,3 +5,9 @@ OX-0003,2026-09-29 05:40,A second prompt silently replaces a queued prompt,high,
 OX-0004,2026-09-29 06:56,Joined emoji split across display rows,medium,correctness,fixed,reviews/2026-09-29-002-ratatui-usage-review.md
 OX-0005,2026-09-29 06:56,Every draw formats the entire transcript,medium,performance,fixed,reviews/2026-09-29-002-ratatui-usage-review.md
 OX-0006,2026-09-29 07:39,Cached rows are invalidated by hand at each mutation site,low,readability,unscheduled,reviews/2026-09-29-003-tui-readability-review.md
+OX-0007,2026-09-29 09:20,"""Agent message"" names two things",medium,naming,scheduled,reviews/2026-09-29-004-naming-review.md
+OX-0008,2026-09-29 09:20,The turn functions and types are named for the prompt,low,naming,unscheduled,reviews/2026-09-29-004-naming-review.md
+OX-0009,2026-09-29 09:20,"The client's ""resume"" uses the name of a different ACP method",low,naming,unscheduled,reviews/2026-09-29-004-naming-review.md
+OX-0010,2026-09-29 09:20,"Server strings, the model persona, and the bundled server's name say ""Ox""",low,naming,unscheduled,reviews/2026-09-29-004-naming-review.md
+OX-0011,2026-09-29 09:20,"The client says ""line"" and ""row"" for the same thing",low,naming,unscheduled,reviews/2026-09-29-004-naming-review.md
+OX-0012,2026-09-29 09:20,"The README calls saved sessions ""history"" and denies the resume command",low,naming,unscheduled,reviews/2026-09-29-004-naming-review.md

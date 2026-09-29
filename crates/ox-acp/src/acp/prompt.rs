@@ -1,6 +1,6 @@
-//! Runs one ACP prompt request. It saves the user message or skill invocation,
-//! makes model requests, runs tools in call order, saves each complete
-//! assistant batch, and returns an outcome carrying the answer when finished.
+//! Runs one turn for the main agent or a subagent. It saves the user message or
+//! skill invocation, makes model requests, runs tools in call order, saves each
+//! complete assistant batch, and returns the answer when the turn finishes.
 
 use std::{fmt, future::Future, io, ops::ControlFlow};
 
@@ -178,7 +178,7 @@ pub(crate) struct PromptInput {
     pub session_id: SessionId,
     /// The user message or skill invocation that starts the turn.
     pub turn_input: TurnInput,
-    /// The ACP selections the turn starts with, used for every model request
+    /// The session settings the turn starts with, used for every model request
     /// in the turn, including automatic compaction.
     pub selected_settings: SessionSettings,
     /// The complete system prompt captured when the session became active.
@@ -188,7 +188,8 @@ pub(crate) struct PromptInput {
     pub shell_processes: ShellProcesses,
 }
 
-/// A prompt run's outcome, carrying an answer only when it finishes.
+/// What a turn returns: the answer when it finishes, otherwise why it stopped
+/// early.
 #[derive(Debug, PartialEq)]
 pub enum PromptOutput {
     Finished(String),
@@ -228,7 +229,7 @@ pub(crate) fn error_text(error: &Error) -> String {
     }
 }
 
-/// Why this prompt run stopped. Each variant requires a different final response.
+/// Why this turn stopped. Each variant requires a different final response.
 enum PromptOutcome {
     Finished(String),
     Cancelled,
@@ -517,8 +518,8 @@ impl AgentTurn {
         Ok(compacted)
     }
 
-    /// Saves the subagent messages published since the last request
-    /// boundary, after they pass input admission, and presents them. Returns
+    /// Saves the subagent messages published since the last model request,
+    /// after they fit the model's context limit, and presents them. Returns
     /// whether there were any; a subagent has none.
     fn deliver_agent_messages(&mut self) -> std::result::Result<bool, PromptOutcome> {
         let Some(subagents) = &self.tools.subagents else {
