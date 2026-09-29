@@ -32,7 +32,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::acp::{self, Session};
 use input::Input;
-use transcript::TranscriptView;
+use transcript::{ToolOutput, TranscriptView};
 
 pub fn escape(text: &str) -> String {
     text.chars()
@@ -147,7 +147,7 @@ struct Ui {
     input: Input,
     selected: usize,
     show_thinking: bool,
-    show_output: bool,
+    tool_output: ToolOutput,
     layout: Layout,
     picker: Option<Picker>,
     resume_after_turn: bool,
@@ -287,7 +287,7 @@ pub struct Screen<'a> {
     pub settings: &'a str,
     pub usage: &'a str,
     pub show_thinking: bool,
-    pub show_output: bool,
+    pub tool_output: ToolOutput,
     pub now: Instant,
 }
 
@@ -371,7 +371,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
     let view_height = usize::from(view.height);
     let lines = screen
         .view
-        .lines(width, screen.show_thinking, screen.show_output, screen.now);
+        .lines(width, screen.show_thinking, screen.tool_output, screen.now);
     let first = screen.view.first_row(view_height, lines.len());
     for (y, line) in lines.iter().skip(first).take(view_height).enumerate() {
         put(buf, view, y, line);
@@ -390,7 +390,8 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
         put(buf, composer, y, &Line::raw(line.as_str()));
     }
     let status = justified(screen.settings, screen.usage, width);
-    put(buf, composer, input.lines.len() + 1, &Line::raw(status));
+    let status = Line::styled(status, Style::new().fg(theme::GRAY));
+    put(buf, composer, input.lines.len() + 1, &status);
     let (row, column) = input.cursor;
     cursor(frame, composer, column, row);
     Layout {
@@ -696,7 +697,7 @@ async fn key(
             return Ok(true);
         }
         KeyCode::Char('t') if control => ui.show_thinking = !ui.show_thinking,
-        KeyCode::Char('o') if control => ui.show_output = !ui.show_output,
+        KeyCode::Char('o') if control => ui.tool_output = ui.tool_output.next(),
         KeyCode::Char('u') if control => ui.input.clear(),
         KeyCode::Char(c)
             if !key
@@ -943,7 +944,7 @@ pub async fn run(
             settings: &settings,
             usage: &usage,
             show_thinking: ui.show_thinking,
-            show_output: ui.show_output,
+            tool_output: ui.tool_output,
             now: Instant::now(),
         };
         let mut layout = Layout::default();
@@ -1055,7 +1056,7 @@ mod tests {
             settings: "",
             usage: "0% • $0.00",
             show_thinking: false,
-            show_output: false,
+            tool_output: ToolOutput::Summary,
             now,
         }
     }
@@ -1252,11 +1253,12 @@ mod tests {
             usage: "15% • $0.25",
             ..screen(&view, &input, Instant::now())
         };
-        let (rows, cursor, _, _) = render(&screen, 40, 7);
+        let (rows, cursor, _, buffer) = render(&screen, 40, 7);
         assert_eq!(
             rows[5],
             format!("  {:<25}15% • $0.25", "ask • deepseek • high")
         );
+        assert_eq!(buffer.cell((2, 5)).unwrap().fg, theme::GRAY);
         assert_eq!(rows[6], "");
         assert_eq!(rows[3], "  ❯");
         assert_eq!(cursor, (4, 3));
@@ -1521,14 +1523,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn control_t_and_control_o_toggle_thinking_and_tool_output() {
+    async fn control_t_toggles_thinking_and_control_o_cycles_tool_output() {
         with_session(async |mut session, _events| {
             let mut ui = Ui::default();
             let now = Instant::now();
             for (c, expected) in [
-                ('o', (false, true)),
-                ('t', (true, true)),
-                ('o', (true, false)),
+                ('o', (false, ToolOutput::Truncated)),
+                ('t', (true, ToolOutput::Truncated)),
+                ('o', (true, ToolOutput::Full)),
+                ('o', (true, ToolOutput::Summary)),
             ] {
                 key(
                     &mut ui,
@@ -1537,7 +1540,7 @@ mod tests {
                     now,
                 )
                 .await?;
-                assert_eq!((ui.show_thinking, ui.show_output), expected, "Ctrl+{c}");
+                assert_eq!((ui.show_thinking, ui.tool_output), expected, "Ctrl+{c}");
             }
             assert!(ui.input.is_empty());
             Ok(())

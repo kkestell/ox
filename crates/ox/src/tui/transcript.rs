@@ -14,6 +14,28 @@ use super::theme;
 /// Seconds before the thinking placeholder starts counting.
 const COUNT_AFTER: u64 = 10;
 
+/// The content rows a truncated call shows.
+const TRUNCATED_ROWS: usize = 5;
+
+/// How much of a named call's content the transcript shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ToolOutput {
+    #[default]
+    Summary,
+    Truncated,
+    Full,
+}
+
+impl ToolOutput {
+    pub fn next(self) -> Self {
+        match self {
+            ToolOutput::Summary => ToolOutput::Truncated,
+            ToolOutput::Truncated => ToolOutput::Full,
+            ToolOutput::Full => ToolOutput::Summary,
+        }
+    }
+}
+
 pub enum Item {
     User(String),
     Thinking {
@@ -189,12 +211,12 @@ impl TranscriptView {
         &self,
         width: usize,
         show_thinking: bool,
-        show_output: bool,
+        output: ToolOutput,
         now: Instant,
     ) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         for item in &self.items {
-            let item_lines = item_lines(item, width, show_thinking, show_output, now);
+            let item_lines = item_lines(item, width, show_thinking, output, now);
             if item_lines.is_empty() {
                 continue;
             }
@@ -215,13 +237,14 @@ fn gray() -> Style {
     Style::new().fg(theme::DIM)
 }
 
-/// An item's rows. A named call shows its content only while `show_output`
-/// is on; a nameless call, such as a subagent's answer, always shows it.
+/// An item's rows. A named call shows as much of its content as `output`
+/// allows; a nameless call, such as a subagent's answer, always shows all of
+/// it.
 fn item_lines(
     item: &Item,
     width: usize,
     show_thinking: bool,
-    show_output: bool,
+    output: ToolOutput,
     now: Instant,
 ) -> Vec<Line<'static>> {
     match item {
@@ -243,9 +266,22 @@ fn item_lines(
             let mut lines = vec![
                 shell_line(call, width).unwrap_or_else(|| tool_line(call, &call.title, width)),
             ];
-            if show_output || call.name.is_none() {
-                lines.extend(content_lines(call, width, "  └ ", "    ", gray()));
-            }
+            lines.extend(match output {
+                _ if call.name.is_none() => content_lines(call, width, "  └ ", "    ", gray()),
+                ToolOutput::Summary => Vec::new(),
+                ToolOutput::Truncated => {
+                    let mut rows = content_rows(call, width.saturating_sub(4), gray());
+                    // Hiding a single row would not save a row.
+                    if rows.len() > TRUNCATED_ROWS + 1 {
+                        let hidden = rows.len() - TRUNCATED_ROWS;
+                        rows.drain(..hidden);
+                        let count = format!("...{hidden} more lines");
+                        rows.insert(0, Line::styled(count, Style::new().fg(theme::FAINT)));
+                    }
+                    prefixed(rows, width, "  └ ", "    ")
+                }
+                ToolOutput::Full => content_lines(call, width, "  └ ", "    ", gray()),
+            });
             lines
         }
         Item::Notice { text, color } => wrap(plain(text, Style::new().fg(*color)), width),
@@ -276,10 +312,8 @@ pub fn described_lines(call: &ToolCall, width: usize, style: Style) -> Vec<Line<
     lines
 }
 
-/// A call's content rows: `first` before the first row and `rest`, of the
-/// same width, before the others. Text blocks wrap, as Markdown when the call
-/// is nameless, such as a subagent's answer; diff blocks are unified hunks,
-/// clipped so their indentation survives.
+/// A call's content rows with `first` before the first row and `rest`, of the
+/// same width, before the others.
 pub fn content_lines(
     call: &ToolCall,
     width: usize,
@@ -287,6 +321,14 @@ pub fn content_lines(
     rest: &str,
     style: Style,
 ) -> Vec<Line<'static>> {
+    let rows = content_rows(call, width.saturating_sub(first.width()), style);
+    prefixed(rows, width, first, rest)
+}
+
+/// A call's content rows `width` columns wide. Text blocks wrap, as Markdown
+/// when the call is nameless, such as a subagent's answer; diff blocks are
+/// unified hunks, clipped so their indentation survives.
+fn content_rows(call: &ToolCall, width: usize, style: Style) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for block in &call.content {
         match block {
@@ -299,14 +341,14 @@ pub fn content_lines(
                 });
             }
             ToolCallContent::Diff(diff) => lines.extend(
-                diff_rows(diff, width.saturating_sub(first.width()), style)
+                diff_rows(diff, width, style)
                     .into_iter()
                     .map(|(row, style)| Line::styled(row, style)),
             ),
             _ => lines.push(Line::styled("[non-text content]", style)),
         }
     }
-    prefixed(lines, width, first, rest)
+    wrap(lines, width)
 }
 
 /// The unified hunks of a diff with three rows of context. Hunk headers are
@@ -644,7 +686,7 @@ mod tests {
 
     /// The rows with tool output hidden.
     fn rows(view: &TranscriptView, width: usize, show: bool, now: Instant) -> Vec<String> {
-        text(&view.lines(width, show, false, now))
+        text(&view.lines(width, show, ToolOutput::Summary, now))
     }
 
     fn text(lines: &[Line]) -> Vec<String> {
@@ -807,7 +849,8 @@ mod tests {
                 "{case}"
             );
         }
-        let lines = view(vec![message("**bold** `code`")], now).lines(40, false, false, now);
+        let lines =
+            view(vec![message("**bold** `code`")], now).lines(40, false, ToolOutput::Summary, now);
         let spans: Vec<_> = lines[0]
             .spans
             .iter()
@@ -822,7 +865,8 @@ mod tests {
                 ("code", Style::new().fg(theme::LIGHT_YELLOW)),
             ]
         );
-        let dim = view(vec![thought("**bold** `code`")], now).lines(40, true, false, now);
+        let dim =
+            view(vec![thought("**bold** `code`")], now).lines(40, true, ToolOutput::Summary, now);
         for span in &dim[0].spans[1..] {
             assert_eq!(span.style.fg, Some(theme::DIM), "{:?}", span.content);
         }
@@ -837,7 +881,7 @@ mod tests {
             now,
         );
         assert_eq!(
-            text(&view.lines(40, false, true, now)),
+            text(&view.lines(40, false, ToolOutput::Full, now)),
             [
                 "● Read a.md",
                 "  └ # not a heading",
@@ -927,7 +971,7 @@ mod tests {
         assert_eq!(rows(&view, 40, false, at(60)), ["● Thought for 42s"]);
         assert_eq!(rows(&view, 40, true, at(60)), ["● weighing it"]);
         for show in [false, true] {
-            let line = &view.lines(40, show, false, at(60))[0];
+            let line = &view.lines(40, show, ToolOutput::Summary, at(60))[0];
             assert_eq!(color(line), Some(theme::DIM), "{show}");
         }
         let empty = self::view(vec![thought("  ")], start);
@@ -996,7 +1040,7 @@ mod tests {
         let mut view = view(vec![answer("a", "Fixed.")], now);
         view.notice("Turn error: bad".to_owned(), theme::RED, now);
         view.notice("stderr line".to_owned(), theme::DIM, now);
-        let lines = view.lines(40, false, false, now);
+        let lines = view.lines(40, false, ToolOutput::Summary, now);
         assert_eq!(
             rows(&view, 40, false, now)[2..],
             ["", "Turn error: bad", "", "stderr line"]
@@ -1020,7 +1064,7 @@ mod tests {
             ]);
         let view = view(vec![SessionUpdate::ToolCall(call)], now);
         assert_eq!(rows(&view, 32, false, now), ["● Apply patch to a.rs"]);
-        let lines = view.lines(32, false, true, now);
+        let lines = view.lines(32, false, ToolOutput::Full, now);
         assert_eq!(
             text(&lines),
             [
@@ -1056,7 +1100,7 @@ mod tests {
             ))]);
         let view = self::view(vec![SessionUpdate::ToolCall(added)], now);
         assert_eq!(
-            text(&view.lines(40, false, true, now)),
+            text(&view.lines(40, false, ToolOutput::Full, now)),
             [
                 "● Apply patch to b",
                 "  └ @@ -0,0 +1,2 @@",
@@ -1065,6 +1109,55 @@ mod tests {
             ],
             "a new file diffs against nothing and tabs are expanded"
         );
+    }
+
+    #[test]
+    fn truncated_output_shows_the_hidden_row_count_and_the_last_five_rows() {
+        let now = Instant::now();
+        for (lines, expected) in [
+            (
+                52,
+                vec![
+                    "● Read a.txt",
+                    "  └ ...47 more lines",
+                    "    line 48",
+                    "    line 49",
+                    "    line 50",
+                    "    line 51",
+                    "    line 52",
+                ],
+            ),
+            (
+                6,
+                vec![
+                    "● Read a.txt",
+                    "  └ line 1",
+                    "    line 2",
+                    "    line 3",
+                    "    line 4",
+                    "    line 5",
+                    "    line 6",
+                ],
+            ),
+        ] {
+            let text: Vec<_> = (1..=lines).map(|n| format!("line {n}")).collect();
+            let call = ToolCall::new("r", "Read a.txt")
+                .name("read_file".to_owned())
+                .status(ToolCallStatus::Completed)
+                .content(vec![ToolCallContent::from(ContentBlock::from(
+                    text.join("\n"),
+                ))]);
+            let view = view(vec![SessionUpdate::ToolCall(call)], now);
+            let rows = view.lines(40, false, ToolOutput::Truncated, now);
+            assert_eq!(self::text(&rows), expected, "{lines} lines");
+            let colors: Vec<_> = rows[1..].iter().map(|row| row.spans[1].style.fg).collect();
+            let first = if lines > 6 { theme::FAINT } else { theme::DIM };
+            assert_eq!(colors[0], Some(first), "{lines} lines");
+            assert!(
+                colors[1..].iter().all(|&c| c == Some(theme::DIM)),
+                "{lines} lines"
+            );
+        }
     }
 
     #[test]
@@ -1106,7 +1199,9 @@ mod tests {
         );
         assert_eq!(rows(&failed, 40, false, now), ["● Shell rm -rf x"]);
         assert_eq!(
-            failed.lines(40, false, false, now)[0].spans[0].style.fg,
+            failed.lines(40, false, ToolOutput::Summary, now)[0].spans[0]
+                .style
+                .fg,
             Some(theme::RED)
         );
     }
@@ -1124,7 +1219,7 @@ mod tests {
                 .name("read_file".to_owned())
                 .status(status);
             let view = view(vec![SessionUpdate::ToolCall(call)], now);
-            let line = &view.lines(40, false, false, now)[0];
+            let line = &view.lines(40, false, ToolOutput::Summary, now)[0];
             assert_eq!(line.spans[0].content, "●");
             assert_eq!(line.spans[0].style.fg, color, "{status:?}");
         }

@@ -381,7 +381,7 @@ fn the_transcript_view_renders_thinking_tools_and_wrapped_replies() {
         styled.contains("\x1b[38;2;152;195;121m    +two"),
         "{styled}"
     );
-    test.keys(&["C-o"]);
+    test.keys(&["C-o", "C-o"]);
     test.wait_gone("Lines 1–2 of 2");
 }
 

@@ -96,7 +96,7 @@ pub(super) async fn execute(
         text.push_str(&format!(
             "More content remains. Continue with offset={next}.\n"
         ));
-        format!("Lines {}–{last}, more remains", args.offset)
+        format!("Lines {}–{last}", args.offset)
     } else {
         format!("Lines {}–{last} of {last}", args.offset)
     };
@@ -267,7 +267,7 @@ mod tests {
             read_with_content(&workspace, 1, 2).await.unwrap(),
             (
                 "1: one\n2: 雪\nMore content remains. Continue with offset=3.\n".to_owned(),
-                vec![ToolContent::Text("Lines 1–2, more remains".to_owned())]
+                vec![ToolContent::Text("Lines 1–2".to_owned())]
             )
         );
         assert_eq!(
