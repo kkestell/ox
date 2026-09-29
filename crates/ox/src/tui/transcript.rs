@@ -51,9 +51,21 @@ pub enum Item {
     },
 }
 
+struct CachedItem {
+    item: Item,
+    rows: Option<Vec<Line<'static>>>,
+}
+
+impl CachedItem {
+    fn new(item: Item) -> Self {
+        Self { item, rows: None }
+    }
+}
+
 #[derive(Default)]
 pub struct TranscriptView {
-    items: Vec<Item>,
+    items: Vec<CachedItem>,
+    cache_key: Option<(usize, bool, ToolOutput)>,
     tools: HashMap<ToolCallId, usize>,
     /// Whether the last update was a user message chunk.
     user_chunk_open: bool,
@@ -67,14 +79,15 @@ impl TranscriptView {
         self.user_chunk_open = false;
         self.end_thinking(now);
         self.tools.clear();
-        self.items.push(Item::User(text));
+        self.items.push(CachedItem::new(Item::User(text)));
         self.changed();
     }
 
     pub fn notice(&mut self, text: String, color: Color, now: Instant) {
         self.user_chunk_open = false;
         self.end_thinking(now);
-        self.items.push(Item::Notice { text, color });
+        self.items
+            .push(CachedItem::new(Item::Notice { text, color }));
         self.changed();
     }
 
@@ -92,44 +105,63 @@ impl TranscriptView {
                 self.end_thinking(now);
                 let text = content(&chunk.content);
                 match self.items.last_mut() {
-                    Some(Item::User(open)) if continue_user => open.push_str(&text),
+                    Some(CachedItem {
+                        item: Item::User(open),
+                        rows,
+                    }) if continue_user => {
+                        open.push_str(&text);
+                        *rows = None;
+                    }
                     _ => {
                         self.tools.clear();
-                        self.items.push(Item::User(text));
+                        self.items.push(CachedItem::new(Item::User(text)));
                     }
                 }
             }
             SessionUpdate::AgentThoughtChunk(chunk) => {
                 let text = content(&chunk.content);
                 match self.items.last_mut() {
-                    Some(Item::Thinking {
-                        text: open,
-                        ended: None,
-                        ..
-                    }) => open.push_str(&text),
-                    _ => self.items.push(Item::Thinking {
+                    Some(CachedItem {
+                        item:
+                            Item::Thinking {
+                                text: open,
+                                ended: None,
+                                ..
+                            },
+                        rows,
+                    }) => {
+                        open.push_str(&text);
+                        *rows = None;
+                    }
+                    _ => self.items.push(CachedItem::new(Item::Thinking {
                         text,
                         started: now,
                         ended: None,
-                    }),
+                    })),
                 }
             }
             SessionUpdate::AgentMessageChunk(chunk) => {
                 self.end_thinking(now);
                 let text = content(&chunk.content);
                 match self.items.last_mut() {
-                    Some(Item::Response(open)) => open.push_str(&text),
-                    _ => self.items.push(Item::Response(text)),
+                    Some(CachedItem {
+                        item: Item::Response(open),
+                        rows,
+                    }) => {
+                        open.push_str(&text);
+                        *rows = None;
+                    }
+                    _ => self.items.push(CachedItem::new(Item::Response(text))),
                 }
             }
             SessionUpdate::ToolCall(call) => {
                 self.end_thinking(now);
                 match self.tools.get(&call.tool_call_id) {
-                    Some(&index) => self.items[index] = Item::Tool(Box::new(call)),
+                    Some(&index) => self.items[index] = CachedItem::new(Item::Tool(Box::new(call))),
                     None => {
                         self.tools
                             .insert(call.tool_call_id.clone(), self.items.len());
-                        self.items.push(Item::Tool(Box::new(call)));
+                        self.items.push(CachedItem::new(Item::Tool(Box::new(call))));
                     }
                 }
             }
@@ -137,14 +169,20 @@ impl TranscriptView {
                 self.end_thinking(now);
                 match self.tools.get(&update.tool_call_id) {
                     Some(&index) => match &mut self.items[index] {
-                        Item::Tool(call) => call.update(update.fields),
+                        CachedItem {
+                            item: Item::Tool(call),
+                            rows,
+                        } => {
+                            call.update(update.fields);
+                            *rows = None;
+                        }
                         _ => unreachable!("tool indexes point at tool items"),
                     },
                     None => {
                         let mut call = ToolCall::new(update.tool_call_id.clone(), "");
                         call.update(update.fields);
                         self.tools.insert(update.tool_call_id, self.items.len());
-                        self.items.push(Item::Tool(Box::new(call)));
+                        self.items.push(CachedItem::new(Item::Tool(Box::new(call))));
                     }
                 }
             }
@@ -157,17 +195,21 @@ impl TranscriptView {
     }
 
     pub fn tool(&self, id: &ToolCallId) -> Option<&ToolCall> {
-        match self.tools.get(id).map(|&index| &self.items[index]) {
+        match self.tools.get(id).map(|&index| &self.items[index].item) {
             Some(Item::Tool(call)) => Some(call.as_ref()),
             _ => None,
         }
     }
 
     fn end_thinking(&mut self, now: Instant) {
-        if let Some(Item::Thinking { ended, .. }) = self.items.last_mut()
+        if let Some(CachedItem {
+            item: Item::Thinking { ended, .. },
+            rows,
+        }) = self.items.last_mut()
             && ended.is_none()
         {
             *ended = Some(now);
+            *rows = None;
         }
     }
 
@@ -211,26 +253,77 @@ impl TranscriptView {
         }
     }
 
-    /// The rows of every item, one blank row between items.
-    pub fn lines(
-        &self,
+    /// The total row count and the visible rows, with one blank row between items.
+    pub fn visible_rows(
+        &mut self,
+        width: usize,
+        show_thinking: bool,
+        output: ToolOutput,
+        now: Instant,
+        height: usize,
+    ) -> (usize, Vec<Line<'static>>) {
+        let key = (width, show_thinking, output);
+        if self.cache_key != Some(key) {
+            for item in &mut self.items {
+                item.rows = None;
+            }
+            self.cache_key = Some(key);
+        }
+        let mut total = 0;
+        for cached in &mut self.items {
+            let active_placeholder = matches!(
+                &cached.item,
+                Item::Thinking {
+                    text,
+                    ended: None,
+                    ..
+                } if !show_thinking || text.trim().is_empty()
+            );
+            if cached.rows.is_none() || active_placeholder {
+                cached.rows = Some(item_lines(&cached.item, width, show_thinking, output, now));
+            }
+            let count = cached.rows.as_ref().unwrap().len();
+            if count == 0 {
+                continue;
+            }
+            if total > 0 {
+                total += 1;
+            }
+            total += count;
+        }
+        let first = self.first_row(height, total);
+        let end = first.saturating_add(height);
+        let mut row = 0;
+        let mut visible = Vec::new();
+        for cached in &self.items {
+            let lines = cached.rows.as_ref().unwrap();
+            if lines.is_empty() {
+                continue;
+            }
+            if row > 0 {
+                if (first..end).contains(&row) {
+                    visible.push(Line::default());
+                }
+                row += 1;
+            }
+            let from = first.saturating_sub(row).min(lines.len());
+            let to = end.saturating_sub(row).min(lines.len());
+            visible.extend_from_slice(&lines[from..to]);
+            row += lines.len();
+        }
+        (total, visible)
+    }
+
+    #[cfg(test)]
+    fn lines(
+        &mut self,
         width: usize,
         show_thinking: bool,
         output: ToolOutput,
         now: Instant,
     ) -> Vec<Line<'static>> {
-        let mut lines = Vec::new();
-        for item in &self.items {
-            let item_lines = item_lines(item, width, show_thinking, output, now);
-            if item_lines.is_empty() {
-                continue;
-            }
-            if !lines.is_empty() {
-                lines.push(Line::default());
-            }
-            lines.extend(item_lines);
-        }
-        lines
+        self.visible_rows(width, show_thinking, output, now, usize::MAX)
+            .1
     }
 }
 
@@ -558,31 +651,36 @@ pub fn wrap(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
 fn wrap_line(line: &Line<'static>, width: usize) -> Vec<Line<'static>> {
     let hang = hanging(line);
     let hang_width = hang.iter().map(Span::width).sum::<usize>().min(width - 1);
-    // Every character with its style, tabs expanded, trailing blanks dropped.
-    let mut chars: Vec<(char, Style)> = Vec::new();
+    // Every styled cluster stays intact; tabs expand and trailing blanks drop.
+    let mut clusters: Vec<(String, Style)> = Vec::new();
     let mut column = 0;
     for span in &line.spans {
         let style = line.style.patch(span.style);
-        for c in span.content.chars() {
-            if c == '\t' {
+        for (index, segment) in span.content.split('\t').enumerate() {
+            if index > 0 {
                 let spaces = 8 - column % 8;
-                chars.extend(std::iter::repeat_n((' ', style), spaces));
+                clusters.extend(std::iter::repeat_n((" ".to_owned(), style), spaces));
                 column += spaces;
-            } else {
-                chars.push((c, style));
-                column += c.width().unwrap_or(0);
+            }
+            let segment = Span::styled(segment, span.style);
+            for cluster in segment.styled_graphemes(line.style) {
+                clusters.push((cluster.symbol.to_owned(), cluster.style));
+                column += cluster.symbol.width();
             }
         }
     }
-    while chars.last().is_some_and(|(c, _)| c.is_whitespace()) {
-        chars.pop();
+    while clusters
+        .last()
+        .is_some_and(|(cluster, _)| cluster.chars().all(char::is_whitespace))
+    {
+        clusters.pop();
     }
-    let text_width = |chars: &[(char, Style)]| -> usize {
-        chars.iter().map(|(c, _)| c.width().unwrap_or(0)).sum()
+    let text_width = |clusters: &[(String, Style)]| -> usize {
+        clusters.iter().map(|(cluster, _)| cluster.width()).sum()
     };
-    let mut rows: Vec<Vec<(char, Style)>> = vec![Vec::new()];
+    let mut rows: Vec<Vec<(String, Style)>> = vec![Vec::new()];
     let mut column = 0;
-    let mut rest = &chars[..];
+    let mut rest = &clusters[..];
     while !rest.is_empty() {
         let row_width = if rows.len() == 1 {
             width
@@ -591,11 +689,11 @@ fn wrap_line(line: &Line<'static>, width: usize) -> Vec<Line<'static>> {
         };
         let space_end = rest
             .iter()
-            .position(|(c, _)| !c.is_whitespace())
+            .position(|(cluster, _)| !cluster.chars().all(char::is_whitespace))
             .unwrap_or(rest.len());
         let word_end = rest[space_end..]
             .iter()
-            .position(|(c, _)| c.is_whitespace())
+            .position(|(cluster, _)| cluster.chars().all(char::is_whitespace))
             .map_or(rest.len(), |end| space_end + end);
         let (mut space, word) = (&rest[..space_end], &rest[space_end..word_end]);
         if column > 0 && column + text_width(space) + text_width(word) > row_width {
@@ -603,19 +701,19 @@ fn wrap_line(line: &Line<'static>, width: usize) -> Vec<Line<'static>> {
             column = 0;
             space = &[];
         }
-        for &(c, style) in space.iter().chain(word) {
+        for (cluster, style) in space.iter().chain(word) {
             let row_width = if rows.len() == 1 {
                 width
             } else {
                 width - hang_width
             };
-            let c_width = c.width().unwrap_or(0);
-            if column + c_width > row_width && column > 0 {
+            let cluster_width = cluster.width();
+            if column + cluster_width > row_width && column > 0 {
                 rows.push(Vec::new());
                 column = 0;
             }
-            rows.last_mut().unwrap().push((c, style));
-            column += c_width;
+            rows.last_mut().unwrap().push((cluster.clone(), *style));
+            column += cluster_width;
         }
         rest = &rest[word_end..];
     }
@@ -623,10 +721,10 @@ fn wrap_line(line: &Line<'static>, width: usize) -> Vec<Line<'static>> {
         .enumerate()
         .map(|(index, row)| {
             let mut spans: Vec<Span<'static>> = Vec::new();
-            for (c, style) in row {
+            for (cluster, style) in row {
                 match spans.last_mut() {
-                    Some(last) if last.style == style => last.content.to_mut().push(c),
-                    _ => spans.push(Span::styled(c.to_string(), style)),
+                    Some(last) if last.style == style => last.content.to_mut().push_str(&cluster),
+                    _ => spans.push(Span::styled(cluster, style)),
                 }
             }
             if index > 0 {
@@ -690,7 +788,7 @@ mod tests {
     use super::*;
 
     /// The rows with tool output hidden.
-    fn rows(view: &TranscriptView, width: usize, show: bool, now: Instant) -> Vec<String> {
+    fn rows(view: &mut TranscriptView, width: usize, show: bool, now: Instant) -> Vec<String> {
         text(&view.lines(width, show, ToolOutput::Summary, now))
     }
 
@@ -779,6 +877,18 @@ mod tests {
                 vec!["界界", "界界界", "界界界", "界"],
             ),
             (
+                "joined emoji at boundary",
+                "abcde👨‍👩‍👧‍👦",
+                6,
+                vec!["abcde", "👨‍👩‍👧‍👦"],
+            ),
+            (
+                "combining mark at boundary",
+                "abcde e\u{301}",
+                6,
+                vec!["abcde", "e\u{301}"],
+            ),
+            (
                 "escaped control characters",
                 "a\rb \x1b",
                 20,
@@ -795,12 +905,12 @@ mod tests {
         let mut user = TranscriptView::default();
         user.user(text.to_owned(), now);
         assert_eq!(
-            rows(&user, 12, false, now),
+            rows(&mut user, 12, false, now),
             ["❯ first line", "  of text", "  second"]
         );
-        let response = view(vec![message(text)], now);
+        let mut response = view(vec![message(text)], now);
         assert_eq!(
-            rows(&response, 12, false, now),
+            rows(&mut response, 12, false, now),
             ["● first line", "  of text", "  second"]
         );
     }
@@ -849,7 +959,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                rows(&view(vec![message(text)], now), width, false, now),
+                rows(&mut view(vec![message(text)], now), width, false, now),
                 expected,
                 "{case}"
             );
@@ -881,7 +991,7 @@ mod tests {
             .content(vec![ToolCallContent::from(ContentBlock::from(
                 "# not a heading",
             ))]);
-        let view = self::view(
+        let mut view = self::view(
             vec![SessionUpdate::ToolCall(output), answer("a", "# heading")],
             now,
         );
@@ -904,22 +1014,27 @@ mod tests {
         let at = |secs| start + Duration::from_secs(secs);
         let mut view = TranscriptView::default();
         view.update(thought("weigh"), at(0));
+        assert_eq!(rows(&mut view, 40, true, at(0)), ["● weigh"]);
         view.update(thought("ing"), at(1));
         view.update(message("one "), at(3));
+        assert_eq!(
+            rows(&mut view, 40, true, at(3)),
+            ["● weighing", "", "● one"]
+        );
         view.update(message("two"), at(3));
         view.update(thought("again"), at(4));
         assert_eq!(
-            rows(&view, 40, true, at(5)),
+            rows(&mut view, 40, true, at(5)),
             ["● weighing", "", "● one two", "", "● again"]
         );
         assert_eq!(
-            rows(&view, 40, false, at(5)),
+            rows(&mut view, 40, false, at(5)),
             ["● Thought for 3s", "", "● one two", "", "● Thinking..."]
         );
         view.end_turn(at(6));
         view.update(thought("next"), at(7));
         assert_eq!(
-            rows(&view, 40, false, at(8)),
+            rows(&mut view, 40, false, at(8)),
             [
                 "● Thought for 3s",
                 "",
@@ -936,7 +1051,7 @@ mod tests {
     fn replay_keeps_user_messages_and_separates_their_responses() {
         let now = Instant::now();
         let user = |text: &str| SessionUpdate::UserMessageChunk(ContentChunk::new(text.into()));
-        let view = view(
+        let mut view = view(
             vec![
                 user("title"),
                 SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new().title("saved")),
@@ -949,7 +1064,7 @@ mod tests {
             now,
         );
         assert_eq!(
-            rows(&view, 40, false, now),
+            rows(&mut view, 40, false, now),
             [
                 "❯ title",
                 "",
@@ -978,6 +1093,7 @@ mod tests {
             now,
         );
         view.update(read("same", "second.txt"), now);
+        assert_eq!(rows(&mut view, 40, false, now)[6], "● Read second.txt");
         view.update(
             SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
                 "same",
@@ -986,7 +1102,7 @@ mod tests {
             now,
         );
         assert_eq!(
-            rows(&view, 40, false, now),
+            rows(&mut view, 40, false, now),
             [
                 "❯ first",
                 "",
@@ -1004,7 +1120,7 @@ mod tests {
         view.end_turn(now);
         view.update(read("same", "third.txt"), now);
         assert_eq!(
-            rows(&view, 40, false, now).last().unwrap(),
+            rows(&mut view, 40, false, now).last().unwrap(),
             "● Read third.txt"
         );
     }
@@ -1014,18 +1130,69 @@ mod tests {
         let start = Instant::now();
         let at = |secs| start + Duration::from_secs(secs);
         let mut view = view(vec![thought("weighing it")], start);
-        assert_eq!(rows(&view, 40, false, at(3)), ["● Thinking..."]);
-        assert_eq!(rows(&view, 40, false, at(12)), ["● Thinking for 12s..."]);
-        assert_eq!(rows(&view, 40, true, at(12)), ["● weighing it"]);
+        assert_eq!(rows(&mut view, 40, false, at(3)), ["● Thinking..."]);
+        assert_eq!(rows(&mut view, 40, false, at(9)), ["● Thinking..."]);
+        assert_eq!(
+            rows(&mut view, 40, false, at(12)),
+            ["● Thinking for 12s..."]
+        );
+        assert_eq!(rows(&mut view, 40, true, at(12)), ["● weighing it"]);
         view.end_turn(at(42));
-        assert_eq!(rows(&view, 40, false, at(60)), ["● Thought for 42s"]);
-        assert_eq!(rows(&view, 40, true, at(60)), ["● weighing it"]);
+        assert_eq!(rows(&mut view, 40, false, at(60)), ["● Thought for 42s"]);
+        assert_eq!(rows(&mut view, 40, true, at(60)), ["● weighing it"]);
         for show in [false, true] {
             let line = &view.lines(40, show, ToolOutput::Summary, at(60))[0];
             assert_eq!(color(line), Some(theme::DIM), "{show}");
         }
-        let empty = self::view(vec![thought("  ")], start);
-        assert_eq!(rows(&empty, 40, true, at(3)), ["● Thinking..."]);
+        let mut empty = self::view(vec![thought("  ")], start);
+        assert_eq!(rows(&mut empty, 40, true, at(3)), ["● Thinking..."]);
+    }
+
+    #[test]
+    fn visible_rows_follow_updates_resize_and_display_settings() {
+        let now = Instant::now();
+        let call = ToolCall::new("a", "Read old.txt")
+            .name("read_file".to_owned())
+            .status(ToolCallStatus::Completed)
+            .content(vec![ToolCallContent::from(ContentBlock::from(
+                "alpha beta gamma",
+            ))]);
+        let mut view = view(vec![SessionUpdate::ToolCall(call), message("tail")], now);
+        let page = |view: &mut TranscriptView, width, output| {
+            let (total, rows) = view.visible_rows(width, false, output, now, 2);
+            (total, text(&rows))
+        };
+        assert_eq!(
+            page(&mut view, 40, ToolOutput::Summary),
+            (3, vec!["".into(), "● tail".into()])
+        );
+        view.update(message(" end"), now);
+        assert_eq!(
+            page(&mut view, 40, ToolOutput::Summary).1,
+            ["", "● tail end"]
+        );
+        view.update(
+            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                "a",
+                ToolCallUpdateFields::new().title("Read new.txt"),
+            )),
+            now,
+        );
+        assert_eq!(rows(&mut view, 40, false, now)[0], "● Read new.txt");
+        let (total, visible) = page(&mut view, 40, ToolOutput::Full);
+        assert_eq!((total, visible), (4, vec!["".into(), "● tail end".into()]));
+        assert_eq!(
+            text(&view.visible_rows(12, false, ToolOutput::Full, now, 20).1),
+            [
+                "● Read new.…",
+                "  └ alpha",
+                "    beta",
+                "    gamma",
+                "",
+                "● tail end"
+            ]
+        );
+        assert_eq!(page(&mut view, 40, ToolOutput::Summary).0, 3);
     }
 
     #[test]
@@ -1082,7 +1249,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                rows(&view(updates, now), width, false, now),
+                rows(&mut view(updates, now), width, false, now),
                 expected,
                 "{case}"
             );
@@ -1092,7 +1259,7 @@ mod tests {
         view.notice("stderr line".to_owned(), theme::DIM, now);
         let lines = view.lines(40, false, ToolOutput::Summary, now);
         assert_eq!(
-            rows(&view, 40, false, now)[2..],
+            rows(&mut view, 40, false, now)[2..],
             ["", "Turn error: bad", "", "stderr line"]
         );
         assert_eq!(color(&lines[1]), Some(theme::DIM));
@@ -1112,8 +1279,8 @@ mod tests {
                 ToolCallContent::from(ContentBlock::from("Modified a.rs")),
                 ToolCallContent::from(Diff::new("/w/a.rs", new).old_text(old.to_owned())),
             ]);
-        let view = view(vec![SessionUpdate::ToolCall(call)], now);
-        assert_eq!(rows(&view, 32, false, now), ["● Apply patch to a.rs"]);
+        let mut view = view(vec![SessionUpdate::ToolCall(call)], now);
+        assert_eq!(rows(&mut view, 32, false, now), ["● Apply patch to a.rs"]);
         let lines = view.lines(32, false, ToolOutput::Full, now);
         assert_eq!(
             text(&lines),
@@ -1148,7 +1315,7 @@ mod tests {
                 "/w/b",
                 "one\n\ttwo\n",
             ))]);
-        let view = self::view(vec![SessionUpdate::ToolCall(added)], now);
+        let mut view = self::view(vec![SessionUpdate::ToolCall(added)], now);
         assert_eq!(
             text(&view.lines(40, false, ToolOutput::Full, now)),
             [
@@ -1197,7 +1364,7 @@ mod tests {
                 .content(vec![ToolCallContent::from(ContentBlock::from(
                     text.join("\n"),
                 ))]);
-            let view = view(vec![SessionUpdate::ToolCall(call)], now);
+            let mut view = view(vec![SessionUpdate::ToolCall(call)], now);
             let rows = view.lines(40, false, ToolOutput::Truncated, now);
             assert_eq!(self::text(&rows), expected, "{lines} lines");
             let colors: Vec<_> = rows[1..].iter().map(|row| row.spans[1].style.fg).collect();
@@ -1213,9 +1380,9 @@ mod tests {
     #[test]
     fn shell_calls_render_as_one_clipped_row() {
         let now = Instant::now();
-        let pending = view(vec![shell("s", "ls", false, ToolCallStatus::Pending)], now);
-        assert_eq!(rows(&pending, 40, false, now), ["● Shell ls"]);
-        let running = view(
+        let mut pending = view(vec![shell("s", "ls", false, ToolCallStatus::Pending)], now);
+        assert_eq!(rows(&mut pending, 40, false, now), ["● Shell ls"]);
+        let mut running = view(
             vec![shell(
                 "s",
                 "rg -n \\\n  --glob '*.rs' \\\n  'TODO|FIXME' src\n",
@@ -1225,15 +1392,18 @@ mod tests {
             now,
         );
         assert_eq!(
-            rows(&running, 40, false, now),
+            rows(&mut running, 40, false, now),
             ["● Shell rg -n \\ --glob '*.rs' \\ 'TODO|F…"]
         );
-        let background = view(
+        let mut background = view(
             vec![shell("s", "npm run dev", true, ToolCallStatus::Completed)],
             now,
         );
-        assert_eq!(rows(&background, 40, false, now), ["● Shell npm run dev &"]);
-        let clipped = view(
+        assert_eq!(
+            rows(&mut background, 40, false, now),
+            ["● Shell npm run dev &"]
+        );
+        let mut clipped = view(
             vec![shell(
                 "s",
                 "echo abcdefghij",
@@ -1242,12 +1412,12 @@ mod tests {
             )],
             now,
         );
-        assert_eq!(rows(&clipped, 14, false, now), ["● Shell echo …"]);
-        let failed = view(
+        assert_eq!(rows(&mut clipped, 14, false, now), ["● Shell echo …"]);
+        let mut failed = view(
             vec![shell("s", "rm -rf x", false, ToolCallStatus::Failed)],
             now,
         );
-        assert_eq!(rows(&failed, 40, false, now), ["● Shell rm -rf x"]);
+        assert_eq!(rows(&mut failed, 40, false, now), ["● Shell rm -rf x"]);
         assert_eq!(
             failed.lines(40, false, ToolOutput::Summary, now)[0].spans[0]
                 .style
@@ -1268,7 +1438,7 @@ mod tests {
             let call = ToolCall::new("a", "Read a")
                 .name("read_file".to_owned())
                 .status(status);
-            let view = view(vec![SessionUpdate::ToolCall(call)], now);
+            let mut view = view(vec![SessionUpdate::ToolCall(call)], now);
             let line = &view.lines(40, false, ToolOutput::Summary, now)[0];
             assert_eq!(line.spans[0].content, "●");
             assert_eq!(line.spans[0].style.fg, color, "{status:?}");

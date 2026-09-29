@@ -2,5 +2,5 @@ id,created,title,severity,lens,status,review
 OX-0001,2026-09-28 13:56,Picker draws outside the shared margins,low,simplicity,unscheduled,reviews/2026-09-28-002-tui-layout-audit.md
 OX-0002,2026-09-28 19:17,Tall approval blocks hide choices and the composer,medium,correctness,fixed,reviews/2026-09-28-003-tui-review.md
 OX-0003,2026-09-29 05:40,A second prompt silently replaces a queued prompt,high,correctness,fixed,
-OX-0004,2026-09-29 06:56,Joined emoji split across display rows,medium,correctness,scheduled,reviews/2026-09-29-002-ratatui-usage-review.md
-OX-0005,2026-09-29 06:56,Every draw formats the entire transcript,medium,performance,scheduled,reviews/2026-09-29-002-ratatui-usage-review.md
+OX-0004,2026-09-29 06:56,Joined emoji split across display rows,medium,correctness,fixed,reviews/2026-09-29-002-ratatui-usage-review.md
+OX-0005,2026-09-29 06:56,Every draw formats the entire transcript,medium,performance,fixed,reviews/2026-09-29-002-ratatui-usage-review.md

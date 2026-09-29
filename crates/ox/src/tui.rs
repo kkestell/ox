@@ -340,7 +340,7 @@ pub struct Approval<'a> {
 }
 
 pub struct Screen<'a> {
-    pub view: &'a TranscriptView,
+    pub view: &'a mut TranscriptView,
     pub input: &'a Input,
     pub commands: &'a [String],
     pub approval: Option<Approval<'a>>,
@@ -384,7 +384,7 @@ fn justified(left: &str, right: &str, width: usize) -> String {
     format!("{left}{padding}{right}")
 }
 
-pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
+pub fn draw(frame: &mut Frame, screen: &mut Screen) -> Layout {
     let area = frame.area();
     let buf = frame.buffer_mut();
     // Unstyled cells would show the terminal's own colors.
@@ -435,11 +435,14 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
     buf.set_style(composer, Style::new().bg(theme::COMPOSER));
     let view = view.inner(MARGIN);
     let view_height = usize::from(view.height);
-    let lines = screen
-        .view
-        .lines(width, screen.show_thinking, screen.tool_output, screen.now);
-    let first = screen.view.first_row(view_height, lines.len());
-    for (y, line) in lines.iter().skip(first).take(view_height).enumerate() {
+    let (total, lines) = screen.view.visible_rows(
+        width,
+        screen.show_thinking,
+        screen.tool_output,
+        screen.now,
+        view_height,
+    );
+    for (y, line) in lines.iter().enumerate() {
         put(buf, view, y, line);
     }
     if screen.view.new_activity && view_height > 0 {
@@ -497,7 +500,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
     cursor(frame, composer, column, row);
     Layout {
         height: view_height,
-        lines: lines.len(),
+        lines: total,
         approval_height,
         approval_lines,
     }
@@ -1132,8 +1135,8 @@ pub async fn run(
         let settings = settings(&session.config_options);
         let usage = usage(session.usage.as_ref());
         let commands = commands(&session);
-        let screen = Screen {
-            view: &ui.view,
+        let mut screen = Screen {
+            view: &mut ui.view,
             input: &ui.input,
             commands: &commands,
             approval: session.pending.front().map(|(request, _)| Approval {
@@ -1149,7 +1152,9 @@ pub async fn run(
             now: Instant::now(),
         };
         let mut layout = Layout::default();
-        terminal.inner.draw(|frame| layout = draw(frame, &screen))?;
+        terminal
+            .inner
+            .draw(|frame| layout = draw(frame, &mut screen))?;
         ui.layout = layout;
         ui.approval_scroll = ui
             .approval_scroll
@@ -1211,7 +1216,7 @@ mod tests {
     /// Draws the screen and returns its rows, the cursor, the layout, and
     /// the buffer.
     fn render(
-        screen: &Screen,
+        screen: &mut Screen,
         width: u16,
         height: u16,
     ) -> (Vec<String>, (u16, u16), Layout, Buffer) {
@@ -1251,7 +1256,7 @@ mod tests {
         )
     }
 
-    fn screen<'a>(view: &'a TranscriptView, input: &'a Input, now: Instant) -> Screen<'a> {
+    fn screen<'a>(view: &'a mut TranscriptView, input: &'a Input, now: Instant) -> Screen<'a> {
         Screen {
             view,
             input,
@@ -1306,16 +1311,16 @@ mod tests {
             "shell",
             "Working directory: /workspace\n\nCommand:\n\n    cargo test",
         );
-        let screen = Screen {
+        let mut screen = Screen {
             approval: Some(Approval {
                 request: &request,
                 selected: 0,
             }),
             settings: "ask • deepseek/deepseek-v4-flash • high",
             usage: "5% • $0.01",
-            ..screen(&view, &input, now)
+            ..screen(&mut view, &input, now)
         };
-        let (rows, cursor, layout, buffer) = render(&screen, 72, 27);
+        let (rows, cursor, layout, buffer) = render(&mut screen, 72, 27);
         assert_eq!(
             rows,
             [
@@ -1376,19 +1381,19 @@ mod tests {
             let mut ui = Ui::default();
             ui.input.paste("draft");
             let now = Instant::now();
-            let show = |ui: &Ui, session: &Session| {
+            let show = |ui: &mut Ui, session: &Session| {
                 let request = &session.pending.front().unwrap().0;
-                let display = Screen {
+                let mut display = Screen {
                     approval: Some(Approval {
                         request,
                         selected: ui.selected,
                     }),
                     approval_scroll: ui.approval_scroll,
-                    ..screen(&ui.view, &ui.input, now)
+                    ..screen(&mut ui.view, &ui.input, now)
                 };
-                render(&display, 80, 24)
+                render(&mut display, 80, 24)
             };
-            let (rows, cursor, layout, _) = show(&ui, &session);
+            let (rows, cursor, layout, _) = show(&mut ui, &session);
             ui.layout = layout;
             assert!(rows.iter().any(|row| row.contains("detail 00")), "{rows:?}");
             assert!(rows.iter().any(|row| row.contains("Page Down for more")));
@@ -1397,13 +1402,13 @@ mod tests {
             assert!(cursor.1 < 24);
             press(&mut ui, &mut session, KeyCode::PageDown, now).await?;
             press(&mut ui, &mut session, KeyCode::PageDown, now).await?;
-            let (rows, _, _, _) = show(&ui, &session);
+            let (rows, _, _, _) = show(&mut ui, &session);
             assert!(rows.iter().any(|row| row.contains("detail 23")), "{rows:?}");
             assert!(rows.iter().any(|row| row.contains("Page Up for earlier")));
             assert!(rows.iter().any(|row| row.contains("› 1. Yes")));
             press(&mut ui, &mut session, KeyCode::PageUp, now).await?;
             press(&mut ui, &mut session, KeyCode::PageUp, now).await?;
-            let (rows, _, _, _) = show(&ui, &session);
+            let (rows, _, _, _) = show(&mut ui, &session);
             assert!(rows.iter().any(|row| row.contains("detail 00")));
             Ok(())
         })
@@ -1448,14 +1453,14 @@ mod tests {
             view.user(format!("message {index}"), now);
         }
         let input = Input::default();
-        let (rows, _, layout, _) = render(&screen(&view, &input, now), 40, 13);
+        let (rows, _, layout, _) = render(&mut screen(&mut view, &input, now), 40, 13);
         assert_eq!((layout.height, layout.lines), (6, 39));
         assert_eq!(rows[6], "  ❯ message 19");
         view.page_up(layout.height, layout.lines);
-        let (rows, _, _, _) = render(&screen(&view, &input, now), 40, 13);
+        let (rows, _, _, _) = render(&mut screen(&mut view, &input, now), 40, 13);
         assert_eq!(rows[5..8], ["  ❯ message 16", "", ""]);
         view.user("message 20".to_owned(), now);
-        let (rows, _, _, buffer) = render(&screen(&view, &input, now), 40, 13);
+        let (rows, _, _, buffer) = render(&mut screen(&mut view, &input, now), 40, 13);
         assert_eq!(
             rows[..6],
             [
@@ -1470,21 +1475,38 @@ mod tests {
         assert_eq!(rows[6], "              new activity");
         assert_eq!(buffer.cell((14, 6)).unwrap().fg, theme::LIGHT_YELLOW);
         view.end();
-        let (rows, _, _, _) = render(&screen(&view, &input, now), 40, 13);
+        let (rows, _, _, _) = render(&mut screen(&mut view, &input, now), 40, 13);
         assert_eq!(rows[6], "  ❯ message 20");
     }
 
     #[test]
+    fn the_transcript_keeps_graphemes_at_row_boundaries() {
+        let now = Instant::now();
+        let input = Input::default();
+        for (message, expected) in [("abcde👨‍👩‍👧‍👦", "👨‍👩‍👧‍👦"), ("abcde e\u{301}", "e\u{301}")]
+        {
+            let mut view = TranscriptView::default();
+            view.update(
+                SessionUpdate::AgentMessageChunk(ContentChunk::new(message.into())),
+                now,
+            );
+            let mut display = screen(&mut view, &input, now);
+            let (_, _, _, buffer) = render(&mut display, 12, 10);
+            assert_eq!(buffer.cell((4, 2)).unwrap().symbol(), expected, "{message}");
+        }
+    }
+
+    #[test]
     fn ghost_text_is_drawn_dim_after_the_cursor() {
-        let view = TranscriptView::default();
+        let mut view = TranscriptView::default();
         let mut input = Input::default();
         input.paste("/mo");
         let commands = ["model".to_owned()];
-        let screen = Screen {
+        let mut screen = Screen {
             commands: &commands,
-            ..screen(&view, &input, Instant::now())
+            ..screen(&mut view, &input, Instant::now())
         };
-        let (rows, cursor, _, buffer) = render(&screen, 20, 6);
+        let (rows, cursor, _, buffer) = render(&mut screen, 20, 6);
         assert_eq!(rows[2], "  ❯ /model");
         assert_eq!(cursor, (7, 2));
         for x in 4..9 {
@@ -1519,14 +1541,14 @@ mod tests {
         let update = UsageUpdate::new(1200, 8000).cost(Cost::new(0.25, "USD"));
         assert_eq!(usage(Some(&update)), "15% • $0.25");
         assert_eq!(usage(Some(&UsageUpdate::new(2, 3))), "67% • $0.00");
-        let view = TranscriptView::default();
+        let mut view = TranscriptView::default();
         let input = Input::default();
-        let screen = Screen {
+        let mut screen = Screen {
             settings: "ask • deepseek • high",
             usage: "15% • $0.25",
-            ..screen(&view, &input, Instant::now())
+            ..screen(&mut view, &input, Instant::now())
         };
-        let (rows, cursor, _, buffer) = render(&screen, 40, 7);
+        let (rows, cursor, _, buffer) = render(&mut screen, 40, 7);
         assert_eq!(
             rows[5],
             format!("  {:<25}15% • $0.25", "ask • deepseek • high")
@@ -1558,19 +1580,19 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["b", "a", "c"]
         );
-        let view = TranscriptView::default();
+        let mut view = TranscriptView::default();
         let input = Input::default();
         let layout = {
-            let mut display = screen(&view, &input, Instant::now());
+            let mut display = screen(&mut view, &input, Instant::now());
             display.picker = Some(&picker);
-            let (rows, _, layout, _) = render(&display, 40, 7);
+            let (rows, _, layout, _) = render(&mut display, 40, 7);
             assert_eq!(rows[4], format!("    {:<22}2026-09-27", "newer"));
             layout
         };
         picker.move_to(2, layout.height);
-        let mut screen = screen(&view, &input, Instant::now());
+        let mut screen = screen(&mut view, &input, Instant::now());
         screen.picker = Some(&picker);
-        let (rows, _, _, _) = render(&screen, 40, 7);
+        let (rows, _, _, _) = render(&mut screen, 40, 7);
         assert!(
             rows.iter()
                 .any(|row| row.contains("undated") && row.contains("Unknown date"))
@@ -1605,13 +1627,13 @@ mod tests {
         ];
         let mut picker = Picker::new(PickerRows::Models(ModelRows::new(models, &[])));
         picker.move_to(1, 4);
-        let view = TranscriptView::default();
+        let mut view = TranscriptView::default();
         let input = Input::default();
-        let screen = Screen {
+        let mut screen = Screen {
             picker: Some(&picker),
-            ..screen(&view, &input, Instant::now())
+            ..screen(&mut view, &input, Instant::now())
         };
-        let (rows, cursor, _, _) = render(&screen, 60, 12);
+        let (rows, cursor, _, _) = render(&mut screen, 60, 12);
         assert_eq!(
             rows,
             [
@@ -1645,7 +1667,7 @@ mod tests {
         ];
         let favorites = ["opus".to_owned()];
         let mut picker = Picker::new(PickerRows::Models(ModelRows::new(models, &favorites)));
-        let view = TranscriptView::default();
+        let mut view = TranscriptView::default();
         let input = Input::default();
         for (showing_favorites, all, favorites, shown, bold) in [
             (
@@ -1668,11 +1690,11 @@ mod tests {
             };
             models.showing_favorites = showing_favorites;
             picker.filter();
-            let screen = Screen {
+            let mut screen = Screen {
                 picker: Some(&picker),
-                ..screen(&view, &input, Instant::now())
+                ..screen(&mut view, &input, Instant::now())
             };
-            let (rows, cursor, _, buffer) = render(&screen, 40, 8);
+            let (rows, cursor, _, buffer) = render(&mut screen, 40, 8);
             assert_eq!(rows[2], format!("    {:<17}Favorites / All", "Search"));
             assert_eq!(cursor, (4, 2));
             let color = |x: u16| buffer.cell((x, 2)).unwrap().fg;
@@ -1704,12 +1726,12 @@ mod tests {
             .collect();
         let mut picker = Picker::new(PickerRows::Sessions(sessions));
         picker.selected = 9;
-        let view = TranscriptView::default();
+        let mut view = TranscriptView::default();
         let input = Input::default();
         picker.move_to(picker.selected, picker_rows(12));
-        let mut display = screen(&view, &input, Instant::now());
+        let mut display = screen(&mut view, &input, Instant::now());
         display.picker = Some(&picker);
-        let (rows, _, _, _) = render(&display, 40, 12);
+        let (rows, _, _, _) = render(&mut display, 40, 12);
         assert!(rows.iter().any(|row| row.contains("s9")), "{rows:?}");
     }
 
@@ -1720,11 +1742,11 @@ mod tests {
             SessionInfo::new("b", "/tmp").title("newer"),
         ]));
         picker.move_to(1, 2);
-        let view = TranscriptView::default();
+        let mut view = TranscriptView::default();
         let input = Input::default();
-        let mut display = screen(&view, &input, Instant::now());
+        let mut display = screen(&mut view, &input, Instant::now());
         display.picker = Some(&picker);
-        let (_, _, _, buffer) = render(&display, 40, 10);
+        let (_, _, _, buffer) = render(&mut display, 40, 10);
         assert_eq!(buffer.cell((4, 5)).unwrap().fg, theme::BRIGHT);
         assert_eq!(buffer.cell((4, 4)).unwrap().fg, theme::GRAY);
         for (x, y) in [(0, 0), (39, 9), (20, 9)] {
@@ -1848,7 +1870,7 @@ mod tests {
     async fn the_model_picker_shows_only_all_without_an_offered_favorite() {
         with_session(async |mut session, _events| {
             let now = Instant::now();
-            let view = TranscriptView::default();
+            let mut view = TranscriptView::default();
             let input = Input::default();
             for favorites in [vec![], vec!["missing/model".to_owned()]] {
                 let mut ui = Ui {
@@ -1860,11 +1882,11 @@ mod tests {
                 press(&mut ui, &mut session, KeyCode::Left, now).await?;
                 let picker = ui.picker.as_ref().unwrap();
                 assert_eq!(picker.matches, [0, 1], "{favorites:?}");
-                let screen = Screen {
+                let mut screen = Screen {
                     picker: Some(picker),
-                    ..screen(&view, &input, now)
+                    ..screen(&mut view, &input, now)
                 };
-                let (rows, _, _, _) = render(&screen, 40, 8);
+                let (rows, _, _, _) = render(&mut screen, 40, 8);
                 assert_eq!(rows[2], "    Search", "{favorites:?}");
             }
             Ok(())

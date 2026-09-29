@@ -1,3 +1,4 @@
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 const MAX_ROWS: usize = 8;
@@ -37,12 +38,14 @@ impl Input {
     pub fn insert(&mut self, c: char) {
         self.text.insert(self.cursor, c);
         self.cursor += c.len_utf8();
+        self.next_boundary();
     }
 
     pub fn paste(&mut self, text: &str) {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         self.text.insert_str(self.cursor, &text);
         self.cursor += text.len();
+        self.next_boundary();
     }
 
     /// The rest of the first command name that the input, one word starting
@@ -61,28 +64,37 @@ impl Input {
     }
 
     pub fn backspace(&mut self) {
-        if let Some(c) = self.text[..self.cursor].chars().next_back() {
-            self.cursor -= c.len_utf8();
-            self.text.remove(self.cursor);
+        if let Some((start, _)) = self.text[..self.cursor].grapheme_indices(true).next_back() {
+            self.text.drain(start..self.cursor);
+            self.cursor = start;
         }
     }
 
     pub fn delete(&mut self) {
-        if self.cursor < self.text.len() {
-            self.text.remove(self.cursor);
+        if let Some(grapheme) = self.text[self.cursor..].graphemes(true).next() {
+            self.text.drain(self.cursor..self.cursor + grapheme.len());
         }
     }
 
     pub fn left(&mut self) {
-        if let Some(c) = self.text[..self.cursor].chars().next_back() {
-            self.cursor -= c.len_utf8();
+        if let Some((start, _)) = self.text[..self.cursor].grapheme_indices(true).next_back() {
+            self.cursor = start;
         }
     }
 
     pub fn right(&mut self) {
-        if let Some(c) = self.text[self.cursor..].chars().next() {
-            self.cursor += c.len_utf8();
+        if let Some(grapheme) = self.text[self.cursor..].graphemes(true).next() {
+            self.cursor += grapheme.len();
         }
+    }
+
+    fn next_boundary(&mut self) {
+        self.cursor = self
+            .text
+            .grapheme_indices(true)
+            .map(|(index, _)| index)
+            .find(|&index| index >= self.cursor)
+            .unwrap_or(self.text.len());
     }
 
     pub fn home(&mut self) {
@@ -125,8 +137,8 @@ impl Input {
     /// The cursor's display column within its logical line.
     fn column(&self) -> usize {
         self.text[self.line_start()..self.cursor]
-            .chars()
-            .map(|c| display(c).width())
+            .graphemes(true)
+            .map(|cluster| display_cluster(cluster).width())
             .sum()
     }
 
@@ -135,13 +147,13 @@ impl Input {
     fn seek(&self, start: usize, column: usize) -> usize {
         let mut offset = start;
         let mut used = 0;
-        for c in self.text[start..].chars() {
-            let c_width = display(c).width();
-            if c == '\n' || used + c_width > column {
+        for cluster in self.text[start..].graphemes(true) {
+            let cluster_width = display_cluster(cluster).width();
+            if cluster == "\n" || used + cluster_width > column {
                 break;
             }
-            used += c_width;
-            offset += c.len_utf8();
+            used += cluster_width;
+            offset += cluster.len();
         }
         offset
     }
@@ -161,10 +173,10 @@ impl Input {
                 column = 0;
                 offset += 1;
             }
-            for c in line.chars() {
-                let shown = display(c);
-                let c_width = shown.width();
-                if column + c_width > text_width && column > 0 {
+            for cluster in line.graphemes(true) {
+                let shown = display_cluster(cluster);
+                let cluster_width = shown.width();
+                if column + cluster_width > text_width && column > 0 {
                     rows.push(std::mem::take(&mut current));
                     column = 0;
                 }
@@ -172,8 +184,8 @@ impl Input {
                     cursor = (rows.len(), column);
                 }
                 current.push_str(&shown);
-                column += c_width;
-                offset += c.len_utf8();
+                column += cluster_width;
+                offset += cluster.len();
             }
             if offset == self.cursor {
                 if column >= text_width {
@@ -213,6 +225,10 @@ fn display(c: char) -> String {
     } else {
         c.to_string()
     }
+}
+
+fn display_cluster(cluster: &str) -> String {
+    cluster.chars().map(display).collect()
 }
 
 #[cfg(test)]
@@ -336,5 +352,49 @@ mod tests {
         assert_eq!(lines[7], "  7");
         assert_eq!(cursor, (0, 3));
         assert_eq!(rows(&Input::default(), 20), (vec!["❯ ".into()], (0, 2)));
+    }
+
+    #[test]
+    fn joined_emoji_and_combining_marks_are_single_editing_units() {
+        let mut input = Input::default();
+        input.paste("a👨‍👩‍👧‍👦e\u{301}b");
+        input.home();
+        input.right();
+        input.right();
+        assert_eq!(input.rows(12).cursor, (0, 5));
+        input.left();
+        input.delete();
+        assert_eq!(input.text(), "ae\u{301}b");
+        input.right();
+        input.backspace();
+        assert_eq!(input.text(), "ab");
+
+        let mut input = Input::default();
+        input.paste("a👨‍👩‍👧‍👦b\nxy");
+        input.up();
+        input.insert('!');
+        assert_eq!(input.text(), "a!👨‍👩‍👧‍👦b\nxy");
+        input.down();
+        input.insert('?');
+        assert_eq!(input.text(), "a!👨‍👩‍👧‍👦b\nxy?");
+
+        let mut input = Input::default();
+        input.paste("e");
+        input.paste("\u{301}");
+        input.left();
+        assert_eq!(input.rows(12).cursor, (0, 2));
+        input.right();
+        assert_eq!(input.rows(12).cursor, (0, 3));
+    }
+
+    #[test]
+    fn rows_keep_joined_emoji_and_combining_marks_together() {
+        let mut input = Input::default();
+        input.paste("abcd👨‍👩‍👧‍👦e\u{301}");
+        let rows = input.rows(8);
+        assert_eq!(rows.lines, ["❯ abcd👨‍👩‍👧‍👦", "  e\u{301}"]);
+        assert_eq!(rows.cursor, (1, 3));
+        input.left();
+        assert_eq!(input.rows(8).cursor, (1, 2));
     }
 }
