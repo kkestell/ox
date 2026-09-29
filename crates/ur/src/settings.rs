@@ -53,26 +53,13 @@ pub fn load(catalog: &[CatalogModel]) -> io::Result<Settings> {
 }
 
 fn load_from(path: &Path, catalog: &[CatalogModel]) -> io::Result<Settings> {
-    let file = match read(path, catalog) {
+    let file = match read(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => SettingsFile::default(),
         Err(error) => return Err(error),
     };
-    let default_model = match file.model {
-        Some(model) => model,
-        None if catalog.iter().any(|model| model.id == BUILT_IN_MODEL) => BUILT_IN_MODEL.to_owned(),
-        None => {
-            return Err(invalid(
-                path,
-                &format!(
-                    "model must name the default model: the built-in {BUILT_IN_MODEL} is not \
-                     in the OpenRouter model catalog"
-                ),
-            ));
-        }
-    };
     let settings = Settings {
-        default_model,
+        default_model: file.model.unwrap_or_else(|| BUILT_IN_MODEL.to_owned()),
         default_effort: effort(path, file.effort)?,
         default_mode: mode(path, file.mode)?,
     };
@@ -85,7 +72,7 @@ impl Settings {
     /// `workspace_path` replaced. A missing file changes nothing.
     pub fn for_workspace(&self, workspace_path: &Path) -> io::Result<Self> {
         let path = workspace_path.join(".ur/settings.json");
-        let file = match read(&path, openrouter::catalog()) {
+        let file = match read(&path) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(self.clone()),
             Err(error) => return Err(error),
@@ -111,7 +98,15 @@ impl Settings {
         let model = catalog
             .iter()
             .find(|model| model.id == self.default_model)
-            .expect("the selected model was validated while reading settings");
+            .ok_or_else(|| {
+                invalid(
+                    path,
+                    &format!(
+                        "model {} is not in the OpenRouter model catalog",
+                        self.default_model
+                    ),
+                )
+            })?;
         if !model.supports(self.default_effort) {
             return Err(invalid(
                 path,
@@ -185,23 +180,13 @@ fn write(path: &Path, selected: &SessionSettings) -> io::Result<()> {
         .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", path.display())))
 }
 
-/// Reads one settings file, rejecting a model outside `catalog`.
-/// Every error names the file.
-fn read(path: &Path, catalog: &[CatalogModel]) -> io::Result<SettingsFile> {
-    let check = || {
-        let file: SettingsFile = serde_json::from_str(&text_file::read_bounded(path)?)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        if let Some(model) = &file.model
-            && !catalog.iter().any(|candidate| &candidate.id == model)
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("model {model} is not in the OpenRouter model catalog"),
-            ));
-        }
-        Ok(file)
+/// Reads one settings file. Every error names the file.
+fn read(path: &Path) -> io::Result<SettingsFile> {
+    let parse = || {
+        serde_json::from_str(&text_file::read_bounded(path)?)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     };
-    check().map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", path.display())))
+    parse().map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", path.display())))
 }
 
 fn invalid(path: &Path, message: &str) -> io::Error {
@@ -253,10 +238,13 @@ mod tests {
                 .err()
                 .unwrap()
                 .to_string();
-            assert!(
-                message.starts_with(&format!("{}: model must name", path.display()))
-                    && message.contains(BUILT_IN_MODEL),
-                "{text:?}: {message}"
+            assert_eq!(
+                message,
+                format!(
+                    "{}: model {BUILT_IN_MODEL} is not in the OpenRouter model catalog",
+                    path.display()
+                ),
+                "{text:?}"
             );
         }
     }
