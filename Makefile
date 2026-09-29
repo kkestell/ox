@@ -5,6 +5,7 @@ check: check-docs
 	cargo test --workspace --all-targets --all-features
 	cargo build --workspace --all-features
 	cargo clippy --workspace --all-targets --all-features -- -D warnings
+	python3 -m unittest discover -s scripts
 
 e2e:
 	cargo build --workspace
@@ -40,3 +41,4 @@ do-install:
 	install -m 755 target/$(PROFILE_DIR)/ox-acp $(PREFIX)/ox-acp
 	mkdir -p $(CONFIG_DIR)
 	cp examples/settings.json $(CONFIG_DIR)/settings.json
+	python3 scripts/fetch_arena_agent_models.py --config $(CONFIG_DIR)/config.json

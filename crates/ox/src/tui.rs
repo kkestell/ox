@@ -151,12 +151,15 @@ struct Ui {
     layout: Layout,
     picker: Option<Picker>,
     resume_after_turn: bool,
+    /// The configured Frontier model IDs, in order.
+    frontier: Vec<String>,
 }
 
 struct Picker {
     rows: PickerRows,
     query: String,
-    /// The indexes of the rows that match the query, in order.
+    /// The indexes of the shown rows that match the query, in the shown
+    /// order.
     matches: Vec<usize>,
     /// An index into `matches`.
     selected: usize,
@@ -180,7 +183,45 @@ fn picker_rows(height: u16) -> usize {
 
 enum PickerRows {
     Sessions(Vec<SessionInfo>),
-    Models(Vec<ModelChoice>),
+    Models(ModelRows),
+}
+
+/// The model picker's two lists. All is every choice the session offers, in
+/// its order. Frontier is the configured models the session offers, in the
+/// configured order.
+struct ModelRows {
+    all: Vec<ModelChoice>,
+    /// Indexes into `all`.
+    frontier: Vec<usize>,
+    showing_frontier: bool,
+}
+
+impl ModelRows {
+    fn new(all: Vec<ModelChoice>, frontier: &[String]) -> Self {
+        let frontier = frontier
+            .iter()
+            .filter_map(|id| all.iter().position(|model| &*model.value.0 == id))
+            .collect();
+        Self {
+            all,
+            frontier,
+            showing_frontier: false,
+        }
+    }
+
+    /// Whether the picker offers the Frontier list.
+    fn has_frontier(&self) -> bool {
+        !self.frontier.is_empty()
+    }
+
+    /// The indexes into `all` of the shown list, in order.
+    fn shown(&self) -> Vec<usize> {
+        if self.showing_frontier {
+            self.frontier.clone()
+        } else {
+            (0..self.all.len()).collect()
+        }
+    }
 }
 
 struct ModelChoice {
@@ -229,18 +270,23 @@ impl Picker {
             .split_whitespace()
             .map(str::to_lowercase)
             .collect();
-        let names: Vec<_> = match &self.rows {
-            PickerRows::Sessions(sessions) => sessions.iter().map(session_title).collect(),
-            PickerRows::Models(models) => models.iter().map(|model| model.name.clone()).collect(),
+        // The name of every row, and the indexes of the shown rows.
+        let (names, shown): (Vec<String>, Vec<usize>) = match &self.rows {
+            PickerRows::Sessions(sessions) => (
+                sessions.iter().map(session_title).collect(),
+                (0..sessions.len()).collect(),
+            ),
+            PickerRows::Models(models) => (
+                models.all.iter().map(|model| model.name.clone()).collect(),
+                models.shown(),
+            ),
         };
-        self.matches = names
-            .iter()
-            .enumerate()
-            .filter(|(_, name)| {
-                let name = name.to_lowercase();
+        self.matches = shown
+            .into_iter()
+            .filter(|&index| {
+                let name = names[index].to_lowercase();
                 words.iter().all(|word| name.contains(word))
             })
-            .map(|(index, _)| index)
             .collect();
         self.selected = 0;
         self.first = 0;
@@ -410,19 +456,37 @@ fn picker_lines(picker: &Picker, width: usize, rows: usize) -> Vec<Line<'static>
     let error = picker.error.as_ref().map_or_else(Line::default, |error| {
         Line::styled(transcript::clip(error, width), Style::new().fg(theme::RED))
     });
-    let search = if picker.query.is_empty() {
-        Line::styled("Search", Style::new().fg(theme::DIM))
+    let mut search = if picker.query.is_empty() {
+        vec![Span::styled("Search", Style::new().fg(theme::DIM))]
     } else {
-        Line::raw(picker.query.clone())
+        vec![Span::raw(picker.query.clone())]
     };
-    let mut lines = vec![search, error];
+    // The model picker's list toggle ends at the search row's right edge.
+    if let PickerRows::Models(models) = &picker.rows
+        && models.has_frontier()
+    {
+        let (all, frontier) = if models.showing_frontier {
+            (theme::DIM, theme::BRIGHT)
+        } else {
+            (theme::BRIGHT, theme::DIM)
+        };
+        let toggle_width = "All / Frontier".width();
+        let padding = width.saturating_sub(search[0].width() + toggle_width);
+        search.extend([
+            Span::raw(" ".repeat(padding)),
+            Span::styled("All", Style::new().fg(all)),
+            Span::styled(" / ", Style::new().fg(theme::DIM)),
+            Span::styled("Frontier", Style::new().fg(frontier)),
+        ]);
+    }
+    let mut lines = vec![Line::from(search), error];
     let names = match &picker.rows {
         PickerRows::Sessions(sessions) if sessions.is_empty() => {
             lines.push(Line::raw("No saved sessions"));
             return lines;
         }
         PickerRows::Sessions(sessions) => session_rows(sessions, width),
-        PickerRows::Models(models) => model_rows(models, width),
+        PickerRows::Models(models) => model_rows(&models.all, width),
     };
     for (index, &row) in picker
         .matches
@@ -635,6 +699,14 @@ async fn key(
             KeyCode::PageDown => picker.move_to(picker.selected.saturating_add(rows), rows),
             KeyCode::Home => picker.move_to(0, rows),
             KeyCode::End => picker.move_to(picker.matches.len().saturating_sub(1), rows),
+            KeyCode::Left | KeyCode::Right => {
+                if let PickerRows::Models(models) = &mut picker.rows
+                    && models.has_frontier()
+                {
+                    models.showing_frontier = key.code == KeyCode::Right;
+                    picker.filter();
+                }
+            }
             KeyCode::Esc if closable => ui.picker = None,
             KeyCode::Enter => match (&picker.rows, picker.matches.get(picker.selected)) {
                 (_, None) => {}
@@ -656,7 +728,7 @@ async fn key(
                     }
                 }
                 (PickerRows::Models(models), Some(&index)) => {
-                    let value = models[index].value.clone();
+                    let value = models.all[index].value.clone();
                     let Some((id, _)) =
                         select_option(&session.config_options, SessionConfigOptionCategory::Model)
                     else {
@@ -804,7 +876,7 @@ async fn open_session_picker(ui: &mut Ui, session: &mut Session, now: Instant) {
     }
 }
 
-/// Opens the model picker with the current model selected.
+/// Opens the model picker on All with the current model selected.
 fn open_model_picker(ui: &mut Ui, session: &Session, now: Instant) {
     let Some((_, select)) =
         select_option(&session.config_options, SessionConfigOptionCategory::Model)
@@ -818,7 +890,7 @@ fn open_model_picker(ui: &mut Ui, session: &Session, now: Instant) {
         .iter()
         .position(|model| model.value == select.current_value)
         .unwrap_or(0);
-    let mut picker = Picker::new(PickerRows::Models(models));
+    let mut picker = Picker::new(PickerRows::Models(ModelRows::new(models, &ui.frontier)));
     // The next draw scrolls it into view.
     picker.selected = current;
     ui.picker = Some(picker);
@@ -923,6 +995,7 @@ fn handle(
 pub async fn run(
     mut session: Session,
     mut events: UnboundedReceiver<acp::Event>,
+    frontier: Vec<String>,
 ) -> anyhow::Result<()> {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -931,7 +1004,10 @@ pub async fn run(
     }));
     let mut terminal = Terminal::enter()?;
     let mut keys = EventStream::new();
-    let mut ui = Ui::default();
+    let mut ui = Ui {
+        frontier,
+        ..Ui::default()
+    };
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     loop {
         terminal.status(if let Some(picker) = &ui.picker {
@@ -1345,31 +1421,33 @@ mod tests {
         );
     }
 
+    fn model_choice(value: &str, name: &str, meta: serde_json::Value) -> ModelChoice {
+        let serde_json::Value::Object(meta) = meta else {
+            unreachable!()
+        };
+        ModelChoice::new(&SessionConfigSelectOption::new(value.to_owned(), name).meta(meta))
+    }
+
     #[test]
     fn model_picker_rows_share_price_columns_and_leave_missing_values_blank() {
-        let choice = |value: &str, name: &str, meta: serde_json::Value| {
-            let serde_json::Value::Object(meta) = meta else {
-                unreachable!()
-            };
-            ModelChoice::new(&SessionConfigSelectOption::new(value.to_owned(), name).meta(meta))
-        };
-        let mut picker = Picker::new(PickerRows::Models(vec![
-            choice(
+        let models = vec![
+            model_choice(
                 "flash",
                 "DeepSeek: DeepSeek V4.1 Flash",
                 serde_json::json!({"inputPrice": 0.03, "outputPrice": 0.6, "contextLimit": 1048576}),
             ),
-            choice(
+            model_choice(
                 "opus",
                 "Anthropic: Claude Opus 5.5 with a much longer name",
                 serde_json::json!({"inputPrice": 4, "outputPrice": 20, "contextLimit": 200000}),
             ),
-            choice(
+            model_choice(
                 "other",
                 "Other server model",
                 serde_json::json!({"inputPrice": "free", "contextLimit": 1.5}),
             ),
-        ]));
+        ];
+        let mut picker = Picker::new(PickerRows::Models(ModelRows::new(models, &[])));
         picker.move_to(1, 4);
         let view = TranscriptView::default();
         let input = Input::default();
@@ -1401,6 +1479,42 @@ mod tests {
             (4, 2),
             "the cursor starts on the search placeholder"
         );
+    }
+
+    #[test]
+    fn model_picker_search_row_shows_the_active_list_in_white_at_the_right_edge() {
+        let models = vec![
+            model_choice("flash", "Flash", serde_json::json!({})),
+            model_choice("opus", "Opus", serde_json::json!({})),
+        ];
+        let frontier = ["opus".to_owned()];
+        let mut picker = Picker::new(PickerRows::Models(ModelRows::new(models, &frontier)));
+        let view = TranscriptView::default();
+        let input = Input::default();
+        for (showing_frontier, all, frontier, shown) in [
+            (false, theme::BRIGHT, theme::DIM, ["    Flash", "    Opus"]),
+            (true, theme::DIM, theme::BRIGHT, ["    Opus", ""]),
+        ] {
+            let PickerRows::Models(models) = &mut picker.rows else {
+                unreachable!()
+            };
+            models.showing_frontier = showing_frontier;
+            picker.filter();
+            let screen = Screen {
+                picker: Some(&picker),
+                ..screen(&view, &input, Instant::now())
+            };
+            let (rows, cursor, _, buffer) = render(&screen, 40, 8);
+            assert_eq!(rows[2], format!("    {:<18}All / Frontier", "Search"));
+            assert_eq!(cursor, (4, 2));
+            let color = |x: u16| buffer.cell((x, 2)).unwrap().fg;
+            assert_eq!(
+                (color(22), color(26), color(28)),
+                (all, theme::DIM, frontier),
+                "showing_frontier {showing_frontier}"
+            );
+            assert_eq!(rows[4..6], shown);
+        }
     }
 
     #[test]
@@ -1505,6 +1619,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn left_and_right_switch_the_model_picker_between_all_and_frontier() {
+        with_session(async |mut session, _events| {
+            let now = Instant::now();
+            let mut ui = Ui {
+                frontier: vec!["gemma".to_owned(), "deepseek".to_owned()],
+                ..Ui::default()
+            };
+            let state = |ui: &Ui| {
+                let picker = ui.picker.as_ref().unwrap();
+                (picker.matches.clone(), picker.selected)
+            };
+            ui.input.paste("/model");
+            press(&mut ui, &mut session, KeyCode::Enter, now).await?;
+            press(&mut ui, &mut session, KeyCode::Down, now).await?;
+            assert_eq!(state(&ui), (vec![0, 1], 1), "opens on All");
+            press(&mut ui, &mut session, KeyCode::Right, now).await?;
+            assert_eq!(
+                state(&ui),
+                (vec![1, 0], 0),
+                "Frontier follows the configured order"
+            );
+            for c in "deep".chars() {
+                press(&mut ui, &mut session, KeyCode::Char(c), now).await?;
+            }
+            assert_eq!(state(&ui), (vec![0], 0));
+            press(&mut ui, &mut session, KeyCode::Left, now).await?;
+            assert_eq!(
+                state(&ui),
+                (vec![0], 0),
+                "the query is kept across a switch"
+            );
+            for _ in 0..4 {
+                press(&mut ui, &mut session, KeyCode::Backspace, now).await?;
+            }
+            assert_eq!(state(&ui), (vec![0, 1], 0));
+            press(&mut ui, &mut session, KeyCode::Right, now).await?;
+            press(&mut ui, &mut session, KeyCode::Enter, now).await?;
+            assert!(ui.picker.is_none());
+            assert_eq!(
+                settings(&session.config_options),
+                "Ask • Google: Gemma Vision"
+            );
+            Ok(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn the_model_picker_shows_only_all_without_an_offered_frontier_model() {
+        with_session(async |mut session, _events| {
+            let now = Instant::now();
+            let view = TranscriptView::default();
+            let input = Input::default();
+            for frontier in [vec![], vec!["missing/model".to_owned()]] {
+                let mut ui = Ui {
+                    frontier: frontier.clone(),
+                    ..Ui::default()
+                };
+                ui.input.paste("/model");
+                press(&mut ui, &mut session, KeyCode::Enter, now).await?;
+                press(&mut ui, &mut session, KeyCode::Right, now).await?;
+                let picker = ui.picker.as_ref().unwrap();
+                assert_eq!(picker.matches, [0, 1], "{frontier:?}");
+                let screen = Screen {
+                    picker: Some(picker),
+                    ..screen(&view, &input, now)
+                };
+                let (rows, _, _, _) = render(&screen, 40, 8);
+                assert_eq!(rows[2], "    Search", "{frontier:?}");
+            }
+            Ok(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn resume_keys_cancel_or_reload_the_current_session() {
         with_session(async |mut session, _events| {
             let old = session.id().clone();
@@ -1513,6 +1703,8 @@ mod tests {
             ui.input.paste("/resume");
             press(&mut ui, &mut session, KeyCode::Enter, now).await?;
             assert!(ui.picker.is_some());
+            press(&mut ui, &mut session, KeyCode::Right, now).await?;
+            assert_eq!(ui.picker.as_ref().unwrap().matches, [0]);
             press(&mut ui, &mut session, KeyCode::Esc, now).await?;
             assert!(ui.picker.is_none());
             assert_eq!(session.id(), &old);

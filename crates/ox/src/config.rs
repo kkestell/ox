@@ -10,7 +10,12 @@ use serde::Deserialize;
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    #[serde(default)]
     pub servers: Vec<ServerConfig>,
+    /// The OpenRouter model IDs the model picker's Frontier list shows, in
+    /// order.
+    #[serde(default)]
+    pub frontier: Vec<String>,
 }
 
 /// A named server executable.
@@ -24,15 +29,23 @@ pub struct ServerConfig {
 }
 
 impl Config {
-    pub fn bundled_server() -> anyhow::Result<Self> {
+    fn bundled_server() -> anyhow::Result<ServerConfig> {
         let command = std::env::current_exe()?.with_file_name("ox-acp");
-        Ok(Self {
-            servers: vec![ServerConfig {
-                name: "Ox".into(),
-                command: command.to_string_lossy().into_owned(),
-                args: vec![],
-            }],
+        Ok(ServerConfig {
+            name: "Ox".into(),
+            command: command.to_string_lossy().into_owned(),
+            args: vec![],
         })
+    }
+
+    /// Parses the file's text. Omitted servers mean the bundled server.
+    fn parse(text: &str) -> anyhow::Result<Self> {
+        let mut config: Config = serde_json::from_str(text)?;
+        config.validate()?;
+        if config.servers.is_empty() {
+            config.servers.push(Self::bundled_server()?);
+        }
+        Ok(config)
     }
 
     pub fn validate(&self) -> anyhow::Result<()> {
@@ -69,22 +82,17 @@ impl Config {
         }
     }
 
-    /// Reads the config file, or `None` when there is none yet.
-    pub fn read() -> anyhow::Result<Option<Config>> {
+    /// Reads the config file, or the defaults when there is none yet.
+    pub fn read() -> anyhow::Result<Config> {
         let path = path()?;
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(error) if error.kind() == ErrorKind::NotFound => "{}".to_owned(),
             Err(error) => {
                 return Err(error).with_context(|| format!("reading {}", path.display()));
             }
         };
-        let config: Config =
-            serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-        config
-            .validate()
-            .with_context(|| format!("validating {}", path.display()))?;
-        Ok(Some(config))
+        Self::parse(&text).with_context(|| format!("reading {}", path.display()))
     }
 }
 
@@ -112,13 +120,12 @@ mod tests {
                     args: vec![],
                 })
                 .collect(),
+            frontier: vec![],
         }
     }
 
     #[test]
     fn selection_requires_a_name_unless_exactly_one_server_exists() {
-        let bundled = Config::bundled_server().unwrap();
-        assert!(bundled.select(None).unwrap().command.ends_with("/ox-acp"));
         assert!(config(&[]).select(None).is_err());
         assert_eq!(config(&["Alpha"]).select(None).unwrap().name, "Alpha");
         let several = config(&["Alpha", "Beta"]);
@@ -134,6 +141,35 @@ mod tests {
     }
 
     #[test]
+    fn omitted_servers_mean_the_bundled_server_and_omitted_frontier_is_empty() {
+        for (text, server, frontier) in [
+            ("{}", "ox-acp", vec![]),
+            (
+                r#"{"frontier":["a/b","c/d"]}"#,
+                "ox-acp",
+                vec!["a/b", "c/d"],
+            ),
+            (
+                r#"{"servers":[{"name":"Alpha","command":"alpha"}]}"#,
+                "alpha",
+                vec![],
+            ),
+            (
+                r#"{"servers":[{"name":"Alpha","command":"alpha"}],"frontier":["a/b"]}"#,
+                "alpha",
+                vec!["a/b"],
+            ),
+        ] {
+            let config = Config::parse(text).unwrap();
+            assert!(
+                config.select(None).unwrap().command.ends_with(server),
+                "{text}"
+            );
+            assert_eq!(config.frontier, frontier, "{text}");
+        }
+    }
+
+    #[test]
     fn names_must_be_unique_and_nonempty() {
         for names in [vec!["Alpha", "Alpha"], vec![" "], vec![""]] {
             assert!(config(&names).validate().is_err());
@@ -142,14 +178,8 @@ mod tests {
 
     #[test]
     fn old_config_is_rejected_without_migration() {
-        assert!(
-            serde_json::from_str::<Config>(
-                r#"{"servers":[{"id":"old","name":"Ox","command":"ox"}]}"#
-            )
-            .is_err()
-        );
-        let config: Config =
-            serde_json::from_str(r#"{"servers":[{"name":"Ox","command":"ox"}]}"#).unwrap();
+        assert!(Config::parse(r#"{"servers":[{"id":"old","name":"Ox","command":"ox"}]}"#).is_err());
+        let config = Config::parse(r#"{"servers":[{"name":"Ox","command":"ox"}]}"#).unwrap();
         assert!(config.servers[0].args.is_empty());
     }
 }

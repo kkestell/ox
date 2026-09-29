@@ -260,7 +260,11 @@ pub async fn initialize(connection: &ConnectionTo<Agent>) -> anyhow::Result<Agen
     Ok(response.agent_capabilities)
 }
 
-pub async fn start(server: &ServerConfig, directory: PathBuf) -> anyhow::Result<()> {
+pub async fn start(
+    server: &ServerConfig,
+    directory: PathBuf,
+    frontier: Vec<String>,
+) -> anyhow::Result<()> {
     let (events, receiver) = unbounded_channel();
     let diagnostics = events.clone();
     let server = AcpAgent::new(AcpAgentConfig::new(&server.command).args(server.args.clone()))
@@ -274,7 +278,7 @@ pub async fn start(server: &ServerConfig, directory: PathBuf) -> anyhow::Result<
         directory,
         events,
         receiver,
-        async |session, receiver| tui::run(session, receiver).await,
+        async |session, receiver| tui::run(session, receiver, frontier).await,
     )
     .await
 }

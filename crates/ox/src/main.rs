@@ -35,12 +35,9 @@ async fn main() {
 async fn start() -> anyhow::Result<()> {
     let args = Args::parse();
     let directory = workspace(&args.directory)?;
-    let config = match config::Config::read()? {
-        Some(config) => config,
-        None => config::Config::bundled_server()?,
-    };
+    let config = config::Config::read()?;
     let server = config.select(args.server.as_deref())?;
-    acp::start(server, directory).await
+    acp::start(server, directory, config.frontier.clone()).await
 }
 
 #[cfg(test)]

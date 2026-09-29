@@ -23,7 +23,8 @@ impl Tmux {
         std::fs::write(
             config.join("config.json"),
             serde_json::to_vec(&serde_json::json!({
-                "servers": [{"name": "Fake", "command": fake, "args": []}]
+                "servers": [{"name": "Fake", "command": fake, "args": []}],
+                "frontier": ["gemma"]
             }))
             .unwrap(),
         )
@@ -224,7 +225,26 @@ fn model_picker_shows_prices_and_changes_the_model() {
         "{screen}"
     );
     assert!(!screen.contains("0% • $0.00"), "{screen}");
-    test.keys(&["Down", "Enter"]);
+    assert!(
+        screen.contains(&format!("    {:<58}All / Frontier\n", "Search")),
+        "{screen}"
+    );
+    let styled = test.styled_screen();
+    assert!(styled.contains("\x1b[38;2;255;255;255mAll"), "{styled}");
+    assert!(
+        styled.contains("\x1b[38;2;112;112;112m / Frontier"),
+        "{styled}"
+    );
+    test.keys(&["Right"]);
+    test.wait_gone("DeepSeek: DeepSeek Reasoner");
+    let styled = test.styled_screen();
+    assert!(styled.contains("\x1b[38;2;112;112;112mAll"), "{styled}");
+    assert!(
+        styled.contains("\x1b[38;2;255;255;255mFrontier"),
+        "{styled}"
+    );
+    assert!(styled.contains("Google: Gemma Vision"), "{styled}");
+    test.keys(&["Enter"]);
     test.wait_gone("Search");
     test.wait("Ask • Google: Gemma Vision");
 }
