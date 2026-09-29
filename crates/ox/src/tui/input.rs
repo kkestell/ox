@@ -45,6 +45,18 @@ impl Input {
         self.cursor += text.len();
     }
 
+    /// The rest of the first command name that the input, one word starting
+    /// with `/` with the cursor at its end, is a strict prefix of.
+    pub fn ghost_text<'a>(&self, commands: &'a [String]) -> Option<&'a str> {
+        let word = self.text.strip_prefix('/')?;
+        if word.is_empty() || self.cursor != self.text.len() || word.contains(char::is_whitespace) {
+            return None;
+        }
+        commands
+            .iter()
+            .find_map(|command| command.strip_prefix(word).filter(|rest| !rest.is_empty()))
+    }
+
     pub fn newline(&mut self) {
         self.insert('\n');
     }
@@ -265,6 +277,29 @@ mod tests {
         input.insert('!');
         assert_eq!(input.take(), "ab\nc\n!d");
         assert!(input.is_empty());
+    }
+
+    #[test]
+    fn ghost_text_completes_a_lone_slash_word_at_the_end_of_the_input() {
+        let commands = ["compact", "model", "resume"].map(String::from);
+        let mut moved = typed("/mo");
+        moved.left();
+        for (input, expected) in [
+            (typed(""), None),
+            (typed("/"), None),
+            (typed("/mo"), Some("del")),
+            (typed("/model"), None),
+            (typed("/model x"), None),
+            (moved, None),
+            (typed("\n/mo"), None),
+            (typed("hi /mo"), None),
+            (typed("/zzz"), None),
+        ] {
+            assert_eq!(input.ghost_text(&commands), expected, "{:?}", input.text());
+        }
+        let mut input = typed("/mo");
+        input.paste(input.ghost_text(&commands).unwrap());
+        assert_eq!(input.text(), "/model");
     }
 
     #[test]

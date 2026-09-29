@@ -419,6 +419,19 @@ fn tab_and_shift_tab_cycle_modes_in_the_terminal() {
 
 #[test]
 #[ignore = "requires tmux; run make e2e"]
+fn tab_completes_a_slash_command_from_ghost_text() {
+    let test = Tmux::new();
+    test.wait("Ask");
+    test.keys(&["/", "t", "a"]);
+    test.wait("/tally");
+    test.keys(&["Tab"]);
+    test.keys(&["Enter"]);
+    test.wait("you said: /tally");
+    assert!(test.screen().contains("Ask"));
+}
+
+#[test]
+#[ignore = "requires tmux; run make e2e"]
 fn permission_survives_disconnect_and_server_failure_restores_the_shell() {
     let test = Tmux::new();
     let mut client = test.attach();

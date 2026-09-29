@@ -38,6 +38,8 @@ pub struct Session {
     pub busy: bool,
     cancelling: bool,
     pub config_options: Vec<SessionConfigOption>,
+    /// The names in the latest available commands update.
+    pub commands: Vec<String>,
     pub usage: Option<UsageUpdate>,
     /// The prompt sent during a turn, held until the cancelled turn finishes.
     pub queued: Option<String>,
@@ -91,6 +93,7 @@ impl Session {
         self.queued = None;
         self.pending.clear();
         self.config_options.clear();
+        self.commands.clear();
         self.usage = None;
         Ok(())
     }
@@ -214,11 +217,19 @@ impl Session {
         Ok(queued)
     }
 
-    /// Records the session settings and usage an update carries.
+    /// Records the session settings, available commands, and usage an update
+    /// carries.
     pub fn update(&mut self, update: &SessionUpdate) {
         match update {
             SessionUpdate::ConfigOptionUpdate(update) => {
                 self.config_options = update.config_options.clone();
+            }
+            SessionUpdate::AvailableCommandsUpdate(update) => {
+                self.commands = update
+                    .available_commands
+                    .iter()
+                    .map(|command| command.name.clone())
+                    .collect();
             }
             SessionUpdate::UsageUpdate(update) => self.usage = Some(update.clone()),
             _ => {}
@@ -338,6 +349,7 @@ where
                     busy: false,
                     cancelling: false,
                     config_options: session.config_options.unwrap_or_default(),
+                    commands: Vec::new(),
                     usage: None,
                     queued: None,
                 },
@@ -426,10 +438,24 @@ pub mod tests {
         .await;
     }
 
+    /// Records the next available commands update.
+    async fn commands(session: &mut Session, events: &mut UnboundedReceiver<Event>) {
+        loop {
+            if let Event::Update(_, update @ SessionUpdate::AvailableCommandsUpdate(_)) =
+                events.recv().await.unwrap()
+            {
+                return session.update(&update);
+            }
+        }
+    }
+
     #[tokio::test]
     async fn resume_lists_every_page_and_loads_a_different_session_after_close() {
         with_session(async |mut session, mut events| {
             assert!(session.can_resume());
+            assert!(session.commands.is_empty());
+            commands(&mut session, &mut events).await;
+            assert_eq!(session.commands, ["tally"]);
             let old = session.id.clone();
             session.prompt("title".into())?;
             turn(&mut session, &mut events, &[]).await;
@@ -448,8 +474,11 @@ pub mod tests {
             session.close().await?;
             assert!(!session.active());
             assert!(session.config_options.is_empty());
+            assert!(session.commands.is_empty());
             assert!(session.usage.is_none());
             session.load(newer.clone()).await?;
+            commands(&mut session, &mut events).await;
+            assert_eq!(session.commands, ["tally"]);
             assert!(session.active());
             assert_eq!(session.id, newer);
             assert_eq!(session.config_options.len(), 3);

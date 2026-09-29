@@ -25,7 +25,7 @@ use ratatui::{
     buffer::Buffer,
     layout::{Margin, Rect},
     style::Style,
-    text::Line,
+    text::{Line, Span},
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use unicode_width::UnicodeWidthStr;
@@ -282,6 +282,7 @@ pub struct Approval<'a> {
 pub struct Screen<'a> {
     pub view: &'a TranscriptView,
     pub input: &'a Input,
+    pub commands: &'a [String],
     pub approval: Option<Approval<'a>>,
     picker: Option<&'a Picker>,
     pub settings: &'a str,
@@ -386,8 +387,13 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
         put(buf, dialog, y, line);
     }
     let composer = composer.inner(MARGIN);
+    let ghost = screen.input.ghost_text(screen.commands).unwrap_or_default();
     for (y, line) in input.lines.iter().enumerate() {
-        put(buf, composer, y, &Line::raw(line.as_str()));
+        let mut spans = vec![Span::raw(line.as_str())];
+        if y + 1 == input.lines.len() {
+            spans.push(Span::styled(ghost, Style::new().fg(theme::DIM)));
+        }
+        put(buf, composer, y, &Line::from(spans));
     }
     let status = justified(screen.settings, screen.usage, width);
     let status = Line::styled(status, Style::new().fg(theme::GRAY));
@@ -599,6 +605,15 @@ pub fn usage(usage: Option<&UsageUpdate>) -> String {
     format!("{percent}% • ${cost:.2}")
 }
 
+/// The slash command names the composer completes: the client's own and the
+/// session's available commands, sorted.
+fn commands(session: &Session) -> Vec<String> {
+    let mut commands = session.commands.clone();
+    commands.extend(["model", "resume"].map(String::from));
+    commands.sort();
+    commands
+}
+
 /// Handles one key and reports whether to quit.
 async fn key(
     ui: &mut Ui,
@@ -685,7 +700,10 @@ async fn key(
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
         {
             let forward = key.code == KeyCode::Tab && !key.modifiers.contains(KeyModifiers::SHIFT);
-            if let Some((id, value)) = next_mode(&session.config_options, forward)
+            let commands = commands(session);
+            if forward && let Some(ghost) = ui.input.ghost_text(&commands) {
+                ui.input.paste(ghost);
+            } else if let Some((id, value)) = next_mode(&session.config_options, forward)
                 && let Err(error) = session.set_config_option(id, value).await
             {
                 ui.view
@@ -933,9 +951,11 @@ pub async fn run(
         }
         let settings = settings(&session.config_options);
         let usage = usage(session.usage.as_ref());
+        let commands = commands(&session);
         let screen = Screen {
             view: &ui.view,
             input: &ui.input,
+            commands: &commands,
             approval: session.pending.front().map(|(request, _)| Approval {
                 request,
                 selected: ui.selected,
@@ -1051,6 +1071,7 @@ mod tests {
         Screen {
             view,
             input,
+            commands: &[],
             approval: None,
             picker: None,
             settings: "",
@@ -1219,6 +1240,26 @@ mod tests {
         view.end();
         let (rows, _, _, _) = render(&screen(&view, &input, now), 40, 13);
         assert_eq!(rows[6], "  ❯ message 20");
+    }
+
+    #[test]
+    fn ghost_text_is_drawn_dim_after_the_cursor() {
+        let view = TranscriptView::default();
+        let mut input = Input::default();
+        input.paste("/mo");
+        let commands = ["model".to_owned()];
+        let screen = Screen {
+            commands: &commands,
+            ..screen(&view, &input, Instant::now())
+        };
+        let (rows, cursor, _, buffer) = render(&screen, 20, 6);
+        assert_eq!(rows[2], "  ❯ /model");
+        assert_eq!(cursor, (7, 2));
+        for x in 4..9 {
+            let color = buffer.cell((x, 2)).unwrap().fg;
+            let expected = if x < 7 { theme::TEXT } else { theme::DIM };
+            assert_eq!(color, expected, "column {x}");
+        }
     }
 
     #[test]
@@ -1573,6 +1614,29 @@ mod tests {
                 assert_eq!(settings(&session.config_options), expected);
             }
             assert!(ui.input.is_empty());
+            Ok(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn tab_inserts_ghost_text_and_otherwise_cycles_the_mode() {
+        with_session(async |mut session, _events| {
+            let mut ui = Ui::default();
+            let now = Instant::now();
+            session.commands = vec!["tally".to_owned()];
+            for c in "/ta".chars() {
+                press(&mut ui, &mut session, KeyCode::Char(c), now).await?;
+            }
+            press(&mut ui, &mut session, KeyCode::BackTab, now).await?;
+            assert!(settings(&session.config_options).starts_with("Auto"));
+            assert_eq!(ui.input.text(), "/ta");
+            press(&mut ui, &mut session, KeyCode::Tab, now).await?;
+            assert!(settings(&session.config_options).starts_with("Auto"));
+            assert_eq!(ui.input.text(), "/tally");
+            press(&mut ui, &mut session, KeyCode::Tab, now).await?;
+            assert!(settings(&session.config_options).starts_with("Ask"));
+            assert_eq!(ui.input.text(), "/tally");
             Ok(())
         })
         .await;
