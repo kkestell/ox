@@ -1,9 +1,11 @@
 # Ox
 
-Install both binaries to `~/.local/bin` with Rust:
+Download the archive for your platform from the newest release on the
+[releases page](https://github.com/kkestell/ox/releases), then extract `ox` and
+`ur` into a directory on your `PATH`, such as `~/.local/bin`:
 
 ```sh
-make install
+tar -xzf ox*.tar.gz -C ~/.local/bin
 ox /path/to/project
 ```
 
