@@ -1,0 +1,9 @@
+{
+  "favorites": [
+    "deepseek/deepseek-v4.1-flash",
+    "z-ai/glm-5.3-flash",
+    "xiaomi/mimo-v2.6-flash",
+    "openai/gpt-6-luna",
+    "meta/muse-spark-1.3-contributor"
+  ]
+}

@@ -40,3 +40,4 @@ do-install:
 	install -m 755 target/$(PROFILE_DIR)/ox-acp $(PREFIX)/ox-acp
 	mkdir -p $(CONFIG_DIR)
 	cp examples/settings.json $(CONFIG_DIR)/settings.json
+	cp examples/tui.json $(CONFIG_DIR)/tui.json
