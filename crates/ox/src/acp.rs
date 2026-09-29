@@ -131,11 +131,15 @@ impl Session {
     }
 
     /// Sends the prompt, or cancels the running turn and sends it when that
-    /// turn finishes.
-    pub fn prompt(&mut self, text: String) -> anyhow::Result<()> {
+    /// turn finishes. Returns false while another prompt is already pending.
+    pub fn prompt(&mut self, text: String) -> anyhow::Result<bool> {
         if self.busy {
+            if self.queued.is_some() {
+                return Ok(false);
+            }
             self.queued = Some(text);
-            return self.cancel();
+            self.cancel()?;
+            return Ok(true);
         }
         self.busy = true;
         let connection = self.connection.clone();
@@ -147,7 +151,7 @@ impl Session {
             let _ = events.send(Event::Finished(id, response));
             Ok(())
         })?;
-        Ok(())
+        Ok(true)
     }
 
     pub fn permission(

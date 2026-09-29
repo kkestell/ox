@@ -135,12 +135,13 @@ impl Drop for Terminal {
     }
 }
 
-/// The rows the last draw gave the transcript view or the picker, and the
-/// transcript view's line count, which paging uses.
+/// The rows and line counts the last draw gave each pageable region.
 #[derive(Clone, Copy, Default)]
 pub struct Layout {
     pub height: usize,
     pub lines: usize,
+    approval_height: usize,
+    approval_lines: usize,
 }
 
 #[derive(Default)]
@@ -151,6 +152,7 @@ struct Ui {
     show_thinking: bool,
     tool_output: ToolOutput,
     layout: Layout,
+    approval_scroll: usize,
     picker: Option<Picker>,
     resume_after_turn: bool,
     /// The favorite model IDs, in the order they were added.
@@ -342,6 +344,7 @@ pub struct Screen<'a> {
     pub input: &'a Input,
     pub commands: &'a [String],
     pub approval: Option<Approval<'a>>,
+    approval_scroll: usize,
     picker: Option<&'a Picker>,
     pub settings: &'a str,
     pub usage: &'a str,
@@ -401,6 +404,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
         return Layout {
             height: rows,
             lines: 0,
+            ..Layout::default()
         };
     }
     let input = screen.input.rows(width);
@@ -408,10 +412,13 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
         .approval
         .as_ref()
         .map(|approval| approval_lines(screen.view, approval, width));
-    let dialog_height = approval.as_ref().map_or(0, |lines| lines.len() + 2);
     // The composer holds the input, a blank row, and the status line.
     let composer_height = input.lines.len() + 4;
-    let space = height.saturating_sub(dialog_height + composer_height);
+    let composer_top = height.saturating_sub(composer_height);
+    let dialog_height = approval
+        .as_ref()
+        .map_or(0, |lines| (lines.len() + 2).min(composer_top));
+    let space = composer_top - dialog_height;
     // `rows` rows from row `y`, clipped to the screen.
     let region = |y: usize, rows: usize| {
         let top = y.min(height);
@@ -423,7 +430,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
     };
     let view = region(0, space);
     let dialog = region(space, dialog_height);
-    let composer = region(space + dialog_height, composer_height);
+    let composer = region(composer_top, composer_height);
     buf.set_style(dialog, Style::new().bg(theme::APPROVAL));
     buf.set_style(composer, Style::new().bg(theme::COMPOSER));
     let view = view.inner(MARGIN);
@@ -441,8 +448,38 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
         put(buf, view, view_height - 1, &notice);
     }
     let dialog = dialog.inner(MARGIN);
-    for (y, line) in approval.iter().flatten().enumerate() {
-        put(buf, dialog, y, line);
+    let mut approval_height = 0;
+    let mut approval_lines = 0;
+    if let (Some(lines), Some(request)) = (approval.as_ref(), screen.approval.as_ref()) {
+        let choices = request.request.options.len();
+        let body_end = lines.len() - choices - 1;
+        let body = &lines[2..body_end];
+        approval_height = usize::from(dialog.height).saturating_sub(3 + choices);
+        approval_lines = body.len();
+        let first = screen
+            .approval_scroll
+            .min(body.len().saturating_sub(approval_height));
+        put(buf, dialog, 0, &lines[0]);
+        for (y, line) in body.iter().skip(first).take(approval_height).enumerate() {
+            put(buf, dialog, y + 2, line);
+        }
+        let footer = 2 + approval_height;
+        if body.len() > approval_height {
+            let hint = if first + approval_height < body.len() {
+                "↓ Page Down for more"
+            } else {
+                "↑ Page Up for earlier"
+            };
+            put(
+                buf,
+                dialog,
+                footer,
+                &Line::styled(hint, Style::new().fg(theme::DIM)),
+            );
+        }
+        for (y, line) in lines[body_end + 1..].iter().enumerate() {
+            put(buf, dialog, footer + 1 + y, line);
+        }
     }
     let composer = composer.inner(MARGIN);
     let ghost = screen.input.ghost_text(screen.commands).unwrap_or_default();
@@ -461,6 +498,8 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
     Layout {
         height: view_height,
         lines: lines.len(),
+        approval_height,
+        approval_lines,
     }
 }
 
@@ -902,6 +941,18 @@ async fn key(
         }
         KeyCode::Backspace => ui.input.backspace(),
         KeyCode::Delete => ui.input.delete(),
+        KeyCode::PageUp if options.is_some() => {
+            let page = ui.layout.approval_height.saturating_sub(1).max(1);
+            ui.approval_scroll = ui.approval_scroll.saturating_sub(page);
+        }
+        KeyCode::PageDown if options.is_some() => {
+            let page = ui.layout.approval_height.saturating_sub(1).max(1);
+            let last = ui
+                .layout
+                .approval_lines
+                .saturating_sub(ui.layout.approval_height);
+            ui.approval_scroll = ui.approval_scroll.saturating_add(page).min(last);
+        }
         KeyCode::PageUp => ui.view.page_up(ui.layout.height, ui.layout.lines),
         KeyCode::PageDown => ui.view.page_down(ui.layout.height, ui.layout.lines),
         _ => {}
@@ -968,11 +1019,12 @@ fn next_mode(
 /// Sends the input. During a turn the prompt is queued, and its `User` item
 /// waits until the turn finishes.
 fn send(ui: &mut Ui, session: &mut Session, now: Instant) -> anyhow::Result<()> {
-    let text = ui.input.take();
     let busy = session.busy;
-    session.prompt(text.clone())?;
-    if !busy {
-        ui.view.user(text, now);
+    if session.prompt(ui.input.text().to_owned())? {
+        let text = ui.input.take();
+        if !busy {
+            ui.view.user(text, now);
+        }
     }
     Ok(())
 }
@@ -980,6 +1032,7 @@ fn send(ui: &mut Ui, session: &mut Session, now: Instant) -> anyhow::Result<()> 
 fn answer(ui: &mut Ui, session: &mut Session, index: usize) -> anyhow::Result<()> {
     session.answer(index + 1)?;
     ui.selected = 0;
+    ui.approval_scroll = 0;
     if !session.pending.is_empty() {
         ui.view.changed();
     }
@@ -1012,6 +1065,7 @@ fn handle(
             session.permission(request, responder)?;
             if first && !session.pending.is_empty() {
                 ui.selected = 0;
+                ui.approval_scroll = 0;
                 ui.view.changed();
                 terminal.bell()?;
             }
@@ -1086,6 +1140,7 @@ pub async fn run(
                 request,
                 selected: ui.selected,
             }),
+            approval_scroll: ui.approval_scroll,
             picker: ui.picker.as_ref(),
             settings: &settings,
             usage: &usage,
@@ -1096,6 +1151,9 @@ pub async fn run(
         let mut layout = Layout::default();
         terminal.inner.draw(|frame| layout = draw(frame, &screen))?;
         ui.layout = layout;
+        ui.approval_scroll = ui
+            .approval_scroll
+            .min(layout.approval_lines.saturating_sub(layout.approval_height));
         tokio::select! {
             biased;
             _ = session.closed() => anyhow::bail!("server closed the ACP connection"),
@@ -1199,6 +1257,7 @@ mod tests {
             input,
             commands: &[],
             approval: None,
+            approval_scroll: 0,
             picker: None,
             settings: "",
             usage: "0% • $0.00",
@@ -1302,6 +1361,53 @@ mod tests {
         assert_eq!(colors(0, 9), (theme::TEXT, theme::APPROVAL));
         assert_eq!(colors(8, 16), (theme::TEXT, theme::APPROVAL));
         assert_eq!(colors(4, 22), (theme::TEXT, theme::COMPOSER));
+    }
+
+    #[tokio::test]
+    async fn long_approval_keeps_choices_and_composer_visible_and_pages_through_details() {
+        with_session(async |mut session, mut events| {
+            session.prompt("tools".into())?;
+            requests(&mut session, &mut events).await;
+            let details = (0..24)
+                .map(|line| format!("detail {line:02}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            session.pending.front_mut().unwrap().0 = request("shell", &details);
+            let mut ui = Ui::default();
+            ui.input.paste("draft");
+            let now = Instant::now();
+            let show = |ui: &Ui, session: &Session| {
+                let request = &session.pending.front().unwrap().0;
+                let display = Screen {
+                    approval: Some(Approval {
+                        request,
+                        selected: ui.selected,
+                    }),
+                    approval_scroll: ui.approval_scroll,
+                    ..screen(&ui.view, &ui.input, now)
+                };
+                render(&display, 80, 24)
+            };
+            let (rows, cursor, layout, _) = show(&ui, &session);
+            ui.layout = layout;
+            assert!(rows.iter().any(|row| row.contains("detail 00")), "{rows:?}");
+            assert!(rows.iter().any(|row| row.contains("Page Down for more")));
+            assert!(rows.iter().any(|row| row.contains("› 1. Yes")), "{rows:?}");
+            assert!(rows.iter().any(|row| row.contains("❯ draft")), "{rows:?}");
+            assert!(cursor.1 < 24);
+            press(&mut ui, &mut session, KeyCode::PageDown, now).await?;
+            press(&mut ui, &mut session, KeyCode::PageDown, now).await?;
+            let (rows, _, _, _) = show(&ui, &session);
+            assert!(rows.iter().any(|row| row.contains("detail 23")), "{rows:?}");
+            assert!(rows.iter().any(|row| row.contains("Page Up for earlier")));
+            assert!(rows.iter().any(|row| row.contains("› 1. Yes")));
+            press(&mut ui, &mut session, KeyCode::PageUp, now).await?;
+            press(&mut ui, &mut session, KeyCode::PageUp, now).await?;
+            let (rows, _, _, _) = show(&ui, &session);
+            assert!(rows.iter().any(|row| row.contains("detail 00")));
+            Ok(())
+        })
+        .await;
     }
 
     #[test]
@@ -1879,6 +1985,39 @@ mod tests {
             press(&mut ui, &mut session, KeyCode::Enter, now).await?;
             assert_eq!(ui.input.text(), "later");
             assert!(session.queued.is_none());
+            Ok(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn second_submission_stays_in_the_composer_while_a_prompt_is_queued() {
+        with_session(async |mut session, mut events| {
+            session.prompt("running".into())?;
+            while !matches!(
+                events.recv().await.unwrap(),
+                AcpEvent::Update(_, SessionUpdate::AgentMessageChunk(_))
+            ) {}
+            let mut ui = Ui::default();
+            let now = Instant::now();
+            ui.input.paste("first");
+            send(&mut ui, &mut session, now)?;
+            assert!(ui.input.is_empty());
+            ui.input.paste("second");
+            send(&mut ui, &mut session, now)?;
+            assert_eq!(ui.input.text(), "second");
+            assert_eq!(session.queued.as_deref(), Some("first"));
+            let queued = loop {
+                if let AcpEvent::Finished(_, _) = events.recv().await.unwrap() {
+                    break session.finished()?;
+                }
+            };
+            assert_eq!(queued.as_deref(), Some("first"));
+            assert_eq!(
+                turn(&mut session, &mut events, &[]).await.0,
+                "you said: first"
+            );
+            assert_eq!(ui.input.text(), "second");
             Ok(())
         })
         .await;
