@@ -20,24 +20,25 @@ format-docs:
 	dprint fmt
 
 PREFIX ?= $(HOME)/.local/bin
-CONFIG_DIR ?= $(HOME)/.config/ox
+OX_CONFIG_DIR ?= $(HOME)/.config/ox
+UR_CONFIG_DIR ?= $(HOME)/.config/ur
 
 release:
-	cargo build --release -p ox -p ox-acp
+	cargo build --release -p ox -p ur
 
 install:
-	cargo build --profile fast -p ox -p ox-acp
+	cargo build --profile fast -p ox -p ur
 	$(MAKE) PROFILE_DIR=fast do-install
 
 install-release:
-	cargo build --release -p ox -p ox-acp
+	cargo build --release -p ox -p ur
 	$(MAKE) PROFILE_DIR=release do-install
 
 .PHONY: do-install
 do-install:
 	mkdir -p $(PREFIX)
 	install -m 755 target/$(PROFILE_DIR)/ox $(PREFIX)/ox
-	install -m 755 target/$(PROFILE_DIR)/ox-acp $(PREFIX)/ox-acp
-	mkdir -p $(CONFIG_DIR)
-	cp examples/settings.json $(CONFIG_DIR)/settings.json
-	cp examples/tui.json $(CONFIG_DIR)/tui.json
+	install -m 755 target/$(PROFILE_DIR)/ur $(PREFIX)/ur
+	mkdir -p $(OX_CONFIG_DIR) $(UR_CONFIG_DIR)
+	cp examples/ox/settings.json $(OX_CONFIG_DIR)/settings.json
+	cp examples/ur/settings.json $(UR_CONFIG_DIR)/settings.json

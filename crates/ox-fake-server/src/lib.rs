@@ -1,5 +1,5 @@
 //! The fake server: a scripted ACP server for testing ox without a model
-//! provider or ox-acp. Its binary serves terminal tests; its library serves ACP tests.
+//! provider or ur. Its binary serves terminal tests; its library serves ACP tests.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -116,7 +116,7 @@ struct SavedSession {
 const PACES: [(&str, &str); 2] = [("steady", "Steady"), ("brisk", "Brisk")];
 
 /// The values of the `model` config option, with the prices and context limit
-/// ox-acp sends in each choice's `_meta`.
+/// ur sends in each choice's `_meta`.
 const MODELS: [(&str, &str, f64, f64, u64); 2] = [
     (
         "deepseek",
@@ -129,7 +129,7 @@ const MODELS: [(&str, &str, f64, f64, u64); 2] = [
 ];
 
 /// The fake server's pace, mode, and model options. The second model is
-/// described as accepting images, as ox-acp describes such models.
+/// described as accepting images, as ur describes such models.
 fn config_options(pace: &str, mode: &str, model: &str, effort: &str) -> Vec<SessionConfigOption> {
     let values: Vec<_> = PACES
         .iter()

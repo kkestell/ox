@@ -23,7 +23,7 @@ use std::{
 
 use sessions::EffortLevel;
 
-const USAGE: &str = "ox-acp [run [--dir <workspace-path>] [--model <model-id>] \
+const USAGE: &str = "ur [run [--dir <workspace-path>] [--model <model-id>] \
                      [--effort <default|none|minimal|low|medium|high|xhigh|max>] <prompt> \
                      | auth <login|logout>]";
 
@@ -160,7 +160,7 @@ async fn main() -> ExitCode {
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("ox-acp: {error}");
+            eprintln!("ur: {error}");
             ExitCode::FAILURE
         }
     }
@@ -264,9 +264,9 @@ mod tests {
             openrouter::fixture::DEFAULT_MODEL
         );
         let chosen = openrouter::catalog()[1].id.as_str();
-        fs::create_dir(workspace.0.join(".ox")).unwrap();
+        fs::create_dir(workspace.0.join(".ur")).unwrap();
         fs::write(
-            workspace.0.join(".ox/settings.json"),
+            workspace.0.join(".ur/settings.json"),
             format!(r#"{{"model":"{chosen}"}}"#),
         )
         .unwrap();

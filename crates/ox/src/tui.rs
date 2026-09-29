@@ -1995,7 +1995,7 @@ mod tests {
         with_session(async |mut session, _events| {
             let now = Instant::now();
             let directory = tempfile::tempdir()?;
-            let path = directory.path().join("ox/tui.json");
+            let path = directory.path().join("ox/settings.json");
             let mut ui = Ui {
                 favorites: vec!["missing/model".to_owned()],
                 config_path: path.clone(),

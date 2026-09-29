@@ -2,12 +2,12 @@ Keep this document accurate and short.
 
 ## Code
 
-- `crates/ox-acp/` — the ACP server, prompt run, tools, OpenRouter, and session
+- `crates/ur/` — the ACP server, prompt run, tools, OpenRouter, and session
   store.
 - `crates/ox/` — the interactive ACP client and its terminal tests.
 - `crates/ox-fake-server/` — the scripted server for client tests.
-- `crates/ox-acp/src/prompts/` — the built-in prompts.
-- `examples/` — the example settings file and skills.
+- `crates/ur/src/prompts/` — the built-in prompts.
+- `examples/` — the example settings files.
 - `scripts/run.py` — runs one headless prompt in a temporary workspace.
 - `.github/workflows/` — the release build.
 - `research/` — research notes and reports.
@@ -57,9 +57,9 @@ Read before planning and changing code:
 
 ## Backwards Compatibility
 
-Currently, there is none. Recreate `ox.db`, `ox.db-shm`, and `ox.db-wal` instead
-of adding migrations or versions. Their directory is `$OX_DATA_DIR`, else
-`$XDG_DATA_HOME/ox`, else `~/.local/share/ox`; local install targets do this.
+Currently, there is none. Recreate `ur.db`, `ur.db-shm`, and `ur.db-wal` instead
+of adding migrations or versions. Their directory is `$UR_DATA_DIR`, else
+`$XDG_DATA_HOME/ur`, else `~/.local/share/ur`; local install targets do this.
 
 ## Communication
 

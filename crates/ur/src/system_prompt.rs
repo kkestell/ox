@@ -1,4 +1,4 @@
-//! Builds Ox's system prompt from its built-in prompt and workspace
+//! Builds Ur's system prompt from its built-in prompt and workspace
 //! instructions.
 
 use std::{
@@ -90,7 +90,7 @@ mod tests {
 
         fs::write(&path, "Answer in French.\n").unwrap();
         let prompt = for_workspace(&workspace.0).unwrap();
-        assert!(prompt.starts_with("You are Ox, a coding agent"));
+        assert!(prompt.starts_with("You are Ur, a coding agent"));
         assert!(prompt.ends_with("# Workspace instructions from AGENTS.md\n\nAnswer in French."));
     }
 }

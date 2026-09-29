@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ox", "crates/ox-acp", "crates/ox-fake-server"]
+members = ["crates/ox", "crates/ur", "crates/ox-fake-server"]
 resolver = "3"
 
 [workspace.dependencies]

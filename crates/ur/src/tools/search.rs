@@ -108,7 +108,7 @@ pub(super) async fn execute(
     if !directory && workspace.read_file(&path).is_err() {
         return Err("search path must name a regular file or directory".to_owned());
     }
-    // Ripgrep supplies candidate names and ignore filtering. Ox ACP opens
+    // Ripgrep supplies candidate names and ignore filtering. Ur opens
     // each candidate through the workspace descriptor before reading or returning it.
     command.current_dir(root).arg("--").arg(
         Path::new(".").join(
@@ -519,7 +519,7 @@ mod tests {
         );
         let workspace = Workspace::new();
         let pinned = super::Workspace::open(&workspace.0).unwrap();
-        let error = run(Command::new("/nonexistent/ox-test-rg"), &pinned, None)
+        let error = run(Command::new("/nonexistent/ur-test-rg"), &pinned, None)
             .await
             .unwrap_err();
         assert!(error.contains("install ripgrep"));

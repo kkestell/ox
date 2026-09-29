@@ -1,6 +1,6 @@
 //! Session transcripts and the SQLite store that holds them, in one database
-//! at `{data}/ox.db`: `$OX_DATA_DIR`, else `$XDG_DATA_HOME/ox`, else
-//! `~/.local/share/ox`.
+//! at `{data}/ur.db`: `$UR_DATA_DIR`, else `$XDG_DATA_HOME/ur`, else
+//! `~/.local/share/ur`.
 //!
 //! Timestamps are RFC 3339 UTC with millisecond precision, so they sort
 //! lexicographically and `ORDER BY updated_at` needs no date parsing.
@@ -18,9 +18,9 @@ use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Overrides the data directory, mainly for tests.
-pub const DATA_DIR_ENV: &str = "OX_DATA_DIR";
+pub const DATA_DIR_ENV: &str = "UR_DATA_DIR";
 
-const DATABASE_FILE: &str = "ox.db";
+const DATABASE_FILE: &str = "ur.db";
 
 /// Longest session title derived from a prompt, in characters.
 const MAX_SESSION_TITLE_CHARS: usize = 80;
@@ -303,7 +303,7 @@ impl SessionMode {
     }
 }
 
-/// How much reasoning Ox ACP asks a model to do, in ascending order. `Default`
+/// How much reasoning Ur asks a model to do, in ascending order. `Default`
 /// leaves the choice to the model; every other level is the OpenRouter effort
 /// of the same id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -456,7 +456,7 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
-/// What Ox ACP knows happened to a tool call: `text` is what the model reads, and
+/// What Ur knows happened to a tool call: `text` is what the model reads, and
 /// `content` is what the ACP client shows. Empty content means the client
 /// shows the text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1065,12 +1065,12 @@ pub fn database_path() -> io::Result<PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_DATA_HOME")
         && !xdg.is_empty()
     {
-        return Ok(PathBuf::from(xdg).join("ox").join(DATABASE_FILE));
+        return Ok(PathBuf::from(xdg).join("ur").join(DATABASE_FILE));
     }
     let home = std::env::var("HOME")
         .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "HOME is not set"))?;
     Ok(PathBuf::from(home)
-        .join(".local/share/ox")
+        .join(".local/share/ur")
         .join(DATABASE_FILE))
 }
 
@@ -1148,7 +1148,7 @@ mod tests {
 
     #[test]
     fn a_saved_batch_survives_database_reopen_in_order() {
-        let dir = std::env::temp_dir().join(format!("ox-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("ur-test-{}", uuid::Uuid::new_v4()));
         let path = dir.join(DATABASE_FILE);
         let answered = message(vec![]);
         let message = message(vec![

@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, anyhow};
 use serde::Deserialize;
 
-/// The config file, `$XDG_CONFIG_HOME/ox/tui.json`, else
-/// `~/.config/ox/tui.json`.
+/// The config file, `$XDG_CONFIG_HOME/ox/settings.json`, else
+/// `~/.config/ox/settings.json`.
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -29,9 +29,9 @@ pub struct ServerConfig {
 
 impl Config {
     fn bundled_server() -> anyhow::Result<ServerConfig> {
-        let command = std::env::current_exe()?.with_file_name("ox-acp");
+        let command = std::env::current_exe()?.with_file_name("ur");
         Ok(ServerConfig {
-            name: "Ox".into(),
+            name: "Ur".into(),
             command: command.to_string_lossy().into_owned(),
             args: vec![],
         })
@@ -130,7 +130,7 @@ pub fn path() -> anyhow::Result<PathBuf> {
             .ok_or_else(|| anyhow!("no home directory"))?
             .join(".config"),
     };
-    Ok(config_home.join("ox/tui.json"))
+    Ok(config_home.join("ox/settings.json"))
 }
 
 #[cfg(test)]
@@ -170,12 +170,8 @@ mod tests {
     #[test]
     fn omitted_servers_mean_the_bundled_server_and_omitted_favorites_are_empty() {
         for (text, server, favorites) in [
-            ("{}", "ox-acp", vec![]),
-            (
-                r#"{"favorites":["a/b","c/d"]}"#,
-                "ox-acp",
-                vec!["a/b", "c/d"],
-            ),
+            ("{}", "ur", vec![]),
+            (r#"{"favorites":["a/b","c/d"]}"#, "ur", vec!["a/b", "c/d"]),
             (
                 r#"{"servers":[{"name":"Alpha","command":"alpha"}]}"#,
                 "alpha",
@@ -206,7 +202,7 @@ mod tests {
     #[test]
     fn saving_favorites_replaces_them_and_keeps_the_servers() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("ox/tui.json");
+        let path = directory.path().join("ox/settings.json");
         write_favorites(&path, &["a/b".into()]).unwrap();
         let servers = r#"{"servers":[{"name":"Alpha","command":"alpha"}],"favorites":["a/b"]}"#;
         std::fs::write(&path, servers).unwrap();

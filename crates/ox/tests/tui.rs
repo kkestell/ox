@@ -21,7 +21,7 @@ impl Tmux {
         let fake = PathBuf::from(env!("CARGO_BIN_EXE_ox")).with_file_name("ox-fake-server");
         assert!(fake.exists(), "run make e2e to build the fake server");
         std::fs::write(
-            config.join("tui.json"),
+            config.join("settings.json"),
             serde_json::to_vec(&serde_json::json!({
                 "servers": [{"name": "Fake", "command": fake, "args": []}]
             }))
@@ -232,7 +232,7 @@ fn model_picker_shows_prices_and_changes_the_model() {
         screen.contains(&format!("    {:<57}Favorites / All\n", "Search")),
         "{screen}"
     );
-    let config = test.root.path().join("config/ox/tui.json");
+    let config = test.root.path().join("config/ox/settings.json");
     let config: serde_json::Value =
         serde_json::from_slice(&std::fs::read(config).unwrap()).unwrap();
     assert_eq!(config["servers"][0]["name"], "Fake");
@@ -597,7 +597,7 @@ fn invalid_startup_does_not_launch_a_server_or_change_terminal_mode() {
     let config = root.path().join("ox");
     std::fs::create_dir(&config).unwrap();
     let marker = root.path().join("launched");
-    std::fs::write(config.join("tui.json"), serde_json::to_vec(&serde_json::json!({
+    std::fs::write(config.join("settings.json"), serde_json::to_vec(&serde_json::json!({
         "servers": [{"name": "Fake", "command": "/bin/sh", "args": ["-c", format!("touch {}", quote(marker.to_str().unwrap()))]}]
     })).unwrap()).unwrap();
     for args in [

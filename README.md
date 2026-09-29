@@ -1,9 +1,4 @@
-# ox
-
-ox is a small interactive ACP client. Each invocation starts one server and one
-new session in the supplied directory. It requires an already authenticated
-server that supports text prompts without client filesystem or terminal
-capabilities.
+# Ox
 
 Install both binaries to `~/.local/bin` with Rust:
 
@@ -12,11 +7,10 @@ make install
 ox /path/to/project
 ```
 
-The directory defaults to the current directory. `scripts/run-tui` builds a
-debug binary and forwards its arguments to ox.
+The directory defaults to the current directory.
 
-By default, `ox` starts `ox-acp`. To use another server, configure servers in
-`$XDG_CONFIG_HOME/ox/tui.json`, or `~/.config/ox/tui.json`:
+By default, `ox` starts `ur`. To use another server, configure servers in
+`$XDG_CONFIG_HOME/ox/settings.json`, or `~/.config/ox/settings.json`:
 
 ```json
 {
@@ -27,9 +21,9 @@ By default, `ox` starts `ox-acp`. To use another server, configure servers in
 ```
 
 Use your server's actual executable and ACP arguments. Select a server with
-`--server` when more than one is configured. Run `ox-acp` directly to serve an
-ACP client such as Zed; `ox-acp auth login` authenticates it, and `ox-acp run`
-runs a headless prompt.
+`--server` when more than one is configured. Run `ur` directly to serve an ACP
+client such as Zed; `ur auth login` authenticates it, and `ur run` runs a
+headless prompt.
 
 Type a prompt and press Enter. Paste preserves newlines and waits for Enter; the
 input line shows newlines as `↵`. Long input shows its end. Backspace deletes

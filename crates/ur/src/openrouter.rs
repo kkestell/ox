@@ -46,7 +46,7 @@ impl CatalogModel {
     }
 }
 
-/// The fields Ox ACP reads from one entry of OpenRouter's `GET /models`.
+/// The fields Ur reads from one entry of OpenRouter's `GET /models`.
 #[derive(Deserialize)]
 struct OpenRouterModel {
     id: String,
@@ -103,7 +103,7 @@ const RECENT_SECONDS: i64 = 183 * 24 * 60 * 60;
 /// does not serve, and must accept tools, take and produce text, have a context
 /// limit above the 8,000 tokens compaction reserves, have no negative price,
 /// and have been released within `RECENT_SECONDS` of `now`. OpenRouter lists a
-/// router such as `openrouter/auto-beta` at a negative price. Efforts Ox ACP
+/// router such as `openrouter/auto-beta` at a negative price. Efforts Ur
 /// does not know are dropped. Models are sorted by name.
 pub fn parse_catalog(text: &str, now: i64) -> io::Result<Vec<CatalogModel>> {
     let response: ModelsResponse = serde_json::from_str(text).map_err(|error| {
@@ -1299,7 +1299,7 @@ mod tests {
     };
     use crate::sessions::{AssistantBatch, SessionMode, ToolOutcome, TurnStart};
 
-    const TEST_SYSTEM_PROMPT: &str = "You are Ox.";
+    const TEST_SYSTEM_PROMPT: &str = "You are Ur.";
 
     fn test_parameters() -> ModelRequestParameters {
         ModelRequestParameters::new(
@@ -1398,7 +1398,7 @@ mod tests {
                 &ModelRequestParameters::new(
                     catalog()[2].id.as_str(),
                     EffortLevel::Default,
-                    "You are Ox.\n\n# Workspace instructions from AGENTS.md\n\nAnswer in French."
+                    "You are Ur.\n\n# Workspace instructions from AGENTS.md\n\nAnswer in French."
                         .to_owned(),
                     tools::Role::Main,
                 )
@@ -1427,7 +1427,7 @@ mod tests {
             messages[0],
             json!({
                 "role": "system",
-                "content": "You are Ox.\n\n# Workspace instructions from AGENTS.md\n\nAnswer in French."
+                "content": "You are Ur.\n\n# Workspace instructions from AGENTS.md\n\nAnswer in French."
             })
         );
         assert_eq!(

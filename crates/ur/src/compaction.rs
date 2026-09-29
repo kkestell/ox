@@ -30,7 +30,7 @@ fn tokens(bytes: usize) -> usize {
 
 /// Request-size limits for one model, in estimated tokens.
 pub struct Budget {
-    /// The largest request estimate Ox ACP admits or sends.
+    /// The largest request estimate Ur admits or sends.
     pub admission: usize,
     /// The request estimate at which a turn compacts before its next
     /// model request.

@@ -78,7 +78,7 @@ pub enum State {
     /// The command ended after an explicit stop, shutdown, or the end of
     /// the subagent that started it.
     Stopped(ExitStatus),
-    /// Reading its output failed, so Ox ACP ended the command.
+    /// Reading its output failed, so Ur ended the command.
     Failed {
         error: String,
         status: ExitStatus,
@@ -499,7 +499,7 @@ mod tests {
     }
 
     /// Waits until the PID in `file` no longer names a live process; a zombie
-    /// counts as stopped only for a descendant, which Ox ACP does not reap.
+    /// counts as stopped only for a descendant, which Ur does not reap.
     async fn assert_gone(file: &Path, reaped: bool) {
         let pid = std::fs::read_to_string(file).unwrap();
         timeout(Duration::from_secs(3), async {
