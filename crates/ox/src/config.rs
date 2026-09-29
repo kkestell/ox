@@ -1,21 +1,20 @@
 use std::collections::HashSet;
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, anyhow};
 use serde::Deserialize;
 
-/// The config file, `$XDG_CONFIG_HOME/ox/config.json`, else
-/// `~/.config/ox/config.json`.
+/// The config file, `$XDG_CONFIG_HOME/ox/tui.json`, else
+/// `~/.config/ox/tui.json`.
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub servers: Vec<ServerConfig>,
-    /// The OpenRouter model IDs the model picker's Frontier list shows, in
-    /// order.
+    /// The favorite OpenRouter model IDs, in the order they were added.
     #[serde(default)]
-    pub frontier: Vec<String>,
+    pub favorites: Vec<String>,
 }
 
 /// A named server executable.
@@ -82,10 +81,10 @@ impl Config {
         }
     }
 
-    /// Reads the config file, or the defaults when there is none yet.
-    pub fn read() -> anyhow::Result<Config> {
-        let path = path()?;
-        let text = match std::fs::read_to_string(&path) {
+    /// Reads the config file at `path`, or the defaults when there is none
+    /// yet.
+    pub fn read(path: &Path) -> anyhow::Result<Config> {
+        let text = match std::fs::read_to_string(path) {
             Ok(text) => text,
             Err(error) if error.kind() == ErrorKind::NotFound => "{}".to_owned(),
             Err(error) => {
@@ -96,6 +95,34 @@ impl Config {
     }
 }
 
+/// Replaces `favorites` in the config file at `path`, keeping its other
+/// fields.
+pub fn save_favorites(path: &Path, favorites: &[String]) -> anyhow::Result<()> {
+    write_favorites(path, favorites).with_context(|| format!("writing {}", path.display()))
+}
+
+fn write_favorites(path: &Path, favorites: &[String]) -> anyhow::Result<()> {
+    let mut config = match std::fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str(&text)?,
+        Err(error) if error.kind() == ErrorKind::NotFound => serde_json::json!({}),
+        Err(error) => return Err(error.into()),
+    };
+    let Some(fields) = config.as_object_mut() else {
+        anyhow::bail!("the config is not a JSON object");
+    };
+    fields.insert("favorites".into(), favorites.into());
+    let mut text = serde_json::to_string_pretty(&config)?;
+    text.push('\n');
+    let directory = path
+        .parent()
+        .ok_or_else(|| anyhow!("no config directory"))?;
+    std::fs::create_dir_all(directory)?;
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, text)?;
+    std::fs::rename(&temporary, path)?;
+    Ok(())
+}
+
 pub fn path() -> anyhow::Result<PathBuf> {
     let config = match std::env::var_os("XDG_CONFIG_HOME") {
         Some(config) => PathBuf::from(config),
@@ -103,7 +130,7 @@ pub fn path() -> anyhow::Result<PathBuf> {
             .ok_or_else(|| anyhow!("no home directory"))?
             .join(".config"),
     };
-    Ok(config.join("ox/config.json"))
+    Ok(config.join("ox/tui.json"))
 }
 
 #[cfg(test)]
@@ -120,7 +147,7 @@ mod tests {
                     args: vec![],
                 })
                 .collect(),
-            frontier: vec![],
+            favorites: vec![],
         }
     }
 
@@ -141,11 +168,11 @@ mod tests {
     }
 
     #[test]
-    fn omitted_servers_mean_the_bundled_server_and_omitted_frontier_is_empty() {
-        for (text, server, frontier) in [
+    fn omitted_servers_mean_the_bundled_server_and_omitted_favorites_are_empty() {
+        for (text, server, favorites) in [
             ("{}", "ox-acp", vec![]),
             (
-                r#"{"frontier":["a/b","c/d"]}"#,
+                r#"{"favorites":["a/b","c/d"]}"#,
                 "ox-acp",
                 vec!["a/b", "c/d"],
             ),
@@ -155,7 +182,7 @@ mod tests {
                 vec![],
             ),
             (
-                r#"{"servers":[{"name":"Alpha","command":"alpha"}],"frontier":["a/b"]}"#,
+                r#"{"servers":[{"name":"Alpha","command":"alpha"}],"favorites":["a/b"]}"#,
                 "alpha",
                 vec!["a/b"],
             ),
@@ -165,7 +192,7 @@ mod tests {
                 config.select(None).unwrap().command.ends_with(server),
                 "{text}"
             );
-            assert_eq!(config.frontier, frontier, "{text}");
+            assert_eq!(config.favorites, favorites, "{text}");
         }
     }
 
@@ -174,6 +201,21 @@ mod tests {
         for names in [vec!["Alpha", "Alpha"], vec![" "], vec![""]] {
             assert!(config(&names).validate().is_err());
         }
+    }
+
+    #[test]
+    fn saving_favorites_replaces_them_and_keeps_the_servers() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ox/tui.json");
+        write_favorites(&path, &["a/b".into()]).unwrap();
+        let servers = r#"{"servers":[{"name":"Alpha","command":"alpha"}],"favorites":["a/b"]}"#;
+        std::fs::write(&path, servers).unwrap();
+        write_favorites(&path, &["c/d".into(), "a/b".into()]).unwrap();
+        let config = Config::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(config.servers[0].name, "Alpha");
+        assert_eq!(config.favorites, ["c/d", "a/b"]);
+        let files: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().collect();
+        assert_eq!(files.len(), 1);
     }
 
     #[test]

@@ -263,7 +263,8 @@ pub async fn initialize(connection: &ConnectionTo<Agent>) -> anyhow::Result<Agen
 pub async fn start(
     server: &ServerConfig,
     directory: PathBuf,
-    frontier: Vec<String>,
+    favorites: Vec<String>,
+    config: PathBuf,
 ) -> anyhow::Result<()> {
     let (events, receiver) = unbounded_channel();
     let diagnostics = events.clone();
@@ -278,7 +279,7 @@ pub async fn start(
         directory,
         events,
         receiver,
-        async |session, receiver| tui::run(session, receiver, frontier).await,
+        async |session, receiver| tui::run(session, receiver, favorites, config).await,
     )
     .await
 }

@@ -35,9 +35,10 @@ async fn main() {
 async fn start() -> anyhow::Result<()> {
     let args = Args::parse();
     let directory = workspace(&args.directory)?;
-    let config = config::Config::read()?;
+    let path = config::path()?;
+    let config = config::Config::read(&path)?;
     let server = config.select(args.server.as_deref())?;
-    acp::start(server, directory, config.frontier.clone()).await
+    acp::start(server, directory, config.favorites.clone(), path).await
 }
 
 #[cfg(test)]

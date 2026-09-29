@@ -3,6 +3,7 @@ mod theme;
 mod transcript;
 
 use std::io::{Stdout, Write, stdout};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -24,13 +25,14 @@ use ratatui::{
     backend::CrosstermBackend,
     buffer::Buffer,
     layout::{Margin, Rect},
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use unicode_width::UnicodeWidthStr;
 
 use crate::acp::{self, Session};
+use crate::config;
 use input::Input;
 use transcript::{ToolOutput, TranscriptView};
 
@@ -151,8 +153,10 @@ struct Ui {
     layout: Layout,
     picker: Option<Picker>,
     resume_after_turn: bool,
-    /// The configured Frontier model IDs, in order.
-    frontier: Vec<String>,
+    /// The favorite model IDs, in the order they were added.
+    favorites: Vec<String>,
+    /// The config file favorites are saved to.
+    config: PathBuf,
 }
 
 struct Picker {
@@ -187,37 +191,45 @@ enum PickerRows {
 }
 
 /// The model picker's two lists. All is every choice the session offers, in
-/// its order. Frontier is the configured models the session offers, in the
-/// configured order.
+/// its order. Favorites is the favorite models the session offers, in the
+/// order they were added.
 struct ModelRows {
     all: Vec<ModelChoice>,
     /// Indexes into `all`.
-    frontier: Vec<usize>,
-    showing_frontier: bool,
+    favorites: Vec<usize>,
+    showing_favorites: bool,
 }
 
 impl ModelRows {
-    fn new(all: Vec<ModelChoice>, frontier: &[String]) -> Self {
-        let frontier = frontier
-            .iter()
-            .filter_map(|id| all.iter().position(|model| &*model.value.0 == id))
-            .collect();
-        Self {
+    fn new(all: Vec<ModelChoice>, favorites: &[String]) -> Self {
+        let mut rows = Self {
             all,
-            frontier,
-            showing_frontier: false,
-        }
+            favorites: Vec::new(),
+            showing_favorites: false,
+        };
+        rows.set_favorites(favorites);
+        rows.showing_favorites = rows.has_favorites();
+        rows
     }
 
-    /// Whether the picker offers the Frontier list.
-    fn has_frontier(&self) -> bool {
-        !self.frontier.is_empty()
+    /// Replaces the favorites, showing All when none is offered.
+    fn set_favorites(&mut self, favorites: &[String]) {
+        self.favorites = favorites
+            .iter()
+            .filter_map(|id| self.all.iter().position(|model| &*model.value.0 == id))
+            .collect();
+        self.showing_favorites &= self.has_favorites();
+    }
+
+    /// Whether the picker offers the Favorites list.
+    fn has_favorites(&self) -> bool {
+        !self.favorites.is_empty()
     }
 
     /// The indexes into `all` of the shown list, in order.
     fn shown(&self) -> Vec<usize> {
-        if self.showing_frontier {
-            self.frontier.clone()
+        if self.showing_favorites {
+            self.favorites.clone()
         } else {
             (0..self.all.len()).collect()
         }
@@ -463,20 +475,20 @@ fn picker_lines(picker: &Picker, width: usize, rows: usize) -> Vec<Line<'static>
     };
     // The model picker's list toggle ends at the search row's right edge.
     if let PickerRows::Models(models) = &picker.rows
-        && models.has_frontier()
+        && models.has_favorites()
     {
-        let (all, frontier) = if models.showing_frontier {
+        let (all, favorites) = if models.showing_favorites {
             (theme::DIM, theme::BRIGHT)
         } else {
             (theme::BRIGHT, theme::DIM)
         };
-        let toggle_width = "All / Frontier".width();
+        let toggle_width = "Favorites / All".width();
         let padding = width.saturating_sub(search[0].width() + toggle_width);
         search.extend([
             Span::raw(" ".repeat(padding)),
-            Span::styled("All", Style::new().fg(all)),
+            Span::styled("Favorites", Style::new().fg(favorites)),
             Span::styled(" / ", Style::new().fg(theme::DIM)),
-            Span::styled("Frontier", Style::new().fg(frontier)),
+            Span::styled("All", Style::new().fg(all)),
         ]);
     }
     let mut lines = vec![Line::from(search), error];
@@ -500,7 +512,15 @@ fn picker_lines(picker: &Picker, width: usize, rows: usize) -> Vec<Line<'static>
         } else {
             theme::GRAY
         };
-        lines.push(Line::styled(names[row].clone(), Style::new().fg(color)));
+        let mut style = Style::new().fg(color);
+        // All shows favorites in bold.
+        if let PickerRows::Models(models) = &picker.rows
+            && !models.showing_favorites
+            && models.favorites.contains(&row)
+        {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        lines.push(Line::styled(names[row].clone(), style));
     }
     lines
 }
@@ -701,10 +721,34 @@ async fn key(
             KeyCode::End => picker.move_to(picker.matches.len().saturating_sub(1), rows),
             KeyCode::Left | KeyCode::Right => {
                 if let PickerRows::Models(models) = &mut picker.rows
-                    && models.has_frontier()
+                    && models.has_favorites()
                 {
-                    models.showing_frontier = key.code == KeyCode::Right;
+                    models.showing_favorites = key.code == KeyCode::Left;
                     picker.filter();
+                }
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let PickerRows::Models(models) = &mut picker.rows
+                    && let Some(&index) = picker.matches.get(picker.selected)
+                {
+                    let id = models.all[index].value.0.to_string();
+                    let mut favorites = ui.favorites.clone();
+                    match favorites.iter().position(|favorite| *favorite == id) {
+                        Some(position) => {
+                            favorites.remove(position);
+                        }
+                        None => favorites.push(id),
+                    }
+                    match config::save_favorites(&ui.config, &favorites) {
+                        Ok(()) => {
+                            models.set_favorites(&favorites);
+                            ui.favorites = favorites;
+                            let selected = picker.selected;
+                            picker.filter();
+                            picker.move_to(selected, rows);
+                        }
+                        Err(error) => picker.error = Some(format!("Favorite failed: {error:#}")),
+                    }
                 }
             }
             KeyCode::Esc if closable => ui.picker = None,
@@ -876,7 +920,8 @@ async fn open_session_picker(ui: &mut Ui, session: &mut Session, now: Instant) {
     }
 }
 
-/// Opens the model picker on All with the current model selected.
+/// Opens the model picker on Favorites when the session offers a favorite,
+/// else on All, with the current model selected when it is shown.
 fn open_model_picker(ui: &mut Ui, session: &Session, now: Instant) {
     let Some((_, select)) =
         select_option(&session.config_options, SessionConfigOptionCategory::Model)
@@ -888,11 +933,14 @@ fn open_model_picker(ui: &mut Ui, session: &Session, now: Instant) {
     let models: Vec<_> = choices(select).into_iter().map(ModelChoice::new).collect();
     let current = models
         .iter()
-        .position(|model| model.value == select.current_value)
-        .unwrap_or(0);
-    let mut picker = Picker::new(PickerRows::Models(ModelRows::new(models, &ui.frontier)));
+        .position(|model| model.value == select.current_value);
+    let mut picker = Picker::new(PickerRows::Models(ModelRows::new(models, &ui.favorites)));
     // The next draw scrolls it into view.
-    picker.selected = current;
+    picker.selected = picker
+        .matches
+        .iter()
+        .position(|&index| Some(index) == current)
+        .unwrap_or(0);
     ui.picker = Some(picker);
 }
 
@@ -995,7 +1043,8 @@ fn handle(
 pub async fn run(
     mut session: Session,
     mut events: UnboundedReceiver<acp::Event>,
-    frontier: Vec<String>,
+    favorites: Vec<String>,
+    config: PathBuf,
 ) -> anyhow::Result<()> {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -1005,7 +1054,8 @@ pub async fn run(
     let mut terminal = Terminal::enter()?;
     let mut keys = EventStream::new();
     let mut ui = Ui {
-        frontier,
+        favorites,
+        config,
         ..Ui::default()
     };
     let mut tick = tokio::time::interval(Duration::from_secs(1));
@@ -1482,38 +1532,62 @@ mod tests {
     }
 
     #[test]
-    fn model_picker_search_row_shows_the_active_list_in_white_at_the_right_edge() {
+    fn model_picker_search_row_shows_the_active_list_in_white_and_all_shows_favorites_in_bold() {
         let models = vec![
             model_choice("flash", "Flash", serde_json::json!({})),
             model_choice("opus", "Opus", serde_json::json!({})),
         ];
-        let frontier = ["opus".to_owned()];
-        let mut picker = Picker::new(PickerRows::Models(ModelRows::new(models, &frontier)));
+        let favorites = ["opus".to_owned()];
+        let mut picker = Picker::new(PickerRows::Models(ModelRows::new(models, &favorites)));
         let view = TranscriptView::default();
         let input = Input::default();
-        for (showing_frontier, all, frontier, shown) in [
-            (false, theme::BRIGHT, theme::DIM, ["    Flash", "    Opus"]),
-            (true, theme::DIM, theme::BRIGHT, ["    Opus", ""]),
+        for (showing_favorites, all, favorites, shown, bold) in [
+            (
+                false,
+                theme::BRIGHT,
+                theme::DIM,
+                ["    Flash", "    Opus"],
+                [false, true],
+            ),
+            (
+                true,
+                theme::DIM,
+                theme::BRIGHT,
+                ["    Opus", ""],
+                [false, false],
+            ),
         ] {
             let PickerRows::Models(models) = &mut picker.rows else {
                 unreachable!()
             };
-            models.showing_frontier = showing_frontier;
+            models.showing_favorites = showing_favorites;
             picker.filter();
             let screen = Screen {
                 picker: Some(&picker),
                 ..screen(&view, &input, Instant::now())
             };
             let (rows, cursor, _, buffer) = render(&screen, 40, 8);
-            assert_eq!(rows[2], format!("    {:<18}All / Frontier", "Search"));
+            assert_eq!(rows[2], format!("    {:<17}Favorites / All", "Search"));
             assert_eq!(cursor, (4, 2));
             let color = |x: u16| buffer.cell((x, 2)).unwrap().fg;
             assert_eq!(
-                (color(22), color(26), color(28)),
-                (all, theme::DIM, frontier),
-                "showing_frontier {showing_frontier}"
+                (color(21), color(31), color(33)),
+                (favorites, theme::DIM, all),
+                "showing_favorites {showing_favorites}"
             );
             assert_eq!(rows[4..6], shown);
+            let is_bold = |y: u16| {
+                buffer
+                    .cell((4, y))
+                    .unwrap()
+                    .modifier
+                    .contains(Modifier::BOLD)
+            };
+            assert_eq!(
+                [is_bold(4), is_bold(5)],
+                bold,
+                "showing_favorites {showing_favorites}"
+            );
         }
     }
 
@@ -1619,11 +1693,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn left_and_right_switch_the_model_picker_between_all_and_frontier() {
+    async fn the_model_picker_opens_on_favorites_and_left_and_right_switch_lists() {
         with_session(async |mut session, _events| {
             let now = Instant::now();
             let mut ui = Ui {
-                frontier: vec!["gemma".to_owned(), "deepseek".to_owned()],
+                favorites: vec!["gemma".to_owned(), "deepseek".to_owned()],
                 ..Ui::default()
             };
             let state = |ui: &Ui| {
@@ -1632,14 +1706,13 @@ mod tests {
             };
             ui.input.paste("/model");
             press(&mut ui, &mut session, KeyCode::Enter, now).await?;
-            press(&mut ui, &mut session, KeyCode::Down, now).await?;
-            assert_eq!(state(&ui), (vec![0, 1], 1), "opens on All");
-            press(&mut ui, &mut session, KeyCode::Right, now).await?;
             assert_eq!(
                 state(&ui),
-                (vec![1, 0], 0),
-                "Frontier follows the configured order"
+                (vec![1, 0], 1),
+                "opens on Favorites, in the order they were added, with the current model selected"
             );
+            press(&mut ui, &mut session, KeyCode::Right, now).await?;
+            assert_eq!(state(&ui), (vec![0, 1], 0), "Right shows All");
             for c in "deep".chars() {
                 press(&mut ui, &mut session, KeyCode::Char(c), now).await?;
             }
@@ -1653,8 +1726,7 @@ mod tests {
             for _ in 0..4 {
                 press(&mut ui, &mut session, KeyCode::Backspace, now).await?;
             }
-            assert_eq!(state(&ui), (vec![0, 1], 0));
-            press(&mut ui, &mut session, KeyCode::Right, now).await?;
+            assert_eq!(state(&ui), (vec![1, 0], 0));
             press(&mut ui, &mut session, KeyCode::Enter, now).await?;
             assert!(ui.picker.is_none());
             assert_eq!(
@@ -1667,28 +1739,103 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_model_picker_shows_only_all_without_an_offered_frontier_model() {
+    async fn the_model_picker_shows_only_all_without_an_offered_favorite() {
         with_session(async |mut session, _events| {
             let now = Instant::now();
             let view = TranscriptView::default();
             let input = Input::default();
-            for frontier in [vec![], vec!["missing/model".to_owned()]] {
+            for favorites in [vec![], vec!["missing/model".to_owned()]] {
                 let mut ui = Ui {
-                    frontier: frontier.clone(),
+                    favorites: favorites.clone(),
                     ..Ui::default()
                 };
                 ui.input.paste("/model");
                 press(&mut ui, &mut session, KeyCode::Enter, now).await?;
-                press(&mut ui, &mut session, KeyCode::Right, now).await?;
+                press(&mut ui, &mut session, KeyCode::Left, now).await?;
                 let picker = ui.picker.as_ref().unwrap();
-                assert_eq!(picker.matches, [0, 1], "{frontier:?}");
+                assert_eq!(picker.matches, [0, 1], "{favorites:?}");
                 let screen = Screen {
                     picker: Some(picker),
                     ..screen(&view, &input, now)
                 };
                 let (rows, _, _, _) = render(&screen, 40, 8);
-                assert_eq!(rows[2], "    Search", "{frontier:?}");
+                assert_eq!(rows[2], "    Search", "{favorites:?}");
             }
+            Ok(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn control_f_favorites_and_unfavorites_the_selected_model_and_saves_the_favorites() {
+        with_session(async |mut session, _events| {
+            let now = Instant::now();
+            let directory = tempfile::tempdir()?;
+            let path = directory.path().join("ox/tui.json");
+            let mut ui = Ui {
+                favorites: vec!["missing/model".to_owned()],
+                config: path.clone(),
+                ..Ui::default()
+            };
+            let control_f = async |ui: &mut Ui, session: &mut Session| {
+                let control_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL);
+                key(ui, session, control_f, now).await
+            };
+            let state = |ui: &Ui| {
+                let picker = ui.picker.as_ref().unwrap();
+                let saved = config::Config::read(&path).unwrap().favorites;
+                assert_eq!(saved, ui.favorites);
+                (
+                    ui.favorites.clone(),
+                    picker.matches.clone(),
+                    picker.selected,
+                )
+            };
+            ui.input.paste("/model");
+            press(&mut ui, &mut session, KeyCode::Enter, now).await?;
+            press(&mut ui, &mut session, KeyCode::Down, now).await?;
+            control_f(&mut ui, &mut session).await?;
+            assert_eq!(
+                state(&ui),
+                (vec!["missing/model".into(), "gemma".into()], vec![0, 1], 1),
+                "favoriting keeps the selection"
+            );
+            press(&mut ui, &mut session, KeyCode::Up, now).await?;
+            control_f(&mut ui, &mut session).await?;
+            press(&mut ui, &mut session, KeyCode::Left, now).await?;
+            assert_eq!(
+                state(&ui),
+                (
+                    vec!["missing/model".into(), "gemma".into(), "deepseek".into()],
+                    vec![1, 0],
+                    0
+                )
+            );
+            control_f(&mut ui, &mut session).await?;
+            assert_eq!(
+                state(&ui),
+                (vec!["missing/model".into(), "deepseek".into()], vec![0], 0),
+                "unfavoriting removes the row from Favorites"
+            );
+            control_f(&mut ui, &mut session).await?;
+            assert_eq!(
+                state(&ui),
+                (vec!["missing/model".into()], vec![0, 1], 0),
+                "the last offered favorite's removal shows All"
+            );
+            assert!(ui.input.is_empty());
+            ui.config = directory.path().into();
+            control_f(&mut ui, &mut session).await?;
+            let picker = ui.picker.as_ref().unwrap();
+            assert!(
+                picker
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.starts_with("Favorite failed: ")),
+                "{:?}",
+                picker.error
+            );
+            assert_eq!(ui.favorites, ["missing/model"]);
             Ok(())
         })
         .await;

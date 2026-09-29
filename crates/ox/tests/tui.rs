@@ -21,10 +21,9 @@ impl Tmux {
         let fake = PathBuf::from(env!("CARGO_BIN_EXE_ox")).with_file_name("ox-fake-server");
         assert!(fake.exists(), "run make e2e to build the fake server");
         std::fs::write(
-            config.join("config.json"),
+            config.join("tui.json"),
             serde_json::to_vec(&serde_json::json!({
-                "servers": [{"name": "Fake", "command": fake, "args": []}],
-                "frontier": ["gemma"]
+                "servers": [{"name": "Fake", "command": fake, "args": []}]
             }))
             .unwrap(),
         )
@@ -225,28 +224,45 @@ fn model_picker_shows_prices_and_changes_the_model() {
         "{screen}"
     );
     assert!(!screen.contains("0% • $0.00"), "{screen}");
+    assert!(!screen.contains("Favorites / All"), "{screen}");
+    test.keys(&["Down", "C-f"]);
+    test.wait("Favorites / All");
+    let screen = test.screen();
     assert!(
-        screen.contains(&format!("    {:<58}All / Frontier\n", "Search")),
+        screen.contains(&format!("    {:<57}Favorites / All\n", "Search")),
         "{screen}"
     );
+    let config = test.root.path().join("config/ox/tui.json");
+    let config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(config).unwrap()).unwrap();
+    assert_eq!(config["servers"][0]["name"], "Fake");
+    assert_eq!(config["favorites"], serde_json::json!(["gemma"]));
     let styled = test.styled_screen();
-    assert!(styled.contains("\x1b[38;2;255;255;255mAll"), "{styled}");
     assert!(
-        styled.contains("\x1b[38;2;112;112;112m / Frontier"),
+        styled.contains("\x1b[38;2;112;112;112mFavorites / \x1b[38;2;255;255;255mAll"),
         "{styled}"
     );
-    test.keys(&["Right"]);
+    assert!(styled.contains("\x1b[1m"), "{styled}");
+    test.keys(&["Left"]);
     test.wait_gone("DeepSeek: DeepSeek Reasoner");
     let styled = test.styled_screen();
-    assert!(styled.contains("\x1b[38;2;112;112;112mAll"), "{styled}");
     assert!(
-        styled.contains("\x1b[38;2;255;255;255mFrontier"),
+        styled.contains("\x1b[38;2;255;255;255mFavorites\x1b[38;2;112;112;112m / All"),
         "{styled}"
     );
     assert!(styled.contains("Google: Gemma Vision"), "{styled}");
+    assert!(!styled.contains("\x1b[1m"), "{styled}");
     test.keys(&["Enter"]);
     test.wait_gone("Search");
     test.wait("Ask • Google: Gemma Vision");
+    test.prompt("/model");
+    test.wait("Search");
+    let screen = test.screen();
+    assert!(screen.contains("Google: Gemma Vision"), "{screen}");
+    assert!(
+        !screen.contains("DeepSeek: DeepSeek Reasoner"),
+        "the picker opens on Favorites:\n{screen}"
+    );
 }
 
 #[test]
@@ -521,7 +537,7 @@ fn invalid_startup_does_not_launch_a_server_or_change_terminal_mode() {
     let config = root.path().join("ox");
     std::fs::create_dir(&config).unwrap();
     let marker = root.path().join("launched");
-    std::fs::write(config.join("config.json"), serde_json::to_vec(&serde_json::json!({
+    std::fs::write(config.join("tui.json"), serde_json::to_vec(&serde_json::json!({
         "servers": [{"name": "Fake", "command": "/bin/sh", "args": ["-c", format!("touch {}", quote(marker.to_str().unwrap()))]}]
     })).unwrap()).unwrap();
     for args in [

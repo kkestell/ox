@@ -16,7 +16,7 @@ The directory defaults to the current directory. `scripts/run-tui` builds a
 debug binary and forwards its arguments to ox.
 
 By default, `ox` starts `ox-acp`. To use another server, configure servers in
-`$XDG_CONFIG_HOME/ox/config.json`, or `~/.config/ox/config.json`:
+`$XDG_CONFIG_HOME/ox/tui.json`, or `~/.config/ox/tui.json`:
 
 ```json
 {
