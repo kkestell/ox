@@ -496,7 +496,7 @@ pub mod tests {
             assert_eq!(session.commands, ["tally"]);
             assert!(session.active());
             assert_eq!(session.id, newer);
-            assert_eq!(session.config_options.len(), 3);
+            assert_eq!(session.config_options.len(), 4);
             let mode = session.config_options.iter().find(|option| option.id.0.as_ref() == "mode").unwrap();
             assert!(matches!(&mode.kind, SessionConfigKind::Select(select) if select.current_value.0.as_ref() == "ask"));
             session.prompt("after".into())?;

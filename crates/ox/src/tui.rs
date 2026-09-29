@@ -863,8 +863,11 @@ async fn key(
             let commands = commands(session);
             if forward && let Some(ghost) = ui.input.ghost_text(&commands) {
                 ui.input.paste(ghost);
-            } else if let Some((id, value)) = next_mode(&session.config_options, forward)
-                && let Err(error) = session.set_config_option(id, value).await
+            } else if let Some((id, value)) = next_choice(
+                &session.config_options,
+                SessionConfigOptionCategory::Mode,
+                forward,
+            ) && let Err(error) = session.set_config_option(id, value).await
             {
                 ui.view
                     .notice(format!("Mode change failed: {error}"), theme::RED, now);
@@ -875,6 +878,17 @@ async fn key(
             return Ok(true);
         }
         KeyCode::Char('t') if control => ui.show_thinking = !ui.show_thinking,
+        KeyCode::Char('e' | 'E') if control => {
+            if let Some((id, value)) = next_choice(
+                &session.config_options,
+                SessionConfigOptionCategory::ThoughtLevel,
+                true,
+            ) && let Err(error) = session.set_config_option(id, value).await
+            {
+                ui.view
+                    .notice(format!("Effort change failed: {error}"), theme::RED, now);
+            }
+        }
         KeyCode::Char('o') if control => ui.tool_output = ui.tool_output.next(),
         KeyCode::Char('u') if control => ui.input.clear(),
         KeyCode::Char(c)
@@ -1000,11 +1014,12 @@ fn open_model_picker(ui: &mut Ui, session: &Session, now: Instant) {
     ui.picker = Some(picker);
 }
 
-fn next_mode(
+fn next_choice(
     options: &[SessionConfigOption],
+    category: SessionConfigOptionCategory,
     forward: bool,
 ) -> Option<(SessionConfigId, SessionConfigValueId)> {
-    let (id, select) = select_option(options, SessionConfigOptionCategory::Mode)?;
+    let (id, select) = select_option(options, category)?;
     let choices = choices(select);
     let count = choices.len();
     if count < 2 {
@@ -1781,7 +1796,7 @@ mod tests {
             assert!(ui.picker.is_none());
             assert_eq!(
                 settings(&session.config_options),
-                "Ask • Google: Gemma Vision"
+                "Ask • Google: Gemma Vision • Low"
             );
             Ok(())
         })
@@ -1802,7 +1817,7 @@ mod tests {
             assert!(ui.picker.is_none());
             assert_eq!(
                 settings(&session.config_options),
-                "Ask • DeepSeek: DeepSeek Reasoner"
+                "Ask • DeepSeek: DeepSeek Reasoner • Low"
             );
             ui.input.paste("/model");
             press(&mut ui, &mut session, KeyCode::Enter, now).await?;
@@ -1811,7 +1826,7 @@ mod tests {
             assert!(ui.picker.is_none());
             assert_eq!(
                 settings(&session.config_options),
-                "Ask • Google: Gemma Vision"
+                "Ask • Google: Gemma Vision • Low"
             );
             ui.input.paste("/model");
             press(&mut ui, &mut session, KeyCode::Enter, now).await?;
@@ -1861,7 +1876,7 @@ mod tests {
             assert!(ui.picker.is_none());
             assert_eq!(
                 settings(&session.config_options),
-                "Ask • Google: Gemma Vision"
+                "Ask • Google: Gemma Vision • Low"
             );
             Ok(())
         })
@@ -2098,13 +2113,13 @@ mod tests {
             let now = Instant::now();
             assert_eq!(
                 settings(&session.config_options),
-                "Ask • DeepSeek: DeepSeek Reasoner"
+                "Ask • DeepSeek: DeepSeek Reasoner • Low"
             );
             for (code, expected) in [
-                (KeyCode::Tab, "Auto • DeepSeek: DeepSeek Reasoner"),
-                (KeyCode::Tab, "Ask • DeepSeek: DeepSeek Reasoner"),
-                (KeyCode::BackTab, "Auto • DeepSeek: DeepSeek Reasoner"),
-                (KeyCode::BackTab, "Ask • DeepSeek: DeepSeek Reasoner"),
+                (KeyCode::Tab, "Auto • DeepSeek: DeepSeek Reasoner • Low"),
+                (KeyCode::Tab, "Ask • DeepSeek: DeepSeek Reasoner • Low"),
+                (KeyCode::BackTab, "Auto • DeepSeek: DeepSeek Reasoner • Low"),
+                (KeyCode::BackTab, "Ask • DeepSeek: DeepSeek Reasoner • Low"),
             ] {
                 key(
                     &mut ui,
@@ -2119,6 +2134,46 @@ mod tests {
             Ok(())
         })
         .await;
+    }
+
+    #[tokio::test]
+    async fn control_e_cycles_effort_with_or_without_shift() {
+        with_session(async |mut session, _events| {
+            let mut ui = Ui::default();
+            let now = Instant::now();
+            ui.input.paste("draft");
+            for (code, modifiers, expected) in [
+                ('e', KeyModifiers::CONTROL, "High"),
+                ('e', KeyModifiers::CONTROL | KeyModifiers::SHIFT, "Low"),
+                ('E', KeyModifiers::CONTROL | KeyModifiers::SHIFT, "High"),
+            ] {
+                key(
+                    &mut ui,
+                    &mut session,
+                    KeyEvent::new(KeyCode::Char(code), modifiers),
+                    now,
+                )
+                .await?;
+                assert!(settings(&session.config_options).ends_with(expected));
+                assert_eq!(ui.input.text(), "draft");
+            }
+            Ok(())
+        })
+        .await;
+    }
+
+    #[test]
+    fn effort_cycle_ignores_missing_or_single_choices() {
+        use SessionConfigOptionCategory::ThoughtLevel;
+        assert!(next_choice(&[], ThoughtLevel, true).is_none());
+        let only = SessionConfigOption::select(
+            "effort",
+            "Effort",
+            "low",
+            vec![SessionConfigSelectOption::new("low", "Low")],
+        )
+        .category(ThoughtLevel);
+        assert!(next_choice(&[only], ThoughtLevel, true).is_none());
     }
 
     #[tokio::test]

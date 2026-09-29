@@ -109,6 +109,7 @@ struct SavedSession {
     pace: String,
     mode: String,
     model: String,
+    effort: String,
 }
 
 /// The values of the `pace` config option.
@@ -129,7 +130,7 @@ const MODELS: [(&str, &str, f64, f64, u64); 2] = [
 
 /// The fake server's pace, mode, and model options. The second model is
 /// described as accepting images, as ox-acp describes such models.
-fn config_options(pace: &str, mode: &str, model: &str) -> Vec<SessionConfigOption> {
+fn config_options(pace: &str, mode: &str, model: &str, effort: &str) -> Vec<SessionConfigOption> {
     let values: Vec<_> = PACES
         .iter()
         .map(|(value, name)| SessionConfigSelectOption::new(*value, *name))
@@ -164,6 +165,16 @@ fn config_options(pace: &str, mode: &str, model: &str) -> Vec<SessionConfigOptio
         .category(SessionConfigOptionCategory::Mode),
         SessionConfigOption::select("model", "Model", model.to_string(), models)
             .category(SessionConfigOptionCategory::Model),
+        SessionConfigOption::select(
+            "effort",
+            "Effort",
+            effort.to_string(),
+            vec![
+                SessionConfigSelectOption::new("low", "Low"),
+                SessionConfigSelectOption::new("high", "High"),
+            ],
+        )
+        .category(SessionConfigOptionCategory::ThoughtLevel),
     ]
 }
 
@@ -350,13 +361,14 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
                             pace: "steady".to_string(),
                             mode: "ask".to_string(),
                             model: "deepseek".to_string(),
+                            effort: "low".to_string(),
                         });
                         session
                     });
                     loaded.lock().unwrap().insert(session.clone());
                     responder.respond(
                         NewSessionResponse::new(session.clone())
-                            .config_options(config_options("steady", "ask", "deepseek")),
+                            .config_options(config_options("steady", "ask", "deepseek", "low")),
                     )?;
                     let command = AvailableCommand::new("tally", "count the tallies");
                     let update =
@@ -429,9 +441,10 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
                             saved.pace.clone(),
                             saved.mode.clone(),
                             saved.model.clone(),
+                            saved.effort.clone(),
                         )
                     });
-                    let (updates, pace, mode, model) = match replay {
+                    let (updates, pace, mode, model, effort) = match replay {
                         None => {
                             return responder
                                 .respond_with_internal_error(format!("no session {session}"));
@@ -441,7 +454,9 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
                                 "the fake server cannot load this session",
                             );
                         }
-                        Some((false, updates, pace, mode, model)) => (updates, pace, mode, model),
+                        Some((false, updates, pace, mode, model, effort)) => {
+                            (updates, pace, mode, model, effort)
+                        }
                     };
                     for update in updates {
                         connection
@@ -450,7 +465,7 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
                     loaded.lock().unwrap().insert(session);
                     responder.respond(
                         LoadSessionResponse::new()
-                            .config_options(config_options(&pace, &mode, &model)),
+                            .config_options(config_options(&pace, &mode, &model, &effort)),
                     )
                 }
             },
@@ -476,6 +491,11 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
                         {
                             value.0.to_string()
                         }
+                        ("effort", SessionConfigOptionValue::ValueId { value })
+                            if matches!(&*value.0, "low" | "high") =>
+                        {
+                            value.0.to_string()
+                        }
                         _ => {
                             return responder.respond_with_error(
                                 agent_client_protocol::Error::invalid_params(),
@@ -486,18 +506,24 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
                         match &*request.config_id.0 {
                             "pace" => saved.pace = value,
                             "mode" => saved.mode = value,
+                            "effort" => saved.effort = value,
                             _ => saved.model = value,
                         }
-                        (saved.pace.clone(), saved.mode.clone(), saved.model.clone())
+                        (
+                            saved.pace.clone(),
+                            saved.mode.clone(),
+                            saved.model.clone(),
+                            saved.effort.clone(),
+                        )
                     });
-                    let Some((pace, mode, model)) = set else {
+                    let Some((pace, mode, model, effort)) = set else {
                         return responder.respond_with_internal_error(format!(
                             "no session {}",
                             request.session_id
                         ));
                     };
                     responder.respond(SetSessionConfigOptionResponse::new(config_options(
-                        &pace, &mode, &model,
+                        &pace, &mode, &model, &effort,
                     )))
                 }
             },
@@ -740,15 +766,19 @@ impl Script {
 
     /// Sets `pace` to `brisk` with a `config_option_update`.
     fn pace(&self) -> agent_client_protocol::Result<StopReason> {
-        let (mode, model) = self
+        let (mode, model, effort) = self
             .history
             .with_session(&self.session, |saved| {
                 saved.pace = "brisk".to_string();
-                (saved.mode.clone(), saved.model.clone())
+                (
+                    saved.mode.clone(),
+                    saved.model.clone(),
+                    saved.effort.clone(),
+                )
             })
             .expect("session exists");
         self.update(SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(
-            config_options("brisk", &mode, &model),
+            config_options("brisk", &mode, &model, &effort),
         )))?;
         Ok(StopReason::EndTurn)
     }
@@ -756,9 +786,9 @@ impl Script {
     /// Sends the model, effort, and mode options, each with its category,
     /// plus `pace` without one.
     fn options(&self) -> agent_client_protocol::Result<StopReason> {
-        let [pace, _, model] = config_options("steady", "ask", "deepseek")
+        let [pace, _, model, _] = config_options("steady", "ask", "deepseek", "low")
             .try_into()
-            .expect("three options");
+            .expect("four options");
         let mut options = vec![
             model,
             SessionConfigOption::select(

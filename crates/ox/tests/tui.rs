@@ -455,6 +455,17 @@ fn tab_and_shift_tab_cycle_modes_in_the_terminal() {
 
 #[test]
 #[ignore = "requires tmux; run make e2e"]
+fn control_e_cycles_effort_in_the_terminal() {
+    let test = Tmux::new();
+    test.wait("DeepSeek: DeepSeek Reasoner • Low");
+    test.keys(&["C-e"]);
+    test.wait("DeepSeek: DeepSeek Reasoner • High");
+    test.keys(&["C-e"]);
+    test.wait("DeepSeek: DeepSeek Reasoner • Low");
+}
+
+#[test]
+#[ignore = "requires tmux; run make e2e"]
 fn tab_completes_a_slash_command_from_ghost_text() {
     let test = Tmux::new();
     test.wait("Ask");

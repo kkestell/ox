@@ -159,7 +159,7 @@ struct ServerState {
     store: SessionStore,
     /// The settings file's settings. Each session applies its workspace
     /// settings file to them when it becomes active.
-    settings: Settings,
+    settings: Arc<Mutex<Settings>>,
     /// The home directory read at startup, which holds the user skills
     /// directories.
     home: PathBuf,
@@ -191,7 +191,7 @@ impl ServerState {
     fn new(store: SessionStore, settings: Settings, home: PathBuf) -> Self {
         Self {
             store,
-            settings,
+            settings: Arc::new(Mutex::new(settings)),
             home,
             openrouter: Arc::default(),
             operations: SessionOperations::default(),
@@ -292,12 +292,14 @@ impl ServerState {
     fn default_settings(&self, workspace_path: &Path) -> Result<SessionSettings> {
         let settings = self
             .settings
+            .lock()
+            .expect("settings mutex poisoned")
             .for_workspace(workspace_path)
             .map_err(Error::into_internal_error)?;
-        Ok(SessionSettings::new(
-            settings.default_model,
-            EffortLevel::Default,
-        ))
+        Ok(
+            SessionSettings::new(settings.default_model, settings.default_effort)
+                .with_mode(settings.default_mode),
+        )
     }
 
     fn new_session(&self, request: &NewSessionRequest) -> Result<NewSessionResponse> {
@@ -331,6 +333,7 @@ impl ServerState {
             .get_mut(&request.session_id)
             .ok_or_else(|| inactive(&request.session_id))?
             .selections;
+        let mut selected = selections.clone();
         match request.config_id.0.as_ref() {
             "model" => {
                 let model = openrouter::catalog_model(value.0.as_ref()).ok_or_else(|| {
@@ -339,15 +342,15 @@ impl ServerState {
                         value, request.config_id
                     ))
                 })?;
-                selections.model.clone_from(&model.id);
-                if !model.supports(selections.effort) {
-                    selections.effort = EffortLevel::Default;
+                selected.model.clone_from(&model.id);
+                if !model.supports(selected.effort) {
+                    selected.effort = EffortLevel::Default;
                 }
             }
             "effort" => {
-                let model = openrouter::catalog_model(&selections.model)
+                let model = openrouter::catalog_model(&selected.model)
                     .expect("a session model comes from the model catalog");
-                selections.effort = EffortLevel::from_id(value.0.as_ref())
+                selected.effort = EffortLevel::from_id(value.0.as_ref())
                     .filter(|effort| model.supports(*effort))
                     .ok_or_else(|| {
                         Error::invalid_params().data(format!(
@@ -357,7 +360,7 @@ impl ServerState {
                     })?;
             }
             "mode" => {
-                selections.mode = SessionMode::from_id(value.0.as_ref()).ok_or_else(|| {
+                selected.mode = SessionMode::from_id(value.0.as_ref()).ok_or_else(|| {
                     Error::invalid_params().data(format!(
                         "{} is not a choice of configuration option {}",
                         value, request.config_id
@@ -369,6 +372,23 @@ impl ServerState {
                     .data(format!("no configuration option {}", request.config_id)));
             }
         }
+        let workspace = self
+            .store
+            .read(&request.session_id)
+            .map_err(Error::into_internal_error)?
+            .ok_or_else(|| not_found(&request.session_id))?
+            .summary
+            .workspace_path;
+        let global = settings::save(&self.home, &workspace, &selected)
+            .map_err(Error::into_internal_error)?;
+        if global {
+            *self.settings.lock().expect("settings mutex poisoned") = Settings {
+                default_model: selected.model.clone(),
+                default_effort: selected.effort,
+                default_mode: selected.mode,
+            };
+        }
+        *selections = selected;
         let options = config_options(selections);
         drop(active);
         Ok(SetSessionConfigOptionResponse::new(options))
@@ -1199,6 +1219,8 @@ mod tests {
     fn test_settings() -> Settings {
         Settings {
             default_model: openrouter::fixture::DEFAULT_MODEL.to_owned(),
+            default_effort: EffortLevel::Default,
+            default_mode: SessionMode::Ask,
         }
     }
 
@@ -1537,18 +1559,24 @@ mod tests {
     }
 
     #[test]
-    fn new_sessions_use_the_workspace_default_model() {
+    fn new_sessions_use_the_workspace_session_settings() {
         let workspace = Workspace::new();
         let chosen = openrouter::catalog()[1].id.as_str();
         let path = workspace.0.join(".ox/settings.json");
         fs::create_dir(workspace.0.join(".ox")).unwrap();
-        fs::write(&path, format!(r#"{{"model":"{chosen}"}}"#)).unwrap();
+        fs::write(
+            &path,
+            format!(r#"{{"model":"{chosen}","effort":"xhigh","mode":"auto"}}"#),
+        )
+        .unwrap();
         let state = state();
         let created = state
             .new_session(&NewSessionRequest::new(&workspace.0))
             .unwrap();
         let options = serde_json::to_value(&created).unwrap();
         assert_eq!(options["configOptions"][0]["currentValue"], chosen);
+        assert_eq!(options["configOptions"][1]["currentValue"], "xhigh");
+        assert_eq!(options["configOptions"][2]["currentValue"], "auto");
 
         let later = state_over(state.store.clone());
         let loaded = later
@@ -1562,6 +1590,8 @@ mod tests {
             options["configOptions"][0]["currentValue"], chosen,
             "a later load of a session without turns"
         );
+        assert_eq!(options["configOptions"][1]["currentValue"], "xhigh");
+        assert_eq!(options["configOptions"][2]["currentValue"], "auto");
 
         fs::write(&path, r#"{"model":"a/b"}"#).unwrap();
         let invalid = state
@@ -1827,6 +1857,11 @@ mod tests {
             ),
             "a model without the current effort level resets it"
         );
+        let global_path = state.home.join(".config/ox/settings.json");
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&global_path).unwrap()).unwrap();
+        assert_eq!(saved["model"], openrouter::catalog()[2].id);
+        assert_eq!(saved["effort"], "default");
         set("effort", "xhigh").unwrap();
         let response = set("model", chosen).unwrap();
         assert_eq!(response["configOptions"][0]["currentValue"], chosen);
@@ -1842,6 +1877,18 @@ mod tests {
             set("mode", "auto").unwrap()["configOptions"][2]["currentValue"],
             "auto"
         );
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&global_path).unwrap()).unwrap();
+        assert_eq!(saved["model"], chosen);
+        assert_eq!(saved["effort"], "xhigh");
+        assert_eq!(saved["mode"], "auto");
+        let next = state
+            .new_session(&NewSessionRequest::new(workspace_path))
+            .unwrap();
+        let next = serde_json::to_value(next).unwrap();
+        assert_eq!(next["configOptions"][0]["currentValue"], chosen);
+        assert_eq!(next["configOptions"][1]["currentValue"], "xhigh");
+        assert_eq!(next["configOptions"][2]["currentValue"], "auto");
         assert_eq!(
             set("mode", "unknown").unwrap_err().code,
             ErrorCode::InvalidParams
@@ -1853,6 +1900,7 @@ mod tests {
                 &created.session_id,
                 &TurnStart {
                     model: chosen.to_owned(),
+                    effort: EffortLevel::High,
                     mode: SessionMode::Auto,
                     ..TurnStart::test("Hello".to_owned())
                 },
@@ -1905,6 +1953,7 @@ mod tests {
             .unwrap();
         let loaded = serde_json::to_value(loaded).unwrap();
         assert_eq!(loaded["configOptions"][0]["currentValue"], chosen);
+        assert_eq!(loaded["configOptions"][1]["currentValue"], "high");
         assert_eq!(loaded["configOptions"][2]["currentValue"], "auto");
         assert_eq!(replayed.len(), 3, "setting entries are not replayed");
         assert!(matches!(
@@ -1921,6 +1970,33 @@ mod tests {
                 .len(),
             openrouter::catalog().len()
         );
+    }
+
+    #[test]
+    fn failed_settings_save_keeps_the_active_selection() {
+        let state = state();
+        let workspace = Workspace::new();
+        let created = state
+            .new_session(&NewSessionRequest::new(&workspace.0))
+            .unwrap();
+        let path = workspace.0.join(".ox/settings.json");
+        fs::create_dir_all(&path).unwrap();
+        let error = state
+            .set_config_option(&SetSessionConfigOptionRequest::new(
+                created.session_id.clone(),
+                "mode",
+                "auto",
+            ))
+            .unwrap_err();
+        assert!(
+            error
+                .data
+                .unwrap()
+                .to_string()
+                .contains(path.to_str().unwrap())
+        );
+        let active = state.active_session(&created.session_id).unwrap();
+        assert_eq!(active.selections.mode, SessionMode::Ask);
     }
 
     #[tokio::test]

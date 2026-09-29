@@ -249,6 +249,8 @@ mod tests {
         assert_eq!(model, None);
         let settings = settings::Settings {
             default_model: openrouter::fixture::DEFAULT_MODEL.to_owned(),
+            default_effort: sessions::EffortLevel::Default,
+            default_mode: sessions::SessionMode::Ask,
         };
         let workspace = Workspace::new();
         let workspace_model = || {
