@@ -1,5 +1,7 @@
 # Ox
 
+## Quick Start
+
 Download the newest release on the
 [releases page](https://github.com/kkestell/ox/releases), then extract `ox` and
 `ur` into a directory on your `PATH`, such as `~/.local/bin`:
@@ -20,7 +22,16 @@ Start ox in a project directory:
 ox /path/to/project
 ```
 
-The directory defaults to the current directory.
+Configure Zed to use ur as an external agent by adding the following to `~/.config/zed/settings.json`:
+
+```sh
+"agent_servers": {
+  "Ur": {
+    "type": "custom",
+    "command": "/Users/username/.local/bin/ur",
+  }
+}
+```
 
 By default, `ox` starts `ur`. To use another server, configure servers in
 `$XDG_CONFIG_HOME/ox/settings.json`, or `~/.config/ox/settings.json`:
