@@ -261,7 +261,8 @@ impl TranscriptView {
         }
     }
 
-    /// The total row count and the visible rows, with one blank row between items.
+    /// The total row count and the visible rows, with one blank row between
+    /// items except between named calls while their output is hidden.
     pub fn visible_rows(
         &mut self,
         width: usize,
@@ -278,6 +279,7 @@ impl TranscriptView {
             self.cache_key = Some(key);
         }
         let mut total = 0;
+        let mut after_call = false;
         for cached in &mut self.items {
             let active_placeholder = matches!(
                 &cached.item,
@@ -294,26 +296,31 @@ impl TranscriptView {
             if count == 0 {
                 continue;
             }
-            if total > 0 {
+            let call = hidden_call(&cached.item, output);
+            if total > 0 && !(after_call && call) {
                 total += 1;
             }
+            after_call = call;
             total += count;
         }
         let first = self.first_row(height, total);
         let end = first.saturating_add(height);
         let mut row = 0;
+        let mut after_call = false;
         let mut visible = Vec::new();
         for cached in &self.items {
             let lines = cached.rows.as_ref().unwrap();
             if lines.is_empty() {
                 continue;
             }
-            if row > 0 {
+            let call = hidden_call(&cached.item, output);
+            if row > 0 && !(after_call && call) {
                 if (first..end).contains(&row) {
                     visible.push(Line::default());
                 }
                 row += 1;
             }
+            after_call = call;
             let from = first.saturating_sub(row).min(lines.len());
             let to = end.saturating_sub(row).min(lines.len());
             visible.extend_from_slice(&lines[from..to]);
@@ -337,6 +344,11 @@ impl TranscriptView {
 
 fn page(height: usize) -> usize {
     height.saturating_sub(1).max(1)
+}
+
+/// Whether an item is a named call whose output is hidden.
+fn hidden_call(item: &Item, output: ToolOutput) -> bool {
+    output == ToolOutput::Summary && matches!(item, Item::Tool(call) if call.name.is_some())
 }
 
 fn gray() -> Style {
@@ -1231,7 +1243,7 @@ mod tests {
                 ],
             ),
             (
-                "every item is followed by a blank row",
+                "a blank row between items except between named calls",
                 vec![
                     message("Checking"),
                     read("a", "a"),
@@ -1245,7 +1257,6 @@ mod tests {
                     "● Checking",
                     "",
                     "● Read a",
-                    "",
                     "● Shell ls -la",
                     "",
                     "● Final answer from subagent child-1",
@@ -1261,6 +1272,14 @@ mod tests {
                 rows(&mut view(updates, now), width, false, now),
                 expected,
                 "{case}"
+            );
+        }
+        for output in [ToolOutput::Truncated, ToolOutput::Full] {
+            let mut view = view(vec![read("a", "a"), read("b", "b")], now);
+            assert_eq!(
+                text(&view.lines(40, false, output, now)),
+                ["● Read a", "", "● Read b"],
+                "{output:?}"
             );
         }
         let mut view = view(vec![answer("a", "Fixed.")], now);
