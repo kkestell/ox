@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
-# Apply-patch stress prompt used for a live empty-workspace run:
-#   Stress-test the apply_patch tool in this empty workspace. Use apply_patch for
-#   every filesystem change; do not use shell redirection, sed, Python, or other
-#   commands to write files. First, create a small fixture with README.md,
-#   data/repeated.txt (three similar sections with repeated lines and Unicode),
-#   src/config.txt (at least three named sections), old/location.txt, and
-#   delete-me.txt. Then use a later single apply_patch call that mixes all of
-#   these operations: make multiple separated updates to README.md and
-#   src/config.txt; change only the middle similar section in data/repeated.txt;
-#   move old/location.txt to archive/final.txt while changing its contents; add
-#   nested/new.txt; and delete delete-me.txt. Use more than one update chunk for
-#   at least one file. Finally, inspect the resulting tree and exact file
-#   contents with read-only commands, confirm the old and deleted paths are
-#   absent, and fix any discrepancy with apply_patch before reporting what you
-#   verified.
+# File-tool stress prompt used for a live empty-workspace run:
+#   Stress-test write_file and edit_file in this empty workspace. Use write_file
+#   to create README.md, data/repeated.txt (three similar sections with repeated
+#   lines and Unicode), src/config.txt (at least three named sections),
+#   old/location.txt, and delete-me.txt, then overwrite README.md. Use edit_file
+#   for exact edits to src/config.txt and only the middle similar section in
+#   data/repeated.txt. Try an ambiguous old_text, confirm the failed edit changed
+#   nothing, then retry with enough surrounding context. Create nested/new.txt
+#   with write_file, move old/location.txt to archive/final.txt with shell, edit
+#   its contents with edit_file, and delete delete-me.txt with shell. Finally,
+#   inspect the resulting tree and exact file contents with read-only commands,
+#   confirm the old and deleted paths are absent, and fix any discrepancy before
+#   reporting what you verified.
 # Prompt ideas for an empty workspace:
 #   Create a C command-line program that computes the 100th decimal digit of pi
 #   using integer arithmetic. Add a Makefile and README, compile with strict
