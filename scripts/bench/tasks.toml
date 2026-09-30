@@ -59,7 +59,7 @@ repo = "https://github.com/codeplea/tinyexpr/commit/c3b2f32eee61762f4c9d89c2c08c
 prompt = """
 Inspect the parser and smoke tests. Add a focused regression test for operator \
 precedence to smoke.c, run make smoke, and fix any failures."""
-check = "make -B smoke && ! git diff --quiet -- smoke.c"
+check = "make -B smoke && ! git diff --quiet c3b2f32eee61762f4c9d89c2c08cf34556a4a780 -- smoke.c"
 
 [[task]]
 id = "itoa-boundaries"
@@ -67,7 +67,7 @@ repo = "https://github.com/dtolnay/itoa/commit/1577ed901354d0d7448ac162328f9dbf5
 prompt = """
 Inspect the public formatting API and tests. Add tests for signed integer \
 boundary values to tests/test.rs, run cargo test, and fix any failures."""
-check = "cargo test -q && ! git diff --quiet -- tests/test.rs"
+check = "cargo test -q && ! git diff --quiet 1577ed901354d0d7448ac162328f9dbf5183124c -- tests/test.rs"
 
 [[task]]
 id = "inih-quoted"
@@ -76,4 +76,32 @@ prompt = """
 Inspect the C parser and its tests. Add a regression test for an edge case in \
 quoted values to tests/unittest.c with a matching .ini fixture in tests/, run \
 ./unittest.sh from the tests directory, and fix any failures."""
-check = "cd tests && ./unittest.sh && ! git diff --quiet -- unittest.c"
+check = "cd tests && ./unittest.sh && ! git diff --quiet 577ae2dee1f0d9c2d11c7f10375c1715f3d6940c -- unittest.c"
+
+[[task]]
+id = "sds-startswith"
+repo = "https://github.com/antirez/sds/commit/5347739b1581fcba74fd5cab1fc21d2aef317d71"
+prompt = """
+Add `int sdsstartswith(const sds s, const char *prefix)` to sds. It returns 1 \
+when s begins with prefix and 0 otherwise. Declare it in sds.h next to the \
+other comparison functions, implement it in sds.c, and add cases to the unit \
+tests in sds.c. Build with make, run ./sds-test, and fix any failures."""
+check = '''make -B && ./sds-test && printf '#include "sds.h"\nint main(void) { sds s = sdsnew("hello"); return !(sdsstartswith(s, "he") == 1 && sdsstartswith(s, "hello") == 1 && sdsstartswith(s, "") == 1 && sdsstartswith(s, "hex") == 0 && sdsstartswith(s, "hello!") == 0); }\n' > /tmp/check.c && cc -std=c99 -Werror=implicit-function-declaration -I. /tmp/check.c sds.c -o /tmp/check && /tmp/check'''
+
+[[task]]
+id = "jsmn-rename"
+repo = "https://github.com/zserge/jsmn/commit/25647e692c7906b96ffd2b05ca54c097948e879c"
+prompt = """
+Rename the type `jsmn_parser` to `jsmn_state` everywhere in this repository, \
+including its struct tag, the tests, the examples, and the README. Run make \
+test, build both examples with make, and fix any failures."""
+check = "! grep -rnw jsmn_parser . --exclude-dir=.git && grep -qw jsmn_state jsmn.h && make test && make simple_example jsondump"
+
+[[task]]
+id = "tinyexpr-clamp"
+repo = "https://github.com/codeplea/tinyexpr/commit/c3b2f32eee61762f4c9d89c2c08cf34556a4a780"
+prompt = """
+Add a built-in function clamp(x, lo, hi) to tinyexpr. It returns lo when x is \
+less than lo, hi when x is greater than hi, and x otherwise. Add tests for it \
+to smoke.c, run make smoke, and fix any failures."""
+check = '''make -B smoke && printf '#include "tinyexpr.h"\nint main(void) { return !(te_interp("clamp(5, 0, 3)", 0) == 3 && te_interp("clamp(-1, 0, 3)", 0) == 0 && te_interp("clamp(2.5, 0, 3)", 0) == 2.5 && te_interp("ceil(1.5)", 0) == 2 && te_interp("cos(0)", 0) == 1); }\n' > /tmp/check.c && cc -I. /tmp/check.c tinyexpr.c -lm -o /tmp/check && /tmp/check'''

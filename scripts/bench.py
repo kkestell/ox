@@ -5,7 +5,9 @@
 #
 #   scripts/bench.py run --label base --ref main --model MODEL_ID --effort LEVEL
 #   scripts/bench.py run --label change --model MODEL_ID --effort LEVEL
-#   scripts/bench.py compare base change
+#   scripts/bench.py compare base change    # writes agents/evals/base-vs-change.md
+#
+# Running an existing label again runs only its repetitions without a result.
 
 import argparse
 import concurrent.futures
@@ -13,19 +15,25 @@ import datetime
 import json
 import os
 import re
+import shutil
 import sqlite3
 import statistics
 import subprocess
+import textwrap
 import time
 import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BENCH = ROOT / "bench"
+EVALS = ROOT / "agents" / "evals"
 TASKS = ROOT / "scripts" / "bench" / "tasks.toml"
 IMAGE = "ox-bench"
 # Seconds between SIGTERM and SIGKILL for a timed-out run.
 KILL_GRACE = 30
+# Attempts per repetition. An attempt that times out or where Ox fails is
+# retried; a failed check is a result.
+ATTEMPTS = 4
 
 METRICS = [
     "passed",
@@ -75,8 +83,6 @@ def run(parser, args):
     if not re.fullmatch(r"[A-Za-z0-9._-]+", args.label):
         parser.error("--label may contain only letters, digits, '.', '_', and '-'")
     label_dir = BENCH / "runs" / args.label
-    if label_dir.exists():
-        parser.error(f"{label_dir} already exists")
     tasks = load_tasks()
     if args.tasks:
         unknown = set(args.tasks) - {task["id"] for task in tasks}
@@ -97,8 +103,21 @@ def run(parser, args):
         "model": args.model,
         "effort": args.effort,
     }
-    label_dir.mkdir(parents=True)
-    runs = [(task, rep) for rep in range(1, args.reps + 1) for task in tasks]
+    saved_path = next(label_dir.glob("*/*/result.json"), None)
+    if saved_path:
+        saved = json.loads(saved_path.read_text())
+        if any(
+            saved[key] != identity[key]
+            for key in ("commit", "dirty", "model", "effort")
+        ):
+            parser.error(
+                f"{label_dir} holds results for a different commit, model, or effort"
+            )
+    runs = []
+    for rep in range(1, args.reps + 1):
+        for task in tasks:
+            if not (label_dir / task["id"] / str(rep) / "result.json").exists():
+                runs.append((task, rep))
     with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
         futures = [
             pool.submit(run_repetition, binary, api_key, args, identity, task, rep)
@@ -226,6 +245,20 @@ def cargo_build(source, binary, label):
 
 def run_repetition(binary, api_key, args, identity, task, rep):
     run_dir = BENCH / "runs" / args.label / task["id"] / str(rep)
+    for attempt in range(1, ATTEMPTS + 1):
+        # A directory without a result is from an interrupted or retried attempt.
+        if run_dir.exists():
+            shutil.rmtree(run_dir)
+        result = attempt_repetition(binary, api_key, args, identity, task, rep, run_dir)
+        if result["status"] == "finished" or attempt == ATTEMPTS:
+            break
+        print(f"{task['id']} {rep}: {result['status']}, retrying", flush=True)
+    result["attempts"] = attempt
+    (run_dir / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+    return result
+
+
+def attempt_repetition(binary, api_key, args, identity, task, rep, run_dir):
     run_dir.mkdir(parents=True)
     container = f"ox-bench-{args.label}-{task['id']}-{rep}"
     docker(
@@ -336,9 +369,7 @@ def run_repetition(binary, api_key, args, identity, task, rep):
         "status": status,
         "seconds": round(seconds, 1),
     }
-    result |= transcript_metrics(run_dir / "data" / "ox.db")
-    (run_dir / "result.json").write_text(json.dumps(result, indent=2) + "\n")
-    return result
+    return result | transcript_metrics(run_dir / "data" / "ox.db")
 
 
 def transcript_metrics(database):
@@ -417,6 +448,7 @@ def transcript_metrics(database):
 
 
 def compare(parser, labels):
+    """Writes a Markdown comparison of the labels to agents/evals/ and prints its path."""
     results = {}
     for label in labels:
         paths = sorted((BENCH / "runs" / label).glob("*/*/result.json"))
@@ -424,24 +456,24 @@ def compare(parser, labels):
             parser.error(f"no results for {label}")
         results[label] = [json.loads(path.read_text()) for path in paths]
 
-    header = ["label", "commit", "dirty", "model", "effort", "results"]
-    rows = []
+    runs_rows = []
     for label, label_results in results.items():
         first = label_results[0]
-        rows.append(
+        runs_rows.append(
             [
                 label,
-                first["commit"][:10],
+                f"`{first['commit'][:10]}`",
                 "yes" if first["dirty"] else "no",
-                first["model"],
+                f"`{first['model']}`",
                 first["effort"],
                 str(len(label_results)),
             ]
         )
-    print_table(header, rows)
 
     task_ids = sorted({result["task"] for runs in results.values() for result in runs})
     totals = {label: {} for label in labels}
+    overview_rows = []
+    task_sections = []
     for task_id in task_ids:
         by_label = {
             label: [result for result in runs if result["task"] == task_id]
@@ -459,7 +491,7 @@ def compare(parser, labels):
         for metric in METRICS:
             if metric == "passed":
                 rows.append(
-                    ["passed", *(pass_rate(runs) for runs in by_label.values())]
+                    text_row("passed", [pass_rate(runs) for runs in by_label.values()])
                 )
                 for label, runs in by_label.items():
                     passed, count = totals[label].get("passed", (0, 0))
@@ -469,7 +501,9 @@ def compare(parser, labels):
                     )
             elif metric == "status":
                 rows.append(
-                    ["status", *(status_counts(runs) for runs in by_label.values())]
+                    text_row(
+                        "status", [status_counts(runs) for runs in by_label.values()]
+                    )
                 )
             elif metric == "calls_by_tool":
                 for name in tools:
@@ -481,34 +515,89 @@ def compare(parser, labels):
                             ]
                             for label, runs in by_label.items()
                         }
-                        rows.append(numeric_row(f"{name} {field}", "", values, totals))
+                        rows.append(
+                            numeric_row(f"`{name}` {field}", "", values, totals)
+                        )
             else:
                 values = {
                     label: [result[metric] for result in runs]
                     for label, runs in by_label.items()
                 }
-                rows.append(numeric_row(metric, metric, values, totals))
-        print(f"\n{task_id}")
-        print_table(["metric", *labels], rows)
+                row = numeric_row(metric, metric, values, totals)
+                rows.append(row)
+                if metric == "cost":
+                    overview_rows.append(
+                        [
+                            f"`{task_id}`",
+                            *(pass_rate(runs) for runs in by_label.values()),
+                            *row[1:],
+                        ]
+                    )
+        task_sections += [
+            "",
+            f"### `{task_id}`",
+            "",
+            *markdown_table(value_header("Metric", labels), rows),
+        ]
 
-    rows = [
-        [
+    total_rows = [
+        text_row(
             "passed",
-            *(
+            [
                 f"{totals[label]['passed'][0]}/{totals[label]['passed'][1]}"
                 for label in labels
-            ),
-        ]
+            ],
+        )
     ]
     for metric in METRICS:
         if metric in ("passed", "status", "calls_by_tool"):
             continue
         sums = [totals[label].get(metric, 0) for label in labels]
-        rows.append(
+        total_rows.append(
             [metric, *with_changes(sums, [number(metric, value) for value in sums])]
         )
-    print("\ntotals (sums of task medians)")
-    print_table(["metric", *labels], rows)
+
+    lines = [
+        f"# Benchmark comparison: {', '.join(labels)}",
+        "",
+        "## Runs",
+        "",
+        *markdown_table(
+            ["Label", "Commit", "Dirty", "Model", "Effort", "Results"],
+            runs_rows,
+            numeric=False,
+        ),
+        "",
+        "## Summary",
+        "",
+        *textwrap.wrap(
+            f"Changes are relative to `{labels[0]}`. A task's values are medians"
+            " over its repetitions, with the range in parentheses. Totals are sums"
+            " of task medians.",
+            80,
+            break_long_words=False,
+            break_on_hyphens=False,
+        ),
+        "",
+        *markdown_table(value_header("Metric", labels), total_rows),
+        "",
+        "### Pass rate and cost by task",
+        "",
+        *markdown_table(
+            [
+                "Task",
+                *(f"{label} passed" for label in labels),
+                *value_header("", labels, " cost")[1:],
+            ],
+            overview_rows,
+        ),
+        "",
+        "## Tasks",
+        *task_sections,
+    ]
+    report = EVALS / f"{'-vs-'.join(labels)}.md"
+    report.write_text("\n".join(lines) + "\n")
+    print(report)
 
 
 def pass_rate(runs):
@@ -519,7 +608,23 @@ def status_counts(runs):
     counts = {}
     for result in runs:
         counts[result["status"]] = counts.get(result["status"], 0) + 1
-    return " ".join(f"{status} {count}" for status, count in sorted(counts.items()))
+    return ", ".join(f"{status} {count}" for status, count in sorted(counts.items()))
+
+
+def value_header(first, labels, suffix=""):
+    """A first column, then each label's values, with a change column after each later label."""
+    header = [first, f"{labels[0]}{suffix}"]
+    for label in labels[1:]:
+        header += [
+            f"{label}{suffix}",
+            "Change" if len(labels) == 2 else f"{label} change",
+        ]
+    return header
+
+
+def text_row(name, cells):
+    """A row of values that have no percentage change."""
+    return [name, *with_changes([None] * len(cells), cells)]
 
 
 def numeric_row(name, metric, values, totals):
@@ -544,13 +649,14 @@ def numeric_row(name, metric, values, totals):
 
 
 def with_changes(values, cells):
-    """Appends the percentage change from the first value to each later cell."""
+    """Follows each later cell with its percentage change from the first value."""
     base = values[0]
     changed = [cells[0]]
     for value, cell in zip(values[1:], cells[1:]):
-        if base and value is not None:
-            cell += f" {(value - base) / base * 100:+.0f}%"
-        changed.append(cell)
+        change = (
+            f"{(value - base) / base * 100:+.0f}%" if base and value is not None else ""
+        )
+        changed += [cell, change]
     return changed
 
 
@@ -562,18 +668,28 @@ def number(metric, value):
     return f"{value:.1f}"
 
 
-def print_table(header, rows):
+def markdown_table(header, rows, numeric=True):
+    """A padded Markdown table whose columns after the first are right-aligned when numeric."""
     widths = [
-        max(len(row[column]) for row in [header, *rows])
+        max(3, *(len(row[column]) for row in [header, *rows]))
         for column in range(len(header))
     ]
-    for row in [header, *rows]:
-        print(
-            "  ".join(
-                cell.ljust(width) if column == 0 else cell.rjust(width)
-                for column, (cell, width) in enumerate(zip(row, widths))
-            ).rstrip()
+
+    def line(cells):
+        return (
+            "| "
+            + " | ".join(
+                cell.rjust(width) if numeric and column else cell.ljust(width)
+                for column, (cell, width) in enumerate(zip(cells, widths))
+            )
+            + " |"
         )
+
+    divider = [
+        "-" * (width - 1) + ":" if numeric and column else "-" * width
+        for column, width in enumerate(widths)
+    ]
+    return [line(header), "| " + " | ".join(divider) + " |", *map(line, rows)]
 
 
 raise SystemExit(main())
