@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-# Runs the benchmark tasks in scripts/bench/tasks.toml against one build of ox
-# and compares labeled benchmark runs.
+# Runs the benchmark tasks in scripts/bench/tasks.toml against one build of ox,
+# each repetition in its own Docker container, and compares labeled benchmark
+# runs.
 #
 #   scripts/bench.py run --label base --ref main --model MODEL_ID --effort LEVEL
 #   scripts/bench.py run --label change --model MODEL_ID --effort LEVEL
@@ -12,8 +13,6 @@ import datetime
 import json
 import os
 import re
-import shutil
-import signal
 import sqlite3
 import statistics
 import subprocess
@@ -24,6 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BENCH = ROOT / "bench"
 TASKS = ROOT / "scripts" / "bench" / "tasks.toml"
+IMAGE = "ox-bench"
 # Seconds between SIGTERM and SIGKILL for a timed-out run.
 KILL_GRACE = 30
 
@@ -104,15 +104,27 @@ def run(parser, args):
             pool.submit(run_repetition, binary, api_key, args, identity, task, rep)
             for task, rep in runs
         ]
-        for future in concurrent.futures.as_completed(futures):
-            result = future.result()
-            print(
-                f"{result['task']} {result['rep']}: {result['status']},"
-                f" {'passed' if result['passed'] else 'failed check'},"
-                f" {result['requests']} requests, {result['tool_calls']} tool calls,"
-                f" ${result['cost']:.4f}, {result['seconds']:.0f}s",
-                flush=True,
-            )
+        try:
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                print(
+                    f"{result['task']} {result['rep']}: {result['status']},"
+                    f" {'passed' if result['passed'] else 'failed check'},"
+                    f" {result['requests']} requests,"
+                    f" {result['tool_calls']} tool calls,"
+                    f" ${result['cost']:.4f}, {result['seconds']:.0f}s",
+                    flush=True,
+                )
+        except KeyboardInterrupt:
+            # Removing the containers ends the running `docker exec` calls, so
+            # the pool's threads finish instead of waiting on `sleep infinity`.
+            pool.shutdown(wait=False, cancel_futures=True)
+            containers = docker(
+                "ps", "-aq", "--filter", f"label=ox-bench={args.label}"
+            ).split()
+            if containers:
+                docker("rm", "-f", *containers)
+            raise SystemExit(130)
 
 
 def load_tasks():
@@ -136,8 +148,15 @@ def git(*args, cwd=ROOT):
     ).stdout.strip()
 
 
+def docker(*args):
+    return subprocess.run(
+        ["docker", *args], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
 def build(ref, label):
     """Builds ox and returns the binary, its commit, and whether the tree was dirty."""
+    subprocess.run(["docker", "build", "-t", IMAGE, str(TASKS.parent)], check=True)
     bin_dir = BENCH / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     if ref:
@@ -147,97 +166,167 @@ def build(ref, label):
         if binary.exists():
             print(f"reusing {binary}", flush=True)
             return binary, commit, dirty
-        worktree = BENCH / "worktree" / commit
+        worktree = BENCH / "worktree" / label
         git("worktree", "add", "--detach", str(worktree), commit)
         try:
-            cargo_build(worktree, binary)
+            cargo_build(worktree, binary, label)
         finally:
             git("worktree", "remove", "--force", str(worktree))
     else:
         commit = git("rev-parse", "HEAD")
         dirty = bool(git("status", "--porcelain", "--untracked-files=no"))
         binary = bin_dir / f"ox-{label}"
-        cargo_build(ROOT, binary)
+        cargo_build(ROOT, binary, label)
     return binary, commit, dirty
 
 
-def cargo_build(source, binary):
-    # One target directory for every build, so commits share dependencies.
-    target = ROOT / "target" / "bench"
+def cargo_build(source, binary, label):
+    # Every build shares one target directory and one Cargo registry in Docker
+    # volumes. Cargo compares file times, not content, to decide whether Ox's
+    # crates are fresh, so a build cleans them first, holding a lock so that no
+    # other build replaces them before the binary is copied.
+    partial = f"{binary.name}.tmp-{label}"
+    script = (
+        "cargo clean --profile fast -p ox -p ox-server"
+        " && cargo build --profile fast -p ox"
+        f" && cp /target/fast/ox /out/{partial}"
+    )
     subprocess.run(
-        ["cargo", "build", "--profile", "fast", "-p", "ox"],
-        cwd=source,
-        env=os.environ | {"CARGO_TARGET_DIR": str(target)},
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{source}:/src:ro",
+            "-v",
+            "ox-bench-target:/target",
+            "-v",
+            "ox-bench-cargo:/usr/local/cargo/registry",
+            "-v",
+            f"{binary.parent}:/out",
+            "-w",
+            "/src",
+            "-e",
+            "CARGO_TARGET_DIR=/target",
+            IMAGE,
+            "flock",
+            "/target/bench.lock",
+            "sh",
+            "-c",
+            script,
+        ],
         check=True,
     )
-    shutil.copy2(target / "fast" / "ox", binary)
+    # Docker Desktop's file sharing can create the file without execute
+    # permission. A concurrent benchmark run that finds the binary never reads a
+    # partial file.
+    os.chmod(binary.parent / partial, 0o755)
+    os.replace(binary.parent / partial, binary)
 
 
 def run_repetition(binary, api_key, args, identity, task, rep):
     run_dir = BENCH / "runs" / args.label / task["id"] / str(rep)
-    workspace = run_dir / "workspace"
-    data = run_dir / "data"
-    data.mkdir(parents=True)
-    if "clone" in task:
-        url, commit = task["clone"]
-        git("clone", "--quiet", url, str(workspace))
-        git("checkout", "--quiet", commit, cwd=workspace)
-    else:
-        workspace.mkdir()
+    run_dir.mkdir(parents=True)
+    container = f"ox-bench-{args.label}-{task['id']}-{rep}"
+    docker(
+        "run",
+        "-d",
+        "--name",
+        container,
+        "--label",
+        f"ox-bench={args.label}",
+        IMAGE,
+        "sleep",
+        "infinity",
+    )
+    try:
+        docker("cp", str(binary), f"{container}:/usr/local/bin/ox")
+        docker("exec", container, "mkdir", "/workspace", "/data")
+        if "clone" in task:
+            url, commit = task["clone"]
+            docker("exec", container, "git", "clone", "--quiet", url, "/workspace")
+            docker(
+                "exec",
+                "-w",
+                "/workspace",
+                container,
+                "git",
+                "checkout",
+                "--quiet",
+                commit,
+            )
 
-    started_at = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
-    start = time.monotonic()
-    timed_out = False
-    with (
-        open(run_dir / "answer.txt", "w") as answer,
-        open(run_dir / "stderr.txt", "w") as stderr,
-    ):
-        process = subprocess.Popen(
-            [
-                str(binary),
-                "run",
-                "--dir",
-                str(workspace),
-                "--model",
-                args.model,
-                "--effort",
-                args.effort,
-                task["prompt"],
-            ],
-            stdin=subprocess.DEVNULL,
-            stdout=answer,
-            stderr=stderr,
-            env=os.environ | {"OPENROUTER_API_KEY": api_key, "OX_DATA_DIR": str(data)},
-        )
-        try:
-            process.wait(args.timeout)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            process.send_signal(signal.SIGTERM)
-            try:
-                process.wait(KILL_GRACE)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-    seconds = time.monotonic() - start
-    if timed_out:
-        status = "timeout"
-    elif process.returncode == 0:
-        status = "finished"
-    else:
-        status = "failed"
-
-    with open(run_dir / "check.txt", "w") as check:
-        passed = (
-            subprocess.run(
-                ["sh", "-c", task["check"]],
-                cwd=workspace,
+        started_at = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
+        start = time.monotonic()
+        with (
+            open(run_dir / "answer.txt", "w") as answer,
+            open(run_dir / "stderr.txt", "w") as stderr,
+        ):
+            # The key comes from the docker process's environment, so it never
+            # appears on a command line.
+            returncode = subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    "-e",
+                    "OPENROUTER_API_KEY",
+                    "-e",
+                    "OX_DATA_DIR=/data",
+                    "-w",
+                    "/workspace",
+                    container,
+                    "timeout",
+                    "--signal=TERM",
+                    f"--kill-after={KILL_GRACE}",
+                    str(args.timeout),
+                    "ox",
+                    "run",
+                    "--dir",
+                    "/workspace",
+                    "--model",
+                    args.model,
+                    "--effort",
+                    args.effort,
+                    task["prompt"],
+                ],
                 stdin=subprocess.DEVNULL,
-                stdout=check,
-                stderr=subprocess.STDOUT,
+                stdout=answer,
+                stderr=stderr,
+                env=os.environ | {"OPENROUTER_API_KEY": api_key},
             ).returncode
-            == 0
-        )
+        seconds = time.monotonic() - start
+        # `timeout` exits 124 after SIGTERM and 137 after SIGKILL.
+        if returncode in (124, 137):
+            status = "timeout"
+        elif returncode == 0:
+            status = "finished"
+        else:
+            status = "failed"
+
+        with open(run_dir / "check.txt", "w") as check:
+            passed = (
+                subprocess.run(
+                    [
+                        "docker",
+                        "exec",
+                        "-w",
+                        "/workspace",
+                        container,
+                        "sh",
+                        "-c",
+                        task["check"],
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=check,
+                    stderr=subprocess.STDOUT,
+                ).returncode
+                == 0
+            )
+
+        docker("cp", f"{container}:/workspace", str(run_dir / "workspace"))
+        docker("cp", f"{container}:/data", str(run_dir / "data"))
+    finally:
+        docker("rm", "-f", container)
 
     result = identity | {
         "task": task["id"],
@@ -247,7 +336,7 @@ def run_repetition(binary, api_key, args, identity, task, rep):
         "status": status,
         "seconds": round(seconds, 1),
     }
-    result |= transcript_metrics(data / "ox.db")
+    result |= transcript_metrics(run_dir / "data" / "ox.db")
     (run_dir / "result.json").write_text(json.dumps(result, indent=2) + "\n")
     return result
 
