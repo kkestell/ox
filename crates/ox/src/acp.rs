@@ -89,6 +89,7 @@ impl Session {
             .await?;
         self.active = false;
         self.busy = false;
+        self.cancelling = false;
         self.queued = None;
         self.permission_requests.clear();
         self.config_options.clear();
@@ -345,12 +346,9 @@ where
                         .await?,
                 ))
             })
-            .await;
-            let (capabilities, session) = match started {
-                Ok(Ok(session)) => session,
-                Ok(Err(error)) => return Ok(Err(error)),
-                Err(_) => return Ok(Err(anyhow::anyhow!("server startup timed out"))),
-            };
+            .await
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("server startup timed out")));
+            let (capabilities, session) = started?;
             Ok(body(
                 Session {
                     connection,
@@ -702,6 +700,36 @@ pub mod tests {
             );
             Ok(())
         })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn closing_a_cancelled_session_queues_the_next_permission_request() {
+        let hang = Reply::Hang(format!(
+            "data: {}\n\n",
+            delta(json!({"role":"assistant", "content":"cancelled"}), None)
+        ));
+        with_session(
+            vec![hang, shell_reply(&[("touch next", 0)])],
+            async |mut session, mut events| {
+                session.prompt("running".into())?;
+                while !matches!(
+                    events.recv().await.unwrap(),
+                    Event::Update(_, SessionUpdate::AgentMessageChunk(_))
+                ) {}
+                session.cancel()?;
+                session.close().await?;
+                session.create().await?;
+                session.prompt("run a command".into())?;
+                while session.permission_requests.is_empty() {
+                    if let Event::Permission(_, request, responder) = events.recv().await.unwrap() {
+                        session.permission(request, responder)?;
+                    }
+                }
+                assert_eq!(session.permission_requests.len(), 1);
+                Ok(())
+            },
+        )
         .await;
     }
 

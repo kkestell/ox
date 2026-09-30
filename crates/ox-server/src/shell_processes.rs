@@ -138,8 +138,9 @@ impl ShellProcesses {
         let retained = registry
             .processes
             .iter()
-            .filter(|process| &process.session_id == session_id);
-        let removable = if retained.clone().count() < MAX_SHELL_PROCESSES {
+            .filter(|process| &process.session_id == session_id)
+            .count();
+        let removable = if retained < MAX_SHELL_PROCESSES {
             None
         } else {
             Some(

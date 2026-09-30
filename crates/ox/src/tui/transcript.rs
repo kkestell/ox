@@ -297,7 +297,7 @@ impl TranscriptView {
                 continue;
             }
             let call = hidden_call(&cached.item, output);
-            if total > 0 && !(after_call && call) {
+            if needs_blank_row(total, after_call, call) {
                 total += 1;
             }
             after_call = call;
@@ -314,7 +314,7 @@ impl TranscriptView {
                 continue;
             }
             let call = hidden_call(&cached.item, output);
-            if row > 0 && !(after_call && call) {
+            if needs_blank_row(row, after_call, call) {
                 if (first..end).contains(&row) {
                     visible.push(Line::default());
                 }
@@ -349,6 +349,12 @@ fn page(height: usize) -> usize {
 /// Whether an item is a named call whose output is hidden.
 fn hidden_call(item: &Item, output: ToolOutput) -> bool {
     output == ToolOutput::Summary && matches!(item, Item::Tool(call) if call.name.is_some())
+}
+
+/// Whether a blank row sits before this item. Consecutive hidden tool calls
+/// stack without one.
+fn needs_blank_row(row: usize, after_call: bool, call: bool) -> bool {
+    row > 0 && !(after_call && call)
 }
 
 fn gray() -> Style {

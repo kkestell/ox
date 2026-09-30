@@ -456,11 +456,11 @@ impl AgentTurn {
             automatic_threshold,
             ..
         } = compaction::budget(self.parameters.model);
-        let estimate = compaction::request_estimate(&self.parameters, &self.transcript);
+        let estimate = compaction::request_tokens(&self.parameters, &self.transcript);
         if estimate >= automatic_threshold && compaction::has_candidate(&self.transcript) {
             self.compact().await?;
         }
-        if compaction::request_estimate(&self.parameters, &self.transcript) > admission {
+        if compaction::request_tokens(&self.parameters, &self.transcript) > admission {
             return Err(PromptOutcome::OpenRouter(compaction::context_error()));
         }
         let mut retried = false;
@@ -489,23 +489,17 @@ impl AgentTurn {
                     item = stream.next() => item.map_err(PromptOutcome::OpenRouter)?,
                 };
                 match item {
-                    Some(openrouter::StreamItem::TextDelta(text)) => {
+                    openrouter::StreamItem::TextDelta(text) => {
                         self.presentation
                             .send(convert::agent_message_chunk(&text))
                             .map_err(PromptOutcome::AcpUpdate)?;
                     }
-                    Some(openrouter::StreamItem::ReasoningDelta(text)) => {
+                    openrouter::StreamItem::ReasoningDelta(text) => {
                         self.presentation
                             .send(convert::agent_thought_chunk(&text))
                             .map_err(PromptOutcome::AcpUpdate)?;
                     }
-                    Some(openrouter::StreamItem::Completion(completion)) => return Ok(completion),
-                    None => {
-                        return Err(PromptOutcome::OpenRouter(io::Error::new(
-                            io::ErrorKind::UnexpectedEof,
-                            "OpenRouter stream ended without a completion",
-                        )));
-                    }
+                    openrouter::StreamItem::Completion(completion) => return Ok(completion),
                 }
             }
         }
@@ -724,13 +718,14 @@ impl AgentTurn {
                 unreachable!("{outcome} does not interrupt tool execution")
             }
         };
+        let connection_failed = matches!(outcome, PromptOutcome::AcpUpdate(_));
         let remaining = batch.fill_remaining(&placeholder);
         if let Err(error) = self.commit(batch.complete()) {
             outcome = PromptOutcome::Storage(io::Error::other(format!(
                 "{error}; the batch was being completed because {outcome}"
             )));
         }
-        if !matches!(outcome, PromptOutcome::AcpUpdate(_)) {
+        if !connection_failed {
             for update in remaining {
                 if let Err(error) = self.presentation.send(update) {
                     outcome = PromptOutcome::AcpUpdate(error);
@@ -1341,7 +1336,7 @@ mod tests {
             answer("Earlier answer"),
             turn(user("next request")),
         ];
-        let base_estimate = compaction::request_estimate(&parameters, &prospective);
+        let base_estimate = compaction::request_tokens(&parameters, &prospective);
         let old = "x".repeat(2_000_000 + (automatic_threshold - base_estimate - 50) * 3);
         between
             .store

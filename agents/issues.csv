@@ -12,3 +12,14 @@ OX-0010,2026-09-29 09:20,"Server strings, the model persona, and the bundled ser
 OX-0011,2026-09-29 09:20,"The client says ""line"" and ""row"" for the same thing",low,naming,unscheduled,reviews/2026-09-29-004-naming-review.md
 OX-0012,2026-09-29 09:20,"The README calls saved sessions ""history"" and denies the resume command",low,naming,unscheduled,reviews/2026-09-29-004-naming-review.md
 OX-0013,2026-09-29 14:20,AGENTS.md says install targets recreate the database,low,documentation,unscheduled,reviews/2026-09-29-006-single-ox-binary-review.md
+OX-0014,2026-09-30 17:12,request_completion repeats its cancellation select inside the stream loop,low,readability,unscheduled,reviews/2026-09-30-002-readability-simplicity-review.md
+OX-0015,"The picker list-row count is stored in the transcript Layout",low,readability,unscheduled,reviews/2026-09-30-002-readability-simplicity-review.md
+OX-0016,ranked_cuts recomputes the request size beside projected_tokens,low,simplicity,unscheduled,reviews/2026-09-30-002-readability-simplicity-review.md
+OX-0017,children_cost sums session cost through SQL JSON paths,low,simplicity,unscheduled,reviews/2026-09-30-002-readability-simplicity-review.md
+OX-0018,Shell timeout_seconds rejects an explicit null,low,simplicity,unscheduled,reviews/2026-09-30-002-readability-simplicity-review.md
+OX-0019,Workspace settings are merged by a second builder,low,simplicity,unscheduled,reviews/2026-09-30-002-readability-simplicity-review.md
+OX-0020,Model and effort validation is written three times,low,simplicity,unscheduled,reviews/2026-09-30-002-readability-simplicity-review.md
+OX-0021,The client and server each implement the atomic settings write,low,simplicity,unscheduled,reviews/2026-09-30-002-readability-simplicity-review.md
+OX-0022,The 80-character truncation rule is implemented twice,low,simplicity,unscheduled,reviews/2026-09-30-002-readability-simplicity-review.md
+OX-0023,The 16 KiB limits are repeated in model-facing text,low,simplicity,unscheduled,reviews/2026-09-30-002-readability-simplicity-review.md
+OX-0024,The scripts carry two copies of the commit URL parse and the env scan,low,simplicity,unscheduled,reviews/2026-09-30-002-readability-simplicity-review.md

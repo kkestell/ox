@@ -327,6 +327,10 @@ pub(crate) fn ordinary_body(parameters: &ModelRequestParameters, messages: Vec<V
     body
 }
 
+/// The token limit Ox gives summarizer requests. Compaction sizes each piece
+/// so a summary plus this much output fits the model's context.
+pub(crate) const SUMMARIZER_MAX_TOKENS: usize = 4096;
+
 pub(crate) fn summarizer_body(model: &CatalogModel, previous: &str, piece: &str) -> Value {
     let mut body = json!({
         "model": model.id,
@@ -334,7 +338,7 @@ pub(crate) fn summarizer_body(model: &CatalogModel, previous: &str, piece: &str)
             {"role": "system", "content": include_str!("prompts/compaction_prompt.md")},
             {"role": "user", "content": format!("Previous summary:\n{previous}\n\nNew conversation material:\n{piece}")},
         ],
-        "max_tokens": 4096,
+        "max_tokens": SUMMARIZER_MAX_TOKENS,
         "stream": true,
         "usage": { "include": true },
     });
@@ -408,20 +412,20 @@ impl Client {
         let mut stream = self
             .stream_body(&summarizer_body(model, previous, piece))
             .await?;
-        while let Some(item) = stream.next().await? {
-            if let StreamItem::Completion(completion) = item {
-                if completion.stop != Stop::Finished
-                    || !completion.message.tool_calls.is_empty()
-                    || completion.message.text.trim().is_empty()
-                {
-                    return Err(malformed(
-                        "compaction summary was not a finished, nonempty text completion",
-                    ));
-                }
-                return Ok((completion.message.text, completion.message.usage));
+        loop {
+            let StreamItem::Completion(completion) = stream.next().await? else {
+                continue;
+            };
+            if completion.stop != Stop::Finished
+                || !completion.message.tool_calls.is_empty()
+                || completion.message.text.trim().is_empty()
+            {
+                return Err(malformed(
+                    "compaction summary was not a finished, nonempty text completion",
+                ));
             }
+            return Ok((completion.message.text, completion.message.usage));
         }
-        Err(malformed("compaction summary ended without a completion"))
     }
 
     async fn stream_body(&self, body: &Value) -> io::Result<CompletionStream> {
@@ -636,19 +640,15 @@ pub struct CompletionStream {
 }
 
 impl CompletionStream {
-    /// Returns the next output delta or the one validated completion.
-    /// `Ok(None)` follows a completion; ending before one is an error.
-    pub async fn next(&mut self) -> io::Result<Option<StreamItem>> {
+    /// Returns the next output delta or the one validated completion. Ending
+    /// the stream before a completion is an error.
+    pub async fn next(&mut self) -> io::Result<StreamItem> {
         while self.buffered_items.is_empty() {
             if !self.read_chunk().await? {
-                return if self.assembly.is_none() {
-                    Ok(None)
-                } else {
-                    Err(io::Error::new(
-                        ErrorKind::UnexpectedEof,
-                        "OpenRouter stream ended before the response finished",
-                    ))
-                };
+                return Err(io::Error::new(
+                    ErrorKind::UnexpectedEof,
+                    "OpenRouter stream ended before the response finished",
+                ));
             }
         }
         if matches!(self.buffered_items.front(), Some(StreamItem::Completion(_))) {
@@ -661,7 +661,10 @@ impl CompletionStream {
                 completion.message.usage = self.usage.take();
             }
         }
-        Ok(self.buffered_items.pop_front())
+        Ok(self
+            .buffered_items
+            .pop_front()
+            .expect("a buffered item was just checked"))
     }
 
     /// Reads one network chunk into stream items; `false` at the end of the body.
@@ -1427,10 +1430,14 @@ mod tests {
 
     async fn drain(request: &mut CompletionStream) -> io::Result<Vec<StreamItem>> {
         let mut items = Vec::new();
-        while let Some(item) = request.next().await? {
+        loop {
+            let item = request.next().await?;
+            let done = matches!(item, StreamItem::Completion(_));
             items.push(item);
+            if done {
+                return Ok(items);
+            }
         }
-        Ok(items)
     }
 
     async fn complete_with(chunks: &[Value]) -> io::Result<Vec<StreamItem>> {
@@ -2021,10 +2028,11 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            while !matches!(
-                request.next().await.unwrap(),
-                Some(StreamItem::Completion(_))
-            ) {}
+            loop {
+                if let StreamItem::Completion(_) = request.next().await.unwrap() {
+                    break;
+                }
+            }
             drop(request);
             // The pool takes an idle connection back on a background task.
             tokio::task::yield_now().await;
