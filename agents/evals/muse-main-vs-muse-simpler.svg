@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="878" height="844" viewBox="0 0 878 844">
+<style>
+text { font-family: system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif; font-size: 13px; fill: #0b0b0b; font-variant-numeric: tabular-nums; }
+.secondary { fill: #52514e; } .muted { fill: #898781; }
+.title { font-size: 18px; font-weight: 600; }
+.heading { font-size: 15px; font-weight: 600; } .strong { font-weight: 600; }
+.surface { fill: #fcfcfb; } .grid { stroke: #e1e0d9; } .base { stroke: #c3c2b7; }
+.good { fill: #0ca30c; } line.good { stroke: #0ca30c; }
+.bad { fill: #d03b3b; } line.bad { stroke: #d03b3b; }
+.neutral { fill: #898781; } line.neutral { stroke: #898781; }
+.good-text { fill: #006300; } .bad-text { fill: #b02a2a; } .neutral-text { fill: #52514e; }
+.tint { stroke: none; fill-opacity: 0.16; }
+circle { stroke: #fcfcfb; stroke-width: 2px; }
+@media (prefers-color-scheme: dark) {
+text { fill: #ffffff; } .secondary, .neutral-text { fill: #c3c2b7; }
+.good-text { fill: #0ca30c; } .bad-text { fill: #e06464; }
+.surface { fill: #1a1a19; } .grid { stroke: #2c2c2a; } .base { stroke: #383835; }
+.tint { fill-opacity: 0.28; } circle { stroke: #1a1a19; }
+}
+</style>
+<rect class="surface" width="878" height="844"/>
+<text class="title" x="24" y="40">muse-simpler compared with muse-main</text>
+<text class="secondary" x="24" y="62">meta/muse-spark-1.3-contributor. Passed: muse-main 36/36, <tspan class="neutral-text strong">muse-simpler 36/36</tspan>.</text>
+<text class="heading" x="24" y="106">Across all tasks</text>
+<text class="secondary" x="24" y="124">Each dot is the geometric mean over tasks of the candidate's median over the base's median, with a 90% bootstrap interval.</text>
+<text class="secondary" x="24" y="142">Green is clearly lower, red is clearly higher, and gray is within the noise.</text>
+<line class="grid" x1="205.0" y1="158" x2="205.0" y2="308"/><text class="muted" x="205.0" y="322" text-anchor="middle">-20%</text>
+<line class="grid" x1="294.2" y1="158" x2="294.2" y2="308"/><text class="muted" x="294.2" y="322" text-anchor="middle">-10%</text>
+<line class="base" x1="374.0" y1="158" x2="374.0" y2="308"/><text class="muted" x="374.0" y="322" text-anchor="middle">0%</text>
+<line class="grid" x1="446.2" y1="158" x2="446.2" y2="308"/><text class="muted" x="446.2" y="322" text-anchor="middle">+10%</text>
+<line class="grid" x1="543.0" y1="158" x2="543.0" y2="308"/><text class="muted" x="543.0" y="322" text-anchor="middle">+25%</text>
+<text class="muted" x="194" y="340">← lower</text><text class="muted" x="554" y="340" text-anchor="end">higher →</text>
+<g><title>Cost: -6% (-19% to +12%)</title><rect x="24" y="158.0" width="830" height="30" fill="transparent"/><text class="strong" x="24" y="177.0">Cost</text><line class="neutral" x1="214.0" y1="173.0" x2="460.3" y2="173.0" stroke-width="2" stroke-linecap="round"/><circle class="neutral" cx="329.1" cy="173.0" r="6"/><text x="578" y="177.0">-6% (-19% to +12%)</text><text class="neutral-text strong" x="734" y="177.0">No clear change</text></g>
+<g><title>Time: -15% (-19% to +6%)</title><rect x="24" y="188.0" width="830" height="30" fill="transparent"/><text class="strong" x="24" y="207.0">Time</text><line class="neutral" x1="210.4" y1="203.0" x2="416.7" y2="203.0" stroke-width="2" stroke-linecap="round"/><circle class="neutral" cx="253.5" cy="203.0" r="6"/><text x="578" y="207.0">-15% (-19% to +6%)</text><text class="neutral-text strong" x="734" y="207.0">No clear change</text></g>
+<g><title>Input tokens: +2% (-11% to +14%)</title><rect x="24" y="218.0" width="830" height="30" fill="transparent"/><text class="strong" x="24" y="237.0">Input tokens</text><line class="neutral" x1="286.3" y1="233.0" x2="471.0" y2="233.0" stroke-width="2" stroke-linecap="round"/><circle class="neutral" cx="389.2" cy="233.0" r="6"/><text x="578" y="237.0">+2% (-11% to +14%)</text><text class="neutral-text strong" x="734" y="237.0">No clear change</text></g>
+<g><title>Output tokens: -9% (-17% to +1%)</title><rect x="24" y="248.0" width="830" height="30" fill="transparent"/><text class="strong" x="24" y="267.0">Output tokens</text><line class="neutral" x1="236.5" y1="263.0" x2="383.4" y2="263.0" stroke-width="2" stroke-linecap="round"/><circle class="neutral" cx="298.5" cy="263.0" r="6"/><text x="578" y="267.0">-9% (-17% to +1%)</text><text class="neutral-text strong" x="734" y="267.0">No clear change</text></g>
+<g><title>Requests: +9% (0% to +17%)</title><rect x="24" y="278.0" width="830" height="30" fill="transparent"/><text class="strong" x="24" y="297.0">Requests</text><line class="neutral" x1="372.2" y1="293.0" x2="494.3" y2="293.0" stroke-width="2" stroke-linecap="round"/><circle class="neutral" cx="439.4" cy="293.0" r="6"/><text x="578" y="297.0">+9% (0% to +17%)</text><text class="neutral-text strong" x="734" y="297.0">No clear change</text></g>
+<text class="heading" x="24" y="380">By task</text>
+<text class="secondary" x="24" y="398">Each cell is the change in the task's median. A cell is colored only when every repetition of the candidate was lower (green)</text>
+<text class="secondary" x="24" y="416">or higher (red) than every repetition of the base; hover a cell for the values.</text>
+<text class="strong" x="292" y="450" text-anchor="end">Passed</text>
+<text class="strong" x="402" y="450" text-anchor="end">Cost</text>
+<text class="strong" x="512" y="450" text-anchor="end">Time</text>
+<text class="strong" x="622" y="450" text-anchor="end">Input tokens</text>
+<text class="strong" x="732" y="450" text-anchor="end">Output tokens</text>
+<text class="strong" x="842" y="450" text-anchor="end">Requests</text>
+<line class="grid" x1="24" y1="460" x2="854" y2="460"/><text x="24" y="479">coffee-site</text>
+<g><title>coffee-site, passed: muse-main 3/3; muse-simpler 3/3</title><rect x="194" y="460" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="479" text-anchor="end">3/3</text></g>
+<g><title>coffee-site, cost: muse-main $0.0042, $0.0067, $0.0071; muse-simpler $0.0015, $0.0020, $0.0040</title><rect x="304" y="460" width="110" height="30" fill="transparent"/><rect class="good tint" x="308" y="463" width="102" height="24" rx="4"/><text class="strong" x="402" y="479" text-anchor="end">-70%</text></g>
+<g><title>coffee-site, time: muse-main 68, 78, 79; muse-simpler 26, 31, 49</title><rect x="414" y="460" width="110" height="30" fill="transparent"/><rect class="good tint" x="418" y="463" width="102" height="24" rx="4"/><text class="strong" x="512" y="479" text-anchor="end">-60%</text></g>
+<g><title>coffee-site, input tokens: muse-main 70792, 82875, 87325; muse-simpler 27860, 34549, 37994</title><rect x="524" y="460" width="110" height="30" fill="transparent"/><rect class="good tint" x="528" y="463" width="102" height="24" rx="4"/><text class="strong" x="622" y="479" text-anchor="end">-58%</text></g>
+<g><title>coffee-site, output tokens: muse-main 4748, 4794, 5479; muse-simpler 2343, 2620, 3439</title><rect x="634" y="460" width="110" height="30" fill="transparent"/><rect class="good tint" x="638" y="463" width="102" height="24" rx="4"/><text class="strong" x="732" y="479" text-anchor="end">-45%</text></g>
+<g><title>coffee-site, requests: muse-main 10, 11, 11; muse-simpler 6, 7, 7</title><rect x="744" y="460" width="110" height="30" fill="transparent"/><rect class="good tint" x="748" y="463" width="102" height="24" rx="4"/><text class="strong" x="842" y="479" text-anchor="end">-36%</text></g>
+<line class="grid" x1="24" y1="490" x2="854" y2="490"/><text x="24" y="509">csv-stats</text>
+<g><title>csv-stats, passed: muse-main 3/3; muse-simpler 3/3</title><rect x="194" y="490" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="509" text-anchor="end">3/3</text></g>
+<g><title>csv-stats, cost: muse-main $0.0043, $0.0048, $0.0057; muse-simpler $0.0051, $0.0064, $0.0079</title><rect x="304" y="490" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="509" text-anchor="end">+31%</text></g>
+<g><title>csv-stats, time: muse-main 86, 127, 131; muse-simpler 84, 109, 124</title><rect x="414" y="490" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="509" text-anchor="end">-14%</text></g>
+<g><title>csv-stats, input tokens: muse-main 38133, 52069, 56918; muse-simpler 60365, 66151, 76485</title><rect x="524" y="490" width="110" height="30" fill="transparent"/><rect class="bad tint" x="528" y="493" width="102" height="24" rx="4"/><text class="strong" x="622" y="509" text-anchor="end">+27%</text></g>
+<g><title>csv-stats, output tokens: muse-main 6143, 7457, 9302; muse-simpler 5285, 6691, 7446</title><rect x="634" y="490" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="509" text-anchor="end">-10%</text></g>
+<g><title>csv-stats, requests: muse-main 5, 6, 7; muse-simpler 8, 9, 10</title><rect x="744" y="490" width="110" height="30" fill="transparent"/><rect class="bad tint" x="748" y="493" width="102" height="24" rx="4"/><text class="strong" x="842" y="509" text-anchor="end">+50%</text></g>
+<line class="grid" x1="24" y1="520" x2="854" y2="520"/><text x="24" y="539">inih-quoted</text>
+<g><title>inih-quoted, passed: muse-main 3/3; muse-simpler 3/3</title><rect x="194" y="520" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="539" text-anchor="end">3/3</text></g>
+<g><title>inih-quoted, cost: muse-main $0.0245, $0.0316, $0.0401; muse-simpler $0.0316, $0.0394, $0.0407</title><rect x="304" y="520" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="539" text-anchor="end">+24%</text></g>
+<g><title>inih-quoted, time: muse-main 120, 130, 130; muse-simpler 142, 172, 172</title><rect x="414" y="520" width="110" height="30" fill="transparent"/><rect class="bad tint" x="418" y="523" width="102" height="24" rx="4"/><text class="strong" x="512" y="539" text-anchor="end">+32%</text></g>
+<g><title>inih-quoted, input tokens: muse-main 294343, 367446, 486752; muse-simpler 423310, 455661, 484400</title><rect x="524" y="520" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="539" text-anchor="end">+24%</text></g>
+<g><title>inih-quoted, output tokens: muse-main 5318, 6466, 7327; muse-simpler 6931, 7245, 7958</title><rect x="634" y="520" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="539" text-anchor="end">+12%</text></g>
+<g><title>inih-quoted, requests: muse-main 15, 16, 18; muse-simpler 17, 19, 22</title><rect x="744" y="520" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="539" text-anchor="end">+19%</text></g>
+<line class="grid" x1="24" y1="550" x2="854" y2="550"/><text x="24" y="569">itoa-boundaries</text>
+<g><title>itoa-boundaries, passed: muse-main 3/3; muse-simpler 3/3</title><rect x="194" y="550" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="569" text-anchor="end">3/3</text></g>
+<g><title>itoa-boundaries, cost: muse-main $0.0060, $0.0066, $0.0071; muse-simpler $0.0070, $0.0092, $0.0103</title><rect x="304" y="550" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="569" text-anchor="end">+39%</text></g>
+<g><title>itoa-boundaries, time: muse-main 41, 64, 98; muse-simpler 65, 65, 76</title><rect x="414" y="550" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="569" text-anchor="end">+1%</text></g>
+<g><title>itoa-boundaries, input tokens: muse-main 79141, 80527, 98093; muse-simpler 93517, 109806, 138243</title><rect x="524" y="550" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="569" text-anchor="end">+36%</text></g>
+<g><title>itoa-boundaries, output tokens: muse-main 3029, 3071, 3925; muse-simpler 3796, 4038, 4485</title><rect x="634" y="550" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="569" text-anchor="end">+31%</text></g>
+<g><title>itoa-boundaries, requests: muse-main 8, 8, 9; muse-simpler 9, 10, 12</title><rect x="744" y="550" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="569" text-anchor="end">+25%</text></g>
+<line class="grid" x1="24" y1="580" x2="854" y2="580"/><text x="24" y="599">jsmn-rename</text>
+<g><title>jsmn-rename, passed: muse-main 3/3; muse-simpler 3/3</title><rect x="194" y="580" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="599" text-anchor="end">3/3</text></g>
+<g><title>jsmn-rename, cost: muse-main $0.0068, $0.0162, $0.0203; muse-simpler $0.0055, $0.0137, $0.0182</title><rect x="304" y="580" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="599" text-anchor="end">-15%</text></g>
+<g><title>jsmn-rename, time: muse-main 48, 62, 84; muse-simpler 34, 46, 46</title><rect x="414" y="580" width="110" height="30" fill="transparent"/><rect class="good tint" x="418" y="583" width="102" height="24" rx="4"/><text class="strong" x="512" y="599" text-anchor="end">-27%</text></g>
+<g><title>jsmn-rename, input tokens: muse-main 113437, 197264, 222010; muse-simpler 77944, 161437, 211975</title><rect x="524" y="580" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="599" text-anchor="end">-18%</text></g>
+<g><title>jsmn-rename, output tokens: muse-main 1989, 2852, 2863; muse-simpler 1421, 1937, 2987</title><rect x="634" y="580" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="599" text-anchor="end">-32%</text></g>
+<g><title>jsmn-rename, requests: muse-main 8, 12, 13; muse-simpler 8, 10, 13</title><rect x="744" y="580" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="599" text-anchor="end">-17%</text></g>
+<line class="grid" x1="24" y1="610" x2="854" y2="610"/><text x="24" y="629">mini-redis-docs</text>
+<g><title>mini-redis-docs, passed: muse-main 3/3; muse-simpler 3/3</title><rect x="194" y="610" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="629" text-anchor="end">3/3</text></g>
+<g><title>mini-redis-docs, cost: muse-main $0.1795, $0.2830, $0.2895; muse-simpler $0.2833, $0.2985, $0.3732</title><rect x="304" y="610" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="629" text-anchor="end">+5%</text></g>
+<g><title>mini-redis-docs, time: muse-main 365, 402, 581; muse-simpler 436, 446, 522</title><rect x="414" y="610" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="629" text-anchor="end">+11%</text></g>
+<g><title>mini-redis-docs, input tokens: muse-main 2279607, 3517658, 4028057; muse-simpler 3731264, 4305959, 5368352</title><rect x="524" y="610" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="629" text-anchor="end">+22%</text></g>
+<g><title>mini-redis-docs, output tokens: muse-main 18374, 18383, 19417; muse-simpler 16978, 17100, 19109</title><rect x="634" y="610" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="629" text-anchor="end">-7%</text></g>
+<g><title>mini-redis-docs, requests: muse-main 39, 54, 59; muse-simpler 59, 65, 79</title><rect x="744" y="610" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="629" text-anchor="end">+20%</text></g>
+<line class="grid" x1="24" y1="640" x2="854" y2="640"/><text x="24" y="659">pi-digit</text>
+<g><title>pi-digit, passed: muse-main 3/3; muse-simpler 3/3</title><rect x="194" y="640" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="659" text-anchor="end">3/3</text></g>
+<g><title>pi-digit, cost: muse-main $0.0029, $0.0032, $0.0051; muse-simpler $0.0041, $0.0057, $0.0064</title><rect x="304" y="640" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="659" text-anchor="end">+79%</text></g>
+<g><title>pi-digit, time: muse-main 76, 108, 115; muse-simpler 82, 105, 161</title><rect x="414" y="640" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="659" text-anchor="end">-3%</text></g>
+<g><title>pi-digit, input tokens: muse-main 33586, 34715, 39841; muse-simpler 40790, 45871, 66417</title><rect x="524" y="640" width="110" height="30" fill="transparent"/><rect class="bad tint" x="528" y="643" width="102" height="24" rx="4"/><text class="strong" x="622" y="659" text-anchor="end">+32%</text></g>
+<g><title>pi-digit, output tokens: muse-main 5672, 6230, 7347; muse-simpler 5681, 5974, 8856</title><rect x="634" y="640" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="659" text-anchor="end">-4%</text></g>
+<g><title>pi-digit, requests: muse-main 5, 5, 5; muse-simpler 6, 7, 7</title><rect x="744" y="640" width="110" height="30" fill="transparent"/><rect class="bad tint" x="748" y="643" width="102" height="24" rx="4"/><text class="strong" x="842" y="659" text-anchor="end">+40%</text></g>
+<line class="grid" x1="24" y1="670" x2="854" y2="670"/><text x="24" y="689">sds-startswith</text>
+<g><title>sds-startswith, passed: muse-main 3/3; muse-simpler 3/3</title><rect x="194" y="670" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="689" text-anchor="end">3/3</text></g>
+<g><title>sds-startswith, cost: muse-main $0.0097, $0.0117, $0.0132; muse-simpler $0.0062, $0.0108, $0.0171</title><rect x="304" y="670" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="689" text-anchor="end">-8%</text></g>
+<g><title>sds-startswith, time: muse-main 49, 56, 83; muse-simpler 36, 44, 73</title><rect x="414" y="670" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="689" text-anchor="end">-22%</text></g>
+<g><title>sds-startswith, input tokens: muse-main 138582, 143014, 144080; muse-simpler 125914, 133809, 201233</title><rect x="524" y="670" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="689" text-anchor="end">-6%</text></g>
+<g><title>sds-startswith, output tokens: muse-main 2413, 2692, 3139; muse-simpler 2518, 3190, 4751</title><rect x="634" y="670" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="689" text-anchor="end">+18%</text></g>
+<g><title>sds-startswith, requests: muse-main 11, 11, 11; muse-simpler 10, 11, 14</title><rect x="744" y="670" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="689" text-anchor="end">0%</text></g>
+<line class="grid" x1="24" y1="700" x2="854" y2="700"/><text x="24" y="719">temp-cli</text>
+<g><title>temp-cli, passed: muse-main 3/3; muse-simpler 3/3</title><rect x="194" y="700" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="719" text-anchor="end">3/3</text></g>
+<g><title>temp-cli, cost: muse-main $0.0034, $0.0052, $0.0055; muse-simpler $0.0020, $0.0038, $0.0041</title><rect x="304" y="700" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="719" text-anchor="end">-26%</text></g>
+<g><title>temp-cli, time: muse-main 48, 76, 86; muse-simpler 44, 59, 83</title><rect x="414" y="700" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="719" text-anchor="end">-22%</text></g>
+<g><title>temp-cli, input tokens: muse-main 48284, 53183, 87465; muse-simpler 40728, 51350, 53376</title><rect x="524" y="700" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="719" text-anchor="end">-3%</text></g>
+<g><title>temp-cli, output tokens: muse-main 3063, 3298, 4245; muse-simpler 2451, 3504, 3635</title><rect x="634" y="700" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="719" text-anchor="end">+6%</text></g>
+<g><title>temp-cli, requests: muse-main 9, 10, 13; muse-simpler 9, 10, 10</title><rect x="744" y="700" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="719" text-anchor="end">0%</text></g>
+<line class="grid" x1="24" y1="730" x2="854" y2="730"/><text x="24" y="749">tinyexpr-clamp</text>
+<g><title>tinyexpr-clamp, passed: muse-main 3/3; muse-simpler 3/3</title><rect x="194" y="730" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="749" text-anchor="end">3/3</text></g>
+<g><title>tinyexpr-clamp, cost: muse-main $0.0181, $0.0192, $0.0198; muse-simpler $0.0173, $0.0174, $0.0189</title><rect x="304" y="730" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="749" text-anchor="end">-9%</text></g>
+<g><title>tinyexpr-clamp, time: muse-main 49, 54, 55; muse-simpler 60, 60, 130</title><rect x="414" y="730" width="110" height="30" fill="transparent"/><rect class="bad tint" x="418" y="733" width="102" height="24" rx="4"/><text class="strong" x="512" y="749" text-anchor="end">+10%</text></g>
+<g><title>tinyexpr-clamp, input tokens: muse-main 201040, 223115, 227796; muse-simpler 200359, 222574, 253593</title><rect x="524" y="730" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="749" text-anchor="end">0%</text></g>
+<g><title>tinyexpr-clamp, output tokens: muse-main 2803, 2828, 3473; muse-simpler 2233, 2482, 2602</title><rect x="634" y="730" width="110" height="30" fill="transparent"/><rect class="good tint" x="638" y="733" width="102" height="24" rx="4"/><text class="strong" x="732" y="749" text-anchor="end">-12%</text></g>
+<g><title>tinyexpr-clamp, requests: muse-main 10, 11, 11; muse-simpler 11, 11, 13</title><rect x="744" y="730" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="749" text-anchor="end">0%</text></g>
+<line class="grid" x1="24" y1="760" x2="854" y2="760"/><text x="24" y="779">tinyexpr-precedence</text>
+<g><title>tinyexpr-precedence, passed: muse-main 3/3; muse-simpler 3/3</title><rect x="194" y="760" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="779" text-anchor="end">3/3</text></g>
+<g><title>tinyexpr-precedence, cost: muse-main $0.0224, $0.0255, $0.0529; muse-simpler $0.0377, $0.0417, $0.0450</title><rect x="304" y="760" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="779" text-anchor="end">+63%</text></g>
+<g><title>tinyexpr-precedence, time: muse-main 95, 156, 172; muse-simpler 129, 134, 232</title><rect x="414" y="760" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="779" text-anchor="end">-14%</text></g>
+<g><title>tinyexpr-precedence, input tokens: muse-main 248180, 313810, 593138; muse-simpler 435656, 456402, 466271</title><rect x="524" y="760" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="779" text-anchor="end">+45%</text></g>
+<g><title>tinyexpr-precedence, output tokens: muse-main 5495, 10351, 10513; muse-simpler 6184, 6944, 10925</title><rect x="634" y="760" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="779" text-anchor="end">-33%</text></g>
+<g><title>tinyexpr-precedence, requests: muse-main 11, 12, 20; muse-simpler 16, 17, 17</title><rect x="744" y="760" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="779" text-anchor="end">+42%</text></g>
+<line class="grid" x1="24" y1="790" x2="854" y2="790"/><text x="24" y="809">todo-cli</text>
+<g><title>todo-cli, passed: muse-main 3/3; muse-simpler 3/3</title><rect x="194" y="790" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="809" text-anchor="end">3/3</text></g>
+<g><title>todo-cli, cost: muse-main $0.0021, $0.0051, $0.0065; muse-simpler $0.0023, $0.0023, $0.0030</title><rect x="304" y="790" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="809" text-anchor="end">-55%</text></g>
+<g><title>todo-cli, time: muse-main 41, 62, 67; muse-simpler 36, 46, 65</title><rect x="414" y="790" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="809" text-anchor="end">-27%</text></g>
+<g><title>todo-cli, input tokens: muse-main 30813, 45710, 79869; muse-simpler 27964, 37425, 40205</title><rect x="524" y="790" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="809" text-anchor="end">-18%</text></g>
+<g><title>todo-cli, output tokens: muse-main 2964, 3270, 4539; muse-simpler 2804, 3048, 3050</title><rect x="634" y="790" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="809" text-anchor="end">-7%</text></g>
+<g><title>todo-cli, requests: muse-main 6, 8, 12; muse-simpler 6, 8, 8</title><rect x="744" y="790" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="809" text-anchor="end">0%</text></g>
+</svg>

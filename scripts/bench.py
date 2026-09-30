@@ -13,7 +13,9 @@ import argparse
 import concurrent.futures
 import datetime
 import json
+import math
 import os
+import random
 import re
 import shutil
 import sqlite3
@@ -56,6 +58,24 @@ METRICS = [
     "summarizer_cost",
     "subagents",
 ]
+# The chart's metrics, where lower is better, and its axis tick sets from finest
+# to coarsest.
+CHART_METRICS = [
+    ("cost", "Cost"),
+    ("seconds", "Time"),
+    ("input_tokens", "Input tokens"),
+    ("output_tokens", "Output tokens"),
+    ("requests", "Requests"),
+]
+CHART_TICKS = [
+    [0.8, 0.9, 1, 1.1, 1.25],
+    [0.67, 0.8, 1, 1.25, 1.5],
+    [0.5, 0.67, 1, 1.5, 2],
+    [0.5, 1, 2, 3],
+    [0.25, 0.5, 1, 2, 4],
+    [0.1, 0.2, 0.5, 1, 2, 5, 10],
+]
+BOOTSTRAP_SAMPLES = 2000
 
 
 def main():
@@ -102,16 +122,18 @@ def run(parser, args):
         "dirty": dirty,
         "model": args.model,
         "effort": args.effort,
+        "providers": pinned_providers(args.model),
     }
     saved_path = next(label_dir.glob("*/*/result.json"), None)
     if saved_path:
         saved = json.loads(saved_path.read_text())
         if any(
-            saved[key] != identity[key]
-            for key in ("commit", "dirty", "model", "effort")
+            saved.get(key) != identity[key]
+            for key in ("commit", "dirty", "model", "effort", "providers")
         ):
             parser.error(
-                f"{label_dir} holds results for a different commit, model, or effort"
+                f"{label_dir} holds results for a different commit, model, effort,"
+                " or providers"
             )
     runs = []
     for rep in range(1, args.reps + 1):
@@ -144,6 +166,15 @@ def run(parser, args):
             if containers:
                 docker("rm", "-f", *containers)
             raise SystemExit(130)
+
+
+def pinned_providers(model):
+    """The providers pinned for the model in the global settings file, or []."""
+    path = Path.home() / ".config" / "ox" / "settings.json"
+    if not path.exists():
+        return []
+    models = json.loads(path.read_text()).get("models", {})
+    return models.get(model, {}).get("providers", [])
 
 
 def load_tasks():
@@ -275,6 +306,23 @@ def attempt_repetition(binary, api_key, args, identity, task, rep, run_dir):
     try:
         docker("cp", str(binary), f"{container}:/usr/local/bin/ox")
         docker("exec", container, "mkdir", "/workspace", "/data")
+        if identity["providers"]:
+            settings = {"models": {args.model: {"providers": identity["providers"]}}}
+            subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    "-i",
+                    container,
+                    "sh",
+                    "-c",
+                    "mkdir -p ~/.config/ox && cat > ~/.config/ox/settings.json",
+                ],
+                input=json.dumps(settings),
+                check=True,
+                capture_output=True,
+                text=True,
+            )
         if "clone" in task:
             url, commit = task["clone"]
             docker("exec", container, "git", "clone", "--quiet", url, "/workspace")
@@ -466,6 +514,7 @@ def compare(parser, labels):
                 "yes" if first["dirty"] else "no",
                 f"`{first['model']}`",
                 first["effort"],
+                ", ".join(first.get("providers", [])) or "any",
                 str(len(label_results)),
             ]
         )
@@ -563,9 +612,16 @@ def compare(parser, labels):
         "## Runs",
         "",
         *markdown_table(
-            ["Label", "Commit", "Dirty", "Model", "Effort", "Results"],
+            ["Label", "Commit", "Dirty", "Model", "Effort", "Providers", "Results"],
             runs_rows,
             numeric=False,
+        ),
+        "",
+        "## Chart",
+        "",
+        *(
+            f"![{label} compared with {labels[0]}]({labels[0]}-vs-{label}.svg)"
+            for label in labels[1:]
         ),
         "",
         "## Summary",
@@ -596,8 +652,236 @@ def compare(parser, labels):
         *task_sections,
     ]
     report = EVALS / f"{'-vs-'.join(labels)}.md"
+    EVALS.mkdir(parents=True, exist_ok=True)
     report.write_text("\n".join(lines) + "\n")
+    for label in labels[1:]:
+        svg = EVALS / f"{labels[0]}-vs-{label}.svg"
+        svg.write_text(chart_svg(results, labels[0], label))
+        subprocess.run(
+            ["rsvg-convert", "--zoom", "2", "-o", str(svg.with_suffix(".png")), str(svg)],
+            check=True,
+        )
     print(report)
+
+
+def chart_svg(results, base, candidate):
+    """An SVG of how the candidate label changes each chart metric from the base
+    label: across all tasks with a bootstrap interval, then task by task."""
+    pad, name_width, plot_width, column_width, row_height = 24, 170, 360, 110, 30
+    width = pad * 2 + name_width + len(CHART_METRICS) * column_width + column_width
+    rng = random.Random(0)
+    task_ids = sorted({r["task"] for label in (base, candidate) for r in results[label]})
+
+    def values(label, task_id, key):
+        return [r[key] for r in results[label] if r["task"] == task_id]
+
+    def verdict(low, high):
+        return "good" if high < 1 else "bad" if low > 1 else "neutral"
+
+    def passed(flags):
+        return sum(flags), len(flags)
+
+    def pass_verdict(base_passed, base_count, passed_count, count):
+        more = passed_count * base_count - base_passed * count
+        return "good" if more > 0 else "bad" if more < 0 else "neutral"
+
+    def change(ratio):
+        text = f"{ratio - 1:+.0%}"
+        return "0%" if text[1:] == "0%" else text
+
+    # overall[metric] is (low, point, high); each ratio is the candidate's median
+    # over the base's median, and the point is their geometric mean over tasks.
+    overall = {}
+    for metric, _ in CHART_METRICS:
+        pairs = [
+            (values(base, task_id, metric), values(candidate, task_id, metric))
+            for task_id in task_ids
+        ]
+        pairs = [(a, b) for a, b in pairs if a and b and min(a) > 0 and min(b) > 0]
+
+        def mean_ratio(sample):
+            return statistics.geometric_mean(
+                statistics.median(sample(b)) / statistics.median(sample(a))
+                for a, b in pairs
+            )
+
+        samples = sorted(
+            mean_ratio(lambda v: rng.choices(v, k=len(v)))
+            for _ in range(BOOTSTRAP_SAMPLES)
+        )
+        overall[metric] = (
+            samples[int(0.05 * len(samples))],
+            mean_ratio(lambda v: v),
+            samples[int(0.95 * len(samples)) - 1],
+        )
+
+    def wrap(text):
+        return textwrap.wrap(text, 125)
+
+    out = []
+    y = pad + 16
+    out.append(
+        f'<text class="title" x="{pad}" y="{y}">{candidate} compared with {base}</text>'
+    )
+    y += 22
+    base_passed, base_count = passed([r["passed"] for r in results[base]])
+    passed_count, count = passed([r["passed"] for r in results[candidate]])
+    pass_class = pass_verdict(base_passed, base_count, passed_count, count)
+    out.append(
+        f'<text class="secondary" x="{pad}" y="{y}">{results[base][0]["model"]}.'
+        f' Passed: {base} {base_passed}/{base_count},'
+        f' <tspan class="{pass_class}-text strong">{candidate} {passed_count}/{count}</tspan>.'
+        "</text>"
+    )
+
+    y += 44
+    out.append(f'<text class="heading" x="{pad}" y="{y}">Across all tasks</text>')
+    for line in wrap(
+        "Each dot is the geometric mean over tasks of the candidate's median over the"
+        " base's median, with a 90% bootstrap interval. Green is clearly lower, red is"
+        " clearly higher, and gray is within the noise."
+    ):
+        y += 18
+        out.append(f'<text class="secondary" x="{pad}" y="{y}">{line}</text>')
+    left = pad + name_width
+    reach = 1.1 * max(
+        math.log(1.1), *(abs(math.log(x)) for r in overall.values() for x in r)
+    )
+
+    def x(ratio):
+        return left + (math.log(ratio) + reach) / (2 * reach) * plot_width
+
+    ticks = next(
+        (
+            visible
+            for ticks in CHART_TICKS
+            for visible in [[t for t in ticks if abs(math.log(t)) <= reach]]
+            if len(visible) >= 3
+            and all(b - a >= 44 for a, b in zip(map(x, visible), map(x, visible[1:])))
+        ),
+        [1],
+    )
+    rows_top = y + 16
+    axis_y = rows_top + len(CHART_METRICS) * row_height + 8
+    for tick in ticks:
+        out.append(
+            f'<line class="{"base" if tick == 1 else "grid"}" x1="{x(tick):.1f}"'
+            f' y1="{rows_top}" x2="{x(tick):.1f}" y2="{axis_y - 8}"/>'
+            f'<text class="muted" x="{x(tick):.1f}" y="{axis_y + 6}"'
+            f' text-anchor="middle">{change(tick)}</text>'
+        )
+    out.append(
+        f'<text class="muted" x="{left}" y="{axis_y + 24}">← lower</text>'
+        f'<text class="muted" x="{left + plot_width}" y="{axis_y + 24}"'
+        ' text-anchor="end">higher →</text>'
+    )
+    for row, (metric, title) in enumerate(CHART_METRICS):
+        low, point, high = overall[metric]
+        kind = verdict(low, high)
+        cy = rows_top + row * row_height + row_height / 2
+        summary = f"{change(point)} ({change(low)} to {change(high)})"
+        word = {"good": "Lower", "bad": "Higher", "neutral": "No clear change"}[kind]
+        out.append(
+            f"<g><title>{title}: {summary}</title>"
+            f'<rect x="{pad}" y="{cy - row_height / 2}" width="{width - 2 * pad}"'
+            f' height="{row_height}" fill="transparent"/>'
+            f'<text class="strong" x="{pad}" y="{cy + 4}">{title}</text>'
+            f'<line class="{kind}" x1="{x(low):.1f}" y1="{cy}" x2="{x(high):.1f}"'
+            f' y2="{cy}" stroke-width="2" stroke-linecap="round"/>'
+            f'<circle class="{kind}" cx="{x(point):.1f}" cy="{cy}" r="6"/>'
+            f'<text x="{left + plot_width + 24}" y="{cy + 4}">{summary}</text>'
+            f'<text class="{kind}-text strong" x="{left + plot_width + 180}" y="{cy + 4}">'
+            f"{word}</text></g>"
+        )
+
+    y = axis_y + 64
+    out.append(f'<text class="heading" x="{pad}" y="{y}">By task</text>')
+    for line in wrap(
+        "Each cell is the change in the task's median. A cell is colored only when"
+        " every repetition of the candidate was lower (green) or higher (red) than"
+        " every repetition of the base; hover a cell for the values."
+    ):
+        y += 18
+        out.append(f'<text class="secondary" x="{pad}" y="{y}">{line}</text>')
+    y += 34
+    columns = [("passed", "Passed"), *CHART_METRICS]
+    for column, (_, title) in enumerate(columns):
+        out.append(
+            f'<text class="strong" x="{left + (column + 1) * column_width - 12}"'
+            f' y="{y}" text-anchor="end">{title}</text>'
+        )
+    y += 10
+    for task_id in task_ids:
+        out.append(
+            f'<line class="grid" x1="{pad}" y1="{y}" x2="{width - pad}" y2="{y}"/>'
+            f'<text x="{pad}" y="{y + 19}">{task_id}</text>'
+        )
+        for column, (metric, title) in enumerate(columns):
+            a, b = values(base, task_id, metric), values(candidate, task_id, metric)
+            if metric == "passed":
+                (pa, na), (pb, nb) = passed(a), passed(b)
+                text = f"{pb}/{nb}" if pa * nb == pb * na else f"{pa}/{na} → {pb}/{nb}"
+                kind = pass_verdict(pa, na, pb, nb)
+                tip = f"{base} {pa}/{na}; {candidate} {pb}/{nb}"
+            else:
+                if not a or not b or not statistics.median(a):
+                    text, kind = "-", "neutral"
+                else:
+                    text = change(statistics.median(b) / statistics.median(a))
+                    kind = verdict(min(b) / max(a), max(b) / min(a))
+                tip = "; ".join(
+                    f"{label} " + ", ".join(number(metric, v) for v in sorted(vs))
+                    for label, vs in ((base, a), (candidate, b))
+                )
+            cell_left = left + column * column_width
+            fill = (
+                f'<rect class="{kind} tint" x="{cell_left + 4}" y="{y + 3}"'
+                f' width="{column_width - 8}" height="{row_height - 6}" rx="4"/>'
+                if kind != "neutral"
+                else ""
+            )
+            out.append(
+                f"<g><title>{task_id}, {title.lower()}: {tip}</title>"
+                f'<rect x="{cell_left}" y="{y}" width="{column_width}"'
+                f' height="{row_height}" fill="transparent"/>{fill}'
+                f'<text class="{"strong" if fill else "muted"}"'
+                f' x="{cell_left + column_width - 12}" y="{y + 19}"'
+                f' text-anchor="end">{text}</text></g>'
+            )
+        y += row_height
+    height = y + pad
+
+    return "\n".join(
+        [
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}"'
+            f' height="{height}" viewBox="0 0 {width} {height}">',
+            "<style>",
+            "text { font-family: system-ui, -apple-system, 'Helvetica Neue', Arial,"
+            " sans-serif; font-size: 13px; fill: #0b0b0b;"
+            " font-variant-numeric: tabular-nums; }",
+            ".secondary { fill: #52514e; } .muted { fill: #898781; }",
+            ".title { font-size: 18px; font-weight: 600; }",
+            ".heading { font-size: 15px; font-weight: 600; } .strong { font-weight: 600; }",
+            ".surface { fill: #fcfcfb; } .grid { stroke: #e1e0d9; } .base { stroke: #c3c2b7; }",
+            ".good { fill: #0ca30c; } line.good { stroke: #0ca30c; }",
+            ".bad { fill: #d03b3b; } line.bad { stroke: #d03b3b; }",
+            ".neutral { fill: #898781; } line.neutral { stroke: #898781; }",
+            ".good-text { fill: #006300; } .bad-text { fill: #b02a2a; }"
+            " .neutral-text { fill: #52514e; }",
+            ".tint { stroke: none; fill-opacity: 0.16; }",
+            "circle { stroke: #fcfcfb; stroke-width: 2px; }",
+            "@media (prefers-color-scheme: dark) {",
+            "text { fill: #ffffff; } .secondary, .neutral-text { fill: #c3c2b7; }",
+            ".good-text { fill: #0ca30c; } .bad-text { fill: #e06464; }",
+            ".surface { fill: #1a1a19; } .grid { stroke: #2c2c2a; } .base { stroke: #383835; }",
+            ".tint { fill-opacity: 0.28; } circle { stroke: #1a1a19; }",
+            "}",
+            "</style>",
+            f'<rect class="surface" width="{width}" height="{height}"/>',
+            *out,
+            "</svg>",
+        ]
+    ) + "\n"
 
 
 def pass_rate(runs):

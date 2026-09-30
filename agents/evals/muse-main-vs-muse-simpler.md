@@ -2,10 +2,14 @@
 
 ## Runs
 
-| Label        | Commit       | Dirty | Model                             | Effort  | Results |
-| ------------ | ------------ | ----- | --------------------------------- | ------- | ------- |
-| muse-main    | `82d15b17c1` | no    | `meta/muse-spark-1.3-contributor` | default | 33      |
-| muse-simpler | `2596cf26c4` | no    | `meta/muse-spark-1.3-contributor` | default | 33      |
+| Label        | Commit       | Dirty | Model                             | Effort  | Providers | Results |
+| ------------ | ------------ | ----- | --------------------------------- | ------- | --------- | ------- |
+| muse-main    | `b577037dbb` | no    | `meta/muse-spark-1.3-contributor` | default | any       | 36      |
+| muse-simpler | `debe5fd3b2` | no    | `meta/muse-spark-1.3-contributor` | default | any       | 36      |
+
+## Chart
+
+![muse-simpler compared with muse-main](muse-main-vs-muse-simpler.svg)
 
 ## Summary
 
@@ -14,20 +18,20 @@ repetitions, with the range in parentheses. Totals are sums of task medians.
 
 | Metric            | muse-main | muse-simpler | Change |
 | ----------------- | --------: | -----------: | -----: |
-| passed            |     33/33 |        33/33 |        |
-| seconds           |       774 |          766 |    -1% |
-| requests          |       117 |          113 |    -3% |
-| tool_calls        |       142 |          141 |    -1% |
-| failed_calls      |         7 |            2 |   -71% |
+| passed            |     36/36 |        36/36 |        |
+| seconds           |      1377 |         1314 |    -5% |
+| requests          |       164 |          184 |   +12% |
+| tool_calls        |       209 |          235 |   +12% |
+| failed_calls      |         3 |            4 |   +33% |
 | cancelled_calls   |         0 |            0 |        |
 | repeated_calls    |         0 |            1 |        |
-| input_tokens      |   1635202 |      1621327 |    -1% |
-| cached_tokens     |    374181 |       385851 |    +3% |
-| output_tokens     |     53515 |        45382 |   -15% |
-| reasoning_tokens  |     21629 |        18050 |   -17% |
-| cost              |   $0.1386 |      $0.1387 |    +0% |
-| max_input_tokens  |    201108 |       181925 |   -10% |
-| tool_output_chars |    341142 |       326027 |    -4% |
+| input_tokens      |   5111386 |      6080994 |   +19% |
+| cached_tokens     |   1056898 |      1931177 |   +83% |
+| output_tokens     |     71692 |        64773 |   -10% |
+| reasoning_tokens  |     28790 |        25208 |   -12% |
+| cost              |   $0.4188 |      $0.4509 |    +8% |
+| max_input_tokens  |    292033 |       279792 |    -4% |
+| tool_output_chars |    599225 |       593112 |    -1% |
 | compactions       |         0 |            0 |        |
 | summarizer_cost   |   $0.0000 |      $0.0000 |        |
 | subagents         |         0 |            0 |        |
@@ -36,17 +40,18 @@ repetitions, with the range in parentheses. Totals are sums of task medians.
 
 | Task                  | muse-main passed | muse-simpler passed |            muse-main cost |         muse-simpler cost | Change |
 | --------------------- | ---------------: | ------------------: | ------------------------: | ------------------------: | -----: |
-| `coffee-site`         |              3/3 |                 3/3 | $0.0051 ($0.0035–$0.0059) | $0.0024 ($0.0024–$0.0029) |   -53% |
-| `csv-stats`           |              3/3 |                 3/3 | $0.0037 ($0.0031–$0.0107) | $0.0064 ($0.0043–$0.0064) |   +73% |
-| `inih-quoted`         |              3/3 |                 3/3 | $0.0322 ($0.0224–$0.0642) | $0.0320 ($0.0147–$0.0393) |    -1% |
-| `itoa-boundaries`     |              3/3 |                 3/3 | $0.0073 ($0.0035–$0.0086) | $0.0075 ($0.0053–$0.0094) |    +2% |
-| `jsmn-rename`         |              3/3 |                 3/3 | $0.0126 ($0.0117–$0.0200) | $0.0097 ($0.0057–$0.0139) |   -23% |
-| `pi-digit`            |              3/3 |                 3/3 | $0.0087 ($0.0061–$0.0152) | $0.0048 ($0.0046–$0.0060) |   -45% |
-| `sds-startswith`      |              3/3 |                 3/3 | $0.0107 ($0.0091–$0.0148) | $0.0100 ($0.0084–$0.0120) |    -7% |
-| `temp-cli`            |              3/3 |                 3/3 | $0.0039 ($0.0028–$0.0075) | $0.0025 ($0.0024–$0.0042) |   -36% |
-| `tinyexpr-clamp`      |              3/3 |                 3/3 | $0.0137 ($0.0134–$0.0160) | $0.0215 ($0.0163–$0.0253) |   +57% |
-| `tinyexpr-precedence` |              3/3 |                 3/3 | $0.0365 ($0.0299–$0.0479) | $0.0388 ($0.0262–$0.0666) |    +6% |
-| `todo-cli`            |              3/3 |                 3/3 | $0.0043 ($0.0024–$0.0063) | $0.0033 ($0.0032–$0.0063) |   -24% |
+| `coffee-site`         |              3/3 |                 3/3 | $0.0067 ($0.0042–$0.0071) | $0.0020 ($0.0015–$0.0040) |   -70% |
+| `csv-stats`           |              3/3 |                 3/3 | $0.0048 ($0.0043–$0.0057) | $0.0064 ($0.0051–$0.0079) |   +31% |
+| `inih-quoted`         |              3/3 |                 3/3 | $0.0316 ($0.0245–$0.0401) | $0.0394 ($0.0316–$0.0407) |   +24% |
+| `itoa-boundaries`     |              3/3 |                 3/3 | $0.0066 ($0.0060–$0.0071) | $0.0092 ($0.0070–$0.0103) |   +39% |
+| `jsmn-rename`         |              3/3 |                 3/3 | $0.0162 ($0.0068–$0.0203) | $0.0137 ($0.0055–$0.0182) |   -15% |
+| `mini-redis-docs`     |              3/3 |                 3/3 | $0.2830 ($0.1795–$0.2895) | $0.2985 ($0.2833–$0.3732) |    +5% |
+| `pi-digit`            |              3/3 |                 3/3 | $0.0032 ($0.0029–$0.0051) | $0.0057 ($0.0041–$0.0064) |   +79% |
+| `sds-startswith`      |              3/3 |                 3/3 | $0.0117 ($0.0097–$0.0132) | $0.0108 ($0.0062–$0.0171) |    -8% |
+| `temp-cli`            |              3/3 |                 3/3 | $0.0052 ($0.0034–$0.0055) | $0.0038 ($0.0020–$0.0041) |   -26% |
+| `tinyexpr-clamp`      |              3/3 |                 3/3 | $0.0192 ($0.0181–$0.0198) | $0.0174 ($0.0173–$0.0189) |    -9% |
+| `tinyexpr-precedence` |              3/3 |                 3/3 | $0.0255 ($0.0224–$0.0529) | $0.0417 ($0.0377–$0.0450) |   +63% |
+| `todo-cli`            |              3/3 |                 3/3 | $0.0051 ($0.0021–$0.0065) | $0.0023 ($0.0023–$0.0030) |   -55% |
 
 ## Tasks
 
@@ -56,29 +61,29 @@ repetitions, with the range in parentheses. Totals are sums of task medians.
 | ---------------------- | ------------------------: | ------------------------: | -----: |
 | passed                 |                       3/3 |                       3/3 |        |
 | status                 |                finished 3 |                finished 3 |        |
-| seconds                |                48 (48–67) |                37 (31–40) |   -24% |
-| requests               |                 11 (7–11) |                   6 (6–8) |   -45% |
-| tool_calls             |                 10 (6–10) |                   7 (7–9) |   -30% |
-| failed_calls           |                   1 (0–1) |                         0 |  -100% |
+| seconds                |                78 (68–79) |                31 (26–49) |   -60% |
+| requests               |                11 (10–11) |                   7 (6–7) |   -36% |
+| tool_calls             |                 10 (9–10) |                   8 (7–8) |   -20% |
+| failed_calls           |                         1 |                         0 |  -100% |
 | cancelled_calls        |                         0 |                         0 |        |
-| `apply_patch` calls    |                         1 |                         0 |  -100% |
-| `apply_patch` failed   |                   1 (0–1) |                         0 |  -100% |
-| `glob` calls           |                   0 (0–1) |                         0 |        |
+| `apply_patch` calls    |                   1 (1–2) |                         0 |  -100% |
+| `apply_patch` failed   |                         1 |                         0 |  -100% |
+| `glob` calls           |                   0 (0–1) |                   0 (0–1) |        |
 | `glob` failed          |                         0 |                         0 |        |
-| `shell` calls          |                   7 (4–7) |                   3 (3–4) |   -57% |
+| `shell` calls          |                         6 |                   4 (2–4) |   -33% |
 | `shell` failed         |                         0 |                         0 |        |
-| `shell_process` calls  |                   1 (1–2) |                   1 (1–2) |    +0% |
+| `shell_process` calls  |                         2 |                         1 |   -50% |
 | `shell_process` failed |                         0 |                         0 |        |
 | `write_file` calls     |                         0 |                         3 |        |
 | `write_file` failed    |                         0 |                         0 |        |
 | repeated_calls         |                         0 |                         0 |        |
-| input_tokens           |       77070 (38400–82473) |       29616 (28531–42307) |   -62% |
-| cached_tokens          |        32347 (9623–36443) |        11942 (9781–19336) |   -63% |
-| output_tokens          |          4302 (2876–4858) |          2857 (2646–2889) |   -34% |
-| reasoning_tokens       |             278 (209–779) |             183 (176–195) |   -34% |
-| cost                   | $0.0051 ($0.0035–$0.0059) | $0.0024 ($0.0024–$0.0029) |   -53% |
-| max_input_tokens       |        10063 (6962–10303) |          6500 (6214–6836) |   -35% |
-| tool_output_chars      |          5679 (1971–6334) |          2071 (1645–2302) |   -64% |
+| input_tokens           |       82875 (70792–87325) |       34549 (27860–37994) |   -58% |
+| cached_tokens          |       32219 (21467–39146) |        17574 (5143–20503) |   -45% |
+| output_tokens          |          4794 (4748–5479) |          2620 (2343–3439) |   -45% |
+| reasoning_tokens       |             678 (328–892) |             217 (163–244) |   -68% |
+| cost                   | $0.0067 ($0.0042–$0.0071) | $0.0020 ($0.0015–$0.0040) |   -70% |
+| max_input_tokens       |        10303 (9535–11320) |          6362 (6149–7073) |   -38% |
+| tool_output_chars      |          5783 (3828–6956) |          1952 (1876–2318) |   -66% |
 | compactions            |                         0 |                         0 |        |
 | summarizer_cost        |                   $0.0000 |                   $0.0000 |        |
 | subagents              |                         0 |                         0 |        |
@@ -89,25 +94,27 @@ repetitions, with the range in parentheses. Totals are sums of task medians.
 | -------------------- | ------------------------: | ------------------------: | -----: |
 | passed               |                       3/3 |                       3/3 |        |
 | status               |                finished 3 |                finished 3 |        |
-| seconds              |               87 (78–102) |               86 (65–104) |    -1% |
-| requests             |                  6 (5–10) |                   8 (7–8) |   +33% |
-| tool_calls           |                   5 (4–9) |                        10 |  +100% |
-| failed_calls         |                         1 |                   0 (0–1) |  -100% |
+| seconds              |              127 (86–131) |              109 (84–124) |   -14% |
+| requests             |                   6 (5–7) |                  9 (8–10) |   +50% |
+| tool_calls           |                   5 (4–6) |                11 (10–12) |  +120% |
+| failed_calls         |                         0 |                   1 (0–1) |        |
 | cancelled_calls      |                         0 |                         0 |        |
-| `apply_patch` calls  |                         1 |                         0 |  -100% |
-| `apply_patch` failed |                   0 (0–1) |                         0 |        |
-| `shell` calls        |                   4 (3–8) |                   5 (4–5) |   +25% |
-| `shell` failed       |                   1 (0–1) |                   0 (0–1) |  -100% |
-| `write_file` calls   |                         0 |                   5 (5–6) |        |
+| `apply_patch` calls  |                   1 (1–2) |                         0 |  -100% |
+| `apply_patch` failed |                         0 |                         0 |        |
+| `edit_file` calls    |                         0 |                   1 (0–1) |        |
+| `edit_file` failed   |                         0 |                         0 |        |
+| `shell` calls        |                   4 (3–4) |                   5 (5–6) |   +25% |
+| `shell` failed       |                         0 |                   1 (0–1) |        |
+| `write_file` calls   |                         0 |                         5 |        |
 | `write_file` failed  |                         0 |                         0 |        |
-| repeated_calls       |                         0 |                         0 |        |
-| input_tokens         |      41375 (38638–107800) |       64178 (43607–74766) |   +55% |
-| cached_tokens        |       22378 (15398–22837) |       14728 (10519–29704) |   -34% |
-| output_tokens        |         7496 (5252–10379) |          6928 (4644–9365) |    -8% |
-| reasoning_tokens     |          4089 (1912–4193) |          3167 (1555–3462) |   -23% |
-| cost                 | $0.0037 ($0.0031–$0.0107) | $0.0064 ($0.0043–$0.0064) |   +73% |
-| max_input_tokens     |        11181 (9447–14775) |        10657 (8152–12894) |    -5% |
-| tool_output_chars    |          3396 (1992–3828) |          1981 (1737–2378) |   -42% |
+| repeated_calls       |                   0 (0–1) |                         0 |        |
+| input_tokens         |       52069 (38133–56918) |       66151 (60365–76485) |   +27% |
+| cached_tokens        |        16279 (9781–19238) |       17800 (10858–20729) |    +9% |
+| output_tokens        |          7457 (6143–9302) |          6691 (5285–7446) |   -10% |
+| reasoning_tokens     |          4063 (2505–5689) |          2619 (1651–4048) |   -36% |
+| cost                 | $0.0048 ($0.0043–$0.0057) | $0.0064 ($0.0051–$0.0079) |   +31% |
+| max_input_tokens     |        10897 (9934–13287) |        10580 (9073–11154) |    -3% |
+| tool_output_chars    |          2386 (1354–3414) |          2893 (2415–3141) |   +21% |
 | compactions          |                         0 |                         0 |        |
 | summarizer_cost      |                   $0.0000 |                   $0.0000 |        |
 | subagents            |                         0 |                         0 |        |
@@ -118,33 +125,33 @@ repetitions, with the range in parentheses. Totals are sums of task medians.
 | -------------------- | ------------------------: | ------------------------: | -----: |
 | passed               |                       3/3 |                       3/3 |        |
 | status               |                finished 3 |                finished 3 |        |
-| seconds              |             121 (120–189) |              103 (91–197) |   -15% |
-| requests             |                20 (14–27) |                16 (13–20) |   -20% |
-| tool_calls           |                32 (26–34) |                26 (21–29) |   -19% |
-| failed_calls         |                   1 (0–1) |                         0 |  -100% |
+| seconds              |             130 (120–130) |             172 (142–172) |   +32% |
+| requests             |                16 (15–18) |                19 (17–22) |   +19% |
+| tool_calls           |                24 (23–27) |                26 (26–31) |    +8% |
+| failed_calls         |                         0 |                   1 (0–2) |        |
 | cancelled_calls      |                         0 |                         0 |        |
-| `apply_patch` calls  |                   2 (1–4) |                         0 |  -100% |
+| `apply_patch` calls  |                   3 (2–3) |                         0 |  -100% |
 | `apply_patch` failed |                         0 |                         0 |        |
-| `edit_file` calls    |                         0 |                   1 (1–2) |        |
+| `edit_file` calls    |                         0 |                         1 |        |
 | `edit_file` failed   |                         0 |                         0 |        |
-| `glob` calls         |                   1 (1–2) |                         1 |    +0% |
+| `glob` calls         |                         1 |                   1 (1–2) |    +0% |
 | `glob` failed        |                         0 |                         0 |        |
-| `grep` calls         |                   1 (0–1) |                   1 (0–1) |    +0% |
+| `grep` calls         |                         0 |                         1 |        |
 | `grep` failed        |                         0 |                         0 |        |
-| `read_file` calls    |                17 (12–18) |                13 (10–14) |   -24% |
+| `read_file` calls    |                12 (12–13) |                13 (11–14) |    +8% |
 | `read_file` failed   |                         0 |                         0 |        |
-| `shell` calls        |                 11 (5–16) |                  9 (7–11) |   -18% |
-| `shell` failed       |                   1 (0–1) |                         0 |  -100% |
+| `shell` calls        |                  8 (7–11) |                 11 (8–13) |   +38% |
+| `shell` failed       |                         0 |                   1 (0–2) |        |
 | `write_file` calls   |                         0 |                         1 |        |
 | `write_file` failed  |                         0 |                         0 |        |
 | repeated_calls       |                         0 |                         0 |        |
-| input_tokens         |    390268 (252182–816441) |    343026 (227953–515181) |   -12% |
-| cached_tokens        |      85844 (42158–197995) |      94653 (36880–144468) |   +10% |
-| output_tokens        |          7698 (6467–9614) |          6423 (5823–9523) |   -17% |
-| reasoning_tokens     |          3280 (3022–4631) |          3479 (3462–5245) |    +6% |
-| cost                 | $0.0322 ($0.0224–$0.0642) | $0.0320 ($0.0147–$0.0393) |    -1% |
-| max_input_tokens     |       27303 (25968–41951) |       31059 (26373–35564) |   +14% |
-| tool_output_chars    |       52797 (52132–93365) |       70706 (59176–76293) |   +34% |
+| input_tokens         |    367446 (294343–486752) |    455661 (423310–484400) |   +24% |
+| cached_tokens        |      65296 (61087–102002) |     108598 (31105–156387) |   +66% |
+| output_tokens        |          6466 (5318–7327) |          7245 (6931–7958) |   +12% |
+| reasoning_tokens     |          3262 (2848–3559) |          4049 (2691–4050) |   +24% |
+| cost                 | $0.0316 ($0.0245–$0.0401) | $0.0394 ($0.0316–$0.0407) |   +24% |
+| max_input_tokens     |       32098 (28128–36536) |       33134 (31546–37117) |    +3% |
+| tool_output_chars    |       72496 (64640–83613) |       77298 (67331–89040) |    +7% |
 | compactions          |                         0 |                         0 |        |
 | summarizer_cost      |                   $0.0000 |                   $0.0000 |        |
 | subagents            |                         0 |                         0 |        |
@@ -155,29 +162,29 @@ repetitions, with the range in parentheses. Totals are sums of task medians.
 | -------------------- | ------------------------: | ------------------------: | -----: |
 | passed               |                       3/3 |                       3/3 |        |
 | status               |                finished 3 |                finished 3 |        |
-| seconds              |                55 (37–61) |                52 (50–68) |    -4% |
-| requests             |                   9 (6–9) |                   9 (7–9) |    +0% |
-| tool_calls           |                 10 (7–11) |                 10 (8–10) |    +0% |
+| seconds              |                64 (41–98) |                65 (65–76) |    +1% |
+| requests             |                   8 (8–9) |                 10 (9–12) |   +25% |
+| tool_calls           |                  9 (9–10) |                11 (10–13) |   +22% |
 | failed_calls         |                         0 |                         0 |        |
 | cancelled_calls      |                         0 |                         0 |        |
-| `apply_patch` calls  |                         1 |                         0 |  -100% |
+| `apply_patch` calls  |                   1 (1–2) |                         0 |  -100% |
 | `apply_patch` failed |                         0 |                         0 |        |
-| `edit_file` calls    |                         0 |                   2 (1–2) |        |
+| `edit_file` calls    |                         0 |                         2 |        |
 | `edit_file` failed   |                         0 |                         0 |        |
 | `glob` calls         |                         1 |                         1 |    +0% |
 | `glob` failed        |                         0 |                         0 |        |
-| `read_file` calls    |                   5 (4–6) |                         5 |    +0% |
+| `read_file` calls    |                         5 |                   5 (5–6) |    +0% |
 | `read_file` failed   |                         0 |                         0 |        |
-| `shell` calls        |                   3 (1–3) |                   2 (1–2) |   -33% |
+| `shell` calls        |                         2 |                   3 (2–4) |   +50% |
 | `shell` failed       |                         0 |                         0 |        |
-| repeated_calls       |                         0 |                   0 (0–1) |        |
-| input_tokens         |      97069 (45703–100423) |       91262 (67364–91537) |    -6% |
-| cached_tokens        |       22777 (15654–31097) |        20503 (3833–23545) |   -10% |
-| output_tokens        |          3147 (2510–3928) |          3241 (2688–3250) |    +3% |
-| reasoning_tokens     |          1264 (1155–2010) |          1352 (1090–1551) |    +7% |
-| cost                 | $0.0073 ($0.0035–$0.0086) | $0.0075 ($0.0053–$0.0094) |    +2% |
-| max_input_tokens     |       15949 (11326–16552) |       14289 (14217–14448) |   -10% |
-| tool_output_chars    |       30793 (19588–30975) |       27808 (27273–28587) |   -10% |
+| repeated_calls       |                         0 |                         0 |        |
+| input_tokens         |       80527 (79141–98093) |     109806 (93517–138243) |   +36% |
+| cached_tokens        |       27528 (19336–36089) |       31993 (27114–43468) |   +16% |
+| output_tokens        |          3071 (3029–3925) |          4038 (3796–4485) |   +31% |
+| reasoning_tokens     |          1406 (1369–2149) |          1815 (1761–2265) |   +29% |
+| cost                 | $0.0066 ($0.0060–$0.0071) | $0.0092 ($0.0070–$0.0103) |   +39% |
+| max_input_tokens     |       14927 (14421–15992) |       16517 (15171–16522) |   +11% |
+| tool_output_chars    |       28483 (27554–29291) |       30386 (28000–31713) |    +7% |
 | compactions          |                         0 |                         0 |        |
 | summarizer_cost      |                   $0.0000 |                   $0.0000 |        |
 | subagents            |                         0 |                         0 |        |
@@ -188,30 +195,67 @@ repetitions, with the range in parentheses. Totals are sums of task medians.
 | ------------------ | ------------------------: | ------------------------: | -----: |
 | passed             |                       3/3 |                       3/3 |        |
 | status             |                finished 3 |                finished 3 |        |
-| seconds            |                59 (44–66) |                64 (27–67) |    +9% |
-| requests           |                11 (10–13) |                   9 (8–9) |   -18% |
-| tool_calls         |                15 (14–19) |                 15 (9–15) |    +0% |
+| seconds            |                62 (48–84) |                46 (34–46) |   -27% |
+| requests           |                 12 (8–13) |                 10 (8–13) |   -17% |
+| tool_calls         |                18 (12–18) |                15 (12–21) |   -17% |
 | failed_calls       |                         0 |                         0 |        |
 | cancelled_calls    |                         0 |                         0 |        |
 | `glob` calls       |                         1 |                         1 |    +0% |
 | `glob` failed      |                         0 |                         0 |        |
-| `grep` calls       |                   1 (1–2) |                         1 |    +0% |
+| `grep` calls       |                         1 |                   1 (1–2) |    +0% |
 | `grep` failed      |                         0 |                         0 |        |
-| `read_file` calls  |                   9 (6–9) |                   8 (3–8) |   -11% |
+| `read_file` calls  |                  9 (7–10) |                  9 (7–12) |    +0% |
 | `read_file` failed |                         0 |                         0 |        |
-| `shell` calls      |                   6 (4–7) |                   5 (4–5) |   -17% |
+| `shell` calls      |                   6 (3–7) |                   4 (3–6) |   -33% |
 | `shell` failed     |                         0 |                         0 |        |
 | repeated_calls     |                         0 |                         0 |        |
-| input_tokens       |    158374 (151007–227862) |     104955 (76313–156680) |   -34% |
-| cached_tokens      |       34365 (29034–46939) |       21896 (12409–23545) |   -36% |
-| output_tokens      |          2550 (1883–2823) |          2053 (1254–2480) |   -19% |
-| reasoning_tokens   |            851 (396–1043) |             572 (213–906) |   -33% |
-| cost               | $0.0126 ($0.0117–$0.0200) | $0.0097 ($0.0057–$0.0139) |   -23% |
-| max_input_tokens   |       21975 (20868–23354) |       15961 (14823–22991) |   -27% |
-| tool_output_chars  |       48610 (45174–49901) |       32213 (31574–51605) |   -34% |
+| input_tokens       |    197264 (113437–222010) |     161437 (77944–211975) |   -18% |
+| cached_tokens      |       42188 (24765–49928) |       29290 (26120–37181) |   -31% |
+| output_tokens      |          2852 (1989–2863) |          1937 (1421–2987) |   -32% |
+| reasoning_tokens   |             953 (701–978) |            439 (243–1043) |   -54% |
+| cost               | $0.0162 ($0.0068–$0.0203) | $0.0137 ($0.0055–$0.0182) |   -15% |
+| max_input_tokens   |       23084 (21633–23553) |       22074 (15257–22787) |    -4% |
+| tool_output_chars  |       49236 (47403–50628) |       48822 (31453–50300) |    -1% |
 | compactions        |                         0 |                         0 |        |
 | summarizer_cost    |                   $0.0000 |                   $0.0000 |        |
 | subagents          |                         0 |                         0 |        |
+
+### `mini-redis-docs`
+
+| Metric               |                 muse-main |              muse-simpler | Change |
+| -------------------- | ------------------------: | ------------------------: | -----: |
+| passed               |                       3/3 |                       3/3 |        |
+| status               |                finished 3 |                finished 3 |        |
+| seconds              |             402 (365–581) |             446 (436–522) |   +11% |
+| requests             |                54 (39–59) |                65 (59–79) |   +20% |
+| tool_calls           |                77 (66–84) |               91 (86–107) |   +18% |
+| failed_calls         |                   0 (0–2) |                   1 (0–1) |        |
+| cancelled_calls      |                         0 |                         0 |        |
+| `apply_patch` calls  |                 27 (3–34) |                         0 |  -100% |
+| `apply_patch` failed |                   0 (0–2) |                         0 |        |
+| `edit_file` calls    |                         0 |                39 (37–39) |        |
+| `edit_file` failed   |                         0 |                         0 |        |
+| `glob` calls         |                         1 |                   1 (0–1) |    +0% |
+| `glob` failed        |                         0 |                         0 |        |
+| `grep` calls         |                   1 (0–1) |                   0 (0–1) |  -100% |
+| `grep` failed        |                         0 |                         0 |        |
+| `read_file` calls    |                39 (38–40) |                41 (38–47) |    +5% |
+| `read_file` failed   |                         0 |                         0 |        |
+| `shell` calls        |                 10 (9–22) |                 10 (8–18) |    +0% |
+| `shell` failed       |                         0 |                   1 (0–1) |        |
+| `write_file` calls   |                         0 |                   1 (0–3) |        |
+| `write_file` failed  |                         0 |                         0 |        |
+| repeated_calls       |                         0 |                         0 |        |
+| input_tokens         | 3517658 (2279607–4028057) | 4305959 (3731264–5368352) |   +22% |
+| cached_tokens        |   674774 (531526–1259930) |  1537600 (795659–1709181) |  +128% |
+| output_tokens        |       18383 (18374–19417) |       17100 (16978–19109) |    -7% |
+| reasoning_tokens     |          6360 (4975–7255) |          5185 (4578–5752) |   -18% |
+| cost                 | $0.2830 ($0.1795–$0.2895) | $0.2985 ($0.2833–$0.3732) |    +5% |
+| max_input_tokens     |       86178 (83025–90699) |       84560 (78457–87428) |    -2% |
+| tool_output_chars    |    237652 (228904–251512) |    237744 (216677–240936) |    +0% |
+| compactions          |                         0 |                         0 |        |
+| summarizer_cost      |                   $0.0000 |                   $0.0000 |        |
+| subagents            |                         0 |                         0 |        |
 
 ### `pi-digit`
 
@@ -219,27 +263,27 @@ repetitions, with the range in parentheses. Totals are sums of task medians.
 | -------------------- | ------------------------: | ------------------------: | -----: |
 | passed               |                       3/3 |                       3/3 |        |
 | status               |                finished 3 |                finished 3 |        |
-| seconds              |              102 (81–245) |                87 (73–97) |   -15% |
-| requests             |                  8 (8–13) |                   7 (6–8) |   -12% |
-| tool_calls           |                  8 (7–12) |                   7 (6–8) |   -12% |
-| failed_calls         |                   2 (0–2) |                   0 (0–1) |  -100% |
+| seconds              |              108 (76–115) |              105 (82–161) |    -3% |
+| requests             |                         5 |                   7 (6–7) |   +40% |
+| tool_calls           |                         4 |                         7 |   +75% |
+| failed_calls         |                         1 |                         0 |  -100% |
 | cancelled_calls      |                         0 |                         0 |        |
-| `apply_patch` calls  |                   1 (1–2) |                         0 |  -100% |
-| `apply_patch` failed |                   0 (0–1) |                         0 |        |
-| `grep` calls         |                   0 (0–1) |                         0 |        |
+| `apply_patch` calls  |                         1 |                         0 |  -100% |
+| `apply_patch` failed |                         0 |                         0 |        |
+| `grep` calls         |                         0 |                   0 (0–1) |        |
 | `grep` failed        |                         0 |                         0 |        |
-| `shell` calls        |                  6 (6–10) |                   4 (3–5) |   -33% |
-| `shell` failed       |                   1 (0–2) |                   0 (0–1) |  -100% |
+| `shell` calls        |                         3 |                   4 (3–4) |   +33% |
+| `shell` failed       |                         1 |                         0 |  -100% |
 | `write_file` calls   |                         0 |                         3 |        |
 | `write_file` failed  |                         0 |                         0 |        |
 | repeated_calls       |                         0 |                         0 |        |
-| input_tokens         |      82001 (63961–166909) |       53649 (45961–61784) |   -35% |
-| cached_tokens        |       16392 (12296–46013) |       16038 (14984–19863) |    -2% |
-| output_tokens        |         8282 (6794–15093) |          6843 (6412–7720) |   -17% |
-| reasoning_tokens     |          4229 (3675–9502) |          4051 (3909–4434) |    -4% |
-| cost                 | $0.0087 ($0.0061–$0.0152) | $0.0048 ($0.0046–$0.0060) |   -45% |
-| max_input_tokens     |       13592 (10410–19257) |        10147 (9811–10543) |   -25% |
-| tool_output_chars    |          3113 (1495–6604) |           1317 (960–1459) |   -58% |
+| input_tokens         |       34715 (33586–39841) |       45871 (40790–66417) |   +32% |
+| cached_tokens        |        15925 (3637–16053) |         11942 (678–20503) |   -25% |
+| output_tokens        |          6230 (5672–7347) |          5974 (5681–8856) |    -4% |
+| reasoning_tokens     |          3963 (3740–4631) |          3611 (2905–6186) |    -9% |
+| cost                 | $0.0032 ($0.0029–$0.0051) | $0.0057 ($0.0041–$0.0064) |   +79% |
+| max_input_tokens     |         9593 (9086–10697) |         9363 (8868–12234) |    -2% |
+| tool_output_chars    |          1007 (1007–1107) |          1357 (1074–1679) |   +35% |
 | compactions          |                         0 |                         0 |        |
 | summarizer_cost      |                   $0.0000 |                   $0.0000 |        |
 | subagents            |                         0 |                         0 |        |
@@ -250,31 +294,31 @@ repetitions, with the range in parentheses. Totals are sums of task medians.
 | -------------------- | ------------------------: | ------------------------: | -----: |
 | passed               |                       3/3 |                       3/3 |        |
 | status               |                finished 3 |                finished 3 |        |
-| seconds              |                46 (42–64) |                59 (27–76) |   +30% |
-| requests             |                 10 (9–12) |                 10 (9–13) |    +0% |
-| tool_calls           |                13 (13–15) |                12 (12–16) |    -8% |
+| seconds              |                56 (49–83) |                44 (36–73) |   -22% |
+| requests             |                        11 |                11 (10–14) |    +0% |
+| tool_calls           |                        14 |                13 (13–17) |    -7% |
 | failed_calls         |                         0 |                   0 (0–1) |        |
 | cancelled_calls      |                         0 |                         0 |        |
-| `apply_patch` calls  |                   3 (3–4) |                         0 |  -100% |
+| `apply_patch` calls  |                         4 |                         0 |  -100% |
 | `apply_patch` failed |                         0 |                         0 |        |
-| `edit_file` calls    |                         0 |                   3 (3–4) |        |
+| `edit_file` calls    |                         0 |                   4 (3–4) |        |
 | `edit_file` failed   |                         0 |                         0 |        |
-| `glob` calls         |                         1 |                         1 |    +0% |
+| `glob` calls         |                         1 |                   1 (1–2) |    +0% |
 | `glob` failed        |                         0 |                         0 |        |
-| `grep` calls         |                         1 |                   1 (1–2) |    +0% |
+| `grep` calls         |                         1 |                         1 |    +0% |
 | `grep` failed        |                         0 |                         0 |        |
-| `read_file` calls    |                   7 (7–8) |                   6 (6–7) |   -14% |
+| `read_file` calls    |                         7 |                   7 (6–8) |    +0% |
 | `read_file` failed   |                         0 |                         0 |        |
 | `shell` calls        |                         1 |                   1 (1–2) |    +0% |
 | `shell` failed       |                         0 |                   0 (0–1) |        |
-| repeated_calls       |                         0 |                         0 |        |
-| input_tokens         |    126927 (114046–173414) |    112576 (104265–159901) |   -11% |
-| cached_tokens        |       29049 (26218–32588) |       26361 (17898–47052) |    -9% |
-| output_tokens        |          2860 (2810–3200) |          2603 (2288–3158) |    -9% |
-| reasoning_tokens     |            999 (919–1089) |             710 (589–952) |   -29% |
-| cost                 | $0.0107 ($0.0091–$0.0148) | $0.0100 ($0.0084–$0.0120) |    -7% |
-| max_input_tokens     |       18643 (17591–20775) |       17429 (16157–17927) |    -7% |
-| tool_output_chars    |       38298 (34156–45015) |       36238 (33536–36481) |    -5% |
+| repeated_calls       |                         0 |                   0 (0–1) |        |
+| input_tokens         |    143014 (138582–144080) |    133809 (125914–201233) |    -6% |
+| cached_tokens        |       32219 (19163–47067) |       41006 (31978–71274) |   +27% |
+| output_tokens        |          2692 (2413–3139) |          3190 (2518–4751) |   +18% |
+| reasoning_tokens     |            645 (519–1134) |           1195 (681–2322) |   +85% |
+| cost                 | $0.0117 ($0.0097–$0.0132) | $0.0108 ($0.0062–$0.0171) |    -8% |
+| max_input_tokens     |       18580 (17877–18700) |       18663 (17721–21367) |    +0% |
+| tool_output_chars    |       37002 (36851–38028) |       38581 (37529–41561) |    +4% |
 | compactions          |                         0 |                         0 |        |
 | summarizer_cost      |                   $0.0000 |                   $0.0000 |        |
 | subagents            |                         0 |                         0 |        |
@@ -285,27 +329,27 @@ repetitions, with the range in parentheses. Totals are sums of task medians.
 | -------------------- | ------------------------: | ------------------------: | -----: |
 | passed               |                       3/3 |                       3/3 |        |
 | status               |                finished 3 |                finished 3 |        |
-| seconds              |                50 (39–60) |                43 (42–45) |   -13% |
-| requests             |                 10 (8–13) |                  9 (8–10) |   -10% |
-| tool_calls           |                  9 (7–12) |                   9 (8–9) |    +0% |
-| failed_calls         |                   1 (0–1) |                         0 |  -100% |
+| seconds              |                76 (48–86) |                59 (44–83) |   -22% |
+| requests             |                 10 (9–13) |                 10 (9–10) |    +0% |
+| tool_calls           |                 10 (8–13) |                   9 (8–9) |   -10% |
+| failed_calls         |                   0 (0–1) |                         0 |        |
 | cancelled_calls      |                         0 |                         0 |        |
-| `apply_patch` calls  |                   2 (1–2) |                         0 |  -100% |
-| `apply_patch` failed |                   1 (0–1) |                         0 |  -100% |
-| `read_file` calls    |                   1 (0–1) |                   1 (0–2) |    +0% |
+| `apply_patch` calls  |                         2 |                         0 |  -100% |
+| `apply_patch` failed |                   0 (0–1) |                         0 |        |
+| `read_file` calls    |                   2 (1–3) |                         1 |   -50% |
 | `read_file` failed   |                         0 |                         0 |        |
-| `shell` calls        |                   6 (6–9) |                   5 (5–6) |   -17% |
+| `shell` calls        |                   6 (5–8) |                   6 (5–6) |    +0% |
 | `shell` failed       |                         0 |                         0 |        |
-| `write_file` calls   |                         0 |                   2 (2–3) |        |
+| `write_file` calls   |                         0 |                         2 |        |
 | `write_file` failed  |                         0 |                         0 |        |
 | repeated_calls       |                         0 |                         0 |        |
-| input_tokens         |       53300 (49893–83601) |       44629 (37072–45693) |   -16% |
-| cached_tokens        |       21000 (17740–32106) |        19080 (9322–27129) |    -9% |
-| output_tokens        |          4464 (3204–4697) |          2780 (2593–3283) |   -38% |
-| reasoning_tokens     |          1457 (1090–1473) |            698 (665–1208) |   -52% |
-| cost                 | $0.0039 ($0.0028–$0.0075) | $0.0025 ($0.0024–$0.0042) |   -36% |
-| max_input_tokens     |         8886 (8101–10534) |          6443 (6405–7423) |   -27% |
-| tool_output_chars    |          5287 (2806–8410) |          2503 (2143–3421) |   -53% |
+| input_tokens         |       53183 (48284–87465) |       51350 (40728–53376) |    -3% |
+| cached_tokens        |        20729 (7673–42173) |       22634 (17770–26617) |    +9% |
+| output_tokens        |          3298 (3063–4245) |          3504 (2451–3635) |    +6% |
+| reasoning_tokens     |           1089 (768–1514) |           1050 (717–1181) |    -4% |
+| cost                 | $0.0052 ($0.0034–$0.0055) | $0.0038 ($0.0020–$0.0041) |   -26% |
+| max_input_tokens     |         8251 (8240–10608) |          7572 (6349–7602) |    -8% |
+| tool_output_chars    |          5957 (5351–9387) |          3041 (2976–3326) |   -49% |
 | compactions          |                         0 |                         0 |        |
 | summarizer_cost      |                   $0.0000 |                   $0.0000 |        |
 | subagents            |                         0 |                         0 |        |
@@ -316,31 +360,31 @@ repetitions, with the range in parentheses. Totals are sums of task medians.
 | -------------------- | ------------------------: | ------------------------: | -----: |
 | passed               |                       3/3 |                       3/3 |        |
 | status               |                finished 3 |                finished 3 |        |
-| seconds              |                39 (37–54) |                38 (34–60) |    -2% |
-| requests             |                  9 (9–10) |                12 (10–15) |   +33% |
-| tool_calls           |                14 (13–14) |                15 (14–18) |    +7% |
+| seconds              |                54 (49–55) |               60 (60–130) |   +10% |
+| requests             |                11 (10–11) |                11 (11–13) |    +0% |
+| tool_calls           |                15 (14–15) |                16 (15–16) |    +7% |
 | failed_calls         |                         0 |                         0 |        |
 | cancelled_calls      |                         0 |                         0 |        |
 | `apply_patch` calls  |                         2 |                         0 |  -100% |
 | `apply_patch` failed |                         0 |                         0 |        |
-| `edit_file` calls    |                         0 |                         3 |        |
+| `edit_file` calls    |                         0 |                   3 (3–4) |        |
 | `edit_file` failed   |                         0 |                         0 |        |
 | `glob` calls         |                         1 |                         1 |    +0% |
 | `glob` failed        |                         0 |                         0 |        |
-| `grep` calls         |                         0 |                   0 (0–1) |        |
+| `grep` calls         |                   1 (0–1) |                   0 (0–1) |  -100% |
 | `grep` failed        |                         0 |                         0 |        |
-| `read_file` calls    |                 10 (9–10) |                 10 (9–11) |    +0% |
+| `read_file` calls    |                 10 (9–10) |                        10 |    +0% |
 | `read_file` failed   |                         0 |                         0 |        |
-| `shell` calls        |                         1 |                   1 (1–2) |    +0% |
+| `shell` calls        |                   1 (1–2) |                         1 |    +0% |
 | `shell` failed       |                         0 |                         0 |        |
 | repeated_calls       |                         0 |                         0 |        |
-| input_tokens         |    180763 (171094–190910) |    235148 (184278–289802) |   +30% |
-| cached_tokens        |       50041 (16505–62954) |       26474 (25164–43167) |   -47% |
-| output_tokens        |          2552 (2367–2656) |          2340 (2092–2716) |    -8% |
-| reasoning_tokens     |             598 (461–715) |             567 (404–636) |    -5% |
-| cost                 | $0.0137 ($0.0134–$0.0160) | $0.0215 ($0.0163–$0.0253) |   +57% |
-| max_input_tokens     |       29268 (29110–30000) |       27212 (26276–28488) |    -7% |
-| tool_output_chars    |       71921 (71921–74566) |       68047 (61907–71881) |    -5% |
+| input_tokens         |    223115 (201040–227796) |    222574 (200359–253593) |    -0% |
+| cached_tokens        |       32475 (26474–42459) |       39131 (32219–86205) |   +20% |
+| output_tokens        |          2828 (2803–3473) |          2482 (2233–2602) |   -12% |
+| reasoning_tokens     |             649 (635–699) |             546 (530–755) |   -16% |
+| cost                 | $0.0192 ($0.0181–$0.0198) | $0.0174 ($0.0173–$0.0189) |    -9% |
+| max_input_tokens     |       30014 (29634–31257) |       28284 (25734–28706) |    -6% |
+| tool_output_chars    |       73320 (72539–75302) |       69402 (62762–71929) |    -5% |
 | compactions          |                         0 |                         0 |        |
 | summarizer_cost      |                   $0.0000 |                   $0.0000 |        |
 | subagents            |                         0 |                         0 |        |
@@ -351,29 +395,29 @@ repetitions, with the range in parentheses. Totals are sums of task medians.
 | -------------------- | ------------------------: | ------------------------: | -----: |
 | passed               |                       3/3 |                       3/3 |        |
 | status               |                finished 3 |                finished 3 |        |
-| seconds              |              118 (80–161) |              142 (77–184) |   +21% |
-| requests             |                15 (14–17) |                19 (13–24) |   +27% |
-| tool_calls           |                19 (17–22) |                23 (17–27) |   +21% |
-| failed_calls         |                   0 (0–3) |                   1 (0–1) |        |
+| seconds              |              156 (95–172) |             134 (129–232) |   -14% |
+| requests             |                12 (11–20) |                17 (16–17) |   +42% |
+| tool_calls           |                16 (14–24) |                21 (20–21) |   +31% |
+| failed_calls         |                   0 (0–1) |                   1 (0–2) |        |
 | cancelled_calls      |                         0 |                         0 |        |
-| `apply_patch` calls  |                   2 (2–3) |                         0 |  -100% |
-| `apply_patch` failed |                   0 (0–3) |                         0 |        |
-| `edit_file` calls    |                         0 |                   4 (2–4) |        |
+| `apply_patch` calls  |                   2 (2–4) |                         0 |  -100% |
+| `apply_patch` failed |                   0 (0–1) |                         0 |        |
+| `edit_file` calls    |                         0 |                   2 (2–3) |        |
 | `edit_file` failed   |                         0 |                         0 |        |
 | `glob` calls         |                         1 |                         1 |    +0% |
 | `glob` failed        |                         0 |                         0 |        |
-| `read_file` calls    |                 11 (9–12) |                 13 (9–14) |   +18% |
+| `read_file` calls    |                  9 (8–14) |                12 (10–12) |   +33% |
 | `read_file` failed   |                         0 |                         0 |        |
-| `shell` calls        |                   5 (5–6) |                   5 (4–9) |    +0% |
-| `shell` failed       |                         0 |                   1 (0–1) |        |
-| repeated_calls       |                         0 |                   1 (0–2) |        |
-| input_tokens         |    386470 (332008–519179) |    499947 (291876–760829) |   +29% |
-| cached_tokens        |       45614 (35487–74497) |     117272 (39869–125155) |  +157% |
-| output_tokens        |         6865 (5957–16404) |          5442 (4764–9835) |   -21% |
-| reasoning_tokens     |          4059 (2444–9829) |          2388 (2007–5832) |   -41% |
-| cost                 | $0.0365 ($0.0299–$0.0479) | $0.0388 ($0.0262–$0.0666) |    +6% |
-| max_input_tokens     |       37282 (33553–44869) |       34643 (31894–41785) |    -7% |
-| tool_output_chars    |       79643 (74511–83823) |       81297 (74185–87664) |    +2% |
+| `shell` calls        |                   4 (3–5) |                   6 (4–8) |   +50% |
+| `shell` failed       |                         0 |                   1 (0–2) |        |
+| repeated_calls       |                   0 (0–2) |                         1 |        |
+| input_tokens         |    313810 (248180–593138) |    456402 (435656–466271) |   +45% |
+| cached_tokens        |       81100 (35690–86740) |       52993 (39041–74512) |   -35% |
+| output_tokens        |        10351 (5495–10513) |         6944 (6184–10925) |   -33% |
+| reasoning_tokens     |          5359 (2869–7444) |          4151 (2580–7144) |   -23% |
+| cost                 | $0.0255 ($0.0224–$0.0529) | $0.0417 ($0.0377–$0.0450) |   +63% |
+| max_input_tokens     |       39886 (32663–41449) |       36391 (35485–39328) |    -9% |
+| tool_output_chars    |       81047 (73848–84679) |       79938 (77451–83515) |    -1% |
 | compactions          |                         0 |                         0 |        |
 | summarizer_cost      |                   $0.0000 |                   $0.0000 |        |
 | subagents            |                         0 |                         0 |        |
@@ -384,31 +428,29 @@ repetitions, with the range in parentheses. Totals are sums of task medians.
 | -------------------- | ------------------------: | ------------------------: | -----: |
 | passed               |                       3/3 |                       3/3 |        |
 | status               |                finished 3 |                finished 3 |        |
-| seconds              |                49 (38–58) |                54 (48–75) |    +9% |
-| requests             |                  8 (6–12) |                  8 (6–14) |    +0% |
-| tool_calls           |                  7 (5–11) |                  7 (6–13) |    +0% |
-| failed_calls         |                   1 (0–2) |                   1 (0–1) |    +0% |
+| seconds              |                62 (41–67) |                46 (36–65) |   -27% |
+| requests             |                  8 (6–12) |                   8 (6–8) |    +0% |
+| tool_calls           |                  7 (5–11) |                   7 (6–7) |    +0% |
+| failed_calls         |                   1 (0–2) |                         0 |  -100% |
 | cancelled_calls      |                         0 |                         0 |        |
 | `apply_patch` calls  |                   3 (2–4) |                         0 |  -100% |
 | `apply_patch` failed |                   0 (0–1) |                         0 |        |
-| `edit_file` calls    |                         0 |                   0 (0–5) |        |
-| `edit_file` failed   |                         0 |                         0 |        |
-| `glob` calls         |                   0 (0–1) |                         0 |        |
+| `glob` calls         |                   0 (0–1) |                   0 (0–1) |        |
 | `glob` failed        |                         0 |                         0 |        |
 | `read_file` calls    |                   0 (0–1) |                         0 |        |
 | `read_file` failed   |                         0 |                         0 |        |
-| `shell` calls        |                   3 (3–6) |                   4 (3–5) |   +33% |
-| `shell` failed       |                   1 (0–1) |                   1 (0–1) |    +0% |
+| `shell` calls        |                   4 (3–5) |                   3 (3–4) |   -25% |
+| `shell` failed       |                   1 (0–1) |                         0 |  -100% |
 | `write_file` calls   |                         0 |                         3 |        |
 | `write_file` failed  |                         0 |                         0 |        |
-| repeated_calls       |                   0 (0–1) |                   0 (0–1) |        |
-| input_tokens         |       41585 (31859–86138) |       42341 (33543–82820) |    +2% |
-| cached_tokens        |        14374 (5256–32716) |       16904 (10150–28590) |   +18% |
-| output_tokens        |          3299 (3283–4266) |          3872 (3500–4288) |   +17% |
-| reasoning_tokens     |             525 (498–878) |            883 (660–1324) |   +68% |
-| cost                 | $0.0043 ($0.0024–$0.0063) | $0.0033 ($0.0032–$0.0063) |   -24% |
-| max_input_tokens     |          6966 (6930–9858) |          7585 (6864–7805) |    +9% |
-| tool_output_chars    |          1605 (1378–8680) |          1846 (1697–3323) |   +15% |
+| repeated_calls       |                   0 (0–1) |                         0 |        |
+| input_tokens         |       45710 (30813–79869) |       37425 (27964–40205) |   -18% |
+| cached_tokens        |         16166 (904–24396) |        20616 (3494–23432) |   +28% |
+| output_tokens        |          3270 (2964–4539) |          3048 (2804–3050) |    -7% |
+| reasoning_tokens     |             363 (282–978) |             331 (324–413) |    -9% |
+| cost                 | $0.0051 ($0.0021–$0.0065) | $0.0023 ($0.0023–$0.0030) |   -55% |
+| max_input_tokens     |          8222 (6826–9180) |          6292 (6149–6545) |   -23% |
+| tool_output_chars    |          4856 (1986–5877) |          1698 (1511–1873) |   -65% |
 | compactions          |                         0 |                         0 |        |
 | summarizer_cost      |                   $0.0000 |                   $0.0000 |        |
 | subagents            |                         0 |                         0 |        |

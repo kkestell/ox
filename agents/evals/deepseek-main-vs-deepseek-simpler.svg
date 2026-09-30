@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="878" height="844" viewBox="0 0 878 844">
+<style>
+text { font-family: system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif; font-size: 13px; fill: #0b0b0b; font-variant-numeric: tabular-nums; }
+.secondary { fill: #52514e; } .muted { fill: #898781; }
+.title { font-size: 18px; font-weight: 600; }
+.heading { font-size: 15px; font-weight: 600; } .strong { font-weight: 600; }
+.surface { fill: #fcfcfb; } .grid { stroke: #e1e0d9; } .base { stroke: #c3c2b7; }
+.good { fill: #0ca30c; } line.good { stroke: #0ca30c; }
+.bad { fill: #d03b3b; } line.bad { stroke: #d03b3b; }
+.neutral { fill: #898781; } line.neutral { stroke: #898781; }
+.good-text { fill: #006300; } .bad-text { fill: #b02a2a; } .neutral-text { fill: #52514e; }
+.tint { stroke: none; fill-opacity: 0.16; }
+circle { stroke: #fcfcfb; stroke-width: 2px; }
+@media (prefers-color-scheme: dark) {
+text { fill: #ffffff; } .secondary, .neutral-text { fill: #c3c2b7; }
+.good-text { fill: #0ca30c; } .bad-text { fill: #e06464; }
+.surface { fill: #1a1a19; } .grid { stroke: #2c2c2a; } .base { stroke: #383835; }
+.tint { fill-opacity: 0.28; } circle { stroke: #1a1a19; }
+}
+</style>
+<rect class="surface" width="878" height="844"/>
+<text class="title" x="24" y="40">deepseek-simpler compared with deepseek-main</text>
+<text class="secondary" x="24" y="62">deepseek/deepseek-v4.1-flash. Passed: deepseek-main 36/36, <tspan class="neutral-text strong">deepseek-simpler 36/36</tspan>.</text>
+<text class="heading" x="24" y="106">Across all tasks</text>
+<text class="secondary" x="24" y="124">Each dot is the geometric mean over tasks of the candidate's median over the base's median, with a 90% bootstrap interval.</text>
+<text class="secondary" x="24" y="142">Green is clearly lower, red is clearly higher, and gray is within the noise.</text>
+<line class="grid" x1="268.2" y1="158" x2="268.2" y2="308"/><text class="muted" x="268.2" y="322" text-anchor="middle">-20%</text>
+<line class="grid" x1="324.0" y1="158" x2="324.0" y2="308"/><text class="muted" x="324.0" y="322" text-anchor="middle">-10%</text>
+<line class="base" x1="374.0" y1="158" x2="374.0" y2="308"/><text class="muted" x="374.0" y="322" text-anchor="middle">0%</text>
+<line class="grid" x1="419.2" y1="158" x2="419.2" y2="308"/><text class="muted" x="419.2" y="322" text-anchor="middle">+10%</text>
+<line class="grid" x1="479.8" y1="158" x2="479.8" y2="308"/><text class="muted" x="479.8" y="322" text-anchor="middle">+25%</text>
+<text class="muted" x="194" y="340">← lower</text><text class="muted" x="554" y="340" text-anchor="end">higher →</text>
+<g><title>Cost: -13% (-26% to +2%)</title><rect x="24" y="158.0" width="830" height="30" fill="transparent"/><text class="strong" x="24" y="177.0">Cost</text><line class="neutral" x1="233.6" y1="173.0" x2="384.6" y2="173.0" stroke-width="2" stroke-linecap="round"/><circle class="neutral" cx="309.1" cy="173.0" r="6"/><text x="578" y="177.0">-13% (-26% to +2%)</text><text class="neutral-text strong" x="734" y="177.0">No clear change</text></g>
+<g><title>Time: -10% (-24% to +16%)</title><rect x="24" y="188.0" width="830" height="30" fill="transparent"/><text class="strong" x="24" y="207.0">Time</text><line class="neutral" x1="243.2" y1="203.0" x2="445.6" y2="203.0" stroke-width="2" stroke-linecap="round"/><circle class="neutral" cx="325.4" cy="203.0" r="6"/><text x="578" y="207.0">-10% (-24% to +16%)</text><text class="neutral-text strong" x="734" y="207.0">No clear change</text></g>
+<g><title>Input tokens: -9% (-29% to +16%)</title><rect x="24" y="218.0" width="830" height="30" fill="transparent"/><text class="strong" x="24" y="237.0">Input tokens</text><line class="neutral" x1="210.4" y1="233.0" x2="443.8" y2="233.0" stroke-width="2" stroke-linecap="round"/><circle class="neutral" cx="331.5" cy="233.0" r="6"/><text x="578" y="237.0">-9% (-29% to +16%)</text><text class="neutral-text strong" x="734" y="237.0">No clear change</text></g>
+<g><title>Output tokens: -16% (-29% to +1%)</title><rect x="24" y="248.0" width="830" height="30" fill="transparent"/><text class="strong" x="24" y="267.0">Output tokens</text><line class="neutral" x1="214.7" y1="263.0" x2="376.5" y2="263.0" stroke-width="2" stroke-linecap="round"/><circle class="neutral" cx="289.0" cy="263.0" r="6"/><text x="578" y="267.0">-16% (-29% to +1%)</text><text class="neutral-text strong" x="734" y="267.0">No clear change</text></g>
+<g><title>Requests: +1% (-15% to +18%)</title><rect x="24" y="278.0" width="830" height="30" fill="transparent"/><text class="strong" x="24" y="297.0">Requests</text><line class="neutral" x1="297.7" y1="293.0" x2="452.7" y2="293.0" stroke-width="2" stroke-linecap="round"/><circle class="neutral" cx="376.7" cy="293.0" r="6"/><text x="578" y="297.0">+1% (-15% to +18%)</text><text class="neutral-text strong" x="734" y="297.0">No clear change</text></g>
+<text class="heading" x="24" y="380">By task</text>
+<text class="secondary" x="24" y="398">Each cell is the change in the task's median. A cell is colored only when every repetition of the candidate was lower (green)</text>
+<text class="secondary" x="24" y="416">or higher (red) than every repetition of the base; hover a cell for the values.</text>
+<text class="strong" x="292" y="450" text-anchor="end">Passed</text>
+<text class="strong" x="402" y="450" text-anchor="end">Cost</text>
+<text class="strong" x="512" y="450" text-anchor="end">Time</text>
+<text class="strong" x="622" y="450" text-anchor="end">Input tokens</text>
+<text class="strong" x="732" y="450" text-anchor="end">Output tokens</text>
+<text class="strong" x="842" y="450" text-anchor="end">Requests</text>
+<line class="grid" x1="24" y1="460" x2="854" y2="460"/><text x="24" y="479">coffee-site</text>
+<g><title>coffee-site, passed: deepseek-main 3/3; deepseek-simpler 3/3</title><rect x="194" y="460" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="479" text-anchor="end">3/3</text></g>
+<g><title>coffee-site, cost: deepseek-main $0.0035, $0.0046, $0.0059; deepseek-simpler $0.0037, $0.0041, $0.0052</title><rect x="304" y="460" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="479" text-anchor="end">-10%</text></g>
+<g><title>coffee-site, time: deepseek-main 31, 33, 43; deepseek-simpler 33, 35, 36</title><rect x="414" y="460" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="479" text-anchor="end">+8%</text></g>
+<g><title>coffee-site, input tokens: deepseek-main 61312, 71766, 87246; deepseek-simpler 57559, 58536, 66921</title><rect x="524" y="460" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="479" text-anchor="end">-18%</text></g>
+<g><title>coffee-site, output tokens: deepseek-main 5038, 6687, 9009; deepseek-simpler 5341, 5795, 7805</title><rect x="634" y="460" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="479" text-anchor="end">-13%</text></g>
+<g><title>coffee-site, requests: deepseek-main 9, 9, 9; deepseek-simpler 8, 8, 9</title><rect x="744" y="460" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="479" text-anchor="end">-11%</text></g>
+<line class="grid" x1="24" y1="490" x2="854" y2="490"/><text x="24" y="509">csv-stats</text>
+<g><title>csv-stats, passed: deepseek-main 3/3; deepseek-simpler 3/3</title><rect x="194" y="490" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="509" text-anchor="end">3/3</text></g>
+<g><title>csv-stats, cost: deepseek-main $0.0071, $0.0086, $0.0098; deepseek-simpler $0.0063, $0.0090, $0.0096</title><rect x="304" y="490" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="509" text-anchor="end">+4%</text></g>
+<g><title>csv-stats, time: deepseek-main 54, 64, 70; deepseek-simpler 46, 71, 88</title><rect x="414" y="490" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="509" text-anchor="end">+12%</text></g>
+<g><title>csv-stats, input tokens: deepseek-main 88638, 124495, 187226; deepseek-simpler 65950, 172067, 377585</title><rect x="524" y="490" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="509" text-anchor="end">+38%</text></g>
+<g><title>csv-stats, output tokens: deepseek-main 11078, 12205, 15200; deepseek-simpler 9640, 11802, 13334</title><rect x="634" y="490" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="509" text-anchor="end">-3%</text></g>
+<g><title>csv-stats, requests: deepseek-main 8, 9, 15; deepseek-simpler 7, 14, 30</title><rect x="744" y="490" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="509" text-anchor="end">+56%</text></g>
+<line class="grid" x1="24" y1="520" x2="854" y2="520"/><text x="24" y="539">inih-quoted</text>
+<g><title>inih-quoted, passed: deepseek-main 3/3; deepseek-simpler 3/3</title><rect x="194" y="520" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="539" text-anchor="end">3/3</text></g>
+<g><title>inih-quoted, cost: deepseek-main $0.0342, $0.0366, $0.0474; deepseek-simpler $0.0421, $0.0463, $0.0640</title><rect x="304" y="520" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="539" text-anchor="end">+27%</text></g>
+<g><title>inih-quoted, time: deepseek-main 238, 296, 423; deepseek-simpler 297, 332, 478</title><rect x="414" y="520" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="539" text-anchor="end">+12%</text></g>
+<g><title>inih-quoted, input tokens: deepseek-main 2151739, 2402560, 3646937; deepseek-simpler 3059502, 3324941, 4788752</title><rect x="524" y="520" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="539" text-anchor="end">+38%</text></g>
+<g><title>inih-quoted, output tokens: deepseek-main 35965, 39220, 48947; deepseek-simpler 42760, 47252, 70019</title><rect x="634" y="520" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="539" text-anchor="end">+20%</text></g>
+<g><title>inih-quoted, requests: deepseek-main 48, 54, 68; deepseek-simpler 61, 63, 73</title><rect x="744" y="520" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="539" text-anchor="end">+17%</text></g>
+<line class="grid" x1="24" y1="550" x2="854" y2="550"/><text x="24" y="569">itoa-boundaries</text>
+<g><title>itoa-boundaries, passed: deepseek-main 3/3; deepseek-simpler 3/3</title><rect x="194" y="550" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="569" text-anchor="end">3/3</text></g>
+<g><title>itoa-boundaries, cost: deepseek-main $0.0078, $0.0104, $0.0338; deepseek-simpler $0.0050, $0.0099, $0.0197</title><rect x="304" y="550" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="569" text-anchor="end">-4%</text></g>
+<g><title>itoa-boundaries, time: deepseek-main 59, 91, 324; deepseek-simpler 49, 86, 768</title><rect x="414" y="550" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="569" text-anchor="end">-5%</text></g>
+<g><title>itoa-boundaries, input tokens: deepseek-main 205460, 215733, 1662323; deepseek-simpler 137619, 263356, 680418</title><rect x="524" y="550" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="569" text-anchor="end">+22%</text></g>
+<g><title>itoa-boundaries, output tokens: deepseek-main 8973, 13192, 41452; deepseek-simpler 5086, 12249, 25349</title><rect x="634" y="550" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="569" text-anchor="end">-7%</text></g>
+<g><title>itoa-boundaries, requests: deepseek-main 13, 14, 49; deepseek-simpler 13, 17, 27</title><rect x="744" y="550" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="569" text-anchor="end">+21%</text></g>
+<line class="grid" x1="24" y1="580" x2="854" y2="580"/><text x="24" y="599">jsmn-rename</text>
+<g><title>jsmn-rename, passed: deepseek-main 3/3; deepseek-simpler 3/3</title><rect x="194" y="580" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="599" text-anchor="end">3/3</text></g>
+<g><title>jsmn-rename, cost: deepseek-main $0.0016, $0.0019, $0.0028; deepseek-simpler $0.0016, $0.0018, $0.0020</title><rect x="304" y="580" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="599" text-anchor="end">-7%</text></g>
+<g><title>jsmn-rename, time: deepseek-main 15, 16, 24; deepseek-simpler 13, 14, 18</title><rect x="414" y="580" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="599" text-anchor="end">-14%</text></g>
+<g><title>jsmn-rename, input tokens: deepseek-main 43359, 52558, 82097; deepseek-simpler 38524, 40708, 60807</title><rect x="524" y="580" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="599" text-anchor="end">-23%</text></g>
+<g><title>jsmn-rename, output tokens: deepseek-main 1328, 1805, 2729; deepseek-simpler 1554, 1581, 1819</title><rect x="634" y="580" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="599" text-anchor="end">-12%</text></g>
+<g><title>jsmn-rename, requests: deepseek-main 7, 9, 11; deepseek-simpler 7, 7, 10</title><rect x="744" y="580" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="599" text-anchor="end">-22%</text></g>
+<line class="grid" x1="24" y1="610" x2="854" y2="610"/><text x="24" y="629">mini-redis-docs</text>
+<g><title>mini-redis-docs, passed: deepseek-main 3/3; deepseek-simpler 3/3</title><rect x="194" y="610" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="629" text-anchor="end">3/3</text></g>
+<g><title>mini-redis-docs, cost: deepseek-main $0.0206, $0.0309, $0.0315; deepseek-simpler $0.0267, $0.0321, $0.0321</title><rect x="304" y="610" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="629" text-anchor="end">+4%</text></g>
+<g><title>mini-redis-docs, time: deepseek-main 125, 158, 185; deepseek-simpler 172, 179, 179</title><rect x="414" y="610" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="629" text-anchor="end">+13%</text></g>
+<g><title>mini-redis-docs, input tokens: deepseek-main 1513520, 2636417, 3158901; deepseek-simpler 2225693, 2798872, 4043534</title><rect x="524" y="610" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="629" text-anchor="end">+6%</text></g>
+<g><title>mini-redis-docs, output tokens: deepseek-main 12789, 19803, 21461; deepseek-simpler 16639, 18871, 23352</title><rect x="634" y="610" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="629" text-anchor="end">-5%</text></g>
+<g><title>mini-redis-docs, requests: deepseek-main 37, 46, 57; deepseek-simpler 44, 52, 81</title><rect x="744" y="610" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="629" text-anchor="end">+13%</text></g>
+<line class="grid" x1="24" y1="640" x2="854" y2="640"/><text x="24" y="659">pi-digit</text>
+<g><title>pi-digit, passed: deepseek-main 3/3; deepseek-simpler 3/3</title><rect x="194" y="640" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="659" text-anchor="end">3/3</text></g>
+<g><title>pi-digit, cost: deepseek-main $0.0061, $0.0109, $0.0225; deepseek-simpler $0.0051, $0.0065, $0.0086</title><rect x="304" y="640" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="659" text-anchor="end">-40%</text></g>
+<g><title>pi-digit, time: deepseek-main 48, 82, 166; deepseek-simpler 42, 54, 67</title><rect x="414" y="640" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="659" text-anchor="end">-34%</text></g>
+<g><title>pi-digit, input tokens: deepseek-main 70464, 164439, 680412; deepseek-simpler 62299, 66415, 89848</title><rect x="524" y="640" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="659" text-anchor="end">-60%</text></g>
+<g><title>pi-digit, output tokens: deepseek-main 9409, 16660, 32599; deepseek-simpler 7723, 10244, 13183</title><rect x="634" y="640" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="659" text-anchor="end">-39%</text></g>
+<g><title>pi-digit, requests: deepseek-main 7, 12, 26; deepseek-simpler 6, 7, 9</title><rect x="744" y="640" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="659" text-anchor="end">-42%</text></g>
+<line class="grid" x1="24" y1="670" x2="854" y2="670"/><text x="24" y="689">sds-startswith</text>
+<g><title>sds-startswith, passed: deepseek-main 3/3; deepseek-simpler 3/3</title><rect x="194" y="670" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="689" text-anchor="end">3/3</text></g>
+<g><title>sds-startswith, cost: deepseek-main $0.0033, $0.0041, $0.0046; deepseek-simpler $0.0023, $0.0023, $0.0024</title><rect x="304" y="670" width="110" height="30" fill="transparent"/><rect class="good tint" x="308" y="673" width="102" height="24" rx="4"/><text class="strong" x="402" y="689" text-anchor="end">-43%</text></g>
+<g><title>sds-startswith, time: deepseek-main 28, 29, 37; deepseek-simpler 19, 19, 23</title><rect x="414" y="670" width="110" height="30" fill="transparent"/><rect class="good tint" x="418" y="673" width="102" height="24" rx="4"/><text class="strong" x="512" y="689" text-anchor="end">-34%</text></g>
+<g><title>sds-startswith, input tokens: deepseek-main 84814, 107989, 114394; deepseek-simpler 51178, 54643, 66698</title><rect x="524" y="670" width="110" height="30" fill="transparent"/><rect class="good tint" x="528" y="673" width="102" height="24" rx="4"/><text class="strong" x="622" y="689" text-anchor="end">-49%</text></g>
+<g><title>sds-startswith, output tokens: deepseek-main 3207, 4392, 5459; deepseek-simpler 2430, 2469, 2517</title><rect x="634" y="670" width="110" height="30" fill="transparent"/><rect class="good tint" x="638" y="673" width="102" height="24" rx="4"/><text class="strong" x="732" y="689" text-anchor="end">-44%</text></g>
+<g><title>sds-startswith, requests: deepseek-main 11, 12, 14; deepseek-simpler 9, 9, 11</title><rect x="744" y="670" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="689" text-anchor="end">-25%</text></g>
+<line class="grid" x1="24" y1="700" x2="854" y2="700"/><text x="24" y="719">temp-cli</text>
+<g><title>temp-cli, passed: deepseek-main 3/3; deepseek-simpler 3/3</title><rect x="194" y="700" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="719" text-anchor="end">3/3</text></g>
+<g><title>temp-cli, cost: deepseek-main $0.0031, $0.0065, $0.0078; deepseek-simpler $0.0030, $0.0037, $0.0043</title><rect x="304" y="700" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="719" text-anchor="end">-43%</text></g>
+<g><title>temp-cli, time: deepseek-main 24, 49, 55; deepseek-simpler 26, 34, 36</title><rect x="414" y="700" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="719" text-anchor="end">-29%</text></g>
+<g><title>temp-cli, input tokens: deepseek-main 43568, 132195, 156206; deepseek-simpler 46347, 75509, 87196</title><rect x="524" y="700" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="719" text-anchor="end">-43%</text></g>
+<g><title>temp-cli, output tokens: deepseek-main 4490, 9073, 11392; deepseek-simpler 4358, 4960, 6138</title><rect x="634" y="700" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="719" text-anchor="end">-45%</text></g>
+<g><title>temp-cli, requests: deepseek-main 7, 13, 15; deepseek-simpler 8, 11, 14</title><rect x="744" y="700" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="719" text-anchor="end">-15%</text></g>
+<line class="grid" x1="24" y1="730" x2="854" y2="730"/><text x="24" y="749">tinyexpr-clamp</text>
+<g><title>tinyexpr-clamp, passed: deepseek-main 3/3; deepseek-simpler 3/3</title><rect x="194" y="730" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="749" text-anchor="end">3/3</text></g>
+<g><title>tinyexpr-clamp, cost: deepseek-main $0.0034, $0.0062, $0.0065; deepseek-simpler $0.0049, $0.0051, $0.0064</title><rect x="304" y="730" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="749" text-anchor="end">-19%</text></g>
+<g><title>tinyexpr-clamp, time: deepseek-main 26, 46, 53; deepseek-simpler 34, 34, 49</title><rect x="414" y="730" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="749" text-anchor="end">-24%</text></g>
+<g><title>tinyexpr-clamp, input tokens: deepseek-main 132938, 221227, 306806; deepseek-simpler 218996, 245354, 350600</title><rect x="524" y="730" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="749" text-anchor="end">+11%</text></g>
+<g><title>tinyexpr-clamp, output tokens: deepseek-main 2528, 5357, 6250; deepseek-simpler 3686, 3830, 5020</title><rect x="634" y="730" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="749" text-anchor="end">-29%</text></g>
+<g><title>tinyexpr-clamp, requests: deepseek-main 13, 18, 20; deepseek-simpler 18, 19, 26</title><rect x="744" y="730" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="749" text-anchor="end">+6%</text></g>
+<line class="grid" x1="24" y1="760" x2="854" y2="760"/><text x="24" y="779">tinyexpr-precedence</text>
+<g><title>tinyexpr-precedence, passed: deepseek-main 3/3; deepseek-simpler 3/3</title><rect x="194" y="760" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="779" text-anchor="end">3/3</text></g>
+<g><title>tinyexpr-precedence, cost: deepseek-main $0.0412, $0.0544, $0.0649; deepseek-simpler $0.0539, $0.0570, $0.0623</title><rect x="304" y="760" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="779" text-anchor="end">+5%</text></g>
+<g><title>tinyexpr-precedence, time: deepseek-main 255, 419, 678; deepseek-simpler 325, 376, 537</title><rect x="414" y="760" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="779" text-anchor="end">-10%</text></g>
+<g><title>tinyexpr-precedence, input tokens: deepseek-main 1677479, 3672274, 6127799; deepseek-simpler 2923078, 4789421, 4861181</title><rect x="524" y="760" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="779" text-anchor="end">+30%</text></g>
+<g><title>tinyexpr-precedence, output tokens: deepseek-main 49279, 59461, 60093; deepseek-simpler 49855, 64872, 69393</title><rect x="634" y="760" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="779" text-anchor="end">+9%</text></g>
+<g><title>tinyexpr-precedence, requests: deepseek-main 32, 55, 82; deepseek-simpler 46, 68, 70</title><rect x="744" y="760" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="779" text-anchor="end">+24%</text></g>
+<line class="grid" x1="24" y1="790" x2="854" y2="790"/><text x="24" y="809">todo-cli</text>
+<g><title>todo-cli, passed: deepseek-main 3/3; deepseek-simpler 3/3</title><rect x="194" y="790" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="809" text-anchor="end">3/3</text></g>
+<g><title>todo-cli, cost: deepseek-main $0.0034, $0.0038, $0.0040; deepseek-simpler $0.0032, $0.0041, $0.0042</title><rect x="304" y="790" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="809" text-anchor="end">+7%</text></g>
+<g><title>todo-cli, time: deepseek-main 25, 26, 28; deepseek-simpler 28, 30, 30</title><rect x="414" y="790" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="809" text-anchor="end">+13%</text></g>
+<g><title>todo-cli, input tokens: deepseek-main 41895, 45840, 51132; deepseek-simpler 49444, 59136, 70106</title><rect x="524" y="790" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="809" text-anchor="end">+29%</text></g>
+<g><title>todo-cli, output tokens: deepseek-main 5115, 5589, 6053; deepseek-simpler 4314, 5642, 6162</title><rect x="634" y="790" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="809" text-anchor="end">+1%</text></g>
+<g><title>todo-cli, requests: deepseek-main 6, 7, 7; deepseek-simpler 7, 9, 12</title><rect x="744" y="790" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="809" text-anchor="end">+29%</text></g>
+</svg>
