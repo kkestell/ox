@@ -68,8 +68,8 @@ fn invalid_input(message: String) -> io::Error {
 /// Fetches and installs the model catalog and returns the settings checked
 /// against it.
 async fn load_settings_and_catalog() -> io::Result<settings::Settings> {
-    let catalog = openrouter::fetch_catalog().await?;
-    let settings = settings::load(&catalog)?;
+    let mut catalog = openrouter::fetch_catalog().await?;
+    let settings = settings::load(&mut catalog)?;
     openrouter::install_catalog(catalog);
     Ok(settings)
 }

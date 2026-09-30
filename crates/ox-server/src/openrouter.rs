@@ -29,6 +29,10 @@ pub struct CatalogModel {
     pub accepts_images: bool,
     /// `Default` followed by the efforts OpenRouter lists, in ascending order.
     pub efforts: Vec<EffortLevel>,
+    /// The provider pin from the global settings file: model requests go only
+    /// to these OpenRouter provider slugs, tried in order. Empty lets
+    /// OpenRouter choose.
+    pub providers: Vec<String>,
 }
 
 impl CatalogModel {
@@ -143,6 +147,7 @@ pub fn parse_catalog(text: &str, now: i64) -> io::Result<Vec<CatalogModel>> {
                 output_price: model.pricing.completion * 1_000_000.0,
                 accepts_images: has(&model.architecture.input_modalities, "image"),
                 efforts,
+                providers: Vec::new(),
             }
         })
         .collect::<Vec<_>>();
@@ -318,6 +323,7 @@ pub(crate) fn ordinary_body(parameters: &ModelRequestParameters, messages: Vec<V
     if let Some(effort) = parameters.effort.openrouter_effort() {
         body["reasoning"] = json!({ "effort": effort });
     }
+    route(&mut body, parameters.model);
     body
 }
 
@@ -335,7 +341,16 @@ pub(crate) fn summarizer_body(model: &CatalogModel, previous: &str, piece: &str)
     if let Some(effort) = model.summarizer_effort().openrouter_effort() {
         body["reasoning"] = json!({ "effort": effort });
     }
+    route(&mut body, model);
     body
+}
+
+/// Restricts a pinned model's request to its providers. Without fallbacks,
+/// OpenRouter fails the request instead of trying another provider.
+fn route(body: &mut Value, model: &CatalogModel) {
+    if !model.providers.is_empty() {
+        body["provider"] = json!({ "order": model.providers, "allow_fallbacks": false });
+    }
 }
 
 impl Client {
@@ -1662,6 +1677,36 @@ mod tests {
                     EffortLevel::Default => assert!(body.get("reasoning").is_none()),
                     _ => assert_eq!(body["reasoning"]["effort"], effort.id()),
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn requests_route_pinned_models_to_their_providers() {
+        let mut models = parse_catalog(fixture::CATALOG, fixture::NOW).unwrap();
+        let unpinned = models.pop().unwrap();
+        let mut pinned = models.pop().unwrap();
+        pinned.providers = vec!["deepseek".to_owned(), "deepinfra/turbo".to_owned()];
+        let pinned: &'static CatalogModel = Box::leak(Box::new(pinned));
+        let unpinned: &'static CatalogModel = Box::leak(Box::new(unpinned));
+        for (model, provider) in [
+            (
+                pinned,
+                Some(json!({ "order": ["deepseek", "deepinfra/turbo"], "allow_fallbacks": false })),
+            ),
+            (unpinned, None),
+        ] {
+            let parameters = ModelRequestParameters {
+                model,
+                effort: EffortLevel::Default,
+                system_prompt: TEST_SYSTEM_PROMPT.to_owned(),
+                role: tools::Role::Main,
+            };
+            for body in [
+                ordinary_body(&parameters, vec![]),
+                summarizer_body(model, "", "piece"),
+            ] {
+                assert_eq!(body.get("provider"), provider.as_ref(), "{}", model.id);
             }
         }
     }
