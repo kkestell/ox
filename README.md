@@ -46,8 +46,9 @@ Configure Zed to use Ox as an external agent. Add the following to
 - OpenRouter model catalog
 - Model switching and configurable reasoning effort
 - Streaming responses and visible reasoning
-- Built-in tools: `read_file`, `glob`, `grep`, `apply_patch`, `shell`,
-  `shell_process`, `start_subagent`, `send_message`, `stop_subagent`, and `wait`
+- Built-in tools: `read_file`, `glob`, `grep`, `write_file`, `edit_file`,
+  `shell`, `shell_process`, `start_subagent`, `send_message`, `stop_subagent`,
+  and `wait`
 - Workspace-scoped file tools
 - Paginated file reads and bounded tool output
 - Persistent background shell processes
