@@ -27,7 +27,6 @@ pub struct Session {
     connection: ConnectionTo<Agent>,
     id: SessionId,
     active: bool,
-    loading: Option<SessionId>,
     directory: PathBuf,
     can_resume: bool,
     events: UnboundedSender<Event>,
@@ -55,7 +54,7 @@ impl Session {
     }
 
     pub fn accepts(&self, id: &SessionId) -> bool {
-        (self.active && self.id == *id) || self.loading.as_ref() == Some(id)
+        self.active && self.id == *id
     }
 
     pub fn can_resume(&self) -> bool {
@@ -111,14 +110,11 @@ impl Session {
     }
 
     pub async fn load(&mut self, id: SessionId) -> anyhow::Result<()> {
-        self.loading = Some(id.clone());
         let response = self
             .connection
             .send_request(LoadSessionRequest::new(id.clone(), self.directory.clone()))
             .block_task()
-            .await;
-        self.loading = None;
-        let response = response?;
+            .await?;
         self.id = id;
         self.active = true;
         self.config_options = response.config_options.unwrap_or_default();
@@ -360,7 +356,6 @@ where
                     connection,
                     id: session.session_id,
                     active: true,
-                    loading: None,
                     directory,
                     can_resume: capabilities.load_session
                         && capabilities.session_capabilities.list.is_some()

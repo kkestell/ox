@@ -591,7 +591,7 @@ fn check_compaction_checkpoint(
     previous_prefix: usize,
     entries: &[TranscriptEntry],
 ) -> io::Result<()> {
-    // The preceding scan already validated every assistant batch.
+    // Assistant batches have already been validated.
     if checkpoint.summary.trim().is_empty()
         || checkpoint.covered_prefix <= previous_prefix
         || checkpoint.covered_prefix > index
@@ -847,27 +847,31 @@ impl SessionStore {
             .map_err(io::Error::other)
     }
 
-    /// Appends a checkpoint atomically, after checking the transcript it was
-    /// computed from is still the saved transcript.
+    /// Validates the new checkpoint against the calling operation's transcript
+    /// and appends it atomically.
     pub fn append_checkpoint(
         &self,
         id: &SessionId,
-        expected_len: usize,
+        transcript: &[TranscriptEntry],
         checkpoint: &CompactionCheckpoint,
     ) -> io::Result<()> {
-        let mut connection = self.lock();
-        let tx = connection.transaction().map_err(io::Error::other)?;
-        let mut entries = read_transcript(&tx, id)?;
-        if entries.len() != expected_len {
-            return Err(invalid_data(
-                "transcript changed before compaction checkpoint",
-            ));
-        }
-        let entry = TranscriptEntry::CompactionCheckpoint(checkpoint.clone());
-        entries.push(entry.clone());
-        validate_transcript(&entries)?;
-        write_entries(&tx, id, None, &[entry])?;
-        tx.commit().map_err(io::Error::other)
+        let previous_prefix = transcript
+            .iter()
+            .rev()
+            .find_map(|entry| match entry {
+                TranscriptEntry::CompactionCheckpoint(checkpoint) => {
+                    Some(checkpoint.covered_prefix)
+                }
+                _ => None,
+            })
+            .unwrap_or(0);
+        check_compaction_checkpoint(checkpoint, transcript.len(), previous_prefix, transcript)?;
+        self.append(
+            id,
+            None,
+            &[TranscriptEntry::CompactionCheckpoint(checkpoint.clone())],
+        )
+        .map(drop)
     }
 
     fn append(
@@ -1187,7 +1191,10 @@ mod tests {
             store.append_turn_start(&id, &first).unwrap();
             let batch = AssistantBatch::new(message.clone(), outcomes.clone()).unwrap();
             store.append_batch(&id, &batch).unwrap();
-            store.append_checkpoint(&id, 2, &checkpoint).unwrap();
+            let transcript = store.read(&id).unwrap().unwrap().transcript;
+            store
+                .append_checkpoint(&id, &transcript, &checkpoint)
+                .unwrap();
             store.append_turn_start(&id, &second).unwrap();
             store
                 .append_batch(&id, &AssistantBatch::new(answered.clone(), vec![]).unwrap())
@@ -1640,7 +1647,7 @@ mod tests {
         store
             .append_checkpoint(
                 &summarized,
-                2,
+                &store.read(&summarized).unwrap().unwrap().transcript,
                 &CompactionCheckpoint {
                     summary: "Worked.".to_owned(),
                     covered_prefix: 2,
