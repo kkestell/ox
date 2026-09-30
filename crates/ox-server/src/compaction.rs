@@ -466,7 +466,7 @@ pub async fn compact(
             covered_prefix: cut,
             summarizer_cost,
         };
-        store.append_checkpoint(id, transcript, &checkpoint)?;
+        store.append_checkpoint(id, transcript.len(), &checkpoint)?;
         transcript.push(TranscriptEntry::CompactionCheckpoint(checkpoint));
         return Ok(true);
     }
@@ -950,7 +950,7 @@ mod tests {
         store
             .append_checkpoint(
                 &id,
-                &store.read(&id).unwrap().unwrap().transcript,
+                2,
                 &CompactionCheckpoint {
                     summary: "Earlier work is complete.".to_owned(),
                     covered_prefix: 2,
