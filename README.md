@@ -39,49 +39,6 @@ Configure Zed to use Ox as an external agent. Add the following to
 }
 ```
 
-## Features
-
-### Ox agent
-
-- OpenRouter model catalog
-- Model switching and configurable reasoning effort
-- Streaming responses and visible reasoning
-- Built-in tools: `read_file`, `glob`, `grep`, `write_file`, `edit_file`,
-  `shell`, `shell_process`, `start_subagent`, `send_message`, `stop_subagent`,
-  and `wait`
-- Workspace-scoped file tools
-- Paginated file reads and bounded tool output
-- Persistent background shell processes
-- Asynchronous subagents with messaging and coordination
-- Resumable SQLite sessions
-- Automatic and manual context compaction
-- Global and workspace skills
-- `AGENTS.md` workspace instructions
-- Image input and ACP resource links
-- Ask and Auto permission modes
-- Context usage and session cost reporting
-- Global and workspace settings
-- OpenRouter authentication through the environment or system keyring
-- Headless operation with `ox run`
-
-### Terminal client
-
-- Bundled Ox agent or any ACP-compatible server
-- Streaming Markdown transcript
-- Toggleable reasoning
-- Tool call and patch rendering
-- Summary, truncated, and full tool output views
-- Searchable model picker
-- Model favorites with pricing and context limits
-- New sessions and a searchable resume picker
-- Model, reasoning effort, and permission mode controls
-- Multiline input and paste
-- Slash-command completion
-- Interactive permission prompts
-- Prompt cancellation and replacement
-- Live context usage and session cost
-- Terminal title and bell notifications
-
 ## Usage
 
 ### `ox`
