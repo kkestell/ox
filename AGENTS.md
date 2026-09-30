@@ -5,7 +5,6 @@ Keep this document accurate and short.
 - `crates/ox-server/` — the Ox server: prompt run, tools, OpenRouter, and
   session store.
 - `crates/ox/` — the command line, the Ox client, and its terminal tests.
-- `crates/ox-fake-server/` — the scripted server for client tests.
 - `crates/ox-server/src/prompts/` — the built-in prompts.
 - `examples/` — the example settings file.
 - `scripts/run.py` — runs one headless prompt in a temporary workspace.

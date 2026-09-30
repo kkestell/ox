@@ -1265,7 +1265,9 @@ mod tests {
     use super::*;
     use crate::acp::Event as AcpEvent;
     use crate::acp::tests::{turn, with_session};
+    use ox_server::fixture::{DEFAULT_MODEL, Reply, echo_reply, shell_reply};
     use ratatui::backend::TestBackend;
+    use serde_json::json;
 
     #[test]
     fn server_control_characters_are_printed_as_text() {
@@ -1466,48 +1468,51 @@ mod tests {
 
     #[tokio::test]
     async fn long_approval_keeps_options_and_composer_visible_and_pages_through_details() {
-        with_session(async |mut session, mut events| {
-            session.prompt("tools".into())?;
-            requests(&mut session, &mut events).await;
-            let details = (0..24)
-                .map(|line| format!("detail {line:02}"))
-                .collect::<Vec<_>>()
-                .join("\n");
-            session.permission_requests.front_mut().unwrap().0 = request("shell", &details);
-            let mut ui = Ui::default();
-            ui.input.paste("draft");
-            let now = Instant::now();
-            let show = |ui: &mut Ui, session: &Session| {
-                let request = &session.permission_requests.front().unwrap().0;
-                let mut display = Screen {
-                    approval: Some(Approval {
-                        request,
-                        selected: ui.approval_selected,
-                    }),
-                    approval_scroll: ui.approval_scroll,
-                    ..screen(&mut ui.view, &ui.input, now)
+        with_session(
+            vec![shell_reply(&[("true", 10)])],
+            async |mut session, mut events| {
+                session.prompt("run a command".into())?;
+                collect_request(&mut session, &mut events).await;
+                let details = (0..24)
+                    .map(|line| format!("detail {line:02}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                session.permission_requests.front_mut().unwrap().0 = request("shell", &details);
+                let mut ui = Ui::default();
+                ui.input.paste("draft");
+                let now = Instant::now();
+                let show = |ui: &mut Ui, session: &Session| {
+                    let request = &session.permission_requests.front().unwrap().0;
+                    let mut display = Screen {
+                        approval: Some(Approval {
+                            request,
+                            selected: ui.approval_selected,
+                        }),
+                        approval_scroll: ui.approval_scroll,
+                        ..screen(&mut ui.view, &ui.input, now)
+                    };
+                    render(&mut display, 80, 24)
                 };
-                render(&mut display, 80, 24)
-            };
-            let (rows, cursor, layout, _) = show(&mut ui, &session);
-            ui.layout = layout;
-            assert!(rows.iter().any(|row| row.contains("detail 00")), "{rows:?}");
-            assert!(rows.iter().any(|row| row.contains("Page Down for more")));
-            assert!(rows.iter().any(|row| row.contains("› 1. Yes")), "{rows:?}");
-            assert!(rows.iter().any(|row| row.contains("❯ draft")), "{rows:?}");
-            assert!(cursor.1 < 24);
-            press(&mut ui, &mut session, KeyCode::PageDown, now).await?;
-            press(&mut ui, &mut session, KeyCode::PageDown, now).await?;
-            let (rows, _, _, _) = show(&mut ui, &session);
-            assert!(rows.iter().any(|row| row.contains("detail 23")), "{rows:?}");
-            assert!(rows.iter().any(|row| row.contains("Page Up for earlier")));
-            assert!(rows.iter().any(|row| row.contains("› 1. Yes")));
-            press(&mut ui, &mut session, KeyCode::PageUp, now).await?;
-            press(&mut ui, &mut session, KeyCode::PageUp, now).await?;
-            let (rows, _, _, _) = show(&mut ui, &session);
-            assert!(rows.iter().any(|row| row.contains("detail 00")));
-            Ok(())
-        })
+                let (rows, cursor, layout, _) = show(&mut ui, &session);
+                ui.layout = layout;
+                assert!(rows.iter().any(|row| row.contains("detail 00")), "{rows:?}");
+                assert!(rows.iter().any(|row| row.contains("Page Down for more")));
+                assert!(rows.iter().any(|row| row.contains("› 1. Yes")), "{rows:?}");
+                assert!(rows.iter().any(|row| row.contains("❯ draft")), "{rows:?}");
+                assert!(cursor.1 < 24);
+                press(&mut ui, &mut session, KeyCode::PageDown, now).await?;
+                press(&mut ui, &mut session, KeyCode::PageDown, now).await?;
+                let (rows, _, _, _) = show(&mut ui, &session);
+                assert!(rows.iter().any(|row| row.contains("detail 23")), "{rows:?}");
+                assert!(rows.iter().any(|row| row.contains("Page Up for earlier")));
+                assert!(rows.iter().any(|row| row.contains("› 1. Yes")));
+                press(&mut ui, &mut session, KeyCode::PageUp, now).await?;
+                press(&mut ui, &mut session, KeyCode::PageUp, now).await?;
+                let (rows, _, _, _) = show(&mut ui, &session);
+                assert!(rows.iter().any(|row| row.contains("detail 00")));
+                Ok(())
+            },
+        )
         .await;
     }
 
@@ -1852,13 +1857,17 @@ mod tests {
 
     #[tokio::test]
     async fn picker_search_keeps_rows_containing_every_word_and_enter_chooses_a_match() {
-        with_session(async |mut session, _events| {
+        with_session(vec![], async |mut session, _events| {
             let mut ui = Ui::default();
             let now = Instant::now();
             let matches = |ui: &Ui| ui.picker.as_ref().unwrap().matches.clone();
             ui.input.paste("/model");
             press(&mut ui, &mut session, KeyCode::Enter, now).await?;
-            for (typed, expected) in [("", vec![0, 1]), ("VISION goo", vec![1]), ("x", vec![])] {
+            for (typed, expected) in [
+                ("", vec![0, 1, 2, 3]),
+                ("FLASH glm", vec![1]),
+                ("nonexistent", vec![]),
+            ] {
                 ui.picker.as_mut().unwrap().query.clear();
                 for c in typed.chars() {
                     press(&mut ui, &mut session, KeyCode::Char(c), now).await?;
@@ -1867,15 +1876,15 @@ mod tests {
             }
             press(&mut ui, &mut session, KeyCode::Enter, now).await?;
             assert!(ui.picker.is_some(), "Enter without a match does nothing");
-            press(&mut ui, &mut session, KeyCode::Backspace, now).await?;
-            for c in "gemma".chars() {
+            ui.picker.as_mut().unwrap().query.clear();
+            for c in "glm".chars() {
                 press(&mut ui, &mut session, KeyCode::Char(c), now).await?;
             }
             press(&mut ui, &mut session, KeyCode::Enter, now).await?;
             assert!(ui.picker.is_none());
             assert_eq!(
                 settings(&session.config_options),
-                "Ask • Google: Gemma Vision • Low"
+                "Ask • GLM 5.3 Flash • Default"
             );
             Ok(())
         })
@@ -1884,7 +1893,7 @@ mod tests {
 
     #[tokio::test]
     async fn model_keys_choose_a_model_or_cancel() {
-        with_session(async |mut session, _events| {
+        with_session(vec![], async |mut session, _events| {
             let mut ui = Ui::default();
             let now = Instant::now();
             let selected = |ui: &Ui| ui.picker.as_ref().map(|picker| picker.selected);
@@ -1896,7 +1905,7 @@ mod tests {
             assert!(ui.picker.is_none());
             assert_eq!(
                 settings(&session.config_options),
-                "Ask • DeepSeek: DeepSeek Reasoner • Low"
+                "Ask • DeepSeek V4.1 Flash • Default"
             );
             ui.input.paste("/model");
             press(&mut ui, &mut session, KeyCode::Enter, now).await?;
@@ -1905,7 +1914,7 @@ mod tests {
             assert!(ui.picker.is_none());
             assert_eq!(
                 settings(&session.config_options),
-                "Ask • Google: Gemma Vision • Low"
+                "Ask • GLM 5.3 Flash • Default"
             );
             ui.input.paste("/model");
             press(&mut ui, &mut session, KeyCode::Enter, now).await?;
@@ -1918,10 +1927,10 @@ mod tests {
 
     #[tokio::test]
     async fn the_model_picker_opens_on_favorites_and_left_and_right_switch_lists() {
-        with_session(async |mut session, _events| {
+        with_session(vec![], async |mut session, _events| {
             let now = Instant::now();
             let mut ui = Ui {
-                favorites: vec!["gemma".to_owned(), "deepseek".to_owned()],
+                favorites: vec!["z-ai/glm-5.3-flash".to_owned(), DEFAULT_MODEL.to_owned()],
                 ..Ui::default()
             };
             let state = |ui: &Ui| {
@@ -1936,7 +1945,7 @@ mod tests {
                 "opens on Favorites, in the order they were added, with the current model selected"
             );
             press(&mut ui, &mut session, KeyCode::Right, now).await?;
-            assert_eq!(state(&ui), (vec![0, 1], 0), "Right shows All");
+            assert_eq!(state(&ui), (vec![0, 1, 2, 3], 0), "Right shows All");
             for c in "deep".chars() {
                 press(&mut ui, &mut session, KeyCode::Char(c), now).await?;
             }
@@ -1955,7 +1964,7 @@ mod tests {
             assert!(ui.picker.is_none());
             assert_eq!(
                 settings(&session.config_options),
-                "Ask • Google: Gemma Vision • Low"
+                "Ask • GLM 5.3 Flash • Default"
             );
             Ok(())
         })
@@ -1964,7 +1973,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_model_picker_shows_only_all_without_an_offered_favorite() {
-        with_session(async |mut session, _events| {
+        with_session(vec![], async |mut session, _events| {
             let now = Instant::now();
             let mut view = TranscriptView::default();
             let input = Input::default();
@@ -1977,7 +1986,7 @@ mod tests {
                 press(&mut ui, &mut session, KeyCode::Enter, now).await?;
                 press(&mut ui, &mut session, KeyCode::Left, now).await?;
                 let picker = ui.picker.as_ref().unwrap();
-                assert_eq!(picker.matches, [0, 1], "{favorites:?}");
+                assert_eq!(picker.matches, [0, 1, 2, 3], "{favorites:?}");
                 let mut screen = Screen {
                     picker: Some(picker),
                     ..screen(&mut view, &input, now)
@@ -1992,7 +2001,7 @@ mod tests {
 
     #[tokio::test]
     async fn control_f_favorites_and_unfavorites_the_selected_model_and_saves_the_favorites() {
-        with_session(async |mut session, _events| {
+        with_session(vec![], async |mut session, _events| {
             let now = Instant::now();
             let directory = tempfile::tempdir()?;
             let path = directory.path().join("ox/settings.json");
@@ -2021,7 +2030,11 @@ mod tests {
             control_f(&mut ui, &mut session).await?;
             assert_eq!(
                 state(&ui),
-                (vec!["missing/model".into(), "gemma".into()], vec![0, 1], 1),
+                (
+                    vec!["missing/model".into(), "z-ai/glm-5.3-flash".into()],
+                    vec![0, 1, 2, 3],
+                    1
+                ),
                 "favoriting keeps the selection"
             );
             press(&mut ui, &mut session, KeyCode::Up, now).await?;
@@ -2030,7 +2043,11 @@ mod tests {
             assert_eq!(
                 state(&ui),
                 (
-                    vec!["missing/model".into(), "gemma".into(), "deepseek".into()],
+                    vec![
+                        "missing/model".into(),
+                        "z-ai/glm-5.3-flash".into(),
+                        DEFAULT_MODEL.into()
+                    ],
                     vec![1, 0],
                     0
                 )
@@ -2038,13 +2055,17 @@ mod tests {
             control_f(&mut ui, &mut session).await?;
             assert_eq!(
                 state(&ui),
-                (vec!["missing/model".into(), "deepseek".into()], vec![0], 0),
+                (
+                    vec!["missing/model".into(), DEFAULT_MODEL.into()],
+                    vec![0],
+                    0
+                ),
                 "unfavoriting removes the row from Favorites"
             );
             control_f(&mut ui, &mut session).await?;
             assert_eq!(
                 state(&ui),
-                (vec!["missing/model".into()], vec![0, 1], 0),
+                (vec!["missing/model".into()], vec![0, 1, 2, 3], 0),
                 "the last offered favorite's removal shows All"
             );
             assert!(ui.input.is_empty());
@@ -2067,7 +2088,7 @@ mod tests {
 
     #[tokio::test]
     async fn resume_keys_cancel_or_reload_the_current_session() {
-        with_session(async |mut session, _events| {
+        with_session(vec![], async |mut session, _events| {
             let old = session.id().clone();
             let mut ui = Ui::default();
             let now = Instant::now();
@@ -2092,7 +2113,7 @@ mod tests {
 
     #[tokio::test]
     async fn new_command_replaces_the_session_and_quit_command_quits() {
-        with_session(async |mut session, _events| {
+        with_session(vec![], async |mut session, _events| {
             let old = session.id().clone();
             let mut ui = Ui::default();
             let now = Instant::now();
@@ -2110,7 +2131,11 @@ mod tests {
 
     #[tokio::test]
     async fn resume_wait_does_not_queue_another_prompt() {
-        with_session(async |mut session, _events| {
+        let hang = Reply::Hang(format!(
+            "data: {}\n\n",
+            ox_server::fixture::delta(json!({"role":"assistant", "content":"running"}), None)
+        ));
+        with_session(vec![hang], async |mut session, _events| {
             let mut ui = Ui::default();
             let now = Instant::now();
             session.prompt("running".into())?;
@@ -2128,7 +2153,11 @@ mod tests {
 
     #[tokio::test]
     async fn second_submission_stays_in_the_composer_while_a_prompt_is_queued() {
-        with_session(async |mut session, mut events| {
+        let hang = Reply::Hang(format!(
+            "data: {}\n\n",
+            ox_server::fixture::delta(json!({"role":"assistant", "content":"running"}), None)
+        ));
+        with_session(vec![hang, echo_reply()], async |mut session, mut events| {
             session.prompt("running".into())?;
             while !matches!(
                 events.recv().await.unwrap(),
@@ -2159,9 +2188,9 @@ mod tests {
         .await;
     }
 
-    /// Collects the `tools` script's two permission requests.
-    async fn requests(session: &mut Session, events: &mut UnboundedReceiver<AcpEvent>) {
-        while session.permission_requests.len() < 2 {
+    /// Collects the next permission request.
+    async fn collect_request(session: &mut Session, events: &mut UnboundedReceiver<AcpEvent>) {
+        while session.permission_requests.is_empty() {
             if let AcpEvent::Permission(_, request, responder) = events.recv().await.unwrap() {
                 session.permission(request, responder).unwrap();
             }
@@ -2179,7 +2208,7 @@ mod tests {
 
     #[tokio::test]
     async fn control_t_toggles_thinking_and_control_o_cycles_tool_output() {
-        with_session(async |mut session, _events| {
+        with_session(vec![], async |mut session, _events| {
             let mut ui = Ui::default();
             let now = Instant::now();
             for (c, expected) in [
@@ -2205,18 +2234,18 @@ mod tests {
 
     #[tokio::test]
     async fn tab_and_backtab_cycle_the_available_modes() {
-        with_session(async |mut session, _events| {
+        with_session(vec![], async |mut session, _events| {
             let mut ui = Ui::default();
             let now = Instant::now();
             assert_eq!(
                 settings(&session.config_options),
-                "Ask • DeepSeek: DeepSeek Reasoner • Low"
+                "Ask • DeepSeek V4.1 Flash • Default"
             );
             for (code, expected) in [
-                (KeyCode::Tab, "Auto • DeepSeek: DeepSeek Reasoner • Low"),
-                (KeyCode::Tab, "Ask • DeepSeek: DeepSeek Reasoner • Low"),
-                (KeyCode::BackTab, "Auto • DeepSeek: DeepSeek Reasoner • Low"),
-                (KeyCode::BackTab, "Ask • DeepSeek: DeepSeek Reasoner • Low"),
+                (KeyCode::Tab, "Auto • DeepSeek V4.1 Flash • Default"),
+                (KeyCode::Tab, "Ask • DeepSeek V4.1 Flash • Default"),
+                (KeyCode::BackTab, "Auto • DeepSeek V4.1 Flash • Default"),
+                (KeyCode::BackTab, "Ask • DeepSeek V4.1 Flash • Default"),
             ] {
                 key(
                     &mut ui,
@@ -2235,13 +2264,13 @@ mod tests {
 
     #[tokio::test]
     async fn control_e_cycles_effort_with_or_without_shift() {
-        with_session(async |mut session, _events| {
+        with_session(vec![], async |mut session, _events| {
             let mut ui = Ui::default();
             let now = Instant::now();
             ui.input.paste("draft");
             for (code, modifiers, expected) in [
-                ('e', KeyModifiers::CONTROL, "High"),
-                ('e', KeyModifiers::CONTROL | KeyModifiers::SHIFT, "Low"),
+                ('e', KeyModifiers::CONTROL, "Low"),
+                ('e', KeyModifiers::CONTROL | KeyModifiers::SHIFT, "Medium"),
                 ('E', KeyModifiers::CONTROL | KeyModifiers::SHIFT, "High"),
             ] {
                 key(
@@ -2275,7 +2304,7 @@ mod tests {
 
     #[tokio::test]
     async fn tab_inserts_ghost_text_and_otherwise_cycles_the_mode() {
-        with_session(async |mut session, _events| {
+        with_session(vec![], async |mut session, _events| {
             let mut ui = Ui::default();
             let now = Instant::now();
             session.commands = vec!["tally".to_owned()];
@@ -2298,50 +2327,63 @@ mod tests {
 
     #[tokio::test]
     async fn approval_keys_move_the_selection_and_enter_answers_only_with_an_empty_input() {
-        with_session(async |mut session, mut events| {
-            let now = Instant::now();
-            let mut ui = Ui::default();
-            session.prompt("tools".into())?;
-            requests(&mut session, &mut events).await;
-            press(&mut ui, &mut session, KeyCode::Down, now).await?;
-            press(&mut ui, &mut session, KeyCode::Down, now).await?;
-            assert_eq!(ui.approval_selected, 1);
-            press(&mut ui, &mut session, KeyCode::Esc, now).await?;
-            assert_eq!(
-                (session.permission_requests.len(), ui.approval_selected),
-                (1, 0)
-            );
-            press(&mut ui, &mut session, KeyCode::Up, now).await?;
-            press(&mut ui, &mut session, KeyCode::Down, now).await?;
-            press(&mut ui, &mut session, KeyCode::Enter, now).await?;
-            assert!(session.permission_requests.is_empty());
-            let (text, ok) = turn(&mut session, &mut events, &[]).await;
-            assert!(ok);
-            assert_eq!(text, "tally-1: stop, tally-2: stop");
-            session.prompt("tools".into())?;
-            requests(&mut session, &mut events).await;
-            press(&mut ui, &mut session, KeyCode::Char('h'), now).await?;
-            press(&mut ui, &mut session, KeyCode::Char('i'), now).await?;
-            press(&mut ui, &mut session, KeyCode::Enter, now).await?;
-            assert!(session.permission_requests.is_empty());
-            assert_eq!(session.queued.as_deref(), Some("hi"));
-            assert!(ui.input.is_empty());
-            let queued = loop {
-                match events.recv().await.unwrap() {
-                    AcpEvent::Permission(_, request, responder) => {
-                        session.permission(request, responder)?;
+        with_session(
+            vec![
+                shell_reply(&[("true", 10)]),
+                echo_reply(),
+                shell_reply(&[("true", 10)]),
+                echo_reply(),
+                shell_reply(&[("true", 10)]),
+                echo_reply(),
+            ],
+            async |mut session, mut events| {
+                let now = Instant::now();
+                let mut ui = Ui::default();
+                session.prompt("run a command".into())?;
+                collect_request(&mut session, &mut events).await;
+                press(&mut ui, &mut session, KeyCode::Down, now).await?;
+                press(&mut ui, &mut session, KeyCode::Down, now).await?;
+                assert_eq!(ui.approval_selected, 1);
+                press(&mut ui, &mut session, KeyCode::Esc, now).await?;
+                assert_eq!(
+                    (session.permission_requests.len(), ui.approval_selected),
+                    (0, 0)
+                );
+                assert!(turn(&mut session, &mut events, &[]).await.1);
+                session.prompt("run another command".into())?;
+                collect_request(&mut session, &mut events).await;
+                press(&mut ui, &mut session, KeyCode::Up, now).await?;
+                press(&mut ui, &mut session, KeyCode::Down, now).await?;
+                press(&mut ui, &mut session, KeyCode::Enter, now).await?;
+                assert!(session.permission_requests.is_empty());
+                let (text, ok) = turn(&mut session, &mut events, &[]).await;
+                assert!(ok);
+                assert_eq!(text, "you said: run another command");
+                session.prompt("run a third command".into())?;
+                collect_request(&mut session, &mut events).await;
+                press(&mut ui, &mut session, KeyCode::Char('h'), now).await?;
+                press(&mut ui, &mut session, KeyCode::Char('i'), now).await?;
+                press(&mut ui, &mut session, KeyCode::Enter, now).await?;
+                assert!(session.permission_requests.is_empty());
+                assert_eq!(session.queued.as_deref(), Some("hi"));
+                assert!(ui.input.is_empty());
+                let queued = loop {
+                    match events.recv().await.unwrap() {
+                        AcpEvent::Permission(_, request, responder) => {
+                            session.permission(request, responder)?;
+                        }
+                        AcpEvent::Finished(..) => break session.finished()?,
+                        _ => {}
                     }
-                    AcpEvent::Finished(..) => break session.finished()?,
-                    _ => {}
-                }
-            };
-            assert_eq!(queued.as_deref(), Some("hi"));
-            assert_eq!(
-                turn(&mut session, &mut events, &[]).await,
-                ("you said: hi".into(), true)
-            );
-            Ok(())
-        })
+                };
+                assert_eq!(queued.as_deref(), Some("hi"));
+                assert_eq!(
+                    turn(&mut session, &mut events, &[]).await,
+                    ("you said: hi".into(), true)
+                );
+                Ok(())
+            },
+        )
         .await;
     }
 }

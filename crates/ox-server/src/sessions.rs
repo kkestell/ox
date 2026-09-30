@@ -668,8 +668,8 @@ impl SessionStore {
         Ok(Self(Arc::new(Mutex::new(connection))))
     }
 
-    #[cfg(test)]
-    pub(crate) fn in_memory() -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn in_memory() -> Self {
         Self::initialize(Connection::open_in_memory().expect("in-memory database opens"))
             .expect("fresh database initializes")
     }

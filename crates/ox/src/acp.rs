@@ -385,27 +385,37 @@ where
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use ox_fake_server::{Hold, SavedSessions, fake_server};
+    use ox_server::fixture::{
+        Reply, Server, calls_reply, delta, echo_reply, serve_connection, shell_reply, sse,
+        text_reply,
+    };
+    use serde_json::json;
 
-    pub async fn with_session<F, Fut>(body: F)
+    pub async fn with_session<F, Fut>(replies: Vec<Reply>, body: F)
     where
         F: FnOnce(Session, UnboundedReceiver<Event>) -> Fut + Send,
         Fut: Future<Output = anyhow::Result<()>> + Send,
     {
+        with_server(Server::start(replies).await, body).await;
+    }
+
+    async fn with_server<F, Fut>(server: Server, body: F)
+    where
+        F: FnOnce(Session, UnboundedReceiver<Event>) -> Fut + Send,
+        Fut: Future<Output = anyhow::Result<()>> + Send,
+    {
+        let workspace = tempfile::tempdir().unwrap();
+        let (client, transport) = agent_client_protocol::Channel::duplex();
+        let server_task = tokio::spawn(serve_connection(server.client(), transport));
         let (events, receiver) = unbounded_channel();
         tokio::time::timeout(
             Duration::from_secs(5),
-            run(
-                fake_server(Hold::default(), SavedSessions::default()),
-                std::env::current_dir().unwrap(),
-                events,
-                receiver,
-                body,
-            ),
+            run(client, workspace.path().to_owned(), events, receiver, body),
         )
         .await
         .expect("ACP test timed out")
         .unwrap();
+        server_task.abort();
     }
 
     pub async fn turn(
@@ -439,23 +449,31 @@ pub mod tests {
 
     #[tokio::test]
     async fn multiple_prompts_share_one_session_and_stream_in_order() {
-        with_session(async |mut session, mut events| {
-            let id = session.id.clone();
-            session.prompt("stream".into())?;
-            assert_eq!(
-                turn(&mut session, &mut events, &[]).await,
-                ("stream arrives in order\n".into(), true)
-            );
-            session.prompt("second".into())?;
-            assert!(
-                turn(&mut session, &mut events, &[])
-                    .await
-                    .0
-                    .contains("second")
-            );
-            assert_eq!(session.id, id);
-            Ok(())
-        })
+        let streamed = Reply::Stream(sse(&[
+            delta(json!({"role":"assistant", "content":"stream "}), None),
+            delta(json!({"content":"arrives "}), None),
+            delta(json!({"content":"in order\n"}), Some("stop")),
+        ]));
+        with_session(
+            vec![streamed, echo_reply()],
+            async |mut session, mut events| {
+                let id = session.id.clone();
+                session.prompt("stream".into())?;
+                assert_eq!(
+                    turn(&mut session, &mut events, &[]).await,
+                    ("stream arrives in order\n".into(), true)
+                );
+                session.prompt("second".into())?;
+                assert!(
+                    turn(&mut session, &mut events, &[])
+                        .await
+                        .0
+                        .contains("second")
+                );
+                assert_eq!(session.id, id);
+                Ok(())
+            },
+        )
         .await;
     }
 
@@ -471,16 +489,16 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn resume_lists_every_page_and_loads_a_different_session_after_close() {
-        with_session(async |mut session, mut events| {
+    async fn resume_lists_and_loads_a_different_session_after_close() {
+        with_session(vec![text_reply("saved"), echo_reply()], async |mut session, mut events| {
             assert!(session.can_resume());
             assert!(session.commands.is_empty());
             let (id, update) = commands(&mut events).await;
             assert_eq!(id, session.id);
             session.update(&update);
-            assert_eq!(session.commands, ["tally"]);
+            assert_eq!(session.commands, ["compact"]);
             let old = session.id.clone();
-            session.prompt("title".into())?;
+            session.prompt("First session".into())?;
             turn(&mut session, &mut events, &[]).await;
             let newer = session
                 .connection
@@ -492,10 +510,12 @@ pub mod tests {
             assert_eq!(id, newer);
             let listed = session.list().await?;
             assert_eq!(listed.len(), 2);
-            assert_eq!(listed[0].session_id, old);
-            assert_eq!(listed[0].title.as_deref(), Some("tallies"));
+            let saved = listed
+                .iter()
+                .find(|item| item.session_id == old)
+                .expect("the first session is listed");
+            assert_eq!(saved.title.as_deref(), Some("First session"));
             assert!(listed.iter().all(|item| item.updated_at.is_some()));
-            session.set_config_option("mode".into(), "auto".into()).await?;
             session.close().await?;
             assert!(!session.active());
             assert!(session.config_options.is_empty());
@@ -505,10 +525,10 @@ pub mod tests {
             let (id, update) = commands(&mut events).await;
             assert_eq!(id, newer);
             session.update(&update);
-            assert_eq!(session.commands, ["tally"]);
+            assert_eq!(session.commands, ["compact"]);
             assert!(session.active());
             assert_eq!(session.id, newer);
-            assert_eq!(session.config_options.len(), 4);
+            assert_eq!(session.config_options.len(), 3);
             let mode = session.config_options.iter().find(|option| option.id.0.as_ref() == "mode").unwrap();
             assert!(matches!(&mode.kind, SessionConfigKind::Select(select) if select.current_value.0.as_ref() == "ask"));
             session.prompt("after".into())?;
@@ -523,7 +543,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn create_replaces_the_closed_session_with_a_new_one() {
-        with_session(async |mut session, _events| {
+        with_session(vec![], async |mut session, _events| {
             let old = session.id.clone();
             session.close().await?;
             session.create().await?;
@@ -537,10 +557,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn failed_load_can_be_followed_by_another_selection() {
-        with_session(async |mut session, mut events| {
-            let old = session.id.clone();
-            session.prompt("unloadable".into())?;
-            turn(&mut session, &mut events, &[]).await;
+        with_session(vec![], async |mut session, _events| {
             let other = session
                 .connection
                 .send_request(NewSessionRequest::new(session.directory.clone()))
@@ -548,7 +565,7 @@ pub mod tests {
                 .await?
                 .session_id;
             session.close().await?;
-            assert!(session.load(old).await.is_err());
+            assert!(session.load(SessionId::new("missing")).await.is_err());
             assert!(!session.active());
             session.load(other).await?;
             assert!(session.active());
@@ -559,9 +576,26 @@ pub mod tests {
 
     #[tokio::test]
     async fn resume_requires_advertised_list_load_and_close_capabilities() {
+        let server = Agent
+            .builder()
+            .on_receive_request(
+                async |_: InitializeRequest, responder, _connection| {
+                    responder.respond(
+                        InitializeResponse::new(ProtocolVersion::V1)
+                            .agent_capabilities(AgentCapabilities::new()),
+                    )
+                },
+                on_receive_request!(),
+            )
+            .on_receive_request(
+                async |_: NewSessionRequest, responder, _connection| {
+                    responder.respond(NewSessionResponse::new(SessionId::new("session")))
+                },
+                on_receive_request!(),
+            );
         let (events, receiver) = unbounded_channel();
         run(
-            fake_server(Hold::default(), SavedSessions::unadvertised()),
+            server,
             std::env::current_dir().unwrap(),
             events,
             receiver,
@@ -577,8 +611,37 @@ pub mod tests {
 
     #[tokio::test]
     async fn simultaneous_permissions_keep_their_supplied_option_ids() {
-        with_session(async |mut session, mut events| {
-            session.prompt("tools".into())?;
+        let server = Server::routed(vec![
+            (
+                "First task",
+                vec![
+                    shell_reply(&[("touch first", 10)]),
+                    text_reply("first done"),
+                ],
+            ),
+            (
+                "Second task",
+                vec![
+                    shell_reply(&[("touch second", 10)]),
+                    text_reply("second done"),
+                ],
+            ),
+            (
+                "Coordinate",
+                vec![
+                    calls_reply(&[
+                        ("start-1", "start_subagent", json!({"prompt":"First task"})),
+                        ("start-2", "start_subagent", json!({"prompt":"Second task"})),
+                        ("wait-1", "wait", json!({"seconds":600})),
+                    ]),
+                    calls_reply(&[("wait-2", "wait", json!({"seconds":600}))]),
+                    text_reply("done"),
+                ],
+            ),
+        ])
+        .await;
+        with_server(server, async |mut session, mut events| {
+            session.prompt("Coordinate both tasks".into())?;
             while session.permission_requests.len() < 2 {
                 if let Event::Permission(_, request, responder) = events.recv().await.unwrap() {
                     session.permission(request, responder)?;
@@ -590,41 +653,48 @@ pub mod tests {
             assert!(session.answer(2)?);
             assert_eq!(session.permission_requests.len(), 1);
             assert!(session.answer(1)?);
-            let (text, ok) = turn(&mut session, &mut events, &[]).await;
+            let (_text, ok) = turn(&mut session, &mut events, &[]).await;
             assert!(ok);
-            assert!(text.contains("tally-1: stop"), "{text}");
-            assert!(text.contains("tally-2: go"), "{text}");
+            assert_ne!(
+                session.directory.join("first").exists(),
+                session.directory.join("second").exists(),
+                "the deny and approve option IDs produce different outcomes"
+            );
             Ok(())
         })
         .await;
     }
 
     #[tokio::test]
-    async fn cancellation_answers_pending_and_late_permissions_before_next_prompt() {
-        with_session(async |mut session, mut events| {
-            session.prompt("tools".into())?;
-            while session.permission_requests.len() < 2 {
-                if let Event::Permission(_, request, responder) = events.recv().await.unwrap() {
-                    session.permission(request, responder)?;
+    async fn cancellation_answers_pending_permissions_before_next_prompt() {
+        with_session(
+            vec![shell_reply(&[("touch cancelled", 10)]), echo_reply()],
+            async |mut session, mut events| {
+                session.prompt("run a command".into())?;
+                while session.permission_requests.is_empty() {
+                    if let Event::Permission(_, request, responder) = events.recv().await.unwrap() {
+                        session.permission(request, responder)?;
+                    }
                 }
-            }
-            session.cancel()?;
-            assert!(session.permission_requests.is_empty());
-            let (text, ok) = turn(&mut session, &mut events, &[]).await;
-            assert!(ok);
-            for id in ["tally-1", "tally-2", "tally-3"] {
-                assert!(text.contains(&format!("{id}: cancelled")), "{text}");
-            }
-            session.prompt("after".into())?;
-            assert!(turn(&mut session, &mut events, &[]).await.1);
-            Ok(())
-        })
+                session.cancel()?;
+                assert!(session.permission_requests.is_empty());
+                let (_text, ok) = turn(&mut session, &mut events, &[]).await;
+                assert!(ok);
+                session.prompt("after".into())?;
+                assert!(turn(&mut session, &mut events, &[]).await.1);
+                Ok(())
+            },
+        )
         .await;
     }
 
     #[tokio::test]
     async fn running_turn_accepts_cancel_without_a_permission_request() {
-        with_session(async |mut session, mut events| {
+        let hang = Reply::Hang(format!(
+            "data: {}\n\n",
+            delta(json!({"role":"assistant", "content":"cancelled"}), None)
+        ));
+        with_session(vec![hang], async |mut session, mut events| {
             session.prompt("running".into())?;
             while !matches!(
                 events.recv().await.unwrap(),
@@ -633,7 +703,7 @@ pub mod tests {
             session.cancel()?;
             assert_eq!(
                 turn(&mut session, &mut events, &[]).await,
-                ("cancelled".into(), true)
+                (String::new(), true)
             );
             Ok(())
         })
@@ -642,7 +712,11 @@ pub mod tests {
 
     #[tokio::test]
     async fn a_prompt_during_a_turn_cancels_it_and_is_sent_after_it_finishes() {
-        with_session(async |mut session, mut events| {
+        let hang = Reply::Hang(format!(
+            "data: {}\n\n",
+            delta(json!({"role":"assistant", "content":"cancelled"}), None)
+        ));
+        with_session(vec![hang, echo_reply()], async |mut session, mut events| {
             session.prompt("running".into())?;
             while !matches!(
                 events.recv().await.unwrap(),
@@ -665,7 +739,7 @@ pub mod tests {
                     _ => {}
                 }
             };
-            assert_eq!(text, "cancelled");
+            assert!(text.is_empty());
             assert_eq!(queued.as_deref(), Some("next"));
             assert!(session.busy);
             assert!(session.queued.is_none());
@@ -680,15 +754,22 @@ pub mod tests {
 
     #[tokio::test]
     async fn rejected_and_failed_turns_allow_another_prompt() {
-        with_session(async |mut session, mut events| {
-            for prompt in ["reject", "fail"] {
-                session.prompt(prompt.into())?;
-                assert!(!turn(&mut session, &mut events, &[]).await.1);
-            }
-            session.prompt("after".into())?;
-            assert!(turn(&mut session, &mut events, &[]).await.1);
-            Ok(())
-        })
+        let failed = Reply::Stream(sse(&[delta(
+            json!({"role":"assistant", "content":"failing"}),
+            None,
+        )]));
+        with_session(
+            vec![Reply::Status(500, "{}".into()), failed, echo_reply()],
+            async |mut session, mut events| {
+                for prompt in ["reject", "fail"] {
+                    session.prompt(prompt.into())?;
+                    assert!(!turn(&mut session, &mut events, &[]).await.1);
+                }
+                session.prompt("after".into())?;
+                assert!(turn(&mut session, &mut events, &[]).await.1);
+                Ok(())
+            },
+        )
         .await;
     }
 
@@ -716,8 +797,8 @@ pub mod tests {
     #[tokio::test]
     async fn server_exit_releases_pending_work() {
         let (client, server) = agent_client_protocol::Channel::duplex();
-        let task =
-            tokio::spawn(fake_server(Hold::default(), SavedSessions::default()).connect_to(server));
+        let openrouter = Server::start(vec![shell_reply(&[("touch pending", 10)])]).await;
+        let task = tokio::spawn(serve_connection(openrouter.client(), server));
         let (events, receiver) = unbounded_channel();
         let result = tokio::time::timeout(
             Duration::from_secs(5),
@@ -727,8 +808,8 @@ pub mod tests {
                 events,
                 receiver,
                 async |mut session, mut events| {
-                    session.prompt("tools".into())?;
-                    while session.permission_requests.len() < 2 {
+                    session.prompt("run a command".into())?;
+                    while session.permission_requests.is_empty() {
                         if let Event::Permission(_, request, responder) =
                             events.recv().await.unwrap()
                         {

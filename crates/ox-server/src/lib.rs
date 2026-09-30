@@ -18,6 +18,12 @@ use std::{env, error::Error, io, path::Path};
 pub use sessions::EffortLevel;
 pub use settings::{global_path, home_dir};
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod fixture {
+    pub use crate::acp::fixture::serve_connection;
+    pub use crate::openrouter::fixture::*;
+}
+
 /// Resolves a `--model` choice against the installed model catalog.
 fn resolve_model(model: Option<String>, default_model: String) -> io::Result<String> {
     let Some(model) = model else {

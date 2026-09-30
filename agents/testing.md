@@ -10,7 +10,8 @@
   OpenRouter in a temporary workspace. For behavior only an ACP client shows,
   connect a client to a local build.
 - **Client tests**: `crates/ox/` has in-process ACP and terminal logic tests.
-  `make e2e` runs the isolated tmux tests against the fake server.
+  `make e2e` runs the isolated tmux tests against the Ox server and scripted
+  OpenRouter test fixture.
 
 ## Test discipline
 

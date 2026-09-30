@@ -22,4 +22,4 @@ tui-markdown.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-ox-fake-server.workspace = true
+ox-server = { workspace = true, features = ["test-support"] }

@@ -3,6 +3,9 @@ name = "ox-server"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+test-support = ["tokio/net"]
+
 [dependencies]
 agent-client-protocol = { version = "2.1.0", features = ["unstable_tool_call_name"] }
 base64 = "0.22.1"
@@ -22,4 +25,3 @@ yaml_serde = "0.10.7"
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["io-util", "net"] }
-

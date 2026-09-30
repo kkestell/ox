@@ -7,7 +7,6 @@ check: check-docs
 	cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 e2e:
-	cargo build --workspace
 	cargo test -p ox --test tui -- --ignored
 
 check-docs:

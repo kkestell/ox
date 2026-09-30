@@ -1094,6 +1094,34 @@ async fn serve(
     result
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod fixture {
+    use super::*;
+
+    /// Serves one in-memory ACP connection against the scripted OpenRouter
+    /// server.
+    pub async fn serve_connection(
+        openrouter: openrouter::Client,
+        transport: impl ConnectTo<Agent> + 'static,
+    ) -> Result<()> {
+        let state = ServerState::new(SessionStore::in_memory(), test_settings(), no_home());
+        *state.openrouter.lock().unwrap() = Some(openrouter);
+        serve(state, transport, std::future::pending()).await
+    }
+
+    pub(crate) fn test_settings() -> Settings {
+        Settings {
+            default_model: openrouter::fixture::DEFAULT_MODEL.to_owned(),
+            default_effort: EffortLevel::Default,
+            default_mode: SessionMode::Ask,
+        }
+    }
+
+    pub(crate) fn no_home() -> PathBuf {
+        std::env::temp_dir().join(format!("ox-no-home-{}", uuid::Uuid::new_v4()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{fs, path::Path};
@@ -1102,6 +1130,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        acp::fixture::{no_home, test_settings},
         sessions::{ToolOutcome, ToolStatus, TranscriptEntry, TurnStart},
         tools::{self, fixture::Workspace},
     };
@@ -1214,21 +1243,6 @@ mod tests {
     }
     fn state() -> ServerState {
         state_over(SessionStore::in_memory())
-    }
-
-    /// Settings with the test catalog's default model.
-    fn test_settings() -> Settings {
-        Settings {
-            default_model: openrouter::fixture::DEFAULT_MODEL.to_owned(),
-            default_effort: EffortLevel::Default,
-            default_mode: SessionMode::Ask,
-        }
-    }
-
-    /// A home directory that does not exist, so skills installed on the
-    /// developer's machine never enter a test catalog.
-    fn no_home() -> PathBuf {
-        std::env::temp_dir().join(format!("ox-no-home-{}", uuid::Uuid::new_v4()))
     }
 
     /// A server state over `store`, as a later process would open it.

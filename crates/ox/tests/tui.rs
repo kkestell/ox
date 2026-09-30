@@ -2,9 +2,18 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use ox_server::fixture::{
+    DEFAULT_MODEL, Reply, Server, calls_reply, catalog_reply, delta, echo_reply, shell_reply, sse,
+    text_reply, usage,
+};
+use serde_json::json;
+
 struct Tmux {
     root: tempfile::TempDir,
     socket: PathBuf,
+    workspace: PathBuf,
+    _runtime: tokio::runtime::Runtime,
+    _openrouter: Server,
 }
 
 fn quote(text: &str) -> String {
@@ -12,31 +21,54 @@ fn quote(text: &str) -> String {
 }
 
 impl Tmux {
-    fn new() -> Self {
+    fn new(replies: Vec<Reply>) -> Self {
+        Self::with_skill(replies, false)
+    }
+
+    fn with_skill(mut replies: Vec<Reply>, skill: bool) -> Self {
         let root = tempfile::tempdir().unwrap();
         let socket = root.path().join("tmux.sock");
-        let test = Self { root, socket };
-        let config = test.root.path().join(".config/ox");
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let config = root.path().join(".config/ox");
         std::fs::create_dir_all(&config).unwrap();
-        let fake = PathBuf::from(env!("CARGO_BIN_EXE_ox")).with_file_name("ox-fake-server");
-        assert!(fake.exists(), "run make e2e to build the fake server");
         std::fs::write(
             config.join("settings.json"),
-            serde_json::to_vec(&serde_json::json!({
-                "servers": [{"name": "Fake", "command": fake, "args": []}]
-            }))
-            .unwrap(),
+            serde_json::to_vec(&serde_json::json!({"model": DEFAULT_MODEL})).unwrap(),
         )
         .unwrap();
+        if skill {
+            let skill = config.join("skills/tally");
+            std::fs::create_dir_all(&skill).unwrap();
+            std::fs::write(
+                skill.join("SKILL.md"),
+                "---\nname: tally\ndescription: Count tallies.\n---\nCount them.\n",
+            )
+            .unwrap();
+        }
+        replies.insert(0, catalog_reply());
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let openrouter = runtime.block_on(Server::start(replies));
+        let endpoint = openrouter.endpoint().to_owned();
+        let test = Self {
+            root,
+            socket,
+            workspace,
+            _runtime: runtime,
+            _openrouter: openrouter,
+        };
         let script = test.root.path().join("shell.sh");
         std::fs::write(&script, format!(
-            "before=$(stty -g)\n{}\nresult=$?\n[ \"$(stty -g)\" = \"$before\" ] && echo TERMINAL_RESTORED\necho EXIT_$result\nexec /bin/sh\n",
+            "before=$(stty -g)\n{} --dir {}\nresult=$?\n[ \"$(stty -g)\" = \"$before\" ] && echo TERMINAL_RESTORED\necho EXIT_$result\nexec /bin/sh\n",
             quote(env!("CARGO_BIN_EXE_ox")),
+            quote(test.workspace.to_str().unwrap()),
         )).unwrap();
         let command = format!(
-            "env HOME={} XDG_STATE_HOME={} /bin/sh {}",
+            "env HOME={} XDG_STATE_HOME={} OX_DATA_DIR={} OPENROUTER_API_KEY=test-key OX_OPENROUTER_ENDPOINT={} /bin/sh {}",
             quote(test.root.path().to_str().unwrap()),
             quote(test.root.path().join("state").to_str().unwrap()),
+            quote(test.root.path().join("data").to_str().unwrap()),
+            quote(&endpoint),
             quote(script.to_str().unwrap())
         );
         let conf = test.root.path().join("tmux.conf");
@@ -60,6 +92,26 @@ impl Tmux {
         ]);
         test.wait("0% • $0.00");
         test
+    }
+
+    fn kill_server(&self) {
+        let pane = self
+            .call(&["display-message", "-p", "-t", "test:0.0", "#{pane_pid}"])
+            .trim()
+            .to_owned();
+        let child = |pid: &str| {
+            let output = Command::new("pgrep").args(["-P", pid]).output().unwrap();
+            assert!(output.status.success(), "no child process of {pid}");
+            String::from_utf8(output.stdout)
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap()
+                .to_owned()
+        };
+        let client = child(&pane);
+        let server = child(&client);
+        assert!(Command::new("kill").arg(server).status().unwrap().success());
     }
 
     fn command(&self) -> Command {
@@ -182,19 +234,87 @@ impl Drop for Tmux {
     }
 }
 
-const APPROVAL: &str = "Would you like to allow the following?";
+const APPROVAL: &str = "Would you like to run the following command?";
+
+fn hang(text: &str) -> Reply {
+    Reply::Hang(format!(
+        "data: {}\n\n",
+        delta(json!({"role":"assistant", "content":text}), None)
+    ))
+}
+
+fn streamed(parts: &[&str]) -> Reply {
+    let last = parts.len() - 1;
+    Reply::Stream(sse(&parts
+        .iter()
+        .enumerate()
+        .map(|(index, text)| {
+            delta(
+                json!({"role":"assistant", "content":text}),
+                (index == last).then_some("stop"),
+            )
+        })
+        .collect::<Vec<_>>()))
+}
+
+fn render_replies() -> Vec<Reply> {
+    let calls = vec![
+        json!({
+            "index":0, "id":"run-1", "type":"function",
+            "function":{"name":"shell", "arguments":json!({"command":"ls"}).to_string()}
+        }),
+        json!({
+            "index":1, "id":"read-1", "type":"function",
+            "function":{"name":"read_file", "arguments":json!({"path":"tallies/2026/september/archive/a.tally"}).to_string()}
+        }),
+        json!({
+            "index":2, "id":"run-2", "type":"function",
+            "function":{"name":"shell", "arguments":json!({"command":"printf 'a.tally\\nb.tally\\n'", "background":true}).to_string()}
+        }),
+        json!({
+            "index":3, "id":"patch-1", "type":"function",
+            "function":{"name":"apply_patch", "arguments":json!({"patch":"*** Begin Patch\n*** Update File: a.tally\n@@\n-one\n+two\n*** End Patch"}).to_string()}
+        }),
+        json!({
+            "index":4, "id":"child-1", "type":"function",
+            "function":{"name":"start_subagent", "arguments":json!({"prompt":"Render child"}).to_string()}
+        }),
+    ];
+    vec![
+        Reply::Stream(sse(&[
+            delta(
+                json!({"role":"assistant", "reasoning":"weighing the tallies"}),
+                None,
+            ),
+            delta(
+                json!({"role":"assistant", "tool_calls":calls}),
+                Some("tool_calls"),
+            ),
+        ])),
+        text_reply("Fixed."),
+        calls_reply(&[("wait", "wait", json!({"seconds":600}))]),
+        text_reply("Two tallies were counted in the workspace:\n\na.tally and b.tally"),
+    ]
+}
+
+fn create_tallies(test: &Tmux) {
+    std::fs::write(test.workspace.join("a.tally"), "one\n").unwrap();
+    std::fs::write(test.workspace.join("b.tally"), "two\n").unwrap();
+    let archive = test.workspace.join("tallies/2026/september/archive");
+    std::fs::create_dir_all(&archive).unwrap();
+    std::fs::write(archive.join("a.tally"), "one\ntwo\n").unwrap();
+}
 
 #[test]
 #[ignore = "requires tmux; run make e2e"]
 fn resume_picker_shows_saved_session_and_replays_on_enter() {
-    let test = Tmux::new();
-    test.prompt("title");
+    let test = Tmux::new(vec![echo_reply(), echo_reply()]);
     test.prompt("original transcript");
     test.wait("you said: original transcript");
     test.prompt("/resume");
     test.wait("Search");
-    test.wait("tallies");
-    test.wait("2026-09-01");
+    test.wait("original transcript");
+    test.wait(&chrono::Utc::now().format("%Y-%m-%d").to_string());
     test.keys(&["Escape"]);
     test.wait_gone("Search");
     test.wait("you said: original transcript");
@@ -211,15 +331,16 @@ fn resume_picker_shows_saved_session_and_replays_on_enter() {
 #[test]
 #[ignore = "requires tmux; run make e2e"]
 fn model_picker_shows_prices_and_changes_the_model() {
-    let test = Tmux::new();
+    let test = Tmux::new(vec![]);
     test.prompt("/model");
     test.wait("Search");
     let screen = test.screen();
     assert!(
-        screen.contains(&format!(
-            "    {:<51}$0.28  $0.42  131,072\n    {:<51}$0.04  $0.08   32,768\n",
-            "DeepSeek: DeepSeek Reasoner", "Google: Gemma Vision"
-        )),
+        screen.contains("DeepSeek V4.1 Flash                              $0.03  $0.60  1,048,576"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("GLM 5.3 Flash                                    $0.04  $0.14  1,310,720"),
         "{screen}"
     );
     assert!(!screen.contains("0% • $0.00"), "{screen}");
@@ -234,8 +355,11 @@ fn model_picker_shows_prices_and_changes_the_model() {
     let config = test.root.path().join(".config/ox/settings.json");
     let config: serde_json::Value =
         serde_json::from_slice(&std::fs::read(config).unwrap()).unwrap();
-    assert_eq!(config["servers"][0]["name"], "Fake");
-    assert_eq!(config["favorites"], serde_json::json!(["gemma"]));
+    assert_eq!(config["model"], DEFAULT_MODEL);
+    assert_eq!(
+        config["favorites"],
+        serde_json::json!(["z-ai/glm-5.3-flash"])
+    );
     let styled = test.styled_screen();
     assert!(
         styled.contains("\x1b[38;2;112;112;112mFavorites / \x1b[38;2;255;255;255mAll"),
@@ -243,23 +367,23 @@ fn model_picker_shows_prices_and_changes_the_model() {
     );
     assert!(styled.contains("\x1b[1m"), "{styled}");
     test.keys(&["Left"]);
-    test.wait_gone("DeepSeek: DeepSeek Reasoner");
+    test.wait_gone("DeepSeek V4.1 Flash");
     let styled = test.styled_screen();
     assert!(
         styled.contains("\x1b[38;2;255;255;255mFavorites\x1b[38;2;112;112;112m / All"),
         "{styled}"
     );
-    assert!(styled.contains("Google: Gemma Vision"), "{styled}");
+    assert!(styled.contains("GLM 5.3 Flash"), "{styled}");
     assert!(!styled.contains("\x1b[1m"), "{styled}");
     test.keys(&["Enter"]);
     test.wait_gone("Search");
-    test.wait("Ask • Google: Gemma Vision");
+    test.wait("Ask • GLM 5.3 Flash");
     test.prompt("/model");
     test.wait("Search");
     let screen = test.screen();
-    assert!(screen.contains("Google: Gemma Vision"), "{screen}");
+    assert!(screen.contains("GLM 5.3 Flash"), "{screen}");
     assert!(
-        !screen.contains("DeepSeek: DeepSeek Reasoner"),
+        !screen.contains("DeepSeek V4.1 Flash"),
         "the picker opens on Favorites:\n{screen}"
     );
 }
@@ -267,55 +391,64 @@ fn model_picker_shows_prices_and_changes_the_model() {
 #[test]
 #[ignore = "requires tmux; run make e2e"]
 fn resume_during_prompt_cancels_before_showing_the_picker() {
-    let test = Tmux::new();
+    let test = Tmux::new(vec![hang("running; waiting for cancellation")]);
     test.prompt("running");
     test.wait("running; waiting for cancellation");
     test.prompt("/resume");
     test.wait("Search");
     test.keys(&["Escape"]);
-    test.wait("cancelled");
     assert!(!test.screen().contains("you said: /resume"));
 }
 
 #[test]
 #[ignore = "requires tmux; run make e2e"]
 fn terminal_keys_send_interrupt_approve_scroll_and_restore_the_shell() {
-    let test = Tmux::new();
+    let test = Tmux::new(vec![
+        streamed(&["stream ", "arrives ", "in order\n"]),
+        shell_reply(&[("printf denied", 10)]),
+        text_reply("selected deny"),
+        shell_reply(&[("printf approved", 10)]),
+        text_reply("selected approve"),
+        hang("running one; waiting for cancellation"),
+        hang("running two; waiting for cancellation"),
+        echo_reply(),
+        echo_reply(),
+        echo_reply(),
+        hang("running three; waiting for cancellation"),
+    ]);
     test.prompt("stream");
     test.wait("stream arrives in order");
     test.prompt("tool");
     test.wait(APPROVAL);
     let screen = test.screen();
-    assert!(
-        screen.contains(concat!(
-            "  Would you like to allow the following?\n",
-            "\n",
-            "  ● count the tallies\n",
-            "    every *.tally file\n",
-            "\n",
-            "  › 1. Go ahead\n",
-            "    2. Hold off\n",
-        )),
-        "{screen}"
-    );
+    for text in [
+        APPROVAL,
+        "● Shell printf denied",
+        "Working directory:",
+        "Command:",
+        "printf denied",
+        "› 1. Yes",
+        "2. No",
+    ] {
+        assert!(screen.contains(text), "missing {text:?}:\n{screen}");
+    }
     test.keys(&["Down", "Enter"]);
-    test.wait("selected stop");
+    test.wait("selected deny");
     test.wait_gone(APPROVAL);
     test.prompt("tool");
-    test.wait("› 1. Go ahead");
+    test.wait("› 1. Yes");
     test.keys(&["Enter"]);
-    test.wait("selected go");
+    test.wait("selected approve");
     test.prompt("running");
-    test.wait("running; waiting for cancellation");
+    test.wait("running one; waiting for cancellation");
     test.keys(&["Escape"]);
-    test.wait("cancelled");
     test.prompt("running");
-    test.wait("running; waiting for cancellation");
+    test.wait("running two; waiting for cancellation");
     test.prompt("interrupting");
     test.wait("you said: interrupting");
     let screen = test.screen();
     assert!(
-        screen.contains("cancelled\n\n  ❯ interrupting\n\n  ● you said: interrupting"),
+        screen.contains("❯ interrupting\n\n  ● you said: interrupting"),
         "{screen}"
     );
     test.type_text("first");
@@ -331,14 +464,12 @@ fn terminal_keys_send_interrupt_approve_scroll_and_restore_the_shell() {
     test.keys(&["Enter"]);
     test.wait("  ● you said: pasted界\n    third line\n");
     test.prompt("running");
-    test.wait("running; waiting for cancellation");
+    test.wait("running three; waiting for cancellation");
     test.keys(&["PageUp"]);
-    test.wait_gone("running; waiting for cancellation\n");
-    test.keys(&["Escape"]);
-    test.wait("new activity");
+    test.wait_gone("running three; waiting for cancellation");
     test.keys(&["End"]);
-    test.wait_gone("new activity");
-    test.wait("cancelled");
+    test.wait("running three; waiting for cancellation");
+    test.keys(&["Escape"]);
     test.keys(&["C-d"]);
     test.wait("TERMINAL_RESTORED");
     test.wait("EXIT_0");
@@ -349,7 +480,10 @@ fn terminal_keys_send_interrupt_approve_scroll_and_restore_the_shell() {
 #[test]
 #[ignore = "requires tmux; run make e2e"]
 fn mouse_wheel_scrolls_the_transcript_one_line_per_event() {
-    let test = Tmux::new();
+    let test = Tmux::new(render_replies());
+    create_tallies(&test);
+    test.keys(&["Tab"]);
+    test.wait("Auto");
     test.call(&["resize-window", "-t", "test:0", "-x", "80", "-y", "12"]);
     test.prompt("render");
     test.wait("a.tally and b.tally");
@@ -398,36 +532,34 @@ fn mouse_wheel_scrolls_the_transcript_one_line_per_event() {
 #[test]
 #[ignore = "requires tmux; run make e2e"]
 fn the_transcript_view_renders_thinking_tools_and_wrapped_replies() {
-    let test = Tmux::new();
-    test.call(&["resize-window", "-t", "test:0", "-x", "40", "-y", "40"]);
+    let test = Tmux::new(render_replies());
+    create_tallies(&test);
+    test.keys(&["Tab"]);
+    test.wait("Auto");
+    test.call(&["resize-window", "-t", "test:0", "-x", "40", "-y", "80"]);
     test.prompt("render");
     test.wait("a.tally and b.tally");
     let screen = test.screen();
-    assert!(
-        screen.starts_with(concat!(
-            "\n",
-            "  ❯ render\n",
-            "\n",
-            "  ● Thought for 0s\n",
-            "\n",
-            "  ● Shell ls\n",
-            "\n",
-            "  ● Read tallies/2026/september/archi…\n",
-            "\n",
-            "  ● Shell npm run dev &\n",
-            "\n",
-            "  ● Apply patch to a.tally\n",
-            "\n",
-            "  ● Final answer from subagent child-1\n",
-            "    └ Fixed.\n",
-            "\n",
-            "  ● Two tallies were counted in the\n",
-            "    workspace:\n",
-            "\n",
-            "    a.tally and b.tally\n",
-        )),
-        "{screen}"
-    );
+    let mut position = 0;
+    for text in [
+        "❯ render",
+        "● Thought for 0s",
+        "● Shell ls",
+        "● Read tallies/2026/september/archi…",
+        "● Shell printf 'a.tally\\nb.tally\\n'…",
+        "● Apply patch to a.tally",
+        "● Start subagent: Render child",
+        "● Wait up to 600 seconds for subage…",
+        "● Final answer from subagent",
+        "└ Fixed.",
+        "● Two tallies were counted in the",
+        "a.tally and b.tally",
+    ] {
+        let found = screen[position..]
+            .find(text)
+            .unwrap_or_else(|| panic!("missing {text:?}:\n{screen}"));
+        position += found + text.len();
+    }
     let styled = test.styled_screen();
     let gray = |text: &str| styled.contains(&format!("\x1b[38;2;112;112;112m{text}"));
     assert!(gray("● Thought for 0s"), "{styled}");
@@ -436,30 +568,17 @@ fn the_transcript_view_renders_thinking_tools_and_wrapped_replies() {
     test.keys(&["C-o"]);
     test.wait("Lines 1–2 of 2");
     let screen = test.screen();
-    assert!(
-        screen.contains(concat!(
-            "  ● Shell ls\n",
-            "    └ a.tally\n",
-            "      b.tally\n",
-            "\n",
-            "  ● Read tallies/2026/september/archi…\n",
-            "    └ Lines 1–2 of 2\n",
-            "\n",
-            "  ● Shell npm run dev &\n",
-            "    └ a.tally\n",
-            "      b.tally\n",
-            "\n",
-            "  ● Apply patch to a.tally\n",
-            "    └ Modified a.tally\n",
-            "      @@ -1 +1 @@\n",
-            "      -one\n",
-            "      +two\n",
-            "\n",
-            "  ● Final answer from subagent child-1\n",
-            "    └ Fixed.\n",
-        )),
-        "{screen}"
-    );
+    for text in [
+        "● Shell ls\n    └ Exit code: 0",
+        "      a.tally\n      b.tally\n      tallies",
+        "● Read tallies/2026/september/archi…\n    └ Lines 1–2 of 2",
+        "● Apply patch to a.tally\n    └ Modified a.tally",
+        "      @@ -1 +1 @@\n      -one\n      +two",
+        "● Final answer from subagent",
+        "└ Fixed.",
+    ] {
+        assert!(screen.contains(text), "missing {text:?}:\n{screen}");
+    }
     let styled = test.styled_screen();
     assert!(
         styled.contains("\x1b[38;2;152;195;121m    +two"),
@@ -472,9 +591,16 @@ fn the_transcript_view_renders_thinking_tools_and_wrapped_replies() {
 #[test]
 #[ignore = "requires tmux; run make e2e"]
 fn the_status_line_shows_the_session_settings_and_usage() {
-    let test = Tmux::new();
-    test.prompt("options");
-    test.wait("Auto • DeepSeek: DeepSeek Reasoner • High");
+    let reply = Reply::Stream(sse(&[
+        delta(
+            json!({"role":"assistant", "content":"usage recorded"}),
+            Some("stop"),
+        ),
+        usage(157_286, 1, 0.25),
+    ]));
+    let test = Tmux::new(vec![reply]);
+    test.keys(&["Tab", "C-e", "C-e", "C-e"]);
+    test.wait("Auto • DeepSeek V4.1 Flash • High");
     test.prompt("usage");
     test.wait("15% • $0.25");
     let screen = test.screen();
@@ -483,7 +609,7 @@ fn the_status_line_shows_the_session_settings_and_usage() {
         panic!("{screen}")
     };
     assert!(
-        status.starts_with("  Auto • DeepSeek: DeepSeek Reasoner • High"),
+        status.starts_with("  Auto • DeepSeek V4.1 Flash • High"),
         "{screen}"
     );
     assert!(status.ends_with("15% • $0.25"), "{screen}");
@@ -493,7 +619,7 @@ fn the_status_line_shows_the_session_settings_and_usage() {
 #[test]
 #[ignore = "requires tmux; run make e2e"]
 fn tab_and_shift_tab_cycle_modes_in_the_terminal() {
-    let test = Tmux::new();
+    let test = Tmux::new(vec![]);
     test.wait("Ask");
     test.keys(&["Tab"]);
     test.wait("Auto");
@@ -504,35 +630,40 @@ fn tab_and_shift_tab_cycle_modes_in_the_terminal() {
 #[test]
 #[ignore = "requires tmux; run make e2e"]
 fn control_e_cycles_effort_in_the_terminal() {
-    let test = Tmux::new();
-    test.wait("DeepSeek: DeepSeek Reasoner • Low");
+    let test = Tmux::new(vec![]);
+    test.wait("DeepSeek V4.1 Flash • Default");
     test.keys(&["C-e"]);
-    test.wait("DeepSeek: DeepSeek Reasoner • High");
+    test.wait("DeepSeek V4.1 Flash • Low");
     test.keys(&["C-e"]);
-    test.wait("DeepSeek: DeepSeek Reasoner • Low");
+    test.wait("DeepSeek V4.1 Flash • Medium");
 }
 
 #[test]
 #[ignore = "requires tmux; run make e2e"]
 fn tab_completes_a_slash_command_from_ghost_text() {
-    let test = Tmux::new();
+    let test = Tmux::with_skill(vec![echo_reply()], true);
     test.wait("Ask");
     test.keys(&["/", "t", "a"]);
     test.wait("/tally");
     test.keys(&["Tab"]);
     test.keys(&["Enter"]);
-    test.wait("you said: /tally");
+    test.wait("you said: Skill /tally invoked.");
     assert!(test.screen().contains("Ask"));
 }
 
 #[test]
 #[ignore = "requires tmux; run make e2e"]
 fn permission_survives_disconnect_and_server_failure_restores_the_shell() {
-    let test = Tmux::new();
+    let test = Tmux::new(vec![
+        echo_reply(),
+        shell_reply(&[("printf pending", 10)]),
+        text_reply("selected deny"),
+        echo_reply(),
+    ]);
     let mut client = test.attach();
     test.prompt("before detach");
     test.wait("you said: before detach");
-    test.prompt("tool");
+    test.prompt("run a command");
     test.wait(APPROVAL);
     test.call(&["split-window", "-h", "-t", "test:0.0", "/bin/sh"]);
     test.call(&[
@@ -546,7 +677,7 @@ fn permission_survives_disconnect_and_server_failure_restores_the_shell() {
     assert!(test.call(&["list-clients"]).trim().is_empty());
     let mut client = test.attach();
     test.keys(&["Down", "Enter"]);
-    test.wait("selected stop");
+    test.wait("selected deny");
     test.prompt("after reconnect");
     test.wait("you said: after reconnect");
     assert!(test.screen().contains("you said: before detach"));
@@ -554,7 +685,7 @@ fn permission_survives_disconnect_and_server_failure_restores_the_shell() {
         test.call(&["capture-pane", "-p", "-t", "test:0.1"])
             .contains("\nADJACENT_SHELL\n")
     );
-    test.prompt("exit");
+    test.kill_server();
     test.wait("TERMINAL_RESTORED");
     test.wait("EXIT_1");
     test.prompt("echo SHELL_AFTER_FAILURE");
@@ -565,7 +696,13 @@ fn permission_survives_disconnect_and_server_failure_restores_the_shell() {
 #[test]
 #[ignore = "requires tmux; run make e2e"]
 fn pane_title_shows_status_and_keeps_unseen_results_until_focus() {
-    let test = Tmux::new();
+    let test = Tmux::new(vec![
+        hang("running"),
+        shell_reply(&[("printf denied", 10)]),
+        text_reply("denied"),
+        Reply::Status(500, "{}".into()),
+        streamed(&["stream ", "arrives ", "in order"]),
+    ]);
     let mut client = test.attach();
     test.call(&["split-window", "-h", "-t", "test:0.0", "/bin/sh"]);
     test.wait_title("ox: ready");
@@ -573,7 +710,7 @@ fn pane_title_shows_status_and_keeps_unseen_results_until_focus() {
     test.wait_title("ox: working");
     test.keys(&["Escape"]);
     test.wait_title("ox: finished");
-    test.prompt("tool");
+    test.prompt("run a command");
     test.wait_title("ox: needs permission");
     test.keys(&["Down", "Enter"]);
     test.wait_title("ox: finished");

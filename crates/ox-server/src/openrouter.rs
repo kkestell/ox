@@ -159,7 +159,7 @@ pub fn parse_catalog(text: &str, now: i64) -> io::Result<Vec<CatalogModel>> {
 /// Downloads and filters OpenRouter's model catalog. It needs no API key.
 pub async fn fetch_catalog() -> io::Result<Vec<CatalogModel>> {
     let response = reqwest::Client::new()
-        .get(format!("{ENDPOINT}/models"))
+        .get(format!("{}/models", endpoint()))
         .timeout(Duration::from_secs(15))
         .send()
         .await
@@ -186,12 +186,16 @@ pub fn install_catalog(models: Vec<CatalogModel>) {
 }
 
 pub fn catalog() -> &'static [CatalogModel] {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     CATALOG.get_or_init(|| parse_catalog(fixture::CATALOG, fixture::NOW).unwrap());
     CATALOG.get().expect("the model catalog is installed")
 }
 
 const ENDPOINT: &str = "https://openrouter.ai/api/v1";
+
+fn endpoint() -> String {
+    std::env::var("OX_OPENROUTER_ENDPOINT").unwrap_or_else(|_| ENDPOINT.to_owned())
+}
 
 pub fn catalog_model(id: &str) -> Option<&'static CatalogModel> {
     catalog().iter().find(|model| model.id == id)
@@ -329,7 +333,7 @@ pub(crate) fn summarizer_body(model: &CatalogModel, previous: &str, piece: &str)
 
 impl Client {
     pub fn new(api_key: String) -> Self {
-        Self::for_endpoint(api_key, ENDPOINT.to_owned())
+        Self::for_endpoint(api_key, endpoint())
     }
 
     fn for_endpoint(api_key: String, endpoint: String) -> Self {
@@ -874,8 +878,8 @@ struct ApiError {
 
 /// A local HTTP server that answers each connection with the next scripted
 /// reply and records the request bodies it received.
-#[cfg(test)]
-pub(crate) mod fixture {
+#[cfg(any(test, feature = "test-support"))]
+pub mod fixture {
     use std::{
         collections::VecDeque,
         sync::{
@@ -972,6 +976,12 @@ pub(crate) mod fixture {
     #[derive(Clone)]
     pub struct Gate(Arc<tokio::sync::watch::Sender<bool>>);
 
+    impl Default for Gate {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl Gate {
         pub fn new() -> Self {
             Self(Arc::new(tokio::sync::watch::Sender::new(false)))
@@ -1065,6 +1075,10 @@ pub(crate) mod fixture {
 
         pub fn client(&self) -> Client {
             Client::for_endpoint("test-key".to_owned(), self.url.clone())
+        }
+
+        pub fn endpoint(&self) -> &str {
+            &self.url
         }
 
         pub fn requests(&self) -> Vec<Value> {
@@ -1244,6 +1258,34 @@ pub(crate) mod fixture {
             delta(json!({ "role": "assistant", "content": text }), None),
             delta(json!({}), Some("stop")),
         ]))
+    }
+
+    /// A reply that echoes the latest user message.
+    pub fn echo_reply() -> Reply {
+        Reply::from(|request| {
+            let text = request["messages"]
+                .as_array()
+                .and_then(|messages| {
+                    messages
+                        .iter()
+                        .rev()
+                        .find(|message| message["role"] == "user")
+                })
+                .and_then(|message| message["content"].as_str())
+                .expect("an echo request has a user message");
+            text_reply(&format!("you said: {text}"))
+        })
+    }
+
+    /// The fixture catalog shifted so its model ages match `NOW` today.
+    pub fn catalog_reply() -> Reply {
+        let mut catalog: Value = serde_json::from_str(CATALOG).unwrap();
+        let shift = chrono::Utc::now().timestamp() - NOW;
+        for model in catalog["data"].as_array_mut().unwrap() {
+            let created = model["created"].as_i64().unwrap();
+            model["created"] = (created + shift).into();
+        }
+        Reply::Status(200, catalog.to_string())
     }
 
     /// One assistant message with one call per `(call_id, tool name,
