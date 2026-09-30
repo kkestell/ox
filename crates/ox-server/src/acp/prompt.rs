@@ -1174,7 +1174,9 @@ mod tests {
         };
         answered.usage = Some(ModelUsage {
             input_tokens: 120,
+            cached_tokens: 0,
             output_tokens: 30,
+            reasoning_tokens: 0,
             cost: 0.25,
         });
         assert_eq!(

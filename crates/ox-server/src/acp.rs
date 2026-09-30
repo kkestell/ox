@@ -1181,7 +1181,9 @@ mod tests {
                         continuation_metadata: vec![],
                         usage: Some(ModelUsage {
                             input_tokens: 9000,
+                            cached_tokens: 0,
                             output_tokens: 10,
+                            reasoning_tokens: 0,
                             cost: 0.25,
                         }),
                     },
@@ -1640,7 +1642,9 @@ mod tests {
                     continuation_metadata: vec![],
                     usage: Some(ModelUsage {
                         input_tokens: 10,
+                        cached_tokens: 0,
                         output_tokens: 5,
+                        reasoning_tokens: 0,
                         cost,
                     }),
                 },
@@ -1946,7 +1950,9 @@ mod tests {
                         continuation_metadata: vec![],
                         usage: Some(sessions::ModelUsage {
                             input_tokens: 40,
+                            cached_tokens: 0,
                             output_tokens: 2,
+                            reasoning_tokens: 0,
                             cost: 0.5,
                         }),
                     },
