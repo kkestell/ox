@@ -2,4 +2,5 @@
 FROM rust:1-bookworm
 RUN apt-get update \
     && apt-get install -y --no-install-recommends procps python3 ripgrep \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && rustup component add clippy

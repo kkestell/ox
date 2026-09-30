@@ -105,3 +105,15 @@ Add a built-in function clamp(x, lo, hi) to tinyexpr. It returns lo when x is \
 less than lo, hi when x is greater than hi, and x otherwise. Add tests for it \
 to smoke.c, run make smoke, and fix any failures."""
 check = '''make -B smoke && printf '#include "tinyexpr.h"\nint main(void) { return !(te_interp("clamp(5, 0, 3)", 0) == 3 && te_interp("clamp(-1, 0, 3)", 0) == 0 && te_interp("clamp(2.5, 0, 3)", 0) == 2.5 && te_interp("ceil(1.5)", 0) == 2 && te_interp("cos(0)", 0) == 1); }\n' > /tmp/check.c && cc -I. /tmp/check.c tinyexpr.c -lm -o /tmp/check && /tmp/check'''
+
+[[task]]
+id = "mini-redis-docs"
+repo = "https://github.com/tokio-rs/mini-redis/commit/3d93b42bc363220f85af4fc9e1bebd35b588a4a3"
+prompt = """
+Document every item in this repository that lacks documentation, so that \
+`cargo clippy --all-targets -- -D missing_docs -D \
+clippy::missing_docs_in_private_items` passes. Write a short, accurate \
+description of each item, and crate documentation for each binary, example, \
+and test file. Do not change code, add allow attributes, or edit Cargo.toml. \
+Run cargo test and fix any failures."""
+check = "git diff --quiet 3d93b42bc363220f85af4fc9e1bebd35b588a4a3 -- Cargo.toml && ! git diff 3d93b42bc363220f85af4fc9e1bebd35b588a4a3 | grep -q '^+.*allow(' && cargo clippy -q --all-targets -- -D missing_docs -D clippy::missing_docs_in_private_items && cargo test -q"
