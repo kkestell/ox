@@ -18,13 +18,12 @@ use crate::{
     },
 };
 
-const SUMMARY_OUTPUT_TOKENS: usize = 4096;
-const SUMMARY_ALLOWANCE_BYTES: usize = SUMMARY_OUTPUT_TOKENS * 3;
+const SUMMARY_ALLOWANCE_BYTES: usize = openrouter::SUMMARIZER_MAX_TOKENS * 3;
 const SUMMARY_LABEL: &str = "Compaction summary of earlier conversation:\n";
 const TOOL_RESULT_EXCERPT_CHARS: usize = 2_000;
 const IMAGE_ESTIMATE_TOKENS: usize = 4_096;
 
-fn tokens(bytes: usize) -> usize {
+fn to_tokens(bytes: usize) -> usize {
     bytes.div_ceil(3)
 }
 
@@ -46,17 +45,19 @@ pub fn budget(model: &CatalogModel) -> Budget {
     }
 }
 
-pub fn request_estimate(
+/// The estimated tokens of the request for `transcript`.
+pub fn request_tokens(
     parameters: &ModelRequestParameters,
     transcript: &[TranscriptEntry],
 ) -> usize {
     let body = openrouter::ordinary_body(parameters, projection(transcript));
-    tokens(estimated_bytes(body))
+    to_tokens(body_bytes(body))
 }
 
-/// Count image data as a fixed token allowance. Encoded base64 is request
-/// transport, not text for the model to tokenize.
-fn estimated_bytes(mut body: Value) -> usize {
+/// The bytes the request body would take, counting image data as a fixed token
+/// allowance. Encoded base64 is request transport, not text for the model to
+/// tokenize.
+fn body_bytes(mut body: Value) -> usize {
     let mut images = 0;
     if let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) {
         for message in messages {
@@ -87,6 +88,11 @@ fn latest(transcript: &[TranscriptEntry]) -> Option<&CompactionCheckpoint> {
         TranscriptEntry::CompactionCheckpoint(checkpoint) => Some(checkpoint),
         _ => None,
     })
+}
+
+/// The transcript length the latest compaction checkpoint covers.
+fn summarized_prefix(transcript: &[TranscriptEntry]) -> usize {
+    latest(transcript).map_or(0, |checkpoint| checkpoint.covered_prefix)
 }
 
 /// The chat messages of the next model request: the saved transcript, or the
@@ -143,7 +149,7 @@ fn projection_at(transcript: &[TranscriptEntry], cut: usize, summary: &str) -> V
 }
 
 fn candidates(transcript: &[TranscriptEntry]) -> Vec<usize> {
-    let start = latest(transcript).map_or(0, |checkpoint| checkpoint.covered_prefix);
+    let start = summarized_prefix(transcript);
     transcript
         .iter()
         .enumerate()
@@ -154,27 +160,29 @@ fn candidates(transcript: &[TranscriptEntry]) -> Vec<usize> {
         .collect()
 }
 
-fn projected_estimate(
+/// The estimated tokens of the request when everything before `cut` is
+/// replaced by `summary`.
+fn projected_tokens(
     parameters: &ModelRequestParameters,
     transcript: &[TranscriptEntry],
     cut: usize,
     summary: &str,
 ) -> usize {
     let body = openrouter::ordinary_body(parameters, projection_at(transcript, cut, summary));
-    tokens(estimated_bytes(body))
+    to_tokens(body_bytes(body))
 }
 
 /// A prospective transcript is rejected only if even the largest complete cut,
 /// with room for a new summary, cannot fit the admission budget.
 pub fn input_fits(parameters: &ModelRequestParameters, prospective: &[TranscriptEntry]) -> bool {
     let admission = budget(parameters.model).admission;
-    if request_estimate(parameters, prospective) <= admission {
+    if request_tokens(parameters, prospective) <= admission {
         return true;
     }
     let Some(cut) = candidates(prospective).last().copied() else {
         return false;
     };
-    projected_estimate(
+    projected_tokens(
         parameters,
         prospective,
         cut,
@@ -184,25 +192,25 @@ pub fn input_fits(parameters: &ModelRequestParameters, prospective: &[Transcript
 
 fn ranked_cuts(parameters: &ModelRequestParameters, transcript: &[TranscriptEntry]) -> Vec<usize> {
     let admission = budget(parameters.model).admission;
-    let start = latest(transcript).map_or(0, |checkpoint| checkpoint.covered_prefix);
+    let start = summarized_prefix(transcript);
     let cuts = candidates(transcript);
     let summary = summary_message(&"x".repeat(SUMMARY_ALLOWANCE_BYTES));
     let base = openrouter::ordinary_body(parameters, vec![summary]);
-    let base_bytes = estimated_bytes(base);
+    let base_bytes = body_bytes(base);
     let mut suffix_bytes = vec![0; transcript.len() - start + 1];
     for index in (start..transcript.len()).rev() {
         suffix_bytes[index - start] =
-            suffix_bytes[index - start + 1] + message_bytes(&transcript[index]);
+            suffix_bytes[index - start + 1] + entry_bytes(&transcript[index]);
     }
     // Every cut past the latest skill invocation repeats it after the summary.
     let repeated = repeated_invocation(transcript, transcript.len())
-        .map(|index| (index, message_bytes(&transcript[index])));
+        .map(|index| (index, entry_bytes(&transcript[index])));
     let mut ranked = Vec::new();
     for cut in cuts {
         let repeated_bytes = repeated
             .filter(|&(index, _)| index < cut)
             .map_or(0, |(_, bytes)| bytes);
-        let estimate = tokens(base_bytes + suffix_bytes[cut - start] + repeated_bytes);
+        let estimate = to_tokens(base_bytes + suffix_bytes[cut - start] + repeated_bytes);
         if estimate > admission {
             continue;
         }
@@ -214,7 +222,7 @@ fn ranked_cuts(parameters: &ModelRequestParameters, transcript: &[TranscriptEntr
 
 /// The serialized size an entry adds to a request body, counting the comma that
 /// separates it from the previous message.
-fn message_bytes(entry: &TranscriptEntry) -> usize {
+fn entry_bytes(entry: &TranscriptEntry) -> usize {
     openrouter::chat_messages(std::slice::from_ref(entry))
         .into_iter()
         .map(|mut message| {
@@ -264,7 +272,7 @@ impl MaterialField {
 /// covered prefix and before `cut`, in transcript order, each labeled with its
 /// transcript index.
 fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<MaterialField> {
-    let start = latest(transcript).map_or(0, |checkpoint| checkpoint.covered_prefix);
+    let start = summarized_prefix(transcript);
     let mut fields = VecDeque::new();
     for (index, entry) in transcript[start..cut].iter().enumerate() {
         let source = format!("Entry {}", start + index);
@@ -365,7 +373,8 @@ fn next_piece(
     while let Some(field) = fields.front_mut() {
         let header = format!("{}, part {}:\n", field.label, field.part);
         let fits = |bytes| {
-            tokens(body_bytes + piece_bytes + bytes) + SUMMARY_OUTPUT_TOKENS <= model.context_limit
+            to_tokens(body_bytes + piece_bytes + bytes) + openrouter::SUMMARIZER_MAX_TOKENS
+                <= model.context_limit
         };
         let (take, addition) = fitting_prefix(&header, &field.text, fits);
         if take == 0 {
@@ -406,6 +415,11 @@ fn fitting_prefix(header: &str, text: &str, fits: impl Fn(usize) -> bool) -> (us
     }
 }
 
+/// Compacts `transcript` if a cut of it produces a smaller request that fits
+/// the admission budget, and returns whether a checkpoint was committed.
+/// Rejected cuts still spend summarizer requests, and their cost is saved with
+/// the committed checkpoint. The checkpoint is pushed onto `transcript` only
+/// after the store saves it.
 pub async fn compact(
     store: &SessionStore,
     client: &Client,
@@ -415,7 +429,7 @@ pub async fn compact(
     transcript: &mut Vec<TranscriptEntry>,
 ) -> io::Result<bool> {
     let model = parameters.model;
-    let original = request_estimate(parameters, transcript);
+    let original = request_tokens(parameters, transcript);
     // Every summarizer request counts, including those for rejected cuts.
     let mut summarizer_cost: Option<f64> = None;
     for cut in ranked_cuts(parameters, transcript) {
@@ -443,7 +457,7 @@ pub async fn compact(
                 "compaction cancelled",
             ));
         }
-        let actual = projected_estimate(parameters, transcript, cut, &summary);
+        let actual = projected_tokens(parameters, transcript, cut, &summary);
         if actual >= original || actual > budget(model).admission {
             continue;
         }
@@ -543,7 +557,7 @@ mod tests {
         let cancellation = PromptCancellation::new();
         let mut transcript = store.read(&id).unwrap().unwrap().transcript;
         assert!(
-            request_estimate(&parameters(), &transcript)
+            request_tokens(&parameters(), &transcript)
                 < budget(parameters().model).automatic_threshold,
             "manual compaction is below the automatic threshold"
         );
@@ -703,18 +717,18 @@ mod tests {
         assert_eq!(cuts, [6, 5]);
         let summary = "x".repeat(SUMMARY_ALLOWANCE_BYTES);
         assert!(
-            projected_estimate(&parameters(), &transcript, cuts[0], &summary)
-                < projected_estimate(&parameters(), &transcript, cuts[1], &summary)
+            projected_tokens(&parameters(), &transcript, cuts[0], &summary)
+                < projected_tokens(&parameters(), &transcript, cuts[1], &summary)
         );
-        let base = estimated_bytes(openrouter::ordinary_body(
+        let base = body_bytes(openrouter::ordinary_body(
             &parameters(),
             vec![summary_message(&summary)],
         ));
         for &cut in &cuts {
-            let suffix: usize = transcript[cut..].iter().map(message_bytes).sum();
+            let suffix: usize = transcript[cut..].iter().map(entry_bytes).sum();
             assert_eq!(
                 base + suffix,
-                estimated_bytes(openrouter::ordinary_body(
+                body_bytes(openrouter::ordinary_body(
                     &parameters(),
                     projection_at(&transcript, cut, &summary)
                 )),
@@ -850,7 +864,8 @@ mod tests {
             pieces += 1;
             let body = openrouter::summarizer_body(model, previous, &piece);
             assert!(
-                tokens(serde_json::to_vec(&body).unwrap().len()) + SUMMARY_OUTPUT_TOKENS
+                to_tokens(serde_json::to_vec(&body).unwrap().len())
+                    + openrouter::SUMMARIZER_MAX_TOKENS
                     <= model.context_limit,
                 "piece {pieces} fits the context limit"
             );
@@ -878,7 +893,7 @@ mod tests {
             projection_at(&transcript, 0, "summary")[1]["content"][1]["type"],
             "image_url"
         );
-        let estimate = request_estimate(&parameters(), &transcript);
+        let estimate = request_tokens(&parameters(), &transcript);
         if let TranscriptEntry::TurnStart(TurnStart {
             input: TurnInput::UserMessage(message),
             ..
@@ -887,7 +902,7 @@ mod tests {
         {
             image.data = "A".repeat(4_000);
         }
-        assert_eq!(estimate, request_estimate(&parameters(), &transcript));
+        assert_eq!(estimate, request_tokens(&parameters(), &transcript));
     }
 
     #[tokio::test]
@@ -902,7 +917,7 @@ mod tests {
             .append_turn_start(&id, &TurnStart::test("u".repeat(1_800_000)))
             .unwrap();
         let mut transcript = store.read(&id).unwrap().unwrap().transcript;
-        let original = request_estimate(&parameters(), &transcript);
+        let original = request_tokens(&parameters(), &transcript);
         let server = Server::start(vec![text_reply("Older work summarized.")]).await;
         assert!(
             compact(
@@ -917,7 +932,7 @@ mod tests {
             .unwrap()
         );
         let admission = budget(parameters().model).admission;
-        let estimate = request_estimate(&parameters(), &transcript);
+        let estimate = request_tokens(&parameters(), &transcript);
         assert!(
             estimate < original && estimate <= admission,
             "compaction reduces the request and admits the remaining input"

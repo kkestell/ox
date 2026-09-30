@@ -751,16 +751,14 @@ def chart_svg(results, base, candidate):
     def x(ratio):
         return left + (math.log(ratio) + reach) / (2 * reach) * plot_width
 
-    ticks = next(
-        (
-            visible
-            for ticks in CHART_TICKS
-            for visible in [[t for t in ticks if abs(math.log(t)) <= reach]]
-            if len(visible) >= 3
-            and all(b - a >= 44 for a, b in zip(map(x, visible), map(x, visible[1:])))
-        ),
-        [1],
-    )
+    ticks = [1]
+    for candidates in CHART_TICKS:
+        visible = [t for t in candidates if abs(math.log(t)) <= reach]
+        if len(visible) >= 3 and all(
+            b - a >= 44 for a, b in zip(map(x, visible), map(x, visible[1:]))
+        ):
+            ticks = visible
+            break
     rows_top = y + 16
     axis_y = rows_top + len(CHART_METRICS) * row_height + 8
     for tick in ticks:

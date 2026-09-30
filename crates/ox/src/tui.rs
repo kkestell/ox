@@ -634,6 +634,8 @@ fn thousands(value: u64) -> String {
 
 /// The approval dialog's rows: the heading, a blank row, the body, a blank row,
 /// and one row per option. `draw` slices the body and the options by position.
+/// The request's tool call may carry only part of the call, so the transcript's
+/// copy fills in the rest.
 fn approval_lines(view: &TranscriptView, approval: &Approval, width: usize) -> Vec<Line<'static>> {
     let request = approval.request;
     let id = &request.tool_call.tool_call_id;

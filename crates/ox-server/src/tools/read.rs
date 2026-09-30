@@ -81,15 +81,14 @@ pub(super) async fn execute(
         };
         return Ok((text.to_owned(), Vec::new()));
     }
+    if matches!(end, PageEnd::LineTruncated) {
+        text.push_str(
+            "[Line truncated. The omitted portion cannot be retrieved through line pagination.]\n",
+        );
+    }
     let more = match end {
         PageEnd::NextLineDeferred => true,
-        PageEnd::LineTruncated => {
-            text.push_str(
-                "[Line truncated. The omitted portion cannot be retrieved through line pagination.]\n",
-            );
-            has_more(&mut reader).await?
-        }
-        PageEnd::LineLimitOrEndOfFile => has_more(&mut reader).await?,
+        PageEnd::LineTruncated | PageEnd::LineLimitOrEndOfFile => has_more(&mut reader).await?,
     };
     let last = next - 1;
     let summary = if more {

@@ -82,27 +82,24 @@ fn write_result(
     old_text: Option<String>,
     new_text: String,
 ) -> Result<(String, Vec<ToolContent>), String> {
-    let action = if old_text.as_ref() == Some(&new_text) {
-        "Unchanged"
-    } else {
-        workspace
-            .write_file(path, new_text.as_bytes(), old_text.is_none())
-            .map_err(|error| format!("{}: {error}", path.display()))?;
-        if old_text.is_none() {
-            "Added"
-        } else {
-            "Modified"
-        }
-    };
+    if old_text.as_ref() == Some(&new_text) {
+        let summary = format!("Unchanged {}", path.display());
+        return Ok((summary.clone(), vec![ToolContent::Text(summary)]));
+    }
+    let created = old_text.is_none();
+    workspace
+        .write_file(path, new_text.as_bytes(), created)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let action = if created { "Added" } else { "Modified" };
     let summary = format!("{action} {}", path.display());
-    let mut content = vec![ToolContent::Text(summary.clone())];
-    if action != "Unchanged" {
-        content.push(ToolContent::Diff {
+    let content = vec![
+        ToolContent::Text(summary.clone()),
+        ToolContent::Diff {
             path: workspace.root().join(path),
             old_text,
             new_text,
-        });
-    }
+        },
+    ];
     Ok((summary, content))
 }
 

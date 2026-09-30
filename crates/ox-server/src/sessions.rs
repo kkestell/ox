@@ -33,7 +33,6 @@ CREATE TABLE IF NOT EXISTS sessions (
     parent_session_id TEXT REFERENCES sessions (id) ON DELETE CASCADE,
     workspace_path    TEXT NOT NULL,
     title             TEXT,
-    created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL
 );
 
@@ -614,7 +613,6 @@ pub struct SessionSummary {
     pub parent_session_id: Option<SessionId>,
     pub workspace_path: PathBuf,
     pub session_title: Option<String>,
-    pub created_at: String,
     pub updated_at: String,
 }
 
@@ -712,8 +710,8 @@ impl SessionStore {
         let at = now();
         self.lock()
             .execute(
-                "INSERT INTO sessions (id, parent_session_id, workspace_path, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?4)",
+                "INSERT INTO sessions (id, parent_session_id, workspace_path, updated_at)
+             VALUES (?1, ?2, ?3, ?4)",
                 params![id.to_string(), parent.map(ToString::to_string), path, at],
             )
             .map_err(io::Error::other)?;
@@ -722,7 +720,6 @@ impl SessionStore {
             parent_session_id: parent.cloned(),
             workspace_path: workspace_path.to_path_buf(),
             session_title: None,
-            created_at: at.clone(),
             updated_at: at,
         })
     }
@@ -757,7 +754,7 @@ impl SessionStore {
         let mut statement = connection
             .prepare(
                 "SELECT sessions.id, sessions.parent_session_id, sessions.workspace_path,
-                        sessions.title, sessions.created_at, sessions.updated_at
+                        sessions.title, sessions.updated_at
                  FROM sessions
                  WHERE sessions.parent_session_id IS NULL
                    AND (?1 IS NULL OR sessions.workspace_path = ?1)
@@ -919,7 +916,7 @@ fn summary(connection: &Connection, id: &SessionId) -> rusqlite::Result<Option<S
     connection
         .query_row(
             "SELECT sessions.id, sessions.parent_session_id, sessions.workspace_path,
-                    sessions.title, sessions.created_at, sessions.updated_at
+                    sessions.title, sessions.updated_at
              FROM sessions
              WHERE sessions.id = ?1",
             params![id.to_string()],
@@ -934,8 +931,7 @@ fn summary_row(row: &Row<'_>) -> rusqlite::Result<SessionSummary> {
         parent_session_id: row.get::<_, Option<String>>(1)?.map(SessionId::new),
         workspace_path: PathBuf::from(row.get::<_, String>(2)?),
         session_title: row.get(3)?,
-        created_at: row.get(4)?,
-        updated_at: row.get(5)?,
+        updated_at: row.get(4)?,
     })
 }
 
@@ -1488,7 +1484,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(first.session_title.as_deref(), Some("First line"));
-        assert_eq!(first.created_at, created.created_at);
         assert!(first.updated_at.as_str() > "2026-09-18T09:00:00.000Z");
 
         let second = store

@@ -13,10 +13,10 @@ use futures::channel::oneshot;
 
 use crate::cancellation::PromptCancellation;
 
+/// The session operation in progress. Only a prompt can be cancelled.
 enum Operation {
     Prompt(PromptCancellation),
-    Load,
-    Delete,
+    Session,
 }
 
 #[derive(Clone, Default)]
@@ -54,11 +54,11 @@ impl SessionOperations {
     }
 
     pub fn try_load(&self, session_id: &SessionId) -> Option<OperationGuard> {
-        self.acquire(session_id, Operation::Load)
+        self.acquire(session_id, Operation::Session)
     }
 
     pub fn try_delete(&self, session_id: &SessionId) -> Option<OperationGuard> {
-        self.acquire(session_id, Operation::Delete)
+        self.acquire(session_id, Operation::Session)
     }
 
     /// Cancels a prompt and waits for any operation to finish while refusing
@@ -95,7 +95,7 @@ impl SessionOperations {
     pub fn cancel(&self, session_id: &SessionId) {
         let cancellation = match self.lock().active.get(session_id) {
             Some(Operation::Prompt(cancellation)) => Some(cancellation.clone()),
-            Some(Operation::Load | Operation::Delete) | None => None,
+            Some(Operation::Session) | None => None,
         };
         if let Some(cancellation) = cancellation {
             cancellation.cancel();

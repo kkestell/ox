@@ -134,7 +134,7 @@ pub fn usage_update(
             },
             ..
         }) => usage.input_tokens + usage.output_tokens,
-        _ => compaction::request_estimate(parameters, transcript) as u64,
+        _ => compaction::request_tokens(parameters, transcript) as u64,
     };
     let size = parameters.model.context_limit as u64;
     let cost = match (sessions::transcript_cost(transcript), children_cost) {

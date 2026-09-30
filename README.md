@@ -2,7 +2,7 @@
 
 Ox is an ACP-native coding agent written in Rust. The Ox ACP server can be used
 with any ACP-compatible client, and the TUI can be used with any ACP-compatible
-server. Ox is a single 9MB binary and under 10,000 lines of code.
+server. Ox is a single 9MB binary.
 
 ## Quick Start
 

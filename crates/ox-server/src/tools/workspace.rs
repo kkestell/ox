@@ -47,19 +47,16 @@ impl Workspace {
     }
 
     pub fn normalize_path(name: &Path) -> io::Result<PathBuf> {
-        let mut path = PathBuf::new();
-        for part in name.components() {
-            match part {
-                Component::Normal(name) => path.push(name),
-                Component::CurDir => {}
-                _ => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "expected a relative path without parent traversal",
-                    ));
-                }
-            }
+        if !is_relative_path(name) {
+            return Err(invalid_relative_path());
         }
+        let path = name
+            .components()
+            .filter_map(|part| match part {
+                Component::Normal(name) => Some(name),
+                _ => None,
+            })
+            .collect::<PathBuf>();
         if path.as_os_str().is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -71,15 +68,8 @@ impl Workspace {
 
     /// Resolves a directly named link, then uses only its in-workspace target.
     pub fn resolve_allowing_link_target(&self, name: &Path) -> io::Result<PathBuf> {
-        if name.as_os_str().is_empty()
-            || name
-                .components()
-                .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "expected a relative path without parent traversal",
-            ));
+        if name.as_os_str().is_empty() || !is_relative_path(name) {
+            return Err(invalid_relative_path());
         }
         self.relative(&self.root.join(name).canonicalize()?)
     }
@@ -169,6 +159,20 @@ impl Workspace {
         file.set_len(0)?;
         file.write_all(contents)
     }
+}
+
+/// Whether every component is a normal directory name or `.`. An empty path
+/// has no components and is relative.
+fn is_relative_path(name: &Path) -> bool {
+    name.components()
+        .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
+}
+
+fn invalid_relative_path() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "expected a relative path without parent traversal",
+    )
 }
 
 #[cfg(test)]

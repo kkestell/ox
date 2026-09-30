@@ -334,14 +334,15 @@ impl ServerState {
             .ok_or_else(|| inactive(&request.session_id))?
             .selections;
         let mut selected = selections.clone();
+        let not_a_choice = || {
+            Error::invalid_params().data(format!(
+                "{} is not a choice of configuration option {}",
+                value, request.config_id
+            ))
+        };
         match request.config_id.0.as_ref() {
             "model" => {
-                let model = openrouter::catalog_model(value.0.as_ref()).ok_or_else(|| {
-                    Error::invalid_params().data(format!(
-                        "{} is not a choice of configuration option {}",
-                        value, request.config_id
-                    ))
-                })?;
+                let model = openrouter::catalog_model(value.0.as_ref()).ok_or_else(not_a_choice)?;
                 selected.model.clone_from(&model.id);
                 if !model.supports(selected.effort) {
                     selected.effort = EffortLevel::Default;
@@ -352,20 +353,10 @@ impl ServerState {
                     .expect("a session model comes from the model catalog");
                 selected.effort = EffortLevel::from_id(value.0.as_ref())
                     .filter(|effort| model.supports(*effort))
-                    .ok_or_else(|| {
-                        Error::invalid_params().data(format!(
-                            "{} is not a choice of configuration option {}",
-                            value, request.config_id
-                        ))
-                    })?;
+                    .ok_or_else(not_a_choice)?;
             }
             "mode" => {
-                selected.mode = SessionMode::from_id(value.0.as_ref()).ok_or_else(|| {
-                    Error::invalid_params().data(format!(
-                        "{} is not a choice of configuration option {}",
-                        value, request.config_id
-                    ))
-                })?;
+                selected.mode = SessionMode::from_id(value.0.as_ref()).ok_or_else(not_a_choice)?;
             }
             _ => {
                 return Err(Error::invalid_params()
@@ -490,15 +481,6 @@ impl ServerState {
     }
 
     fn list_sessions(&self, request: &ListSessionsRequest) -> Result<ListSessionsResponse> {
-        if request
-            .cursor
-            .as_deref()
-            .is_some_and(|cursor| !cursor.is_empty())
-        {
-            return Err(
-                Error::invalid_params().data("session listing is not paginated; omit the cursor")
-            );
-        }
         let summaries = self
             .store
             .list(request.cwd.as_deref())
@@ -563,13 +545,12 @@ impl ServerState {
         }
     }
 
-    /// Signals the shell processes of every active session before waiting
-    /// for any, so cleanup time does not grow with the number of sessions.
+    /// Waits for the shell processes of every active session. `shutdown`
+    /// signals a session's processes before waiting, and `join_all` polls
+    /// every session before any of them completes, so cleanup does not cost
+    /// one session's shutdown time per session.
     async fn shutdown_shell_processes(&self) {
         let session_shell_processes = self.all_shell_processes();
-        for shell_processes in &session_shell_processes {
-            shell_processes.begin_shutdown();
-        }
         futures::future::join_all(session_shell_processes.iter().map(ShellProcesses::shutdown))
             .await;
     }
@@ -1217,7 +1198,7 @@ mod tests {
             Some(TranscriptEntry::CompactionCheckpoint(checkpoint))
                 if checkpoint.summarizer_cost == Some(0.125)
         ));
-        let estimate = compaction::request_estimate(
+        let estimate = compaction::request_tokens(
             &ModelRequestParameters::new(
                 selected,
                 EffortLevel::Default,
@@ -3625,12 +3606,11 @@ mod tests {
     }
 
     #[test]
-    fn listing_rejects_cursors() {
+    fn listing_ignores_a_cursor_and_returns_one_page() {
         let state = state();
         let paged = ListSessionsRequest::new().cursor("next");
-        assert_eq!(
-            state.list_sessions(&paged).unwrap_err().code,
-            ErrorCode::InvalidParams
-        );
+        let response = state.list_sessions(&paged).unwrap();
+        assert!(response.sessions.is_empty());
+        assert!(response.next_cursor.is_none());
     }
 }
