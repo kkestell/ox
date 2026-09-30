@@ -4,7 +4,6 @@
 use std::path::{Path, PathBuf};
 
 use agent_client_protocol::schema::v1::SessionId;
-use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
@@ -13,7 +12,7 @@ use crate::{
     subagents::Subagents,
 };
 
-mod patch;
+mod file;
 mod read;
 mod search;
 mod shell;
@@ -43,7 +42,8 @@ pub struct ToolContext {
     pub subagents: Option<Subagents>,
 }
 
-pub const APPLY_PATCH: &str = "apply_patch";
+pub const WRITE_FILE: &str = "write_file";
+pub const EDIT_FILE: &str = "edit_file";
 pub const READ_FILE: &str = "read_file";
 pub const GLOB: &str = "glob";
 pub const SHELL: &str = "shell";
@@ -99,7 +99,8 @@ pub fn schemas(role: Role) -> Vec<Value> {
         read::schema(),
         search::glob_schema(),
         search::grep_schema(),
-        patch::schema(),
+        file::write_schema(),
+        file::edit_schema(),
     ];
     if role == Role::Main {
         schemas.extend([
@@ -110,12 +111,6 @@ pub fn schemas(role: Role) -> Vec<Value> {
         ]);
     }
     schemas
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PatchArgs {
-    patch: String,
 }
 
 /// What the ACP client shows for one call. Arguments come from the model and
@@ -135,7 +130,8 @@ fn default_tool_call_title(call: &ToolCall) -> String {
         READ_FILE => "Read file".to_owned(),
         GLOB => "Find files".to_owned(),
         GREP => "Search file contents".to_owned(),
-        APPLY_PATCH => "Apply patch".to_owned(),
+        WRITE_FILE => "Write file".to_owned(),
+        EDIT_FILE => "Edit file".to_owned(),
         START_SUBAGENT => "Start subagent".to_owned(),
         SEND_MESSAGE => "Message subagent".to_owned(),
         STOP_SUBAGENT => "Stop subagent".to_owned(),
@@ -185,11 +181,8 @@ fn describe(call: &ToolCall) -> Option<String> {
             }
             Some(description)
         }
-        APPLY_PATCH => match patch::changed_paths(argument("patch")?).as_slice() {
-            [] => None,
-            [path] => Some(format!("Apply patch to {path}")),
-            paths => Some(format!("Apply patch to {} files", paths.len())),
-        },
+        WRITE_FILE => Some(format!("Write {}", argument("path")?)),
+        EDIT_FILE => Some(format!("Edit {}", argument("path")?)),
         START_SUBAGENT => Some(format!(
             "Start subagent: {}",
             command_line(argument("prompt")?)?
@@ -313,10 +306,8 @@ async fn execute_other(workspace_path: &Path, call: &ToolCall) -> ToolOutcome {
         GLOB | GREP => {
             bounded_result(search::execute(workspace_path, &call.name, &call.arguments).await)
         }
-        APPLY_PATCH => match serde_json::from_str::<PatchArgs>(&call.arguments) {
-            Ok(args) => bounded_result(patch::apply(workspace_path, &args.patch)),
-            Err(error) => ToolOutcome::failed(format!("arguments: {error}")),
-        },
+        WRITE_FILE => bounded_result(file::write(workspace_path, &call.arguments)),
+        EDIT_FILE => bounded_result(file::edit(workspace_path, &call.arguments)),
         other => ToolOutcome::failed(format!("Unknown tool: {other}")),
     }
 }
@@ -329,7 +320,7 @@ pub(crate) mod fixture {
 
     impl Workspace {
         pub fn new() -> Self {
-            let path = std::env::temp_dir().join(format!("ox-patch-{}", uuid::Uuid::new_v4()));
+            let path = std::env::temp_dir().join(format!("ox-tools-{}", uuid::Uuid::new_v4()));
             fs::create_dir(&path).unwrap();
             Self(path)
         }
@@ -490,8 +481,8 @@ mod tests {
         assert!(pinned.read_file(&file).is_err());
     }
 
-    #[tokio::test]
-    async fn tool_schemas_and_patch_argument_errors() {
+    #[test]
+    fn tool_schemas_register_the_main_and_subagent_tools() {
         let names = |role| {
             schemas(role)
                 .into_iter()
@@ -500,7 +491,15 @@ mod tests {
         };
         assert_eq!(
             names(Role::Subagent),
-            [SHELL, SHELL_PROCESS, READ_FILE, GLOB, GREP, APPLY_PATCH]
+            [
+                SHELL,
+                SHELL_PROCESS,
+                READ_FILE,
+                GLOB,
+                GREP,
+                WRITE_FILE,
+                EDIT_FILE
+            ]
         );
         assert_eq!(
             names(Role::Main),
@@ -510,7 +509,8 @@ mod tests {
                 READ_FILE,
                 GLOB,
                 GREP,
-                APPLY_PATCH,
+                WRITE_FILE,
+                EDIT_FILE,
                 START_SUBAGENT,
                 SEND_MESSAGE,
                 STOP_SUBAGENT,
@@ -524,23 +524,15 @@ mod tests {
                 false
             );
         }
-        let schema = schemas
-            .iter()
-            .find(|schema| schema["function"]["name"] == APPLY_PATCH)
-            .unwrap();
-        assert_eq!(
-            schema["function"]["parameters"]["required"],
-            json!(["patch"])
-        );
-        assert_eq!(
-            schema["function"]["parameters"]["additionalProperties"],
-            false
-        );
-        for arguments in ["{", "{}", r#"{"patch": 1}"#, r#"{"patch": "", "cwd": "/"}"#] {
-            let call = call(APPLY_PATCH, arguments);
-            let outcome = execute(Path::new("/unused"), &call).await;
-            assert_eq!(outcome.status, ToolStatus::Failed);
-            assert!(outcome.text.starts_with("arguments:"), "{}", outcome.text);
+        for (name, required) in [
+            (WRITE_FILE, json!(["path", "content"])),
+            (EDIT_FILE, json!(["path", "old_text", "new_text"])),
+        ] {
+            let schema = schemas
+                .iter()
+                .find(|schema| schema["function"]["name"] == name)
+                .unwrap();
+            assert_eq!(schema["function"]["parameters"]["required"], required);
         }
     }
 
@@ -610,20 +602,17 @@ mod tests {
                 "Search for fn main in src (files matching *.rs)",
             ),
             (
-                APPLY_PATCH,
-                json!({"patch":"*** Begin Patch\n*** Delete File: src/old.rs\n*** End Patch\n"}),
-                "Apply patch to src/old.rs",
+                WRITE_FILE,
+                json!({"path":"src/new.rs", "content":""}),
+                "Write src/new.rs",
             ),
             (
-                APPLY_PATCH,
-                json!({"patch":"*** Begin Patch\n*** Delete File: a\n*** Delete File: b\n*** End Patch\n"}),
-                "Apply patch to 2 files",
+                EDIT_FILE,
+                json!({"path":"src/main.rs", "old_text":"a", "new_text":"b"}),
+                "Edit src/main.rs",
             ),
-            (
-                APPLY_PATCH,
-                json!({"patch":"*** Begin Patch\n"}),
-                "Apply patch",
-            ),
+            (WRITE_FILE, json!({"content":""}), "Write file"),
+            (EDIT_FILE, json!({"path":3}), "Edit file"),
             (
                 START_SUBAGENT,
                 json!({"prompt":"Fix the parser.\nThen run the tests."}),
@@ -675,10 +664,12 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_tools_fail_as_results_and_keep_their_name_as_tool_call_title() {
-        assert_eq!(
-            execute(Path::new("/workspace"), &call("launch", "{}")).await,
-            ToolOutcome::failed("Unknown tool: launch")
-        );
-        assert_eq!(tool_call_title(&call("launch", "{}")), "launch");
+        for name in ["launch", "apply_patch"] {
+            assert_eq!(
+                execute(Path::new("/workspace"), &call(name, "{}")).await,
+                ToolOutcome::failed(format!("Unknown tool: {name}"))
+            );
+            assert_eq!(tool_call_title(&call(name, "{}")), name);
+        }
     }
 }

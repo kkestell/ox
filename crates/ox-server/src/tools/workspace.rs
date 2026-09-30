@@ -9,7 +9,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use rustix::fs::{self, AtFlags, Mode, OFlags, RenameFlags};
+use rustix::fs::{self, AtFlags, Mode, OFlags};
 
 pub(super) struct Workspace {
     root: PathBuf,
@@ -44,6 +44,29 @@ impl Workspace {
                     "path resolves outside the workspace",
                 )
             })
+    }
+
+    pub fn normalize_path(name: &Path) -> io::Result<PathBuf> {
+        let mut path = PathBuf::new();
+        for part in name.components() {
+            match part {
+                Component::Normal(name) => path.push(name),
+                Component::CurDir => {}
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "expected a relative path without parent traversal",
+                    ));
+                }
+            }
+        }
+        if path.as_os_str().is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "path must name a file, not the workspace root",
+            ));
+        }
+        Ok(path)
     }
 
     /// Resolves a directly named link, then uses only its in-workspace target.
@@ -146,23 +169,47 @@ impl Workspace {
         file.set_len(0)?;
         file.write_all(contents)
     }
+}
 
-    pub fn remove_file(&self, path: &Path) -> io::Result<()> {
-        let (dir, name) = self.parent(path, false)?;
-        fs::unlinkat(&dir, &name, AtFlags::empty())?;
-        Ok(())
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::fixture::Workspace as TempWorkspace;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_swapped_into_a_validated_target_cannot_redirect_a_write() {
+        use std::os::unix::fs::symlink;
+        let workspace = TempWorkspace::new();
+        let outside = TempWorkspace::new();
+        std::fs::write(workspace.0.join("inside"), "inside").unwrap();
+        std::fs::write(outside.0.join("file"), "outside").unwrap();
+        let pinned = Workspace::open(&workspace.0).unwrap();
+        let path = Workspace::normalize_path(Path::new("inside")).unwrap();
+        pinned.read_file(&path).unwrap();
+        std::fs::remove_file(workspace.0.join("inside")).unwrap();
+        symlink(outside.0.join("file"), workspace.0.join("inside")).unwrap();
+        assert!(pinned.write_file(&path, b"changed", false).is_err());
+        assert_eq!(
+            std::fs::read_to_string(outside.0.join("file")).unwrap(),
+            "outside"
+        );
     }
 
-    pub fn move_file(&self, source: &Path, destination: &Path) -> io::Result<()> {
-        let (source_dir, source_name) = self.parent(source, false)?;
-        let (destination_dir, destination_name) = self.parent(destination, true)?;
-        fs::renameat_with(
-            &source_dir,
-            &source_name,
-            &destination_dir,
-            &destination_name,
-            RenameFlags::NOREPLACE,
-        )?;
-        Ok(())
+    #[test]
+    fn exclusive_creation_does_not_overwrite_a_file_created_after_reading() {
+        let workspace = TempWorkspace::new();
+        let pinned = Workspace::open(&workspace.0).unwrap();
+        let path = Workspace::normalize_path(Path::new("file")).unwrap();
+        assert_eq!(
+            pinned.read_file(&path).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        std::fs::write(workspace.0.join("file"), "original").unwrap();
+        assert!(pinned.write_file(&path, b"changed", true).is_err());
+        assert_eq!(
+            std::fs::read_to_string(workspace.0.join("file")).unwrap(),
+            "original"
+        );
     }
 }
