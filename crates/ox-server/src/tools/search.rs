@@ -157,9 +157,9 @@ async fn run(
         let status = child.wait().await?;
         Ok::<_, std::io::Error>((output, status))
     };
-    let ((output, status), errors) =
+    let ((output, status), enumeration_failed) =
         tokio::try_join!(collect, drain_errors(stderr)).map_err(|e| e.to_string())?;
-    output.finish(status, !errors.is_empty(), matcher.is_some())
+    output.finish(status, enumeration_failed, matcher.is_some())
 }
 
 #[derive(Default)]
@@ -319,17 +319,16 @@ async fn scan_file(
     Ok((matches, false))
 }
 
-// Keep diagnostics bounded while continuing to drain the pipe to avoid deadlock.
-async fn drain_errors(mut reader: impl AsyncRead + Unpin) -> std::io::Result<Vec<u8>> {
-    const LIMIT: usize = 4096;
-    let mut saved = Vec::new();
+// Only the presence of diagnostics matters; drain the pipe to avoid deadlock.
+async fn drain_errors(mut reader: impl AsyncRead + Unpin) -> std::io::Result<bool> {
+    let mut had_errors = false;
     let mut buffer = [0; 4096];
     loop {
         let count = reader.read(&mut buffer).await?;
         if count == 0 {
-            return Ok(saved);
+            return Ok(had_errors);
         }
-        saved.extend_from_slice(&buffer[..count.min(LIMIT - saved.len())]);
+        had_errors = true;
     }
 }
 
@@ -513,10 +512,7 @@ mod tests {
         use std::time::Duration;
 
         let bytes = vec![b'x'; 100_000];
-        assert_eq!(
-            drain_errors(bytes.as_slice()).await.unwrap(),
-            vec![b'x'; 4096]
-        );
+        assert!(drain_errors(bytes.as_slice()).await.unwrap());
         let workspace = Workspace::new();
         let pinned = super::Workspace::open(&workspace.0).unwrap();
         let error = run(Command::new("/nonexistent/ox-test-rg"), &pinned, None)
