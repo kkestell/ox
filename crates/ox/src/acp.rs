@@ -346,9 +346,12 @@ where
                         .await?,
                 ))
             })
-            .await
-            .unwrap_or_else(|_| Err(anyhow::anyhow!("server startup timed out")));
-            let (capabilities, session) = started?;
+            .await;
+            let (capabilities, session) = match started {
+                Ok(Ok(session)) => session,
+                Ok(Err(error)) => return Ok(Err(error)),
+                Err(_) => return Ok(Err(anyhow::anyhow!("server startup timed out"))),
+            };
             Ok(body(
                 Session {
                     connection,

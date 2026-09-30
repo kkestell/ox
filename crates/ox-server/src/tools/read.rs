@@ -169,39 +169,68 @@ async fn has_more(reader: &mut BufReader<tokio::fs::File>) -> Result<bool, Strin
         .is_empty())
 }
 
+// Validate the entire line but retain only its prefix, even for enormous lines.
+// The small unfinished UTF-8 suffix is carried across reader buffer boundaries.
 async fn line(
     reader: &mut BufReader<tokio::fs::File>,
     keep: usize,
 ) -> Result<Option<(String, bool)>, String> {
-    let mut bytes = Vec::new();
-    if reader
-        .read_until(b'\n', &mut bytes)
-        .await
-        .map_err(|e| e.to_string())?
-        == 0
-    {
+    let mut prefix = Vec::new();
+    let mut utf8 = Vec::new();
+    let mut length = 0usize;
+    let mut newline = false;
+    loop {
+        let buffer = reader.fill_buf().await.map_err(|e| e.to_string())?;
+        if buffer.is_empty() {
+            break;
+        }
+        let count = match buffer.iter().position(|&b| b == b'\n') {
+            Some(index) => {
+                newline = true;
+                index + 1
+            }
+            None => buffer.len(),
+        };
+        let chunk = &buffer[..count];
+        if chunk.contains(&0) {
+            return Err("unsupported text file: contains NUL bytes".to_owned());
+        }
+        utf8.extend_from_slice(chunk);
+        let valid = match std::str::from_utf8(&utf8) {
+            Ok(_) => utf8.len(),
+            Err(error) if error.error_len().is_none() => error.valid_up_to(),
+            Err(_) => return Err("unsupported text file: invalid UTF-8".to_owned()),
+        };
+        utf8.drain(..valid);
+        prefix.extend_from_slice(&chunk[..chunk.len().min(keep - prefix.len())]);
+        length = length.saturating_add(count);
+        reader.consume(count);
+        if newline {
+            break;
+        }
+    }
+    if !utf8.is_empty() {
+        return Err("unsupported text file: incomplete UTF-8 character".to_owned());
+    }
+    if length == 0 {
         return Ok(None);
     }
-    if bytes.contains(&0) {
-        return Err("unsupported text file: contains NUL bytes".to_owned());
-    }
-    let mut text = String::from_utf8(bytes).map_err(|error| {
-        if error.utf8_error().error_len().is_none() {
-            "unsupported text file: incomplete UTF-8 character".to_owned()
-        } else {
-            "unsupported text file: invalid UTF-8".to_owned()
-        }
-    })?;
-    let omitted = text.len() > keep;
-    if omitted {
-        truncate(&mut text, keep);
-    } else if text.ends_with('\n') {
-        text.pop();
-        if text.ends_with('\r') {
-            text.pop();
+    let omitted = length > prefix.len();
+    if !omitted && newline {
+        prefix.pop();
+        if prefix.last() == Some(&b'\r') {
+            prefix.pop();
         }
     }
-    Ok(Some((text, omitted)))
+    let end = match std::str::from_utf8(&prefix) {
+        Ok(_) => prefix.len(),
+        Err(error) => error.valid_up_to(),
+    };
+    prefix.truncate(end);
+    Ok(Some((
+        String::from_utf8(prefix).expect("validated UTF-8 prefix"),
+        omitted,
+    )))
 }
 
 #[cfg(test)]
