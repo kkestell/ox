@@ -201,12 +201,19 @@ pub fn catalog_model(id: &str) -> Option<&'static CatalogModel> {
     catalog().iter().find(|model| model.id == id)
 }
 
+/// How long a model request may wait for response headers or for the next
+/// SSE data event before it stalls. SSE comments, which OpenRouter sends as
+/// keep-alives, do not count, so a provider that holds the request open
+/// without answering still stalls.
+const STALL_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// OpenRouter credentials and a reusable HTTP connection pool.
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
     api_key: String,
     endpoint: String,
+    stall_timeout: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -341,6 +348,7 @@ impl Client {
             http: reqwest::Client::new(),
             api_key,
             endpoint,
+            stall_timeout: STALL_TIMEOUT,
         }
     }
 
@@ -402,13 +410,15 @@ impl Client {
     }
 
     async fn stream_body(&self, body: &Value) -> io::Result<CompletionStream> {
-        let response = self
+        let request = self
             .http
             .post(format!("{}/chat/completions", self.endpoint))
             .bearer_auth(&self.api_key)
             .json(&body)
-            .send()
+            .send();
+        let response = tokio::time::timeout(self.stall_timeout, request)
             .await
+            .map_err(|_| stalled(self.stall_timeout))?
             .map_err(transport)?;
         let status = response.status();
         if !status.is_success() {
@@ -425,6 +435,8 @@ impl Client {
             assembly: Some(Assembly::default()),
             buffered_items: VecDeque::new(),
             usage: None,
+            stall_timeout: self.stall_timeout,
+            deadline: tokio::time::Instant::now() + self.stall_timeout,
         })
     }
 }
@@ -582,6 +594,13 @@ fn transport(error: reqwest::Error) -> io::Error {
     io::Error::other(format!("OpenRouter request failed: {error}"))
 }
 
+fn stalled(timeout: Duration) -> io::Error {
+    io::Error::new(
+        ErrorKind::TimedOut,
+        format!("OpenRouter sent no response data for {timeout:?}"),
+    )
+}
+
 fn malformed(message: impl Into<String>) -> io::Error {
     io::Error::new(ErrorKind::InvalidData, message.into())
 }
@@ -596,6 +615,9 @@ pub struct CompletionStream {
     buffered_items: VecDeque<StreamItem>,
     /// OpenRouter reports usage once, in the final chunk.
     usage: Option<ModelUsage>,
+    stall_timeout: Duration,
+    /// When the stream stalls unless another SSE data event arrives.
+    deadline: tokio::time::Instant,
 }
 
 impl CompletionStream {
@@ -629,7 +651,11 @@ impl CompletionStream {
 
     /// Reads one network chunk into stream items; `false` at the end of the body.
     async fn read_chunk(&mut self) -> io::Result<bool> {
-        let Some(chunk) = self.response.chunk().await.map_err(transport)? else {
+        let chunk = tokio::time::timeout_at(self.deadline, self.response.chunk())
+            .await
+            .map_err(|_| stalled(self.stall_timeout))?
+            .map_err(transport)?;
+        let Some(chunk) = chunk else {
             return Ok(false);
         };
         self.buffer.extend_from_slice(&chunk);
@@ -650,6 +676,7 @@ impl CompletionStream {
                 self.process_sse_event(&data)?;
             }
         } else if let Some(data) = line.strip_prefix("data:") {
+            self.deadline = tokio::time::Instant::now() + self.stall_timeout;
             if !self.data.is_empty() {
                 self.data.push('\n');
             }
@@ -914,7 +941,7 @@ pub mod fixture {
         net::{TcpListener, TcpStream},
     };
 
-    use super::Client;
+    use super::{Client, STALL_TIMEOUT};
     use crate::tools;
 
     /// The default model of the test settings, a model in `CATALOG`.
@@ -1056,6 +1083,7 @@ pub mod fixture {
         url: String,
         requests: Arc<Mutex<Vec<Value>>>,
         connections: Arc<AtomicUsize>,
+        stall_timeout: std::time::Duration,
     }
 
     impl Server {
@@ -1090,11 +1118,20 @@ pub mod fixture {
                 url,
                 requests,
                 connections,
+                stall_timeout: STALL_TIMEOUT,
             }
         }
 
         pub fn client(&self) -> Client {
-            Client::for_endpoint("test-key".to_owned(), self.url.clone())
+            Client {
+                stall_timeout: self.stall_timeout,
+                ..Client::for_endpoint("test-key".to_owned(), self.url.clone())
+            }
+        }
+
+        /// Sets the stall timeout of the clients made after this call.
+        pub fn set_stall_timeout(&mut self, timeout: std::time::Duration) {
+            self.stall_timeout = timeout;
         }
 
         pub fn endpoint(&self) -> &str {

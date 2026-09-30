@@ -27,6 +27,9 @@ use crate::{
     tools::{self, ToolContext},
 };
 
+/// Attempts for a model request whose OpenRouter response stalls.
+const MODEL_REQUEST_ATTEMPTS: usize = 3;
+
 /// The main session ID and, for a subagent, its child session ID. ACP updates
 /// and permission requests are addressed with it; the session store uses the
 /// agent's own session ID instead.
@@ -405,7 +408,8 @@ impl AgentTurn {
         }
     }
 
-    /// Makes one model request, runs its tool calls, and commits its batch.
+    /// Makes one model request, retrying it when it stalls, runs its tool
+    /// calls, and commits its batch.
     async fn run_model_step(
         &mut self,
     ) -> std::result::Result<ControlFlow<PromptOutcome>, PromptOutcome> {
@@ -413,7 +417,19 @@ impl AgentTurn {
             return Err(PromptOutcome::Cancelled);
         }
         self.deliver_subagent_messages()?;
-        let openrouter::Completion { message, stop } = self.request_completion().await?;
+        let mut attempts = 1;
+        let openrouter::Completion { message, stop } = loop {
+            match self.request_completion().await {
+                // Provisional output of the stalled attempt stays on screen.
+                Err(PromptOutcome::OpenRouter(error))
+                    if error.kind() == io::ErrorKind::TimedOut
+                        && attempts < MODEL_REQUEST_ATTEMPTS =>
+                {
+                    attempts += 1;
+                }
+                result => break result?,
+            }
+        };
         let text = message.text.clone();
         self.process_batch(message).await?;
         self.send_usage()?;
@@ -1777,6 +1793,70 @@ mod tests {
         assert_eq!(response.unwrap(), PromptOutput::Cancelled);
         assert_eq!(transcript, vec![turn(user("Hi"))]);
         assert_eq!(harness.stored(), transcript);
+    }
+
+    #[tokio::test]
+    async fn stalled_model_requests_are_retried_up_to_the_attempt_limit() {
+        let partial = format!(
+            "data: {}\n\n",
+            delta(
+                serde_json::json!({ "role": "assistant", "content": "Hel" }),
+                None
+            )
+        );
+        let keep_alive = || Reply::Hang(": OPENROUTER PROCESSING\n\n".to_owned());
+        let cases = [
+            (
+                "stalls before headers and mid-stream, then answers",
+                vec![
+                    Gate::new().hold(text_reply("Never sent.")),
+                    Reply::Hang(partial),
+                    text_reply("Hello there."),
+                ],
+                Some("Hello there."),
+            ),
+            (
+                "sends only keep-alives on every attempt",
+                vec![
+                    keep_alive(),
+                    keep_alive(),
+                    keep_alive(),
+                    text_reply("Too late."),
+                ],
+                None,
+            ),
+        ];
+        for (name, replies, expected) in cases {
+            let mut harness = Harness::new(replies).await;
+            harness
+                .server
+                .set_stall_timeout(std::time::Duration::from_millis(200));
+
+            let (response, transcript) = harness.run("Hi", |_| Ok(())).await;
+
+            assert_eq!(harness.server.requests().len(), 3, "{name}");
+            match expected {
+                Some(text) => {
+                    assert_eq!(
+                        response.unwrap(),
+                        PromptOutput::Finished(text.to_owned()),
+                        "{name}"
+                    );
+                    assert!(
+                        matches!(
+                            transcript.as_slice(),
+                            [_, TranscriptEntry::AssistantBatch(_)]
+                        ),
+                        "{name}"
+                    );
+                }
+                None => {
+                    let error = format!("{:?}", response.unwrap_err());
+                    assert!(error.contains("no response data"), "{name}: {error}");
+                    assert_eq!(transcript, vec![turn(user("Hi"))], "{name}");
+                }
+            }
+        }
     }
 
     #[tokio::test]
