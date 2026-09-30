@@ -1423,10 +1423,10 @@ mod tests {
             rows,
             [
                 "",
+                "  ● Thought for 12s",
+                "",
                 "  ● Read Makefile",
-                "",
                 "  ● Find files matching *.rs",
-                "",
                 "  ● Shell ls -la",
                 "",
                 "  ● Two tallies were counted in the workspace.",
@@ -1455,7 +1455,7 @@ mod tests {
             ]
         );
         assert_eq!(cursor, (21, 23));
-        assert_eq!((layout.height, layout.lines), (7, 11));
+        assert_eq!((layout.height, layout.lines), (7, 9));
         let colors = |x, y| {
             let cell = buffer.cell((x, y)).unwrap();
             (cell.fg, cell.bg)
