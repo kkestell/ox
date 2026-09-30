@@ -1,0 +1,79 @@
+# Benchmark tasks for scripts/bench.py. Each check runs with `sh -c` in the
+# workspace after Ox exits; exit 0 means the task passed.
+
+[[task]]
+id = "pi-digit"
+prompt = """
+Create a C command-line program in pi.c that computes the 100th decimal digit \
+of pi using integer arithmetic and prints only that digit and a newline. Add a \
+Makefile whose default target builds ./pi with strict warnings, and a \
+README.md. Run make and ./pi, verify it prints 9, and fix any problems before \
+finishing."""
+check = 'make && test "$(./pi)" = 9'
+
+[[task]]
+id = "todo-cli"
+prompt = """
+Build a tiny Python todo command-line program in todo.py with add, list, and \
+done commands, persisted in todo.json in the current directory. \
+`python3 todo.py add "<text>"` adds an item, `python3 todo.py list` prints \
+every item with its text, and `python3 todo.py done <number>` marks one done. \
+Write unittest tests in test_todo.py and a README.md, run \
+`python3 -m unittest`, and manually exercise each command."""
+check = 'python3 -m unittest -q && python3 todo.py add "buy milk" && python3 todo.py list | grep -q "buy milk"'
+
+[[task]]
+id = "coffee-site"
+prompt = """
+Create a self-contained static coffee-shop website with index.html, \
+styles.css, and an SVG logo in logo.svg. index.html links styles.css and shows \
+logo.svg. Start a local HTTP server in the background, fetch every file with \
+curl to confirm it is served, and then stop the server."""
+check = "test -f index.html && test -f styles.css && test -f logo.svg && grep -q styles.css index.html && grep -q logo.svg index.html"
+
+[[task]]
+id = "csv-stats"
+prompt = """
+Create a C program in csvstats.c that takes the path of a CSV file of integers \
+as its only argument and prints the count, min, max, mean, and median, one \
+labeled value per line. It exits with status 1 on malformed input. Add \
+valid.csv and malformed.csv samples, a Makefile whose default target builds \
+./csvstats with strict warnings, and a README.md. Run make and both samples, \
+and fix any problems."""
+check = "make && ./csvstats valid.csv | grep -qi median && ! ./csvstats malformed.csv"
+
+[[task]]
+id = "temp-cli"
+prompt = """
+Build a minimal Rust temperature-conversion command-line program as a Cargo \
+package named temp in this directory. `temp <value> <C|F>` converts the value \
+from the given unit and prints it in the other unit, so `temp 100 C` prints \
+212. Invalid arguments print a usage message and exit with a nonzero status. \
+Add unit tests and a README.md with usage. Run cargo test, and run valid and \
+invalid examples with cargo run."""
+check = "cargo test -q && cargo run -q -- 100 C | grep -q 212 && ! cargo run -q -- abc C"
+
+[[task]]
+id = "tinyexpr-precedence"
+repo = "https://github.com/codeplea/tinyexpr/commit/c3b2f32eee61762f4c9d89c2c08cf34556a4a780"
+prompt = """
+Inspect the parser and smoke tests. Add a focused regression test for operator \
+precedence to smoke.c, run make smoke, and fix any failures."""
+check = "make -B smoke && ! git diff --quiet -- smoke.c"
+
+[[task]]
+id = "itoa-boundaries"
+repo = "https://github.com/dtolnay/itoa/commit/1577ed901354d0d7448ac162328f9dbf5183124c"
+prompt = """
+Inspect the public formatting API and tests. Add tests for signed integer \
+boundary values to tests/test.rs, run cargo test, and fix any failures."""
+check = "cargo test -q && ! git diff --quiet -- tests/test.rs"
+
+[[task]]
+id = "inih-quoted"
+repo = "https://github.com/benhoyt/inih/commit/577ae2dee1f0d9c2d11c7f10375c1715f3d6940c"
+prompt = """
+Inspect the C parser and its tests. Add a regression test for an edge case in \
+quoted values to tests/unittest.c with a matching .ini fixture in tests/, run \
+./unittest.sh from the tests directory, and fix any failures."""
+check = "cd tests && ./unittest.sh && ! git diff --quiet -- unittest.c"

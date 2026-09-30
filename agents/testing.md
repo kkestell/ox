@@ -8,7 +8,9 @@
   scripted OpenRouter test fixture, so tests need no API key or network.
 - **Live checks**: `scripts/run.py '<prompt>'` runs one headless prompt against
   OpenRouter in a temporary workspace. For behavior only an ACP client shows,
-  connect a client to a local build.
+  connect a client to a local build. `scripts/bench.py run` runs the benchmark
+  tasks against a built commit, and `scripts/bench.py compare` compares labeled
+  benchmark runs.
 - **Client tests**: `crates/ox/` has in-process ACP and terminal logic tests.
   `make e2e` runs the isolated tmux tests against the Ox server and scripted
   OpenRouter test fixture.

@@ -673,7 +673,15 @@ impl CompletionStream {
         if let Some(usage) = chunk.usage {
             self.usage = Some(ModelUsage {
                 input_tokens: usage.prompt_tokens,
+                cached_tokens: usage
+                    .prompt_tokens_details
+                    .and_then(|details| details.cached_tokens)
+                    .unwrap_or(0),
                 output_tokens: usage.completion_tokens,
+                reasoning_tokens: usage
+                    .completion_tokens_details
+                    .and_then(|details| details.reasoning_tokens)
+                    .unwrap_or(0),
                 cost: usage.cost,
             });
         }
@@ -836,6 +844,18 @@ struct ApiUsage {
     prompt_tokens: u64,
     completion_tokens: u64,
     cost: f64,
+    prompt_tokens_details: Option<PromptTokensDetails>,
+    completion_tokens_details: Option<CompletionTokensDetails>,
+}
+
+#[derive(Deserialize)]
+struct PromptTokensDetails {
+    cached_tokens: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct CompletionTokensDetails {
+    reasoning_tokens: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -1629,6 +1649,9 @@ mod tests {
 
     #[tokio::test]
     async fn streams_assemble_text_reasoning_and_fragmented_tool_calls() {
+        let mut detailed_usage = usage(12, 34, 0.25);
+        detailed_usage["usage"]["prompt_tokens_details"] = json!({ "cached_tokens": 8 });
+        detailed_usage["usage"]["completion_tokens_details"] = json!({ "reasoning_tokens": 20 });
         let items = complete_with(&[
             delta(
                 json!({
@@ -1668,7 +1691,7 @@ mod tests {
                 json!({ "tool_calls": [{ "index": 1, "function": { "arguments": "{\"command\":\"printf Denver\"}" } }] }),
                 Some("tool_calls"),
             ),
-            usage(12, 34, 0.25),
+            detailed_usage,
         ])
         .await
         .unwrap();
@@ -1707,7 +1730,9 @@ mod tests {
                 ],
                 usage: Some(ModelUsage {
                     input_tokens: 12,
+                    cached_tokens: 8,
                     output_tokens: 34,
+                    reasoning_tokens: 20,
                     cost: 0.25,
                 }),
             }

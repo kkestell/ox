@@ -405,14 +405,17 @@ pub struct AssistantMessage {
     pub usage: Option<ModelUsage>,
 }
 
-/// The input tokens, output tokens, and cost that OpenRouter reports for one
-/// model request. OpenRouter reports cost in credits, whose base currency is
+/// The token counts and cost that OpenRouter reports for one model request.
+/// Cached tokens are part of the input tokens and reasoning tokens part of the
+/// output tokens. OpenRouter reports cost in credits, whose base currency is
 /// the US dollar.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelUsage {
     pub input_tokens: u64,
+    pub cached_tokens: u64,
     pub output_tokens: u64,
+    pub reasoning_tokens: u64,
     pub cost: f64,
 }
 
@@ -1611,7 +1614,9 @@ mod tests {
             let mut message = message(vec![]);
             message.usage = cost.map(|cost| ModelUsage {
                 input_tokens: 10,
+                cached_tokens: 0,
                 output_tokens: 5,
+                reasoning_tokens: 0,
                 cost,
             });
             AssistantBatch::new(message, vec![]).unwrap()

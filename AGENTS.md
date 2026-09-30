@@ -8,6 +8,8 @@ Keep this document accurate and short.
 - `crates/ox-server/src/prompts/` — the built-in prompts.
 - `examples/` — the example settings file.
 - `scripts/run.py` — runs one headless prompt in a temporary workspace.
+- `scripts/bench.py` — benchmarks a build of `ox` and compares benchmark runs.
+- `scripts/bench/tasks.toml` — the benchmark tasks.
 - `.github/workflows/` — the release build.
 - `research/` — research notes and reports.
 - `agents/` — agent docs, plans, and reviews.
