@@ -1,10 +1,12 @@
 //! Settings: the global settings file `~/.config/ox/settings.json`, read once
 //! at process startup, and the workspace settings file `.ox/settings.json`, read
 //! when a session becomes active, whose keys replace the same keys from the
-//! first file. Neither file is required. The Ox client reads and writes other
-//! fields of the global settings file.
+//! first file. Neither file is required. Only the global settings file can set
+//! `models`, the provider pins. The Ox client reads and writes other fields of
+//! the global settings file.
 
 use std::{
+    collections::BTreeMap,
     io,
     path::{Path, PathBuf},
 };
@@ -28,6 +30,13 @@ struct SettingsFile {
     model: Option<String>,
     effort: Option<String>,
     mode: Option<String>,
+    models: Option<BTreeMap<String, ModelSettings>>,
+}
+
+/// One entry under `models`, keyed by model ID.
+#[derive(Deserialize)]
+struct ModelSettings {
+    providers: Vec<String>,
 }
 
 /// The default model, effort, and mode: the global settings file's values,
@@ -52,13 +61,13 @@ pub fn global_path(home: &Path) -> PathBuf {
     home.join(".config/ox/settings.json")
 }
 
-/// Reads the global settings file. A missing file, or one without `model`,
-/// means the built-in model.
-pub fn load(catalog: &[CatalogModel]) -> io::Result<Settings> {
+/// Reads the global settings file and sets each pinned catalog model's
+/// providers. A missing file, or one without `model`, means the built-in model.
+pub fn load(catalog: &mut [CatalogModel]) -> io::Result<Settings> {
     load_from(&global_path(&home_dir()?), catalog)
 }
 
-fn load_from(path: &Path, catalog: &[CatalogModel]) -> io::Result<Settings> {
+fn load_from(path: &Path, catalog: &mut [CatalogModel]) -> io::Result<Settings> {
     let file = match read(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => SettingsFile::default(),
@@ -70,6 +79,21 @@ fn load_from(path: &Path, catalog: &[CatalogModel]) -> io::Result<Settings> {
         default_mode: mode(path, file.mode)?,
     };
     settings.validate(path, catalog)?;
+    for (id, pin) in file.models.unwrap_or_default() {
+        let model = catalog
+            .iter_mut()
+            .find(|model| model.id == id)
+            .ok_or_else(|| {
+                invalid(
+                    path,
+                    &format!("model {id} in models is not in the OpenRouter model catalog"),
+                )
+            })?;
+        if pin.providers.is_empty() {
+            return Err(invalid(path, &format!("model {id} lists no providers")));
+        }
+        model.providers = pin.providers;
+    }
     Ok(settings)
 }
 
@@ -83,6 +107,12 @@ impl Settings {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(self.clone()),
             Err(error) => return Err(error),
         };
+        if file.models.is_some() {
+            return Err(invalid(
+                &path,
+                "models can be set only in the global settings file",
+            ));
+        }
         let settings = Self {
             default_model: file.model.unwrap_or_else(|| self.default_model.clone()),
             default_effort: file
@@ -210,9 +240,14 @@ mod tests {
         tools::fixture::Workspace,
     };
 
+    /// A model catalog `load_from` can set provider pins on.
+    fn catalog() -> Vec<CatalogModel> {
+        openrouter::parse_catalog(openrouter::fixture::CATALOG, NOW).unwrap()
+    }
+
     #[test]
     fn settings_default_to_the_built_in_model_without_a_file_or_model() {
-        let with_built_in = openrouter::parse_catalog(
+        let mut with_built_in = openrouter::parse_catalog(
             &format!(
                 r#"{{"data": [{{"id": "{BUILT_IN_MODEL}", "name": "Built In",
                  "context_length": 1048576, "created": {NOW},
@@ -229,7 +264,7 @@ mod tests {
             if let Some(text) = text {
                 std::fs::write(&path, text).unwrap();
             }
-            let settings = load_from(&path, &with_built_in).unwrap();
+            let settings = load_from(&path, &mut with_built_in).unwrap();
             assert_eq!(settings.default_model, BUILT_IN_MODEL, "{text:?}");
             assert_eq!(settings.default_effort, EffortLevel::Default, "{text:?}");
             assert_eq!(settings.default_mode, SessionMode::Ask, "{text:?}");
@@ -240,10 +275,7 @@ mod tests {
             if let Some(text) = text {
                 std::fs::write(&path, text).unwrap();
             }
-            let message = load_from(&path, openrouter::catalog())
-                .err()
-                .unwrap()
-                .to_string();
+            let message = load_from(&path, &mut catalog()).err().unwrap().to_string();
             assert_eq!(
                 message,
                 format!(
@@ -257,7 +289,7 @@ mod tests {
 
     #[test]
     fn settings_files_must_be_valid_json_naming_a_known_model() {
-        let catalog = openrouter::catalog();
+        let mut catalog = catalog();
         let directory = Workspace::new();
         let path = directory.0.join("settings.json");
         for (text, valid) in [
@@ -270,7 +302,7 @@ mod tests {
         ] {
             let text = text.replace('M', DEFAULT_MODEL);
             std::fs::write(&path, &text).unwrap();
-            let result = load_from(&path, catalog);
+            let result = load_from(&path, &mut catalog);
             assert_eq!(result.is_ok(), valid, "{text}: {:?}", result.as_ref().err());
             match result {
                 Ok(settings) => {
@@ -283,7 +315,7 @@ mod tests {
         }
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap();
-        assert!(load_from(&path, catalog).is_err());
+        assert!(load_from(&path, &mut catalog).is_err());
     }
 
     #[test]
@@ -316,6 +348,10 @@ mod tests {
                 "model a/b is not in the OpenRouter model catalog",
             ),
             ("not json", "expected"),
+            (
+                r#"{"models":{}}"#,
+                "models can be set only in the global settings file",
+            ),
         ] {
             std::fs::write(&path, text).unwrap();
             let message = settings
@@ -332,7 +368,7 @@ mod tests {
 
     #[test]
     fn settings_validate_effort_and_mode_with_the_effective_model() {
-        let catalog = openrouter::catalog();
+        let mut catalog = catalog();
         let home = Workspace::new();
         let path = home.0.join("settings.json");
         std::fs::write(
@@ -340,7 +376,7 @@ mod tests {
             format!(r#"{{"model":"{DEFAULT_MODEL}","effort":"high","mode":"auto"}}"#),
         )
         .unwrap();
-        let settings = load_from(&path, catalog).unwrap();
+        let settings = load_from(&path, &mut catalog).unwrap();
         assert_eq!(settings.default_effort, EffortLevel::High);
         assert_eq!(settings.default_mode, SessionMode::Auto);
 
@@ -391,11 +427,50 @@ mod tests {
                 format!(r#"{{"model":"{DEFAULT_MODEL}","{field}":"{value}"}}"#),
             )
             .unwrap();
-            let message = load_from(&path, catalog).err().unwrap().to_string();
+            let message = load_from(&path, &mut catalog).err().unwrap().to_string();
             assert!(
                 message.starts_with(&format!("{}: ", path.display())) && message.contains(error),
                 "{field}: {message}"
             );
+        }
+    }
+
+    #[test]
+    fn global_settings_pin_providers_for_models() {
+        let directory = Workspace::new();
+        let path = directory.0.join("settings.json");
+        let mut pinned_catalog = catalog();
+        let pinned = pinned_catalog[1].id.clone();
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"model":"{DEFAULT_MODEL}","models":{{"{pinned}":{{"providers":["b","a"]}}}}}}"#
+            ),
+        )
+        .unwrap();
+        load_from(&path, &mut pinned_catalog).unwrap();
+        for model in &pinned_catalog {
+            let expected: &[&str] = if model.id == pinned { &["b", "a"] } else { &[] };
+            assert_eq!(model.providers, expected, "{}", model.id);
+        }
+
+        for (models, error) in [
+            (
+                r#"{"a/b":{"providers":["a"]}}"#.to_owned(),
+                "model a/b in models is not in the OpenRouter model catalog".to_owned(),
+            ),
+            (
+                format!(r#"{{"{pinned}":{{"providers":[]}}}}"#),
+                format!("model {pinned} lists no providers"),
+            ),
+        ] {
+            std::fs::write(
+                &path,
+                format!(r#"{{"model":"{DEFAULT_MODEL}","models":{models}}}"#),
+            )
+            .unwrap();
+            let message = load_from(&path, &mut catalog()).err().unwrap().to_string();
+            assert_eq!(message, format!("{}: {error}", path.display()), "{models}");
         }
     }
 
@@ -413,9 +488,7 @@ mod tests {
         std::fs::write(&global, client_fields).unwrap();
         assert!(save(&home.0, &workspace.0, &selected).unwrap());
         assert_eq!(
-            load_from(&global, openrouter::catalog())
-                .unwrap()
-                .default_effort,
+            load_from(&global, &mut catalog()).unwrap().default_effort,
             EffortLevel::Low
         );
         let saved: serde_json::Value =
@@ -431,7 +504,7 @@ mod tests {
         assert_eq!(saved["model"], DEFAULT_MODEL);
         assert_eq!(saved["effort"], "low");
         assert_eq!(saved["mode"], "auto");
-        let reloaded = load_from(&global, openrouter::catalog())
+        let reloaded = load_from(&global, &mut catalog())
             .unwrap()
             .for_workspace(&workspace.0)
             .unwrap();
@@ -439,9 +512,7 @@ mod tests {
         assert_eq!(reloaded.default_effort, EffortLevel::Low);
         assert_eq!(reloaded.default_mode, SessionMode::Auto);
         assert_eq!(
-            load_from(&global, openrouter::catalog())
-                .unwrap()
-                .default_mode,
+            load_from(&global, &mut catalog()).unwrap().default_mode,
             SessionMode::Auto
         );
     }

@@ -145,6 +145,9 @@ workspace value replaces the global value. Both files are optional.
   "effort": "default",
   "mode": "ask",
   "favorites": ["deepseek/deepseek-v4.1-flash"],
+  "models": {
+    "deepseek/deepseek-v4.1-flash": { "providers": ["deepseek"] }
+  },
   "servers": [
     { "name": "Other", "command": "other-acp-server", "args": [] }
   ]
@@ -160,6 +163,9 @@ workspace value replaces the global value. Both files are optional.
 - `favorites` is an ordered list of OpenRouter model IDs. It applies only to the
   terminal client, can be set only in the global file, and defaults to an empty
   list.
+- `models` maps OpenRouter model IDs to a `providers` list of OpenRouter
+  provider slugs. Requests for that model go only to those providers, tried in
+  order. It can be set only in the global file.
 - `servers` configures ACP servers for the terminal client and can be set only
   in the global file. Each server requires a unique, nonempty `name` and a
   `command`; `args` is an optional list of arguments that defaults to empty. If
