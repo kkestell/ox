@@ -34,7 +34,7 @@ const CLOSED: &str = "This prompt run is ending, so its subagents accept no more
 /// agent.
 pub struct Launch {
     pub store: SessionStore,
-    pub model_client: model::Client,
+    pub clients: model::Clients,
     pub main_session_id: SessionId,
     pub workspace_path: PathBuf,
     /// The main turn's captured model, effort level, and session mode.
@@ -336,7 +336,7 @@ impl Shared {
         let launch = &self.launch;
         let turn = prompt::run(
             launch.store.clone(),
-            launch.model_client.clone(),
+            launch.clients.clone(),
             PromptInput {
                 session_id: id.clone(),
                 turn_input: TurnInput::UserMessage(text.into()),
@@ -554,7 +554,7 @@ mod tests {
             let shell_processes = ShellProcesses::default();
             let subagents = Subagents::new(Launch {
                 store: store.clone(),
-                model_client: server.client().into(),
+                clients: server.client().into(),
                 main_session_id: main_session_id.clone(),
                 workspace_path: workspace.0.clone(),
                 settings: SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default)

@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::{
     cancellation::PromptCancellation,
-    model::{self, CatalogModel, Client, ModelRequestParameters, Provider},
+    model::{self, CatalogModel, ModelRequestParameters, Provider},
     sessions::{
         self, AssistantBatch, CompactionCheckpoint, SessionStore, TranscriptEntry, TurnInput,
         UserMessage, UserMessagePart,
@@ -467,7 +467,7 @@ fn fitting_prefix(header: &str, text: &str, fits: impl Fn(usize) -> bool) -> (us
 /// after the store saves it.
 pub async fn compact(
     store: &SessionStore,
-    client: &Client,
+    clients: &model::Clients,
     cancellation: &PromptCancellation,
     id: &SessionId,
     parameters: &ModelRequestParameters,
@@ -489,7 +489,7 @@ pub async fn compact(
             let (next, usage) = tokio::select! {
                 biased;
                 () = cancellation.cancelled() => return Err(io::Error::new(ErrorKind::Interrupted, "compaction cancelled")),
-                result = client.summarize(model, &summary, &piece) => result?,
+                result = clients.summarize(model, &summary, &piece) => result?,
             };
             summary = next;
             if let Some(cost) = usage.and_then(|usage| usage.cost) {
@@ -558,7 +558,7 @@ mod tests {
         assert!(
             !compact(
                 &store,
-                &server.client(),
+                &server.client().into(),
                 &PromptCancellation::new(),
                 &id,
                 &parameters,

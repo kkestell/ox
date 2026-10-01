@@ -10,7 +10,7 @@
       instead of being retried
 - [ ] [OX-0027](issues.csv:28): The server writes no logs, so provider errors
       are lost after they are shown
-- [ ] [OX-0028](issues.csv:29): Callers pair a model with a client by hand, and
+- [x] [OX-0028](issues.csv:29): Callers pair a model with a client by hand, and
       three runtime guards check that they match
 - [ ] [OX-0029](issues.csv:30): Compaction stops repeating the skill invocation
       once a later turn begins

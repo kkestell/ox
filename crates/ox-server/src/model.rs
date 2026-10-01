@@ -118,76 +118,72 @@ pub(crate) fn summarizer_body(
     }
 }
 
-#[derive(Clone)]
-pub enum Client {
-    OpenRouter(openrouter::Client),
-    OpenAI(openai::Client),
-}
-
-impl From<openrouter::Client> for Client {
-    fn from(client: openrouter::Client) -> Self {
-        Self::OpenRouter(client)
-    }
-}
-
 #[derive(Clone, Default)]
 pub struct Clients {
     pub(crate) openrouter: Option<openrouter::Client>,
     pub(crate) openai: Option<openai::Client>,
 }
 
-impl Clients {
-    pub fn client(&self, provider: Provider) -> Option<Client> {
-        match provider {
-            Provider::OpenRouter => self.openrouter.clone().map(Client::OpenRouter),
-            Provider::OpenAI => self.openai.clone().map(Client::OpenAI),
+impl From<openrouter::Client> for Clients {
+    fn from(client: openrouter::Client) -> Self {
+        Self {
+            openrouter: Some(client),
+            openai: None,
         }
     }
 }
 
-impl Client {
-    pub fn provider(&self) -> Provider {
-        match self {
-            Self::OpenRouter(_) => Provider::OpenRouter,
-            Self::OpenAI(_) => Provider::OpenAI,
+impl From<openai::Client> for Clients {
+    fn from(client: openai::Client) -> Self {
+        Self {
+            openrouter: None,
+            openai: Some(client),
         }
     }
+}
+
+impl Clients {
     pub async fn stream_completion(
         &self,
         parameters: &ModelRequestParameters,
         input: Vec<serde_json::Value>,
     ) -> io::Result<CompletionStream> {
-        if self.provider() != parameters.model.provider {
-            return Err(io::Error::new(
-                ErrorKind::InvalidData,
-                "session model belongs to another model provider",
-            ));
-        }
-        Ok(match self {
-            Self::OpenRouter(client) => {
-                CompletionStream::OpenRouter(client.stream_completion(parameters, input).await?)
-            }
-            Self::OpenAI(client) => {
-                CompletionStream::OpenAI(client.stream_completion(parameters, input).await?)
+        Ok(match parameters.model.provider {
+            Provider::OpenRouter => CompletionStream::OpenRouter(
+                self.openrouter()
+                    .stream_completion(parameters, input)
+                    .await?,
+            ),
+            Provider::OpenAI => {
+                CompletionStream::OpenAI(self.openai().stream_completion(parameters, input).await?)
             }
         })
     }
+
     pub async fn summarize(
         &self,
         model: &CatalogModel,
         previous: &str,
         piece: &str,
     ) -> io::Result<(String, Option<crate::sessions::ModelUsage>)> {
-        if self.provider() != model.provider {
-            return Err(io::Error::new(
-                ErrorKind::InvalidData,
-                "summarizer model belongs to another model provider",
-            ));
+        match model.provider {
+            Provider::OpenRouter => self.openrouter().summarize(model, previous, piece).await,
+            Provider::OpenAI => self.openai().summarize(model, previous, piece).await,
         }
-        match self {
-            Self::OpenRouter(client) => client.summarize(model, previous, piece).await,
-            Self::OpenAI(client) => client.summarize(model, previous, piece).await,
-        }
+    }
+
+    // The model catalog only holds models from providers whose model client was
+    // built, so a missing client is a bug.
+    fn openrouter(&self) -> &openrouter::Client {
+        self.openrouter
+            .as_ref()
+            .expect("every installed model provider has a client")
+    }
+
+    fn openai(&self) -> &openai::Client {
+        self.openai
+            .as_ref()
+            .expect("every installed model provider has a client")
     }
 }
 
