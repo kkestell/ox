@@ -1500,7 +1500,10 @@ mod tests {
         let (response, transcript) = harness.run("Write the file", |_| Ok(())).await;
 
         assert!(response.is_err());
-        assert_eq!(transcript[..1], [turn(user("Write the file"))]);
+        assert_eq!(
+            transcript[..transcript.len() - 1],
+            [turn(user("Write the file"))]
+        );
         assert!(turn_error(&transcript).starts_with("the model request failed: "));
         assert_eq!(harness.stored(), transcript);
         assert_eq!(fs::read_dir(&harness.workspace.0).unwrap().count(), 0);
@@ -2243,7 +2246,11 @@ mod tests {
                 Err(expected) => {
                     let error = format!("{:?}", response.unwrap_err());
                     assert!(error.contains(expected), "{name}: {error}");
-                    assert_eq!(transcript[..1], [turn(user("Hi"))], "{name}");
+                    assert_eq!(
+                        transcript[..transcript.len() - 1],
+                        [turn(user("Hi"))],
+                        "{name}"
+                    );
                     assert!(turn_error(&transcript).contains(expected), "{name}");
                 }
             }
@@ -2312,19 +2319,18 @@ mod tests {
 
             assert!(response.is_err(), "{failing}");
             assert_eq!(
-                transcript[..2],
+                transcript,
                 [
                     turn(user("Weather?")),
                     calls(
                         &[("call-1", "printf Chicago"), ("call-2", "printf Denver")],
                         outcomes
                     ),
+                    TranscriptEntry::TurnError(
+                        "sending an ACP update failed: Internal error: connection closed"
+                            .to_owned()
+                    ),
                 ],
-                "{failing}"
-            );
-            assert_eq!(
-                turn_error(&transcript),
-                "sending an ACP update failed: Internal error: connection closed",
                 "{failing}"
             );
             assert_eq!(harness.stored(), transcript);
