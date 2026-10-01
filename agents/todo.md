@@ -11,7 +11,7 @@
 - [ ] Compaction: when it fires and what it keeps (plan)
   - [x] [OX-0030](issues.csv:31): Compaction fires at about half the usable
         context because the byte estimate overshoots
-  - [ ] [OX-0031](issues.csv:32): A compaction immediately before a subagent's
+  - [x] [OX-0031](issues.csv:32): A compaction immediately before a subagent's
         final answer loses the report
   - [x] [OX-0044](issues.csv:45): A compacted skill invocation with an image
         blocks models without image input until another skill invocation

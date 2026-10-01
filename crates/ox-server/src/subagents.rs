@@ -527,7 +527,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        openrouter::fixture::{DEFAULT_MODEL, Gate, Reply, Server, calls_reply, text_reply},
+        openrouter::fixture::{
+            DEFAULT_MODEL, Gate, Reply, Server, calls_reply, delta, sse, text_reply,
+        },
         sessions::{
             AssistantBatch, AssistantMessage, EffortLevel, SessionMode, ToolStatus,
             TranscriptEntry, TurnStart,
@@ -926,10 +928,27 @@ mod tests {
     async fn a_subagent_compacts_its_own_conversation() {
         // The compacted request keeps the task message, so it still routes to
         // the child's script.
+        let long_batch = Reply::Stream(sse(&[delta(
+            json!({
+                "role": "assistant",
+                "content": "y".repeat(2_300_000),
+                "tool_calls": [{
+                    "index": 0,
+                    "id": "check",
+                    "type": "function",
+                    "function": {
+                        "name": crate::tools::SHELL,
+                        "arguments": r#"{"command":"true"}"#,
+                    },
+                }],
+            }),
+            Some("tool_calls"),
+        )]));
         let owner = Owner::new(vec![(
             "Task C",
             vec![
-                text_reply(&"y".repeat(2_300_000)),
+                long_batch,
+                text_reply("Initial answer."),
                 text_reply("Task C report summarized."),
                 text_reply("Follow-up done."),
             ],
@@ -944,10 +963,25 @@ mod tests {
             .unwrap();
         assert_eq!(owner.settle().await, ["Follow-up done."]);
         let requests = owner.server.requests_for("Task C");
-        assert!(requests[1].get("tools").is_none(), "a summarizer request");
-        assert_eq!(
-            requests[2]["messages"][2]["content"],
-            "Compaction summary of earlier conversation:\nTask C report summarized."
+        assert!(requests[2].get("tools").is_none(), "a summarizer request");
+        assert!(
+            requests[3]["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|message| {
+                    message["content"]
+                        == "Compaction summary of earlier conversation:\nTask C report summarized."
+                })
+        );
+        assert!(
+            requests[3]["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|message| {
+                    message["role"] == "assistant" && message["content"] == "Initial answer."
+                })
         );
         assert!(
             owner

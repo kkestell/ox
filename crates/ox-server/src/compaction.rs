@@ -323,14 +323,17 @@ fn image_text(image: &ImageAttachment) -> String {
 
 fn candidates(transcript: &[TranscriptEntry]) -> Vec<usize> {
     let start = summarized_prefix(transcript);
-    transcript
+    let mut candidates: Vec<_> = transcript
         .iter()
         .enumerate()
         .skip(start)
         .filter_map(|(index, entry)| {
             matches!(entry, TranscriptEntry::AssistantBatch(_)).then_some(index + 1)
         })
-        .collect()
+        .collect();
+    // The newest assistant batch is the model's immediate working state.
+    candidates.pop();
+    candidates
 }
 
 /// The estimated tokens of the request when everything before `cut` is
@@ -368,8 +371,9 @@ pub fn input_fits(parameters: &ModelRequestParameters, prospective: &[Transcript
 
 /// The covered prefix of the next checkpoint: the earliest candidate whose
 /// recent entries fit the recent allowance, so the model keeps the output it
-/// is working from. The last candidate when no recent entries fit, or when the
-/// earliest fitting cut leaves no room for a full summary.
+/// is working from. Every candidate keeps the newest assistant batch. The last
+/// candidate when no additional recent entries fit, or when the earliest
+/// fitting cut leaves no room for a full summary.
 fn cut(parameters: &ModelRequestParameters, transcript: &[TranscriptEntry]) -> Option<usize> {
     let provider = parameters.model.provider;
     let admission = budget(parameters.model).admission;
@@ -769,6 +773,24 @@ mod tests {
         .unwrap()
     }
 
+    fn tool_batch_with_text(id: &str, text: &str) -> AssistantBatch {
+        AssistantBatch::new(
+            AssistantMessage {
+                text: text.to_owned(),
+                reasoning: "private reasoning".to_owned(),
+                tool_calls: vec![ToolCall {
+                    call_id: id.to_owned(),
+                    name: "shell".to_owned(),
+                    arguments: "{\"command\":\"true\"}".to_owned(),
+                }],
+                continuation_metadata: vec![],
+                usage: None,
+            },
+            vec![ToolOutcome::completed("done")],
+        )
+        .unwrap()
+    }
+
     fn call_batch(name: &str, arguments: Value, outcome: ToolOutcome) -> TranscriptEntry {
         TranscriptEntry::AssistantBatch(
             AssistantBatch::new(
@@ -813,10 +835,10 @@ mod tests {
             )
             .unwrap();
         store
-            .append_batch(
-                &id,
-                &answer(&format!("Recorded {}", "old details ".repeat(3000))),
-            )
+            .append_batch(&id, &tool_batch("old", &"old details ".repeat(3000)))
+            .unwrap();
+        store
+            .append_batch(&id, &answer("Current work complete."))
             .unwrap();
         let server = Server::start(vec![
             text_reply("Initial work complete."),
@@ -884,19 +906,16 @@ mod tests {
             .filter(|entry| matches!(entry, TranscriptEntry::CompactionCheckpoint(_)))
             .count();
         assert_eq!(checkpoints, 3);
-        let mut expected = Provider::OpenRouter.transcript(&transcript[..1], None);
-        expected.extend(Provider::OpenRouter.transcript(&transcript[3..4], None));
-        expected.extend([
-            serde_json::json!({
-                "role": "user",
-                "content": "Earlier tool calls, output omitted:\n$ true\n$ true",
-            }),
-            serde_json::json!({
-                "role": "user",
-                "content": "Compaction summary of earlier conversation:\nActive request carried; next tool complete.",
-            }),
-        ]);
-        assert_eq!(projection(Provider::OpenRouter, &transcript), expected);
+        let projected = projection(Provider::OpenRouter, &transcript);
+        assert!(projected.iter().any(|message| {
+            message["content"]
+                == "Compaction summary of earlier conversation:\nActive request carried; next tool complete."
+        }));
+        let latest = Provider::OpenRouter.transcript(
+            &transcript[transcript.len() - 2..transcript.len() - 1],
+            Some(Provider::OpenRouter),
+        );
+        assert!(projected.ends_with(&latest));
         let requests = server.requests();
         assert_eq!(requests.len(), 3);
         assert!(requests.iter().all(|request| request.get("tools").is_none()
@@ -920,16 +939,22 @@ mod tests {
             requests[1]["messages"][1]["content"]
                 .as_str()
                 .unwrap()
+                .contains("Current work complete.")
+        );
+        assert!(
+            requests[2]["messages"][1]["content"]
+                .as_str()
+                .unwrap()
                 .contains("active request")
         );
         assert!(
             requests[2]["messages"][1]["content"]
                 .as_str()
                 .unwrap()
-                .contains("Active request carried.")
+                .contains("new details")
         );
         assert!(
-            requests[2]["messages"][1]["content"]
+            !requests[2]["messages"][1]["content"]
                 .as_str()
                 .unwrap()
                 .contains("later details")
@@ -1015,7 +1040,7 @@ mod tests {
     }
 
     #[test]
-    fn the_cut_keeps_the_newest_entries_within_the_recent_allowance() {
+    fn the_cut_always_keeps_the_newest_assistant_batch() {
         let admission = budget(parameters().model).admission;
         let allowance_bytes = admission * RECENT_ALLOWANCE_PERCENT / 100 * 3;
         let small = || TranscriptEntry::AssistantBatch(tool_batch("small", "output"));
@@ -1031,7 +1056,7 @@ mod tests {
             (
                 "a latest batch larger than the recent allowance",
                 vec![request("task".to_owned()), small(), large],
-                Some(3),
+                Some(2),
             ),
             (
                 "an earliest fitting cut without room for a summary",
@@ -1040,7 +1065,7 @@ mod tests {
                     small(),
                     small(),
                 ],
-                Some(3),
+                Some(2),
             ),
             (
                 "an earlier checkpoint",
@@ -1053,10 +1078,72 @@ mod tests {
                 ],
                 Some(4),
             ),
+            (
+                "one assistant batch",
+                vec![request("task".to_owned()), small()],
+                None,
+            ),
             ("no assistant batch", vec![request("task".to_owned())], None),
         ] {
             assert_eq!(cut(&parameters(), &transcript), expected, "{case}");
         }
+    }
+
+    #[tokio::test]
+    async fn compaction_keeps_the_newest_assistant_batch_unchanged() {
+        let store = SessionStore::in_memory();
+        let id = store.create(std::path::Path::new("/workspace")).unwrap().id;
+        store
+            .append_turn_start(&id, &TurnStart::test("task".to_owned()))
+            .unwrap();
+        store
+            .append_batch(
+                &id,
+                &tool_batch("old", &format!("Older work: {}", "x".repeat(800_000))),
+            )
+            .unwrap();
+        let newest = AssistantBatch::new(
+            AssistantMessage {
+                text: "The implementation is complete.".to_owned(),
+                reasoning: "private reasoning".to_owned(),
+                tool_calls: vec![ToolCall {
+                    call_id: "check".to_owned(),
+                    name: tools::SHELL.to_owned(),
+                    arguments: r#"{"command":"make check"}"#.to_owned(),
+                }],
+                continuation_metadata: vec![],
+                usage: None,
+            },
+            vec![ToolOutcome::completed("All checks passed.")],
+        )
+        .unwrap();
+        store.append_batch(&id, &newest).unwrap();
+        let before = store.read(&id).unwrap().unwrap().transcript;
+        let newest_index = before.len() - 1;
+        let server = Server::start(vec![text_reply("Older work summarized.")]).await;
+        let mut transcript = before.clone();
+
+        assert!(
+            compact(
+                &store,
+                &server.client().into(),
+                &PromptCancellation::new(),
+                &id,
+                &parameters(),
+                &mut transcript,
+            )
+            .await
+            .unwrap()
+        );
+
+        let expected =
+            Provider::OpenRouter.transcript(&before[newest_index..], Some(Provider::OpenRouter));
+        assert!(projection(Provider::OpenRouter, &transcript).ends_with(&expected));
+        let requests = server.requests();
+        let material = requests[0]["messages"][1]["content"].as_str().unwrap();
+        assert!(material.contains("Older work:"));
+        assert!(!material.contains("The implementation is complete."));
+        assert!(!material.contains("All checks passed."));
     }
 
     #[test]
@@ -1360,19 +1447,35 @@ mod tests {
     #[test]
     fn a_prompt_that_cannot_fit_beside_the_user_messages_is_refused() {
         let admission = budget(parameters().model).admission;
-        let transcript = vec![
-            TranscriptEntry::turn("u".repeat(admission * 3 * 7 / 10)),
-            TranscriptEntry::AssistantBatch(answer(&"a".repeat(admission * 3 / 10))),
+        let compactable = vec![
+            TranscriptEntry::turn("u".repeat(admission * 3 * 6 / 10)),
+            TranscriptEntry::AssistantBatch(answer(&"o".repeat(admission * 3 * 2 / 10))),
+            TranscriptEntry::AssistantBatch(answer(&"n".repeat(admission * 3 / 10))),
         ];
-        for (case, prompt, expected) in [
-            ("a small prompt", "next".to_owned(), true),
+        let protected_only = vec![
+            TranscriptEntry::turn("task".to_owned()),
+            TranscriptEntry::AssistantBatch(answer(&"n".repeat(admission * 3))),
+        ];
+        for (case, mut prospective, prompt, expected) in [
+            (
+                "a small prompt",
+                compactable.clone(),
+                "next".to_owned(),
+                true,
+            ),
             (
                 "a prompt that cannot fit",
+                compactable,
                 "p".repeat(admission * 3 * 3 / 10),
                 false,
             ),
+            (
+                "a prompt that fits only by covering the newest assistant batch",
+                protected_only,
+                "next".to_owned(),
+                false,
+            ),
         ] {
-            let mut prospective = transcript.clone();
             prospective.push(TranscriptEntry::turn(prompt));
             assert_eq!(input_fits(&parameters(), &prospective), expected, "{case}");
         }
@@ -1406,6 +1509,12 @@ mod tests {
             .unwrap();
         store
             .append_batch(&id, &answer(&"o".repeat(3_000_000)))
+            .unwrap();
+        store
+            .append_turn_start(&id, &TurnStart::test("recent work".to_owned()))
+            .unwrap();
+        store
+            .append_batch(&id, &answer("Recent work complete."))
             .unwrap();
         store
             .append_turn_start(&id, &TurnStart::test("current request".to_owned()))
@@ -1457,8 +1566,9 @@ mod tests {
             .append_turn_start(&id, &TurnStart::test("later work".to_owned()))
             .unwrap();
         store
-            .append_batch(&id, &answer(&"x".repeat(3_300_000)))
+            .append_batch(&id, &tool_batch_with_text("old", &"x".repeat(3_300_000)))
             .unwrap();
+        store.append_batch(&id, &answer("latest answer")).unwrap();
         let before = store.read(&id).unwrap().unwrap().transcript;
         let server = Server::start(vec![
             text_reply("provisional"),
@@ -1495,7 +1605,10 @@ mod tests {
             .append_turn_start(&small_id, &TurnStart::test("older work".to_owned()))
             .unwrap();
         small_store
-            .append_batch(&small_id, &answer(&"older ".repeat(4000)))
+            .append_batch(&small_id, &tool_batch("old", &"older ".repeat(4000)))
+            .unwrap();
+        small_store
+            .append_batch(&small_id, &answer("latest answer"))
             .unwrap();
         let small_before = small_store.read(&small_id).unwrap().unwrap().transcript;
         for reply in [
