@@ -144,10 +144,15 @@ impl Client {
 
     pub async fn stream_completion(
         &self,
+        session_id: &str,
         parameters: &ModelRequestParameters,
         input: Vec<Value>,
     ) -> io::Result<CompletionStream> {
-        self.stream_body(&ordinary_body(parameters, input)).await
+        let mut body = ordinary_body(parameters, input);
+        // One key per session lets OpenAI route a session's requests, whose
+        // transcripts share a growing prefix, to the same prompt cache.
+        body["prompt_cache_key"] = json!(session_id);
+        self.stream_body(&body).await
     }
 
     pub async fn summarize(
@@ -201,7 +206,7 @@ impl Client {
                 .map_err(transport)?;
             let error =
                 serde_json::from_str::<Value>(&body).unwrap_or_else(|_| json!({"detail": body}));
-            return Err(model::status_error(
+            return Err(model::mark_temporary(
                 status,
                 provider_error(
                     &error,
@@ -444,8 +449,24 @@ impl CompletionStream {
                     .push_str(&delta);
                 self.items.push_back(StreamItem::TextDelta(delta));
             }
-            "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
-                let delta = string(&event, "delta")?.to_owned();
+            kind @ ("response.reasoning_summary_text.delta" | "response.reasoning_text.delta") => {
+                let part = indices(
+                    &event,
+                    if kind == "response.reasoning_summary_text.delta" {
+                        "summary_index"
+                    } else {
+                        "content_index"
+                    },
+                )?;
+                let mut delta = string(&event, "delta")?.to_owned();
+                if self
+                    .assembly
+                    .reasoning_part
+                    .replace(part)
+                    .is_some_and(|last| last != part)
+                {
+                    delta.insert_str(0, REASONING_SEPARATOR);
+                }
                 self.assembly.reasoning.push_str(&delta);
                 self.items.push_back(StreamItem::ReasoningDelta(delta));
             }
@@ -541,7 +562,12 @@ struct Assembly {
     text: BTreeMap<(usize, usize), String>,
     arguments: BTreeMap<usize, String>,
     reasoning: String,
+    /// The output and part indices of the last reasoning delta.
+    reasoning_part: Option<(usize, usize)>,
 }
+
+/// Separates reasoning parts, which are written as separate paragraphs.
+const REASONING_SEPARATOR: &str = "\n\n";
 
 impl Assembly {
     fn finish(&self, response: &Value) -> io::Result<Completion> {
@@ -670,7 +696,11 @@ impl Assembly {
                         if part["type"] != "summary_text" {
                             return Err(malformed("unsupported reasoning summary content"));
                         }
-                        message.reasoning.push_str(string(part, "text")?);
+                        let text = string(part, "text")?;
+                        if !message.reasoning.is_empty() && !text.is_empty() {
+                            message.reasoning.push_str(REASONING_SEPARATOR);
+                        }
+                        message.reasoning.push_str(text);
                     }
                     message.continuation_metadata.push(item.clone());
                 }
@@ -959,7 +989,7 @@ mod tests {
         let client = server.http_client(STALL_TIMEOUT);
         let items = drain(
             client
-                .stream_completion(&parameters(), input(&transcript, None))
+                .stream_completion("session", &parameters(), input(&transcript, None))
                 .await
                 .unwrap(),
         )
@@ -994,6 +1024,7 @@ mod tests {
             );
         }
         assert_eq!(request["instructions"], "You are Ox.");
+        assert_eq!(request["prompt_cache_key"], "session");
         assert_eq!(request["include"], json!(["reasoning.encrypted_content"]));
         assert_eq!(
             request["input"][0]["content"]
@@ -1040,34 +1071,42 @@ mod tests {
     async fn stream_assembles_multiple_fragmented_calls_and_final_reasoning() {
         let first = call("one", "read_file", json!({"path":"a"}));
         let second = call("two", "glob", json!({"pattern":"*"}));
+        let reasoning = json!({"id":"rs_test","type":"reasoning","summary":[{"type":"summary_text","text":"Planning."},{"type":"summary_text","text":"Inspecting."}],"encrypted_content":"opaque-continuation"});
         let mut added = first.clone();
         added["status"] = json!("in_progress");
         added["arguments"] = json!("");
         let events = [
-            json!({"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"Thinking."}),
+            json!({"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"Planning."}),
+            json!({"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":1,"delta":"Inspecting."}),
             json!({"type":"response.output_item.added","output_index":1,"item":added}),
             json!({"type":"response.function_call_arguments.delta","output_index":1,"delta":"{\"path\":"}),
             json!({"type":"response.function_call_arguments.delta","output_index":1,"delta":"\"a\"}"}),
-            completed(vec![reasoning(), first, second]),
+            completed(vec![reasoning.clone(), first, second]),
         ];
         let server = Server::start(vec![Reply::Stream(sse(&events))]).await;
         let items = drain(
             server
                 .http_client(STALL_TIMEOUT)
-                .stream_completion(&parameters(), vec![])
+                .stream_completion("session", &parameters(), vec![])
                 .await
                 .unwrap(),
         )
         .await
         .unwrap();
-        assert_eq!(items[0], StreamItem::ReasoningDelta("Thinking.".to_owned()));
+        assert_eq!(
+            items[..2],
+            [
+                StreamItem::ReasoningDelta("Planning.".to_owned()),
+                StreamItem::ReasoningDelta("\n\nInspecting.".to_owned()),
+            ]
+        );
         let StreamItem::Completion(completion) = items.last().unwrap() else {
             panic!("no completion");
         };
         assert_eq!(completion.stop, Stop::ToolCalls);
         assert_eq!(completion.message.tool_calls.len(), 2);
-        assert_eq!(completion.message.continuation_metadata, vec![reasoning()]);
-        assert_eq!(completion.message.reasoning, "Thinking.");
+        assert_eq!(completion.message.continuation_metadata, vec![reasoning]);
+        assert_eq!(completion.message.reasoning, "Planning.\n\nInspecting.");
     }
 
     #[tokio::test]
@@ -1108,7 +1147,7 @@ mod tests {
             let error = drain(
                 server
                     .http_client(STALL_TIMEOUT)
-                    .stream_completion(&parameters(), vec![])
+                    .stream_completion("session", &parameters(), vec![])
                     .await
                     .unwrap(),
             )
@@ -1142,7 +1181,7 @@ mod tests {
             let result = drain(
                 server
                     .http_client(STALL_TIMEOUT)
-                    .stream_completion(&parameters(), vec![])
+                    .stream_completion("session", &parameters(), vec![])
                     .await
                     .unwrap(),
             )
@@ -1178,7 +1217,7 @@ mod tests {
                 drain(
                     server
                         .http_client(STALL_TIMEOUT)
-                        .stream_completion(&parameters(), vec![])
+                        .stream_completion("session", &parameters(), vec![])
                         .await
                         .unwrap()
                 )
@@ -1198,7 +1237,7 @@ mod tests {
         let items = drain(
             server
                 .http_client(STALL_TIMEOUT)
-                .stream_completion(&parameters(), vec![])
+                .stream_completion("session", &parameters(), vec![])
                 .await
                 .unwrap(),
         )
@@ -1218,7 +1257,7 @@ mod tests {
         .await;
         let error = server
             .http_client(STALL_TIMEOUT)
-            .stream_completion(&parameters(), vec![])
+            .stream_completion("session", &parameters(), vec![])
             .await
             .err()
             .unwrap();
@@ -1237,7 +1276,7 @@ mod tests {
             let error = drain(
                 server
                     .http_client(Duration::from_millis(30))
-                    .stream_completion(&parameters(), vec![])
+                    .stream_completion("session", &parameters(), vec![])
                     .await
                     .unwrap(),
             )

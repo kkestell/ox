@@ -494,9 +494,6 @@ fn find<'a>(state: &'a mut State, id: &str) -> std::result::Result<&'a mut Agent
 
 /// Each subagent's ID and state, one per line.
 fn describe(state: &State) -> String {
-    if state.agents.is_empty() {
-        return "No subagents.".to_owned();
-    }
     state
         .agents
         .iter()
@@ -795,7 +792,6 @@ mod tests {
         let owner = Owner::new(vec![("Task", vec![gate.hold(text_reply("Done."))])]).await;
         let waited = owner.wait(Duration::from_secs(600)).await;
         assert!(matches!(waited.reason, WaitReason::NoSubagents));
-        assert_eq!(waited.states, "No subagents.");
 
         let id = owner.start("Task");
         owner.server.wait_for_requests("Task", 1).await;

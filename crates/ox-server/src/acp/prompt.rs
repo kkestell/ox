@@ -492,7 +492,7 @@ impl AgentTurn {
             let started = tokio::select! {
                 biased;
                 () = self.cancellation.cancelled() => return Err(PromptOutcome::Cancelled),
-                started = self.clients.stream_completion(&self.parameters, projected) => started,
+                started = self.clients.stream_completion(&self.summary.id.0, &self.parameters, projected) => started,
             };
             let mut stream = match started {
                 Ok(stream) => stream,

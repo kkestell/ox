@@ -215,7 +215,9 @@ async fn wait(
         WaitReason::Messages(count) => {
             format!("{count} subagent messages arrived; they follow this result.")
         }
-        WaitReason::NoSubagents => "No subagents exist.".to_owned(),
+        WaitReason::NoSubagents => {
+            return super::bounded_text(Ok("No subagents exist.".to_owned()));
+        }
         WaitReason::AllIdle => "Every subagent is idle.".to_owned(),
         WaitReason::TimedOut => "The wait ended without a subagent message.".to_owned(),
     };

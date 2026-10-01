@@ -145,6 +145,7 @@ impl From<openai::Client> for Clients {
 impl Clients {
     pub async fn stream_completion(
         &self,
+        session_id: &str,
         parameters: &ModelRequestParameters,
         input: Vec<serde_json::Value>,
     ) -> io::Result<CompletionStream> {
@@ -154,9 +155,11 @@ impl Clients {
                     .stream_completion(parameters, input)
                     .await?,
             ),
-            Provider::OpenAI => {
-                CompletionStream::OpenAI(self.openai().stream_completion(parameters, input).await?)
-            }
+            Provider::OpenAI => CompletionStream::OpenAI(
+                self.openai()
+                    .stream_completion(session_id, parameters, input)
+                    .await?,
+            ),
         })
     }
 
@@ -317,7 +320,7 @@ pub fn is_temporary(error: &io::Error) -> bool {
 
 /// Marks the error of a failed HTTP status temporary when the status is 429
 /// or 5xx.
-pub(crate) fn status_error(status: reqwest::StatusCode, error: io::Error) -> io::Error {
+pub(crate) fn mark_temporary(status: reqwest::StatusCode, error: io::Error) -> io::Error {
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
         io::Error::other(Temporary(error.to_string()))
     } else {
