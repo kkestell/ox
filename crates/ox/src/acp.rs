@@ -785,7 +785,7 @@ pub mod tests {
             None,
         )]));
         with_session(
-            vec![Reply::Status(500, "{}".into()), failed, echo_reply()],
+            vec![Reply::Status(400, "{}".into()), failed, echo_reply()],
             async |mut session, mut events| {
                 for prompt in ["reject", "fail"] {
                     session.prompt(prompt.into())?;

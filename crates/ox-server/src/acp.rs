@@ -3099,7 +3099,7 @@ mod tests {
                         shell(&started("failed-background"), 5),
                     ),
                 ]),
-                Reply::Status(500, "failed".to_owned()),
+                Reply::Status(400, "failed".to_owned()),
                 calls_reply(&[
                     background("cancelled-background"),
                     (
