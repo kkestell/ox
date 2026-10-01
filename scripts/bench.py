@@ -503,6 +503,24 @@ def compare(parser, labels):
         if not paths:
             parser.error(f"no results for {label}")
         results[label] = [json.loads(path.read_text()) for path in paths]
+    # Totals and the chart compare only tasks that every label ran.
+    task_sets = [{result["task"] for result in runs} for runs in results.values()]
+    common = set.intersection(*task_sets)
+    if not common:
+        parser.error("the labels have no task in common")
+    left_out = sorted(set.union(*task_sets) - common)
+    results = {
+        label: [result for result in runs if result["task"] in common]
+        for label, runs in results.items()
+    }
+
+    left_out_note = (
+        " Tasks without results for every label are left out: "
+        + ", ".join(f"`{task}`" for task in left_out)
+        + "."
+        if left_out
+        else ""
+    )
 
     runs_rows = []
     for label, label_results in results.items():
@@ -629,7 +647,7 @@ def compare(parser, labels):
         *textwrap.wrap(
             f"Changes are relative to `{labels[0]}`. A task's values are medians"
             " over its repetitions, with the range in parentheses. Totals are sums"
-            " of task medians.",
+            " of task medians." + left_out_note,
             80,
             break_long_words=False,
             break_on_hyphens=False,
