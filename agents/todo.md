@@ -15,13 +15,13 @@
         final answer loses the report
   - [x] [OX-0044](issues.csv:45): A compacted skill invocation with an image
         blocks models without image input until another skill invocation
-- [ ] Subagent lifecycle (plan)
-  - [ ] [OX-0032](issues.csv:33): A failed main turn cancels busy subagents and
-        drops their results
-  - [ ] [OX-0036](issues.csv:37): The subagent limit counts idle subagents whose
+- [x] Subagent lifecycle (plan)
+  - [x] [OX-0032](issues.csv:33): A failed main turn cancels busy subagents and
+        drops their results (won't fix)
+  - [x] [OX-0036](issues.csv:37): The subagent limit counts idle subagents whose
         answers were delivered
-  - [ ] [OX-0042](issues.csv:43): A failed subagent's failure message omits what
-        it changed
+  - [x] [OX-0042](issues.csv:43): A failed subagent's failure message omits what
+        it changed (won't fix)
 - [ ] Transcript storage (plan)
   - [ ] [OX-0034](issues.csv:35): Every edit stores the whole file twice in the
         transcript

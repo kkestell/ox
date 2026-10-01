@@ -30,16 +30,16 @@ OX-0028,2026-10-01 10:48,"Callers pair a model with a client by hand, and three 
 OX-0029,2026-10-01 10:57,Compaction stops repeating the skill invocation once a later turn begins,high,correctness,fixed,reviews/2026-10-01-002-session-transcript-review.md
 OX-0030,2026-10-01 10:57,Compaction fires at about half the usable context because the byte estimate overshoots,medium,performance,fixed,reviews/2026-10-01-002-session-transcript-review.md
 OX-0031,2026-10-01 10:57,A compaction immediately before a subagent's final answer loses the report,medium,correctness,fixed,reviews/2026-10-01-002-session-transcript-review.md
-OX-0032,2026-10-01 10:57,A failed main turn cancels busy subagents and drops their results,medium,correctness,scheduled,reviews/2026-10-01-002-session-transcript-review.md
+OX-0032,2026-10-01 10:57,A failed main turn cancels busy subagents and drops their results,medium,correctness,wontfix,reviews/2026-10-01-002-session-transcript-review.md
 OX-0033,2026-10-01 10:57,OpenAI requests set no prompt cache key and cache hits are erratic,medium,performance,scheduled,reviews/2026-10-01-002-session-transcript-review.md
 OX-0034,2026-10-01 10:57,Every edit stores the whole file twice in the transcript,medium,performance,scheduled,reviews/2026-10-01-002-session-transcript-review.md
 OX-0035,2026-10-01 10:57,Shell output truncation keeps only the tail,medium,correctness,scheduled,reviews/2026-10-01-002-session-transcript-review.md
-OX-0036,2026-10-01 10:57,The subagent limit counts idle subagents whose answers were delivered,medium,usability,scheduled,reviews/2026-10-01-002-session-transcript-review.md
+OX-0036,2026-10-01 10:57,The subagent limit counts idle subagents whose answers were delivered,medium,usability,fixed,reviews/2026-10-01-002-session-transcript-review.md
 OX-0037,2026-10-01 10:57,Reasoning summary parts are joined without a separator,low,correctness,unscheduled,reviews/2026-10-01-002-session-transcript-review.md
 OX-0038,2026-10-01 10:57,wait with no subagents returns a redundant message,low,simplicity,unscheduled,reviews/2026-10-01-002-session-transcript-review.md
 OX-0039,2026-10-01 10:57,Transcript entries carry no timestamps,low,observability,unscheduled,reviews/2026-10-01-002-session-transcript-review.md
 OX-0040,2026-10-01 10:57,Parallel subagents in one workspace contend for the cargo build lock,low,usability,unscheduled,reviews/2026-10-01-002-session-transcript-review.md
 OX-0041,2026-10-01 10:57,The installed ox-work skill points at docs/agents/ while this repo uses agents/,low,documentation,unscheduled,reviews/2026-10-01-002-session-transcript-review.md
-OX-0042,2026-10-01 10:57,A failed subagent's failure message omits what it changed,low,observability,unscheduled,reviews/2026-10-01-002-session-transcript-review.md
+OX-0042,2026-10-01 10:57,A failed subagent's failure message omits what it changed,low,observability,wontfix,reviews/2026-10-01-002-session-transcript-review.md
 OX-0043,2026-10-01 12:53,Two functions named status_error meet at one call,low,naming,unscheduled,reviews/2026-10-01-004-retry-temporary-model-request-failures-review.md
 OX-0044,2026-10-01 13:20,A compacted skill invocation with an image blocks models without image input until another skill invocation,low,correctness,fixed,reviews/2026-10-01-006-repeat-the-skill-invocation-across-turns-review.md
