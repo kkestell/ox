@@ -924,8 +924,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_subagent_compacts_its_own_conversation() {
-        // The summary names the task, so the compacted request still routes
-        // to the child's script.
+        // The compacted request keeps the task message, so it still routes to
+        // the child's script.
         let owner = Owner::new(vec![(
             "Task C",
             vec![
@@ -946,7 +946,7 @@ mod tests {
         let requests = owner.server.requests_for("Task C");
         assert!(requests[1].get("tools").is_none(), "a summarizer request");
         assert_eq!(
-            requests[2]["messages"][1]["content"],
+            requests[2]["messages"][2]["content"],
             "Compaction summary of earlier conversation:\nTask C report summarized."
         );
         assert!(
