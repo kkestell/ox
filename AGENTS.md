@@ -8,6 +8,7 @@ Keep this document accurate and short.
 - `crates/ox-server/src/prompts/` — the built-in prompts.
 - `examples/` — the example settings file.
 - `scripts/run.py` — runs one headless prompt in a temporary workspace.
+- `scripts/export_session.py` — exports a session and its subagents to JSON.
 - `.github/workflows/` — the release build.
 - `research/` — research notes and reports.
 - `agents/` — agent docs, plans, and reviews.
