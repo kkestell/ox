@@ -7,11 +7,13 @@
 - **Automated tests**: in-module `#[cfg(test)]` tests. Model requests go to a
   scripted OpenRouter or OpenAI test fixture, so tests need no account, API key,
   or external network. OpenAI authorization tests use a local scripted service.
-- **Live checks**: `scripts/run.py '<prompt>'` runs one headless prompt in a
-  temporary workspace and requires an OpenRouter key in `.env`. Use
-  `ox run --dir <workspace> '<prompt>'` for OpenAI with the global provider set
-  to `openai`. OpenAI checks require explicit sign-in and a completed inference
-  request; sign-in or catalog discovery alone does not verify plan access. For
+- **Live checks**: For OpenRouter, run
+  `scripts/run.py --model openrouter:MODEL '<prompt>'`; it uses a temporary
+  workspace and requires an OpenRouter key in `.env`. For OpenAI, run
+  `ox run --dir <workspace> --model openai:MODEL '<prompt>'` after
+  `ox auth login openai`. Replace `MODEL` with that provider's model ID. Each
+  check needs that provider's credentials and a completed inference request;
+  authentication or catalog discovery alone does not verify model access. For
   behavior only an ACP client shows, connect a client to a local build.
   `scripts/bench.py run` runs the benchmark tasks against a built commit in
   Docker containers, and `scripts/bench.py compare` compares labeled benchmark

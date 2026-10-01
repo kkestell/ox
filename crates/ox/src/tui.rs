@@ -246,6 +246,7 @@ impl ModelRows {
 struct ModelChoice {
     value: SessionConfigValueId,
     name: String,
+    provider: Option<String>,
     /// USD per million input tokens.
     input_price: Option<f64>,
     /// USD per million output tokens.
@@ -254,12 +255,16 @@ struct ModelChoice {
 }
 
 impl ModelChoice {
-    /// Reads the prices and context limit Ox ACP sends in the choice's `_meta`.
+    /// Reads the provider, prices, and context limit Ox ACP sends in the
+    /// choice's `_meta`.
     fn new(choice: &SessionConfigSelectOption) -> Self {
         let meta = |key: &str| choice.meta.as_ref().and_then(|meta| meta.get(key));
         Self {
             value: choice.value.clone(),
             name: escape_control_characters(&choice.name),
+            provider: meta("provider")
+                .and_then(serde_json::Value::as_str)
+                .map(escape_control_characters),
             input_price: meta("inputPrice").and_then(serde_json::Value::as_f64),
             output_price: meta("outputPrice").and_then(serde_json::Value::as_f64),
             context_limit: meta("contextLimit").and_then(serde_json::Value::as_u64),
@@ -585,7 +590,8 @@ fn session_rows(sessions: &[SessionInfo], width: usize) -> Vec<String> {
         .collect()
 }
 
-/// Both price columns share the widest price's width plus two spaces.
+/// The provider column reserves its widest value plus two spaces. Both price
+/// columns share the widest price's width plus two spaces.
 fn model_rows(models: &[ModelChoice], width: usize) -> Vec<String> {
     let price = |price: Option<f64>| {
         price
@@ -593,6 +599,12 @@ fn model_rows(models: &[ModelChoice], width: usize) -> Vec<String> {
             .unwrap_or_default()
     };
     let limit = |model: &ModelChoice| model.context_limit.map(thousands).unwrap_or_default();
+    let provider_width = models
+        .iter()
+        .filter_map(|model| model.provider.as_deref())
+        .map(UnicodeWidthStr::width)
+        .max()
+        .map_or(0, |width| width + 2);
     let price_width = models
         .iter()
         .flat_map(|model| [price(model.input_price), price(model.output_price)])
@@ -608,13 +620,15 @@ fn model_rows(models: &[ModelChoice], width: usize) -> Vec<String> {
     models
         .iter()
         .map(|model| {
-            let prices = format!(
-                "{:<price_width$}{:<price_width$}{:>limit_width$}",
+            let provider = model.provider.as_deref().unwrap_or_default();
+            let provider_padding = " ".repeat(provider_width.saturating_sub(provider.width()));
+            let details = format!(
+                "{provider}{provider_padding}{:<price_width$}{:<price_width$}{:>limit_width$}",
                 price(model.input_price),
                 price(model.output_price),
                 limit(model),
             );
-            justified(&model.name, &prices, width)
+            justified(&model.name, &details, width)
         })
         .collect()
 }
@@ -1710,22 +1724,27 @@ mod tests {
     }
 
     #[test]
-    fn model_picker_rows_share_price_columns_and_leave_missing_values_blank() {
+    fn model_picker_rows_align_provider_and_price_columns_and_leave_invalid_metadata_blank() {
         let models = vec![
             model_choice(
                 "flash",
                 "DeepSeek: DeepSeek V4.1 Flash",
-                serde_json::json!({"inputPrice": 0.03, "outputPrice": 0.6, "contextLimit": 1048576}),
+                serde_json::json!({"provider": "OpenRouter", "inputPrice": 0.03, "outputPrice": 0.6, "contextLimit": 1048576}),
             ),
             model_choice(
                 "opus",
                 "Anthropic: Claude Opus 5.5 with a much longer name",
-                serde_json::json!({"inputPrice": 4, "outputPrice": 20, "contextLimit": 200000}),
+                serde_json::json!({"provider": "OpenAI", "inputPrice": 4, "outputPrice": 20, "contextLimit": 200000}),
             ),
             model_choice(
                 "other",
                 "Other server model",
-                serde_json::json!({"inputPrice": "free", "contextLimit": 1.5}),
+                serde_json::json!({"provider": 7, "inputPrice": "free", "contextLimit": 1.5}),
+            ),
+            model_choice(
+                "missing",
+                "Missing provider",
+                serde_json::json!({"inputPrice": 1.5, "contextLimit": 8001}),
             ),
         ];
         let mut picker = Picker::new(PickerRows::Models(ModelRows::new(models, &[])));
@@ -1736,7 +1755,7 @@ mod tests {
             picker: Some(&picker),
             ..screen(&mut view, &input, Instant::now())
         };
-        let (rows, cursor, _, _) = render(&mut screen, 60, 12);
+        let (rows, cursor, _, _) = render(&mut screen, 68, 13);
         assert_eq!(
             rows,
             [
@@ -1744,9 +1763,10 @@ mod tests {
                 "",
                 "    Search",
                 "",
-                "    DeepSeek: DeepSeek V4.1 …  $0.03   $0.60   1,048,576",
-                "    Anthropic: Claude Opus 5…  $4.00   $20.00    200,000",
+                "    DeepSeek: DeepSeek V…  OpenRouter  $0.03   $0.60   1,048,576",
+                "    Anthropic: Claude Op…  OpenAI      $4.00   $20.00    200,000",
                 "    Other server model",
+                "    Missing provider                   $1.50               8,001",
                 "",
                 "",
                 "",
@@ -1866,7 +1886,7 @@ mod tests {
             ui.input.paste("/model");
             press(&mut ui, &mut session, KeyCode::Enter, now).await?;
             for (typed, expected) in [
-                ("", vec![0, 1, 2, 3]),
+                ("", vec![0, 1, 2, 3, 4, 5]),
                 ("FLASH glm", vec![1]),
                 ("nonexistent", vec![]),
             ] {
@@ -1932,7 +1952,10 @@ mod tests {
         with_session(vec![], async |mut session, _events| {
             let now = Instant::now();
             let mut ui = Ui {
-                favorites: vec!["z-ai/glm-5.3-flash".to_owned(), DEFAULT_MODEL.to_owned()],
+                favorites: vec![
+                    "openrouter:z-ai/glm-5.3-flash".to_owned(),
+                    DEFAULT_MODEL.to_owned(),
+                ],
                 ..Ui::default()
             };
             let state = |ui: &Ui| {
@@ -1947,7 +1970,7 @@ mod tests {
                 "opens on Favorites, in the order they were added, with the current model selected"
             );
             press(&mut ui, &mut session, KeyCode::Right, now).await?;
-            assert_eq!(state(&ui), (vec![0, 1, 2, 3], 0), "Right shows All");
+            assert_eq!(state(&ui), (vec![0, 1, 2, 3, 4, 5], 0), "Right shows All");
             for c in "deep".chars() {
                 press(&mut ui, &mut session, KeyCode::Char(c), now).await?;
             }
@@ -1988,7 +2011,7 @@ mod tests {
                 press(&mut ui, &mut session, KeyCode::Enter, now).await?;
                 press(&mut ui, &mut session, KeyCode::Left, now).await?;
                 let picker = ui.picker.as_ref().unwrap();
-                assert_eq!(picker.matches, [0, 1, 2, 3], "{favorites:?}");
+                assert_eq!(picker.matches, [0, 1, 2, 3, 4, 5], "{favorites:?}");
                 let mut screen = Screen {
                     picker: Some(picker),
                     ..screen(&mut view, &input, now)
@@ -2033,8 +2056,11 @@ mod tests {
             assert_eq!(
                 state(&ui),
                 (
-                    vec!["missing/model".into(), "z-ai/glm-5.3-flash".into()],
-                    vec![0, 1, 2, 3],
+                    vec![
+                        "missing/model".into(),
+                        "openrouter:z-ai/glm-5.3-flash".into(),
+                    ],
+                    vec![0, 1, 2, 3, 4, 5],
                     1
                 ),
                 "favoriting keeps the selection"
@@ -2047,7 +2073,7 @@ mod tests {
                 (
                     vec![
                         "missing/model".into(),
-                        "z-ai/glm-5.3-flash".into(),
+                        "openrouter:z-ai/glm-5.3-flash".into(),
                         DEFAULT_MODEL.into()
                     ],
                     vec![1, 0],
@@ -2067,7 +2093,7 @@ mod tests {
             control_f(&mut ui, &mut session).await?;
             assert_eq!(
                 state(&ui),
-                (vec!["missing/model".into()], vec![0, 1, 2, 3], 0),
+                (vec!["missing/model".into()], vec![0, 1, 2, 3, 4, 5], 0),
                 "the last offered favorite's removal shows All"
             );
             assert!(ui.input.is_empty());

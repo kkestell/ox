@@ -185,6 +185,12 @@ impl Authentication {
         }
     }
 
+    pub(crate) fn has_credentials(&self) -> io::Result<bool> {
+        Ok(self.read()?.is_some_and(|credentials| {
+            credentials.access_token.is_some() || credentials.refresh_token.is_some()
+        }))
+    }
+
     fn save(&self, credentials: &Credentials) -> io::Result<()> {
         protected_write(
             &self.path(),

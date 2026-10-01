@@ -39,6 +39,20 @@ impl Provider {
             _ => None,
         }
     }
+
+    /// Splits a qualified model ID into its provider and provider-native ID.
+    pub fn split_qualified_model_id(id: &str) -> Option<(Self, &str)> {
+        let (provider, model) = id.split_once(':')?;
+        Some((Self::from_id(provider)?, model)).filter(|_| !model.is_empty())
+    }
+
+    pub fn from_qualified_model_id(id: &str) -> Option<Self> {
+        Self::split_qualified_model_id(id).map(|(provider, _)| provider)
+    }
+
+    pub fn qualify(self, model_id: &str) -> String {
+        format!("{}:{model_id}", self.id())
+    }
 }
 
 #[derive(Debug)]
@@ -63,13 +77,16 @@ pub struct CatalogModel {
 pub(crate) const SUMMARIZER_MAX_TOKENS: usize = 4096;
 
 impl Provider {
+    /// Encodes `transcript` for this provider. `turn_provider` is the provider
+    /// of the turn the first entry belongs to when the slice starts mid-turn.
     pub(crate) fn transcript(
         self,
         transcript: &[crate::sessions::TranscriptEntry],
+        turn_provider: Option<Provider>,
     ) -> Vec<serde_json::Value> {
         match self {
-            Self::OpenRouter => openrouter::chat_messages(transcript),
-            Self::OpenAI => openai::input(transcript),
+            Self::OpenRouter => openrouter::chat_messages(transcript, turn_provider),
+            Self::OpenAI => openai::input(transcript, turn_provider),
         }
     }
     pub(crate) fn user_message(self, message: &UserMessage) -> serde_json::Value {
@@ -110,6 +127,21 @@ pub enum Client {
 impl From<openrouter::Client> for Client {
     fn from(client: openrouter::Client) -> Self {
         Self::OpenRouter(client)
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct Clients {
+    pub(crate) openrouter: Option<openrouter::Client>,
+    pub(crate) openai: Option<openai::Client>,
+}
+
+impl Clients {
+    pub fn client(&self, provider: Provider) -> Option<Client> {
+        match provider {
+            Provider::OpenRouter => self.openrouter.clone().map(Client::OpenRouter),
+            Provider::OpenAI => self.openai.clone().map(Client::OpenAI),
+        }
     }
 }
 
@@ -174,6 +206,10 @@ impl CompletionStream {
 }
 
 impl CatalogModel {
+    pub fn qualified_id(&self) -> String {
+        self.provider.qualify(&self.id)
+    }
+
     pub fn supports(&self, effort: EffortLevel) -> bool {
         self.efforts.contains(&effort)
     }
@@ -200,33 +236,27 @@ pub fn install_catalog(models: Vec<CatalogModel>) {
 pub fn catalog() -> &'static [CatalogModel] {
     #[cfg(any(test, feature = "test-support"))]
     CATALOG.get_or_init(|| {
-        openrouter::parse_catalog(openrouter::fixture::CATALOG, openrouter::fixture::NOW).unwrap()
+        let mut models =
+            openrouter::parse_catalog(openrouter::fixture::CATALOG, openrouter::fixture::NOW)
+                .unwrap();
+        models.extend(openai::parse_catalog(openai::FIXTURE_CATALOG).unwrap());
+        models
     });
     CATALOG.get().expect("the model catalog is installed")
 }
 
 pub fn catalog_model(id: &str) -> Option<&'static CatalogModel> {
-    #[cfg(test)]
-    if let Some(model) = openai::fixture::catalog()
-        .iter()
-        .find(|model| model.id == id)
-    {
-        return Some(model);
-    }
-    catalog().iter().find(|model| model.id == id)
+    catalog_model_in(catalog(), id)
 }
 
-pub(crate) fn catalog_for(provider: Provider) -> &'static [CatalogModel] {
-    #[cfg(test)]
-    if provider == Provider::OpenAI {
-        return openai::fixture::catalog();
-    }
-    let catalog = catalog();
-    assert!(
-        catalog.iter().all(|model| model.provider == provider),
-        "only the selected catalog is installed"
-    );
+pub(crate) fn catalog_model_in<'a>(
+    catalog: &'a [CatalogModel],
+    id: &str,
+) -> Option<&'a CatalogModel> {
+    let (provider, provider_id) = Provider::split_qualified_model_id(id)?;
     catalog
+        .iter()
+        .find(|model| model.provider == provider && model.id == provider_id)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -337,4 +367,44 @@ pub(crate) fn skill_invocation_message(invocation: &SkillInvocation) -> UserMess
 /// The user-role text that gives the main agent one subagent message.
 pub(crate) fn subagent_message_text(message: &SubagentMessage) -> String {
     format!("{}:\n{}", message.label(), message.text())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn model(provider: Provider) -> CatalogModel {
+        CatalogModel {
+            provider,
+            id: "same-model".to_owned(),
+            name: "Same Model".to_owned(),
+            context_limit: 8_000,
+            input_price: None,
+            output_price: None,
+            accepts_images: false,
+            efforts: vec![EffortLevel::Default],
+            providers: vec![],
+        }
+    }
+
+    #[test]
+    fn qualified_model_lookup_uses_both_provider_and_native_id() {
+        let catalog = [model(Provider::OpenRouter), model(Provider::OpenAI)];
+        for (id, provider) in [
+            ("openrouter:same-model", Provider::OpenRouter),
+            ("openai:same-model", Provider::OpenAI),
+        ] {
+            assert_eq!(catalog_model_in(&catalog, id).unwrap().provider, provider);
+            assert_eq!(Provider::from_qualified_model_id(id), Some(provider));
+        }
+        for id in [
+            "same-model",
+            "unknown:same-model",
+            "openrouter:",
+            ":same-model",
+        ] {
+            assert!(catalog_model_in(&catalog, id).is_none(), "accepted {id}");
+            assert_eq!(Provider::from_qualified_model_id(id), None, "accepted {id}");
+        }
+    }
 }

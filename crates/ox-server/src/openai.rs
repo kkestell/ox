@@ -109,10 +109,6 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new() -> io::Result<Self> {
-        Ok(Self::with_authentication(Authentication::new()?))
-    }
-
     pub(crate) fn with_authentication(authentication: Authentication) -> Self {
         Self {
             http: reqwest::Client::builder()
@@ -123,10 +119,6 @@ impl Client {
             endpoint: ENDPOINT.to_owned(),
             stall_timeout: STALL_TIMEOUT,
         }
-    }
-
-    pub(crate) async fn logout(&self) -> io::Result<bool> {
-        self.authentication.logout().await
     }
 
     pub async fn fetch_catalog(&self) -> io::Result<Vec<CatalogModel>> {
@@ -235,17 +227,23 @@ pub(crate) fn user_message(message: &UserMessage) -> Value {
     json!({"type":"message", "role":"user", "content":content})
 }
 
-pub(crate) fn input(transcript: &[TranscriptEntry]) -> Vec<Value> {
+pub(crate) fn input(
+    transcript: &[TranscriptEntry],
+    mut turn_provider: Option<model::Provider>,
+) -> Vec<Value> {
     let mut input = Vec::new();
     for entry in transcript {
         match entry {
             TranscriptEntry::CompactionCheckpoint(_) => {}
-            TranscriptEntry::TurnStart(start) => input.push(match &start.input {
-                TurnInput::UserMessage(message) => user_message(message),
-                TurnInput::SkillInvocation(invocation) => {
-                    user_message(&model::skill_invocation_message(invocation))
-                }
-            }),
+            TranscriptEntry::TurnStart(start) => {
+                turn_provider = model::Provider::from_qualified_model_id(&start.model);
+                input.push(match &start.input {
+                    TurnInput::UserMessage(message) => user_message(message),
+                    TurnInput::SkillInvocation(invocation) => {
+                        user_message(&model::skill_invocation_message(invocation))
+                    }
+                });
+            }
             TranscriptEntry::SubagentMessages(messages) => input.extend(
                 messages
                     .iter()
@@ -253,7 +251,9 @@ pub(crate) fn input(transcript: &[TranscriptEntry]) -> Vec<Value> {
             ),
             TranscriptEntry::AssistantBatch(batch) => {
                 let message = &batch.message;
-                input.extend(message.continuation_metadata.clone());
+                if turn_provider == Some(model::Provider::OpenAI) {
+                    input.extend(message.continuation_metadata.clone());
+                }
                 if !message.text.is_empty() {
                     input.push(json!({"type":"message", "role":"assistant", "content":[{"type":"output_text", "text":message.text, "annotations":[]}]}));
                 }
@@ -728,23 +728,22 @@ impl Assembly {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) const FIXTURE_CATALOG: &str = r#"{"models":[
+    {"slug":"gpt-6-astra","display_name":"GPT-6-Astra","visibility":"list","context_window":272000,"max_context_window":872000,"input_modalities":["text","image"],"supported_in_api":true,"supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}]},
+    {"slug":"gpt-5.5","display_name":"GPT-5.5","visibility":"list","context_window":272000,"input_modalities":["text","image"],"supported_in_api":true,"supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"}]},
+    {"slug":"gpt-reserve","display_name":"GPT-Reserve","visibility":"hide","context_window":272000,"input_modalities":["text","image"],"supported_in_api":true,"supported_reasoning_levels":[]}
+]}"#;
+
 #[cfg(test)]
 pub(crate) mod fixture {
     use super::*;
     pub use crate::openrouter::fixture::{Gate, Reply, sse};
     use crate::tools::fixture::Workspace;
 
-    pub const DEFAULT_MODEL: &str = "gpt-6-astra";
-    pub const CATALOG: &str = r#"{"models":[
-        {"slug":"gpt-6-astra","display_name":"GPT-6-Astra","visibility":"list","context_window":272000,"max_context_window":872000,"input_modalities":["text","image"],"supported_in_api":true,"supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}]},
-        {"slug":"gpt-5.5","display_name":"GPT-5.5","visibility":"list","context_window":272000,"input_modalities":["text","image"],"supported_in_api":true,"supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"}]},
-        {"slug":"gpt-reserve","display_name":"GPT-Reserve","visibility":"hide","context_window":272000,"input_modalities":["text","image"],"supported_in_api":true,"supported_reasoning_levels":[]}
-    ]}"#;
-
-    pub fn catalog() -> &'static [CatalogModel] {
-        static CATALOG_MODELS: std::sync::OnceLock<Vec<CatalogModel>> = std::sync::OnceLock::new();
-        CATALOG_MODELS.get_or_init(|| parse_catalog(CATALOG).unwrap())
-    }
+    pub const DEFAULT_MODEL: &str = "openai:gpt-6-astra";
+    pub const PROVIDER_MODEL: &str = "gpt-6-astra";
+    pub const CATALOG: &str = super::FIXTURE_CATALOG;
 
     pub struct Server {
         inner: crate::openrouter::fixture::Server,
@@ -816,7 +815,8 @@ pub(crate) mod fixture {
 mod tests {
     use super::*;
     use crate::sessions::{
-        AssistantBatch, EffortLevel, ImageAttachment, SkillInvocation, ToolOutcome, TranscriptEntry,
+        AssistantBatch, EffortLevel, ImageAttachment, SkillInvocation, ToolOutcome,
+        TranscriptEntry, TurnStart,
     };
     use fixture::{Reply, Server, call, completed, message, reasoning, sse, text_reply};
 
@@ -864,6 +864,45 @@ mod tests {
         assert!(parse_catalog(r#"{"data":[]}"#).is_err());
     }
 
+    #[test]
+    fn continuation_metadata_is_only_sent_for_openai_turns() {
+        let batch = |text: &str, metadata| {
+            TranscriptEntry::AssistantBatch(AssistantBatch {
+                message: AssistantMessage {
+                    text: text.to_owned(),
+                    reasoning: "Visible reasoning".to_owned(),
+                    tool_calls: vec![],
+                    continuation_metadata: vec![metadata],
+                    usage: None,
+                },
+                outcomes: vec![],
+            })
+        };
+        let mut openrouter_start = TurnStart::test("OpenRouter question".to_owned());
+        openrouter_start.model = crate::openrouter::fixture::DEFAULT_MODEL.to_owned();
+        let mut openai_start = TurnStart::test("OpenAI question".to_owned());
+        openai_start.model = fixture::DEFAULT_MODEL.to_owned();
+        let openrouter_metadata = json!({"type":"reasoning.encrypted", "data":"openrouter"});
+        let openai_metadata = reasoning();
+        let projected = input(
+            &[
+                TranscriptEntry::TurnStart(openrouter_start),
+                batch("OpenRouter answer", openrouter_metadata.clone()),
+                TranscriptEntry::TurnStart(openai_start),
+                batch("OpenAI answer", openai_metadata.clone()),
+            ],
+            None,
+        );
+
+        assert_eq!(projected.len(), 5);
+        assert_eq!(projected[0]["content"][0]["text"], "OpenRouter question");
+        assert_eq!(projected[1]["content"][0]["text"], "OpenRouter answer");
+        assert!(!projected.contains(&openrouter_metadata));
+        assert_eq!(projected[2]["content"][0]["text"], "OpenAI question");
+        assert_eq!(projected[3], openai_metadata);
+        assert_eq!(projected[4]["content"][0]["text"], "OpenAI answer");
+    }
+
     #[tokio::test]
     async fn subscription_requests_encode_transcript_tools_and_reasoning_directly() {
         let server = Server::start(vec![text_reply("Hello."), text_reply("summary")]).await;
@@ -893,7 +932,7 @@ mod tests {
             vec![ToolOutcome::completed("Contents")],
         )
         .unwrap();
-        let transcript = vec![
+        let mut transcript = vec![
             TranscriptEntry::turn(user),
             TranscriptEntry::turn(SkillInvocation {
                 name: "work".to_owned(),
@@ -909,10 +948,15 @@ mod tests {
                 ),
             }]),
         ];
+        for entry in &mut transcript {
+            if let TranscriptEntry::TurnStart(start) = entry {
+                start.model = fixture::DEFAULT_MODEL.to_owned();
+            }
+        }
         let client = server.http_client(STALL_TIMEOUT);
         let items = drain(
             client
-                .stream_completion(&parameters(), input(&transcript))
+                .stream_completion(&parameters(), input(&transcript, None))
                 .await
                 .unwrap(),
         )

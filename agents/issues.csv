@@ -23,3 +23,7 @@ OX-0021,2026-09-30 17:12,The client and server each implement the atomic setting
 OX-0022,2026-09-30 17:12,The 80-character truncation rule is implemented twice,low,simplicity,unscheduled,reviews/2026-09-30-002-readability-simplicity-review.md
 OX-0023,2026-09-30 17:12,The 16 KiB limits are repeated in model-facing text,low,simplicity,unscheduled,reviews/2026-09-30-002-readability-simplicity-review.md
 OX-0024,2026-09-30 17:12,The scripts carry two copies of the commit URL parse and the env scan,low,simplicity,unscheduled,reviews/2026-09-30-002-readability-simplicity-review.md
+OX-0025,2026-10-01 10:38,Unknown slash commands are sent to the model as prompts,medium,correctness,unscheduled,
+OX-0026,2026-10-01 10:39,Temporary OpenAI errors such as 503 end the turn instead of being retried,medium,correctness,unscheduled,
+OX-0027,2026-10-01 10:39,The server writes no logs so provider errors are lost after they are shown,medium,observability,unscheduled,
+OX-0028,2026-10-01 10:48,"Callers pair a model with a client by hand, and three runtime guards check that they match",medium,architecture,scheduled,reviews/2026-10-01-001-multi-provider-models-review.md

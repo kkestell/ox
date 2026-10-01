@@ -17,11 +17,10 @@ use agent_client_protocol::{
     Stdio,
     schema::ProtocolVersion,
     schema::v1::{
-        AgentAuthCapabilities, AgentCapabilities, AuthMethod, AuthMethodTerminal, AvailableCommand,
-        AvailableCommandInput, AvailableCommandsUpdate, CancelNotification, CloseSessionRequest,
-        CloseSessionResponse, DeleteSessionRequest, DeleteSessionResponse, InitializeRequest,
-        InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest,
-        LoadSessionResponse, LogoutCapabilities, LogoutRequest, LogoutResponse, NewSessionRequest,
+        AgentCapabilities, AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate,
+        CancelNotification, CloseSessionRequest, CloseSessionResponse, DeleteSessionRequest,
+        DeleteSessionResponse, InitializeRequest, InitializeResponse, ListSessionsRequest,
+        ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
         NewSessionResponse, PromptCapabilities, PromptRequest, PromptResponse, SessionCapabilities,
         SessionCloseCapabilities, SessionConfigOption, SessionConfigOptionCategory,
         SessionConfigOptionValue, SessionConfigSelectOption, SessionDeleteCapabilities, SessionId,
@@ -32,12 +31,12 @@ use agent_client_protocol::{
 };
 use futures::StreamExt;
 
+#[cfg(any(test, feature = "test-support"))]
+use crate::openrouter;
 use crate::{
-    auth,
     cancellation::PromptCancellation,
     compaction,
     model::{self, ModelRequestParameters},
-    openai, openai_auth, openrouter,
     sessions::{
         self, EffortLevel, SessionMode, SessionSettings, SessionStore, SessionSummary,
         SkillInvocation, TurnInput, UserMessage, UserMessagePart,
@@ -61,18 +60,16 @@ fn config_options(settings: &SessionSettings) -> Vec<SessionConfigOption> {
         if let Some(price) = model.output_price {
             meta.insert("outputPrice".to_owned(), price.into());
         }
+        meta.insert("provider".to_owned(), model.provider.name().into());
         let option =
-            SessionConfigSelectOption::new(model.id.clone(), model.name.clone()).meta(meta);
+            SessionConfigSelectOption::new(model.qualified_id(), model.name.clone()).meta(meta);
         if model.accepts_images {
             option.description("Accepts images")
         } else {
             option
         }
     };
-    let models: Vec<_> = model::catalog_for(model.provider)
-        .iter()
-        .map(model_option)
-        .collect();
+    let models: Vec<_> = model::catalog().iter().map(model_option).collect();
     vec![
         SessionConfigOption::select("model", "Model", settings.model.clone(), models)
             .category(SessionConfigOptionCategory::Model),
@@ -170,8 +167,7 @@ struct ServerState {
     /// The home directory read at startup, which holds the user skills
     /// directories.
     home: PathBuf,
-    provider: model::Provider,
-    model_client: Arc<Mutex<Option<model::Client>>>,
+    clients: model::Clients,
     operations: SessionOperations,
     /// The sessions created or loaded in this process. Only an active session
     /// can be configured or prompted.
@@ -196,43 +192,31 @@ struct ActiveSession {
 }
 
 impl ServerState {
-    fn new(store: SessionStore, settings: Settings, home: PathBuf) -> Self {
-        let provider = settings.provider;
+    fn with_clients(
+        store: SessionStore,
+        settings: Settings,
+        home: PathBuf,
+        clients: model::Clients,
+    ) -> Self {
         Self {
             store,
             settings: Arc::new(Mutex::new(settings)),
             home,
-            provider,
-            model_client: Arc::default(),
+            clients,
             operations: SessionOperations::default(),
             active: Arc::default(),
         }
     }
 
-    /// OpenRouter credentials are read on first use, so the process serves listing,
-    /// deletion, and terminal login before a key exists, and a key saved by
-    /// `ox auth login openrouter` is picked up by the next request without a restart.
-    fn model_client(&self) -> Result<model::Client> {
-        let mut slot = self
-            .model_client
-            .lock()
-            .expect("model client mutex poisoned");
-        if let Some(client) = slot.as_ref() {
-            return Ok(client.clone());
-        }
-        let client = match self.provider {
-            model::Provider::OpenRouter => {
-                let api_key = auth::api_key()
-                    .map_err(Error::into_internal_error)?
-                    .ok_or_else(Error::auth_required)?;
-                openrouter::Client::new(api_key).into()
-            }
-            model::Provider::OpenAI => model::Client::OpenAI(openai::Client::with_authentication(
-                openai_auth::Authentication::for_home(&self.home),
-            )),
-        };
-        *slot = Some(client.clone());
-        Ok(client)
+    #[cfg(test)]
+    fn new(store: SessionStore, settings: Settings, home: PathBuf) -> Self {
+        Self::with_clients(store, settings, home, model::Clients::default())
+    }
+
+    fn client(&self, provider: model::Provider) -> model::Client {
+        self.clients
+            .client(provider)
+            .expect("every installed model provider has a client")
     }
 
     async fn compact_session(
@@ -250,7 +234,6 @@ impl ServerState {
         if !compaction::has_candidate(&stored.transcript) {
             return Ok(PromptResponse::new(StopReason::EndTurn));
         }
-        let client = self.model_client()?;
         // Compaction prepares the next turn, which uses the selected model.
         let parameters = ModelRequestParameters::new(
             &active.selections.model,
@@ -259,6 +242,7 @@ impl ServerState {
             tools::Role::Main,
         )
         .map_err(Error::into_internal_error)?;
+        let client = self.client(parameters.model.provider);
         let mut transcript = stored.transcript;
         match compaction::compact(
             &self.store,
@@ -320,7 +304,6 @@ impl ServerState {
     }
 
     fn new_session(&self, request: &NewSessionRequest) -> Result<NewSessionResponse> {
-        self.model_client()?;
         let system_prompt =
             system_prompt::for_workspace(&request.cwd).map_err(Error::into_internal_error)?;
         let skills = self.skill_catalog(&request.cwd);
@@ -360,7 +343,7 @@ impl ServerState {
         match request.config_id.0.as_ref() {
             "model" => {
                 let model = model::catalog_model(value.0.as_ref()).ok_or_else(not_a_choice)?;
-                selected.model.clone_from(&model.id);
+                selected.model = model.qualified_id();
                 if !model.supports(selected.effort) {
                     selected.effort = EffortLevel::Default;
                 }
@@ -391,7 +374,6 @@ impl ServerState {
             .map_err(Error::into_internal_error)?;
         if global {
             *self.settings.lock().expect("settings mutex poisoned") = Settings {
-                provider: self.provider,
                 default_model: selected.model.clone(),
                 default_effort: selected.effort,
                 default_mode: selected.mode,
@@ -408,7 +390,6 @@ impl ServerState {
         request: &LoadSessionRequest,
         mut send_update: impl FnMut(SessionUpdate) -> Result<()>,
     ) -> Result<LoadSessionResponse> {
-        self.model_client()?;
         // A child session belongs to its main session and cannot be loaded.
         let stored = self
             .store
@@ -445,11 +426,6 @@ impl ServerState {
             tools::Role::Main,
         )
         .map_err(Error::into_internal_error)?;
-        if parameters.model.provider != self.provider {
-            return Err(
-                Error::invalid_params().data("session model belongs to another model provider")
-            );
-        }
         let children_cost = self
             .store
             .children_cost(&request.session_id)
@@ -587,31 +563,6 @@ impl ServerState {
         }
     }
 
-    /// The cached client is cleared even when removing the saved key fails,
-    /// and that failure is reported: the key may still load on a later request.
-    async fn logout(&self) -> Result<LogoutResponse> {
-        let cached = self
-            .model_client
-            .lock()
-            .expect("model client mutex poisoned")
-            .take();
-        match self.provider {
-            model::Provider::OpenRouter => {
-                auth::delete_api_key().map_err(Error::into_internal_error)?;
-            }
-            model::Provider::OpenAI => {
-                let client = match cached {
-                    Some(model::Client::OpenAI(client)) => client,
-                    _ => openai::Client::with_authentication(
-                        openai_auth::Authentication::for_home(&self.home),
-                    ),
-                };
-                client.logout().await.map_err(Error::into_internal_error)?;
-            }
-        }
-        Ok(LogoutResponse::new())
-    }
-
     fn respond_to_new_session(
         &self,
         request: &NewSessionRequest,
@@ -736,10 +687,9 @@ impl ServerState {
         responder: Responder<PromptResponse>,
         connection: &ConnectionTo<Client>,
     ) -> Result<()> {
-        let model_client = match self.model_client() {
-            Ok(client) => client,
-            Err(error) => return responder.respond_with_error(error),
-        };
+        let model = model::catalog_model(&active.selections.model)
+            .expect("an active session model comes from the model catalog");
+        let model_client = self.client(model.provider);
         let run = match prompt::run(
             self.store.clone(),
             model_client,
@@ -812,26 +762,10 @@ fn acp_update_sender(
     move |update| connection.send_notification(SessionNotification::new(session_id.clone(), update))
 }
 
-// TODO: Test terminal authentication with the preview version of Zed.
-fn terminal_auth_method() -> AuthMethod {
-    AuthMethod::Terminal(
-        AuthMethodTerminal::new("openrouter", "Log in to OpenRouter")
-            .description("Enter an OpenRouter API key and save it in the system keyring")
-            .args(vec![
-                "auth".to_owned(),
-                "login".to_owned(),
-                "openrouter".to_owned(),
-            ]),
-    )
-}
-
 /// The agent speaks exactly one protocol version, so the response always
 /// names it; a client that needs a different one disconnects.
-fn initialize_response(
-    initialize: &InitializeRequest,
-    provider: model::Provider,
-) -> InitializeResponse {
-    let mut response = InitializeResponse::new(ProtocolVersion::LATEST).agent_capabilities(
+fn initialize_response() -> InitializeResponse {
+    InitializeResponse::new(ProtocolVersion::LATEST).agent_capabilities(
         AgentCapabilities::new()
             .load_session(true)
             .prompt_capabilities(PromptCapabilities::new().image(true))
@@ -840,25 +774,16 @@ fn initialize_response(
                     .list(SessionListCapabilities::new())
                     .close(SessionCloseCapabilities::new())
                     .delete(SessionDeleteCapabilities::new()),
-            )
-            .auth(AgentAuthCapabilities::new().logout(LogoutCapabilities::new())),
-    );
-    if provider == model::Provider::OpenRouter && initialize.client_capabilities.auth.terminal {
-        response = response.auth_methods(vec![terminal_auth_method()]);
-    }
-    response
+            ),
+    )
 }
 
 pub async fn serve_stdio(
     settings: Settings,
-    client: Option<model::Client>,
+    clients: model::Clients,
 ) -> std::result::Result<(), Box<dyn StdError>> {
     let store = SessionStore::open(&sessions::database_path()?)?;
-    let state = ServerState::new(store, settings, settings::home_dir()?);
-    *state
-        .model_client
-        .lock()
-        .expect("model client mutex poisoned") = client;
+    let state = ServerState::with_clients(store, settings, settings::home_dir()?, clients);
     serve(state, Stdio::new(), termination_signal()?).await?;
     Ok(())
 }
@@ -1021,7 +946,6 @@ async fn serve(
     transport: impl ConnectTo<Agent> + 'static,
     signalled: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
-    let provider = state.provider;
     let close_state = state.clone();
     let signal_state = state.clone();
     let cleanup_state = state.clone();
@@ -1031,7 +955,6 @@ async fn serve(
     let delete_state = state.clone();
     let close_session_state = state.clone();
     let config_state = state.clone();
-    let logout_state = state.clone();
     let prompt_state = state.clone();
     let cancel_state = state;
 
@@ -1044,8 +967,8 @@ async fn serve(
             Ok(())
         })
         .on_receive_request(
-            async move |initialize: InitializeRequest, responder, _connection| {
-                responder.respond(initialize_response(&initialize, provider))
+            async move |_initialize: InitializeRequest, responder, _connection| {
+                responder.respond(initialize_response())
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -1088,12 +1011,6 @@ async fn serve(
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
-            async move |_request: LogoutRequest, responder, _connection| {
-                reply(responder, logout_state.logout().await)
-            },
-            agent_client_protocol::on_receive_request!(),
-        )
-        .on_receive_request(
             async move |request: PromptRequest, responder, connection| {
                 prompt_state.start_prompt(request, responder, &connection)
             },
@@ -1127,17 +1044,27 @@ pub mod fixture {
         openrouter: openrouter::Client,
         transport: impl ConnectTo<Agent> + 'static,
     ) -> Result<()> {
-        let state = ServerState::new(SessionStore::in_memory(), test_settings(), no_home());
-        *state.model_client.lock().unwrap() = Some(openrouter.into());
+        let state = ServerState::with_clients(
+            SessionStore::in_memory(),
+            test_settings(),
+            no_home(),
+            clients(openrouter),
+        );
         serve(state, transport, std::future::pending()).await
     }
 
     pub(crate) fn test_settings() -> Settings {
         Settings {
-            provider: model::Provider::OpenRouter,
             default_model: openrouter::fixture::DEFAULT_MODEL.to_owned(),
             default_effort: EffortLevel::Default,
             default_mode: SessionMode::Ask,
+        }
+    }
+
+    pub(crate) fn clients(openrouter: openrouter::Client) -> model::Clients {
+        model::Clients {
+            openrouter: Some(openrouter),
+            openai: None,
         }
     }
 
@@ -1150,11 +1077,11 @@ pub mod fixture {
 mod tests {
     use std::{fs, path::Path};
 
-    use agent_client_protocol::schema::v1::{AuthCapabilities, ClientCapabilities, ErrorCode};
+    use agent_client_protocol::schema::v1::ErrorCode;
 
     use super::*;
     use crate::{
-        acp::fixture::{no_home, test_settings},
+        acp::fixture::{clients, no_home, test_settings},
         sessions::{ToolOutcome, ToolStatus, TranscriptEntry, TurnStart},
         tools::{self, fixture::Workspace},
     };
@@ -1166,13 +1093,13 @@ mod tests {
             sessions::{AssistantBatch, AssistantMessage, ModelUsage},
         };
         let store = SessionStore::in_memory();
-        let state = ServerState::new(store.clone(), test_settings(), no_home());
+        let mut state = ServerState::new(store.clone(), test_settings(), no_home());
         let id = store.create(Path::new("/workspace")).unwrap().id;
         // The saved turn start uses the default model; compaction prepares the
         // next turn, which uses the selected one.
-        let selected = model::catalog()[1].id.as_str();
+        let selected = model::catalog()[1].qualified_id();
         let active = ActiveSession {
-            selections: SessionSettings::new(selected, EffortLevel::Default),
+            selections: SessionSettings::new(&selected, EffortLevel::Default),
             system_prompt: "captured system".to_owned(),
             shell_processes: ShellProcesses::default(),
             skills: vec![],
@@ -1186,10 +1113,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(empty.stop_reason, StopReason::EndTurn);
-        assert!(
-            state.model_client.lock().unwrap().is_none(),
-            "empty command needs no client"
-        );
 
         store
             .append_turn_start(&id, &TurnStart::test("previous work ".repeat(3000)))
@@ -1225,7 +1148,7 @@ mod tests {
             usage(9000, 20, 0.125),
         ]))])
         .await;
-        *state.model_client.lock().unwrap() = Some(server.client().into());
+        state.clients = clients(server.client());
         let response = state
             .compact_session(&id, active, &PromptCancellation::new(), |update| {
                 updates.push(update);
@@ -1243,7 +1166,7 @@ mod tests {
         ));
         let estimate = compaction::request_tokens(
             &ModelRequestParameters::new(
-                selected,
+                &selected,
                 EffortLevel::Default,
                 "captured system".to_owned(),
                 tools::Role::Main,
@@ -1258,7 +1181,7 @@ mod tests {
                     && usage.cost.as_ref().is_some_and(|cost| cost.amount == 0.375 && cost.currency == "USD")
         ));
         let summarizer = &server.requests()[0];
-        assert_eq!(summarizer["model"], selected);
+        assert_eq!(summarizer["model"], model::catalog()[1].id);
         assert_eq!(
             summarizer["messages"][0]["content"],
             include_str!("prompts/compaction_prompt.md")
@@ -1267,16 +1190,145 @@ mod tests {
             TranscriptEntry::TurnStart(TurnStart { input: TurnInput::UserMessage(message), .. })
                 if message.text() == "/compact")));
     }
+    #[tokio::test]
+    async fn changing_provider_routes_the_next_prompt_and_manual_compaction() {
+        use crate::{openai::fixture as openai_fixture, openrouter::fixture as openrouter_fixture};
+
+        let openrouter = openrouter_fixture::Server::start(vec![openrouter_fixture::text_reply(
+            "OpenRouter answer",
+        )])
+        .await;
+        let openai = openai_fixture::Server::start(
+            std::iter::once(openai_fixture::text_reply("OpenAI answer"))
+                .chain(
+                    std::iter::repeat_with(|| openai_fixture::text_reply("Short summary")).take(4),
+                )
+                .collect(),
+        )
+        .await;
+        let model::Client::OpenAI(openai_client) = openai.client() else {
+            unreachable!()
+        };
+        let state = ServerState::with_clients(
+            SessionStore::in_memory(),
+            test_settings(),
+            no_home(),
+            model::Clients {
+                openrouter: Some(openrouter.client()),
+                openai: Some(openai_client),
+            },
+        );
+        let workspace = Workspace::new();
+        let id = create_session(&state, &workspace.0);
+
+        let first = "Earlier details ".repeat(3_000);
+        assert!(matches!(
+            run_selected_prompt(&state, &id, first).await,
+            prompt::PromptOutput::Finished(_)
+        ));
+        assert_eq!(openrouter.requests().len(), 1);
+        assert!(openai.requests().is_empty());
+
+        state
+            .set_config_option(&SetSessionConfigOptionRequest::new(
+                id.clone(),
+                "model",
+                openai_fixture::DEFAULT_MODEL,
+            ))
+            .unwrap();
+        assert!(matches!(
+            run_selected_prompt(&state, &id, "Continue with OpenAI".to_owned()).await,
+            prompt::PromptOutput::Finished(_)
+        ));
+        assert_eq!(openrouter.requests().len(), 1);
+        assert_eq!(openai.requests().len(), 1);
+        assert_eq!(
+            openai.requests()[0]["model"],
+            openai_fixture::PROVIDER_MODEL
+        );
+
+        let active = state.active_session(&id).unwrap();
+        let response = state
+            .compact_session(&id, active, &PromptCancellation::new(), |_| Ok(()))
+            .await
+            .unwrap();
+        assert_eq!(response.stop_reason, StopReason::EndTurn);
+        assert!(openai.requests().len() > 1);
+        assert_eq!(openrouter.requests().len(), 1);
+        assert!(
+            openai
+                .requests()
+                .iter()
+                .all(|request| request["model"] == openai_fixture::PROVIDER_MODEL)
+        );
+
+        let stored = state.store.read(&id).unwrap().unwrap();
+        let turn_models: Vec<_> = stored
+            .transcript
+            .iter()
+            .filter_map(|entry| match entry {
+                TranscriptEntry::TurnStart(start) => Some(start.model.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            turn_models,
+            [
+                openrouter_fixture::DEFAULT_MODEL,
+                openai_fixture::DEFAULT_MODEL
+            ]
+        );
+        let mut replayed = Vec::new();
+        state
+            .load_session(&LoadSessionRequest::new(id, &workspace.0), |update| {
+                replayed.push(update);
+                Ok(())
+            })
+            .unwrap();
+        let replayed = serde_json::to_string(&replayed).unwrap();
+        assert!(replayed.contains("Earlier details"));
+        assert!(replayed.contains("Continue with OpenAI"));
+    }
+
+    async fn run_selected_prompt(
+        state: &ServerState,
+        session_id: &SessionId,
+        text: String,
+    ) -> prompt::PromptOutput {
+        let active = state.active_session(session_id).unwrap();
+        let provider = model::catalog_model(&active.selections.model)
+            .expect("an active model is installed")
+            .provider;
+        prompt::run(
+            state.store.clone(),
+            state.client(provider),
+            prompt::PromptInput {
+                session_id: session_id.clone(),
+                turn_input: TurnInput::UserMessage(text.into()),
+                selected_settings: active.selections,
+                system_prompt: active.system_prompt,
+                shell_processes: active.shell_processes,
+            },
+            PromptCancellation::new(),
+            prompt::Presentation::headless(session_id.clone()),
+        )
+        .unwrap()
+        .await
+        .unwrap()
+    }
+
     fn state() -> ServerState {
         state_over(SessionStore::in_memory())
     }
 
     /// A server state over `store`, as a later process would open it.
     fn state_over(store: SessionStore) -> ServerState {
-        let state = ServerState::new(store, test_settings(), no_home());
-        *state.model_client.lock().unwrap() =
-            Some(openrouter::Client::new("test-key".to_owned()).into());
-        state
+        ServerState::with_clients(
+            store,
+            test_settings(),
+            no_home(),
+            clients(openrouter::Client::new("test-key".to_owned())),
+        )
     }
 
     /// Whether every operation guard has been dropped. New operations stay
@@ -1346,76 +1398,43 @@ mod tests {
     }
 
     #[test]
-    fn terminal_login_is_advertised_only_to_supporting_clients() {
-        let response = initialize_response(
-            &InitializeRequest::new(ProtocolVersion::V1),
-            model::Provider::OpenRouter,
-        );
+    fn acp_authentication_capabilities_are_absent() {
+        let response = initialize_response();
         assert!(response.auth_methods.is_empty());
+        assert!(response.agent_capabilities.auth.logout.is_none());
         assert!(response.agent_capabilities.prompt_capabilities.image);
-
-        let initialize = InitializeRequest::new(ProtocolVersion::V1).client_capabilities(
-            ClientCapabilities::new().auth(AuthCapabilities::new().terminal(true)),
-        );
-        let response = initialize_response(&initialize, model::Provider::OpenRouter);
-
-        assert!(response.agent_capabilities.auth.logout.is_some());
-        assert!(matches!(
-            &response.auth_methods[..],
-            [AuthMethod::Terminal(method)]
-                if method.id.to_string() == "openrouter"
-                    && method.args == ["auth", "login", "openrouter"]
-        ));
-        assert!(
-            initialize_response(&initialize, model::Provider::OpenAI)
-                .auth_methods
-                .is_empty()
-        );
     }
 
     #[test]
-    fn openai_catalog_metadata_omits_prices_and_keeps_account_order() {
+    fn model_choices_include_provider_metadata_and_keep_catalog_order() {
         let options = serde_json::to_value(config_options(&SessionSettings::new(
             crate::openai::fixture::DEFAULT_MODEL,
             EffortLevel::Low,
         )))
         .unwrap();
-        let models = options[0]["options"].as_array().unwrap();
-        assert_eq!(models[0]["value"], "gpt-6-astra");
-        assert_eq!(models[1]["value"], "gpt-5.5");
+        let choices = options[0]["options"].as_array().unwrap();
+        assert_eq!(choices.len(), model::catalog().len());
+        for (choice, catalog_model) in choices.iter().zip(model::catalog()) {
+            assert_eq!(choice["value"], catalog_model.qualified_id());
+            assert_eq!(choice["_meta"]["provider"], catalog_model.provider.name());
+            assert_eq!(choice["_meta"]["contextLimit"], catalog_model.context_limit);
+        }
+        let openai = choices
+            .iter()
+            .filter(|choice| choice["_meta"]["provider"] == "OpenAI")
+            .collect::<Vec<_>>();
+        assert_eq!(openai[0]["value"], "openai:gpt-6-astra");
+        assert_eq!(openai[1]["value"], "openai:gpt-5.5");
         assert!(
-            models
+            openai
                 .iter()
-                .all(|model| model["_meta"]["contextLimit"] == 272000
-                    && model["_meta"].get("inputPrice").is_none()
-                    && model["_meta"].get("outputPrice").is_none())
+                .all(|choice| choice["_meta"].get("inputPrice").is_none()
+                    && choice["_meta"].get("outputPrice").is_none())
         );
-    }
-
-    #[tokio::test]
-    async fn openai_logout_clears_its_credentials_and_cached_client() {
-        let server = crate::openai::fixture::Server::start(vec![]).await;
-        let mut settings = fixture::test_settings();
-        settings.provider = model::Provider::OpenAI;
-        settings.default_model = crate::openai::fixture::DEFAULT_MODEL.to_owned();
-        let state = ServerState::new(SessionStore::in_memory(), settings, fixture::no_home());
-        *state.model_client.lock().unwrap() = Some(server.client());
-        state.logout().await.unwrap();
-        assert!(state.model_client.lock().unwrap().is_none());
-        assert!(
-            server
-                .http_client(std::time::Duration::from_secs(1))
-                .fetch_catalog()
-                .await
-                .unwrap_err()
-                .to_string()
-                .contains("ox auth login openai")
-        );
-        assert!(server.requests().is_empty());
     }
 
     #[test]
-    fn openai_rejects_openrouter_sessions_before_replay() {
+    fn a_session_from_another_provider_loads_and_replays() {
         let workspace = crate::tools::fixture::Workspace::new();
         let store = SessionStore::in_memory();
         let session = store.create(&workspace.0).unwrap();
@@ -1426,17 +1445,21 @@ mod tests {
             )
             .unwrap();
         let mut settings = fixture::test_settings();
-        settings.provider = model::Provider::OpenAI;
         settings.default_model = crate::openai::fixture::DEFAULT_MODEL.to_owned();
         let state = ServerState::new(store, settings, fixture::no_home());
-        let request = LoadSessionRequest::new(session.id, workspace.0.clone());
-        let error = state
-            .load_session(&request, |_| {
-                panic!("another provider's transcript must not be replayed")
+        let request = LoadSessionRequest::new(session.id.clone(), workspace.0.clone());
+        let mut updates = Vec::new();
+        state
+            .load_session(&request, |update| {
+                updates.push(update);
+                Ok(())
             })
-            .unwrap_err();
-        assert!(error.to_string().contains("another model provider"));
-        assert!(state.active.lock().unwrap().is_empty());
+            .unwrap();
+        assert!(!updates.is_empty());
+        assert_eq!(
+            state.active_session(&session.id).unwrap().selections.model,
+            crate::openrouter::fixture::DEFAULT_MODEL
+        );
     }
 
     #[test]
@@ -1677,7 +1700,7 @@ mod tests {
     #[test]
     fn new_sessions_use_the_workspace_session_settings() {
         let workspace = Workspace::new();
-        let chosen = model::catalog()[1].id.as_str();
+        let chosen = model::catalog()[1].qualified_id();
         let path = workspace.0.join(".ox/settings.json");
         fs::create_dir(workspace.0.join(".ox")).unwrap();
         fs::write(
@@ -1870,21 +1893,21 @@ mod tests {
                 },
             )
         };
-        append("retired/model");
+        append("openrouter:retired/model");
         append(openrouter::fixture::DEFAULT_MODEL);
         assert!(
             load().is_ok(),
             "only the latest turn start's model must be in the catalog"
         );
 
-        append("retired/model");
+        append("openrouter:retired/model");
         let error = load().unwrap_err();
 
         assert_eq!(error.code, ErrorCode::InternalError);
         assert_eq!(
             error.data,
             Some(serde_json::json!(
-                "session model retired/model is not in the model catalog"
+                "session model openrouter:retired/model is not in the model catalog"
             ))
         );
         assert!(updates.is_empty());
@@ -1903,12 +1926,12 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|option| option["value"] == "z-ai/glm-5.3-flash")
+            .find(|option| option["value"] == "openrouter:z-ai/glm-5.3-flash")
             .unwrap();
         assert_eq!(image_option["description"], "Accepts images");
         assert_eq!(
             image_option["_meta"],
-            serde_json::json!({"inputPrice": 0.04, "outputPrice": 0.14, "contextLimit": 1310720})
+            serde_json::json!({"inputPrice": 0.04, "outputPrice": 0.14, "contextLimit": 1310720, "provider": "OpenRouter"})
         );
         assert_eq!(new_options["configOptions"][2]["id"], "mode");
         assert_eq!(new_options["configOptions"][2]["category"], "mode");
@@ -1928,7 +1951,7 @@ mod tests {
                 }
             ])
         );
-        let set = |id: &'static str, value: &'static str| {
+        let set = |id: &'static str, value: &str| {
             state
                 .set_config_option(&SetSessionConfigOptionRequest::new(
                     created.session_id.clone(),
@@ -1963,8 +1986,8 @@ mod tests {
             "the default model does not list xhigh"
         );
         set("effort", "max").unwrap();
-        let chosen = model::catalog()[1].id.as_str();
-        let response = set("model", model::catalog()[2].id.as_str()).unwrap();
+        let chosen = model::catalog()[1].qualified_id();
+        let response = set("model", &model::catalog()[2].qualified_id()).unwrap();
         assert_eq!(
             effort_values(&response),
             (
@@ -1978,10 +2001,10 @@ mod tests {
         let global_path = state.home.join(".config/ox/settings.json");
         let saved: serde_json::Value =
             serde_json::from_slice(&fs::read(&global_path).unwrap()).unwrap();
-        assert_eq!(saved["model"], model::catalog()[2].id);
+        assert_eq!(saved["model"], model::catalog()[2].qualified_id());
         assert_eq!(saved["effort"], "default");
         set("effort", "xhigh").unwrap();
-        let response = set("model", chosen).unwrap();
+        let response = set("model", &chosen).unwrap();
         assert_eq!(response["configOptions"][0]["currentValue"], chosen);
         assert_eq!(response["configOptions"][1]["currentValue"], "xhigh");
         assert_eq!(
@@ -2017,7 +2040,7 @@ mod tests {
             .append_turn_start(
                 &created.session_id,
                 &TurnStart {
-                    model: chosen.to_owned(),
+                    model: chosen.clone(),
                     effort: EffortLevel::High,
                     mode: SessionMode::Auto,
                     ..TurnStart::test("Hello".to_owned())
@@ -2126,7 +2149,7 @@ mod tests {
         let workspace = Workspace::new();
         let agents_md = workspace.0.join("AGENTS.md");
         fs::write(&agents_md, "Answer in French.\n").unwrap();
-        let state = state();
+        let mut state = state();
         let id = create_session(&state, &workspace.0);
         state
             .set_config_option(&SetSessionConfigOptionRequest::new(
@@ -2140,7 +2163,7 @@ mod tests {
             text_reply("Done"),
         ])
         .await;
-        *state.model_client.lock().unwrap() = Some(server.client().into());
+        state.clients = clients(server.client());
         let input = |user_message: &str| {
             let active = state.active_session(&id).unwrap();
             prompt::PromptInput {
@@ -2152,7 +2175,7 @@ mod tests {
             }
         };
 
-        let changed_model = model::catalog()[1].id.as_str();
+        let changed_model = model::catalog()[1].qualified_id();
         let cancellation = PromptCancellation::new();
         let first = prompt::run(
             state.store.clone(),
@@ -2171,7 +2194,7 @@ mod tests {
                 .set_config_option(&SetSessionConfigOptionRequest::new(
                     id.clone(),
                     "model",
-                    changed_model,
+                    changed_model.as_str(),
                 ))
                 .unwrap();
             state
@@ -2226,11 +2249,16 @@ mod tests {
         );
         assert_eq!(
             stored.transcript[1],
-            turn(changed_model, EffortLevel::Max, SessionMode::Auto, "second")
+            turn(
+                &changed_model,
+                EffortLevel::Max,
+                SessionMode::Auto,
+                "second"
+            )
         );
         let requests = server.requests();
-        assert_eq!(requests[0]["model"], openrouter::fixture::DEFAULT_MODEL);
-        assert_eq!(requests[1]["model"], changed_model);
+        assert_eq!(requests[0]["model"], openrouter::fixture::PROVIDER_MODEL);
+        assert_eq!(requests[1]["model"], model::catalog()[1].id);
         assert_eq!(requests[0]["reasoning"]["effort"], "low");
         assert_eq!(requests[1]["reasoning"]["effort"], "max");
         for request in &requests {
@@ -2324,8 +2352,8 @@ mod tests {
             delta(json!({ "content": "Provisional" }), None),
         );
         let server = Server::start(vec![Reply::Hang(prefix)]).await;
-        let state = state();
-        *state.model_client.lock().unwrap() = Some(server.client().into());
+        let mut state = state();
+        state.clients = clients(server.client());
         let store = state.store.clone();
         let operations = state.operations.clone();
         let inactive = store.create(Path::new("/workspace")).unwrap().id;
@@ -2512,7 +2540,7 @@ mod tests {
             use crate::openrouter::fixture::{Server, calls_reply, shell_reply, text_reply};
 
             let workspace = Workspace::new();
-            let state = state();
+            let mut state = state();
             let store = state.store.clone();
             let operations = state.operations.clone();
             let text = "Run commands";
@@ -2591,7 +2619,7 @@ mod tests {
                 replies.push(text_reply("Done"));
             }
             let server = Server::routed(vec![("Child task", child_replies), ("", replies)]).await;
-            *state.model_client.lock().unwrap() = Some(server.client().into());
+            state.clients = clients(server.client());
             let (incoming_tx, incoming_rx) = mpsc::unbounded();
             let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<String>();
             let transport = Lines::new(outgoing_tx.sink_map_err(io::Error::other), incoming_rx);
@@ -3141,7 +3169,7 @@ mod tests {
                 store.clone(),
                 server.client(),
                 session.id.clone(),
-                SessionSettings::new(model::catalog()[1].id.as_str(), EffortLevel::High),
+                SessionSettings::new(model::catalog()[1].qualified_id(), EffortLevel::High),
                 system_prompt::for_workspace(path).unwrap(),
                 "Run commands".into(),
             )
@@ -3154,7 +3182,7 @@ mod tests {
             assert_eq!(
                 &transcript[..1],
                 [TranscriptEntry::TurnStart(TurnStart {
-                    model: model::catalog()[1].id.clone(),
+                    model: model::catalog()[1].qualified_id(),
                     effort: EffortLevel::High,
                     mode: SessionMode::Auto,
                     input: TurnInput::UserMessage("Run commands".to_owned().into()),
@@ -3231,8 +3259,8 @@ mod tests {
             ("touch wrong", 5),
         ])])
         .await;
-        let state = state();
-        *state.model_client.lock().unwrap() = Some(server.client().into());
+        let mut state = state();
+        state.clients = clients(server.client());
         let store = state.store.clone();
         let operations = state.operations.clone();
         let id = create_session(&state, &workspace.0);
@@ -3318,8 +3346,8 @@ mod tests {
             30,
         )])])
         .await;
-        let state = state();
-        *state.model_client.lock().unwrap() = Some(server.client().into());
+        let mut state = state();
+        state.clients = clients(server.client());
         let id = create_session(&state, &workspace.0);
         start_shell_process(
             &state,
