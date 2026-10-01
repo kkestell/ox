@@ -20,4 +20,3 @@ failures still end the turn on the first attempt. The plan's goal is met.
 
 - `make check` — Passed.
 - `make e2e` — Passed.
-

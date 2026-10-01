@@ -299,7 +299,7 @@ pub fn is_input_context_overflow(error: &io::Error) -> bool {
 /// A temporary failure: a model request failure that a later attempt may not
 /// repeat. It keeps the provider's message.
 #[derive(Debug)]
-pub struct Temporary(pub String);
+struct Temporary(String);
 
 impl std::fmt::Display for Temporary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
