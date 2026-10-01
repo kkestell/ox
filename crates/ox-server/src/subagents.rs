@@ -24,8 +24,8 @@ use crate::{
     tools,
 };
 
-/// Idle subagents count, because each keeps its conversation for follow-up
-/// messages until it is stopped.
+/// Only busy and stopping subagents count. An idle subagent has no running
+/// task, so any number can wait for follow-up messages.
 pub const MAX_SUBAGENTS: usize = 4;
 
 const CLOSED: &str = "This prompt run is ending, so its subagents accept no more work.";
@@ -168,9 +168,9 @@ impl Subagents {
         if !state.open {
             return Err(CLOSED.to_owned());
         }
-        if state.agents.len() >= MAX_SUBAGENTS {
+        if busy(&state) >= MAX_SUBAGENTS {
             return Err(format!(
-                "A prompt run can have at most {MAX_SUBAGENTS} subagents, including idle ones. Stop one with stop_subagent before starting another.\n\n{}",
+                "A prompt run can have at most {MAX_SUBAGENTS} busy subagents. Wait for one to finish or stop one with stop_subagent before starting another.\n\n{}",
                 describe(&state)
             ));
         }
@@ -202,12 +202,17 @@ impl Subagents {
         if !state.open {
             return Err(CLOSED.to_owned());
         }
+        let busy = busy(&state);
         let agent = find(&mut state, id)?;
         match agent.status {
             Status::Busy => {
                 agent.queued.push_back(message);
                 Ok(Sent::Queued(agent.queued.len()))
             }
+            Status::Idle if busy >= MAX_SUBAGENTS => Err(format!(
+                "Subagent {id} is idle, but {MAX_SUBAGENTS} subagents are already busy. Wait for one to finish or stop one with stop_subagent before sending it a message.\n\n{}",
+                describe(&state)
+            )),
             Status::Idle => {
                 let turn = shared.begin_turn(&agent.id, message, &agent.cancellation)?;
                 agent.task = Some(spawn(
@@ -470,6 +475,15 @@ async fn run_turns(
     }
 }
 
+/// The subagents with a running task, which the limit counts.
+fn busy(state: &State) -> usize {
+    state
+        .agents
+        .iter()
+        .filter(|agent| agent.status != Status::Idle)
+        .count()
+}
+
 fn find<'a>(state: &'a mut State, id: &str) -> std::result::Result<&'a mut Agent, String> {
     state
         .agents
@@ -640,42 +654,62 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn at_most_four_subagents_start_including_idle_ones() {
-        let tasks: Vec<_> = (1..=5).map(|n| format!("Task {n}")).collect();
-        let owner = Owner::new(
-            tasks
-                .iter()
-                .map(|task| (task.as_str(), vec![text_reply(&format!("{task} done."))]))
-                .collect(),
-        )
-        .await;
-        let ids: Vec<_> = tasks[..4].iter().map(|task| owner.start(task)).collect();
+    async fn at_most_four_subagents_are_busy_at_once() {
+        let gate = Gate::new();
+        let tasks: Vec<_> = (1..=6).map(|n| format!("Task {n}")).collect();
+        let mut routes = vec![(
+            tasks[0].as_str(),
+            vec![text_reply("Task 1 done."), text_reply("Task 1 again.")],
+        )];
+        routes.extend(tasks[1..5].iter().map(|task| {
+            (
+                task.as_str(),
+                vec![gate.hold(text_reply(&format!("{task} done.")))],
+            )
+        }));
+        routes.push((tasks[5].as_str(), vec![text_reply("Task 6 done.")]));
+        let owner = Owner::new(routes).await;
+        let idle = owner.start(&tasks[0]);
+        assert_eq!(owner.settle().await, ["Task 1 done."]);
+        let busy: Vec<_> = tasks[1..5].iter().map(|task| owner.start(task)).collect();
+
+        let states = std::iter::once(format!("{idle}: idle"))
+            .chain(busy.iter().map(|id| format!("{id}: busy")))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            owner.subagents.start(tasks[5].clone()).unwrap_err(),
+            format!(
+                "A prompt run can have at most 4 busy subagents. Wait for one to finish or stop one with stop_subagent before starting another.\n\n{states}"
+            )
+        );
+        assert_eq!(
+            owner.subagents.send(&idle, "Again.".to_owned()).map(drop),
+            Err(format!(
+                "Subagent {idle} is idle, but 4 subagents are already busy. Wait for one to finish or stop one with stop_subagent before sending it a message.\n\n{states}"
+            ))
+        );
+
+        gate.open();
         let mut answers = owner.settle().await;
         answers.sort();
         assert_eq!(
             answers,
             [
-                "Task 1 done.",
                 "Task 2 done.",
                 "Task 3 done.",
-                "Task 4 done."
+                "Task 4 done.",
+                "Task 5 done."
             ]
         );
-
-        let error = owner.subagents.start(tasks[4].clone()).unwrap_err();
-        assert_eq!(
-            error,
-            format!(
-                "A prompt run can have at most 4 subagents, including idle ones. Stop one with stop_subagent before starting another.\n\n{}",
-                ids.iter()
-                    .map(|id| format!("{id}: idle"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            )
-        );
-        owner.subagents.stop(&ids[0]).await.unwrap();
-        owner.start(&tasks[4]);
-        assert_eq!(owner.settle().await, ["Task 5 done."]);
+        // Five idle subagents leave room for a sixth.
+        owner.start(&tasks[5]);
+        assert_eq!(owner.settle().await, ["Task 6 done."]);
+        assert!(matches!(
+            owner.subagents.send(&idle, "Again.".to_owned()),
+            Ok(Sent::Started)
+        ));
+        assert_eq!(owner.settle().await, ["Task 1 again."]);
     }
 
     #[tokio::test]
