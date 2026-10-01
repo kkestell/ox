@@ -61,7 +61,6 @@ COMMIT;
 pub enum TranscriptEntry {
     TurnStart(TurnStart),
     AssistantBatch(AssistantBatch),
-    CompactionCheckpoint(CompactionCheckpoint),
     SubagentMessages(Vec<SubagentMessage>),
     /// Why a turn ended with an error. It ends the turn's entries.
     TurnError(String),
@@ -84,8 +83,7 @@ pub enum SubagentMessageContent {
 }
 
 impl SubagentMessage {
-    /// The same attribution in model requests, summarizer material, and ACP
-    /// updates.
+    /// The same attribution in model requests and ACP updates.
     pub fn label(&self) -> String {
         match self.content {
             SubagentMessageContent::FinalAnswer(_) => {
@@ -264,16 +262,6 @@ impl SkillInvocation {
             format!("/{} {}", self.name, self.arguments)
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CompactionCheckpoint {
-    pub summary: String,
-    pub covered_prefix: usize,
-    /// The summed cost of the summarizer requests made by the compaction that
-    /// committed this checkpoint. `None` when none of them reported usage.
-    pub summarizer_cost: Option<f64>,
 }
 
 /// Whether shell calls and input sent to shell processes require approval
@@ -489,17 +477,6 @@ pub enum ToolStatus {
     Cancelled,
 }
 
-impl ToolStatus {
-    /// `completed`, `failed`, or `cancelled`.
-    pub fn id(self) -> &'static str {
-        match self {
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-            Self::Cancelled => "cancelled",
-        }
-    }
-}
-
 /// One block of tool call content, in the shape of ACP's content blocks. A
 /// diff's `path` is absolute, and `old_text` is `None` for a new file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -577,14 +554,9 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
     if !matches!(entries.first(), Some(TranscriptEntry::TurnStart(_))) {
         return Err(invalid_data("transcript does not open with a turn start"));
     }
-    let mut previous_prefix = 0;
-    for (index, entry) in entries.iter().enumerate() {
+    for entry in entries {
         match entry {
             TranscriptEntry::TurnStart(turn_start) => turn_start.validate()?,
-            TranscriptEntry::CompactionCheckpoint(checkpoint) => {
-                check_compaction_checkpoint(checkpoint, index, previous_prefix, entries)?;
-                previous_prefix = checkpoint.covered_prefix;
-            }
             TranscriptEntry::AssistantBatch(batch) => batch.validate()?,
             TranscriptEntry::SubagentMessages(messages) => {
                 if messages.is_empty() {
@@ -593,28 +565,6 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
             }
             TranscriptEntry::TurnError(_) => {}
         }
-    }
-    Ok(())
-}
-
-fn check_compaction_checkpoint(
-    checkpoint: &CompactionCheckpoint,
-    index: usize,
-    previous_prefix: usize,
-    entries: &[TranscriptEntry],
-) -> io::Result<()> {
-    // The preceding scan already validated every assistant batch.
-    if checkpoint.summary.trim().is_empty()
-        || checkpoint.covered_prefix <= previous_prefix
-        || checkpoint.covered_prefix > index
-        || !matches!(
-            entries[checkpoint.covered_prefix - 1],
-            TranscriptEntry::AssistantBatch(_)
-        )
-    {
-        return Err(invalid_data(
-            "invalid compaction checkpoint or covered prefix",
-        ));
     }
     Ok(())
 }
@@ -629,8 +579,7 @@ pub struct SessionSummary {
     pub updated_at: String,
 }
 
-/// The sum of every saved model usage cost and summarizer cost in one
-/// transcript, or `None` when no saved entry reported a cost.
+/// The sum of every saved model usage cost in one transcript, or `None` when no saved entry reported a cost.
 pub fn transcript_cost(transcript: &[TranscriptEntry]) -> Option<f64> {
     transcript
         .iter()
@@ -638,7 +587,6 @@ pub fn transcript_cost(transcript: &[TranscriptEntry]) -> Option<f64> {
             TranscriptEntry::AssistantBatch(batch) => {
                 batch.message.usage.as_ref().and_then(|usage| usage.cost)
             }
-            TranscriptEntry::CompactionCheckpoint(checkpoint) => checkpoint.summarizer_cost,
             _ => None,
         })
         .reduce(|total, cost| total + cost)
@@ -846,45 +794,20 @@ impl SessionStore {
         tx.commit().map_err(io::Error::other)
     }
 
-    /// The summed model usage and summarizer cost saved in every child
-    /// session of `id`, or `None` when none reported a cost.
+    /// The summed model usage cost saved in every child session of `id`, or
+    /// `None` when none reported a cost.
     pub fn children_cost(&self, id: &SessionId) -> io::Result<Option<f64>> {
         self.lock()
             .query_row(
-                "SELECT SUM(CASE transcript_entries.kind
-                         WHEN 'assistant_batch' THEN json_extract(data, '$.message.usage.cost')
-                         ELSE json_extract(data, '$.summarizer_cost') END)
+                "SELECT SUM(json_extract(data, '$.message.usage.cost'))
                  FROM transcript_entries
                  JOIN sessions ON sessions.id = transcript_entries.session_id
                  WHERE sessions.parent_session_id = ?1
-                   AND transcript_entries.kind IN ('assistant_batch', 'compaction_checkpoint')",
+                   AND transcript_entries.kind = 'assistant_batch'",
                 params![id.to_string()],
                 |row| row.get(0),
             )
             .map_err(io::Error::other)
-    }
-
-    /// Appends a checkpoint atomically, after checking the transcript it was
-    /// computed from is still the saved transcript.
-    pub fn append_checkpoint(
-        &self,
-        id: &SessionId,
-        expected_len: usize,
-        checkpoint: &CompactionCheckpoint,
-    ) -> io::Result<()> {
-        let mut connection = self.lock();
-        let tx = connection.transaction().map_err(io::Error::other)?;
-        let mut entries = read_transcript(&tx, id)?;
-        if entries.len() != expected_len {
-            return Err(invalid_data(
-                "transcript changed before compaction checkpoint",
-            ));
-        }
-        let entry = TranscriptEntry::CompactionCheckpoint(checkpoint.clone());
-        entries.push(entry.clone());
-        validate_transcript(&entries)?;
-        write_entries(&tx, id, None, &[entry])?;
-        tx.commit().map_err(io::Error::other)
     }
 
     fn append(
@@ -1026,9 +949,6 @@ fn encode_entry(entry: &TranscriptEntry) -> (&'static str, String) {
     let (kind, data) = match entry {
         TranscriptEntry::TurnStart(turn_start) => ("turn_start", serde_json::to_string(turn_start)),
         TranscriptEntry::AssistantBatch(batch) => ("assistant_batch", serde_json::to_string(batch)),
-        TranscriptEntry::CompactionCheckpoint(checkpoint) => {
-            ("compaction_checkpoint", serde_json::to_string(checkpoint))
-        }
         TranscriptEntry::SubagentMessages(messages) => {
             ("subagent_messages", serde_json::to_string(messages))
         }
@@ -1041,7 +961,6 @@ fn decode_entry(kind: &str, data: &str) -> io::Result<TranscriptEntry> {
     Ok(match kind {
         "turn_start" => TranscriptEntry::TurnStart(decode(kind, data)?),
         "assistant_batch" => TranscriptEntry::AssistantBatch(decode(kind, data)?),
-        "compaction_checkpoint" => TranscriptEntry::CompactionCheckpoint(decode(kind, data)?),
         "subagent_messages" => TranscriptEntry::SubagentMessages(decode(kind, data)?),
         "turn_error" => TranscriptEntry::TurnError(decode(kind, data)?),
         _ => {
@@ -1219,11 +1138,6 @@ mod tests {
             "Weather in Chicago and Denver?".to_owned(),
         );
         let second = turn_with(EffortLevel::Low, SessionMode::Auto, invocation());
-        let checkpoint = CompactionCheckpoint {
-            summary: "Chicago checked; Denver unavailable.".to_owned(),
-            covered_prefix: 2,
-            summarizer_cost: None,
-        };
 
         let id = {
             let store = SessionStore::open(&path).unwrap();
@@ -1231,7 +1145,6 @@ mod tests {
             store.append_turn_start(&id, &first).unwrap();
             let batch = AssistantBatch::new(message.clone(), outcomes.clone()).unwrap();
             store.append_batch(&id, &batch).unwrap();
-            store.append_checkpoint(&id, 2, &checkpoint).unwrap();
             store.append_turn_start(&id, &second).unwrap();
             store
                 .append_batch(&id, &AssistantBatch::new(answered.clone(), vec![]).unwrap())
@@ -1257,7 +1170,6 @@ mod tests {
                     message: message.clone(),
                     outcomes,
                 }),
-                TranscriptEntry::CompactionCheckpoint(checkpoint),
                 TranscriptEntry::TurnStart(second),
                 TranscriptEntry::AssistantBatch(AssistantBatch {
                     message: answered,
@@ -1279,11 +1191,7 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        assert_eq!(
-            replay.len(),
-            9,
-            "the checkpoint is hidden but the other entries replay"
-        );
+        assert_eq!(replay.len(), 9);
 
         drop(store);
         fs::remove_dir_all(dir).unwrap();
@@ -1449,51 +1357,6 @@ mod tests {
         ] {
             let error = read_error(&[(kind, data.to_string())]);
             assert!(error.contains(kind), "{case}: {error}");
-        }
-    }
-
-    #[test]
-    fn checkpoints_cover_a_growing_prefix_that_ends_at_an_assistant_batch() {
-        let base = [
-            TranscriptEntry::turn("first".to_owned()),
-            TranscriptEntry::AssistantBatch(AssistantBatch {
-                message: message(vec![call("a", "one"), call("b", "two")]),
-                outcomes: vec![completed(), completed()],
-            }),
-        ];
-        let checkpoint = |summary: &str, covered_prefix| {
-            row(&TranscriptEntry::CompactionCheckpoint(
-                CompactionCheckpoint {
-                    summary: summary.to_owned(),
-                    covered_prefix,
-                    summarizer_cost: None,
-                },
-            ))
-        };
-        for (case, checkpoints) in [
-            ("a blank summary", vec![checkpoint(" ", 2)]),
-            ("an empty prefix", vec![checkpoint("ok", 0)]),
-            ("a prefix ending at a turn start", vec![checkpoint("ok", 1)]),
-            ("a prefix past the checkpoint", vec![checkpoint("ok", 3)]),
-            (
-                "a repeated prefix",
-                vec![checkpoint("ok", 2), checkpoint("next", 2)],
-            ),
-            (
-                "a shrinking prefix",
-                vec![checkpoint("ok", 2), checkpoint("next", 1)],
-            ),
-            (
-                "a later prefix past its checkpoint",
-                vec![checkpoint("ok", 2), checkpoint("next", 4)],
-            ),
-        ] {
-            let rows: Vec<_> = base.iter().map(row).chain(checkpoints).collect();
-            let error = read_error(&rows);
-            assert!(
-                error.ends_with("invalid compaction checkpoint or covered prefix"),
-                "{case}: {error}"
-            );
         }
     }
 
@@ -1714,23 +1577,12 @@ mod tests {
         };
         let main = session(None, &[Some(1.0)]);
         assert_eq!(store.children_cost(&main).unwrap(), None);
-        let summarized = session(Some(&main), &[Some(0.25)]);
-        store
-            .append_checkpoint(
-                &summarized,
-                2,
-                &CompactionCheckpoint {
-                    summary: "Worked.".to_owned(),
-                    covered_prefix: 2,
-                    summarizer_cost: Some(0.125),
-                },
-            )
-            .unwrap();
+        session(Some(&main), &[Some(0.25)]);
         session(Some(&main), &[None]);
         session(Some(&main), &[Some(0.5), None]);
         let other = session(None, &[]);
         session(Some(&other), &[Some(8.0)]);
-        assert_eq!(store.children_cost(&main).unwrap(), Some(0.875));
+        assert_eq!(store.children_cost(&main).unwrap(), Some(0.75));
     }
 
     #[test]

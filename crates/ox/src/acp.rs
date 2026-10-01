@@ -492,7 +492,7 @@ pub mod tests {
             let (id, update) = commands(&mut events).await;
             assert_eq!(id, session.id);
             session.update(&update);
-            assert_eq!(session.commands, ["compact"]);
+            assert!(session.commands.is_empty());
             let old = session.id.clone();
             session.prompt("First session".into())?;
             turn(&mut session, &mut events, &[]).await;
@@ -521,7 +521,7 @@ pub mod tests {
             let (id, update) = commands(&mut events).await;
             assert_eq!(id, newer);
             session.update(&update);
-            assert_eq!(session.commands, ["compact"]);
+            assert!(session.commands.is_empty());
             assert!(session.active());
             assert_eq!(session.id, newer);
             assert_eq!(session.config_options.len(), 3);

@@ -75,9 +75,8 @@ const RECENT_SECONDS: i64 = 183 * 24 * 60 * 60;
 
 /// Parses OpenRouter's `GET /models` response and applies the catalog filter:
 /// a model must not be a `:batch` variant, which the chat-completions endpoint
-/// does not serve, and must accept tools, take and produce text, have a context
-/// limit above the 8,000 tokens compaction reserves, have no negative price,
-/// and have been released within `RECENT_SECONDS` of `now`. OpenRouter lists a
+/// does not serve, and must accept tools, take and produce text, have no
+/// negative price, and have been released within `RECENT_SECONDS` of `now`. OpenRouter lists a
 /// router such as `openrouter/auto-beta` at a negative price. Efforts Ox
 /// does not know are dropped. Models are sorted by name.
 pub fn parse_catalog(text: &str, now: i64) -> io::Result<Vec<CatalogModel>> {
@@ -96,7 +95,6 @@ pub fn parse_catalog(text: &str, now: i64) -> io::Result<Vec<CatalogModel>> {
                 && has(&model.supported_parameters, "tools")
                 && has(&model.architecture.input_modalities, "text")
                 && has(&model.architecture.output_modalities, "text")
-                && model.context_length > 8_000
                 && model.pricing.prompt >= 0.0
                 && model.pricing.completion >= 0.0
                 && model.created >= now - RECENT_SECONDS
@@ -175,28 +173,6 @@ pub(crate) fn ordinary_body(parameters: &ModelRequestParameters, messages: Vec<V
     body
 }
 
-/// The token limit Ox gives summarizer requests. Compaction sizes each piece
-/// so a summary plus this much output fits the model's context.
-pub(crate) use crate::model::SUMMARIZER_MAX_TOKENS;
-
-pub(crate) fn summarizer_body(model: &CatalogModel, previous: &str, piece: &str) -> Value {
-    let mut body = json!({
-        "model": model.id,
-        "messages": [
-            {"role": "system", "content": include_str!("prompts/compaction_prompt.md")},
-            {"role": "user", "content": format!("Previous summary:\n{previous}\n\nNew conversation material:\n{piece}")},
-        ],
-        "max_tokens": SUMMARIZER_MAX_TOKENS,
-        "stream": true,
-        "usage": { "include": true },
-    });
-    if let Some(effort) = model.summarizer_effort().openrouter_effort() {
-        body["reasoning"] = json!({ "effort": effort });
-    }
-    route(&mut body, model);
-    body
-}
-
 /// Restricts a pinned model's request to its providers. Without fallbacks,
 /// OpenRouter fails the request instead of trying another provider.
 fn route(body: &mut Value, model: &CatalogModel) {
@@ -270,32 +246,6 @@ impl Client {
         messages: Vec<Value>,
     ) -> io::Result<CompletionStream> {
         self.stream_body(&ordinary_body(parameters, messages)).await
-    }
-
-    /// Returns the summary and the usage OpenRouter reported for it.
-    pub async fn summarize(
-        &self,
-        model: &CatalogModel,
-        previous: &str,
-        piece: &str,
-    ) -> io::Result<(String, Option<ModelUsage>)> {
-        let mut stream = self
-            .stream_body(&summarizer_body(model, previous, piece))
-            .await?;
-        loop {
-            let StreamItem::Completion(completion) = stream.next().await? else {
-                continue;
-            };
-            if completion.stop != Stop::Finished
-                || !completion.message.tool_calls.is_empty()
-                || completion.message.text.trim().is_empty()
-            {
-                return Err(malformed(
-                    "compaction summary was not a finished, nonempty text completion",
-                ));
-            }
-            return Ok((completion.message.text, completion.message.usage));
-        }
     }
 
     async fn stream_body(&self, body: &Value) -> io::Result<CompletionStream> {
@@ -389,20 +339,18 @@ fn user_content(message: &UserMessage) -> Value {
 }
 
 /// A user-role chat message.
-pub(crate) fn user_message(message: &UserMessage) -> Value {
+fn user_message(message: &UserMessage) -> Value {
     json!({ "role": "user", "content": user_content(message) })
 }
 
 /// Encodes the saved transcript as OpenRouter chat messages. Visible reasoning
 /// is sent only when no continuation metadata carries it.
-pub(crate) fn chat_messages(
-    transcript: &[TranscriptEntry],
-    mut turn_provider: Option<model::Provider>,
-) -> Vec<Value> {
+pub(crate) fn chat_messages(transcript: &[TranscriptEntry]) -> Vec<Value> {
+    let mut turn_provider = None;
     let mut messages = Vec::new();
     for entry in transcript {
         let value = match entry {
-            TranscriptEntry::CompactionCheckpoint(_) | TranscriptEntry::TurnError(_) => continue,
+            TranscriptEntry::TurnError(_) => continue,
             TranscriptEntry::TurnStart(turn_start) => {
                 turn_provider = model::Provider::from_qualified_model_id(&turn_start.model);
                 match &turn_start.input {
@@ -856,10 +804,6 @@ pub mod fixture {
          "pricing": {"prompt": "0.000001", "completion": "0.000002"},
          "architecture": {"input_modalities": ["text"], "output_modalities": ["image"]},
          "supported_parameters": ["tools"]},
-        {"id": "acme/small", "name": "Small", "context_length": 8000, "created": 1789689600,
-         "pricing": {"prompt": "0.000001", "completion": "0.000002"},
-         "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
-         "supported_parameters": ["tools"]},
         {"id": "deepseek/deepseek-v4.1-flash:batch", "name": "DeepSeek V4.1 Flash (batch)", "context_length": 1048576, "created": 1789689600,
          "pricing": {"prompt": "0.000001", "completion": "0.000002"},
          "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
@@ -1309,7 +1253,7 @@ mod tests {
             .client()
             .stream_completion(
                 &test_parameters(),
-                chat_messages(&[TranscriptEntry::turn("hi".to_owned())], None),
+                chat_messages(&[TranscriptEntry::turn("hi".to_owned())]),
             )
             .await?;
         drain(&mut request).await
@@ -1389,7 +1333,7 @@ mod tests {
                     tools::Role::Main,
                 )
                 .unwrap(),
-                chat_messages(&transcript, None),
+                chat_messages(&transcript),
             )
             .await
             .unwrap();
@@ -1448,24 +1392,21 @@ mod tests {
             data: "aGVsbG8=".to_owned(),
             mime_type: "image/png".to_owned(),
         };
-        let messages = chat_messages(
-            &[
-                TranscriptEntry::turn(UserMessage {
-                    parts: vec![
-                        UserMessagePart::Text("Before".to_owned()),
-                        UserMessagePart::Image(image.clone()),
-                        UserMessagePart::Text("After".to_owned()),
-                    ],
-                }),
-                TranscriptEntry::turn(SkillInvocation {
-                    name: "goal".to_owned(),
-                    arguments: "Inspect".to_owned(),
-                    instructions: "Look at the screenshot.".to_owned(),
-                    images: vec![image],
-                }),
-            ],
-            None,
-        );
+        let messages = chat_messages(&[
+            TranscriptEntry::turn(UserMessage {
+                parts: vec![
+                    UserMessagePart::Text("Before".to_owned()),
+                    UserMessagePart::Image(image.clone()),
+                    UserMessagePart::Text("After".to_owned()),
+                ],
+            }),
+            TranscriptEntry::turn(SkillInvocation {
+                name: "goal".to_owned(),
+                arguments: "Inspect".to_owned(),
+                instructions: "Look at the screenshot.".to_owned(),
+                images: vec![image],
+            }),
+        ]);
         assert_eq!(
             messages[0]["content"],
             json!([
@@ -1511,9 +1452,7 @@ mod tests {
         assert_eq!(models[1].efforts, [Default, Low, Medium, High, XHigh, Max]);
         assert!(models[1].accepts_images);
         assert!(!models[0].accepts_images);
-        assert_eq!(models[2].summarizer_effort(), Medium);
         assert_eq!(models[3].efforts, [Default]);
-        assert_eq!(models[3].summarizer_effort(), Default);
         assert!(parse_catalog(r#"{"data": []}"#, fixture::NOW).is_err());
         assert!(parse_catalog(r#"{"data": [{"id": "a/b"}]}"#, fixture::NOW).is_err());
         let unpriced = fixture::CATALOG.replace(r#""prompt": "0.00000003""#, r#""prompt": "free""#);
@@ -1583,12 +1522,8 @@ mod tests {
                 system_prompt: TEST_SYSTEM_PROMPT.to_owned(),
                 role: tools::Role::Main,
             };
-            for body in [
-                ordinary_body(&parameters, vec![]),
-                summarizer_body(model, "", "piece"),
-            ] {
-                assert_eq!(body.get("provider"), provider.as_ref(), "{}", model.id);
-            }
+            let body = ordinary_body(&parameters, vec![]);
+            assert_eq!(body.get("provider"), provider.as_ref(), "{}", model.id);
         }
     }
 
@@ -1611,23 +1546,20 @@ mod tests {
         let mut openai_start = TurnStart::test("OpenAI question".to_owned());
         openai_start.model = crate::openai::fixture::DEFAULT_MODEL.to_owned();
         let openrouter_metadata = json!({"type":"reasoning.encrypted", "data":"openrouter"});
-        let messages = chat_messages(
-            &[
-                TranscriptEntry::TurnStart(openrouter_start),
-                batch(
-                    "OpenRouter answer",
-                    "OpenRouter reasoning",
-                    openrouter_metadata.clone(),
-                ),
-                TranscriptEntry::TurnStart(openai_start),
-                batch(
-                    "OpenAI answer",
-                    "OpenAI reasoning",
-                    json!({"type":"reasoning", "encrypted_content":"openai"}),
-                ),
-            ],
-            None,
-        );
+        let messages = chat_messages(&[
+            TranscriptEntry::TurnStart(openrouter_start),
+            batch(
+                "OpenRouter answer",
+                "OpenRouter reasoning",
+                openrouter_metadata.clone(),
+            ),
+            TranscriptEntry::TurnStart(openai_start),
+            batch(
+                "OpenAI answer",
+                "OpenAI reasoning",
+                json!({"type":"reasoning", "encrypted_content":"openai"}),
+            ),
+        ]);
 
         assert_eq!(messages.len(), 4);
         assert_eq!(messages[0]["content"], "OpenRouter question");
@@ -1652,13 +1584,10 @@ mod tests {
             continuation_metadata: vec![],
             usage: None,
         };
-        let messages = chat_messages(
-            &[TranscriptEntry::AssistantBatch(AssistantBatch {
-                message: plain,
-                outcomes: vec![],
-            })],
-            None,
-        );
+        let messages = chat_messages(&[TranscriptEntry::AssistantBatch(AssistantBatch {
+            message: plain,
+            outcomes: vec![],
+        })]);
         assert_eq!(messages[0]["reasoning"], "Add them.");
         assert!(messages[0].get("reasoning_details").is_none());
         assert!(messages[0].get("tool_calls").is_none());
@@ -1799,16 +1728,13 @@ mod tests {
                     third_encrypted,
                 ];
                 assert_eq!(message.continuation_metadata, expected);
-                let messages = chat_messages(
-                    &[
-                        TranscriptEntry::turn("Question".to_owned()),
-                        TranscriptEntry::AssistantBatch(AssistantBatch {
-                            message,
-                            outcomes: vec![],
-                        }),
-                    ],
-                    None,
-                );
+                let messages = chat_messages(&[
+                    TranscriptEntry::turn("Question".to_owned()),
+                    TranscriptEntry::AssistantBatch(AssistantBatch {
+                        message,
+                        outcomes: vec![],
+                    }),
+                ]);
                 assert_eq!(messages[1]["reasoning_details"], json!(expected));
             }
         }
@@ -1958,7 +1884,7 @@ mod tests {
             let mut request = client
                 .stream_completion(
                     &test_parameters(),
-                    chat_messages(&[TranscriptEntry::turn("hi".to_owned())], None),
+                    chat_messages(&[TranscriptEntry::turn("hi".to_owned())]),
                 )
                 .await
                 .unwrap();

@@ -43,7 +43,7 @@ OX-0041,2026-10-01 10:57,The installed ox-work skill points at docs/agents/ whil
 OX-0042,2026-10-01 10:57,A failed subagent's failure message omits what it changed,low,observability,wontfix,reviews/2026-10-01-002-session-transcript-review.md
 OX-0043,2026-10-01 12:53,Two functions named status_error meet at one call,low,naming,fixed,reviews/2026-10-01-004-retry-temporary-model-request-failures-review.md
 OX-0044,2026-10-01 13:20,A compacted skill invocation with an image blocks models without image input until another skill invocation,low,correctness,fixed,reviews/2026-10-01-006-repeat-the-skill-invocation-across-turns-review.md
-OX-0045,2026-10-01 16:42,Compaction permanently retains an ever-growing request prefix,medium,performance,scheduled,reviews/2026-10-01-011-day-simplicity-review.md
-OX-0046,2026-10-01 16:42,A temporary summary failure repeats successful summarizer requests,medium,performance,scheduled,reviews/2026-10-01-011-day-simplicity-review.md
-OX-0047,2026-10-01 16:42,An unused authenticated provider can prevent Ox from starting,medium,architecture,scheduled,reviews/2026-10-01-011-day-simplicity-review.md
-OX-0048,2026-10-01 16:42,OpenAI keeps redundant copies of output only to cross-check them,medium,simplicity,scheduled,reviews/2026-10-01-011-day-simplicity-review.md
+OX-0045,2026-10-01 16:42,Compaction permanently retains an ever-growing request prefix,medium,performance,fixed,reviews/2026-10-01-011-day-simplicity-review.md
+OX-0046,2026-10-01 16:42,A temporary summary failure repeats successful summarizer requests,medium,performance,fixed,reviews/2026-10-01-011-day-simplicity-review.md
+OX-0047,2026-10-01 16:42,An unused authenticated provider can prevent Ox from starting,medium,architecture,wontfix,reviews/2026-10-01-011-day-simplicity-review.md
+OX-0048,2026-10-01 16:42,OpenAI keeps redundant copies of output only to cross-check them,medium,simplicity,fixed,reviews/2026-10-01-011-day-simplicity-review.md

@@ -412,8 +412,8 @@ impl Shared {
         next
     }
 
-    /// Begins the subagent's next queued message, or marks it idle. A
-    /// message that exceeds the model's context limit ends it with a failure.
+    /// Begins the subagent's next queued message, or marks it idle. A queued
+    /// message that cannot start ends the subagent with a failure.
     fn next_turn(&self, state: &mut State, index: usize) -> Option<Turn> {
         let agent = &mut state.agents[index];
         let Some(text) = agent.queued.pop_front() else {
@@ -538,9 +538,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        openrouter::fixture::{
-            DEFAULT_MODEL, Gate, Reply, Server, calls_reply, delta, sse, text_reply,
-        },
+        openrouter::fixture::{DEFAULT_MODEL, Gate, Reply, Server, calls_reply, text_reply},
         sessions::{
             AssistantBatch, AssistantMessage, EffortLevel, SessionMode, ToolStatus,
             TranscriptEntry, TurnStart,
@@ -952,83 +950,6 @@ mod tests {
             messages[0]
         );
         assert!(owner.subagents.send(&id, "Retry.".to_owned()).is_err());
-    }
-
-    #[tokio::test]
-    async fn a_subagent_compacts_its_own_conversation() {
-        // The compacted request keeps the task message, so it still routes to
-        // the child's script.
-        let long_batch = Reply::Stream(sse(&[delta(
-            json!({
-                "role": "assistant",
-                "content": "y".repeat(2_300_000),
-                "tool_calls": [{
-                    "index": 0,
-                    "id": "check",
-                    "type": "function",
-                    "function": {
-                        "name": crate::tools::SHELL,
-                        "arguments": r#"{"command":"true"}"#,
-                    },
-                }],
-            }),
-            Some("tool_calls"),
-        )]));
-        let owner = Owner::new(vec![(
-            "Task C",
-            vec![
-                long_batch,
-                text_reply("Initial answer."),
-                text_reply("Task C report summarized."),
-                text_reply("Follow-up done."),
-            ],
-        )])
-        .await;
-        let id = owner.start("Task C: write a long report.");
-        owner.settle().await;
-        owner
-            .subagents
-            .send(&id, "Shorten it.".to_owned())
-            .map(drop)
-            .unwrap();
-        assert_eq!(owner.settle().await, ["Follow-up done."]);
-        let requests = owner.server.requests_for("Task C");
-        assert!(requests[2].get("tools").is_none(), "a summarizer request");
-        assert!(
-            requests[3]["messages"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|message| {
-                    message["content"]
-                        == "Compaction summary of earlier conversation:\nTask C report summarized."
-                })
-        );
-        assert!(
-            requests[3]["messages"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|message| {
-                    message["role"] == "assistant" && message["content"] == "Initial answer."
-                })
-        );
-        assert!(
-            owner
-                .transcript(&id)
-                .iter()
-                .any(|entry| matches!(entry, TranscriptEntry::CompactionCheckpoint(_)))
-        );
-        let main = owner.store.list(None).unwrap().remove(0).id;
-        assert!(
-            owner
-                .store
-                .read(&main)
-                .unwrap()
-                .unwrap()
-                .transcript
-                .is_empty()
-        );
     }
 
     #[tokio::test]

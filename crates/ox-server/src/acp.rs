@@ -35,7 +35,6 @@ use futures::StreamExt;
 use crate::openrouter;
 use crate::{
     cancellation::PromptCancellation,
-    compaction,
     model::{self, ModelRequestParameters},
     sessions::{
         self, EffortLevel, SessionMode, SessionSettings, SessionStore, SessionSummary,
@@ -100,50 +99,38 @@ fn config_options(settings: &SessionSettings) -> Vec<SessionConfigOption> {
     ]
 }
 
-/// The built-in `/compact` followed by every skill in the catalog.
+/// Every skill in the catalog.
 fn available_commands(skills: &[Skill]) -> SessionUpdate {
-    let mut commands = vec![AvailableCommand::new(
-        "compact",
-        "Compact the conversation context.",
-    )];
-    commands.extend(skills.iter().map(|skill| {
-        let command = AvailableCommand::new(skill.name.clone(), skill.description.clone());
-        match &skill.argument_hint {
-            Some(hint) => command.input(AvailableCommandInput::Unstructured(
-                UnstructuredCommandInput::new(hint.clone()),
-            )),
-            None => command,
-        }
-    }));
+    let commands = skills
+        .iter()
+        .map(|skill| {
+            let command = AvailableCommand::new(skill.name.clone(), skill.description.clone());
+            match &skill.argument_hint {
+                Some(hint) => command.input(AvailableCommandInput::Unstructured(
+                    UnstructuredCommandInput::new(hint.clone()),
+                )),
+                None => command,
+            }
+        })
+        .collect();
     SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(commands))
 }
 
-/// What a prompt request asks for.
-#[derive(Debug, PartialEq)]
-enum Dispatch {
-    Compact,
-    Skill(SkillInvocation),
-    UserMessage(UserMessage),
-}
-
-/// A prompt whose first word is `/compact` or `/<name>` for a catalog skill is
-/// a command; the rest of its text, trimmed, is literal skill arguments. Any
+/// A prompt whose first word is `/<name>` for a catalog skill is a skill
+/// invocation; the rest of its text, trimmed, is literal skill arguments. Any
 /// other text is a user message.
-fn dispatch(message: UserMessage, skills: &[Skill]) -> Dispatch {
+fn dispatch(message: UserMessage, skills: &[Skill]) -> TurnInput {
     let prompt_text = message.text();
     let text = prompt_text.trim();
     let (word, rest) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
-    if word == "/compact" && !message.has_images() {
-        return Dispatch::Compact;
-    }
     let Some(skill) = word
         .strip_prefix('/')
         .and_then(|name| skills.iter().find(|skill| skill.name == name))
     else {
-        return Dispatch::UserMessage(message);
+        return TurnInput::UserMessage(message);
     };
     let arguments = rest.trim().to_owned();
-    Dispatch::Skill(SkillInvocation {
+    TurnInput::SkillInvocation(SkillInvocation {
         name: skill.name.clone(),
         arguments,
         instructions: skill.instructions.clone(),
@@ -211,65 +198,6 @@ impl ServerState {
     #[cfg(test)]
     fn new(store: SessionStore, settings: Settings, home: PathBuf) -> Self {
         Self::with_clients(store, settings, home, model::Clients::default())
-    }
-
-    async fn compact_session(
-        &self,
-        session_id: &SessionId,
-        active: ActiveSession,
-        cancellation: &PromptCancellation,
-        mut send_update: impl FnMut(SessionUpdate) -> Result<()>,
-    ) -> Result<PromptResponse> {
-        let stored = self
-            .store
-            .read(session_id)
-            .map_err(Error::into_internal_error)?
-            .ok_or_else(|| not_found(session_id))?;
-        if !compaction::has_candidate(&stored.transcript) {
-            return Ok(PromptResponse::new(StopReason::EndTurn));
-        }
-        // Compaction prepares the next turn, which uses the selected model.
-        let parameters = ModelRequestParameters::new(
-            &active.selections.model,
-            active.selections.effort,
-            active.system_prompt,
-            tools::Role::Main,
-        )
-        .map_err(Error::into_internal_error)?;
-        let mut transcript = stored.transcript;
-        match compaction::compact(
-            &self.store,
-            &self.clients,
-            cancellation,
-            session_id,
-            &parameters,
-            &mut transcript,
-        )
-        .await
-        {
-            Ok(compacted) => {
-                if compacted {
-                    let children_cost = self
-                        .store
-                        .children_cost(session_id)
-                        .map_err(Error::into_internal_error)?;
-                    if let Some(update) =
-                        convert::usage_update(&transcript, &parameters, children_cost)
-                    {
-                        send_update(update)?;
-                    }
-                }
-                Ok(PromptResponse::new(if cancellation.is_cancelled() {
-                    StopReason::Cancelled
-                } else {
-                    StopReason::EndTurn
-                }))
-            }
-            Err(error) if error.kind() == ErrorKind::Interrupted => {
-                Ok(PromptResponse::new(StopReason::Cancelled))
-            }
-            Err(error) => Err(Error::into_internal_error(error)),
-        }
     }
 
     /// Loads the skill catalog for a session becoming active, writing each
@@ -447,7 +375,7 @@ impl ServerState {
             .insert(session_id, active);
     }
 
-    /// Advertises `/compact` and the session's skill catalog. A session
+    /// Advertises the session's skill catalog. A session
     /// deleted after activation has nothing to advertise.
     fn send_available_commands(
         &self,
@@ -611,8 +539,8 @@ impl ServerState {
         })
     }
 
-    /// Rejects a prompt request that cannot start, or spawns `/compact` or a
-    /// prompt run that responds when it finishes.
+    /// Rejects a prompt request that cannot start, or spawns a prompt run that
+    /// responds when it finishes.
     fn start_prompt(
         &self,
         request: PromptRequest,
@@ -629,19 +557,7 @@ impl ServerState {
         let Some(active) = self.active_session(&request.session_id) else {
             return responder.respond_with_error(inactive(&request.session_id));
         };
-        let turn_input = match dispatch(message, &active.skills) {
-            Dispatch::Compact => {
-                return self.spawn_compaction(
-                    request.session_id,
-                    active,
-                    operation,
-                    responder,
-                    connection,
-                );
-            }
-            Dispatch::Skill(invocation) => TurnInput::SkillInvocation(invocation),
-            Dispatch::UserMessage(message) => TurnInput::UserMessage(message),
-        };
+        let turn_input = dispatch(message, &active.skills);
         self.spawn_prompt_run(
             request.session_id,
             active,
@@ -650,25 +566,6 @@ impl ServerState {
             responder,
             connection,
         )
-    }
-
-    fn spawn_compaction(
-        &self,
-        session_id: SessionId,
-        active: ActiveSession,
-        (guard, cancellation): (OperationGuard, PromptCancellation),
-        responder: Responder<PromptResponse>,
-        connection: &ConnectionTo<Client>,
-    ) -> Result<()> {
-        let state = self.clone();
-        let send_update = acp_update_sender(connection.clone(), session_id.clone());
-        connection.spawn(async move {
-            let _guard = guard;
-            let result = state
-                .compact_session(&session_id, active, &cancellation, send_update)
-                .await;
-            reply(responder, result)
-        })
     }
 
     fn spawn_prompt_run(
@@ -1070,144 +967,15 @@ mod tests {
     };
 
     #[tokio::test]
-    async fn manual_compact_command_uses_the_active_prompt_without_saving_a_message() {
-        use crate::{
-            openrouter::fixture::{Reply, Server, delta, sse, usage},
-            sessions::{AssistantBatch, AssistantMessage, ModelUsage},
-        };
-        let store = SessionStore::in_memory();
-        let mut state = ServerState::new(store.clone(), test_settings(), no_home());
-        let id = store.create(Path::new("/workspace")).unwrap().id;
-        // The saved turn start uses the default model; compaction prepares the
-        // next turn, which uses the selected one.
-        let selected = model::catalog()[1].qualified_id();
-        let active = ActiveSession {
-            selections: SessionSettings::new(&selected, EffortLevel::Default),
-            system_prompt: "captured system".to_owned(),
-            shell_processes: ShellProcesses::default(),
-            skills: vec![],
-        };
-        let mut updates = Vec::new();
-        let empty = state
-            .compact_session(&id, active.clone(), &PromptCancellation::new(), |update| {
-                updates.push(update);
-                Ok(())
-            })
-            .await
-            .unwrap();
-        assert_eq!(empty.stop_reason, StopReason::EndTurn);
-
-        store
-            .append_turn_start(&id, &TurnStart::test("previous work".to_owned()))
-            .unwrap();
-        store
-            .append_batch(
-                &id,
-                &AssistantBatch::new(
-                    AssistantMessage {
-                        text: "previous work ".repeat(3000),
-                        reasoning: String::new(),
-                        tool_calls: vec![],
-                        continuation_metadata: vec![],
-                        usage: Some(ModelUsage {
-                            input_tokens: 9000,
-                            cached_tokens: 0,
-                            output_tokens: 10,
-                            reasoning_tokens: 0,
-                            cost: Some(0.25),
-                        }),
-                    },
-                    vec![],
-                )
-                .unwrap(),
-            )
-            .unwrap();
-        store
-            .append_turn_start(&id, &TurnStart::test("latest work".to_owned()))
-            .unwrap();
-        store
-            .append_batch(
-                &id,
-                &AssistantBatch::new(
-                    AssistantMessage {
-                        text: "Latest work complete.".to_owned(),
-                        reasoning: String::new(),
-                        tool_calls: vec![],
-                        continuation_metadata: vec![],
-                        usage: None,
-                    },
-                    vec![],
-                )
-                .unwrap(),
-            )
-            .unwrap();
-        let before = store.read(&id).unwrap().unwrap().transcript;
-        let server = Server::start(vec![Reply::Stream(sse(&[
-            delta(
-                serde_json::json!({ "role": "assistant", "content": "Previous work complete." }),
-                Some("stop"),
-            ),
-            usage(9000, 20, 0.125),
-        ]))])
-        .await;
-        state.clients = server.client().into();
-        let response = state
-            .compact_session(&id, active, &PromptCancellation::new(), |update| {
-                updates.push(update);
-                Ok(())
-            })
-            .await
-            .unwrap();
-        assert_eq!(response.stop_reason, StopReason::EndTurn);
-        let after = store.read(&id).unwrap().unwrap().transcript;
-        assert_eq!(after.len(), before.len() + 1);
-        assert!(matches!(
-            after.last(),
-            Some(TranscriptEntry::CompactionCheckpoint(checkpoint))
-                if checkpoint.summarizer_cost == Some(0.125)
-        ));
-        let estimate = compaction::request_tokens(
-            &ModelRequestParameters::new(
-                &selected,
-                EffortLevel::Default,
-                "captured system".to_owned(),
-                tools::Role::Main,
-            )
-            .unwrap(),
-            &after,
-        );
-        assert!(matches!(
-            &updates[..],
-            [SessionUpdate::UsageUpdate(usage)]
-                if usage.used == estimate as u64
-                    && usage.cost.as_ref().is_some_and(|cost| cost.amount == 0.375 && cost.currency == "USD")
-        ));
-        let summarizer = &server.requests()[0];
-        assert_eq!(summarizer["model"], model::catalog()[1].id);
-        assert_eq!(
-            summarizer["messages"][0]["content"],
-            include_str!("prompts/compaction_prompt.md")
-        );
-        assert!(after.iter().all(|entry| !matches!(entry,
-            TranscriptEntry::TurnStart(TurnStart { input: TurnInput::UserMessage(message), .. })
-                if message.text() == "/compact")));
-    }
-    #[tokio::test]
-    async fn changing_provider_routes_the_next_prompt_and_manual_compaction() {
+    async fn changing_provider_routes_the_next_prompt() {
         use crate::{openai::fixture as openai_fixture, openrouter::fixture as openrouter_fixture};
 
         let openrouter = openrouter_fixture::Server::start(vec![openrouter_fixture::text_reply(
             "OpenRouter answer",
         )])
         .await;
-        let openai = openai_fixture::Server::start(
-            std::iter::once(openai_fixture::text_reply("OpenAI answer"))
-                .chain(
-                    std::iter::repeat_with(|| openai_fixture::text_reply("Short summary")).take(4),
-                )
-                .collect(),
-        )
-        .await;
+        let openai =
+            openai_fixture::Server::start(vec![openai_fixture::text_reply("OpenAI answer")]).await;
         let state = ServerState::with_clients(
             SessionStore::in_memory(),
             test_settings(),
@@ -1220,9 +988,8 @@ mod tests {
         let workspace = Workspace::new();
         let id = create_session(&state, &workspace.0);
 
-        let first = "Earlier details ".repeat(3_000);
         assert!(matches!(
-            run_selected_prompt(&state, &id, first).await,
+            run_selected_prompt(&state, &id, "Earlier details".to_owned()).await,
             prompt::PromptOutput::Finished(_)
         ));
         assert_eq!(openrouter.requests().len(), 1);
@@ -1244,21 +1011,6 @@ mod tests {
         assert_eq!(
             openai.requests()[0]["model"],
             openai_fixture::PROVIDER_MODEL
-        );
-
-        let active = state.active_session(&id).unwrap();
-        let response = state
-            .compact_session(&id, active, &PromptCancellation::new(), |_| Ok(()))
-            .await
-            .unwrap();
-        assert_eq!(response.stop_reason, StopReason::EndTurn);
-        assert!(openai.requests().len() > 1);
-        assert_eq!(openrouter.requests().len(), 1);
-        assert!(
-            openai
-                .requests()
-                .iter()
-                .all(|request| request["model"] == openai_fixture::PROVIDER_MODEL)
         );
 
         let stored = state.store.read(&id).unwrap().unwrap();
@@ -1472,22 +1224,15 @@ mod tests {
             serde_json::json!({
                 "sessionUpdate": "available_commands_update",
                 "availableCommands": [
-                    {"name": "compact", "description": "Compact the conversation context."},
                     {"name": "goal", "description": "The goal skill.", "input": {"hint": "<objective>"}},
                     {"name": "init", "description": "The init skill."}
                 ]
             })
         );
-        for command in ["/compact", " /compact now\n"] {
-            assert_eq!(
-                dispatch(command.to_owned().into(), &skills),
-                Dispatch::Compact
-            );
-        }
         let arguments = "Fix the \"tests\" in $HOME\n  and more";
         assert_eq!(
             dispatch(format!(" /goal\t{arguments} \n").into(), &skills),
-            Dispatch::Skill(SkillInvocation {
+            TurnInput::SkillInvocation(SkillInvocation {
                 name: "goal".to_owned(),
                 arguments: arguments.to_owned(),
                 instructions: "Follow the goal steps.".to_owned(),
@@ -1496,24 +1241,17 @@ mod tests {
         );
         assert_eq!(
             dispatch("/init".to_owned().into(), &skills),
-            Dispatch::Skill(SkillInvocation {
+            TurnInput::SkillInvocation(SkillInvocation {
                 name: "init".to_owned(),
                 arguments: String::new(),
                 instructions: "Follow the init steps.".to_owned(),
                 images: vec![],
             })
         );
-        for user_message in [
-            "compact",
-            "/compactness",
-            "/",
-            "/goals now",
-            "/review it",
-            "do /goal",
-        ] {
+        for user_message in ["/compact", "/", "/goals now", "/review it", "do /goal"] {
             assert_eq!(
                 dispatch(user_message.to_owned().into(), &skills),
-                Dispatch::UserMessage(user_message.to_owned().into())
+                TurnInput::UserMessage(user_message.to_owned().into())
             );
         }
         let with_image = UserMessage {
@@ -1526,7 +1264,7 @@ mod tests {
             ],
         };
         assert!(
-            matches!(dispatch(with_image, &skills), Dispatch::Skill(invocation)
+            matches!(dispatch(with_image, &skills), TurnInput::SkillInvocation(invocation)
             if invocation.arguments == "inspect" && invocation.images.len() == 1)
         );
     }

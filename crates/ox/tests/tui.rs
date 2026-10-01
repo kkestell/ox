@@ -258,6 +258,17 @@ fn streamed(parts: &[&str]) -> Reply {
 }
 
 fn render_replies() -> Vec<Reply> {
+    // The main agent and its subagent send their next requests concurrently, so
+    // each reply depends on which of them asked.
+    let after_start = || {
+        Reply::from(|request| {
+            if request["messages"][1]["content"] == "Render child" {
+                text_reply("Fixed.")
+            } else {
+                calls_reply(&[("wait", "wait", json!({"seconds":600}))])
+            }
+        })
+    };
     let calls = vec![
         json!({
             "index":0, "id":"run-1", "type":"function",
@@ -291,8 +302,8 @@ fn render_replies() -> Vec<Reply> {
                 Some("tool_calls"),
             ),
         ])),
-        text_reply("Fixed."),
-        calls_reply(&[("wait", "wait", json!({"seconds":600}))]),
+        after_start(),
+        after_start(),
         text_reply("Two tallies were counted in the workspace:\n\na.tally and b.tally"),
     ]
 }
