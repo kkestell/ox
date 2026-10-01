@@ -41,9 +41,8 @@ fn summarizer_tokens(bytes: usize) -> usize {
 
 /// The request body bytes for each reported input token of the latest
 /// assistant batch, from a rebuild of the request that produced it. The default
-/// when that batch has no usage or its turn ran on another model, which may
-/// tokenize differently. Every request carries a system prompt, so reported
-/// input tokens are never zero.
+/// when that batch has no usable usage or its turn ran on another model, which
+/// may tokenize differently.
 fn bytes_per_token(parameters: &ModelRequestParameters, transcript: &[TranscriptEntry]) -> f64 {
     let latest_batch = transcript
         .iter()
@@ -59,6 +58,9 @@ fn bytes_per_token(parameters: &ModelRequestParameters, transcript: &[Transcript
     let Some(usage) = &batch.message.usage else {
         return DEFAULT_BYTES_PER_TOKEN;
     };
+    if usage.input_tokens == 0 {
+        return DEFAULT_BYTES_PER_TOKEN;
+    }
     if turn_start_before(transcript, index).map(|start| start.model.as_str())
         != Some(parameters.model.qualified_id().as_str())
     {
@@ -1084,6 +1086,12 @@ mod tests {
         let measured = bytes(&[start(DEFAULT_MODEL)]) as f64 / 100.0;
         for (case, model, input_tokens, bytes_per_token) in [
             ("no usage", DEFAULT_MODEL, None, DEFAULT_BYTES_PER_TOKEN),
+            (
+                "zero input tokens",
+                DEFAULT_MODEL,
+                Some(0),
+                DEFAULT_BYTES_PER_TOKEN,
+            ),
             (
                 "usage from the same model",
                 DEFAULT_MODEL,
