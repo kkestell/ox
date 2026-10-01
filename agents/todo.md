@@ -1,6 +1,6 @@
 # TODO
 
-- [ ] [OX-0025](issues.csv:26): Unknown slash commands are sent to the model as
+- [x] [OX-0025](issues.csv:26): Unknown slash commands are sent to the model as
       prompts instead of being rejected
 - [ ] [OX-0026](issues.csv:27): Temporary OpenAI errors such as 503 end the turn
       instead of being retried
