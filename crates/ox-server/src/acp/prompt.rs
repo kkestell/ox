@@ -1111,13 +1111,13 @@ mod tests {
                     .contains("4096 tokens")
             );
             assert!(
-                requests[1 + offset]["input"][0]["content"][0]["text"]
+                requests[1 + offset]["input"][1]["content"][0]["text"]
                     .as_str()
                     .unwrap()
                     .starts_with("Compaction summary")
             );
             assert!(
-                requests[2 + offset]["input"][0]["content"][0]["text"]
+                requests[2 + offset]["input"][1]["content"][0]["text"]
                     .as_str()
                     .unwrap()
                     .contains("Earlier material.")
@@ -1657,12 +1657,11 @@ mod tests {
             text_reply("Done"),
         ])
         .await;
-        let old = "x".repeat(2_300_000);
         harness
             .store
-            .append_turn_start(&harness.session_id, &TurnStart::test(old.clone()))
+            .append_turn_start(&harness.session_id, &TurnStart::test("old task".to_owned()))
             .unwrap();
-        let TranscriptEntry::AssistantBatch(batch) = answer("Earlier answer") else {
+        let TranscriptEntry::AssistantBatch(batch) = answer(&"x".repeat(2_300_000)) else {
             unreachable!()
         };
         harness
@@ -1674,11 +1673,12 @@ mod tests {
         let requests = harness.server.requests();
         assert_eq!(requests.len(), 2);
         assert!(requests[0].get("tools").is_none());
+        assert_eq!(requests[1]["messages"][1]["content"], "old task");
         assert_eq!(
-            requests[1]["messages"][1]["content"],
+            requests[1]["messages"][2]["content"],
             "Compaction summary of earlier conversation:\nOlder work summarized."
         );
-        assert_eq!(requests[1]["messages"][2]["content"], "next request");
+        assert_eq!(requests[1]["messages"][3]["content"], "next request");
         assert!(matches!(
             &transcript[3],
             TranscriptEntry::CompactionCheckpoint(_)
@@ -1688,7 +1688,7 @@ mod tests {
         let command = format!("printf %s {}", "z".repeat(1000));
         let between = Harness::new(vec![
             tool_reply(&[("call-1", &command)]),
-            text_reply("The active request and tool result were summarized."),
+            text_reply("The earlier answer was summarized."),
             text_reply("Done"),
         ])
         .await;
@@ -1703,8 +1703,8 @@ mod tests {
         let automatic_threshold = compaction::budget(parameters.model).automatic_threshold;
         let base = "x".repeat(2_000_000);
         let prospective = vec![
-            turn(user(&base)),
-            answer("Earlier answer"),
+            turn(user("old task")),
+            answer(&base),
             turn(user("next request")),
         ];
         let base_estimate = compaction::request_tokens(&parameters, &prospective);
@@ -1715,11 +1715,11 @@ mod tests {
                 &between.session_id,
                 &TurnStart {
                     mode: SessionMode::Auto,
-                    ..TurnStart::test(user(&old))
+                    ..TurnStart::test(user("old task"))
                 },
             )
             .unwrap();
-        let TranscriptEntry::AssistantBatch(batch) = answer("Earlier answer") else {
+        let TranscriptEntry::AssistantBatch(batch) = answer(&old) else {
             unreachable!()
         };
         between
@@ -1737,10 +1737,10 @@ mod tests {
         assert!(requests[0].get("tools").is_some());
         assert!(requests[1].get("tools").is_none());
         assert!(
-            requests[2]["messages"][1]["content"]
+            requests[2]["messages"][2]["content"]
                 .as_str()
                 .unwrap()
-                .contains("The active request and tool result were summarized.")
+                .contains("The earlier answer was summarized.")
         );
         assert!(
             transcript
@@ -1762,12 +1762,9 @@ mod tests {
         .await;
         harness
             .store
-            .append_turn_start(
-                &harness.session_id,
-                &TurnStart::test("history ".repeat(4000)),
-            )
+            .append_turn_start(&harness.session_id, &TurnStart::test("history".to_owned()))
             .unwrap();
-        let TranscriptEntry::AssistantBatch(batch) = answer("Earlier answer") else {
+        let TranscriptEntry::AssistantBatch(batch) = answer(&"history ".repeat(4000)) else {
             unreachable!()
         };
         harness

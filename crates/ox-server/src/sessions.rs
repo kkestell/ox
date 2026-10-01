@@ -272,8 +272,7 @@ pub struct CompactionCheckpoint {
     pub summary: String,
     pub covered_prefix: usize,
     /// The summed cost of the summarizer requests made by the compaction that
-    /// committed this checkpoint, including cuts it tried and rejected. `None`
-    /// when none of them reported usage.
+    /// committed this checkpoint. `None` when none of them reported usage.
     pub summarizer_cost: Option<f64>,
 }
 

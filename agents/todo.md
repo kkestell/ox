@@ -13,7 +13,7 @@
         context because the byte estimate overshoots
   - [ ] [OX-0031](issues.csv:32): A compaction immediately before a subagent's
         final answer loses the report
-  - [ ] [OX-0044](issues.csv:45): A compacted skill invocation with an image
+  - [x] [OX-0044](issues.csv:45): A compacted skill invocation with an image
         blocks models without image input until another skill invocation
 - [ ] Subagent lifecycle (plan)
   - [ ] [OX-0032](issues.csv:33): A failed main turn cancels busy subagents and

@@ -1098,14 +1098,14 @@ mod tests {
         assert_eq!(empty.stop_reason, StopReason::EndTurn);
 
         store
-            .append_turn_start(&id, &TurnStart::test("previous work ".repeat(3000)))
+            .append_turn_start(&id, &TurnStart::test("previous work".to_owned()))
             .unwrap();
         store
             .append_batch(
                 &id,
                 &AssistantBatch::new(
                     AssistantMessage {
-                        text: "done".to_owned(),
+                        text: "previous work ".repeat(3000),
                         reasoning: String::new(),
                         tool_calls: vec![],
                         continuation_metadata: vec![],
