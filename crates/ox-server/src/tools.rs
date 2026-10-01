@@ -20,6 +20,7 @@ mod subagent;
 mod workspace;
 
 pub use shell::Permission;
+pub(crate) use shell::SHELL_PROGRAM;
 
 /// Which tools an agent has. The main agent also coordinates subagents,
 /// which have only the workspace and shell tools.
@@ -423,6 +424,33 @@ mod tests {
         let result = execute(&workspace.0, &call(READ_FILE, &args)).await;
         assert_eq!(result.status, ToolStatus::Failed);
         assert!(result.text.len() <= OUTPUT_LIMIT);
+    }
+
+    #[tokio::test]
+    async fn file_tools_accept_absolute_paths_inside_the_workspace() {
+        let workspace = fixture::Workspace::new();
+        let given = workspace.0.display().to_string();
+        let canonical = workspace.0.canonicalize().unwrap().display().to_string();
+        for (name, args) in [
+            (
+                WRITE_FILE,
+                json!({"path":format!("{given}/file"), "content":"needle\n"}),
+            ),
+            (
+                EDIT_FILE,
+                json!({"path":format!("{canonical}/file"), "old_text":"needle", "new_text":"needle!"}),
+            ),
+            (READ_FILE, json!({"path":format!("{given}/file")})),
+            (GLOB, json!({"path":given, "pattern":"*"})),
+            (GREP, json!({"path":canonical, "pattern":"needle!"})),
+        ] {
+            let outcome = execute(&workspace.0, &call(name, &args.to_string())).await;
+            assert_eq!(outcome.status, ToolStatus::Completed, "{name}: {outcome:?}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(workspace.0.join("file")).unwrap(),
+            "needle!\n"
+        );
     }
 
     #[cfg(unix)]

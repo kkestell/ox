@@ -12,6 +12,8 @@ use std::{
 use rustix::fs::{self, AtFlags, Mode, OFlags};
 
 pub(super) struct Workspace {
+    /// The workspace path as Ox was given it.
+    given: PathBuf,
     root: PathBuf,
     dir: File,
 }
@@ -26,9 +28,24 @@ impl Workspace {
             Mode::empty(),
         )?;
         Ok(Self {
+            given: path.to_path_buf(),
             root,
             dir: File::from(dir),
         })
+    }
+
+    /// `name` relative to the workspace when it is an absolute path inside
+    /// the workspace, under the path Ox was given or its canonical form, and
+    /// otherwise `name` itself. The workspace itself becomes `.`.
+    pub fn relative_name<'a>(&self, name: &'a Path) -> &'a Path {
+        match [&self.given, &self.root]
+            .into_iter()
+            .find_map(|root| name.strip_prefix(root).ok())
+        {
+            Some(relative) if relative.as_os_str().is_empty() => Path::new("."),
+            Some(relative) => relative,
+            None => name,
+        }
     }
 
     pub fn root(&self) -> &Path {
@@ -171,7 +188,7 @@ fn is_relative_path(name: &Path) -> bool {
 fn invalid_relative_path() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
-        "expected a relative path without parent traversal",
+        "expected a path inside the workspace without parent traversal; use the shell tool for other paths",
     )
 }
 

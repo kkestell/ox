@@ -1,12 +1,12 @@
-//! Builds Ox's system prompt from its built-in prompt and workspace
-//! instructions.
+//! Builds Ox's system prompt from its built-in prompt, the environment, and
+//! workspace instructions.
 
 use std::{
     io::{self, ErrorKind},
     path::Path,
 };
 
-use crate::text_file;
+use crate::{text_file, tools};
 
 const FILE_NAME: &str = "AGENTS.md";
 const BUILT_IN_PROMPT: &str = include_str!("prompts/system_prompt.md");
@@ -17,6 +17,13 @@ const SUBAGENT_PROMPT: &str = include_str!("prompts/subagent_prompt.md");
 pub fn for_workspace(workspace_path: &Path) -> io::Result<String> {
     let workspace = read_workspace(workspace_path)?;
     let mut prompt = BUILT_IN_PROMPT.trim_end().to_owned();
+    prompt.push_str(&format!(
+        "\n\n# Environment\n\n- Workspace: {}\n- Platform: {} ({})\n- Shell: {}",
+        workspace_path.display(),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        tools::SHELL_PROGRAM,
+    ));
     if let Some(workspace) = workspace {
         prompt.push_str("\n\n# Workspace instructions from AGENTS.md\n\n");
         prompt.push_str(workspace.trim_end());
@@ -56,9 +63,15 @@ mod tests {
     fn builds_a_prompt_from_bounded_utf8_workspace_instructions() {
         let workspace = Workspace::new();
         let path = workspace.0.join(FILE_NAME);
+        let environment = format!(
+            "# Environment\n\n- Workspace: {}\n- Platform: {} ({})\n- Shell: bash",
+            workspace.0.display(),
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        );
         assert_eq!(
             for_workspace(&workspace.0).unwrap(),
-            BUILT_IN_PROMPT.trim_end()
+            format!("{}\n\n{environment}", BUILT_IN_PROMPT.trim_end())
         );
         let limit = usize::try_from(MAX_BYTES).unwrap();
         let full = "a".repeat(limit);

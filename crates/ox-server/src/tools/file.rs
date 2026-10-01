@@ -14,11 +14,11 @@ pub(super) fn write_schema() -> Value {
         "type": "function",
         "function": {
             "name": WRITE_FILE,
-            "description": "Create or overwrite one UTF-8 regular file in the workspace, creating missing parent directories. Paths must be relative, without parent traversal or symbolic links. Content is literal: line endings and final newlines are supplied by you. Empty content creates or truncates an empty file. Example: {\"path\":\"notes/today.txt\",\"content\":\"Hello\\n\"}.",
+            "description": "Create or overwrite one UTF-8 regular file in the workspace, creating missing parent directories. Paths are relative to the workspace or absolute inside it, without parent traversal or symbolic links. Content is literal: line endings and final newlines are supplied by you. Empty content creates or truncates an empty file. Example: {\"path\":\"notes/today.txt\",\"content\":\"Hello\\n\"}.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "File path relative to the workspace."},
+                    "path": {"type": "string", "description": "File path relative to the workspace or absolute inside it."},
                     "content": {"type": "string", "description": "Complete file content."}
                 },
                 "required": ["path", "content"],
@@ -33,11 +33,11 @@ pub(super) fn edit_schema() -> Value {
         "type": "function",
         "function": {
             "name": EDIT_FILE,
-            "description": "Replace exactly one occurrence of old_text in an existing UTF-8 regular file. old_text must be nonempty and unique; include surrounding context if ambiguous. Empty new_text deletes the match. Strings are literal, with no regular expressions, escape interpretation, or newline normalization. Paths must be relative to the workspace, without parent traversal or symbolic links. Example: {\"path\":\"notes/today.txt\",\"old_text\":\"Hello\",\"new_text\":\"Goodbye\"}.",
+            "description": "Replace exactly one occurrence of old_text in an existing UTF-8 regular file. old_text must be nonempty and unique; include surrounding context if ambiguous. Empty new_text deletes the match. Strings are literal, with no regular expressions, escape interpretation, or newline normalization. Paths are relative to the workspace or absolute inside it, without parent traversal or symbolic links. Example: {\"path\":\"notes/today.txt\",\"old_text\":\"Hello\",\"new_text\":\"Goodbye\"}.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "File path relative to the workspace."},
+                    "path": {"type": "string", "description": "File path relative to the workspace or absolute inside it."},
                     "old_text": {"type": "string", "description": "Nonempty exact text that occurs once."},
                     "new_text": {"type": "string", "description": "Literal replacement text."}
                 },
@@ -64,9 +64,9 @@ struct EditArgs {
 }
 
 fn target(root: &Path, name: &str) -> Result<(Workspace, PathBuf), String> {
-    let path =
-        Workspace::normalize_path(Path::new(name)).map_err(|error| format!("{name}: {error}"))?;
     let workspace = Workspace::open(root).map_err(|error| format!("workspace: {error}"))?;
+    let path = Workspace::normalize_path(workspace.relative_name(Path::new(name)))
+        .map_err(|error| format!("{name}: {error}"))?;
     Ok((workspace, path))
 }
 

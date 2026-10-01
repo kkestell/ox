@@ -14,6 +14,8 @@ use crate::{
 
 use super::{SHELL, SHELL_PROCESS};
 
+/// Found on `PATH`, so a newer bash takes precedence over an old `/bin/bash`.
+pub(crate) const SHELL_PROGRAM: &str = "bash";
 const OUTPUT_BODY_LIMIT: usize = 14 * 1024;
 const DEFAULT_TIMEOUT_SECONDS: u64 = 120;
 const MAX_WAIT_SECONDS: u64 = 30;
@@ -123,7 +125,7 @@ pub(super) fn schema() -> Value {
         "type": "function",
         "function": {
             "name": SHELL,
-            "description": "Run a /bin/sh command starting in the session workspace. An ordinary call waits for the command to finish and returns the exit status and tails of stdout and stderr, at most 16 KiB total. Output has a shared 14 KiB budget: 7 KiB per stream, with unused space given to the other stream. Earlier output may be omitted; redirect long logs to a workspace file for later inspection. Each ordinary call starts a fresh shell with stdin connected to /dev/null. Set background to true for a development server, watcher, or long build: the call returns a process ID as soon as the command starts, and the command keeps running across turns until it exits, shell_process stops it, the session is deleted, or Ox exits. Commands run with Ox's permissions and can access paths outside the workspace.",
+            "description": "Run a bash command starting in the session workspace. An ordinary call waits for the command to finish and returns the exit status and tails of stdout and stderr, at most 16 KiB total. Output has a shared 14 KiB budget: 7 KiB per stream, with unused space given to the other stream. Earlier output may be omitted; rerun a narrower command or redirect long output to a file to inspect it. Output is already bounded, so run a command directly rather than piping it through tail or head: a pipeline reports only its last command's exit status. Each ordinary call starts a fresh shell in the workspace with stdin connected to /dev/null, so directory changes and exported variables do not carry over. Set background to true for a development server, watcher, or long build: the call returns a process ID as soon as the command starts, and the command keeps running across turns until it exits, shell_process stops it, the session is deleted, or Ox exits. Commands run with Ox's permissions and can access paths outside the workspace.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -198,7 +200,7 @@ pub(super) fn process_schema() -> Value {
 }
 
 fn shell_command(workspace: &Path, command_text: &str) -> Command {
-    let mut command = Command::new("/bin/sh");
+    let mut command = Command::new(SHELL_PROGRAM);
     command
         .arg("-c")
         .arg(command_text)
@@ -245,7 +247,7 @@ pub(super) async fn execute(
                 process.id()
             )),
             Err(error) => failure(format!(
-                "Could not start /bin/sh in {}: {error}",
+                "Could not start {SHELL_PROGRAM} in {}: {error}",
                 workspace.display()
             )),
         };
@@ -263,7 +265,7 @@ pub(super) async fn execute(
             finished.diagnostics,
         ),
         Err(error) => failure(format!(
-            "Could not start /bin/sh in {}: {error}",
+            "Could not start {SHELL_PROGRAM} in {}: {error}",
             workspace.display()
         )),
     }
@@ -487,13 +489,13 @@ fn report(
     out.omitted |= trim_front(&mut stdout, out_budget);
     err.omitted |= trim_front(&mut stderr, err_budget);
     let mut content = vec![ToolContent::Text(status.clone())];
-    for (name, text, omitted) in [
-        ("stdout", stdout, out.omitted),
-        ("stderr", stderr, err.omitted),
-    ] {
+    for (name, text, capture) in [("stdout", stdout, &out), ("stderr", stderr, &err)] {
         status.push_str(&format!("\n\n{name}:"));
-        if omitted {
-            status.push_str(" (tail; earlier output omitted)");
+        if capture.omitted {
+            status.push_str(&format!(
+                " (tail of {} bytes; earlier output omitted)",
+                capture.total_bytes
+            ));
         }
         status.push('\n');
         status.push_str(if text.is_empty() { "(empty)" } else { &text });
@@ -1099,9 +1101,11 @@ mod tests {
         let killed = run(&workspace.0, "kill -TERM $$").await;
         assert_eq!(killed.status, ToolStatus::Failed);
         assert!(killed.text.contains("signal: 15"));
+        let bash = run(&workspace.0, "false | true; exit ${PIPESTATUS[0]}").await;
+        assert!(bash.text.starts_with("Exit code: 1"), "{bash:?}");
         let unstarted = run(&workspace.0.join("missing"), "true").await;
         assert_eq!(unstarted.status, ToolStatus::Failed);
-        assert!(unstarted.text.contains("Could not start /bin/sh"));
+        assert!(unstarted.text.contains("Could not start bash"));
         assert_eq!(run(&workspace.0, "false; false | true; mkdir sub; cd sub; export OX_SHELL_LOCAL=changed; printf saved > ../file").await.status, ToolStatus::Completed);
         let read = run(
             &workspace.0,
@@ -1170,7 +1174,11 @@ mod tests {
         assert_eq!(outcome.status, ToolStatus::Completed);
         assert!(workspace.0.join("finished").exists());
         assert!(outcome.text.len() <= tools::OUTPUT_LIMIT);
-        assert_eq!(outcome.text.matches("earlier output omitted").count(), 2);
+        for (stream, end) in [("stdout", "OUT_END"), ("stderr", "ERR_END")] {
+            let total = format!("{stream} line\n").len() * 5000 + end.len();
+            let notice = format!("{stream}: (tail of {total} bytes; earlier output omitted)");
+            assert!(outcome.text.contains(&notice), "{notice}");
+        }
         assert!(outcome.text.contains("OUT_END"));
         assert!(outcome.text.ends_with("ERR_END"));
     }
@@ -1207,6 +1215,7 @@ mod tests {
 
     fn capture(bytes: Vec<u8>) -> Capture {
         let mut capture = Capture::new(OUTPUT_BODY_LIMIT);
+        capture.total_bytes = bytes.len() as u64;
         capture.bytes = bytes.into();
         capture
     }

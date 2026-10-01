@@ -5,6 +5,7 @@ use std::{
     process::{ExitStatus, Stdio},
 };
 
+use ignore::overrides::{Override, OverrideBuilder};
 use regex::bytes::Regex;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -42,12 +43,12 @@ pub(super) fn glob_schema() -> Value {
         "type": "function",
         "function": {
             "name": GLOB,
-            "description": "Find files inside the workspace using a ripgrep glob. Returns `./`-prefixed workspace-relative paths, at most 16 KiB. Narrow the pattern or path if truncated. Uses ripgrep's normal hidden-file and ignore filtering, including glob overrides; does not follow symlinks during traversal. Example: {\"pattern\":\"*.rs\",\"path\":\"src\"}.",
+            "description": "Find files inside the workspace using a ripgrep glob. Returns `./`-prefixed workspace-relative paths, at most 16 KiB. Narrow the pattern or path if truncated. Skips hidden and ignored files, whatever the pattern; does not follow symlinks during traversal. Example: {\"pattern\":\"*.rs\",\"path\":\"src\"}.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "pattern": { "type": "string", "description": "Ripgrep glob, e.g. *.rs or src/**/*.rs." },
-                    "path": { "type": "string", "default": ".", "description": "Workspace-relative directory to search. Globs are relative to the workspace." }
+                    "path": { "type": "string", "default": ".", "description": "Directory to search, relative to the workspace or absolute inside it. Globs are relative to the workspace." }
                 },
                 "required": ["pattern"],
                 "additionalProperties": false
@@ -61,12 +62,12 @@ pub(super) fn grep_schema() -> Value {
         "type": "function",
         "function": {
             "name": GREP,
-            "description": "Search workspace text files with a case-sensitive Rust regex; use (?i) for case-insensitivity. Returns path:line:content, at most 16 KiB. Narrow the pattern or path if truncated. Uses ripgrep's normal hidden-file and ignore filtering for file discovery, including explicit-path and glob overrides; does not follow symlinks during traversal. Example: {\"pattern\":\"fn main\",\"path\":\"src\",\"glob\":\"*.rs\"}.",
+            "description": "Search workspace text files with a case-sensitive Rust regex; use (?i) for case-insensitivity. Returns path:line:content, at most 16 KiB. Narrow the pattern or path if truncated. Skips hidden and ignored files unless the path names one; does not follow symlinks during traversal. Example: {\"pattern\":\"fn main\",\"path\":\"src\",\"glob\":\"*.rs\"}.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "pattern": { "type": "string", "description": "Ripgrep regular expression." },
-                    "path": { "type": "string", "default": ".", "description": "Workspace-relative file or directory to search." },
+                    "path": { "type": "string", "default": ".", "description": "File or directory to search, relative to the workspace or absolute inside it." },
                     "glob": { "type": "string", "description": "Optional filename glob, relative to the workspace, e.g. *.rs." }
                 },
                 "required": ["pattern"],
@@ -84,22 +85,25 @@ pub(super) async fn execute(
     let workspace = Workspace::open(root).map_err(|e| e.to_string())?;
     let mut command = Command::new("rg");
     command.args(["--no-config", "--files", "--null"]);
-    let (scope, matcher) = if name == GLOB {
+    let (scope, glob, matcher) = if name == GLOB {
         let args: GlobArgs =
             serde_json::from_str(arguments).map_err(|e| format!("arguments: {e}"))?;
-        command.arg("--glob").arg(args.pattern);
-        (args.path, None)
+        let glob =
+            glob_filter(workspace.root(), &args.pattern).map_err(|e| format!("pattern: {e}"))?;
+        (args.path, Some(glob), None)
     } else {
         let args: GrepArgs =
             serde_json::from_str(arguments).map_err(|e| format!("arguments: {e}"))?;
         let matcher = Regex::new(&args.pattern).map_err(|e| format!("pattern: {e}"))?;
-        if let Some(glob) = args.glob {
-            command.arg("--glob").arg(glob);
-        }
-        (args.path, Some(matcher))
+        let glob = args
+            .glob
+            .map(|glob| glob_filter(workspace.root(), &glob).map_err(|e| format!("glob: {e}")))
+            .transpose()?;
+        (args.path, glob, Some(matcher))
     };
+    let relative = workspace.relative_name(Path::new(&scope));
     let path = workspace
-        .resolve_allowing_link_target(Path::new(&scope))
+        .resolve_allowing_link_target(relative)
         .map_err(|e| format!("{scope}: {e}"))?;
     let directory = workspace.directory(&path).is_ok();
     if name == GLOB && !directory {
@@ -112,13 +116,22 @@ pub(super) async fn execute(
     // each candidate through the workspace descriptor before reading or returning it.
     command.current_dir(root).arg("--").arg(
         Path::new(".").join(
-            Path::new(&scope)
+            relative
                 .components()
                 .filter(|part| matches!(part, Component::Normal(_)))
                 .collect::<PathBuf>(),
         ),
     );
-    run(command, &workspace, matcher.as_ref()).await
+    run(command, &workspace, glob.as_ref(), matcher.as_ref()).await
+}
+
+/// Matches candidate names the way ripgrep's `--glob` does. Given to ripgrep,
+/// a glob would override its ignore filtering, so `**/*` would list `.git` and
+/// every ignored file.
+fn glob_filter(root: &Path, glob: &str) -> Result<Override, ignore::Error> {
+    let mut builder = OverrideBuilder::new(root);
+    builder.add(glob)?;
+    builder.build()
 }
 
 // Leave room in the output budget for the truncation and diagnostics notices.
@@ -129,6 +142,7 @@ const DIAGNOSTICS_LIMIT: usize = 512;
 async fn run(
     mut command: Command,
     workspace: &Workspace,
+    glob: Option<&Override>,
     matcher: Option<&Regex>,
 ) -> Result<(String, Vec<ToolContent>), String> {
     let mut child = command
@@ -145,10 +159,12 @@ async fn run(
         let mut candidate = Vec::new();
         let mut output = SearchOutput::default();
         while !output.truncated && reader.read_until(0, &mut candidate).await? != 0 {
-            let name = candidate.strip_suffix(&[0]).unwrap_or(&candidate);
-            output
-                .add_candidate(workspace, Path::new(OsStr::from_bytes(name)), matcher)
-                .await;
+            let name = Path::new(OsStr::from_bytes(
+                candidate.strip_suffix(&[0]).unwrap_or(&candidate),
+            ));
+            if !glob.is_some_and(|glob| glob.matched(name, false).is_ignore()) {
+                output.add_candidate(workspace, name, matcher).await;
+            }
             candidate.clear();
         }
         if output.truncated {
@@ -380,6 +396,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(files, ("./src/a.rs\n".to_owned(), summary("1 files")));
+        assert_eq!(
+            search(&workspace, GLOB, json!({"pattern":"src/**/*.rs"}))
+                .await
+                .unwrap(),
+            "./src/a.rs\n"
+        );
         let matches = search_with_content(
             &workspace,
             GREP,
@@ -437,12 +459,15 @@ mod tests {
             .unwrap()
             .contains("needle")
         );
-        assert!(
-            search(&workspace, GLOB, json!({"pattern":"ignored"}))
+        for pattern in ["ignored", ".hidden", "**/*"] {
+            let files = search(&workspace, GLOB, json!({"pattern":pattern}))
                 .await
-                .unwrap()
-                .contains("ignored")
-        );
+                .unwrap();
+            assert!(
+                !files.contains("ignored") && !files.contains(".hidden"),
+                "{pattern}: {files}"
+            );
+        }
         for name in [GLOB, GREP] {
             assert_eq!(
                 search_with_content(&workspace, name, json!({"pattern":"nothing-matches"}))
@@ -515,7 +540,7 @@ mod tests {
         assert!(drain_errors(bytes.as_slice()).await.unwrap());
         let workspace = Workspace::new();
         let pinned = super::Workspace::open(&workspace.0).unwrap();
-        let error = run(Command::new("/nonexistent/ox-test-rg"), &pinned, None)
+        let error = run(Command::new("/nonexistent/ox-test-rg"), &pinned, None, None)
             .await
             .unwrap_err();
         assert!(error.contains("install ripgrep"));
@@ -525,7 +550,7 @@ mod tests {
         command
             .args(["-c", "echo $$ > \"$1\"; exec sleep 60", "sh"])
             .arg(&pid_path);
-        let task = tokio::spawn(async move { run(command, &pinned, None).await });
+        let task = tokio::spawn(async move { run(command, &pinned, None, None).await });
         let pid = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if let Ok(pid) = tokio::fs::read_to_string(&pid_path).await
@@ -576,7 +601,7 @@ mod tests {
             let mut command = Command::new("sh");
             command.args(["-c", "printf 'link/secret\\000'"]);
             assert_eq!(
-                run(command, &pinned, matcher.as_ref()).await.unwrap(),
+                run(command, &pinned, None, matcher.as_ref()).await.unwrap(),
                 ("No matches found.".to_owned(), vec![])
             );
         }
