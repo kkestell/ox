@@ -665,6 +665,7 @@ mod tests {
         )
         .unwrap();
         store.append_batch(&id, &batch).unwrap();
+        store.append_batch(&id, &answer("latest answer")).unwrap();
         let mut transcript = store.read(&id).unwrap().unwrap().transcript;
         let original = transcript.clone();
         let server =
@@ -684,6 +685,7 @@ mod tests {
             .await
             .unwrap()
         );
+        assert_eq!(server.requests().len(), 1);
         assert_eq!(transcript, original);
         assert_eq!(store.read(&id).unwrap().unwrap().transcript, original);
     }
