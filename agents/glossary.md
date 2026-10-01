@@ -60,10 +60,12 @@
 - **Skill**: Instructions from a skills directory, invoked as a slash command.
 - **Workspace instructions**: The workspace's `AGENTS.md`, added to the system
   prompt.
-- **Model provider**: OpenRouter or OpenAI, selected once for an Ox server
-  process.
-- **Model client**: The selected provider's HTTP client.
-- **Model catalog**: The selected provider's models Ox offers.
+- **Model provider**: OpenRouter or OpenAI, selected by a qualified model ID.
+- **Qualified model ID**: A model provider ID, a colon, and that provider's
+  model ID.
+- **Model client**: One model provider's HTTP client.
+- **Model catalog**: The models from every model provider whose credentials were
+  available when the process started.
 - **Session cost**: What a main session and its child sessions have spent on
   model requests.
 - **Transcript view**: The client's display of the session's transcript, the

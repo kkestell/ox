@@ -330,17 +330,17 @@ fn resume_picker_shows_saved_session_and_replays_on_enter() {
 
 #[test]
 #[ignore = "requires tmux; run make e2e"]
-fn model_picker_shows_prices_and_changes_the_model() {
+fn model_picker_shows_providers_and_prices_and_changes_the_model() {
     let test = Tmux::new(vec![]);
     test.prompt("/model");
     test.wait("Search");
     let screen = test.screen();
     assert!(
-        screen.contains("DeepSeek V4.1 Flash                              $0.03  $0.60  1,048,576"),
+        screen.contains("DeepSeek V4.1 Flash                  OpenRouter  $0.03  $0.60  1,048,576"),
         "{screen}"
     );
     assert!(
-        screen.contains("GLM 5.3 Flash                                    $0.04  $0.14  1,310,720"),
+        screen.contains("GLM 5.3 Flash                        OpenRouter  $0.04  $0.14  1,310,720"),
         "{screen}"
     );
     assert!(!screen.contains("0% • $0.00"), "{screen}");
@@ -358,7 +358,7 @@ fn model_picker_shows_prices_and_changes_the_model() {
     assert_eq!(config["model"], DEFAULT_MODEL);
     assert_eq!(
         config["favorites"],
-        serde_json::json!(["z-ai/glm-5.3-flash"])
+        serde_json::json!(["openrouter:z-ai/glm-5.3-flash"])
     );
     let styled = test.styled_screen();
     assert!(

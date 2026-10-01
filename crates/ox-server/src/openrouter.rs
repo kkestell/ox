@@ -11,8 +11,8 @@ use serde_json::{Value, json};
 
 use crate::{
     model::{
-        CatalogModel, Completion, InputContextOverflow, ModelRequestParameters, Stop, StreamItem,
-        skill_invocation_message, subagent_message_text,
+        self, CatalogModel, Completion, InputContextOverflow, ModelRequestParameters, Stop,
+        StreamItem, skill_invocation_message, subagent_message_text,
     },
     sessions::{
         AssistantMessage, EffortLevel, ImageAttachment, ModelUsage, ToolCall, TranscriptEntry,
@@ -133,26 +133,6 @@ pub fn parse_catalog(text: &str, now: i64) -> io::Result<Vec<CatalogModel>> {
     Ok(models)
 }
 
-/// Downloads and filters OpenRouter's model catalog. It needs no API key.
-pub async fn fetch_catalog() -> io::Result<Vec<CatalogModel>> {
-    let response = reqwest::Client::new()
-        .get(format!("{}/models", endpoint()))
-        .timeout(Duration::from_secs(15))
-        .send()
-        .await
-        .map_err(transport)?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(io::Error::other(format!(
-            "OpenRouter model catalog returned {status}"
-        )));
-    }
-    parse_catalog(
-        &response.text().await.map_err(transport)?,
-        chrono::Utc::now().timestamp(),
-    )
-}
-
 const ENDPOINT: &str = "https://openrouter.ai/api/v1";
 
 fn endpoint() -> String {
@@ -237,6 +217,28 @@ impl Client {
             endpoint,
             stall_timeout: STALL_TIMEOUT,
         }
+    }
+
+    /// Downloads and filters OpenRouter's model catalog.
+    pub async fn fetch_catalog(&self) -> io::Result<Vec<CatalogModel>> {
+        let response = self
+            .http
+            .get(format!("{}/models", self.endpoint))
+            .bearer_auth(&self.api_key)
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(transport)?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(io::Error::other(format!(
+                "OpenRouter model catalog returned {status}"
+            )));
+        }
+        parse_catalog(
+            &response.text().await.map_err(transport)?,
+            chrono::Utc::now().timestamp(),
+        )
     }
 
     /// Checks the key against OpenRouter's key endpoint without generating.
@@ -390,17 +392,23 @@ pub(crate) fn user_message(message: &UserMessage) -> Value {
 
 /// Encodes the saved transcript as OpenRouter chat messages. Visible reasoning
 /// is sent only when no continuation metadata carries it.
-pub(crate) fn chat_messages(transcript: &[TranscriptEntry]) -> Vec<Value> {
+pub(crate) fn chat_messages(
+    transcript: &[TranscriptEntry],
+    mut turn_provider: Option<model::Provider>,
+) -> Vec<Value> {
     let mut messages = Vec::new();
     for entry in transcript {
         let value = match entry {
             TranscriptEntry::CompactionCheckpoint(_) => continue,
-            TranscriptEntry::TurnStart(turn_start) => match &turn_start.input {
-                TurnInput::UserMessage(message) => user_message(message),
-                TurnInput::SkillInvocation(invocation) => {
-                    user_message(&skill_invocation_message(invocation))
+            TranscriptEntry::TurnStart(turn_start) => {
+                turn_provider = model::Provider::from_qualified_model_id(&turn_start.model);
+                match &turn_start.input {
+                    TurnInput::UserMessage(message) => user_message(message),
+                    TurnInput::SkillInvocation(invocation) => {
+                        user_message(&skill_invocation_message(invocation))
+                    }
                 }
-            },
+            }
             TranscriptEntry::SubagentMessages(subagent_messages) => {
                 messages.extend(subagent_messages.iter().map(
                     |message| json!({ "role": "user", "content": subagent_message_text(message) }),
@@ -428,7 +436,9 @@ pub(crate) fn chat_messages(transcript: &[TranscriptEntry]) -> Vec<Value> {
                         })
                         .collect();
                 }
-                if !message.continuation_metadata.is_empty() {
+                if turn_provider == Some(model::Provider::OpenRouter)
+                    && !message.continuation_metadata.is_empty()
+                {
                     value["reasoning_details"] =
                         Value::Array(message.continuation_metadata.clone());
                 } else if !message.reasoning.is_empty() {
@@ -805,8 +815,10 @@ pub mod fixture {
     use super::{Client, STALL_TIMEOUT};
     use crate::tools;
 
-    /// The default model of the test settings, a model in `CATALOG`.
-    pub const DEFAULT_MODEL: &str = "deepseek/deepseek-v4.1-flash";
+    /// The default qualified model of the test settings, whose provider-native
+    /// ID is in `CATALOG`.
+    pub const DEFAULT_MODEL: &str = "openrouter:deepseek/deepseek-v4.1-flash";
+    pub const PROVIDER_MODEL: &str = "deepseek/deepseek-v4.1-flash";
 
     /// The time `CATALOG` is filtered at: 2026-09-23.
     pub const NOW: i64 = 1_790_121_600;
@@ -1159,7 +1171,7 @@ pub mod fixture {
         json!({
             "id": "gen-1",
             "object": "chat.completion.chunk",
-            "model": DEFAULT_MODEL,
+            "model": PROVIDER_MODEL,
             "choices": [{ "index": 0, "delta": delta, "finish_reason": finish_reason }],
         })
     }
@@ -1169,7 +1181,7 @@ pub mod fixture {
         json!({
             "id": "gen-1",
             "object": "chat.completion.chunk",
-            "model": DEFAULT_MODEL,
+            "model": PROVIDER_MODEL,
             "choices": [{ "index": 0, "delta": { "content": "" }, "finish_reason": "stop" }],
             "usage": { "prompt_tokens": input, "completion_tokens": output, "total_tokens": input + output, "cost": cost },
         })
@@ -1294,7 +1306,7 @@ mod tests {
             .client()
             .stream_completion(
                 &test_parameters(),
-                chat_messages(&[TranscriptEntry::turn("hi".to_owned())]),
+                chat_messages(&[TranscriptEntry::turn("hi".to_owned())], None),
             )
             .await?;
         drain(&mut request).await
@@ -1339,9 +1351,11 @@ mod tests {
             arguments: raw.to_owned(),
             ..call("call-1", "printf Chicago")
         };
+        let model = &catalog()[2];
+        assert_eq!(model.provider, model::Provider::OpenRouter);
         let transcript = vec![
             TranscriptEntry::TurnStart(TurnStart {
-                model: catalog()[2].id.clone(),
+                model: model.qualified_id(),
                 effort: EffortLevel::High,
                 mode: SessionMode::Auto,
                 input: "Weather in Chicago and Denver?".to_owned().into(),
@@ -1365,14 +1379,14 @@ mod tests {
             .client()
             .stream_completion(
                 &ModelRequestParameters::new(
-                    catalog()[2].id.as_str(),
+                    &model.qualified_id(),
                     EffortLevel::Default,
                     "You are Ox.\n\n# Workspace instructions from AGENTS.md\n\nAnswer in French."
                         .to_owned(),
                     tools::Role::Main,
                 )
                 .unwrap(),
-                chat_messages(&transcript),
+                chat_messages(&transcript, None),
             )
             .await
             .unwrap();
@@ -1380,7 +1394,7 @@ mod tests {
         assert_eq!(completion(&items).stop, Stop::Finished);
 
         let body = &server.requests()[0];
-        assert_eq!(body["model"], catalog()[2].id.as_str());
+        assert_eq!(body["model"], model.id);
         assert_eq!(body["stream"], true);
         assert_eq!(body["usage"], json!({ "include": true }));
         assert!(
@@ -1431,21 +1445,24 @@ mod tests {
             data: "aGVsbG8=".to_owned(),
             mime_type: "image/png".to_owned(),
         };
-        let messages = chat_messages(&[
-            TranscriptEntry::turn(UserMessage {
-                parts: vec![
-                    UserMessagePart::Text("Before".to_owned()),
-                    UserMessagePart::Image(image.clone()),
-                    UserMessagePart::Text("After".to_owned()),
-                ],
-            }),
-            TranscriptEntry::turn(SkillInvocation {
-                name: "goal".to_owned(),
-                arguments: "Inspect".to_owned(),
-                instructions: "Look at the screenshot.".to_owned(),
-                images: vec![image],
-            }),
-        ]);
+        let messages = chat_messages(
+            &[
+                TranscriptEntry::turn(UserMessage {
+                    parts: vec![
+                        UserMessagePart::Text("Before".to_owned()),
+                        UserMessagePart::Image(image.clone()),
+                        UserMessagePart::Text("After".to_owned()),
+                    ],
+                }),
+                TranscriptEntry::turn(SkillInvocation {
+                    name: "goal".to_owned(),
+                    arguments: "Inspect".to_owned(),
+                    instructions: "Look at the screenshot.".to_owned(),
+                    images: vec![image],
+                }),
+            ],
+            None,
+        );
         assert_eq!(
             messages[0]["content"],
             json!([
@@ -1467,7 +1484,10 @@ mod tests {
     #[test]
     fn catalog_filter_keeps_recent_usable_models_by_name_with_known_efforts() {
         use EffortLevel::*;
-        let models = catalog();
+        let models = catalog()
+            .iter()
+            .filter(|model| model.provider == crate::model::Provider::OpenRouter)
+            .collect::<Vec<_>>();
         assert_eq!(
             models
                 .iter()
@@ -1507,14 +1527,17 @@ mod tests {
 
     #[tokio::test]
     async fn requests_send_each_effort_of_each_model() {
-        for model in catalog() {
+        for model in catalog()
+            .iter()
+            .filter(|model| model.provider == crate::model::Provider::OpenRouter)
+        {
             for effort in model.efforts.iter().copied() {
                 let server = Server::start(vec![text_reply("Done")]).await;
                 let mut stream = server
                     .client()
                     .stream_completion(
                         &ModelRequestParameters::new(
-                            &model.id,
+                            &model.qualified_id(),
                             effort,
                             TEST_SYSTEM_PROMPT.to_owned(),
                             tools::Role::Main,
@@ -1567,6 +1590,57 @@ mod tests {
     }
 
     #[test]
+    fn continuation_metadata_is_only_sent_for_openrouter_turns() {
+        let batch = |text: &str, reasoning: &str, metadata| {
+            TranscriptEntry::AssistantBatch(AssistantBatch {
+                message: AssistantMessage {
+                    text: text.to_owned(),
+                    reasoning: reasoning.to_owned(),
+                    tool_calls: vec![],
+                    continuation_metadata: vec![metadata],
+                    usage: None,
+                },
+                outcomes: vec![],
+            })
+        };
+        let mut openrouter_start = TurnStart::test("OpenRouter question".to_owned());
+        openrouter_start.model = DEFAULT_MODEL.to_owned();
+        let mut openai_start = TurnStart::test("OpenAI question".to_owned());
+        openai_start.model = crate::openai::fixture::DEFAULT_MODEL.to_owned();
+        let openrouter_metadata = json!({"type":"reasoning.encrypted", "data":"openrouter"});
+        let messages = chat_messages(
+            &[
+                TranscriptEntry::TurnStart(openrouter_start),
+                batch(
+                    "OpenRouter answer",
+                    "OpenRouter reasoning",
+                    openrouter_metadata.clone(),
+                ),
+                TranscriptEntry::TurnStart(openai_start),
+                batch(
+                    "OpenAI answer",
+                    "OpenAI reasoning",
+                    json!({"type":"reasoning", "encrypted_content":"openai"}),
+                ),
+            ],
+            None,
+        );
+
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0]["content"], "OpenRouter question");
+        assert_eq!(messages[1]["content"], "OpenRouter answer");
+        assert_eq!(
+            messages[1]["reasoning_details"],
+            json!([openrouter_metadata])
+        );
+        assert!(messages[1].get("reasoning").is_none());
+        assert_eq!(messages[2]["content"], "OpenAI question");
+        assert_eq!(messages[3]["content"], "OpenAI answer");
+        assert!(messages[3].get("reasoning_details").is_none());
+        assert_eq!(messages[3]["reasoning"], "OpenAI reasoning");
+    }
+
+    #[test]
     fn visible_reasoning_is_sent_only_without_metadata() {
         let plain = AssistantMessage {
             text: "Four.".to_owned(),
@@ -1575,10 +1649,13 @@ mod tests {
             continuation_metadata: vec![],
             usage: None,
         };
-        let messages = chat_messages(&[TranscriptEntry::AssistantBatch(AssistantBatch {
-            message: plain,
-            outcomes: vec![],
-        })]);
+        let messages = chat_messages(
+            &[TranscriptEntry::AssistantBatch(AssistantBatch {
+                message: plain,
+                outcomes: vec![],
+            })],
+            None,
+        );
         assert_eq!(messages[0]["reasoning"], "Add them.");
         assert!(messages[0].get("reasoning_details").is_none());
         assert!(messages[0].get("tool_calls").is_none());
@@ -1719,11 +1796,17 @@ mod tests {
                     third_encrypted,
                 ];
                 assert_eq!(message.continuation_metadata, expected);
-                let messages = chat_messages(&[TranscriptEntry::AssistantBatch(AssistantBatch {
-                    message,
-                    outcomes: vec![],
-                })]);
-                assert_eq!(messages[0]["reasoning_details"], json!(expected));
+                let messages = chat_messages(
+                    &[
+                        TranscriptEntry::turn("Question".to_owned()),
+                        TranscriptEntry::AssistantBatch(AssistantBatch {
+                            message,
+                            outcomes: vec![],
+                        }),
+                    ],
+                    None,
+                );
+                assert_eq!(messages[1]["reasoning_details"], json!(expected));
             }
         }
     }
@@ -1872,7 +1955,7 @@ mod tests {
             let mut request = client
                 .stream_completion(
                     &test_parameters(),
-                    chat_messages(&[TranscriptEntry::turn("hi".to_owned())]),
+                    chat_messages(&[TranscriptEntry::turn("hi".to_owned())], None),
                 )
                 .await
                 .unwrap();

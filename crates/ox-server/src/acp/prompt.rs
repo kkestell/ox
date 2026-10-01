@@ -380,7 +380,7 @@ impl AgentTurn {
             return Ok(None);
         }
         let turn_start = TurnStart {
-            model: self.parameters.model.id.clone(),
+            model: self.parameters.model.qualified_id(),
             effort: self.parameters.effort,
             mode: self.mode,
             input,
@@ -1004,7 +1004,7 @@ mod tests {
                 .requests()
                 .iter()
                 .all(|request| request.get("input").is_some()
-                    && request["model"] == openai_fixture::DEFAULT_MODEL)
+                    && request["model"] == openai_fixture::PROVIDER_MODEL)
         );
     }
 
@@ -1474,7 +1474,7 @@ mod tests {
 
         assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
         let request = &harness.server.requests()[0];
-        assert_eq!(request["model"], DEFAULT_MODEL);
+        assert_eq!(request["model"], crate::openrouter::fixture::PROVIDER_MODEL);
         assert!(request.get("reasoning").is_none());
         let TranscriptEntry::AssistantBatch(AssistantBatch {
             message: mut answered,
@@ -1773,9 +1773,11 @@ mod tests {
         let harness = Harness::new(vec![text_reply("First"), text_reply("Second")]).await;
         let selected = Arc::new(Mutex::new(EffortLevel::Low));
         let changed = selected.clone();
-        let first_model = catalog()[1].id.as_str();
-        let second_model = catalog()[2].id.as_str();
-        let first_settings = SessionSettings::new(first_model, *selected.lock().unwrap());
+        let first_model = &catalog()[1];
+        let second_model = &catalog()[2];
+        let first_model_id = first_model.qualified_id();
+        let second_model_id = second_model.qualified_id();
+        let first_settings = SessionSettings::new(&first_model_id, *selected.lock().unwrap());
 
         let (first, _) = harness
             .run_with_settings("one", first_settings, move |update| {
@@ -1786,7 +1788,7 @@ mod tests {
             })
             .await;
         assert!(matches!(first.unwrap(), PromptOutput::Finished(_)));
-        let second_settings = SessionSettings::new(second_model, *selected.lock().unwrap());
+        let second_settings = SessionSettings::new(&second_model_id, *selected.lock().unwrap());
         let (second, transcript) = harness
             .run_with_settings("two", second_settings, |_| Ok(()))
             .await;
@@ -1795,13 +1797,13 @@ mod tests {
             transcript,
             vec![
                 TranscriptEntry::TurnStart(TurnStart {
-                    model: first_model.to_owned(),
+                    model: first_model_id,
                     effort: EffortLevel::Low,
                     ..TurnStart::test(user("one"))
                 }),
                 answer("First"),
                 TranscriptEntry::TurnStart(TurnStart {
-                    model: second_model.to_owned(),
+                    model: second_model_id,
                     effort: EffortLevel::XHigh,
                     ..TurnStart::test(user("two"))
                 }),
@@ -1809,8 +1811,8 @@ mod tests {
             ]
         );
         let requests = harness.server.requests();
-        assert_eq!(requests[0]["model"], first_model);
-        assert_eq!(requests[1]["model"], second_model);
+        assert_eq!(requests[0]["model"], first_model.id);
+        assert_eq!(requests[1]["model"], second_model.id);
         assert_eq!(requests[0]["reasoning"]["effort"], "low");
         assert_eq!(requests[1]["reasoning"]["effort"], "xhigh");
     }
@@ -1874,10 +1876,10 @@ mod tests {
 
         let vision_server = Server::start(vec![text_reply("I see it.")]).await;
         let vision_session = store.create(&workspace.0).unwrap().id;
-        let vision_model = catalog()[1].id.as_str();
+        let vision_model = catalog()[1].qualified_id();
         let vision_run = start(
             vision_server.client(),
-            input(&vision_session, image_input.clone(), vision_model),
+            input(&vision_session, image_input.clone(), &vision_model),
         )
         .unwrap();
         assert_eq!(

@@ -116,7 +116,7 @@ pub fn projection(provider: Provider, transcript: &[TranscriptEntry]) -> Vec<Val
             checkpoint.covered_prefix,
             &checkpoint.summary,
         ),
-        None => provider.transcript(transcript),
+        None => provider.transcript(transcript, None),
     }
 }
 
@@ -155,6 +155,17 @@ fn summary_message(provider: Provider, summary: &str) -> Value {
     provider.user_message(&format!("{SUMMARY_LABEL}{summary}").into())
 }
 
+fn turn_provider_before(transcript: &[TranscriptEntry], index: usize) -> Option<Provider> {
+    transcript[..index]
+        .iter()
+        .rev()
+        .find_map(|entry| match entry {
+            TranscriptEntry::TurnStart(start) => Some(start),
+            _ => None,
+        })
+        .and_then(|start| Provider::from_qualified_model_id(&start.model))
+}
+
 fn projection_at(
     provider: Provider,
     transcript: &[TranscriptEntry],
@@ -163,9 +174,10 @@ fn projection_at(
 ) -> Vec<Value> {
     let mut projected = vec![summary_message(provider, summary)];
     if let Some(index) = repeated_invocation(transcript, cut) {
-        projected.extend(provider.transcript(&transcript[index..=index]));
+        projected.extend(provider.transcript(&transcript[index..=index], None));
     }
-    projected.extend(provider.transcript(&transcript[cut..]));
+    projected
+        .extend(provider.transcript(&transcript[cut..], turn_provider_before(transcript, cut)));
     projected
 }
 
@@ -227,13 +239,13 @@ fn ranked_cuts(parameters: &ModelRequestParameters, transcript: &[TranscriptEntr
     let mut suffix_bytes = vec![0; transcript.len() - start + 1];
     for index in (start..transcript.len()).rev() {
         suffix_bytes[index - start] = suffix_bytes[index - start + 1]
-            + entry_bytes(parameters.model.provider, &transcript[index]);
+            + entry_bytes(parameters.model.provider, transcript, index);
     }
     // Every cut past the latest skill invocation repeats it after the summary.
     let repeated = repeated_invocation(transcript, transcript.len()).map(|index| {
         (
             index,
-            entry_bytes(parameters.model.provider, &transcript[index]),
+            entry_bytes(parameters.model.provider, transcript, index),
         )
     });
     let mut ranked = Vec::new();
@@ -253,9 +265,12 @@ fn ranked_cuts(parameters: &ModelRequestParameters, transcript: &[TranscriptEntr
 
 /// The serialized size an entry adds to a request body, counting the comma that
 /// separates it from the previous message.
-fn entry_bytes(provider: Provider, entry: &TranscriptEntry) -> usize {
+fn entry_bytes(provider: Provider, transcript: &[TranscriptEntry], index: usize) -> usize {
     provider
-        .transcript(std::slice::from_ref(entry))
+        .transcript(
+            &transcript[index..=index],
+            turn_provider_before(transcript, index),
+        )
         .into_iter()
         .map(|mut message| {
             let images = strip_images(&mut message);
@@ -811,6 +826,62 @@ mod tests {
     }
 
     #[test]
+    fn compacted_suffixes_keep_turn_provider_for_metadata_and_byte_estimates() {
+        for source in [Provider::OpenRouter, Provider::OpenAI] {
+            let mut start = TurnStart::test("request".to_owned());
+            start.model = match source {
+                Provider::OpenRouter => DEFAULT_MODEL,
+                Provider::OpenAI => crate::openai::fixture::DEFAULT_MODEL,
+            }
+            .to_owned();
+            let transcript = vec![
+                TranscriptEntry::TurnStart(start),
+                TranscriptEntry::AssistantBatch(answer("first answer")),
+                TranscriptEntry::AssistantBatch(answer("second answer")),
+            ];
+            let cut = 2;
+            for target in [Provider::OpenRouter, Provider::OpenAI] {
+                let parameters = match target {
+                    Provider::OpenRouter => parameters(),
+                    Provider::OpenAI => ModelRequestParameters::new(
+                        crate::openai::fixture::DEFAULT_MODEL,
+                        EffortLevel::Default,
+                        "system".to_owned(),
+                        tools::Role::Main,
+                    )
+                    .unwrap(),
+                };
+                let summary = "summary";
+                let projected = projection_at(target, &transcript, cut, summary);
+                let has_metadata = match target {
+                    Provider::OpenRouter => projected
+                        .iter()
+                        .any(|item| item.get("reasoning_details").is_some()),
+                    Provider::OpenAI => projected
+                        .iter()
+                        .any(|item| item.get("opaque") == Some(&Value::Bool(true))),
+                };
+                assert_eq!(has_metadata, source == target, "{source:?} to {target:?}");
+                assert!(projected.iter().any(|item| match target {
+                    Provider::OpenRouter => item["content"] == "second answer",
+                    Provider::OpenAI => item["content"][0]["text"] == "second answer",
+                }));
+
+                let base = body_bytes(model::ordinary_body(
+                    &parameters,
+                    vec![summary_message(target, summary)],
+                ));
+                let suffix = entry_bytes(target, &transcript, cut);
+                assert_eq!(
+                    base + suffix,
+                    body_bytes(model::ordinary_body(&parameters, projected)),
+                    "{source:?} to {target:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn ranked_cuts_follow_the_latest_checkpoint_smallest_request_first() {
         let transcript = vec![
             TranscriptEntry::turn("earlier request".to_owned()),
@@ -836,9 +907,8 @@ mod tests {
             vec![summary_message(Provider::OpenRouter, &summary)],
         ));
         for &cut in &cuts {
-            let suffix: usize = transcript[cut..]
-                .iter()
-                .map(|entry| entry_bytes(Provider::OpenRouter, entry))
+            let suffix: usize = (cut..transcript.len())
+                .map(|index| entry_bytes(Provider::OpenRouter, &transcript, index))
                 .sum();
             assert_eq!(
                 base + suffix,
@@ -969,7 +1039,7 @@ mod tests {
 
     #[test]
     fn summarizer_pieces_fit_the_context_limit_and_keep_all_material() {
-        let model = model::catalog_model("acme/plain").unwrap();
+        let model = model::catalog_model("openrouter:acme/plain").unwrap();
         let previous = "Earlier \"summary\".";
         let text = "Quote \" slash \\ tab \t bell \u{7} snow 雪\n".repeat(1_000);
         let transcript = vec![TranscriptEntry::turn(text.clone())];

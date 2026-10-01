@@ -150,6 +150,17 @@ impl TurnStart {
     }
 }
 
+impl TurnStart {
+    fn validate(&self) -> io::Result<()> {
+        if crate::model::Provider::from_qualified_model_id(&self.model).is_none() {
+            return Err(invalid_data(
+                "turn start model is not a qualified model ID with a known provider",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 impl From<String> for TurnInput {
     fn from(text: String) -> Self {
@@ -568,7 +579,7 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
     let mut previous_prefix = 0;
     for (index, entry) in entries.iter().enumerate() {
         match entry {
-            TranscriptEntry::TurnStart(_) => {}
+            TranscriptEntry::TurnStart(turn_start) => turn_start.validate()?,
             TranscriptEntry::CompactionCheckpoint(checkpoint) => {
                 check_compaction_checkpoint(checkpoint, index, previous_prefix, entries)?;
                 previous_prefix = checkpoint.covered_prefix;
@@ -774,6 +785,7 @@ impl SessionStore {
         id: &SessionId,
         turn_start: &TurnStart,
     ) -> io::Result<SessionSummary> {
+        turn_start.validate()?;
         let session_title = match &turn_start.input {
             TurnInput::UserMessage(message) => session_title_from_prompt(&message.text())
                 .or_else(|| message.has_images().then(|| "Image".to_owned())),
@@ -1310,6 +1322,35 @@ mod tests {
     }
 
     #[test]
+    fn turn_start_models_require_a_qualified_id_with_a_known_provider() {
+        let expected = "turn start model is not a qualified model ID with a known provider";
+        let store = SessionStore::in_memory();
+        for model in [
+            "deepseek/deepseek-v4.1-flash",
+            "unknown:some-model",
+            "openrouter:",
+        ] {
+            let mut turn_start = TurnStart::test("hello".to_owned());
+            turn_start.model = model.to_owned();
+            let id = store.create(workspace()).unwrap().id;
+            let error = store.append_turn_start(&id, &turn_start).unwrap_err();
+            assert_eq!(error.to_string(), expected, "append accepted {model}");
+
+            let error = read_error(&[row(&TranscriptEntry::TurnStart(turn_start))]);
+            assert!(error.ends_with(expected), "read accepted {model}: {error}");
+        }
+
+        let mut turn_start = TurnStart::test("hello".to_owned());
+        turn_start.model = "openai:retired-model".to_owned();
+        let id = store.create(workspace()).unwrap().id;
+        store.append_turn_start(&id, &turn_start).unwrap();
+        assert_eq!(
+            store.read(&id).unwrap().unwrap().transcript,
+            [TranscriptEntry::TurnStart(turn_start)]
+        );
+    }
+
+    #[test]
     fn malformed_assistant_batches_are_rejected_at_every_boundary() {
         let called = message(vec![call("a", "one"), call("b", "two")]);
         let mut empty_id = called.clone();
@@ -1452,15 +1493,15 @@ mod tests {
             "an empty transcript uses the defaults"
         );
 
-        let chosen = crate::model::catalog()[1].id.as_str();
+        let chosen = crate::model::catalog()[1].qualified_id();
         let turns = [
-            (chosen, EffortLevel::Low, SessionMode::Auto),
+            (chosen.as_str(), EffortLevel::Low, SessionMode::Auto),
             (
                 openrouter::fixture::DEFAULT_MODEL,
                 EffortLevel::High,
                 SessionMode::Auto,
             ),
-            (chosen, EffortLevel::Default, SessionMode::Ask),
+            (chosen.as_str(), EffortLevel::Default, SessionMode::Ask),
         ];
         for (index, (model, effort, mode)) in turns.into_iter().enumerate() {
             let turn_start = TurnStart {
@@ -1472,7 +1513,7 @@ mod tests {
         let stored = store.read(&id).unwrap().unwrap();
         assert_eq!(
             stored.saved_settings(&defaults),
-            SessionSettings::new(chosen, EffortLevel::Default),
+            SessionSettings::new(chosen.as_str(), EffortLevel::Default),
             "returning to a model, Default, and Ask is saved rather than inherited"
         );
         let saved_turns: Vec<_> = stored

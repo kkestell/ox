@@ -40,7 +40,7 @@ fn resolve_model(model: Option<String>, default_model: String) -> io::Result<Str
         "{model} is not a model; choose one of {}",
         model::catalog()
             .iter()
-            .map(|model| model.id.as_str())
+            .map(model::CatalogModel::qualified_id)
             .collect::<Vec<_>>()
             .join(", ")
     )))
@@ -54,7 +54,7 @@ fn check_effort(model: &str, effort: EffortLevel) -> io::Result<()> {
     }
     Err(invalid_input(format!(
         "{} does not accept effort {}; choose one of {}",
-        model.id,
+        model.qualified_id(),
         effort.id(),
         model
             .efforts
@@ -69,27 +69,45 @@ fn invalid_input(message: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
-/// Fetches and installs the model catalog and returns the settings checked
-/// against it.
-async fn load_settings_and_catalog() -> io::Result<(settings::Settings, Option<model::Client>)> {
-    let provider = settings::provider()?;
-    let (mut catalog, client) = match provider {
-        Provider::OpenRouter => (openrouter::fetch_catalog().await?, None),
-        Provider::OpenAI => {
-            let client = openai::Client::new()?;
-            let catalog = client.fetch_catalog().await?;
-            (catalog, Some(model::Client::OpenAI(client)))
-        }
-    };
+/// Fetches the catalogs of every enabled provider in installed order.
+async fn discover_catalogs(
+    openrouter: Option<openrouter::Client>,
+    openai: Option<openai::Client>,
+) -> io::Result<(Vec<model::CatalogModel>, model::Clients)> {
+    if openrouter.is_none() && openai.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "model provider authentication required; run `ox auth login openrouter` or `ox auth login openai`",
+        ));
+    }
+    let mut catalog = Vec::new();
+    if let Some(client) = &openrouter {
+        catalog.extend(client.fetch_catalog().await?);
+    }
+    if let Some(client) = &openai {
+        catalog.extend(client.fetch_catalog().await?);
+    }
+    Ok((catalog, model::Clients { openrouter, openai }))
+}
+
+/// Discovers credentials, fetches and installs the enabled model catalogs, and
+/// returns the settings checked against them.
+async fn load_settings_and_catalog() -> io::Result<(settings::Settings, model::Clients)> {
+    let openrouter = auth::api_key()?.map(openrouter::Client::new);
+    let authentication = openai_auth::Authentication::new()?;
+    let openai = authentication
+        .has_credentials()?
+        .then(|| openai::Client::with_authentication(authentication));
+    let (mut catalog, clients) = discover_catalogs(openrouter, openai).await?;
     let settings = settings::load(&mut catalog)?;
     model::install_catalog(catalog);
-    Ok((settings, client))
+    Ok((settings, clients))
 }
 
 /// Serves one ACP connection over stdin and stdout.
 pub async fn serve() -> Result<(), Box<dyn Error>> {
-    let (settings, client) = load_settings_and_catalog().await?;
-    acp::serve_stdio(settings, client).await
+    let (settings, clients) = load_settings_and_catalog().await?;
+    acp::serve_stdio(settings, clients).await
 }
 
 /// Runs one prompt in `dir` and returns the final answer.
@@ -102,20 +120,16 @@ pub async fn run(
     let dir = dir
         .canonicalize()
         .map_err(|error| format!("opening {}: {error}", dir.display()))?;
-    let (settings, client) = load_settings_and_catalog().await?;
+    let (settings, clients) = load_settings_and_catalog().await?;
     let settings = settings.for_workspace(&dir)?;
     let model = resolve_model(model, settings.default_model)?;
     check_effort(&model, effort)?;
-    let client = match client {
-        Some(client) => client,
-        None => openrouter::Client::new(auth::api_key()?.ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "OpenRouter authentication required; run `ox auth login openrouter`",
-            )
-        })?)
-        .into(),
-    };
+    let provider = model::catalog_model(&model)
+        .expect("a resolved model is in the catalog")
+        .provider;
+    let client = clients
+        .client(provider)
+        .expect("every installed model provider has a client");
     acp::run_headless(&dir, model, effort, prompt, client).await
 }
 
@@ -165,10 +179,10 @@ mod tests {
     #[test]
     fn model_and_effort_choices_must_be_in_the_catalog() {
         let default = openrouter::fixture::DEFAULT_MODEL;
-        let chosen = model::catalog()[1].id.as_str();
+        let chosen = model::catalog()[1].qualified_id();
         assert_eq!(resolve_model(None, default.to_owned()).unwrap(), default);
         assert_eq!(
-            resolve_model(Some(chosen.to_owned()), default.to_owned()).unwrap(),
+            resolve_model(Some(chosen.clone()), default.to_owned()).unwrap(),
             chosen
         );
         assert!(
@@ -177,12 +191,132 @@ mod tests {
                 .to_string()
                 .contains("not a model")
         );
-        check_effort(chosen, EffortLevel::XHigh).unwrap();
+        check_effort(&chosen, EffortLevel::XHigh).unwrap();
         assert!(
             check_effort(default, EffortLevel::XHigh)
                 .unwrap_err()
                 .to_string()
                 .contains("choose one of default, low, medium, high, max")
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_discovers_each_enabled_provider_in_fixed_order() {
+        use openrouter::fixture::{Reply, Server, catalog_reply};
+
+        let openrouter = Server::start(vec![catalog_reply()]).await;
+        let (catalog, clients) = discover_catalogs(Some(openrouter.client()), None)
+            .await
+            .unwrap();
+        assert!(
+            catalog
+                .iter()
+                .all(|model| model.provider == Provider::OpenRouter)
+        );
+        assert!(clients.client(Provider::OpenRouter).is_some());
+        assert!(clients.client(Provider::OpenAI).is_none());
+
+        let openai = openai::fixture::Server::start(vec![Reply::Status(
+            200,
+            openai::fixture::CATALOG.to_owned(),
+        )])
+        .await;
+        let model::Client::OpenAI(openai_client) = openai.client() else {
+            unreachable!()
+        };
+        let (catalog, clients) = discover_catalogs(None, Some(openai_client)).await.unwrap();
+        assert!(
+            catalog
+                .iter()
+                .all(|model| model.provider == Provider::OpenAI)
+        );
+        assert!(clients.client(Provider::OpenRouter).is_none());
+        assert!(clients.client(Provider::OpenAI).is_some());
+
+        let openrouter = Server::start(vec![catalog_reply()]).await;
+        let openai = openai::fixture::Server::start(vec![Reply::Status(
+            200,
+            openai::fixture::CATALOG.to_owned(),
+        )])
+        .await;
+        let model::Client::OpenAI(openai_client) = openai.client() else {
+            unreachable!()
+        };
+        let (catalog, clients) = discover_catalogs(Some(openrouter.client()), Some(openai_client))
+            .await
+            .unwrap();
+        let first_openai = catalog
+            .iter()
+            .position(|model| model.provider == Provider::OpenAI)
+            .unwrap();
+        assert!(
+            catalog[..first_openai]
+                .iter()
+                .all(|model| model.provider == Provider::OpenRouter)
+        );
+        assert!(
+            catalog[first_openai..]
+                .iter()
+                .all(|model| model.provider == Provider::OpenAI)
+        );
+        assert!(clients.client(Provider::OpenRouter).is_some());
+        assert!(clients.client(Provider::OpenAI).is_some());
+    }
+
+    #[tokio::test]
+    async fn startup_requires_credentials_and_does_not_ignore_catalog_failures() {
+        let error = match discover_catalogs(None, None).await {
+            Err(error) => error,
+            Ok(_) => panic!("startup without credentials succeeded"),
+        };
+        let message = error.to_string();
+        assert!(message.contains("ox auth login openrouter"));
+        assert!(message.contains("ox auth login openai"));
+
+        let openrouter =
+            openrouter::fixture::Server::start(vec![openrouter::fixture::Reply::Status(
+                500,
+                "{}".to_owned(),
+            )])
+            .await;
+        let openai = openai::fixture::Server::start(vec![]).await;
+        let error = match discover_catalogs(
+            Some(openrouter.client()),
+            Some(match openai.client() {
+                model::Client::OpenAI(client) => client,
+                _ => unreachable!(),
+            }),
+        )
+        .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("startup ignored an enabled provider failure"),
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("OpenRouter model catalog returned 500")
+        );
+        assert!(openai.requests().is_empty());
+
+        let openrouter =
+            openrouter::fixture::Server::start(vec![openrouter::fixture::catalog_reply()]).await;
+        let openai = openai::fixture::Server::start(vec![openrouter::fixture::Reply::Status(
+            500,
+            "{}".to_owned(),
+        )])
+        .await;
+        let model::Client::OpenAI(openai_client) = openai.client() else {
+            unreachable!()
+        };
+        let error = match discover_catalogs(Some(openrouter.client()), Some(openai_client)).await {
+            Err(error) => error,
+            Ok(_) => panic!("startup ignored an enabled provider failure"),
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("OpenAI model catalog returned 500")
         );
     }
 }

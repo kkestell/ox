@@ -23,8 +23,9 @@ sessions. The client can launch the Ox server or another compatible ACP server.
   and transcript commits. The same loop runs the main agent and its subagents.
 - **Compaction**: summarizes older transcript to keep model requests within the
   context limit, both automatically and on request.
-- **Model client**: encodes requests for the selected provider and turns a
-  streamed response into one validated completion.
+- **Model clients**: encode provider-specific requests and turn each streamed
+  response into one validated completion. A prompt run uses the client for its
+  captured model.
 - **Tools**: the fixed tool set. A tool executes one call and neither sends ACP
   updates nor saves the transcript.
 - **Session store**: validates and saves sessions and transcripts. It knows
@@ -92,8 +93,10 @@ a turn governs the whole turn.
 
 ## Deliberate constraints
 
-One model provider per server process, one tool set, one SQLite connection,
-sequential tool execution, and process-local session coordination. Main agents,
-subagents, and compaction share the provider. There is no provider fallback,
-prompt queue, cross-process session coordination, or database migration.
-Changing any of these means revisiting the boundaries that depend on it.
+One model provider per captured turn, one tool set, one SQLite connection,
+sequential tool execution, and process-local session coordination. A prompt run,
+its subagents, and its compaction requests share the turn's provider. Model
+catalogs and clients are fixed for the process lifetime. There is no provider
+fallback, prompt queue, cross-process session coordination, or database
+migration. Changing any of these means revisiting the boundaries that depend on
+it.

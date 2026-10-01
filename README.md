@@ -59,11 +59,11 @@ ox run [--dir <DIR>] [--model <MODEL>] [--effort <EFFORT>] <PROMPT>
 ```
 
 Runs one noninteractive prompt and prints the final answer. `--dir` selects the
-workspace and defaults to the current directory. `--model` accepts a model ID
-from the selected provider and overrides the configured model. `--effort`
-defaults to `default` and accepts `default`, `none`, `minimal`, `low`, `medium`,
-`high`, `xhigh`, or `max`; the selected model must support it. Headless runs use
-`auto` mode.
+workspace and defaults to the current directory. `--model` accepts a qualified
+model ID such as `openrouter:deepseek/deepseek-v4.1-flash` and overrides the
+configured model. `--effort` defaults to `default` and accepts `default`,
+`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; the selected
+model must support it. Headless runs use `auto` mode.
 
 ### `ox auth`
 
@@ -77,8 +77,11 @@ removes that key. `OPENROUTER_API_KEY`, when set, takes precedence over the
 saved key. OpenAI login opens ChatGPT sign-in and saves protected credentials
 under `~/.config/ox/`. Login leaves settings unchanged. To replace a saved
 ChatGPT account, log out first and decline continuing with the saved account at
-the next login. After OpenAI logout, log in again and restart the server to
-refresh its catalog.
+the next login.
+
+When the bundled server starts, it loads the model catalog for every provider
+whose credentials are available. At least one provider must be authenticated.
+Restart the server after a login, logout, or other credential change.
 
 ### `ox acp`
 
@@ -103,19 +106,16 @@ Global settings live in `~/.config/ox/settings.json`. A workspace can override
 `model`, `effort`, and `mode` in `<workspace>/.ox/settings.json`; each present
 workspace value replaces the global value. Both files are optional.
 
-To use an eligible ChatGPT subscription, run `ox auth login openai` before
-starting the server, set `"provider": "openai"` in the global file, and remove
-OpenRouter model IDs and `models` pins. OpenAI startup requires authentication.
-
 ```json
 {
-  "provider": "openrouter",
-  "model": "deepseek/deepseek-v4.1-flash",
+  "model": "openrouter:deepseek/deepseek-v4.1-flash",
   "effort": "default",
   "mode": "ask",
-  "favorites": ["deepseek/deepseek-v4.1-flash"],
+  "favorites": ["openrouter:deepseek/deepseek-v4.1-flash"],
   "models": {
-    "deepseek/deepseek-v4.1-flash": { "providers": ["deepseek"] }
+    "openrouter:deepseek/deepseek-v4.1-flash": {
+      "providers": ["deepseek"]
+    }
   },
   "servers": [
     { "name": "Other", "command": "other-acp-server", "args": [] }
@@ -123,21 +123,33 @@ OpenRouter model IDs and `models` pins. OpenAI startup requires authentication.
 }
 ```
 
-- `provider` is `openrouter` or `openai`, defaults to `openrouter`, and can be
-  set only in the global file. Each server process uses one provider.
-- `model` is a model ID from that provider's catalog: an OpenRouter ID or an
-  OpenAI slug. OpenRouter defaults to `~deepseek/deepseek-flash-latest`; OpenAI
-  defaults to the first usable model in the account's catalog.
+- `model` is a qualified model ID in the form `<provider>:<provider-model-id>`.
+  When OpenRouter is available, the default is
+  `openrouter:~deepseek/deepseek-flash-latest`. With only OpenAI available, the
+  default is the first usable model in its catalog.
 - `effort` is `default`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or
   `max`. It defaults to `default` and must be supported by the selected model.
 - `mode` is `ask` or `auto`. It defaults to `ask`; `ask` requests permission
   before shell actions, while `auto` runs them without asking.
-- `favorites` is an ordered list of model IDs. It applies only to the terminal
-  client, can be set only in the global file, and defaults to an empty list.
-- `models` maps OpenRouter model IDs to a `providers` list of OpenRouter
-  provider slugs. Requests for that model go only to those providers, tried in
-  order. It can be set only in the global file and only with `openrouter`.
+- `favorites` is an ordered list of qualified model IDs. It applies only to the
+  terminal client, can be set only in the global file, and defaults to an empty
+  list.
+- `models` maps qualified OpenRouter model IDs to a `providers` list of
+  OpenRouter provider slugs. Requests for that model go only to those providers,
+  tried in order. It can be set only in the global file.
 - `servers` configures ACP servers for the terminal client and can be set only
   in the global file. Each server requires a unique, nonempty `name` and a
   `command`; `args` is an optional list of arguments that defaults to empty. If
   `servers` is absent or empty, the client starts the bundled Ox server.
+
+To use an eligible ChatGPT subscription, run `ox auth login openai` before
+starting the server. OpenAI models appear alongside OpenRouter models when both
+providers are authenticated, and the model picker can change providers between
+turns. Choose an OpenAI model there or configure its qualified model ID:
+
+```json
+{
+  "model": "openai:gpt-5.5",
+  "effort": "high"
+}
+```
