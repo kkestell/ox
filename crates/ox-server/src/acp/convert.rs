@@ -16,7 +16,7 @@ use serde_json::Value;
 use super::prompt::AcpIdentity;
 use crate::{
     compaction,
-    openrouter::ModelRequestParameters,
+    model::ModelRequestParameters,
     sessions::{
         self, AssistantBatch, AssistantMessage, ImageAttachment, SubagentMessage,
         SubagentMessageContent, ToolCall, ToolContent, ToolOutcome, ToolStatus, TranscriptEntry,
@@ -407,6 +407,40 @@ fn status(outcome: &ToolOutcome) -> ToolCallStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unpriced_usage_reports_tokens_without_a_dollar_cost() {
+        let parameters = ModelRequestParameters::new(
+            crate::openai::fixture::DEFAULT_MODEL,
+            crate::sessions::EffortLevel::Low,
+            "Ox".to_owned(),
+            crate::tools::Role::Main,
+        )
+        .unwrap();
+        let message = AssistantMessage {
+            text: "Done".to_owned(),
+            reasoning: String::new(),
+            tool_calls: vec![],
+            continuation_metadata: vec![],
+            usage: Some(crate::sessions::ModelUsage {
+                input_tokens: 100,
+                cached_tokens: 20,
+                output_tokens: 30,
+                reasoning_tokens: 10,
+                cost: None,
+            }),
+        };
+        let transcript = [TranscriptEntry::AssistantBatch(
+            AssistantBatch::new(message, vec![]).unwrap(),
+        )];
+        let Some(SessionUpdate::UsageUpdate(usage)) = usage_update(&transcript, &parameters, None)
+        else {
+            panic!("no usage update");
+        };
+        assert_eq!(usage.used, 130);
+        assert_eq!(usage.size, 272000);
+        assert!(usage.cost.is_none());
+    }
     use agent_client_protocol::schema::v1::{AudioContent, ErrorCode, ImageContent, ResourceLink};
 
     #[test]

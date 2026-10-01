@@ -5,10 +5,14 @@
 ## Where tests go
 
 - **Automated tests**: in-module `#[cfg(test)]` tests. Model requests go to a
-  scripted OpenRouter test fixture, so tests need no API key or network.
-- **Live checks**: `scripts/run.py '<prompt>'` runs one headless prompt against
-  OpenRouter in a temporary workspace. For behavior only an ACP client shows,
-  connect a client to a local build.
+  scripted OpenRouter or OpenAI test fixture, so tests need no account, API key,
+  or external network. OpenAI authorization tests use a local scripted service.
+- **Live checks**: `scripts/run.py '<prompt>'` runs one headless prompt in a
+  temporary workspace and requires an OpenRouter key in `.env`. Use
+  `ox run --dir <workspace> '<prompt>'` for OpenAI with the global provider set
+  to `openai`. OpenAI checks require explicit sign-in and a completed inference
+  request; sign-in or catalog discovery alone does not verify plan access. For
+  behavior only an ACP client shows, connect a client to a local build.
 - **Client tests**: `crates/ox/` has in-process ACP and terminal logic tests.
   `make e2e` runs the isolated tmux tests against the Ox server and scripted
   OpenRouter test fixture.

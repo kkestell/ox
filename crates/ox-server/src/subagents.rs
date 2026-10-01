@@ -18,7 +18,7 @@ use tokio::{sync::Notify, task::JoinHandle};
 use crate::{
     acp::prompt::{self, Presentation, PromptInput, PromptOutput},
     cancellation::PromptCancellation,
-    openrouter,
+    model,
     sessions::{SessionSettings, SessionStore, SubagentMessage, SubagentMessageContent, TurnInput},
     shell_processes::ShellProcesses,
     tools,
@@ -34,7 +34,7 @@ const CLOSED: &str = "This prompt run is ending, so its subagents accept no more
 /// agent.
 pub struct Launch {
     pub store: SessionStore,
-    pub openrouter: openrouter::Client,
+    pub model_client: model::Client,
     pub main_session_id: SessionId,
     pub workspace_path: PathBuf,
     /// The main turn's captured model, effort level, and session mode.
@@ -336,7 +336,7 @@ impl Shared {
         let launch = &self.launch;
         let turn = prompt::run(
             launch.store.clone(),
-            launch.openrouter.clone(),
+            launch.model_client.clone(),
             PromptInput {
                 session_id: id.clone(),
                 turn_input: TurnInput::UserMessage(text.into()),
@@ -554,7 +554,7 @@ mod tests {
             let shell_processes = ShellProcesses::default();
             let subagents = Subagents::new(Launch {
                 store: store.clone(),
-                openrouter: server.client(),
+                model_client: server.client().into(),
                 main_session_id: main_session_id.clone(),
                 workspace_path: workspace.0.clone(),
                 settings: SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default)

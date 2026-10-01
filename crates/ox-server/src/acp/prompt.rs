@@ -16,7 +16,7 @@ use super::convert;
 use crate::cancellation::PromptCancellation;
 use crate::{
     compaction,
-    openrouter::{self, ModelRequestParameters},
+    model::{self, ModelRequestParameters},
     sessions::{
         AssistantBatch, AssistantMessage, SessionMode, SessionSettings, SessionStore,
         SessionSummary, ToolCall, ToolOutcome, TranscriptEntry, TurnInput, TurnStart,
@@ -203,12 +203,18 @@ pub enum PromptOutput {
 
 pub fn run(
     store: SessionStore,
-    openrouter: openrouter::Client,
+    model_client: impl Into<model::Client>,
     input: PromptInput,
     cancellation: PromptCancellation,
     presentation: Presentation,
 ) -> Result<impl Future<Output = Result<PromptOutput>>> {
-    let mut run = AgentTurn::open(store, openrouter, &input, cancellation, presentation)?;
+    let mut run = AgentTurn::open(
+        store,
+        model_client.into(),
+        &input,
+        cancellation,
+        presentation,
+    )?;
     let update = run.save_turn_start(input.turn_input)?;
     Ok(async move {
         let Some(update) = update else {
@@ -238,7 +244,7 @@ enum PromptOutcome {
     Cancelled,
     TokenLimit,
     Refused,
-    OpenRouter(io::Error),
+    ModelRequest(io::Error),
     AcpUpdate(Error),
     Permission(Error),
     Storage(io::Error),
@@ -251,7 +257,7 @@ impl fmt::Display for PromptOutcome {
             Self::Cancelled => write!(f, "the prompt was cancelled"),
             Self::TokenLimit => write!(f, "the model reached its token limit"),
             Self::Refused => write!(f, "the model refused"),
-            Self::OpenRouter(error) => write!(f, "the model request failed: {error}"),
+            Self::ModelRequest(error) => write!(f, "the model request failed: {error}"),
             Self::AcpUpdate(error) => write!(f, "sending an ACP update failed: {error}"),
             Self::Permission(error) => write!(f, "requesting shell permission failed: {error}"),
             Self::Storage(error) => write!(f, "saving the transcript failed: {error}"),
@@ -261,7 +267,7 @@ impl fmt::Display for PromptOutcome {
 
 struct AgentTurn {
     store: SessionStore,
-    openrouter: openrouter::Client,
+    model_client: model::Client,
     /// Sent with the transcript on every model request of this run.
     parameters: ModelRequestParameters,
     mode: SessionMode,
@@ -310,7 +316,7 @@ impl UncommittedAssistantBatch {
 impl AgentTurn {
     fn open(
         store: SessionStore,
-        openrouter: openrouter::Client,
+        model_client: model::Client,
         input: &PromptInput,
         cancellation: PromptCancellation,
         presentation: Presentation,
@@ -329,10 +335,15 @@ impl AgentTurn {
             role,
         )
         .map_err(Error::into_internal_error)?;
+        if parameters.model.provider != model_client.provider() {
+            return Err(
+                Error::invalid_params().data("session model belongs to another model provider")
+            );
+        }
         let subagents = (role == tools::Role::Main).then(|| {
             Subagents::new(Launch {
                 store: store.clone(),
-                openrouter: openrouter.clone(),
+                model_client: model_client.clone(),
                 main_session_id: stored.summary.id.clone(),
                 workspace_path: stored.summary.workspace_path.clone(),
                 settings: settings.clone(),
@@ -344,7 +355,7 @@ impl AgentTurn {
         });
         Ok(Self {
             store,
-            openrouter,
+            model_client,
             parameters,
             mode: settings.mode,
             tools: ToolContext {
@@ -377,7 +388,9 @@ impl AgentTurn {
         let mut prospective = self.transcript.clone();
         prospective.push(TranscriptEntry::TurnStart(turn_start.clone()));
         // An earlier image fails every request to a model without image input.
-        if !self.parameters.model.accepts_images && compaction::has_images(&prospective) {
+        if !self.parameters.model.accepts_images
+            && compaction::has_images(self.parameters.model.provider, &prospective)
+        {
             return Err(Error::invalid_params().data(
                 "the selected model does not accept images; choose a model that accepts images",
             ));
@@ -418,11 +431,12 @@ impl AgentTurn {
         }
         self.deliver_subagent_messages()?;
         let mut attempts = 1;
-        let openrouter::Completion { message, stop } = loop {
+        let model::Completion { message, stop } = loop {
             match self.request_completion().await {
                 // Provisional output of the stalled attempt stays on screen.
-                Err(PromptOutcome::OpenRouter(error))
+                Err(PromptOutcome::ModelRequest(error))
                     if error.kind() == io::ErrorKind::TimedOut
+                        && self.model_client.provider() == model::Provider::OpenRouter
                         && attempts < MODEL_REQUEST_ATTEMPTS =>
                 {
                     attempts += 1;
@@ -434,15 +448,15 @@ impl AgentTurn {
         self.process_batch(message).await?;
         self.send_usage()?;
         match stop {
-            openrouter::Stop::ToolCalls => Ok(ControlFlow::Continue(())),
+            model::Stop::ToolCalls => Ok(ControlFlow::Continue(())),
             // Messages that arrived by the time the answer committed
             // supersede it. Later ones may be discarded when the run ends.
-            openrouter::Stop::Finished if self.deliver_subagent_messages()? => {
+            model::Stop::Finished if self.deliver_subagent_messages()? => {
                 Ok(ControlFlow::Continue(()))
             }
-            openrouter::Stop::Finished => Ok(ControlFlow::Break(PromptOutcome::Finished(text))),
-            openrouter::Stop::TokenLimit => Ok(ControlFlow::Break(PromptOutcome::TokenLimit)),
-            openrouter::Stop::Refused => Ok(ControlFlow::Break(PromptOutcome::Refused)),
+            model::Stop::Finished => Ok(ControlFlow::Break(PromptOutcome::Finished(text))),
+            model::Stop::TokenLimit => Ok(ControlFlow::Break(PromptOutcome::TokenLimit)),
+            model::Stop::Refused => Ok(ControlFlow::Break(PromptOutcome::Refused)),
         }
     }
 
@@ -450,7 +464,7 @@ impl AgentTurn {
     /// validated completion.
     async fn request_completion(
         &mut self,
-    ) -> std::result::Result<openrouter::Completion, PromptOutcome> {
+    ) -> std::result::Result<model::Completion, PromptOutcome> {
         let compaction::Budget {
             admission,
             automatic_threshold,
@@ -461,45 +475,54 @@ impl AgentTurn {
             self.compact().await?;
         }
         if compaction::request_tokens(&self.parameters, &self.transcript) > admission {
-            return Err(PromptOutcome::OpenRouter(compaction::context_error()));
+            return Err(PromptOutcome::ModelRequest(compaction::context_error()));
         }
         let mut retried = false;
-        loop {
-            let projected = compaction::projection(&self.transcript);
+        'request: loop {
+            let projected =
+                compaction::projection(self.parameters.model.provider, &self.transcript);
             let started = tokio::select! {
                 biased;
                 () = self.cancellation.cancelled() => return Err(PromptOutcome::Cancelled),
-                started = self.openrouter.stream_completion(&self.parameters, projected) => started,
+                started = self.model_client.stream_completion(&self.parameters, projected) => started,
             };
             let mut stream = match started {
                 Ok(stream) => stream,
-                Err(error) if openrouter::is_input_context_overflow(&error) && !retried => {
+                Err(error) if model::is_input_context_overflow(&error) && !retried => {
                     retried = true;
                     if self.compact().await? {
                         continue;
                     }
-                    return Err(PromptOutcome::OpenRouter(compaction::context_error()));
+                    return Err(PromptOutcome::ModelRequest(compaction::context_error()));
                 }
-                Err(error) => return Err(PromptOutcome::OpenRouter(error)),
+                Err(error) => return Err(PromptOutcome::ModelRequest(error)),
             };
             loop {
                 let item = tokio::select! {
                     biased;
                     () = self.cancellation.cancelled() => return Err(PromptOutcome::Cancelled),
-                    item = stream.next() => item.map_err(PromptOutcome::OpenRouter)?,
+                    item = stream.next() => match item {
+                        Ok(item) => item,
+                        Err(error) if model::is_input_context_overflow(&error) && !retried => {
+                            retried = true;
+                            if self.compact().await? { continue 'request; }
+                            return Err(PromptOutcome::ModelRequest(compaction::context_error()));
+                        }
+                        Err(error) => return Err(PromptOutcome::ModelRequest(error)),
+                    },
                 };
                 match item {
-                    openrouter::StreamItem::TextDelta(text) => {
+                    model::StreamItem::TextDelta(text) => {
                         self.presentation
                             .send(convert::agent_message_chunk(&text))
                             .map_err(PromptOutcome::AcpUpdate)?;
                     }
-                    openrouter::StreamItem::ReasoningDelta(text) => {
+                    model::StreamItem::ReasoningDelta(text) => {
                         self.presentation
                             .send(convert::agent_thought_chunk(&text))
                             .map_err(PromptOutcome::AcpUpdate)?;
                     }
-                    openrouter::StreamItem::Completion(completion) => return Ok(completion),
+                    model::StreamItem::Completion(completion) => return Ok(completion),
                 }
             }
         }
@@ -508,7 +531,7 @@ impl AgentTurn {
     async fn compact(&mut self) -> std::result::Result<bool, PromptOutcome> {
         let compacted = compaction::compact(
             &self.store,
-            &self.openrouter,
+            &self.model_client,
             &self.cancellation,
             &self.summary.id,
             &self.parameters,
@@ -519,7 +542,7 @@ impl AgentTurn {
             if error.kind() == io::ErrorKind::Interrupted {
                 PromptOutcome::Cancelled
             } else {
-                PromptOutcome::OpenRouter(error)
+                PromptOutcome::ModelRequest(error)
             }
         })?;
         if compacted {
@@ -542,7 +565,7 @@ impl AgentTurn {
         let mut prospective = self.transcript.clone();
         prospective.push(TranscriptEntry::SubagentMessages(messages.clone()));
         if !compaction::input_fits(&self.parameters, &prospective) {
-            return Err(PromptOutcome::OpenRouter(io::Error::new(
+            return Err(PromptOutcome::ModelRequest(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "subagent messages exceed the model context limit",
             )));
@@ -713,7 +736,7 @@ impl AgentTurn {
             PromptOutcome::Finished(_)
             | PromptOutcome::TokenLimit
             | PromptOutcome::Refused
-            | PromptOutcome::OpenRouter(_)
+            | PromptOutcome::ModelRequest(_)
             | PromptOutcome::Storage(_) => {
                 unreachable!("{outcome} does not interrupt tool execution")
             }
@@ -744,7 +767,7 @@ impl PromptOutcome {
             Self::Cancelled => Ok(PromptOutput::Cancelled),
             Self::TokenLimit => Ok(PromptOutput::TokenLimit),
             Self::Refused => Ok(PromptOutput::Refused),
-            Self::OpenRouter(error) | Self::Storage(error) => {
+            Self::ModelRequest(error) | Self::Storage(error) => {
                 Err(Error::into_internal_error(error))
             }
             Self::AcpUpdate(error) | Self::Permission(error) => Err(error),
@@ -754,6 +777,7 @@ impl PromptOutcome {
 
 #[cfg(test)]
 mod tests {
+    use crate::openai::fixture as openai_fixture;
     use std::{
         fs,
         path::Path,
@@ -763,15 +787,305 @@ mod tests {
     use agent_client_protocol::schema::v1::ToolCallStatus;
 
     use super::*;
+
+    struct OpenAIHarness {
+        server: openai_fixture::Server,
+        workspace: Workspace,
+        store: SessionStore,
+        id: SessionId,
+        cancellation: PromptCancellation,
+        timeout: std::time::Duration,
+    }
+
+    impl OpenAIHarness {
+        async fn new(routes: Vec<(&str, Vec<openai_fixture::Reply>)>) -> Self {
+            let workspace = Workspace::new();
+            let store = SessionStore::in_memory();
+            let id = store.create(&workspace.0).unwrap().id;
+            Self {
+                server: openai_fixture::Server::routed(routes).await,
+                workspace,
+                store,
+                id,
+                cancellation: PromptCancellation::new(),
+                timeout: std::time::Duration::from_secs(120),
+            }
+        }
+        async fn turn(
+            &self,
+            text: &str,
+            on_update: impl FnMut(SessionUpdate) -> Result<()> + Send + 'static,
+        ) -> Result<PromptOutput> {
+            run(
+                self.store.clone(),
+                model::Client::OpenAI(self.server.http_client(self.timeout)),
+                PromptInput {
+                    session_id: self.id.clone(),
+                    turn_input: TurnInput::UserMessage(text.to_owned().into()),
+                    selected_settings: SessionSettings::new(
+                        openai_fixture::DEFAULT_MODEL,
+                        EffortLevel::Low,
+                    )
+                    .with_mode(SessionMode::Auto),
+                    system_prompt: "You are Ox.".to_owned(),
+                    shell_processes: ShellProcesses::default(),
+                },
+                self.cancellation.clone(),
+                Presentation::observed(self.id.clone(), on_update),
+            )?
+            .await
+        }
+        fn transcript(&self) -> Vec<TranscriptEntry> {
+            self.store.read(&self.id).unwrap().unwrap().transcript
+        }
+    }
+
+    #[tokio::test]
+    async fn openai_stalls_discard_the_attempt_without_retrying() {
+        let prefix = openai_fixture::sse(&[
+            json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"Provisional"}),
+        ]);
+        let mut harness = OpenAIHarness::new(vec![(
+            "",
+            vec![
+                openai_fixture::Reply::Hang(prefix),
+                openai_fixture::text_reply("Must not retry."),
+            ],
+        )])
+        .await;
+        harness.timeout = std::time::Duration::from_millis(200);
+        assert!(harness.turn("Continue", |_| Ok(())).await.is_err());
+        assert_eq!(harness.server.requests().len(), 1);
+        assert!(matches!(
+            harness.transcript().as_slice(),
+            [TranscriptEntry::TurnStart(_)]
+        ));
+    }
+
+    #[tokio::test]
+    async fn openai_tool_turn_saves_batches_and_resends_validated_continuation() {
+        let first = openai_fixture::completed(vec![
+            openai_fixture::reasoning(),
+            openai_fixture::call(
+                "write",
+                "write_file",
+                json!({"path":"hello.txt","content":"Hello"}),
+            ),
+        ]);
+        let harness = OpenAIHarness::new(vec![(
+            "",
+            vec![
+                openai_fixture::Reply::Stream(openai_fixture::sse(&[first])),
+                openai_fixture::text_reply("Done."),
+            ],
+        )])
+        .await;
+        assert_eq!(
+            harness.turn("Write hello.txt", |_| Ok(())).await.unwrap(),
+            PromptOutput::Finished("Done.".to_owned())
+        );
+        assert_eq!(
+            fs::read_to_string(harness.workspace.0.join("hello.txt")).unwrap(),
+            "Hello"
+        );
+        let transcript = harness.transcript();
+        let TranscriptEntry::AssistantBatch(batch) = &transcript[1] else {
+            panic!("no saved batch");
+        };
+        assert_eq!(
+            batch.message.continuation_metadata,
+            vec![openai_fixture::reasoning()]
+        );
+        assert_eq!(batch.outcomes[0].status, ToolStatus::Completed);
+        assert!(crate::sessions::transcript_cost(&transcript).is_none());
+        let requests = harness.server.requests();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests[1]["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item == &openai_fixture::reasoning())
+        );
+        assert!(
+            requests[1]["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["type"] == "function_call_output" && item["call_id"] == "write")
+        );
+    }
+
+    #[tokio::test]
+    async fn openai_cancellation_and_limit_failures_discard_provisional_batches() {
+        for cancelled in [true, false] {
+            let prefix = format!(
+                "data: {}\n\ndata: {}\n\n",
+                json!({"type":"response.output_item.done","output_index":0,"item":openai_fixture::call("unsafe","write_file",json!({"path":"unsafe.txt","content":"No"}))}),
+                json!({"type":"response.output_text.delta","output_index":1,"content_index":0,"delta":"Provisional"})
+            );
+            let reply = if cancelled {
+                openai_fixture::Reply::Hang(prefix)
+            } else {
+                openai_fixture::Reply::Stream(format!(
+                    "{prefix}data: {}\n\n",
+                    json!({"type":"response.failed","response":{"error":{"code":"subscription_sharing_usage_limit_exceeded","message":"No allowance"}}})
+                ))
+            };
+            let harness = OpenAIHarness::new(vec![("", vec![reply])]).await;
+            let cancellation = harness.cancellation.clone();
+            let result = harness
+                .turn("Write unsafe.txt", move |update| {
+                    if cancelled && matches!(update, SessionUpdate::AgentMessageChunk(_)) {
+                        cancellation.cancel();
+                    }
+                    Ok(())
+                })
+                .await;
+            if cancelled {
+                assert_eq!(result.unwrap(), PromptOutput::Cancelled);
+            } else {
+                assert!(result.is_err());
+            }
+            assert_eq!(harness.transcript().len(), 1);
+            assert!(!harness.workspace.0.join("unsafe.txt").exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn openai_subagent_turns_share_the_provider_and_save_unpriced_usage() {
+        let gate = openai_fixture::Gate::new();
+        let harness = OpenAIHarness::new(vec![
+            (
+                "Task A",
+                vec![gate.hold(openai_fixture::text_reply("Child found it."))],
+            ),
+            (
+                "Coordinate",
+                vec![
+                    openai_fixture::calls_reply(vec![
+                        openai_fixture::call(
+                            "start",
+                            "start_subagent",
+                            json!({"prompt":"Task A: inspect"}),
+                        ),
+                        openai_fixture::call("wait", "wait", json!({"seconds":600})),
+                    ]),
+                    openai_fixture::text_reply("All done."),
+                ],
+            ),
+        ])
+        .await;
+        let release = async {
+            harness.server.wait_for_requests("Task A", 1).await;
+            gate.open();
+        };
+        let (result, ()) = tokio::join!(harness.turn("Coordinate", |_| Ok(())), release);
+        assert_eq!(
+            result.unwrap(),
+            PromptOutput::Finished("All done.".to_owned())
+        );
+        let transcript = harness.transcript();
+        let child_id = transcript
+            .iter()
+            .find_map(|entry| match entry {
+                TranscriptEntry::SubagentMessages(messages) => messages
+                    .first()
+                    .map(|message| SessionId::new(message.subagent_id.clone())),
+                _ => None,
+            })
+            .expect("child report was saved");
+        let child = harness.store.read(&child_id).unwrap().unwrap();
+        assert!(child.transcript.iter().any(|entry| matches!(entry,TranscriptEntry::AssistantBatch(batch) if batch.message.text == "Child found it." && batch.message.usage.as_ref().is_some_and(|usage| usage.cost.is_none()))));
+        assert!(harness.store.children_cost(&harness.id).unwrap().is_none());
+        assert!(
+            harness
+                .server
+                .requests()
+                .iter()
+                .all(|request| request.get("input").is_some()
+                    && request["model"] == openai_fixture::DEFAULT_MODEL)
+        );
+    }
+
+    #[tokio::test]
+    async fn openai_compaction_is_saved_before_the_next_subscription_request() {
+        for overflow in [false, true] {
+            let mut replies = vec![
+                openai_fixture::text_reply("Earlier material."),
+                openai_fixture::text_reply("Done."),
+                openai_fixture::text_reply("Continued."),
+            ];
+            if overflow {
+                replies.insert(0, openai_fixture::Reply::Stream(openai_fixture::sse(&[
+                json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"Discard this attempt"}),
+                json!({"type":"response.failed","response":{"error":{"code":"context_length_exceeded","message":"Too large"}}}),
+            ])));
+            }
+            let harness = OpenAIHarness::new(vec![("", replies)]).await;
+            let mut start = TurnStart::test("Old task".to_owned());
+            start.model = openai_fixture::DEFAULT_MODEL.to_owned();
+            harness
+                .store
+                .append_turn_start(&harness.id, &start)
+                .unwrap();
+            harness
+                .store
+                .append_batch(
+                    &harness.id,
+                    &AssistantBatch::new(
+                        AssistantMessage {
+                            text: "x".repeat(if overflow { 10000 } else { 700000 }),
+                            reasoning: String::new(),
+                            tool_calls: vec![],
+                            continuation_metadata: vec![],
+                            usage: None,
+                        },
+                        vec![],
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            assert_eq!(
+                harness.turn("Continue", |_| Ok(())).await.unwrap(),
+                PromptOutput::Finished("Done.".to_owned())
+            );
+            assert!(harness.transcript().iter().any(|entry| matches!(entry,TranscriptEntry::CompactionCheckpoint(checkpoint) if checkpoint.summarizer_cost.is_none())));
+            assert_eq!(
+                harness.turn("Again", |_| Ok(())).await.unwrap(),
+                PromptOutput::Finished("Continued.".to_owned())
+            );
+            let requests = harness.server.requests();
+            let offset = usize::from(overflow);
+            assert_eq!(requests.len(), 3 + offset, "overflow={overflow}");
+            assert!(!harness.transcript().iter().any(|entry| matches!(entry, TranscriptEntry::AssistantBatch(batch) if batch.message.text.contains("Discard this attempt"))));
+            assert!(
+                requests[offset]["instructions"]
+                    .as_str()
+                    .unwrap()
+                    .contains("4096 tokens")
+            );
+            assert!(
+                requests[1 + offset]["input"][0]["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("Compaction summary")
+            );
+            assert!(
+                requests[2 + offset]["input"][0]["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Earlier material.")
+            );
+        }
+    }
     use serde_json::json;
 
     use crate::{
-        openrouter::{
-            catalog,
-            fixture::{
-                DEFAULT_MODEL, Gate, Reply, Server, calls_reply, delta, sse, text_reply,
-                tool_reply, usage,
-            },
+        model::catalog,
+        openrouter::fixture::{
+            DEFAULT_MODEL, Gate, Reply, Server, calls_reply, delta, sse, text_reply, tool_reply,
+            usage,
         },
         sessions::{EffortLevel, ModelUsage, ToolContent, ToolStatus},
         system_prompt,
@@ -1174,7 +1488,7 @@ mod tests {
             cached_tokens: 0,
             output_tokens: 30,
             reasoning_tokens: 0,
-            cost: 0.25,
+            cost: Some(0.25),
         });
         assert_eq!(
             transcript,
@@ -1513,7 +1827,7 @@ mod tests {
             system_prompt: system_prompt::for_workspace(&workspace.0).unwrap(),
             shell_processes: ShellProcesses::default(),
         };
-        let start = |client: openrouter::Client, input: PromptInput| {
+        let start = |client: crate::openrouter::Client, input: PromptInput| {
             let session_id = input.session_id.clone();
             run(
                 store.clone(),

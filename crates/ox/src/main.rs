@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, anyhow};
 use clap::{Parser, Subcommand};
-use ox_server::EffortLevel;
+use ox_server::{EffortLevel, Provider};
 
 #[derive(Parser)]
 #[command(
@@ -41,25 +41,36 @@ enum Command {
         #[command(subcommand)]
         command: Option<AcpCommand>,
     },
-    /// Save or remove the OpenRouter API key.
+    /// Sign in to or out of a model provider.
     #[command(subcommand)]
     Auth(Auth),
 }
 
-/// ACP terminal authentication appends `auth login` to the server's command.
+/// ACP terminal authentication appends the authentication command.
 #[derive(Subcommand)]
 enum AcpCommand {
-    /// Save or remove the OpenRouter API key.
+    /// Sign in to or out of a model provider.
     #[command(subcommand)]
     Auth(Auth),
 }
 
 #[derive(Clone, Copy, Subcommand)]
 enum Auth {
-    /// Save an OpenRouter API key in the system keyring.
-    Login,
-    /// Remove the saved OpenRouter API key.
-    Logout,
+    /// Sign in to ChatGPT or save an OpenRouter API key.
+    Login {
+        #[arg(value_parser = provider)]
+        provider: Provider,
+    },
+    /// Remove the saved credentials for the named provider.
+    Logout {
+        #[arg(value_parser = provider)]
+        provider: Provider,
+    },
+}
+
+fn provider(value: &str) -> Result<Provider, String> {
+    Provider::from_id(value)
+        .ok_or_else(|| format!("{value} is not a model provider; choose openrouter or openai"))
 }
 
 fn effort(value: &str) -> Result<EffortLevel, String> {
@@ -122,8 +133,10 @@ async fn start() -> anyhow::Result<()> {
                 command: Some(AcpCommand::Auth(auth)),
             },
         ) => match auth {
-            Auth::Login => ox_server::login().await.map_err(|error| anyhow!("{error}")),
-            Auth::Logout => Ok(ox_server::logout()?),
+            Auth::Login { provider } => ox_server::login(provider)
+                .await
+                .map_err(|error| anyhow!("{error}")),
+            Auth::Logout { provider } => Ok(ox_server::logout(provider).await?),
         },
     }
 }
@@ -147,9 +160,6 @@ mod tests {
             &["ox", "--dir", "d"],
             &["ox", "--server", "X"],
             &["ox", "acp"],
-            &["ox", "acp", "auth", "login"],
-            &["ox", "auth", "login"],
-            &["ox", "auth", "logout"],
         ] {
             assert!(Args::try_parse_from(args).is_ok(), "{args:?}");
         }
@@ -195,6 +205,32 @@ mod tests {
                 panic!("{args:?} parsed");
             };
             assert!(message.to_string().contains(error), "{args:?}: {message}");
+        }
+    }
+
+    #[test]
+    fn authentication_requires_a_known_provider_for_commands_and_acp_aliases() {
+        for prefix in [vec!["ox", "auth"], vec!["ox", "acp", "auth"]] {
+            for action in ["login", "logout"] {
+                for provider in ["openrouter", "openai"] {
+                    let mut args = prefix.clone();
+                    args.extend([action, provider]);
+                    assert!(Args::try_parse_from(&args).is_ok(), "{args:?}");
+                }
+                let mut bare = prefix.clone();
+                bare.push(action);
+                let error = Args::try_parse_from(&bare).err().unwrap().to_string();
+                assert!(
+                    error.contains("Usage:") && error.contains("<PROVIDER>"),
+                    "{bare:?}: {error}"
+                );
+                bare.push("unknown");
+                let error = Args::try_parse_from(&bare).err().unwrap().to_string();
+                assert!(
+                    error.contains("choose openrouter or openai"),
+                    "{bare:?}: {error}"
+                );
+            }
         }
     }
 

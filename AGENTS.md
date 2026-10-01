@@ -2,8 +2,8 @@ Keep this document accurate and short.
 
 ## Code
 
-- `crates/ox-server/` — the Ox server: prompt run, tools, OpenRouter, and
-  session store.
+- `crates/ox-server/` — the Ox server: prompt run, tools, OpenRouter, OpenAI,
+  and session store.
 - `crates/ox/` — the command line, the Ox client, and its terminal tests.
 - `crates/ox-server/src/prompts/` — the built-in prompts.
 - `examples/` — the example settings file.

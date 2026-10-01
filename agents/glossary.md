@@ -4,10 +4,10 @@
 
 - Use transcript for the durable conversation and transcript entry for one
   element. Do not introduce history, record, or event as domain synonyms.
-- Use model request for one OpenRouter invocation. Reserve completion for the
-  validated result of that request.
-- Qualify client as ACP, OpenRouter, or HTTP whenever the surrounding text does
-  not make it obvious.
+- Use model request for one invocation of the selected model provider. Reserve
+  completion for the validated result of that request.
+- Qualify client as ACP, model, OpenRouter, OpenAI, or HTTP whenever the
+  surrounding text does not make it obvious.
 - Say session title or tool call title. Never write an unqualified title.
 
 ## Terms
@@ -60,7 +60,10 @@
 - **Skill**: Instructions from a skills directory, invoked as a slash command.
 - **Workspace instructions**: The workspace's `AGENTS.md`, added to the system
   prompt.
-- **Model catalog**: The OpenRouter models Ox offers.
+- **Model provider**: OpenRouter or OpenAI, selected once for an Ox server
+  process.
+- **Model client**: The selected provider's HTTP client.
+- **Model catalog**: The selected provider's models Ox offers.
 - **Session cost**: What a main session and its child sessions have spent on
   model requests.
 - **Transcript view**: The client's display of the session's transcript, the
