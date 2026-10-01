@@ -6,8 +6,8 @@ Commit `a6d9430`, which saves a turn error as the last transcript entry of a
 turn that ends with an error. The review covered the changes in `sessions.rs`,
 `acp/prompt.rs`, `acp/convert.rs`, `compaction.rs`, `openai.rs`, and
 `openrouter.rs`, and the code that depends on them: compaction cut selection,
-replay in the Ox client's transcript view, and the session export script. It
-was checked against `agents/plans/2026-10-01-006-save-turn-errors.md`.
+replay in the Ox client's transcript view, and the session export script. It was
+checked against `agents/plans/2026-10-01-006-save-turn-errors.md`.
 
 Lenses: correctness, error-handling, testing, simplicity.
 
