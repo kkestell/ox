@@ -27,9 +27,48 @@ const ACTION_LOG_LABEL: &str = "Earlier tool calls, output omitted:\n";
 const RECENT_ALLOWANCE_PERCENT: usize = 20;
 const TOOL_RESULT_EXCERPT_CHARS: usize = 2_000;
 const IMAGE_ESTIMATE_TOKENS: usize = 4_096;
+const DEFAULT_BYTES_PER_TOKEN: f64 = 3.0;
 
-fn to_tokens(bytes: usize) -> usize {
-    bytes.div_ceil(3)
+fn to_tokens(bytes: usize, bytes_per_token: f64) -> usize {
+    (bytes as f64 / bytes_per_token).ceil() as usize
+}
+
+/// Summarizer requests keep the default bytes per token. They have no reported
+/// usage to measure, and they do not decide when compaction fires.
+fn summarizer_tokens(bytes: usize) -> usize {
+    to_tokens(bytes, DEFAULT_BYTES_PER_TOKEN)
+}
+
+/// The request body bytes for each reported input token of the latest
+/// assistant batch, from a rebuild of the request that produced it. The default
+/// when that batch has no usage or its turn ran on another model, which may
+/// tokenize differently. Every request carries a system prompt, so reported
+/// input tokens are never zero.
+fn bytes_per_token(parameters: &ModelRequestParameters, transcript: &[TranscriptEntry]) -> f64 {
+    let latest_batch = transcript
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, entry)| match entry {
+            TranscriptEntry::AssistantBatch(batch) => Some((index, batch)),
+            _ => None,
+        });
+    let Some((index, batch)) = latest_batch else {
+        return DEFAULT_BYTES_PER_TOKEN;
+    };
+    let Some(usage) = &batch.message.usage else {
+        return DEFAULT_BYTES_PER_TOKEN;
+    };
+    if turn_start_before(transcript, index).map(|start| start.model.as_str())
+        != Some(parameters.model.qualified_id().as_str())
+    {
+        return DEFAULT_BYTES_PER_TOKEN;
+    }
+    let body = model::ordinary_body(
+        parameters,
+        projection(parameters.model.provider, &transcript[..index]),
+    );
+    body_bytes(body) as f64 / usage.input_tokens as f64
 }
 
 /// Request-size limits for one model, in estimated tokens.
@@ -59,7 +98,7 @@ pub fn request_tokens(
         parameters,
         projection(parameters.model.provider, transcript),
     );
-    to_tokens(body_bytes(body))
+    to_tokens(body_bytes(body), bytes_per_token(parameters, transcript))
 }
 
 /// The bytes the request body would take, counting image data as a fixed token
@@ -161,7 +200,7 @@ fn summary_message(provider: Provider, summary: &str) -> Value {
     provider.user_message(&format!("{SUMMARY_LABEL}{summary}").into())
 }
 
-fn turn_provider_before(transcript: &[TranscriptEntry], index: usize) -> Option<Provider> {
+fn turn_start_before(transcript: &[TranscriptEntry], index: usize) -> Option<&TurnStart> {
     transcript[..index]
         .iter()
         .rev()
@@ -169,6 +208,10 @@ fn turn_provider_before(transcript: &[TranscriptEntry], index: usize) -> Option<
             TranscriptEntry::TurnStart(start) => Some(start),
             _ => None,
         })
+}
+
+fn turn_provider_before(transcript: &[TranscriptEntry], index: usize) -> Option<Provider> {
+    turn_start_before(transcript, index)
         .and_then(|start| Provider::from_qualified_model_id(&start.model))
 }
 
@@ -300,7 +343,7 @@ fn projected_tokens(
         parameters,
         projection_at(parameters.model.provider, transcript, cut, summary),
     );
-    to_tokens(body_bytes(body))
+    to_tokens(body_bytes(body), bytes_per_token(parameters, transcript))
 }
 
 /// A prospective transcript is rejected only if even the largest complete cut,
@@ -331,6 +374,7 @@ fn cut(parameters: &ModelRequestParameters, transcript: &[TranscriptEntry]) -> O
     let allowance = admission * RECENT_ALLOWANCE_PERCENT / 100;
     let candidates = candidates(transcript);
     let last = *candidates.last()?;
+    let bytes_per_token = bytes_per_token(parameters, transcript);
     let mut chosen = last;
     let mut end = transcript.len();
     let mut recent_bytes = 0;
@@ -338,7 +382,7 @@ fn cut(parameters: &ModelRequestParameters, transcript: &[TranscriptEntry]) -> O
         recent_bytes += messages_bytes(
             provider.transcript(&transcript[cut..end], turn_provider_before(transcript, cut)),
         );
-        if to_tokens(recent_bytes) > allowance {
+        if to_tokens(recent_bytes, bytes_per_token) > allowance {
             break;
         }
         chosen = cut;
@@ -487,7 +531,7 @@ fn next_piece(
     while let Some(field) = fields.front_mut() {
         let header = format!("{}, part {}:\n", field.label, field.part);
         let fits = |bytes| {
-            to_tokens(body_bytes + piece_bytes + bytes) + model::SUMMARIZER_MAX_TOKENS
+            summarizer_tokens(body_bytes + piece_bytes + bytes) + model::SUMMARIZER_MAX_TOKENS
                 <= model.context_limit
         };
         let (take, addition) = fitting_prefix(&header, &field.text, fits);
@@ -666,7 +710,10 @@ mod tests {
         body["input"][0]["content"][0]["image_url"] = serde_json::json!("[image]");
         assert_eq!(
             request_tokens(&parameters, &small),
-            to_tokens(serde_json::to_vec(&body).unwrap().len() + IMAGE_ESTIMATE_TOKENS * 3)
+            to_tokens(
+                serde_json::to_vec(&body).unwrap().len() + IMAGE_ESTIMATE_TOKENS * 3,
+                DEFAULT_BYTES_PER_TOKEN
+            )
         );
     }
     use crate::{
@@ -1011,6 +1058,55 @@ mod tests {
     }
 
     #[test]
+    fn request_estimates_use_the_bytes_per_token_of_the_latest_reported_usage() {
+        let start = |model: &str| {
+            let mut start = TurnStart::test("task".to_owned());
+            start.model = model.to_owned();
+            TranscriptEntry::TurnStart(start)
+        };
+        let batch = |input_tokens: Option<u64>| {
+            let mut batch = answer(&"answer ".repeat(1_000));
+            batch.message.usage = input_tokens.map(|input_tokens| crate::sessions::ModelUsage {
+                input_tokens,
+                cached_tokens: 0,
+                output_tokens: 0,
+                reasoning_tokens: 0,
+                cost: None,
+            });
+            TranscriptEntry::AssistantBatch(batch)
+        };
+        let bytes = |transcript: &[TranscriptEntry]| {
+            body_bytes(model::ordinary_body(
+                &parameters(),
+                projection(Provider::OpenRouter, transcript),
+            ))
+        };
+        let measured = bytes(&[start(DEFAULT_MODEL)]) as f64 / 100.0;
+        for (case, model, input_tokens, bytes_per_token) in [
+            ("no usage", DEFAULT_MODEL, None, DEFAULT_BYTES_PER_TOKEN),
+            (
+                "usage from the same model",
+                DEFAULT_MODEL,
+                Some(100),
+                measured,
+            ),
+            (
+                "usage from a turn on another model",
+                "openrouter:acme/other",
+                Some(100),
+                DEFAULT_BYTES_PER_TOKEN,
+            ),
+        ] {
+            let transcript = vec![start(model), batch(input_tokens)];
+            assert_eq!(
+                request_tokens(&parameters(), &transcript),
+                to_tokens(bytes(&transcript), bytes_per_token),
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
     fn only_the_latest_covered_skill_invocation_keeps_its_instructions() {
         let skill = |name: &str| {
             TranscriptEntry::turn(SkillInvocation {
@@ -1231,7 +1327,8 @@ mod tests {
             pieces += 1;
             let body = model::summarizer_body(model, previous, &piece);
             assert!(
-                to_tokens(serde_json::to_vec(&body).unwrap().len()) + model::SUMMARIZER_MAX_TOKENS
+                summarizer_tokens(serde_json::to_vec(&body).unwrap().len())
+                    + model::SUMMARIZER_MAX_TOKENS
                     <= model.context_limit,
                 "piece {pieces} fits the context limit"
             );
