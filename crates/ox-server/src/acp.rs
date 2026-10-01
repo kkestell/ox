@@ -1122,6 +1122,25 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
+        store
+            .append_turn_start(&id, &TurnStart::test("latest work".to_owned()))
+            .unwrap();
+        store
+            .append_batch(
+                &id,
+                &AssistantBatch::new(
+                    AssistantMessage {
+                        text: "Latest work complete.".to_owned(),
+                        reasoning: String::new(),
+                        tool_calls: vec![],
+                        continuation_metadata: vec![],
+                        usage: None,
+                    },
+                    vec![],
+                )
+                .unwrap(),
+            )
+            .unwrap();
         let before = store.read(&id).unwrap().unwrap().transcript;
         let server = Server::start(vec![Reply::Stream(sse(&[
             delta(

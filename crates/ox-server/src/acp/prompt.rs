@@ -1091,6 +1091,29 @@ mod tests {
                     .unwrap(),
                 )
                 .unwrap();
+            let mut recent = TurnStart::test("Recent task".to_owned());
+            recent.model = openai_fixture::DEFAULT_MODEL.to_owned();
+            harness
+                .store
+                .append_turn_start(&harness.id, &recent)
+                .unwrap();
+            harness
+                .store
+                .append_batch(
+                    &harness.id,
+                    &AssistantBatch::new(
+                        AssistantMessage {
+                            text: "Recent answer.".to_owned(),
+                            reasoning: String::new(),
+                            tool_calls: vec![],
+                            continuation_metadata: vec![],
+                            usage: None,
+                        },
+                        vec![],
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
             assert_eq!(
                 harness.turn("Continue", |_| Ok(())).await.unwrap(),
                 PromptOutput::Finished("Done.".to_owned())
@@ -1115,6 +1138,10 @@ mod tests {
                     .as_str()
                     .unwrap()
                     .starts_with("Compaction summary")
+            );
+            assert_eq!(
+                requests[1 + offset]["input"][3]["content"][0]["text"],
+                "Recent answer."
             );
             assert!(
                 requests[2 + offset]["input"][1]["content"][0]["text"]
@@ -1668,6 +1695,20 @@ mod tests {
             .store
             .append_batch(&harness.session_id, &batch)
             .unwrap();
+        harness
+            .store
+            .append_turn_start(
+                &harness.session_id,
+                &TurnStart::test("recent task".to_owned()),
+            )
+            .unwrap();
+        let TranscriptEntry::AssistantBatch(batch) = answer("Recent answer.") else {
+            unreachable!()
+        };
+        harness
+            .store
+            .append_batch(&harness.session_id, &batch)
+            .unwrap();
         let (response, transcript) = harness.run("next request", |_| Ok(())).await;
         assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
         let requests = harness.server.requests();
@@ -1678,9 +1719,11 @@ mod tests {
             requests[1]["messages"][2]["content"],
             "Compaction summary of earlier conversation:\nOlder work summarized."
         );
-        assert_eq!(requests[1]["messages"][3]["content"], "next request");
+        assert_eq!(requests[1]["messages"][3]["content"], "recent task");
+        assert_eq!(requests[1]["messages"][4]["content"], "Recent answer.");
+        assert_eq!(requests[1]["messages"][5]["content"], "next request");
         assert!(matches!(
-            &transcript[3],
+            &transcript[5],
             TranscriptEntry::CompactionCheckpoint(_)
         ));
         assert_eq!(harness.stored(), transcript);
@@ -1771,13 +1814,28 @@ mod tests {
             .store
             .append_batch(&harness.session_id, &batch)
             .unwrap();
+        harness
+            .store
+            .append_turn_start(
+                &harness.session_id,
+                &TurnStart::test("latest context".to_owned()),
+            )
+            .unwrap();
+        let TranscriptEntry::AssistantBatch(batch) = answer("latest answer") else {
+            unreachable!()
+        };
+        harness
+            .store
+            .append_batch(&harness.session_id, &batch)
+            .unwrap();
         let (response, transcript) = harness.run("next request", |_| Ok(())).await;
         assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
         assert_eq!(harness.server.requests().len(), 3);
-        assert!(matches!(
-            &transcript[3],
-            TranscriptEntry::CompactionCheckpoint(_)
-        ));
+        assert!(
+            transcript
+                .iter()
+                .any(|entry| matches!(entry, TranscriptEntry::CompactionCheckpoint(_)))
+        );
 
         let no_reduction = Harness::new(vec![
             Reply::Status(
@@ -1798,10 +1856,24 @@ mod tests {
             .store
             .append_batch(&no_reduction.session_id, &batch)
             .unwrap();
+        no_reduction
+            .store
+            .append_turn_start(
+                &no_reduction.session_id,
+                &TurnStart::test("latest context".to_owned()),
+            )
+            .unwrap();
+        let TranscriptEntry::AssistantBatch(batch) = answer("latest answer") else {
+            unreachable!()
+        };
+        no_reduction
+            .store
+            .append_batch(&no_reduction.session_id, &batch)
+            .unwrap();
         let (response, transcript) = no_reduction.run("next", |_| Ok(())).await;
         assert!(response.is_err());
         assert_eq!(no_reduction.server.requests().len(), 2);
-        assert_eq!(transcript.len(), 4, "the new user message remains saved");
+        assert_eq!(transcript.len(), 6, "the new user message remains saved");
         assert!(turn_error(&transcript).contains("context"));
 
         for reply in [
