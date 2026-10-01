@@ -228,7 +228,7 @@ pub fn run(
             Ok(()) => run.run_model_loop().await,
             Err(error) => PromptOutcome::AcpUpdate(error),
         };
-        let result = outcome.into_output();
+        let result = run.save_turn_error(outcome).into_output();
         run.stop_subagents().await;
         result
     })
@@ -262,8 +262,14 @@ impl fmt::Display for PromptOutcome {
             Self::TokenLimit => write!(f, "the model reached its token limit"),
             Self::Refused => write!(f, "the model refused"),
             Self::ModelRequest(error) => write!(f, "the model request failed: {error}"),
-            Self::AcpUpdate(error) => write!(f, "sending an ACP update failed: {error}"),
-            Self::Permission(error) => write!(f, "requesting shell permission failed: {error}"),
+            Self::AcpUpdate(error) => {
+                write!(f, "sending an ACP update failed: {}", error_text(error))
+            }
+            Self::Permission(error) => write!(
+                f,
+                "requesting shell permission failed: {}",
+                error_text(error)
+            ),
             Self::Storage(error) => write!(f, "saving the transcript failed: {error}"),
         }
     }
@@ -717,6 +723,31 @@ impl AgentTurn {
         Ok(())
     }
 
+    /// Saves a turn error when `outcome` is a failure, and returns the outcome
+    /// that ends the turn.
+    fn save_turn_error(&mut self, outcome: PromptOutcome) -> PromptOutcome {
+        match outcome {
+            PromptOutcome::Finished(_)
+            | PromptOutcome::Cancelled
+            | PromptOutcome::TokenLimit
+            | PromptOutcome::Refused => return outcome,
+            PromptOutcome::ModelRequest(_)
+            | PromptOutcome::AcpUpdate(_)
+            | PromptOutcome::Permission(_)
+            | PromptOutcome::Storage(_) => {}
+        }
+        let text = outcome.to_string();
+        match self.store.append_turn_error(&self.summary.id, &text) {
+            Ok(()) => {
+                self.transcript.push(TranscriptEntry::TurnError(text));
+                outcome
+            }
+            Err(error) => PromptOutcome::Storage(io::Error::other(format!(
+                "{error}; a turn error was being saved because {outcome}"
+            ))),
+        }
+    }
+
     /// Gives every unstarted call an outcome saying why it did not run, saves
     /// the batch, sends the remaining updates, and returns the outcome that
     /// ends the turn.
@@ -953,12 +984,15 @@ mod tests {
                     Ok(())
                 })
                 .await;
+            let transcript = harness.transcript();
             if cancelled {
                 assert_eq!(result.unwrap(), PromptOutput::Cancelled);
+                assert_eq!(transcript.len(), 1);
             } else {
                 assert!(result.is_err());
+                assert_eq!(transcript.len(), 2);
+                assert!(turn_error(&transcript).contains("No allowance"));
             }
-            assert_eq!(harness.transcript().len(), 1);
             assert!(!harness.workspace.0.join("unsafe.txt").exists());
         }
     }
@@ -1230,6 +1264,14 @@ mod tests {
         TurnInput::UserMessage(text.to_owned().into())
     }
 
+    /// The text of the turn error that ends `transcript`.
+    fn turn_error(transcript: &[TranscriptEntry]) -> &str {
+        let Some(TranscriptEntry::TurnError(text)) = transcript.last() else {
+            panic!("no turn error ends {transcript:?}");
+        };
+        text
+    }
+
     fn answer(text: &str) -> TranscriptEntry {
         TranscriptEntry::AssistantBatch(
             AssistantBatch::new(
@@ -1458,7 +1500,8 @@ mod tests {
         let (response, transcript) = harness.run("Write the file", |_| Ok(())).await;
 
         assert!(response.is_err());
-        assert_eq!(transcript, vec![turn(user("Write the file"))]);
+        assert_eq!(transcript[..1], [turn(user("Write the file"))]);
+        assert!(turn_error(&transcript).starts_with("the model request failed: "));
         assert_eq!(harness.stored(), transcript);
         assert_eq!(fs::read_dir(&harness.workspace.0).unwrap().count(), 0);
     }
@@ -1758,7 +1801,8 @@ mod tests {
         let (response, transcript) = no_reduction.run("next", |_| Ok(())).await;
         assert!(response.is_err());
         assert_eq!(no_reduction.server.requests().len(), 2);
-        assert_eq!(transcript.len(), 3, "the new user message remains saved");
+        assert_eq!(transcript.len(), 4, "the new user message remains saved");
+        assert!(turn_error(&transcript).contains("context"));
 
         for reply in [
             Reply::Status(400, "bad request".to_owned()),
@@ -2199,7 +2243,8 @@ mod tests {
                 Err(expected) => {
                     let error = format!("{:?}", response.unwrap_err());
                     assert!(error.contains(expected), "{name}: {error}");
-                    assert_eq!(transcript, vec![turn(user("Hi"))], "{name}");
+                    assert_eq!(transcript[..1], [turn(user("Hi"))], "{name}");
+                    assert!(turn_error(&transcript).contains(expected), "{name}");
                 }
             }
         }
@@ -2212,7 +2257,7 @@ mod tests {
             connection
                 .execute_batch(
                     "CREATE TRIGGER refuse BEFORE INSERT ON transcript_entries
-                     WHEN NEW.kind = 'assistant_batch'
+                     WHEN NEW.kind <> 'turn_start'
                      BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
                 )
                 .unwrap()
@@ -2220,10 +2265,9 @@ mod tests {
 
         let (response, transcript) = harness.run("Hi", |_| Ok(())).await;
 
-        let error = response.unwrap_err();
-        assert!(
-            error.to_string().contains("disk full") || format!("{error:?}").contains("disk full")
-        );
+        let error = format!("{:?}", response.unwrap_err());
+        assert!(error.contains("disk full"), "{error}");
+        assert!(error.contains("a turn error was being saved"), "{error}");
         assert_eq!(transcript, vec![turn(user("Hi"))]);
         assert_eq!(harness.stored(), transcript);
     }
@@ -2268,14 +2312,19 @@ mod tests {
 
             assert!(response.is_err(), "{failing}");
             assert_eq!(
-                transcript,
-                vec![
+                transcript[..2],
+                [
                     turn(user("Weather?")),
                     calls(
                         &[("call-1", "printf Chicago"), ("call-2", "printf Denver")],
                         outcomes
                     ),
                 ],
+                "{failing}"
+            );
+            assert_eq!(
+                turn_error(&transcript),
+                "sending an ACP update failed: Internal error: connection closed",
                 "{failing}"
             );
             assert_eq!(harness.stored(), transcript);

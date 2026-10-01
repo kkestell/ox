@@ -4,7 +4,7 @@
       prompts instead of being rejected
 - [x] [OX-0026](issues.csv:27): Temporary OpenAI errors such as 503 end the turn
       instead of being retried
-- [ ] [OX-0027](issues.csv:28): The server writes no logs, so provider errors
+- [x] [OX-0027](issues.csv:28): The server writes no logs, so provider errors
       are lost after they are shown
 - [ ] [OX-0029](issues.csv:30): Compaction stops repeating the skill invocation
       once a later turn begins

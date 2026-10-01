@@ -237,7 +237,7 @@ pub(crate) fn input(
     let mut input = Vec::new();
     for entry in transcript {
         match entry {
-            TranscriptEntry::CompactionCheckpoint(_) => {}
+            TranscriptEntry::CompactionCheckpoint(_) | TranscriptEntry::TurnError(_) => {}
             TranscriptEntry::TurnStart(start) => {
                 turn_provider = model::Provider::from_qualified_model_id(&start.model);
                 input.push(match &start.input {

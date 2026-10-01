@@ -307,6 +307,22 @@ pub fn subagent_message_updates(messages: &[SubagentMessage]) -> Vec<SessionUpda
         .collect()
 }
 
+/// Shows a saved turn error in replay as a failed tool call, so it stays apart
+/// from model text. A live turn reports its error in the prompt's response
+/// instead.
+pub fn turn_error_update(text: &str) -> SessionUpdate {
+    SessionUpdate::ToolCall(
+        AcpToolCall::new(
+            ToolCallId::new(format!("turn-error-{}", uuid::Uuid::new_v4())),
+            "Turn error",
+        )
+        .kind(ToolKind::Other)
+        .status(ToolCallStatus::Failed)
+        .content(vec![text_content(text)])
+        .raw_output(Value::String(text.to_owned())),
+    )
+}
+
 /// Sends the saved transcript as displayable content and final tool states.
 /// The model and continuation metadata are never shown.
 pub fn replay_transcript(
@@ -334,6 +350,7 @@ pub fn replay_transcript(
                     send_update(update)?;
                 }
             }
+            TranscriptEntry::TurnError(text) => send_update(turn_error_update(text))?,
             TranscriptEntry::AssistantBatch(batch) => {
                 let message = &batch.message;
                 if !message.reasoning.is_empty() {
@@ -636,6 +653,24 @@ mod tests {
         );
         assert_eq!(request["toolCall"]["rawInput"]["command"], "touch first");
         assert_eq!(request["toolCall"]["_meta"]["subagent_id"], "child");
+    }
+
+    #[test]
+    fn turn_errors_are_replayed_as_failed_tool_calls() {
+        let text = "the model request failed: OpenAI returned 503";
+        let mut replay = Vec::new();
+        replay_transcript(&[TranscriptEntry::TurnError(text.to_owned())], |update| {
+            replay.push(update);
+            Ok(())
+        })
+        .unwrap();
+        let [SessionUpdate::ToolCall(call)] = replay.as_slice() else {
+            panic!("unexpected replay {replay:?}");
+        };
+        assert!(call.tool_call_id.to_string().starts_with("turn-error-"));
+        assert_eq!(call.title, "Turn error");
+        assert_eq!(call.status, ToolCallStatus::Failed);
+        assert_eq!(call.content, vec![text_content(text)]);
     }
 
     #[test]

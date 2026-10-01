@@ -336,7 +336,7 @@ fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<MaterialFiel
                     )
                 }));
             }
-            TranscriptEntry::CompactionCheckpoint(_) => {}
+            TranscriptEntry::CompactionCheckpoint(_) | TranscriptEntry::TurnError(_) => {}
         }
     }
     fields
@@ -1016,6 +1016,35 @@ mod tests {
                 ),
                 ("Entry 2 Failure of subagent child-2", "The model refused."),
             ]
+        );
+    }
+
+    #[test]
+    fn turn_errors_reach_neither_requests_nor_summarizer_material() {
+        let failed = vec![
+            TranscriptEntry::turn("Edit.".to_owned()),
+            TranscriptEntry::AssistantBatch(answer("Editing.")),
+        ];
+        let mut transcript = failed.clone();
+        transcript.push(TranscriptEntry::TurnError(
+            "the model request failed: OpenAI returned 503".to_owned(),
+        ));
+        for provider in [Provider::OpenRouter, Provider::OpenAI] {
+            assert_eq!(
+                projection(provider, &transcript),
+                projection(provider, &failed),
+                "{provider:?}"
+            );
+        }
+        let labeled = |fields: VecDeque<MaterialField>| -> Vec<_> {
+            fields
+                .into_iter()
+                .map(|field| (field.label, field.text))
+                .collect()
+        };
+        assert_eq!(
+            labeled(material(&transcript, 3)),
+            labeled(material(&failed, 2))
         );
     }
 
