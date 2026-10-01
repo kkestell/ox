@@ -59,6 +59,20 @@ impl Input {
         command.strip_prefix(word).filter(|rest| !rest.is_empty())
     }
 
+    /// The input's slash command word, `/` and a name of lowercase letters,
+    /// digits, and hyphens as the first word of the trimmed text, when the name
+    /// is not one of the commands. Other first words, such as paths, are not
+    /// slash command words.
+    pub fn unknown_command(&self, commands: &[String]) -> Option<&str> {
+        let word = self.text.split_whitespace().next()?;
+        let name = word.strip_prefix('/')?;
+        let is_name = !name.is_empty()
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+        (is_name && !commands.iter().any(|command| command == name)).then_some(word)
+    }
+
     pub fn newline(&mut self) {
         self.insert('\n');
     }
@@ -321,6 +335,33 @@ mod tests {
         let mut input = typed("/mo");
         input.paste(input.ghost_text(&commands).unwrap());
         assert_eq!(input.text(), "/model");
+    }
+
+    #[test]
+    fn unknown_command_names_a_slash_command_word_missing_from_the_commands() {
+        let commands = ["compact", "model"].map(String::from);
+        for (input, expected) in [
+            ("/mo", Some("/mo")),
+            ("/modle", Some("/modle")),
+            ("/mo more text", Some("/mo")),
+            ("  /mo", Some("/mo")),
+            ("/mo\nmore", Some("/mo")),
+            ("/model", None),
+            ("/model x", None),
+            ("/compact now", None),
+            ("/", None),
+            ("/Users/kyle/x.rs", None),
+            ("/tmp/out", None),
+            ("hi /mo", None),
+            ("plain text", None),
+            ("", None),
+        ] {
+            assert_eq!(
+                typed(input).unknown_command(&commands),
+                expected,
+                "{input:?}"
+            );
+        }
     }
 
     #[test]

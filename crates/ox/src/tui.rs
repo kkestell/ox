@@ -950,6 +950,9 @@ async fn key(
                 } else if ui.input.text() == "/model" {
                     ui.input.clear();
                     open_model_picker(ui, session, now);
+                } else if let Some(word) = ui.input.unknown_command(&commands(session)) {
+                    ui.view
+                        .notice(format!("Unknown command {word}"), theme::RED, now);
                 } else {
                     send(ui, session, now)?;
                 }
@@ -2152,6 +2155,25 @@ mod tests {
             assert!(ui.input.is_empty());
             ui.input.paste("/quit");
             assert!(press(&mut ui, &mut session, KeyCode::Enter, now).await?);
+            Ok(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn enter_refuses_an_unknown_slash_command() {
+        with_session(vec![], async |mut session, _events| {
+            let mut ui = Ui::default();
+            let now = Instant::now();
+            ui.input.paste("/mo");
+            press(&mut ui, &mut session, KeyCode::Enter, now).await?;
+            assert_eq!(ui.input.text(), "/mo");
+            assert!(!session.busy);
+            let (rows, _, _, _) = render(&mut screen(&mut ui.view, &ui.input, now), 40, 10);
+            assert!(
+                rows.iter().any(|row| row.contains("Unknown command /mo")),
+                "{rows:#?}"
+            );
             Ok(())
         })
         .await;
