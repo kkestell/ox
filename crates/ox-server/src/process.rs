@@ -1,4 +1,4 @@
-//! Child processes in a new process group: bounded output tails, reading and
+//! Child processes in a new process group: bounded output excerpts, reading and
 //! draining a child's output pipes into a caller's sink, cleanup of the whole
 //! group, and a runner for one child with a deadline and cancellation.
 
@@ -19,11 +19,14 @@ use tokio::{
 pub const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 const GROUP_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-/// The tail of one output stream, at most `limit` bytes.
+/// The start and end of one output stream, at most `limit` bytes together.
 #[derive(Clone)]
 pub struct Capture {
-    pub bytes: VecDeque<u8>,
-    /// Earlier output was dropped to stay within the limit.
+    /// The stream's first bytes, at most half the limit.
+    pub head: Vec<u8>,
+    /// The stream's latest bytes after `head`, at most the rest of the limit.
+    pub tail: VecDeque<u8>,
+    /// Output between `head` and `tail` was dropped to stay within the limit.
     pub omitted: bool,
     /// Every byte the stream produced, kept or dropped.
     pub total_bytes: u64,
@@ -33,26 +36,43 @@ pub struct Capture {
 impl Capture {
     pub fn new(limit: usize) -> Self {
         Self {
-            bytes: VecDeque::new(),
+            head: Vec::new(),
+            tail: VecDeque::new(),
             omitted: false,
             total_bytes: 0,
             limit,
         }
     }
 
-    /// Keeps the last `limit` bytes of the stream after `bytes`.
+    /// Keeps the first half of the limit and the latest rest of the stream
+    /// after `bytes`.
     pub fn append(&mut self, bytes: &[u8]) {
         self.total_bytes += bytes.len() as u64;
-        let excess = (self.bytes.len() + bytes.len()).saturating_sub(self.limit);
+        let head_limit = self.limit / 2;
+        let (head, bytes) =
+            bytes.split_at(head_limit.saturating_sub(self.head.len()).min(bytes.len()));
+        self.head.extend(head);
+        let excess = (self.tail.len() + bytes.len()).saturating_sub(self.limit - head_limit);
         self.omitted |= excess > 0;
         // A limit smaller than one read also drops the front of that read.
-        let dropped = excess.min(self.bytes.len());
-        self.bytes.drain(..dropped);
-        self.bytes.extend(&bytes[excess - dropped..]);
+        let dropped = excess.min(self.tail.len());
+        self.tail.drain(..dropped);
+        self.tail.extend(&bytes[excess - dropped..]);
     }
 
-    pub fn decode(&mut self) -> String {
-        String::from_utf8_lossy(self.bytes.make_contiguous()).into_owned()
+    /// The stream's text, or its start and its end when the middle was
+    /// omitted.
+    pub fn decode(&mut self) -> (String, Option<String>) {
+        let tail = self.tail.make_contiguous();
+        if self.omitted {
+            (
+                String::from_utf8_lossy(&self.head).into_owned(),
+                Some(String::from_utf8_lossy(tail).into_owned()),
+            )
+        } else {
+            let bytes = [self.head.as_slice(), tail].concat();
+            (String::from_utf8_lossy(&bytes).into_owned(), None)
+        }
     }
 }
 

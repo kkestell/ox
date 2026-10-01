@@ -27,16 +27,16 @@
         transcript
   - [ ] [OX-0039](issues.csv:40): Transcript entries carry no timestamps
 - [ ] Small fixes (no plan)
-  - [ ] [OX-0033](issues.csv:34): OpenAI requests set no prompt cache key and
+  - [x] [OX-0033](issues.csv:34): OpenAI requests set no prompt cache key and
         cache hits are erratic
-  - [ ] [OX-0035](issues.csv:36): Shell output truncation keeps only the tail
-  - [ ] [OX-0037](issues.csv:38): Reasoning summary parts are joined without a
+  - [x] [OX-0035](issues.csv:36): Shell output truncation keeps only the tail
+  - [x] [OX-0037](issues.csv:38): Reasoning summary parts are joined without a
         separator
-  - [ ] [OX-0038](issues.csv:39): `wait` with no subagents returns a redundant
+  - [x] [OX-0038](issues.csv:39): `wait` with no subagents returns a redundant
         message
   - [ ] [OX-0040](issues.csv:41): Parallel subagents in one workspace contend
         for the cargo build lock
-  - [ ] [OX-0043](issues.csv:44): Two functions named `status_error` meet at one
+  - [x] [OX-0043](issues.csv:44): Two functions named `status_error` meet at one
         call
 - [ ] [OX-0041](issues.csv:42): The installed `ox-work` skill points at
       `docs/agents/` while this repo uses `agents/` (outside this repo)

@@ -125,7 +125,7 @@ pub(super) fn schema() -> Value {
         "type": "function",
         "function": {
             "name": SHELL,
-            "description": "Run a bash command starting in the session workspace. An ordinary call waits for the command to finish and returns the exit status and tails of stdout and stderr, at most 16 KiB total. Output has a shared 14 KiB budget: 7 KiB per stream, with unused space given to the other stream. Earlier output may be omitted; rerun a narrower command or redirect long output to a file to inspect it. Output is already bounded, so run a command directly rather than piping it through tail or head: a pipeline reports only its last command's exit status. Each ordinary call starts a fresh shell in the workspace with stdin connected to /dev/null, so directory changes and exported variables do not carry over. Set background to true for a development server, watcher, or long build: the call returns a process ID as soon as the command starts, and the command keeps running across turns until it exits, shell_process stops it, the session is deleted, or Ox exits. Commands run with Ox's permissions and can access paths outside the workspace.",
+            "description": "Run a bash command starting in the session workspace. An ordinary call waits for the command to finish and returns the exit status and the start and end of stdout and stderr, at most 16 KiB total. Output has a shared 14 KiB budget: 7 KiB per stream, with unused space given to the other stream. The middle of long output is omitted; rerun a narrower command or redirect long output to a file to inspect it. Output is already bounded, so run a command directly rather than piping it through tail or head: a pipeline reports only its last command's exit status. Each ordinary call starts a fresh shell in the workspace with stdin connected to /dev/null, so directory changes and exported variables do not carry over. Set background to true for a development server, watcher, or long build: the call returns a process ID as soon as the command starts, and the command keeps running across turns until it exits, shell_process stops it, the session is deleted, or Ox exits. Commands run with Ox's permissions and can access paths outside the workspace.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -422,16 +422,28 @@ fn failure(message: String) -> ToolOutcome {
     )
 }
 
-fn trim_front(text: &mut String, limit: usize) -> bool {
-    if text.len() <= limit {
-        return false;
-    }
-    let mut start = text.len() - limit;
+fn trim_front(text: &mut String, limit: usize) {
+    let mut start = text.len().saturating_sub(limit);
     while !text.is_char_boundary(start) {
         start += 1;
     }
     text.drain(..start);
-    true
+}
+
+/// A decoded stream's text within `budget` bytes, cut from the middle, and
+/// whether any output was omitted.
+fn excerpt((mut head, tail): (String, Option<String>), budget: usize) -> (String, bool) {
+    let mut tail = match tail {
+        None if head.len() <= budget => return (head, false),
+        None => head.clone(),
+        Some(tail) => tail,
+    };
+    super::truncate(
+        &mut head,
+        (budget / 2).max(budget.saturating_sub(tail.len())),
+    );
+    trim_front(&mut tail, budget - head.len());
+    (format!("{head}\n[...]\n{tail}"), true)
 }
 
 fn exit_status(status: ExitStatus) -> String {
@@ -464,9 +476,9 @@ fn render(observed: Observed, out: Capture, err: Capture, diagnostics: String) -
     }
 }
 
-/// `status` and `diagnostics` followed by the output tails, within the tool
-/// output limit, and the client's blocks: the status, then each nonempty
-/// tail.
+/// `status` and `diagnostics` followed by the output excerpts, within the
+/// tool output limit, and the client's blocks: the status, then each nonempty
+/// excerpt.
 fn report(
     mut status: String,
     mut out: Capture,
@@ -481,19 +493,23 @@ fn report(
         super::truncate(&mut status, 1500);
         status.push_str("\nDiagnostic truncated.");
     }
-    let mut stdout = out.decode();
-    let mut stderr = err.decode();
+    let (stdout, stderr) = (out.decode(), err.decode());
+    let len =
+        |(head, tail): &(String, Option<String>)| head.len() + tail.as_ref().map_or(0, String::len);
     let half = OUTPUT_BODY_LIMIT / 2;
-    let out_budget = half.max(OUTPUT_BODY_LIMIT.saturating_sub(stderr.len()));
-    let err_budget = OUTPUT_BODY_LIMIT - stdout.len().min(out_budget);
-    out.omitted |= trim_front(&mut stdout, out_budget);
-    err.omitted |= trim_front(&mut stderr, err_budget);
+    let out_budget = half.max(OUTPUT_BODY_LIMIT.saturating_sub(len(&stderr)));
+    let err_budget = OUTPUT_BODY_LIMIT - len(&stdout).min(out_budget);
+    let (stdout, out_omitted) = excerpt(stdout, out_budget);
+    let (stderr, err_omitted) = excerpt(stderr, err_budget);
     let mut content = vec![ToolContent::Text(status.clone())];
-    for (name, text, capture) in [("stdout", stdout, &out), ("stderr", stderr, &err)] {
+    for (name, text, omitted, capture) in [
+        ("stdout", stdout, out_omitted, &out),
+        ("stderr", stderr, err_omitted, &err),
+    ] {
         status.push_str(&format!("\n\n{name}:"));
-        if capture.omitted {
+        if omitted {
             status.push_str(&format!(
-                " (tail of {} bytes; earlier output omitted)",
+                " (start and end of {} bytes; the middle is omitted)",
                 capture.total_bytes
             ));
         }
@@ -1023,7 +1039,7 @@ mod tests {
         let outcome = render_process("p-1", &"雪".repeat(1000), flooded, false);
         assert!(outcome.text.len() <= tools::OUTPUT_LIMIT);
         assert!(outcome.text.contains("Diagnostic truncated."));
-        assert_eq!(outcome.text.matches("earlier output omitted").count(), 2);
+        assert_eq!(outcome.text.matches("the middle is omitted").count(), 2);
 
         for (written, expected) in [
             (
@@ -1168,15 +1184,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn large_output_keeps_tails_and_finishes_writing() {
+    async fn large_output_keeps_its_start_and_end_and_finishes_writing() {
         let workspace = Workspace::new();
-        let outcome = run(&workspace.0, "i=0; while [ $i -lt 5000 ]; do printf 'stdout line\n'; printf 'stderr line\n' >&2; i=$((i+1)); done; printf OUT_END; printf ERR_END >&2; touch finished").await;
+        let outcome = run(&workspace.0, "printf OUT_START; printf ERR_START >&2; i=0; while [ $i -lt 5000 ]; do printf 'stdout line\n'; printf 'stderr line\n' >&2; i=$((i+1)); done; printf OUT_END; printf ERR_END >&2; touch finished").await;
         assert_eq!(outcome.status, ToolStatus::Completed);
         assert!(workspace.0.join("finished").exists());
         assert!(outcome.text.len() <= tools::OUTPUT_LIMIT);
         for (stream, end) in [("stdout", "OUT_END"), ("stderr", "ERR_END")] {
-            let total = format!("{stream} line\n").len() * 5000 + end.len();
-            let notice = format!("{stream}: (tail of {total} bytes; earlier output omitted)");
+            let total = format!("{stream} line\n").len() * 5000 + 2 * end.len() + 2;
+            let start = end.replace("END", "START");
+            let notice = format!(
+                "{stream}: (start and end of {total} bytes; the middle is omitted)\n{start}"
+            );
             assert!(outcome.text.contains(&notice), "{notice}");
         }
         assert!(outcome.text.contains("OUT_END"));
@@ -1198,9 +1217,9 @@ mod tests {
             assert_eq!(result.text.matches('X').count(), expected_out);
             assert_eq!(result.text.matches('Y').count(), expected_err);
         }
-        let mut text = "a雪🙂z".to_owned();
-        assert!(trim_front(&mut text, 5));
-        assert_eq!(text, "🙂z");
+        let (text, omitted) = excerpt(("a雪🙂z".to_owned(), None), 6);
+        assert!(omitted);
+        assert_eq!(text, "a\n[...]\n🙂z");
         for observed in [
             Observed::Failed("雪".repeat(10000)),
             Observed::Cancelled,
@@ -1209,14 +1228,13 @@ mod tests {
             let invalid = || capture(vec![0xff; OUTPUT_BODY_LIMIT]);
             let result = render(observed, invalid(), invalid(), "雪".repeat(10000));
             assert!(result.text.len() <= tools::OUTPUT_LIMIT);
-            assert_eq!(result.text.matches("earlier output omitted").count(), 2);
+            assert_eq!(result.text.matches("the middle is omitted").count(), 2);
         }
     }
 
     fn capture(bytes: Vec<u8>) -> Capture {
         let mut capture = Capture::new(OUTPUT_BODY_LIMIT);
-        capture.total_bytes = bytes.len() as u64;
-        capture.bytes = bytes.into();
+        capture.append(&bytes);
         capture
     }
 

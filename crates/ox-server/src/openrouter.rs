@@ -315,7 +315,7 @@ impl Client {
             if matches!(status.as_u16(), 400 | 413 | 422) && explicit_context_overflow(&detail) {
                 return Err(io::Error::other(InputContextOverflow));
             }
-            return Err(model::status_error(
+            return Err(model::mark_temporary(
                 status,
                 io::Error::other(status_error(status, &detail)),
             ));

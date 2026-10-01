@@ -480,7 +480,7 @@ mod tests {
     /// Waits until the command has printed `marker` to stdout.
     async fn printed(process: &ShellProcess, marker: &str) {
         timeout(Duration::from_secs(5), async {
-            while !process.output().stdout.clone().decode().contains(marker) {
+            while !text(&process.output().stdout).contains(marker) {
                 sleep(Duration::from_millis(10)).await;
             }
         })
@@ -544,7 +544,7 @@ mod tests {
         }
         let output = finished(&process).await;
         assert_eq!(output.state, State::Exited(ExitStatus::from_raw(0)));
-        assert_eq!(output.stdout.clone().decode(), "readyone\ntwo");
+        assert_eq!(text(&output.stdout), "readyone\ntwo");
         assert_eq!(
             process.write(b"late", false, std::future::pending()).await,
             Written {
@@ -582,7 +582,7 @@ mod tests {
         ] {
             let output = finished(&start(&shell_processes, &workspace.0, command)).await;
             assert_eq!(output.state, State::Exited(status), "{command}");
-            assert_eq!(output.stdout.clone().decode(), stdout, "{command}");
+            assert_eq!(text(&output.stdout), stdout, "{command}");
         }
     }
 
@@ -616,8 +616,14 @@ mod tests {
         .unwrap_or_else(|_| panic!("{}: {what}", process.command()));
     }
 
+    /// The captured start and end of a stream, joined.
+    fn text(capture: &Capture) -> String {
+        let (head, tail) = capture.clone().decode();
+        head + &tail.unwrap_or_default()
+    }
+
     fn ends_with(capture: &Capture, marker: &str) -> bool {
-        capture.clone().decode().ends_with(marker)
+        text(capture).ends_with(marker)
     }
 
     #[tokio::test]
@@ -649,13 +655,14 @@ mod tests {
         let second = process.output();
         for capture in [&first.stdout, &first.stderr] {
             assert!(capture.omitted);
-            assert_eq!(capture.bytes.len(), LIMIT);
+            assert_eq!(capture.head.len() + capture.tail.len(), LIMIT);
         }
         assert_eq!(
-            first.stdout.bytes, second.stdout.bytes,
+            text(&first.stdout),
+            text(&second.stdout),
             "reads do not consume"
         );
-        assert_eq!(first.stderr.bytes, second.stderr.bytes);
+        assert_eq!(text(&first.stderr), text(&second.stderr));
 
         let starving = start(
             &shell_processes,
@@ -817,7 +824,7 @@ mod tests {
             }
         );
         assert_eq!(
-            finished(&reader).await.stdout.clone().decode().trim(),
+            text(&finished(&reader).await.stdout).trim(),
             written.bytes.to_string(),
             "only the reported prefix was sent"
         );
