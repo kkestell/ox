@@ -296,6 +296,35 @@ pub fn is_input_context_overflow(error: &io::Error) -> bool {
         .is_some_and(|inner| inner.is::<InputContextOverflow>())
 }
 
+/// A temporary failure: a model request failure that a later attempt may not
+/// repeat. It keeps the provider's message.
+#[derive(Debug)]
+pub struct Temporary(pub String);
+
+impl std::fmt::Display for Temporary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Temporary {}
+
+/// True for a temporary failure: a stall, or an HTTP 429 or 5xx status.
+pub fn is_temporary(error: &io::Error) -> bool {
+    error.kind() == ErrorKind::TimedOut
+        || error.get_ref().is_some_and(|inner| inner.is::<Temporary>())
+}
+
+/// Marks the error of a failed HTTP status temporary when the status is 429
+/// or 5xx.
+pub(crate) fn status_error(status: reqwest::StatusCode, error: io::Error) -> io::Error {
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+        io::Error::other(Temporary(error.to_string()))
+    } else {
+        error
+    }
+}
+
 /// The validated catalog model, effort level, system prompt, and the tools of
 /// the agent's role, which every ordinary model request in a turn sends with
 /// the transcript.

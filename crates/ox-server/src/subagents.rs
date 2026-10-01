@@ -861,7 +861,7 @@ mod tests {
                 "Failing task",
                 vec![
                     background("exec sleep 30"),
-                    Reply::Status(500, "unavailable".to_owned()),
+                    Reply::Status(400, "bad request".to_owned()),
                 ],
             ),
         ])
@@ -908,14 +908,14 @@ mod tests {
     async fn a_failed_turn_reports_its_failure_and_ends_the_subagent() {
         let owner = Owner::new(vec![(
             "Task",
-            vec![Reply::Status(500, "unavailable".to_owned())],
+            vec![Reply::Status(400, "bad request".to_owned())],
         )])
         .await;
         let id = owner.start("Task");
         let messages = owner.settle().await;
         assert_eq!(messages.len(), 1);
         assert!(
-            messages[0].contains("OpenRouter returned 500"),
+            messages[0].contains("OpenRouter returned 400"),
             "{}",
             messages[0]
         );

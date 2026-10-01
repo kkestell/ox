@@ -2,7 +2,7 @@
 //! skill invocation, makes model requests, runs tools in call order, saves each
 //! complete assistant batch, and returns the answer when the turn finishes.
 
-use std::{fmt, future::Future, io, ops::ControlFlow};
+use std::{fmt, future::Future, io, ops::ControlFlow, time::Duration};
 
 use agent_client_protocol::{
     Client, ConnectionTo, Error, Result,
@@ -27,8 +27,18 @@ use crate::{
     tools::{self, ToolContext},
 };
 
-/// Attempts for a model request whose OpenRouter response stalls.
+/// Attempts for a model request that ends in a temporary failure.
 const MODEL_REQUEST_ATTEMPTS: usize = 3;
+
+/// The waits before the second and third attempts, since retrying a temporary
+/// failure at once tends to fail the same way. Tests skip them because the
+/// scripted fixtures use real sockets, where paused time would fire stall
+/// timeouts early.
+#[cfg(not(test))]
+const RETRY_DELAYS: [Duration; MODEL_REQUEST_ATTEMPTS - 1] =
+    [Duration::from_secs(2), Duration::from_secs(8)];
+#[cfg(test)]
+const RETRY_DELAYS: [Duration; MODEL_REQUEST_ATTEMPTS - 1] = [Duration::ZERO; 2];
 
 /// The main session ID and, for a subagent, its child session ID. ACP updates
 /// and permission requests are addressed with it; the session store uses the
@@ -410,8 +420,8 @@ impl AgentTurn {
         }
     }
 
-    /// Makes one model request, retrying it when it stalls, runs its tool
-    /// calls, and commits its batch.
+    /// Makes one model request, retrying it after a temporary failure, runs
+    /// its tool calls, and commits its batch.
     async fn run_model_step(
         &mut self,
     ) -> std::result::Result<ControlFlow<PromptOutcome>, PromptOutcome> {
@@ -422,12 +432,15 @@ impl AgentTurn {
         let mut attempts = 1;
         let model::Completion { message, stop } = loop {
             match self.request_completion().await {
-                // Provisional output of the stalled attempt stays on screen.
+                // Provisional output of a stalled attempt stays on screen.
                 Err(PromptOutcome::ModelRequest(error))
-                    if error.kind() == io::ErrorKind::TimedOut
-                        && self.parameters.model.provider == model::Provider::OpenRouter
-                        && attempts < MODEL_REQUEST_ATTEMPTS =>
+                    if model::is_temporary(&error) && attempts < MODEL_REQUEST_ATTEMPTS =>
                 {
+                    tokio::select! {
+                        biased;
+                        () = self.cancellation.cancelled() => return Err(PromptOutcome::Cancelled),
+                        () = tokio::time::sleep(RETRY_DELAYS[attempts - 1]) => {}
+                    }
                     attempts += 1;
                 }
                 result => break result?,
@@ -830,24 +843,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn openai_stalls_discard_the_attempt_without_retrying() {
-        let prefix = openai_fixture::sse(&[
-            json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"Provisional"}),
-        ]);
+    async fn openai_temporary_failures_are_retried() {
+        let prefix = format!(
+            "data: {}\n\n",
+            json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"Provisional"})
+        );
+        let unavailable = json!({"error":{"code":"subscription_sharing_user_unavailable","message":"Unavailable"}});
         let mut harness = OpenAIHarness::new(vec![(
             "",
             vec![
+                openai_fixture::Reply::Status(503, unavailable.to_string()),
                 openai_fixture::Reply::Hang(prefix),
-                openai_fixture::text_reply("Must not retry."),
+                openai_fixture::text_reply("Done."),
             ],
         )])
         .await;
         harness.timeout = std::time::Duration::from_millis(200);
-        assert!(harness.turn("Continue", |_| Ok(())).await.is_err());
-        assert_eq!(harness.server.requests().len(), 1);
+        assert_eq!(
+            harness.turn("Continue", |_| Ok(())).await.unwrap(),
+            PromptOutput::Finished("Done.".to_owned())
+        );
+        assert_eq!(harness.server.requests().len(), 3);
         assert!(matches!(
             harness.transcript().as_slice(),
-            [TranscriptEntry::TurnStart(_)]
+            [
+                TranscriptEntry::TurnStart(_),
+                TranscriptEntry::AssistantBatch(_)
+            ]
         ));
     }
 
@@ -1739,7 +1761,7 @@ mod tests {
         assert_eq!(transcript.len(), 3, "the new user message remains saved");
 
         for reply in [
-            Reply::Status(500, "server unavailable".to_owned()),
+            Reply::Status(400, "bad request".to_owned()),
             Reply::Stream(sse(&[delta(
                 json!({"role":"assistant", "content":"partial"}),
                 Some("length"),
@@ -2082,7 +2104,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stalled_model_requests_are_retried_up_to_the_attempt_limit() {
+    async fn temporary_failures_are_retried_up_to_the_attempt_limit() {
         let partial = format!(
             "data: {}\n\n",
             delta(
@@ -2091,6 +2113,7 @@ mod tests {
             )
         );
         let keep_alive = || Reply::Hang(": OPENROUTER PROCESSING\n\n".to_owned());
+        let unavailable = || Reply::Status(503, "unavailable".to_owned());
         let cases = [
             (
                 "stalls before headers and mid-stream, then answers",
@@ -2099,7 +2122,8 @@ mod tests {
                     Reply::Hang(partial),
                     text_reply("Hello there."),
                 ],
-                Some("Hello there."),
+                3,
+                Ok("Hello there."),
             ),
             (
                 "sends only keep-alives on every attempt",
@@ -2109,10 +2133,46 @@ mod tests {
                     keep_alive(),
                     text_reply("Too late."),
                 ],
-                None,
+                3,
+                Err("no response data"),
+            ),
+            (
+                "returns 503, then answers",
+                vec![unavailable(), text_reply("Hello there.")],
+                2,
+                Ok("Hello there."),
+            ),
+            (
+                "returns 429, then answers",
+                vec![
+                    Reply::Status(429, "rate limited".to_owned()),
+                    text_reply("Hello there."),
+                ],
+                2,
+                Ok("Hello there."),
+            ),
+            (
+                "returns 503 on every attempt",
+                vec![
+                    unavailable(),
+                    unavailable(),
+                    unavailable(),
+                    text_reply("Too late."),
+                ],
+                3,
+                Err("503"),
+            ),
+            (
+                "returns 400",
+                vec![
+                    Reply::Status(400, "bad request".to_owned()),
+                    text_reply("Must not retry."),
+                ],
+                1,
+                Err("400"),
             ),
         ];
-        for (name, replies, expected) in cases {
+        for (name, replies, requests, expected) in cases {
             let mut harness = Harness::new(replies).await;
             harness
                 .server
@@ -2120,9 +2180,9 @@ mod tests {
 
             let (response, transcript) = harness.run("Hi", |_| Ok(())).await;
 
-            assert_eq!(harness.server.requests().len(), 3, "{name}");
+            assert_eq!(harness.server.requests().len(), requests, "{name}");
             match expected {
-                Some(text) => {
+                Ok(text) => {
                     assert_eq!(
                         response.unwrap(),
                         PromptOutput::Finished(text.to_owned()),
@@ -2136,9 +2196,9 @@ mod tests {
                         "{name}"
                     );
                 }
-                None => {
+                Err(expected) => {
                     let error = format!("{:?}", response.unwrap_err());
-                    assert!(error.contains("no response data"), "{name}: {error}");
+                    assert!(error.contains(expected), "{name}: {error}");
                     assert_eq!(transcript, vec![turn(user("Hi"))], "{name}");
                 }
             }

@@ -201,9 +201,12 @@ impl Client {
                 .map_err(transport)?;
             let error =
                 serde_json::from_str::<Value>(&body).unwrap_or_else(|_| json!({"detail": body}));
-            return Err(provider_error(
-                &error,
-                &format!("OpenAI returned {status}, request {request_id}"),
+            return Err(model::status_error(
+                status,
+                provider_error(
+                    &error,
+                    &format!("OpenAI returned {status}, request {request_id}"),
+                ),
             ));
         }
         Ok(CompletionStream {

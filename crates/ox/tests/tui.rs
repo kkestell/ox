@@ -700,7 +700,7 @@ fn pane_title_shows_status_and_keeps_unseen_results_until_focus() {
         hang("running"),
         shell_reply(&[("printf denied", 10)]),
         text_reply("denied"),
-        Reply::Status(500, "{}".into()),
+        Reply::Status(400, "{}".into()),
         streamed(&["stream ", "arrives ", "in order"]),
     ]);
     let mut client = test.attach();
