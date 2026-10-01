@@ -32,6 +32,8 @@
   input to its end.
 - **Turn start**: The transcript entry that begins a turn, with its input and
   the settings captured for it.
+- **Turn error**: The transcript entry that records why a turn ended with an
+  error.
 - **Session settings**: The model, effort level, and session mode for a turn.
 - **Session mode**: Ask, where shell actions need the client's permission, or
   Auto, where they do not.

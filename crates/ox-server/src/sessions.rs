@@ -63,6 +63,8 @@ pub enum TranscriptEntry {
     AssistantBatch(AssistantBatch),
     CompactionCheckpoint(CompactionCheckpoint),
     SubagentMessages(Vec<SubagentMessage>),
+    /// Why a turn ended with an error. It ends the turn's entries.
+    TurnError(String),
 }
 
 /// A subagent's final answer or failure, published to the main agent.
@@ -590,6 +592,7 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
                     return Err(invalid_data("subagent messages entry is empty"));
                 }
             }
+            TranscriptEntry::TurnError(_) => {}
         }
     }
     Ok(())
@@ -805,6 +808,12 @@ impl SessionStore {
     pub fn append_batch(&self, id: &SessionId, batch: &AssistantBatch) -> io::Result<()> {
         batch.validate()?;
         self.append(id, None, &[TranscriptEntry::AssistantBatch(batch.clone())])
+            .map(drop)
+    }
+
+    /// Appends a turn error and updates activity in one transaction.
+    pub fn append_turn_error(&self, id: &SessionId, text: &str) -> io::Result<()> {
+        self.append(id, None, &[TranscriptEntry::TurnError(text.to_owned())])
             .map(drop)
     }
 
@@ -1024,6 +1033,7 @@ fn encode_entry(entry: &TranscriptEntry) -> (&'static str, String) {
         TranscriptEntry::SubagentMessages(messages) => {
             ("subagent_messages", serde_json::to_string(messages))
         }
+        TranscriptEntry::TurnError(text) => ("turn_error", serde_json::to_string(text)),
     };
     (kind, data.expect("transcript entries serialize"))
 }
@@ -1034,6 +1044,7 @@ fn decode_entry(kind: &str, data: &str) -> io::Result<TranscriptEntry> {
         "assistant_batch" => TranscriptEntry::AssistantBatch(decode(kind, data)?),
         "compaction_checkpoint" => TranscriptEntry::CompactionCheckpoint(decode(kind, data)?),
         "subagent_messages" => TranscriptEntry::SubagentMessages(decode(kind, data)?),
+        "turn_error" => TranscriptEntry::TurnError(decode(kind, data)?),
         _ => {
             return Err(invalid_data(format!(
                 "unknown transcript entry kind {kind:?}"
@@ -1226,6 +1237,9 @@ mod tests {
             store
                 .append_batch(&id, &AssistantBatch::new(answered.clone(), vec![]).unwrap())
                 .unwrap();
+            store
+                .append_turn_error(&id, "the model request failed: OpenAI returned 503")
+                .unwrap();
             id
         };
 
@@ -1250,6 +1264,9 @@ mod tests {
                     message: answered,
                     outcomes: vec![]
                 }),
+                TranscriptEntry::TurnError(
+                    "the model request failed: OpenAI returned 503".to_owned()
+                ),
             ]
         );
         assert_eq!(
@@ -1265,7 +1282,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             replay.len(),
-            8,
+            9,
             "the checkpoint is hidden but the other entries replay"
         );
 

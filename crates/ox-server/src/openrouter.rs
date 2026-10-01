@@ -402,7 +402,7 @@ pub(crate) fn chat_messages(
     let mut messages = Vec::new();
     for entry in transcript {
         let value = match entry {
-            TranscriptEntry::CompactionCheckpoint(_) => continue,
+            TranscriptEntry::CompactionCheckpoint(_) | TranscriptEntry::TurnError(_) => continue,
             TranscriptEntry::TurnStart(turn_start) => {
                 turn_provider = model::Provider::from_qualified_model_id(&turn_start.model);
                 match &turn_start.input {
