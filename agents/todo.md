@@ -6,7 +6,7 @@
       instead of being retried
 - [x] [OX-0027](issues.csv:28): The server writes no logs, so provider errors
       are lost after they are shown
-- [ ] [OX-0029](issues.csv:30): Compaction stops repeating the skill invocation
+- [x] [OX-0029](issues.csv:30): Compaction stops repeating the skill invocation
       once a later turn begins
 - [ ] [OX-0030](issues.csv:31): Compaction fires at about half the usable
       context because the byte estimate overshoots

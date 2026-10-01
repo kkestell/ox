@@ -13,7 +13,7 @@ use crate::{
     cancellation::PromptCancellation,
     model::{self, CatalogModel, ModelRequestParameters, Provider},
     sessions::{
-        self, AssistantBatch, CompactionCheckpoint, SessionStore, TranscriptEntry, TurnInput,
+        AssistantBatch, CompactionCheckpoint, SessionStore, TranscriptEntry, TurnInput, TurnStart,
         UserMessage, UserMessagePart,
     },
 };
@@ -132,12 +132,20 @@ pub fn has_images(provider: Provider, transcript: &[TranscriptEntry]) -> bool {
 }
 
 /// The index of the skill invocation to repeat after a summary covering
-/// `[..cut]`: the latest turn start, when it is a covered skill invocation. A
-/// long run keeps its skill instructions and arguments this way until a
-/// later turn begins.
+/// `[..cut]`: the latest skill invocation, when the summary covers it. A long
+/// run keeps its skill instructions and arguments this way across later user
+/// messages until another skill invocation begins.
 fn repeated_invocation(transcript: &[TranscriptEntry], cut: usize) -> Option<usize> {
-    let (index, turn_start) = sessions::latest_turn_start(transcript)?;
-    (index < cut && matches!(turn_start.input, TurnInput::SkillInvocation(_))).then_some(index)
+    let index = transcript.iter().rposition(|entry| {
+        matches!(
+            entry,
+            TranscriptEntry::TurnStart(TurnStart {
+                input: TurnInput::SkillInvocation(_),
+                ..
+            })
+        )
+    })?;
+    (index < cut).then_some(index)
 }
 
 pub fn has_candidate(transcript: &[TranscriptEntry]) -> bool {
@@ -740,13 +748,12 @@ mod tests {
             .filter(|entry| matches!(entry, TranscriptEntry::CompactionCheckpoint(_)))
             .count();
         assert_eq!(checkpoints, 3);
-        assert_eq!(
-            projection(Provider::OpenRouter, &transcript),
-            vec![serde_json::json!({
-                "role": "user",
-                "content": "Compaction summary of earlier conversation:\nActive request carried; next tool complete.",
-            })]
-        );
+        let mut expected = vec![serde_json::json!({
+            "role": "user",
+            "content": "Compaction summary of earlier conversation:\nActive request carried; next tool complete.",
+        })];
+        expected.extend(Provider::OpenRouter.transcript(&transcript[..1], None));
+        assert_eq!(projection(Provider::OpenRouter, &transcript), expected);
         let requests = server.requests();
         assert_eq!(requests.len(), 3);
         assert!(requests.iter().all(|request| request.get("tools").is_none()
@@ -884,7 +891,12 @@ mod tests {
     #[test]
     fn ranked_cuts_follow_the_latest_checkpoint_smallest_request_first() {
         let transcript = vec![
-            TranscriptEntry::turn("earlier request".to_owned()),
+            TranscriptEntry::turn(SkillInvocation {
+                name: "goal".to_owned(),
+                arguments: "earlier request".to_owned(),
+                instructions: "Finish the work.".to_owned(),
+                images: vec![],
+            }),
             TranscriptEntry::AssistantBatch(answer("earlier answer")),
             TranscriptEntry::CompactionCheckpoint(CompactionCheckpoint {
                 summary: "Earlier work is complete.".to_owned(),
@@ -905,7 +917,7 @@ mod tests {
         let base = body_bytes(model::ordinary_body(
             &parameters(),
             vec![summary_message(Provider::OpenRouter, &summary)],
-        ));
+        )) + entry_bytes(Provider::OpenRouter, &transcript, 0);
         for &cut in &cuts {
             let suffix: usize = (cut..transcript.len())
                 .map(|index| entry_bytes(Provider::OpenRouter, &transcript, index))
@@ -918,6 +930,63 @@ mod tests {
                 )),
                 "ranking counts the bytes of the projected request for cut {cut}"
             );
+        }
+    }
+
+    #[test]
+    fn a_covered_skill_invocation_repeats_until_a_later_skill_invocation() {
+        let skill = |name: &str| {
+            TranscriptEntry::turn(SkillInvocation {
+                name: name.to_owned(),
+                arguments: String::new(),
+                instructions: format!("Follow {name}."),
+                images: vec![],
+            })
+        };
+        let user = || TranscriptEntry::turn("Try again".to_owned());
+        let answered = || TranscriptEntry::AssistantBatch(answer("Done."));
+        let message = |entry: &TranscriptEntry| {
+            Provider::OpenRouter
+                .transcript(std::slice::from_ref(entry), None)
+                .remove(0)
+        };
+        for (case, transcript, cut, expected) in [
+            (
+                "a covered user message turn",
+                vec![skill("first"), answered(), user(), answered()],
+                4,
+                skill("first"),
+            ),
+            (
+                "an uncovered user message turn",
+                vec![skill("first"), answered(), user(), answered()],
+                2,
+                skill("first"),
+            ),
+            (
+                "a later covered skill invocation",
+                vec![skill("first"), answered(), skill("second"), answered()],
+                4,
+                skill("second"),
+            ),
+            (
+                "a later uncovered skill invocation",
+                vec![skill("first"), answered(), skill("second"), answered()],
+                2,
+                skill("second"),
+            ),
+        ] {
+            let projected = projection_at(Provider::OpenRouter, &transcript, cut, "summary");
+            assert_eq!(projected[1], message(&expected), "{case}");
+            let skills = projected
+                .iter()
+                .filter(|item| {
+                    item["content"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("Follow"))
+                })
+                .count();
+            assert_eq!(skills, 1, "{case}");
         }
     }
 
