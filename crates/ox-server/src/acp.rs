@@ -213,12 +213,6 @@ impl ServerState {
         Self::with_clients(store, settings, home, model::Clients::default())
     }
 
-    fn client(&self, provider: model::Provider) -> model::Client {
-        self.clients
-            .client(provider)
-            .expect("every installed model provider has a client")
-    }
-
     async fn compact_session(
         &self,
         session_id: &SessionId,
@@ -242,11 +236,10 @@ impl ServerState {
             tools::Role::Main,
         )
         .map_err(Error::into_internal_error)?;
-        let client = self.client(parameters.model.provider);
         let mut transcript = stored.transcript;
         match compaction::compact(
             &self.store,
-            &client,
+            &self.clients,
             cancellation,
             session_id,
             &parameters,
@@ -687,12 +680,9 @@ impl ServerState {
         responder: Responder<PromptResponse>,
         connection: &ConnectionTo<Client>,
     ) -> Result<()> {
-        let model = model::catalog_model(&active.selections.model)
-            .expect("an active session model comes from the model catalog");
-        let model_client = self.client(model.provider);
         let run = match prompt::run(
             self.store.clone(),
-            model_client,
+            self.clients.clone(),
             prompt::PromptInput {
                 session_id: session_id.clone(),
                 turn_input,
@@ -810,14 +800,14 @@ pub async fn run_headless(
     model: String,
     effort: EffortLevel,
     user_message: String,
-    model_client: model::Client,
+    clients: model::Clients,
 ) -> std::result::Result<String, Box<dyn StdError>> {
     let system_prompt = system_prompt::for_workspace(workspace_path)?;
     let store = SessionStore::open(&sessions::database_path()?)?;
     let session = store.create(workspace_path)?;
     run_headless_prompt(
         store,
-        model_client,
+        clients,
         session.id,
         SessionSettings::new(model, effort),
         system_prompt,
@@ -828,7 +818,7 @@ pub async fn run_headless(
 
 async fn run_headless_prompt(
     store: SessionStore,
-    model_client: impl Into<model::Client>,
+    clients: impl Into<model::Clients>,
     session_id: SessionId,
     settings: SessionSettings,
     system_prompt: String,
@@ -839,7 +829,7 @@ async fn run_headless_prompt(
     let shell_processes = ShellProcesses::default();
     let run = prompt::run(
         store,
-        model_client,
+        clients,
         prompt::PromptInput {
             session_id: session_id.clone(),
             turn_input: TurnInput::UserMessage(user_message.into()),
@@ -1048,7 +1038,7 @@ pub mod fixture {
             SessionStore::in_memory(),
             test_settings(),
             no_home(),
-            clients(openrouter),
+            openrouter.into(),
         );
         serve(state, transport, std::future::pending()).await
     }
@@ -1058,13 +1048,6 @@ pub mod fixture {
             default_model: openrouter::fixture::DEFAULT_MODEL.to_owned(),
             default_effort: EffortLevel::Default,
             default_mode: SessionMode::Ask,
-        }
-    }
-
-    pub(crate) fn clients(openrouter: openrouter::Client) -> model::Clients {
-        model::Clients {
-            openrouter: Some(openrouter),
-            openai: None,
         }
     }
 
@@ -1081,7 +1064,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        acp::fixture::{clients, no_home, test_settings},
+        acp::fixture::{no_home, test_settings},
         sessions::{ToolOutcome, ToolStatus, TranscriptEntry, TurnStart},
         tools::{self, fixture::Workspace},
     };
@@ -1148,7 +1131,7 @@ mod tests {
             usage(9000, 20, 0.125),
         ]))])
         .await;
-        state.clients = clients(server.client());
+        state.clients = server.client().into();
         let response = state
             .compact_session(&id, active, &PromptCancellation::new(), |update| {
                 updates.push(update);
@@ -1206,16 +1189,13 @@ mod tests {
                 .collect(),
         )
         .await;
-        let model::Client::OpenAI(openai_client) = openai.client() else {
-            unreachable!()
-        };
         let state = ServerState::with_clients(
             SessionStore::in_memory(),
             test_settings(),
             no_home(),
             model::Clients {
                 openrouter: Some(openrouter.client()),
-                openai: Some(openai_client),
+                openai: Some(openai.client()),
             },
         );
         let workspace = Workspace::new();
@@ -1296,12 +1276,9 @@ mod tests {
         text: String,
     ) -> prompt::PromptOutput {
         let active = state.active_session(session_id).unwrap();
-        let provider = model::catalog_model(&active.selections.model)
-            .expect("an active model is installed")
-            .provider;
         prompt::run(
             state.store.clone(),
-            state.client(provider),
+            state.clients.clone(),
             prompt::PromptInput {
                 session_id: session_id.clone(),
                 turn_input: TurnInput::UserMessage(text.into()),
@@ -1327,7 +1304,7 @@ mod tests {
             store,
             test_settings(),
             no_home(),
-            clients(openrouter::Client::new("test-key".to_owned())),
+            openrouter::Client::new("test-key".to_owned()).into(),
         )
     }
 
@@ -2163,7 +2140,7 @@ mod tests {
             text_reply("Done"),
         ])
         .await;
-        state.clients = clients(server.client());
+        state.clients = server.client().into();
         let input = |user_message: &str| {
             let active = state.active_session(&id).unwrap();
             prompt::PromptInput {
@@ -2353,7 +2330,7 @@ mod tests {
         );
         let server = Server::start(vec![Reply::Hang(prefix)]).await;
         let mut state = state();
-        state.clients = clients(server.client());
+        state.clients = server.client().into();
         let store = state.store.clone();
         let operations = state.operations.clone();
         let inactive = store.create(Path::new("/workspace")).unwrap().id;
@@ -2619,7 +2596,7 @@ mod tests {
                 replies.push(text_reply("Done"));
             }
             let server = Server::routed(vec![("Child task", child_replies), ("", replies)]).await;
-            state.clients = clients(server.client());
+            state.clients = server.client().into();
             let (incoming_tx, incoming_rx) = mpsc::unbounded();
             let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<String>();
             let transport = Lines::new(outgoing_tx.sink_map_err(io::Error::other), incoming_rx);
@@ -3260,7 +3237,7 @@ mod tests {
         ])])
         .await;
         let mut state = state();
-        state.clients = clients(server.client());
+        state.clients = server.client().into();
         let store = state.store.clone();
         let operations = state.operations.clone();
         let id = create_session(&state, &workspace.0);
@@ -3347,7 +3324,7 @@ mod tests {
         )])])
         .await;
         let mut state = state();
-        state.clients = clients(server.client());
+        state.clients = server.client().into();
         let id = create_session(&state, &workspace.0);
         start_shell_process(
             &state,

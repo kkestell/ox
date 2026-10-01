@@ -763,8 +763,8 @@ pub(crate) mod fixture {
                 _workspace: workspace,
             }
         }
-        pub fn client(&self) -> model::Client {
-            model::Client::OpenAI(self.http_client(STALL_TIMEOUT))
+        pub fn client(&self) -> Client {
+            self.http_client(STALL_TIMEOUT)
         }
         pub fn http_client(&self, timeout: Duration) -> Client {
             Client {

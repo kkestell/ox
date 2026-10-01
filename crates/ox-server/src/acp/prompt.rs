@@ -203,18 +203,12 @@ pub enum PromptOutput {
 
 pub fn run(
     store: SessionStore,
-    model_client: impl Into<model::Client>,
+    clients: impl Into<model::Clients>,
     input: PromptInput,
     cancellation: PromptCancellation,
     presentation: Presentation,
 ) -> Result<impl Future<Output = Result<PromptOutput>>> {
-    let mut run = AgentTurn::open(
-        store,
-        model_client.into(),
-        &input,
-        cancellation,
-        presentation,
-    )?;
+    let mut run = AgentTurn::open(store, clients.into(), &input, cancellation, presentation)?;
     let update = run.save_turn_start(input.turn_input)?;
     Ok(async move {
         let Some(update) = update else {
@@ -267,7 +261,7 @@ impl fmt::Display for PromptOutcome {
 
 struct AgentTurn {
     store: SessionStore,
-    model_client: model::Client,
+    clients: model::Clients,
     /// Sent with the transcript on every model request of this run.
     parameters: ModelRequestParameters,
     mode: SessionMode,
@@ -316,7 +310,7 @@ impl UncommittedAssistantBatch {
 impl AgentTurn {
     fn open(
         store: SessionStore,
-        model_client: model::Client,
+        clients: model::Clients,
         input: &PromptInput,
         cancellation: PromptCancellation,
         presentation: Presentation,
@@ -335,15 +329,10 @@ impl AgentTurn {
             role,
         )
         .map_err(Error::into_internal_error)?;
-        if parameters.model.provider != model_client.provider() {
-            return Err(
-                Error::invalid_params().data("session model belongs to another model provider")
-            );
-        }
         let subagents = (role == tools::Role::Main).then(|| {
             Subagents::new(Launch {
                 store: store.clone(),
-                model_client: model_client.clone(),
+                clients: clients.clone(),
                 main_session_id: stored.summary.id.clone(),
                 workspace_path: stored.summary.workspace_path.clone(),
                 settings: settings.clone(),
@@ -355,7 +344,7 @@ impl AgentTurn {
         });
         Ok(Self {
             store,
-            model_client,
+            clients,
             parameters,
             mode: settings.mode,
             tools: ToolContext {
@@ -436,7 +425,7 @@ impl AgentTurn {
                 // Provisional output of the stalled attempt stays on screen.
                 Err(PromptOutcome::ModelRequest(error))
                     if error.kind() == io::ErrorKind::TimedOut
-                        && self.model_client.provider() == model::Provider::OpenRouter
+                        && self.parameters.model.provider == model::Provider::OpenRouter
                         && attempts < MODEL_REQUEST_ATTEMPTS =>
                 {
                     attempts += 1;
@@ -484,7 +473,7 @@ impl AgentTurn {
             let started = tokio::select! {
                 biased;
                 () = self.cancellation.cancelled() => return Err(PromptOutcome::Cancelled),
-                started = self.model_client.stream_completion(&self.parameters, projected) => started,
+                started = self.clients.stream_completion(&self.parameters, projected) => started,
             };
             let mut stream = match started {
                 Ok(stream) => stream,
@@ -531,7 +520,7 @@ impl AgentTurn {
     async fn compact(&mut self) -> std::result::Result<bool, PromptOutcome> {
         let compacted = compaction::compact(
             &self.store,
-            &self.model_client,
+            &self.clients,
             &self.cancellation,
             &self.summary.id,
             &self.parameters,
@@ -818,7 +807,7 @@ mod tests {
         ) -> Result<PromptOutput> {
             run(
                 self.store.clone(),
-                model::Client::OpenAI(self.server.http_client(self.timeout)),
+                self.server.http_client(self.timeout),
                 PromptInput {
                     session_id: self.id.clone(),
                     turn_input: TurnInput::UserMessage(text.to_owned().into()),

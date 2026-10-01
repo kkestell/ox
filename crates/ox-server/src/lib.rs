@@ -124,13 +124,7 @@ pub async fn run(
     let settings = settings.for_workspace(&dir)?;
     let model = resolve_model(model, settings.default_model)?;
     check_effort(&model, effort)?;
-    let provider = model::catalog_model(&model)
-        .expect("a resolved model is in the catalog")
-        .provider;
-    let client = clients
-        .client(provider)
-        .expect("every installed model provider has a client");
-    acp::run_headless(&dir, model, effort, prompt, client).await
+    acp::run_headless(&dir, model, effort, prompt, clients).await
 }
 
 /// Authenticates and saves credentials for the named provider.
@@ -213,25 +207,24 @@ mod tests {
                 .iter()
                 .all(|model| model.provider == Provider::OpenRouter)
         );
-        assert!(clients.client(Provider::OpenRouter).is_some());
-        assert!(clients.client(Provider::OpenAI).is_none());
+        assert!(clients.openrouter.is_some());
+        assert!(clients.openai.is_none());
 
         let openai = openai::fixture::Server::start(vec![Reply::Status(
             200,
             openai::fixture::CATALOG.to_owned(),
         )])
         .await;
-        let model::Client::OpenAI(openai_client) = openai.client() else {
-            unreachable!()
-        };
-        let (catalog, clients) = discover_catalogs(None, Some(openai_client)).await.unwrap();
+        let (catalog, clients) = discover_catalogs(None, Some(openai.client()))
+            .await
+            .unwrap();
         assert!(
             catalog
                 .iter()
                 .all(|model| model.provider == Provider::OpenAI)
         );
-        assert!(clients.client(Provider::OpenRouter).is_none());
-        assert!(clients.client(Provider::OpenAI).is_some());
+        assert!(clients.openrouter.is_none());
+        assert!(clients.openai.is_some());
 
         let openrouter = Server::start(vec![catalog_reply()]).await;
         let openai = openai::fixture::Server::start(vec![Reply::Status(
@@ -239,12 +232,10 @@ mod tests {
             openai::fixture::CATALOG.to_owned(),
         )])
         .await;
-        let model::Client::OpenAI(openai_client) = openai.client() else {
-            unreachable!()
-        };
-        let (catalog, clients) = discover_catalogs(Some(openrouter.client()), Some(openai_client))
-            .await
-            .unwrap();
+        let (catalog, clients) =
+            discover_catalogs(Some(openrouter.client()), Some(openai.client()))
+                .await
+                .unwrap();
         let first_openai = catalog
             .iter()
             .position(|model| model.provider == Provider::OpenAI)
@@ -259,8 +250,8 @@ mod tests {
                 .iter()
                 .all(|model| model.provider == Provider::OpenAI)
         );
-        assert!(clients.client(Provider::OpenRouter).is_some());
-        assert!(clients.client(Provider::OpenAI).is_some());
+        assert!(clients.openrouter.is_some());
+        assert!(clients.openai.is_some());
     }
 
     #[tokio::test]
@@ -280,14 +271,7 @@ mod tests {
             )])
             .await;
         let openai = openai::fixture::Server::start(vec![]).await;
-        let error = match discover_catalogs(
-            Some(openrouter.client()),
-            Some(match openai.client() {
-                model::Client::OpenAI(client) => client,
-                _ => unreachable!(),
-            }),
-        )
-        .await
+        let error = match discover_catalogs(Some(openrouter.client()), Some(openai.client())).await
         {
             Err(error) => error,
             Ok(_) => panic!("startup ignored an enabled provider failure"),
@@ -306,10 +290,8 @@ mod tests {
             "{}".to_owned(),
         )])
         .await;
-        let model::Client::OpenAI(openai_client) = openai.client() else {
-            unreachable!()
-        };
-        let error = match discover_catalogs(Some(openrouter.client()), Some(openai_client)).await {
+        let error = match discover_catalogs(Some(openrouter.client()), Some(openai.client())).await
+        {
             Err(error) => error,
             Ok(_) => panic!("startup ignored an enabled provider failure"),
         };
