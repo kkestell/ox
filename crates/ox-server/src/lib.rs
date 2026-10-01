@@ -1,7 +1,6 @@
 mod acp;
 mod auth;
 mod cancellation;
-mod compaction;
 mod model;
 mod openai;
 mod openai_auth;

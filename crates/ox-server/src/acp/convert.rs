@@ -15,12 +15,10 @@ use serde_json::Value;
 
 use super::prompt::AcpIdentity;
 use crate::{
-    compaction,
     model::ModelRequestParameters,
     sessions::{
-        self, AssistantBatch, AssistantMessage, ImageAttachment, SubagentMessage,
-        SubagentMessageContent, ToolCall, ToolContent, ToolOutcome, ToolStatus, TranscriptEntry,
-        TurnInput, UserMessage, UserMessagePart,
+        self, ImageAttachment, SubagentMessage, SubagentMessageContent, ToolCall, ToolContent,
+        ToolOutcome, ToolStatus, TranscriptEntry, TurnInput, UserMessage, UserMessagePart,
     },
     tools,
 };
@@ -113,29 +111,23 @@ fn text_chunk(text: &str) -> ContentChunk {
 
 /// Reports the context tokens, the context limit, and the session cost: the
 /// main transcript's saved cost plus `children_cost`, the saved cost of its
-/// child sessions. The latest assistant message's reported usage counts the
-/// context until a later checkpoint replaces it; otherwise the request
-/// estimate does. `None` before the first assistant message.
+/// child sessions. The context tokens are the latest assistant message's
+/// reported usage, or 0 when it reported none. `None` before the first
+/// assistant message.
 pub fn usage_update(
     transcript: &[TranscriptEntry],
     parameters: &ModelRequestParameters,
     children_cost: Option<f64>,
 ) -> Option<SessionUpdate> {
-    let latest = transcript.iter().rev().find(|entry| {
-        matches!(
-            entry,
-            TranscriptEntry::AssistantBatch(_) | TranscriptEntry::CompactionCheckpoint(_)
-        )
-    });
-    let used = match latest? {
-        TranscriptEntry::AssistantBatch(AssistantBatch {
-            message: AssistantMessage {
-                usage: Some(usage), ..
-            },
-            ..
-        }) => usage.input_tokens + usage.output_tokens,
-        _ => compaction::request_tokens(parameters, transcript) as u64,
-    };
+    let latest = transcript.iter().rev().find_map(|entry| match entry {
+        TranscriptEntry::AssistantBatch(batch) => Some(batch),
+        _ => None,
+    })?;
+    let used = latest
+        .message
+        .usage
+        .as_ref()
+        .map_or(0, |usage| usage.input_tokens + usage.output_tokens);
     let size = parameters.model.context_limit as u64;
     let cost = match (sessions::transcript_cost(transcript), children_cost) {
         (Some(main), Some(children)) => Some(main + children),
@@ -331,7 +323,6 @@ pub fn replay_transcript(
 ) -> Result<()> {
     for entry in transcript {
         match entry {
-            TranscriptEntry::CompactionCheckpoint(_) => {}
             TranscriptEntry::TurnStart(turn_start) => match &turn_start.input {
                 TurnInput::UserMessage(message) => {
                     for update in user_message_updates(message) {
@@ -424,6 +415,7 @@ fn status(outcome: &ToolOutcome) -> ToolCallStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sessions::{AssistantBatch, AssistantMessage};
 
     #[test]
     fn unpriced_usage_reports_tokens_without_a_dollar_cost() {

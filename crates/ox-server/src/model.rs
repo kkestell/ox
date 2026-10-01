@@ -74,47 +74,16 @@ pub struct CatalogModel {
     pub providers: Vec<String>,
 }
 
-pub(crate) const SUMMARIZER_MAX_TOKENS: usize = 4096;
-
 impl Provider {
-    /// Encodes `transcript` for this provider. `turn_provider` is the provider
-    /// of the turn the first entry belongs to when the slice starts mid-turn.
+    /// Encodes `transcript` for this provider.
     pub(crate) fn transcript(
         self,
         transcript: &[crate::sessions::TranscriptEntry],
-        turn_provider: Option<Provider>,
     ) -> Vec<serde_json::Value> {
         match self {
-            Self::OpenRouter => openrouter::chat_messages(transcript, turn_provider),
-            Self::OpenAI => openai::input(transcript, turn_provider),
+            Self::OpenRouter => openrouter::chat_messages(transcript),
+            Self::OpenAI => openai::input(transcript),
         }
-    }
-    pub(crate) fn user_message(self, message: &UserMessage) -> serde_json::Value {
-        match self {
-            Self::OpenRouter => openrouter::user_message(message),
-            Self::OpenAI => openai::user_message(message),
-        }
-    }
-}
-
-pub(crate) fn ordinary_body(
-    parameters: &ModelRequestParameters,
-    input: Vec<serde_json::Value>,
-) -> serde_json::Value {
-    match parameters.model.provider {
-        Provider::OpenRouter => openrouter::ordinary_body(parameters, input),
-        Provider::OpenAI => openai::ordinary_body(parameters, input),
-    }
-}
-
-pub(crate) fn summarizer_body(
-    model: &CatalogModel,
-    previous: &str,
-    piece: &str,
-) -> serde_json::Value {
-    match model.provider {
-        Provider::OpenRouter => openrouter::summarizer_body(model, previous, piece),
-        Provider::OpenAI => openai::summarizer_body(model, previous, piece),
     }
 }
 
@@ -163,18 +132,6 @@ impl Clients {
         })
     }
 
-    pub async fn summarize(
-        &self,
-        model: &CatalogModel,
-        previous: &str,
-        piece: &str,
-    ) -> io::Result<(String, Option<crate::sessions::ModelUsage>)> {
-        match model.provider {
-            Provider::OpenRouter => self.openrouter().summarize(model, previous, piece).await,
-            Provider::OpenAI => self.openai().summarize(model, previous, piece).await,
-        }
-    }
-
     // The model catalog only holds models from providers whose model client was
     // built, so a missing client is a bug.
     fn openrouter(&self) -> &openrouter::Client {
@@ -211,15 +168,6 @@ impl CatalogModel {
 
     pub fn supports(&self, effort: EffortLevel) -> bool {
         self.efforts.contains(&effort)
-    }
-
-    /// The lowest effort that still reasons, for summarizer requests.
-    pub fn summarizer_effort(&self) -> EffortLevel {
-        self.efforts
-            .iter()
-            .copied()
-            .find(|effort| !matches!(effort, EffortLevel::Default | EffortLevel::None))
-            .unwrap_or(EffortLevel::Default)
     }
 }
 

@@ -155,31 +155,6 @@ impl Client {
         self.stream_body(&body).await
     }
 
-    pub async fn summarize(
-        &self,
-        model: &CatalogModel,
-        previous: &str,
-        piece: &str,
-    ) -> io::Result<(String, Option<ModelUsage>)> {
-        let mut stream = self
-            .stream_body(&summarizer_body(model, previous, piece))
-            .await?;
-        loop {
-            let StreamItem::Completion(completion) = stream.next().await? else {
-                continue;
-            };
-            if completion.stop != Stop::Finished
-                || !completion.message.tool_calls.is_empty()
-                || completion.message.text.trim().is_empty()
-            {
-                return Err(malformed(
-                    "compaction summary was not a finished, nonempty text completion",
-                ));
-            }
-            return Ok((completion.message.text, completion.message.usage));
-        }
-    }
-
     async fn stream_body(&self, body: &Value) -> io::Result<CompletionStream> {
         let token = self.authentication.access_token().await?;
         let request = self
@@ -227,7 +202,7 @@ impl Client {
     }
 }
 
-pub(crate) fn user_message(message: &UserMessage) -> Value {
+fn user_message(message: &UserMessage) -> Value {
     let content = message.parts.iter().map(|part| match part {
         UserMessagePart::Text(text) => json!({"type":"input_text", "text":text}),
         UserMessagePart::Image(image) => json!({"type":"input_image", "image_url":format!("data:{};base64,{}", image.mime_type, image.data)}),
@@ -235,14 +210,12 @@ pub(crate) fn user_message(message: &UserMessage) -> Value {
     json!({"type":"message", "role":"user", "content":content})
 }
 
-pub(crate) fn input(
-    transcript: &[TranscriptEntry],
-    mut turn_provider: Option<model::Provider>,
-) -> Vec<Value> {
+pub(crate) fn input(transcript: &[TranscriptEntry]) -> Vec<Value> {
+    let mut turn_provider = None;
     let mut input = Vec::new();
     for entry in transcript {
         match entry {
-            TranscriptEntry::CompactionCheckpoint(_) | TranscriptEntry::TurnError(_) => {}
+            TranscriptEntry::TurnError(_) => {}
             TranscriptEntry::TurnStart(start) => {
                 turn_provider = model::Provider::from_qualified_model_id(&start.model);
                 input.push(match &start.input {
@@ -287,44 +260,13 @@ pub(crate) fn ordinary_body(parameters: &ModelRequestParameters, input: Vec<Valu
             function
         })
         .collect::<Vec<_>>();
-    let mut body = base_body(
-        parameters.model,
-        parameters.effort,
-        &parameters.system_prompt,
-        input,
-    );
-    body["tools"] = json!([{"type":"namespace", "name":"ox", "description":"Ox workspace, shell, and subagent tools.", "tools":functions}]);
-    body
-}
-
-pub(crate) fn summarizer_body(model: &CatalogModel, previous: &str, piece: &str) -> Value {
-    let instructions = format!(
-        "{}\n\nKeep the summary within {} tokens.",
-        include_str!("prompts/compaction_prompt.md"),
-        model::SUMMARIZER_MAX_TOKENS
-    );
-    base_body(
-        model,
-        model.summarizer_effort(),
-        &instructions,
-        vec![user_message(
-            &format!("Previous summary:\n{previous}\n\nNew conversation material:\n{piece}").into(),
-        )],
-    )
-}
-
-fn base_body(
-    model: &CatalogModel,
-    effort: crate::sessions::EffortLevel,
-    instructions: &str,
-    input: Vec<Value>,
-) -> Value {
     let mut body = json!({
-        "model":model.id, "instructions":instructions, "input":input, "store":false, "stream":true,
-        "include":["reasoning.encrypted_content"],
+        "model":parameters.model.id, "instructions":parameters.system_prompt, "input":input,
+        "store":false, "stream":true, "include":["reasoning.encrypted_content"],
+        "tools":[{"type":"namespace", "name":"ox", "description":"Ox workspace, shell, and subagent tools.", "tools":functions}],
     });
-    if effort != crate::sessions::EffortLevel::Default {
-        body["reasoning"] = json!({"effort":effort.id(), "summary":"auto"});
+    if parameters.effort != crate::sessions::EffortLevel::Default {
+        body["reasoning"] = json!({"effort":parameters.effort.id(), "summary":"auto"});
     }
     body
 }
@@ -442,11 +384,6 @@ impl CompletionStream {
         {
             "response.output_text.delta" | "response.refusal.delta" => {
                 let delta = string(&event, "delta")?.to_owned();
-                self.assembly
-                    .text
-                    .entry(indices(&event, "content_index")?)
-                    .or_default()
-                    .push_str(&delta);
                 self.items.push_back(StreamItem::TextDelta(delta));
             }
             kind @ ("response.reasoning_summary_text.delta" | "response.reasoning_text.delta") => {
@@ -467,27 +404,7 @@ impl CompletionStream {
                 {
                     delta.insert_str(0, REASONING_SEPARATOR);
                 }
-                self.assembly.reasoning.push_str(&delta);
                 self.items.push_back(StreamItem::ReasoningDelta(delta));
-            }
-            "response.output_item.added" => {
-                let index = index(&event)?;
-                if self
-                    .assembly
-                    .added
-                    .insert(index, event["item"].clone())
-                    .is_some()
-                {
-                    return Err(malformed("repeated output item index"));
-                }
-            }
-            "response.function_call_arguments.delta" => {
-                let delta = string(&event, "delta")?;
-                self.assembly
-                    .arguments
-                    .entry(index(&event)?)
-                    .or_default()
-                    .push_str(delta);
             }
             "response.output_item.done" => {
                 if self
@@ -519,6 +436,8 @@ impl CompletionStream {
             }
             "response.created"
             | "response.in_progress"
+            | "response.output_item.added"
+            | "response.function_call_arguments.delta"
             | "response.content_part.added"
             | "response.content_part.done"
             | "response.output_text.done"
@@ -557,11 +476,7 @@ fn indices(event: &Value, part: &str) -> io::Result<(usize, usize)> {
 
 #[derive(Default)]
 struct Assembly {
-    added: BTreeMap<usize, Value>,
     done: BTreeMap<usize, Value>,
-    text: BTreeMap<(usize, usize), String>,
-    arguments: BTreeMap<usize, String>,
-    reasoning: String,
     /// The output and part indices of the last reasoning delta.
     reasoning_part: Option<(usize, usize)>,
 }
@@ -592,11 +507,6 @@ impl Assembly {
             assembled = self.done.values().cloned().collect::<Vec<_>>();
             &assembled
         } else {
-            for (&index, item) in &self.done {
-                if terminal_output.get(index) != Some(item) {
-                    return Err(malformed("terminal output differs from its completed item"));
-                }
-            }
             terminal_output
         };
         if output.is_empty() {
@@ -610,59 +520,27 @@ impl Assembly {
             usage: None,
         };
         let mut refused = false;
-        for (index, item) in output.iter().enumerate() {
+        for item in output {
             if item
                 .get("status")
                 .is_some_and(|status| status != "completed")
             {
                 return Err(malformed("terminal output item is incomplete"));
             }
-            if let Some(added) = self.added.get(&index) {
-                for key in ["id", "type", "name", "namespace", "call_id"] {
-                    if added
-                        .get(key)
-                        .is_some_and(|value| item.get(key) != Some(value))
-                    {
-                        return Err(malformed("terminal output differs from the streamed item"));
-                    }
-                }
-            }
             match string(item, "type")? {
                 "message" => {
                     if item["role"] != "assistant" {
                         return Err(malformed("output message is not from the assistant"));
                     }
-                    for (content_index, part) in item["content"]
+                    for part in item["content"]
                         .as_array()
                         .ok_or_else(|| malformed("output message content is missing"))?
-                        .iter()
-                        .enumerate()
                     {
                         match string(part, "type")? {
-                            "output_text" => {
-                                let text = string(part, "text")?;
-                                if self
-                                    .text
-                                    .get(&(index, content_index))
-                                    .is_some_and(|delta| delta != text)
-                                {
-                                    return Err(malformed("terminal text differs from its deltas"));
-                                }
-                                message.text.push_str(text);
-                            }
+                            "output_text" => message.text.push_str(string(part, "text")?),
                             "refusal" => {
                                 refused = true;
-                                let text = string(part, "refusal")?;
-                                if self
-                                    .text
-                                    .get(&(index, content_index))
-                                    .is_some_and(|delta| delta != text)
-                                {
-                                    return Err(malformed(
-                                        "terminal refusal differs from its deltas",
-                                    ));
-                                }
-                                message.text.push_str(text);
+                                message.text.push_str(string(part, "refusal")?);
                             }
                             _ => return Err(malformed("unsupported output content")),
                         }
@@ -672,20 +550,10 @@ impl Assembly {
                     if item["namespace"] != "ox" {
                         return Err(malformed("tool call is outside the ox namespace"));
                     }
-                    let arguments = string(item, "arguments")?;
-                    if self
-                        .arguments
-                        .get(&index)
-                        .is_some_and(|delta| delta != arguments)
-                    {
-                        return Err(malformed(
-                            "terminal tool arguments differ from their deltas",
-                        ));
-                    }
                     message.tool_calls.push(ToolCall {
                         call_id: string(item, "call_id")?.to_owned(),
                         name: string(item, "name")?.to_owned(),
-                        arguments: arguments.to_owned(),
+                        arguments: string(item, "arguments")?.to_owned(),
                     });
                 }
                 "reasoning" => {
@@ -706,26 +574,6 @@ impl Assembly {
                 }
                 _ => return Err(malformed("unsupported output item")),
             }
-        }
-        if self.added.keys().any(|&index| index >= output.len())
-            || self.arguments.keys().any(|&index| {
-                output
-                    .get(index)
-                    .is_none_or(|item| item["type"] != "function_call")
-            })
-            || self.text.keys().any(|&(index, part)| {
-                output
-                    .get(index)
-                    .and_then(|item| item["content"].as_array())
-                    .is_none_or(|content| part >= content.len())
-            })
-        {
-            return Err(malformed(
-                "streamed output is absent from the terminal response",
-            ));
-        }
-        if !self.reasoning.is_empty() && self.reasoning != message.reasoning {
-            return Err(malformed("terminal reasoning differs from its deltas"));
         }
         if !response["usage"].is_null() {
             let usage = &response["usage"];
@@ -917,15 +765,12 @@ mod tests {
         openai_start.model = fixture::DEFAULT_MODEL.to_owned();
         let openrouter_metadata = json!({"type":"reasoning.encrypted", "data":"openrouter"});
         let openai_metadata = reasoning();
-        let projected = input(
-            &[
-                TranscriptEntry::TurnStart(openrouter_start),
-                batch("OpenRouter answer", openrouter_metadata.clone()),
-                TranscriptEntry::TurnStart(openai_start),
-                batch("OpenAI answer", openai_metadata.clone()),
-            ],
-            None,
-        );
+        let projected = input(&[
+            TranscriptEntry::TurnStart(openrouter_start),
+            batch("OpenRouter answer", openrouter_metadata.clone()),
+            TranscriptEntry::TurnStart(openai_start),
+            batch("OpenAI answer", openai_metadata.clone()),
+        ]);
 
         assert_eq!(projected.len(), 5);
         assert_eq!(projected[0]["content"][0]["text"], "OpenRouter question");
@@ -938,7 +783,7 @@ mod tests {
 
     #[tokio::test]
     async fn subscription_requests_encode_transcript_tools_and_reasoning_directly() {
-        let server = Server::start(vec![text_reply("Hello."), text_reply("summary")]).await;
+        let server = Server::start(vec![text_reply("Hello.")]).await;
         let image = ImageAttachment {
             mime_type: "image/png".to_owned(),
             data: "YWJj".to_owned(),
@@ -989,7 +834,7 @@ mod tests {
         let client = server.http_client(STALL_TIMEOUT);
         let items = drain(
             client
-                .stream_completion("session", &parameters(), input(&transcript, None))
+                .stream_completion("session", &parameters(), input(&transcript))
                 .await
                 .unwrap(),
         )
@@ -1008,21 +853,14 @@ mod tests {
                 cost: None
             }
         );
-        client
-            .summarize(parameters().model, "previous", "piece")
-            .await
-            .unwrap();
-        let requests = server.requests();
-        let request = &requests[0];
-        for body in &requests {
-            assert_eq!(body["store"], false);
-            assert_eq!(body["stream"], true);
-            assert!(
-                body.get("messages").is_none()
-                    && body.get("max_output_tokens").is_none()
-                    && body.get("previous_response_id").is_none()
-            );
-        }
+        let request = &server.requests()[0];
+        assert_eq!(request["store"], false);
+        assert_eq!(request["stream"], true);
+        assert!(
+            request.get("messages").is_none()
+                && request.get("max_output_tokens").is_none()
+                && request.get("previous_response_id").is_none()
+        );
         assert_eq!(request["instructions"], "You are Ox.");
         assert_eq!(request["prompt_cache_key"], "session");
         assert_eq!(request["include"], json!(["reasoning.encrypted_content"]));
@@ -1058,13 +896,6 @@ mod tests {
                 .iter()
                 .all(|function| function["strict"] == false)
         );
-        assert!(
-            requests[1]["instructions"]
-                .as_str()
-                .unwrap()
-                .contains("4096 tokens")
-        );
-        assert!(requests[1].get("tools").is_none());
     }
 
     #[tokio::test]
@@ -1204,10 +1035,6 @@ mod tests {
             vec![
                 json!({"type":"response.output_item.done","output_index":0,"item":message("First")}),
                 json!({"type":"response.output_item.done","output_index":0,"item":message("Duplicate")}),
-            ],
-            vec![
-                json!({"type":"response.output_item.added","output_index":1,"item":reasoning()}),
-                json!({"type":"response.output_item.done","output_index":0,"item":message("Missing item")}),
             ],
         ] {
             let mut events = done;

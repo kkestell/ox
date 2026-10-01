@@ -54,8 +54,6 @@ METRICS = [
     "cost",
     "max_input_tokens",
     "tool_output_chars",
-    "compactions",
-    "summarizer_cost",
     "subagents",
 ]
 # The chart's metrics, where lower is better, and its axis tick sets from finest
@@ -436,8 +434,6 @@ def transcript_metrics(database):
         "cost": 0.0,
         "max_input_tokens": 0,
         "tool_output_chars": 0,
-        "compactions": 0,
-        "summarizer_cost": 0.0,
         "subagents": 0,
     }
     # Ox never opened its database when it failed before creating a session.
@@ -487,11 +483,7 @@ def transcript_metrics(database):
                     metrics["repeated_calls"] += 1
                 seen_calls.add(key)
                 metrics["tool_output_chars"] += len(outcome["text"])
-        elif kind == "compaction_checkpoint":
-            metrics["compactions"] += 1
-            metrics["summarizer_cost"] += entry["summarizer_cost"] or 0.0
     metrics["cost"] = round(metrics["cost"], 6)
-    metrics["summarizer_cost"] = round(metrics["summarizer_cost"], 6)
     return metrics
 
 
@@ -961,7 +953,7 @@ def with_changes(values, cells):
 
 
 def number(metric, value):
-    if metric in ("cost", "summarizer_cost"):
+    if metric == "cost":
         return f"${value:.4f}"
     if metric == "seconds" or float(value).is_integer():
         return f"{value:.0f}"

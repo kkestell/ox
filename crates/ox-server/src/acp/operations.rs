@@ -1,6 +1,5 @@
 //! Allows at most one prompt, load, close, or delete to run for a session at a time.
-//! `/compact` arrives as a prompt request and runs as a prompt operation. An
-//! operation starts only when it acquires a guard and ends when that guard is
+//! An operation starts only when it acquires a guard and ends when that guard is
 //! dropped. Once connection shutdown begins, no operation starts.
 
 use std::{
@@ -90,7 +89,7 @@ impl SessionOperations {
         })
     }
 
-    /// Signals the active prompt, including a running `/compact`. Does nothing
+    /// Signals the active prompt. Does nothing
     /// when the session is idle or is being loaded or deleted.
     pub fn cancel(&self, session_id: &SessionId) {
         let cancellation = match self.lock().active.get(session_id) {

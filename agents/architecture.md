@@ -21,8 +21,6 @@ sessions. The client can launch the Ox server or another compatible ACP server.
   runs session operations.
 - **Prompt run**: runs the turns of one prompt: model requests, tool execution,
   and transcript commits. The same loop runs the main agent and its subagents.
-- **Compaction**: summarizes older transcript to keep model requests within the
-  context limit, both automatically and on request.
 - **Model clients**: encode provider-specific requests and turn each streamed
   response into one validated completion. A prompt run uses the client for its
   captured model.
@@ -31,9 +29,9 @@ sessions. The client can launch the Ox server or another compatible ACP server.
 - **Session store**: validates and saves sessions and transcripts. It knows
   neither the providers' formats nor ACP's.
 
-Dependencies point from the ACP boundary, prompt run, and compaction toward the
-model client, tools, and session store. Settings, skills, credentials, and
-process execution support these components but take no part in running a turn.
+Dependencies point from the ACP boundary and prompt run toward the model client,
+tools, and session store. Settings, skills, credentials, and process execution
+support these components but take no part in running a turn.
 
 ## External boundaries
 
@@ -45,9 +43,7 @@ becomes server state. Credentials never enter a session or a child process.
 ## Sources of authority
 
 - **The transcript is the only durable record of a conversation.** Replay to the
-  ACP client and future model requests are both derived from it. A compaction
-  summary changes what model requests contain but never replaces the saved
-  entries.
+  ACP client and future model requests are both derived from it.
 - **Each turn records its own settings.** The model, effort, and mode are
   captured when a turn starts and saved with it, so a loaded session resumes
   from its transcript.
@@ -94,9 +90,8 @@ a turn governs the whole turn.
 ## Deliberate constraints
 
 One model provider per captured turn, one tool set, one SQLite connection,
-sequential tool execution, and process-local session coordination. A prompt run,
-its subagents, and its compaction requests share the turn's provider. Model
-catalogs and clients are fixed for the process lifetime. There is no provider
-fallback, prompt queue, cross-process session coordination, or database
-migration. Changing any of these means revisiting the boundaries that depend on
-it.
+sequential tool execution, and process-local session coordination. A prompt run
+and its subagents share the turn's provider. Model catalogs and clients are
+fixed for the process lifetime. There is no compaction, provider fallback,
+prompt queue, cross-process session coordination, or database migration.
+Changing any of these means revisiting the boundaries that depend on it.

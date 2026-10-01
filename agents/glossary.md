@@ -52,12 +52,6 @@
 - **Visible reasoning**: Reasoning text shown to the ACP client.
 - **Continuation metadata**: Opaque model state sent back on later requests,
   never shown as reasoning.
-- **Compaction checkpoint**: A saved summary and the transcript length it
-  covers. Later model requests keep the covered user messages, list the covered
-  tool calls in action logs, and replace the rest with the summary, without
-  deleting any entry.
-- **Action log**: A message in a compacted model request that lists the tool
-  call titles of covered tool calls.
 - **Session operation**: A prompt, load, close, or delete. At most one runs per
   session at a time.
 - **Shell process**: A background command that outlives the tool call that

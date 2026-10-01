@@ -109,9 +109,6 @@ fn parse(directory_name: &str, text: &str) -> io::Result<Skill> {
             "name {name:?} does not match its directory"
         )));
     }
-    if name == "compact" {
-        return Err(invalid("compact is the built-in /compact command"));
-    }
     if frontmatter.description.trim().is_empty() {
         return Err(invalid("description is blank"));
     }
@@ -176,11 +173,6 @@ mod tests {
     #[test]
     fn invalid_skill_definitions_are_skipped_with_their_path() {
         for (name, text, error) in [
-            (
-                "compact",
-                "---\nname: compact\ndescription: Shadow.\n---\nBody\n",
-                "compact is the built-in /compact command",
-            ),
             (
                 "Goal",
                 "---\nname: Goal\ndescription: Goal.\n---\nBody\n",

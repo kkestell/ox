@@ -15,7 +15,6 @@ use agent_client_protocol::{
 use super::convert;
 use crate::cancellation::PromptCancellation;
 use crate::{
-    compaction,
     model::{self, ModelRequestParameters},
     sessions::{
         AssistantBatch, AssistantMessage, SessionMode, SessionSettings, SessionStore,
@@ -192,7 +191,7 @@ pub(crate) struct PromptInput {
     /// The user message or skill invocation that starts the turn.
     pub turn_input: TurnInput,
     /// The session settings the turn starts with, used for every model request
-    /// in the turn, including automatic compaction.
+    /// in the turn.
     pub selected_settings: SessionSettings,
     /// The complete system prompt captured when the session became active.
     pub system_prompt: String,
@@ -393,15 +392,10 @@ impl AgentTurn {
         let mut prospective = self.transcript.clone();
         prospective.push(TranscriptEntry::TurnStart(turn_start.clone()));
         // An earlier image fails every request to a model without image input.
-        if !self.parameters.model.accepts_images
-            && compaction::has_images(self.parameters.model.provider, &prospective)
-        {
+        if !self.parameters.model.accepts_images && prospective.iter().any(has_images) {
             return Err(Error::invalid_params().data(
                 "the selected model does not accept images; choose a model that accepts images",
             ));
-        }
-        if !compaction::input_fits(&self.parameters, &prospective) {
-            return Err(Error::invalid_params().data("prompt exceeds the model context limit"));
         }
         let updated = self
             .store
@@ -473,95 +467,40 @@ impl AgentTurn {
     async fn request_completion(
         &mut self,
     ) -> std::result::Result<model::Completion, PromptOutcome> {
-        let compaction::Budget {
-            admission,
-            automatic_threshold,
-            ..
-        } = compaction::budget(self.parameters.model);
-        let estimate = compaction::request_tokens(&self.parameters, &self.transcript);
-        if estimate >= automatic_threshold && compaction::has_candidate(&self.transcript) {
-            self.compact().await?;
-        }
-        if compaction::request_tokens(&self.parameters, &self.transcript) > admission {
-            return Err(PromptOutcome::ModelRequest(compaction::context_error()));
-        }
-        let mut retried = false;
-        'request: loop {
-            let projected =
-                compaction::projection(self.parameters.model.provider, &self.transcript);
-            let started = tokio::select! {
+        let started = tokio::select! {
+            biased;
+            () = self.cancellation.cancelled() => return Err(PromptOutcome::Cancelled),
+            started = self.clients.stream_completion(
+                &self.summary.id.0,
+                &self.parameters,
+                self.parameters.model.provider.transcript(&self.transcript),
+            ) => started,
+        };
+        let mut stream = started.map_err(model_request_failure)?;
+        loop {
+            let item = tokio::select! {
                 biased;
                 () = self.cancellation.cancelled() => return Err(PromptOutcome::Cancelled),
-                started = self.clients.stream_completion(&self.summary.id.0, &self.parameters, projected) => started,
+                item = stream.next() => item.map_err(model_request_failure)?,
             };
-            let mut stream = match started {
-                Ok(stream) => stream,
-                Err(error) if model::is_input_context_overflow(&error) && !retried => {
-                    retried = true;
-                    if self.compact().await? {
-                        continue;
-                    }
-                    return Err(PromptOutcome::ModelRequest(compaction::context_error()));
+            match item {
+                model::StreamItem::TextDelta(text) => {
+                    self.presentation
+                        .send(convert::agent_message_chunk(&text))
+                        .map_err(PromptOutcome::AcpUpdate)?;
                 }
-                Err(error) => return Err(PromptOutcome::ModelRequest(error)),
-            };
-            loop {
-                let item = tokio::select! {
-                    biased;
-                    () = self.cancellation.cancelled() => return Err(PromptOutcome::Cancelled),
-                    item = stream.next() => match item {
-                        Ok(item) => item,
-                        Err(error) if model::is_input_context_overflow(&error) && !retried => {
-                            retried = true;
-                            if self.compact().await? { continue 'request; }
-                            return Err(PromptOutcome::ModelRequest(compaction::context_error()));
-                        }
-                        Err(error) => return Err(PromptOutcome::ModelRequest(error)),
-                    },
-                };
-                match item {
-                    model::StreamItem::TextDelta(text) => {
-                        self.presentation
-                            .send(convert::agent_message_chunk(&text))
-                            .map_err(PromptOutcome::AcpUpdate)?;
-                    }
-                    model::StreamItem::ReasoningDelta(text) => {
-                        self.presentation
-                            .send(convert::agent_thought_chunk(&text))
-                            .map_err(PromptOutcome::AcpUpdate)?;
-                    }
-                    model::StreamItem::Completion(completion) => return Ok(completion),
+                model::StreamItem::ReasoningDelta(text) => {
+                    self.presentation
+                        .send(convert::agent_thought_chunk(&text))
+                        .map_err(PromptOutcome::AcpUpdate)?;
                 }
+                model::StreamItem::Completion(completion) => return Ok(completion),
             }
         }
     }
 
-    async fn compact(&mut self) -> std::result::Result<bool, PromptOutcome> {
-        let compacted = compaction::compact(
-            &self.store,
-            &self.clients,
-            &self.cancellation,
-            &self.summary.id,
-            &self.parameters,
-            &mut self.transcript,
-        )
-        .await
-        .map_err(|error| {
-            if error.kind() == io::ErrorKind::Interrupted {
-                PromptOutcome::Cancelled
-            } else {
-                PromptOutcome::ModelRequest(error)
-            }
-        })?;
-        if compacted {
-            self.send_usage()?;
-        }
-        Ok(compacted)
-    }
-
-    /// Saves the subagent messages published since the last model request,
-    /// after they fit the model's context limit, and presents them. Returns
-    /// whether there were any; a subagent has none.
+    /// Saves the subagent messages published since the last model request and
+    /// presents them. Returns whether there were any; a subagent has none.
     fn deliver_subagent_messages(&mut self) -> std::result::Result<bool, PromptOutcome> {
         let Some(subagents) = &self.tools.subagents else {
             return Ok(false);
@@ -570,18 +509,11 @@ impl AgentTurn {
         if messages.is_empty() {
             return Ok(false);
         }
-        let mut prospective = self.transcript.clone();
-        prospective.push(TranscriptEntry::SubagentMessages(messages.clone()));
-        if !compaction::input_fits(&self.parameters, &prospective) {
-            return Err(PromptOutcome::ModelRequest(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "subagent messages exceed the model context limit",
-            )));
-        }
         self.store
             .append_subagent_messages(&self.summary.id, &messages)
             .map_err(PromptOutcome::Storage)?;
-        self.transcript = prospective;
+        self.transcript
+            .push(TranscriptEntry::SubagentMessages(messages.clone()));
         for update in convert::subagent_message_updates(&messages) {
             self.presentation
                 .send(update)
@@ -805,6 +737,29 @@ impl PromptOutcome {
             }
             Self::AcpUpdate(error) | Self::Permission(error) => Err(error),
         }
+    }
+}
+
+/// A failed model request. A session too large for the model context fails
+/// every later request, so the Ox server stops instead.
+fn model_request_failure(error: io::Error) -> PromptOutcome {
+    if model::is_input_context_overflow(&error) {
+        panic!("the session exceeds the model context limit; start a new session");
+    }
+    PromptOutcome::ModelRequest(error)
+}
+
+fn has_images(entry: &TranscriptEntry) -> bool {
+    match entry {
+        TranscriptEntry::TurnStart(TurnStart {
+            input: TurnInput::UserMessage(message),
+            ..
+        }) => message.has_images(),
+        TranscriptEntry::TurnStart(TurnStart {
+            input: TurnInput::SkillInvocation(invocation),
+            ..
+        }) => !invocation.images.is_empty(),
+        _ => false,
     }
 }
 
@@ -1053,104 +1008,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn openai_compaction_is_saved_before_the_next_subscription_request() {
-        for overflow in [false, true] {
-            let mut replies = vec![
-                openai_fixture::text_reply("Earlier material."),
-                openai_fixture::text_reply("Done."),
-                openai_fixture::text_reply("Continued."),
-            ];
-            if overflow {
-                replies.insert(0, openai_fixture::Reply::Stream(openai_fixture::sse(&[
-                json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"Discard this attempt"}),
-                json!({"type":"response.failed","response":{"error":{"code":"context_length_exceeded","message":"Too large"}}}),
-            ])));
-            }
-            let harness = OpenAIHarness::new(vec![("", replies)]).await;
-            let mut start = TurnStart::test("Old task".to_owned());
-            start.model = openai_fixture::DEFAULT_MODEL.to_owned();
-            harness
-                .store
-                .append_turn_start(&harness.id, &start)
-                .unwrap();
-            harness
-                .store
-                .append_batch(
-                    &harness.id,
-                    &AssistantBatch::new(
-                        AssistantMessage {
-                            text: "x".repeat(if overflow { 10000 } else { 700000 }),
-                            reasoning: String::new(),
-                            tool_calls: vec![],
-                            continuation_metadata: vec![],
-                            usage: None,
-                        },
-                        vec![],
-                    )
-                    .unwrap(),
-                )
-                .unwrap();
-            let mut recent = TurnStart::test("Recent task".to_owned());
-            recent.model = openai_fixture::DEFAULT_MODEL.to_owned();
-            harness
-                .store
-                .append_turn_start(&harness.id, &recent)
-                .unwrap();
-            harness
-                .store
-                .append_batch(
-                    &harness.id,
-                    &AssistantBatch::new(
-                        AssistantMessage {
-                            text: "Recent answer.".to_owned(),
-                            reasoning: String::new(),
-                            tool_calls: vec![],
-                            continuation_metadata: vec![],
-                            usage: None,
-                        },
-                        vec![],
-                    )
-                    .unwrap(),
-                )
-                .unwrap();
-            assert_eq!(
-                harness.turn("Continue", |_| Ok(())).await.unwrap(),
-                PromptOutput::Finished("Done.".to_owned())
-            );
-            assert!(harness.transcript().iter().any(|entry| matches!(entry,TranscriptEntry::CompactionCheckpoint(checkpoint) if checkpoint.summarizer_cost.is_none())));
-            assert_eq!(
-                harness.turn("Again", |_| Ok(())).await.unwrap(),
-                PromptOutput::Finished("Continued.".to_owned())
-            );
-            let requests = harness.server.requests();
-            let offset = usize::from(overflow);
-            assert_eq!(requests.len(), 3 + offset, "overflow={overflow}");
-            assert!(!harness.transcript().iter().any(|entry| matches!(entry, TranscriptEntry::AssistantBatch(batch) if batch.message.text.contains("Discard this attempt"))));
-            assert!(
-                requests[offset]["instructions"]
-                    .as_str()
-                    .unwrap()
-                    .contains("4096 tokens")
-            );
-            assert!(
-                requests[1 + offset]["input"][1]["content"][0]["text"]
-                    .as_str()
-                    .unwrap()
-                    .starts_with("Compaction summary")
-            );
-            assert_eq!(
-                requests[1 + offset]["input"][3]["content"][0]["text"],
-                "Recent answer."
-            );
-            assert!(
-                requests[2 + offset]["input"][1]["content"][0]["text"]
-                    .as_str()
-                    .unwrap()
-                    .contains("Earlier material.")
-            );
-        }
-    }
     use serde_json::json;
 
     use crate::{
@@ -1605,294 +1462,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn oversized_input_is_rejected_before_save_and_a_valid_prompt_can_follow() {
-        let harness = Harness::new(vec![text_reply("Accepted")]).await;
-        let oversized = "x".repeat(3_000_000);
-        let rejected = run(
-            harness.store.clone(),
-            harness.server.client(),
-            PromptInput {
-                session_id: harness.session_id.clone(),
-                turn_input: user(&oversized),
-                selected_settings: SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
-                system_prompt: "system".to_owned(),
-                shell_processes: ShellProcesses::default(),
-            },
-            PromptCancellation::new(),
-            Presentation::headless(harness.session_id.clone()),
-        );
-        assert!(rejected.is_err());
-        assert!(harness.stored().is_empty());
-        let valid = "v".repeat(2_300_000);
-        let (response, transcript) = harness.run(&valid, |_| Ok(())).await;
-        assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
-        assert_eq!(transcript.len(), 2);
-        assert_eq!(
-            harness.server.requests().len(),
-            1,
-            "a valid request above the automatic threshold runs when no prefix can be cut"
-        );
-
-        let directory =
-            std::env::temp_dir().join(format!("ox-compaction-{}", uuid::Uuid::new_v4()));
-        let database = directory.join("ox.db");
-        let store = SessionStore::open(&database).unwrap();
-        let id = store.create(&harness.workspace.0).unwrap().id;
-        store
-            .append_turn_start(&id, &TurnStart::test("unanswered ".repeat(180_000)))
-            .unwrap();
-        drop(store);
-        let reopened = SessionStore::open(&database).unwrap();
-        let before = reopened.read(&id).unwrap().unwrap().transcript;
-        let server = Server::start(vec![text_reply("Accepted after reload")]).await;
-        let input = |user_message: String| PromptInput {
-            session_id: id.clone(),
-            turn_input: user(&user_message),
-            selected_settings: SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
-            system_prompt: "system".to_owned(),
-            shell_processes: ShellProcesses::default(),
-        };
-        assert!(
-            run(
-                reopened.clone(),
-                server.client(),
-                input("b".repeat(1_100_000)),
-                PromptCancellation::new(),
-                Presentation::headless(id.clone()),
-            )
-            .is_err()
-        );
-        assert_eq!(reopened.read(&id).unwrap().unwrap().transcript, before);
-        let accepted = run(
-            reopened.clone(),
-            server.client(),
-            input("small".to_owned()),
-            PromptCancellation::new(),
-            Presentation::headless(id.clone()),
-        )
-        .unwrap();
-        assert!(matches!(accepted.await.unwrap(), PromptOutput::Finished(_)));
-        assert_eq!(server.requests().len(), 1);
-        drop(reopened);
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[tokio::test]
-    async fn automatic_compaction_precedes_the_next_model_request() {
-        let harness = Harness::new(vec![
-            text_reply("Older work summarized."),
-            text_reply("Done"),
-        ])
+    #[should_panic(expected = "the session exceeds the model context limit; start a new session")]
+    async fn an_input_context_overflow_panics_with_a_clear_message() {
+        let harness = Harness::new(vec![Reply::Status(
+            400,
+            r#"{"error":{"message":"maximum context length exceeded"}}"#.to_owned(),
+        )])
         .await;
-        harness
-            .store
-            .append_turn_start(&harness.session_id, &TurnStart::test("old task".to_owned()))
-            .unwrap();
-        let TranscriptEntry::AssistantBatch(batch) = answer(&"x".repeat(2_300_000)) else {
-            unreachable!()
-        };
-        harness
-            .store
-            .append_batch(&harness.session_id, &batch)
-            .unwrap();
-        harness
-            .store
-            .append_turn_start(
-                &harness.session_id,
-                &TurnStart::test("recent task".to_owned()),
-            )
-            .unwrap();
-        let TranscriptEntry::AssistantBatch(batch) = answer("Recent answer.") else {
-            unreachable!()
-        };
-        harness
-            .store
-            .append_batch(&harness.session_id, &batch)
-            .unwrap();
-        let (response, transcript) = harness.run("next request", |_| Ok(())).await;
-        assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
-        let requests = harness.server.requests();
-        assert_eq!(requests.len(), 2);
-        assert!(requests[0].get("tools").is_none());
-        assert_eq!(requests[1]["messages"][1]["content"], "old task");
-        assert_eq!(
-            requests[1]["messages"][2]["content"],
-            "Compaction summary of earlier conversation:\nOlder work summarized."
-        );
-        assert_eq!(requests[1]["messages"][3]["content"], "recent task");
-        assert_eq!(requests[1]["messages"][4]["content"], "Recent answer.");
-        assert_eq!(requests[1]["messages"][5]["content"], "next request");
-        assert!(matches!(
-            &transcript[5],
-            TranscriptEntry::CompactionCheckpoint(_)
-        ));
-        assert_eq!(harness.stored(), transcript);
-
-        let command = format!("printf %s {}", "z".repeat(1000));
-        let between = Harness::new(vec![
-            tool_reply(&[("call-1", &command)]),
-            text_reply("The earlier answer was summarized."),
-            text_reply("Done"),
-        ])
-        .await;
-        let system = system_prompt::for_workspace(&between.workspace.0).unwrap();
-        let parameters = ModelRequestParameters::new(
-            DEFAULT_MODEL,
-            EffortLevel::Default,
-            system,
-            tools::Role::Main,
-        )
-        .unwrap();
-        let automatic_threshold = compaction::budget(parameters.model).automatic_threshold;
-        let base = "x".repeat(2_000_000);
-        let prospective = vec![
-            turn(user("old task")),
-            answer(&base),
-            turn(user("next request")),
-        ];
-        let base_estimate = compaction::request_tokens(&parameters, &prospective);
-        let old = "x".repeat(2_000_000 + (automatic_threshold - base_estimate - 50) * 3);
-        between
-            .store
-            .append_turn_start(
-                &between.session_id,
-                &TurnStart {
-                    mode: SessionMode::Auto,
-                    ..TurnStart::test(user("old task"))
-                },
-            )
-            .unwrap();
-        let TranscriptEntry::AssistantBatch(batch) = answer(&old) else {
-            unreachable!()
-        };
-        between
-            .store
-            .append_batch(&between.session_id, &batch)
-            .unwrap();
-        let (response, transcript) = between.run("next request", |_| Ok(())).await;
-        assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
-        let requests = between.server.requests();
-        assert_eq!(
-            requests.len(),
-            3,
-            "compaction occurs between the two ordinary requests"
-        );
-        assert!(requests[0].get("tools").is_some());
-        assert!(requests[1].get("tools").is_none());
-        assert!(
-            requests[2]["messages"][2]["content"]
-                .as_str()
-                .unwrap()
-                .contains("The earlier answer was summarized.")
-        );
-        assert!(
-            transcript
-                .iter()
-                .any(|entry| matches!(entry, TranscriptEntry::CompactionCheckpoint(_)))
-        );
-    }
-
-    #[tokio::test]
-    async fn explicit_input_overflow_retries_once_only_after_a_smaller_checkpoint() {
-        let harness = Harness::new(vec![
-            Reply::Status(
-                400,
-                r#"{"error":{"message":"maximum context length exceeded"}}"#.to_owned(),
-            ),
-            text_reply("Older work summarized."),
-            text_reply("Done"),
-        ])
-        .await;
-        harness
-            .store
-            .append_turn_start(&harness.session_id, &TurnStart::test("history".to_owned()))
-            .unwrap();
-        let TranscriptEntry::AssistantBatch(batch) = answer(&"history ".repeat(4000)) else {
-            unreachable!()
-        };
-        harness
-            .store
-            .append_batch(&harness.session_id, &batch)
-            .unwrap();
-        harness
-            .store
-            .append_turn_start(
-                &harness.session_id,
-                &TurnStart::test("latest context".to_owned()),
-            )
-            .unwrap();
-        let TranscriptEntry::AssistantBatch(batch) = answer("latest answer") else {
-            unreachable!()
-        };
-        harness
-            .store
-            .append_batch(&harness.session_id, &batch)
-            .unwrap();
-        let (response, transcript) = harness.run("next request", |_| Ok(())).await;
-        assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
-        assert_eq!(harness.server.requests().len(), 3);
-        assert!(
-            transcript
-                .iter()
-                .any(|entry| matches!(entry, TranscriptEntry::CompactionCheckpoint(_)))
-        );
-
-        let no_reduction = Harness::new(vec![
-            Reply::Status(
-                400,
-                r#"{"error":{"message":"maximum context length exceeded"}}"#.to_owned(),
-            ),
-            text_reply(&"summary ".repeat(5000)),
-        ])
-        .await;
-        no_reduction
-            .store
-            .append_turn_start(&no_reduction.session_id, &TurnStart::test("old".to_owned()))
-            .unwrap();
-        let TranscriptEntry::AssistantBatch(batch) = answer("done") else {
-            unreachable!()
-        };
-        no_reduction
-            .store
-            .append_batch(&no_reduction.session_id, &batch)
-            .unwrap();
-        no_reduction
-            .store
-            .append_turn_start(
-                &no_reduction.session_id,
-                &TurnStart::test("latest context".to_owned()),
-            )
-            .unwrap();
-        let TranscriptEntry::AssistantBatch(batch) = answer("latest answer") else {
-            unreachable!()
-        };
-        no_reduction
-            .store
-            .append_batch(&no_reduction.session_id, &batch)
-            .unwrap();
-        let (response, transcript) = no_reduction.run("next", |_| Ok(())).await;
-        assert!(response.is_err());
-        assert_eq!(no_reduction.server.requests().len(), 2);
-        assert_eq!(transcript.len(), 6, "the new user message remains saved");
-        assert!(turn_error(&transcript).contains("context"));
-
-        for reply in [
-            Reply::Status(400, "bad request".to_owned()),
-            Reply::Stream(sse(&[delta(
-                json!({"role":"assistant", "content":"partial"}),
-                Some("length"),
-            )])),
-        ] {
-            let harness = Harness::new(vec![reply]).await;
-            let (response, transcript) = harness.run("small", |_| Ok(())).await;
-            assert!(response.is_err() || response.unwrap() == PromptOutput::TokenLimit);
-            assert_eq!(harness.server.requests().len(), 1);
-            assert!(
-                transcript
-                    .iter()
-                    .all(|entry| !matches!(entry, TranscriptEntry::CompactionCheckpoint(_)))
-            );
-        }
+        let _ = harness.run("Hi", |_| Ok(())).await;
     }
 
     #[tokio::test]
