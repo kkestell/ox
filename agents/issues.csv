@@ -42,3 +42,4 @@ OX-0040,2026-10-01 10:57,Parallel subagents in one workspace contend for the car
 OX-0041,2026-10-01 10:57,The installed ox-work skill points at docs/agents/ while this repo uses agents/,low,documentation,unscheduled,reviews/2026-10-01-002-session-transcript-review.md
 OX-0042,2026-10-01 10:57,A failed subagent's failure message omits what it changed,low,observability,unscheduled,reviews/2026-10-01-002-session-transcript-review.md
 OX-0043,2026-10-01 12:53,Two functions named status_error meet at one call,low,naming,unscheduled,reviews/2026-10-01-004-retry-temporary-model-request-failures-review.md
+OX-0044,2026-10-01 13:20,A compacted skill invocation with an image blocks models without image input until another skill invocation,low,correctness,unscheduled,reviews/2026-10-01-006-repeat-the-skill-invocation-across-turns-review.md
