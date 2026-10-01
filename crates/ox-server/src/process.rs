@@ -25,6 +25,8 @@ pub struct Capture {
     pub bytes: VecDeque<u8>,
     /// Earlier output was dropped to stay within the limit.
     pub omitted: bool,
+    /// Every byte the stream produced, kept or dropped.
+    pub total_bytes: u64,
     limit: usize,
 }
 
@@ -33,12 +35,14 @@ impl Capture {
         Self {
             bytes: VecDeque::new(),
             omitted: false,
+            total_bytes: 0,
             limit,
         }
     }
 
     /// Keeps the last `limit` bytes of the stream after `bytes`.
     pub fn append(&mut self, bytes: &[u8]) {
+        self.total_bytes += bytes.len() as u64;
         let excess = (self.bytes.len() + bytes.len()).saturating_sub(self.limit);
         self.omitted |= excess > 0;
         // A limit smaller than one read also drops the front of that read.

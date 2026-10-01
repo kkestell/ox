@@ -7,6 +7,9 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use super::{BODY_LIMIT, READ_FILE, truncate, workspace::Workspace};
 use crate::sessions::ToolContent;
 
+// The byte limit, not the line limit, usually ends a page.
+const MAX_LIMIT: usize = 1000;
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Args {
@@ -21,7 +24,7 @@ fn default_offset() -> u64 {
     1
 }
 fn default_limit() -> usize {
-    200
+    MAX_LIMIT
 }
 
 pub(super) fn schema() -> Value {
@@ -33,9 +36,9 @@ pub(super) fn schema() -> Value {
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Workspace-relative file path." },
+                    "path": { "type": "string", "description": "File path relative to the workspace or absolute inside it." },
                     "offset": { "type": "integer", "minimum": 1, "default": 1, "description": "1-based starting line." },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 200, "description": "Maximum number of lines to return." }
+                    "limit": { "type": "integer", "minimum": 1, "maximum": MAX_LIMIT, "default": MAX_LIMIT, "description": "Maximum number of lines to return." }
                 },
                 "required": ["path"],
                 "additionalProperties": false
@@ -54,12 +57,14 @@ pub(super) async fn execute(
     arguments: &str,
 ) -> Result<(String, Vec<ToolContent>), String> {
     let args: Args = serde_json::from_str(arguments).map_err(|e| format!("arguments: {e}"))?;
-    if args.offset == 0 || !(1..=1000).contains(&args.limit) {
-        return Err("offset must be at least 1 and limit must be between 1 and 1000".to_owned());
+    if args.offset == 0 || !(1..=MAX_LIMIT).contains(&args.limit) {
+        return Err(format!(
+            "offset must be at least 1 and limit must be between 1 and {MAX_LIMIT}"
+        ));
     }
     let workspace = Workspace::open(root).map_err(|e| e.to_string())?;
     let path = workspace
-        .resolve_allowing_link_target(Path::new(&args.path))
+        .resolve_allowing_link_target(workspace.relative_name(Path::new(&args.path)))
         .map_err(|e| format!("{}: {e}", args.path))?;
     let file = tokio::fs::File::from_std(workspace.read_file(&path).map_err(|e| e.to_string())?);
     let mut reader = BufReader::new(file);
