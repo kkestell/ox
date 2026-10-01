@@ -2,8 +2,8 @@
 //! at process startup, and the workspace settings file `.ox/settings.json`, read
 //! when a session becomes active, whose keys replace the same keys from the
 //! first file. Neither file is required. Only the global settings file can set
-//! `models`, the provider pins. The Ox client reads and writes other fields of
-//! the global settings file.
+//! `provider` and `models`, the OpenRouter provider pins. The Ox client reads
+//! and writes other fields of the global settings file.
 
 use std::{
     collections::BTreeMap,
@@ -14,7 +14,7 @@ use std::{
 use serde::Deserialize;
 
 use crate::{
-    openrouter::{self, CatalogModel},
+    model::{self, CatalogModel, Provider},
     sessions::{EffortLevel, SessionMode, SessionSettings},
     text_file,
 };
@@ -27,6 +27,7 @@ const BUILT_IN_MODEL: &str = "~deepseek/deepseek-flash-latest";
 /// The format of both settings files.
 #[derive(Deserialize, Default)]
 struct SettingsFile {
+    provider: Option<Provider>,
     model: Option<String>,
     effort: Option<String>,
     mode: Option<String>,
@@ -43,6 +44,7 @@ struct ModelSettings {
 /// or, after `for_workspace`, with the workspace settings file's keys applied.
 #[derive(Clone)]
 pub struct Settings {
+    pub provider: Provider,
     pub default_model: String,
     pub default_effort: EffortLevel,
     pub default_mode: SessionMode,
@@ -61,8 +63,21 @@ pub fn global_path(home: &Path) -> PathBuf {
     home.join(".config/ox/settings.json")
 }
 
+/// Reads provider selection before fetching its model catalog.
+pub fn provider() -> io::Result<Provider> {
+    provider_from(&global_path(&home_dir()?))
+}
+
+fn provider_from(path: &Path) -> io::Result<Provider> {
+    match read(path) {
+        Ok(file) => Ok(file.provider.unwrap_or_default()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Provider::default()),
+        Err(error) => Err(error),
+    }
+}
+
 /// Reads the global settings file and sets each pinned catalog model's
-/// providers. A missing file, or one without `model`, means the built-in model.
+/// providers. Without `model`, selects the provider's default model.
 pub fn load(catalog: &mut [CatalogModel]) -> io::Result<Settings> {
     load_from(&global_path(&home_dir()?), catalog)
 }
@@ -73,8 +88,24 @@ fn load_from(path: &Path, catalog: &mut [CatalogModel]) -> io::Result<Settings> 
         Err(error) if error.kind() == io::ErrorKind::NotFound => SettingsFile::default(),
         Err(error) => return Err(error),
     };
+    let provider = file.provider.unwrap_or_default();
+    if provider == Provider::OpenAI && file.models.is_some() {
+        return Err(invalid(
+            path,
+            "models provider pins are supported only with OpenRouter",
+        ));
+    }
+    let default_model = file.model.unwrap_or_else(|| match provider {
+        Provider::OpenRouter => BUILT_IN_MODEL.to_owned(),
+        Provider::OpenAI => catalog
+            .first()
+            .expect("the catalog has usable models")
+            .id
+            .clone(),
+    });
     let settings = Settings {
-        default_model: file.model.unwrap_or_else(|| BUILT_IN_MODEL.to_owned()),
+        provider,
+        default_model,
         default_effort: effort(path, file.effort)?,
         default_mode: mode(path, file.mode)?,
     };
@@ -107,6 +138,12 @@ impl Settings {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(self.clone()),
             Err(error) => return Err(error),
         };
+        if file.provider.is_some() {
+            return Err(invalid(
+                &path,
+                "provider can be set only in the global settings file",
+            ));
+        }
         if file.models.is_some() {
             return Err(invalid(
                 &path,
@@ -114,6 +151,7 @@ impl Settings {
             ));
         }
         let settings = Self {
+            provider: self.provider,
             default_model: file.model.unwrap_or_else(|| self.default_model.clone()),
             default_effort: file
                 .effort
@@ -126,7 +164,7 @@ impl Settings {
                 .transpose()?
                 .unwrap_or(self.default_mode),
         };
-        settings.validate(&path, openrouter::catalog())?;
+        settings.validate(&path, model::catalog())?;
         Ok(settings)
     }
 
@@ -138,8 +176,9 @@ impl Settings {
                 invalid(
                     path,
                     &format!(
-                        "model {} is not in the OpenRouter model catalog",
-                        self.default_model
+                        "model {} is not in the {} model catalog",
+                        self.default_model,
+                        self.provider.name()
                     ),
                 )
             })?;
@@ -236,6 +275,7 @@ fn invalid(path: &Path, message: &str) -> io::Error {
 mod tests {
     use super::*;
     use crate::{
+        openrouter,
         openrouter::fixture::{DEFAULT_MODEL, NOW},
         tools::fixture::Workspace,
     };
@@ -321,6 +361,7 @@ mod tests {
     #[test]
     fn workspace_settings_override_the_default_model() {
         let settings = Settings {
+            provider: Provider::OpenRouter,
             default_model: DEFAULT_MODEL.to_owned(),
             default_effort: EffortLevel::Default,
             default_mode: SessionMode::Ask,
@@ -329,7 +370,7 @@ mod tests {
         let unchanged = settings.for_workspace(&workspace.0).unwrap();
         assert_eq!(unchanged.default_model, DEFAULT_MODEL);
 
-        let chosen = &openrouter::catalog()[1].id;
+        let chosen = &model::catalog()[1].id;
         assert_ne!(chosen, DEFAULT_MODEL);
         let path = workspace.0.join(".ox/settings.json");
         std::fs::create_dir(workspace.0.join(".ox")).unwrap();
@@ -343,6 +384,10 @@ mod tests {
         }
 
         for (text, error) in [
+            (
+                r#"{"provider":"openai"}"#,
+                "provider can be set only in the global settings file",
+            ),
             (
                 r#"{"model":"a/b"}"#,
                 "model a/b is not in the OpenRouter model catalog",
@@ -483,8 +528,7 @@ mod tests {
         let selected =
             SessionSettings::new(DEFAULT_MODEL, EffortLevel::Low).with_mode(SessionMode::Auto);
         std::fs::create_dir_all(global.parent().unwrap()).unwrap();
-        let client_fields =
-            r#"{"servers":[{"name":"Alpha","command":"alpha"}],"favorites":["a/b"]}"#;
+        let client_fields = r#"{"provider":"openrouter","servers":[{"name":"Alpha","command":"alpha"}],"favorites":["a/b"]}"#;
         std::fs::write(&global, client_fields).unwrap();
         assert!(save(&home.0, &workspace.0, &selected).unwrap());
         assert_eq!(
@@ -495,6 +539,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&global).unwrap()).unwrap();
         assert_eq!(saved["servers"][0]["name"], "Alpha");
         assert_eq!(saved["favorites"], serde_json::json!(["a/b"]));
+        assert_eq!(saved["provider"], "openrouter");
         std::fs::create_dir(workspace.0.join(".ox")).unwrap();
         std::fs::write(&local, r#"{"model":"z-ai/glm-5.3-flash","other":42}"#).unwrap();
         assert!(!save(&home.0, &workspace.0, &selected).unwrap());
@@ -515,5 +560,31 @@ mod tests {
             load_from(&global, &mut catalog()).unwrap().default_mode,
             SessionMode::Auto
         );
+    }
+
+    #[test]
+    fn provider_selection_is_global_and_openai_uses_the_first_catalog_model() {
+        let home = Workspace::new();
+        let path = home.0.join("settings.json");
+        assert_eq!(provider_from(&path).unwrap(), Provider::OpenRouter);
+        std::fs::write(&path, r#"{"provider":"openai"}"#).unwrap();
+        assert_eq!(provider_from(&path).unwrap(), Provider::OpenAI);
+        let mut models = catalog();
+        for model in &mut models {
+            model.provider = Provider::OpenAI;
+        }
+        let selected = load_from(&path, &mut models).unwrap();
+        assert_eq!(selected.provider, Provider::OpenAI);
+        assert_eq!(selected.default_model, models[0].id);
+        std::fs::write(&path, r#"{"provider":"openai","models":{}}"#).unwrap();
+        assert!(
+            load_from(&path, &mut models)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("only with OpenRouter")
+        );
+        std::fs::write(&path, r#"{"provider":"unknown"}"#).unwrap();
+        assert!(provider_from(&path).is_err());
     }
 }

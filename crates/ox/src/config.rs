@@ -11,7 +11,7 @@ use serde::Deserialize;
 pub struct Config {
     #[serde(default)]
     pub servers: Vec<ServerConfig>,
-    /// The favorite OpenRouter model IDs, in the order they were added.
+    /// The favorite model IDs, in the order they were added.
     #[serde(default)]
     pub favorites: Vec<String>,
 }

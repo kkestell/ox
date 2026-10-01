@@ -303,7 +303,7 @@ impl SessionMode {
 }
 
 /// How much reasoning Ox asks a model to do, in ascending order. `Default`
-/// leaves the choice to the model; every other level is the OpenRouter effort
+/// leaves the choice to the model; every other level is the provider effort
 /// of the same id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -397,14 +397,14 @@ pub struct AssistantMessage {
     pub text: String,
     pub reasoning: String,
     pub tool_calls: Vec<ToolCall>,
-    /// OpenRouter's opaque `reasoning_details`, retained for the next request.
+    /// Opaque provider continuation state retained for the next request.
     pub continuation_metadata: Vec<serde_json::Value>,
-    /// The usage OpenRouter reported for the model request that produced this
+    /// The usage the provider reported for the model request that produced this
     /// message, or `None` when the stream carried none.
     pub usage: Option<ModelUsage>,
 }
 
-/// The token counts and cost that OpenRouter reports for one model request.
+/// The token counts and optional cost reported for one model request.
 /// Cached tokens are part of the input tokens and reasoning tokens part of the
 /// output tokens. OpenRouter reports cost in credits, whose base currency is
 /// the US dollar.
@@ -415,7 +415,7 @@ pub struct ModelUsage {
     pub cached_tokens: u64,
     pub output_tokens: u64,
     pub reasoning_tokens: u64,
-    pub cost: f64,
+    pub cost: Option<f64>,
 }
 
 impl AssistantMessage {
@@ -623,7 +623,7 @@ pub fn transcript_cost(transcript: &[TranscriptEntry]) -> Option<f64> {
         .iter()
         .filter_map(|entry| match entry {
             TranscriptEntry::AssistantBatch(batch) => {
-                batch.message.usage.as_ref().map(|usage| usage.cost)
+                batch.message.usage.as_ref().and_then(|usage| usage.cost)
             }
             TranscriptEntry::CompactionCheckpoint(checkpoint) => checkpoint.summarizer_cost,
             _ => None,
@@ -1076,6 +1076,32 @@ pub fn database_path() -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unpriced_usage_keeps_token_counts_and_does_not_create_session_cost() {
+        let store = SessionStore::in_memory();
+        let id = store.create(workspace()).unwrap().id;
+        store
+            .append_turn_start(&id, &TurnStart::test("Task".to_owned()))
+            .unwrap();
+        let mut response = message(vec![]);
+        response.usage = Some(ModelUsage {
+            input_tokens: 100,
+            cached_tokens: 20,
+            output_tokens: 30,
+            reasoning_tokens: 10,
+            cost: None,
+        });
+        store
+            .append_batch(&id, &AssistantBatch::new(response.clone(), vec![]).unwrap())
+            .unwrap();
+        let stored = store.read(&id).unwrap().unwrap();
+        assert!(transcript_cost(&stored.transcript).is_none());
+        let TranscriptEntry::AssistantBatch(batch) = &stored.transcript[1] else {
+            panic!("no batch");
+        };
+        assert_eq!(batch.message.usage, response.usage);
+    }
     use crate::{openrouter, tools};
     use serde_json::json;
 
@@ -1426,7 +1452,7 @@ mod tests {
             "an empty transcript uses the defaults"
         );
 
-        let chosen = openrouter::catalog()[1].id.as_str();
+        let chosen = crate::model::catalog()[1].id.as_str();
         let turns = [
             (chosen, EffortLevel::Low, SessionMode::Auto),
             (
@@ -1607,7 +1633,7 @@ mod tests {
         let store = SessionStore::in_memory();
         let batch = |cost: Option<f64>| {
             let mut message = message(vec![]);
-            message.usage = cost.map(|cost| ModelUsage {
+            message.usage = Some(ModelUsage {
                 input_tokens: 10,
                 cached_tokens: 0,
                 output_tokens: 5,

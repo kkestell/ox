@@ -2,6 +2,9 @@ mod acp;
 mod auth;
 mod cancellation;
 mod compaction;
+mod model;
+mod openai;
+mod openai_auth;
 mod openrouter;
 mod process;
 mod sessions;
@@ -15,6 +18,7 @@ mod tools;
 
 use std::{env, error::Error, io, path::Path};
 
+pub use model::Provider;
 pub use sessions::EffortLevel;
 pub use settings::{global_path, home_dir};
 
@@ -29,12 +33,12 @@ fn resolve_model(model: Option<String>, default_model: String) -> io::Result<Str
     let Some(model) = model else {
         return Ok(default_model);
     };
-    if openrouter::catalog_model(&model).is_some() {
+    if model::catalog_model(&model).is_some() {
         return Ok(model);
     }
     Err(invalid_input(format!(
         "{model} is not a model; choose one of {}",
-        openrouter::catalog()
+        model::catalog()
             .iter()
             .map(|model| model.id.as_str())
             .collect::<Vec<_>>()
@@ -44,7 +48,7 @@ fn resolve_model(model: Option<String>, default_model: String) -> io::Result<Str
 
 /// Rejects an effort level the chosen model does not list.
 fn check_effort(model: &str, effort: EffortLevel) -> io::Result<()> {
-    let model = openrouter::catalog_model(model).expect("a resolved model is in the catalog");
+    let model = model::catalog_model(model).expect("a resolved model is in the catalog");
     if model.supports(effort) {
         return Ok(());
     }
@@ -67,16 +71,25 @@ fn invalid_input(message: String) -> io::Error {
 
 /// Fetches and installs the model catalog and returns the settings checked
 /// against it.
-async fn load_settings_and_catalog() -> io::Result<settings::Settings> {
-    let mut catalog = openrouter::fetch_catalog().await?;
+async fn load_settings_and_catalog() -> io::Result<(settings::Settings, Option<model::Client>)> {
+    let provider = settings::provider()?;
+    let (mut catalog, client) = match provider {
+        Provider::OpenRouter => (openrouter::fetch_catalog().await?, None),
+        Provider::OpenAI => {
+            let client = openai::Client::new()?;
+            let catalog = client.fetch_catalog().await?;
+            (catalog, Some(model::Client::OpenAI(client)))
+        }
+    };
     let settings = settings::load(&mut catalog)?;
-    openrouter::install_catalog(catalog);
-    Ok(settings)
+    model::install_catalog(catalog);
+    Ok((settings, client))
 }
 
 /// Serves one ACP connection over stdin and stdout.
 pub async fn serve() -> Result<(), Box<dyn Error>> {
-    acp::serve_stdio(load_settings_and_catalog().await?).await
+    let (settings, client) = load_settings_and_catalog().await?;
+    acp::serve_stdio(settings, client).await
 }
 
 /// Runs one prompt in `dir` and returns the final answer.
@@ -89,15 +102,30 @@ pub async fn run(
     let dir = dir
         .canonicalize()
         .map_err(|error| format!("opening {}: {error}", dir.display()))?;
-    let settings = load_settings_and_catalog().await?.for_workspace(&dir)?;
+    let (settings, client) = load_settings_and_catalog().await?;
+    let settings = settings.for_workspace(&dir)?;
     let model = resolve_model(model, settings.default_model)?;
     check_effort(&model, effort)?;
-    acp::run_headless(&dir, model, effort, prompt).await
+    let client = match client {
+        Some(client) => client,
+        None => openrouter::Client::new(auth::api_key()?.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "OpenRouter authentication required; run `ox auth login openrouter`",
+            )
+        })?)
+        .into(),
+    };
+    acp::run_headless(&dir, model, effort, prompt, client).await
 }
 
-/// Prompts for an OpenRouter API key, verifies it, and saves it in the
-/// keyring.
-pub async fn login() -> Result<(), Box<dyn Error>> {
+/// Authenticates and saves credentials for the named provider.
+pub async fn login(provider: Provider) -> Result<(), Box<dyn Error>> {
+    if provider == Provider::OpenAI {
+        openai_auth::Authentication::new()?.login().await?;
+        println!("OpenAI credentials saved.");
+        return Ok(());
+    }
     let api_key = rpassword::prompt_password("OpenRouter API key: ")?;
     let api_key = api_key.trim();
     if api_key.is_empty() {
@@ -109,8 +137,16 @@ pub async fn login() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Removes the saved OpenRouter API key.
-pub fn logout() -> io::Result<()> {
+/// Removes the named provider's saved credentials.
+pub async fn logout(provider: Provider) -> io::Result<()> {
+    if provider == Provider::OpenAI {
+        if openai_auth::Authentication::new()?.logout().await? {
+            println!("OpenAI credentials removed.");
+        } else {
+            println!("No saved OpenAI credentials.");
+        }
+        return Ok(());
+    }
     if auth::delete_api_key()? {
         println!("OpenRouter API key removed.");
     } else {
@@ -129,7 +165,7 @@ mod tests {
     #[test]
     fn model_and_effort_choices_must_be_in_the_catalog() {
         let default = openrouter::fixture::DEFAULT_MODEL;
-        let chosen = openrouter::catalog()[1].id.as_str();
+        let chosen = model::catalog()[1].id.as_str();
         assert_eq!(resolve_model(None, default.to_owned()).unwrap(), default);
         assert_eq!(
             resolve_model(Some(chosen.to_owned()), default.to_owned()).unwrap(),

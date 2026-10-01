@@ -10,45 +10,16 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::{
+    model::{
+        CatalogModel, Completion, InputContextOverflow, ModelRequestParameters, Stop, StreamItem,
+        skill_invocation_message, subagent_message_text,
+    },
     sessions::{
-        AssistantMessage, EffortLevel, ImageAttachment, ModelUsage, SkillInvocation,
-        SubagentMessage, ToolCall, TranscriptEntry, TurnInput, UserMessage, UserMessagePart,
+        AssistantMessage, EffortLevel, ImageAttachment, ModelUsage, ToolCall, TranscriptEntry,
+        TurnInput, UserMessage, UserMessagePart,
     },
     tools,
 };
-
-#[derive(Debug)]
-pub struct CatalogModel {
-    pub id: String,
-    pub name: String,
-    pub context_limit: usize,
-    /// USD per million input tokens.
-    pub input_price: f64,
-    /// USD per million output tokens.
-    pub output_price: f64,
-    pub accepts_images: bool,
-    /// `Default` followed by the efforts OpenRouter lists, in ascending order.
-    pub efforts: Vec<EffortLevel>,
-    /// The provider pin from the global settings file: model requests go only
-    /// to these OpenRouter provider slugs, tried in order. Empty lets
-    /// OpenRouter choose.
-    pub providers: Vec<String>,
-}
-
-impl CatalogModel {
-    pub fn supports(&self, effort: EffortLevel) -> bool {
-        self.efforts.contains(&effort)
-    }
-
-    /// The lowest effort that still reasons, for summarizer requests.
-    pub fn summarizer_effort(&self) -> EffortLevel {
-        self.efforts
-            .iter()
-            .copied()
-            .find(|effort| !matches!(effort, EffortLevel::Default | EffortLevel::None))
-            .unwrap_or(EffortLevel::Default)
-    }
-}
 
 /// The fields Ox reads from one entry of OpenRouter's `GET /models`.
 #[derive(Deserialize)]
@@ -140,11 +111,12 @@ pub fn parse_catalog(text: &str, now: i64) -> io::Result<Vec<CatalogModel>> {
                 .filter(|effort| *effort == EffortLevel::Default || has(&listed, effort.id()))
                 .collect();
             CatalogModel {
+                provider: crate::model::Provider::OpenRouter,
                 id: model.id,
                 name: model.name,
                 context_limit: model.context_length,
-                input_price: model.pricing.prompt * 1_000_000.0,
-                output_price: model.pricing.completion * 1_000_000.0,
+                input_price: Some(model.pricing.prompt * 1_000_000.0),
+                output_price: Some(model.pricing.completion * 1_000_000.0),
                 accepts_images: has(&model.architecture.input_modalities, "image"),
                 efforts,
                 providers: Vec::new(),
@@ -181,29 +153,10 @@ pub async fn fetch_catalog() -> io::Result<Vec<CatalogModel>> {
     )
 }
 
-static CATALOG: std::sync::OnceLock<Vec<CatalogModel>> = std::sync::OnceLock::new();
-
-/// Installs the fetched model catalog, once per process.
-pub fn install_catalog(models: Vec<CatalogModel>) {
-    if CATALOG.set(models).is_err() {
-        panic!("the model catalog is installed once");
-    }
-}
-
-pub fn catalog() -> &'static [CatalogModel] {
-    #[cfg(any(test, feature = "test-support"))]
-    CATALOG.get_or_init(|| parse_catalog(fixture::CATALOG, fixture::NOW).unwrap());
-    CATALOG.get().expect("the model catalog is installed")
-}
-
 const ENDPOINT: &str = "https://openrouter.ai/api/v1";
 
 fn endpoint() -> String {
     std::env::var("OX_OPENROUTER_ENDPOINT").unwrap_or_else(|_| ENDPOINT.to_owned())
-}
-
-pub fn catalog_model(id: &str) -> Option<&'static CatalogModel> {
-    catalog().iter().find(|model| model.id == id)
 }
 
 /// How long a model request may wait for response headers or for the next
@@ -219,91 +172,6 @@ pub struct Client {
     api_key: String,
     endpoint: String,
     stall_timeout: Duration,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum StreamItem {
-    TextDelta(String),
-    ReasoningDelta(String),
-    Completion(Completion),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Completion {
-    pub message: AssistantMessage,
-    pub stop: Stop,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Stop {
-    Finished,
-    ToolCalls,
-    TokenLimit,
-    Refused,
-}
-
-#[derive(Debug)]
-pub struct InputContextOverflow;
-
-impl std::fmt::Display for InputContextOverflow {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "OpenRouter rejected the input as too large for the model context"
-        )
-    }
-}
-
-impl std::error::Error for InputContextOverflow {}
-
-pub fn is_input_context_overflow(error: &io::Error) -> bool {
-    error
-        .get_ref()
-        .is_some_and(|inner| inner.is::<InputContextOverflow>())
-}
-
-/// The validated catalog model, effort level, system prompt, and the tools of
-/// the agent's role, which every ordinary model request in a turn sends with
-/// the transcript.
-#[derive(Debug, Clone)]
-pub struct ModelRequestParameters {
-    pub model: &'static CatalogModel,
-    pub effort: EffortLevel,
-    pub system_prompt: String,
-    pub role: tools::Role,
-}
-
-impl ModelRequestParameters {
-    /// Rejects saved or selected settings the fetched model catalog no longer
-    /// accepts.
-    pub fn new(
-        model_id: &str,
-        effort: EffortLevel,
-        system_prompt: String,
-        role: tools::Role,
-    ) -> io::Result<Self> {
-        let model = catalog_model(model_id).ok_or_else(|| {
-            io::Error::new(
-                ErrorKind::InvalidData,
-                format!("session model {model_id} is not in the model catalog"),
-            )
-        })?;
-        if !model.supports(effort) {
-            return Err(io::Error::new(
-                ErrorKind::InvalidData,
-                format!(
-                    "session model {model_id} does not accept effort {}",
-                    effort.id()
-                ),
-            ));
-        }
-        Ok(Self {
-            model,
-            effort,
-            system_prompt,
-            role,
-        })
-    }
 }
 
 /// The request body for encoded chat `messages`, which follow the system
@@ -329,7 +197,7 @@ pub(crate) fn ordinary_body(parameters: &ModelRequestParameters, messages: Vec<V
 
 /// The token limit Ox gives summarizer requests. Compaction sizes each piece
 /// so a summary plus this much output fits the model's context.
-pub(crate) const SUMMARIZER_MAX_TOKENS: usize = 4096;
+pub(crate) use crate::model::SUMMARIZER_MAX_TOKENS;
 
 pub(crate) fn summarizer_body(model: &CatalogModel, previous: &str, piece: &str) -> Value {
     let mut body = json!({
@@ -490,31 +358,6 @@ fn explicit_context_overflow(detail: &str) -> bool {
         ]
         .iter()
         .any(|term| lower.contains(term))
-}
-
-/// The user message that gives the model a skill invocation: its text
-/// followed by its image attachments.
-pub(crate) fn skill_invocation_message(invocation: &SkillInvocation) -> UserMessage {
-    let text = format!(
-        "Skill /{} invoked.\n\nInstructions:\n{}\n\nArguments:\n{}",
-        invocation.name, invocation.instructions, invocation.arguments
-    );
-    UserMessage {
-        parts: std::iter::once(UserMessagePart::Text(text))
-            .chain(
-                invocation
-                    .images
-                    .iter()
-                    .cloned()
-                    .map(UserMessagePart::Image),
-            )
-            .collect(),
-    }
-}
-
-/// The user-role text that gives the main agent one subagent message.
-pub(crate) fn subagent_message_text(message: &SubagentMessage) -> String {
-    format!("{}:\n{}", message.label(), message.text())
 }
 
 fn image_part(image: &ImageAttachment) -> Value {
@@ -727,7 +570,7 @@ impl CompletionStream {
                     .completion_tokens_details
                     .and_then(|details| details.reasoning_tokens)
                     .unwrap_or(0),
-                cost: usage.cost,
+                cost: Some(usage.cost),
             });
         }
         // The usage chunk after the final one repeats the finish reason with
@@ -1187,7 +1030,11 @@ pub mod fixture {
 
     /// The text a request is routed by.
     fn route_key(request: &Value) -> String {
-        request["messages"][1]["content"].to_string()
+        if request.get("input").is_some() {
+            request["input"][0]["content"].to_string()
+        } else {
+            request["messages"][1]["content"].to_string()
+        }
     }
 
     async fn serve(mut socket: TcpStream, routes: Routes, seen: Arc<Mutex<Vec<Value>>>) {
@@ -1414,7 +1261,8 @@ mod tests {
         fixture::{DEFAULT_MODEL, Reply, Server, delta, sse, text_reply, usage},
         *,
     };
-    use crate::sessions::{AssistantBatch, SessionMode, ToolOutcome, TurnStart};
+    use crate::model::catalog;
+    use crate::sessions::{AssistantBatch, SessionMode, SkillInvocation, ToolOutcome, TurnStart};
 
     const TEST_SYSTEM_PROMPT: &str = "You are Ox.";
 
@@ -1634,7 +1482,7 @@ mod tests {
         );
         assert_eq!(
             (models[0].input_price, models[0].output_price),
-            (0.03, 0.6),
+            (Some(0.03), Some(0.6)),
             "prices are USD per million tokens"
         );
         assert_eq!(models[1].efforts, [Default, Low, Medium, High, XHigh, Max]);
@@ -1822,7 +1670,7 @@ mod tests {
                     cached_tokens: 8,
                     output_tokens: 34,
                     reasoning_tokens: 20,
-                    cost: 0.25,
+                    cost: Some(0.25),
                 }),
             }
         );

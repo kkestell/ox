@@ -3,10 +3,10 @@
 Ox is one program with two parts. The Ox server is an ACP-native coding agent
 that works in any ACP-compatible client. The Ox client is a terminal ACP client
 that launches an ACP server for a workspace and shows its output in the
-terminal. The Ox server sends model requests to OpenRouter, runs tools with the
-user's operating-system permissions, and saves sessions in a local SQLite
-database. One server process serves one ACP connection. A headless entry point
-runs one prompt through the same parts and prints the answer.
+terminal. The Ox server sends model requests to OpenRouter or OpenAI, runs tools
+with the user's operating-system permissions, and saves sessions in a local
+SQLite database. One server process serves one ACP connection. A headless entry
+point runs one prompt through the same parts and prints the answer.
 
 ## Client boundary
 
@@ -23,23 +23,23 @@ sessions. The client can launch the Ox server or another compatible ACP server.
   and transcript commits. The same loop runs the main agent and its subagents.
 - **Compaction**: summarizes older transcript to keep model requests within the
   context limit, both automatically and on request.
-- **OpenRouter client**: encodes model requests and turns a streamed response
-  into one validated completion.
+- **Model client**: encodes requests for the selected provider and turns a
+  streamed response into one validated completion.
 - **Tools**: the fixed tool set. A tool executes one call and neither sends ACP
   updates nor saves the transcript.
 - **Session store**: validates and saves sessions and transcripts. It knows
-  neither OpenRouter's formats nor ACP's.
+  neither the providers' formats nor ACP's.
 
 Dependencies point from the ACP boundary, prompt run, and compaction toward the
-OpenRouter client, tools, and session store. Settings, skills, credentials, and
+model client, tools, and session store. Settings, skills, credentials, and
 process execution support these components but take no part in running a turn.
 
 ## External boundaries
 
-The ACP client, OpenRouter, the workspace, settings and skill files, child
-processes, the keyring, and SQLite are outside the Ox server. Their input is
-untrusted and is validated or translated before it becomes server state.
-Credentials never enter a session or a child process.
+The ACP client, OpenRouter, OpenAI, the workspace, settings and skill files,
+child processes, the keyring, protected credential files, and SQLite are outside
+the Ox server. Their input is untrusted and is validated or translated before it
+becomes server state. Credentials never enter a session or a child process.
 
 ## Sources of authority
 
@@ -75,10 +75,13 @@ Credentials never enter a session or a child process.
 ## Concurrency and cancellation
 
 At most one prompt, load, close, or delete runs for a session at a time.
-Different sessions run concurrently. No lock or database transaction is held
-across an asynchronous wait. Cancellation stops new work but never claims to
-undo saved state or external effects. A failure in one request does not affect
-other sessions or end the connection.
+Different sessions run concurrently. Session coordination holds no lock or
+database transaction across an asynchronous wait. OpenAI credential replacement
+is the exception: one credential-file lock serializes rotating refresh tokens
+across Ox processes. It never protects model requests or session state.
+Cancellation stops new work but never claims to undo saved state or external
+effects. A failure in one request does not affect other sessions or end the
+connection.
 
 ## Trust
 
@@ -89,7 +92,8 @@ a turn governs the whole turn.
 
 ## Deliberate constraints
 
-One model provider, one tool set, one SQLite connection, sequential tool
-execution, and process-local coordination. There is no provider fallback, prompt
-queue, cross-process coordination, or database migration. Changing any of these
-means revisiting the boundaries that depend on it.
+One model provider per server process, one tool set, one SQLite connection,
+sequential tool execution, and process-local session coordination. Main agents,
+subagents, and compaction share the provider. There is no provider fallback,
+prompt queue, cross-process session coordination, or database migration.
+Changing any of these means revisiting the boundaries that depend on it.

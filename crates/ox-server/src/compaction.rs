@@ -11,14 +11,14 @@ use serde_json::Value;
 
 use crate::{
     cancellation::PromptCancellation,
-    openrouter::{self, CatalogModel, Client, ModelRequestParameters},
+    model::{self, CatalogModel, Client, ModelRequestParameters, Provider},
     sessions::{
         self, AssistantBatch, CompactionCheckpoint, SessionStore, TranscriptEntry, TurnInput,
         UserMessage, UserMessagePart,
     },
 };
 
-const SUMMARY_ALLOWANCE_BYTES: usize = openrouter::SUMMARIZER_MAX_TOKENS * 3;
+const SUMMARY_ALLOWANCE_BYTES: usize = model::SUMMARIZER_MAX_TOKENS * 3;
 const SUMMARY_LABEL: &str = "Compaction summary of earlier conversation:\n";
 const TOOL_RESULT_EXCERPT_CHARS: usize = 2_000;
 const IMAGE_ESTIMATE_TOKENS: usize = 4_096;
@@ -50,7 +50,10 @@ pub fn request_tokens(
     parameters: &ModelRequestParameters,
     transcript: &[TranscriptEntry],
 ) -> usize {
-    let body = openrouter::ordinary_body(parameters, projection(transcript));
+    let body = model::ordinary_body(
+        parameters,
+        projection(parameters.model.provider, transcript),
+    );
     to_tokens(body_bytes(body))
 }
 
@@ -59,7 +62,12 @@ pub fn request_tokens(
 /// tokenize.
 fn body_bytes(mut body: Value) -> usize {
     let mut images = 0;
-    if let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) {
+    let input_key = if body.get("input").is_some() {
+        "input"
+    } else {
+        "messages"
+    };
+    if let Some(messages) = body.get_mut(input_key).and_then(Value::as_array_mut) {
         for message in messages {
             images += strip_images(message);
         }
@@ -76,6 +84,9 @@ fn strip_images(message: &mut Value) -> usize {
         for part in parts {
             if part.get("type").and_then(Value::as_str) == Some("image_url") {
                 part["image_url"]["url"] = Value::String("[image]".to_owned());
+                images += 1;
+            } else if part["type"] == "input_image" {
+                part["image_url"] = Value::String("[image]".to_owned());
                 images += 1;
             }
         }
@@ -97,21 +108,26 @@ fn summarized_prefix(transcript: &[TranscriptEntry]) -> usize {
 
 /// The chat messages of the next model request: the saved transcript, or the
 /// latest summary followed by the entries after its covered prefix.
-pub fn projection(transcript: &[TranscriptEntry]) -> Vec<Value> {
+pub fn projection(provider: Provider, transcript: &[TranscriptEntry]) -> Vec<Value> {
     match latest(transcript) {
-        Some(checkpoint) => {
-            projection_at(transcript, checkpoint.covered_prefix, &checkpoint.summary)
-        }
-        None => openrouter::chat_messages(transcript),
+        Some(checkpoint) => projection_at(
+            provider,
+            transcript,
+            checkpoint.covered_prefix,
+            &checkpoint.summary,
+        ),
+        None => provider.transcript(transcript),
     }
 }
 
 /// Whether the projection of the next model request contains an image.
-pub fn has_images(transcript: &[TranscriptEntry]) -> bool {
-    projection(transcript).iter().any(|message| {
-        message["content"]
-            .as_array()
-            .is_some_and(|parts| parts.iter().any(|part| part["type"] == "image_url"))
+pub fn has_images(provider: Provider, transcript: &[TranscriptEntry]) -> bool {
+    projection(provider, transcript).iter().any(|message| {
+        message["content"].as_array().is_some_and(|parts| {
+            parts
+                .iter()
+                .any(|part| matches!(part["type"].as_str(), Some("image_url" | "input_image")))
+        })
     })
 }
 
@@ -135,16 +151,21 @@ pub fn context_error() -> io::Error {
     )
 }
 
-fn summary_message(summary: &str) -> Value {
-    openrouter::user_message(&format!("{SUMMARY_LABEL}{summary}").into())
+fn summary_message(provider: Provider, summary: &str) -> Value {
+    provider.user_message(&format!("{SUMMARY_LABEL}{summary}").into())
 }
 
-fn projection_at(transcript: &[TranscriptEntry], cut: usize, summary: &str) -> Vec<Value> {
-    let mut projected = vec![summary_message(summary)];
+fn projection_at(
+    provider: Provider,
+    transcript: &[TranscriptEntry],
+    cut: usize,
+    summary: &str,
+) -> Vec<Value> {
+    let mut projected = vec![summary_message(provider, summary)];
     if let Some(index) = repeated_invocation(transcript, cut) {
-        projected.extend(openrouter::chat_messages(&transcript[index..=index]));
+        projected.extend(provider.transcript(&transcript[index..=index]));
     }
-    projected.extend(openrouter::chat_messages(&transcript[cut..]));
+    projected.extend(provider.transcript(&transcript[cut..]));
     projected
 }
 
@@ -168,7 +189,10 @@ fn projected_tokens(
     cut: usize,
     summary: &str,
 ) -> usize {
-    let body = openrouter::ordinary_body(parameters, projection_at(transcript, cut, summary));
+    let body = model::ordinary_body(
+        parameters,
+        projection_at(parameters.model.provider, transcript, cut, summary),
+    );
     to_tokens(body_bytes(body))
 }
 
@@ -194,17 +218,24 @@ fn ranked_cuts(parameters: &ModelRequestParameters, transcript: &[TranscriptEntr
     let admission = budget(parameters.model).admission;
     let start = summarized_prefix(transcript);
     let cuts = candidates(transcript);
-    let summary = summary_message(&"x".repeat(SUMMARY_ALLOWANCE_BYTES));
-    let base = openrouter::ordinary_body(parameters, vec![summary]);
+    let summary = summary_message(
+        parameters.model.provider,
+        &"x".repeat(SUMMARY_ALLOWANCE_BYTES),
+    );
+    let base = model::ordinary_body(parameters, vec![summary]);
     let base_bytes = body_bytes(base);
     let mut suffix_bytes = vec![0; transcript.len() - start + 1];
     for index in (start..transcript.len()).rev() {
-        suffix_bytes[index - start] =
-            suffix_bytes[index - start + 1] + entry_bytes(&transcript[index]);
+        suffix_bytes[index - start] = suffix_bytes[index - start + 1]
+            + entry_bytes(parameters.model.provider, &transcript[index]);
     }
     // Every cut past the latest skill invocation repeats it after the summary.
-    let repeated = repeated_invocation(transcript, transcript.len())
-        .map(|index| (index, entry_bytes(&transcript[index])));
+    let repeated = repeated_invocation(transcript, transcript.len()).map(|index| {
+        (
+            index,
+            entry_bytes(parameters.model.provider, &transcript[index]),
+        )
+    });
     let mut ranked = Vec::new();
     for cut in cuts {
         let repeated_bytes = repeated
@@ -222,8 +253,9 @@ fn ranked_cuts(parameters: &ModelRequestParameters, transcript: &[TranscriptEntr
 
 /// The serialized size an entry adds to a request body, counting the comma that
 /// separates it from the previous message.
-fn entry_bytes(entry: &TranscriptEntry) -> usize {
-    openrouter::chat_messages(std::slice::from_ref(entry))
+fn entry_bytes(provider: Provider, entry: &TranscriptEntry) -> usize {
+    provider
+        .transcript(std::slice::from_ref(entry))
         .into_iter()
         .map(|mut message| {
             let images = strip_images(&mut message);
@@ -298,11 +330,9 @@ fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<MaterialFiel
 fn push_turn_input(fields: &mut VecDeque<MaterialField>, source: &str, input: &TurnInput) {
     match input {
         TurnInput::UserMessage(message) => push_user_request(fields, source, message),
-        TurnInput::SkillInvocation(invocation) => push_user_request(
-            fields,
-            source,
-            &openrouter::skill_invocation_message(invocation),
-        ),
+        TurnInput::SkillInvocation(invocation) => {
+            push_user_request(fields, source, &model::skill_invocation_message(invocation))
+        }
     }
 }
 
@@ -364,7 +394,7 @@ fn next_piece(
     previous: &str,
     fields: &mut VecDeque<MaterialField>,
 ) -> io::Result<String> {
-    let body = openrouter::summarizer_body(model, previous, "");
+    let body = model::summarizer_body(model, previous, "");
     let body_bytes = serde_json::to_vec(&body)
         .expect("summary body serializes")
         .len();
@@ -373,7 +403,7 @@ fn next_piece(
     while let Some(field) = fields.front_mut() {
         let header = format!("{}, part {}:\n", field.label, field.part);
         let fits = |bytes| {
-            to_tokens(body_bytes + piece_bytes + bytes) + openrouter::SUMMARIZER_MAX_TOKENS
+            to_tokens(body_bytes + piece_bytes + bytes) + model::SUMMARIZER_MAX_TOKENS
                 <= model.context_limit
         };
         let (take, addition) = fitting_prefix(&header, &field.text, fits);
@@ -447,8 +477,8 @@ pub async fn compact(
                 result = client.summarize(model, &summary, &piece) => result?,
             };
             summary = next;
-            if let Some(usage) = usage {
-                *summarizer_cost.get_or_insert(0.0) += usage.cost;
+            if let Some(cost) = usage.and_then(|usage| usage.cost) {
+                *summarizer_cost.get_or_insert(0.0) += cost;
             }
         }
         if cancellation.is_cancelled() {
@@ -476,6 +506,87 @@ pub async fn compact(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_oversized_openai_summary_never_becomes_a_checkpoint() {
+        let parameters = ModelRequestParameters::new(
+            crate::openai::fixture::DEFAULT_MODEL,
+            EffortLevel::Low,
+            "You are Ox.".to_owned(),
+            tools::Role::Main,
+        )
+        .unwrap();
+        let store = SessionStore::in_memory();
+        let id = store.create(std::path::Path::new("/workspace")).unwrap().id;
+        let mut start = TurnStart::test("Task".to_owned());
+        start.model = crate::openai::fixture::DEFAULT_MODEL.to_owned();
+        store.append_turn_start(&id, &start).unwrap();
+        let batch = AssistantBatch::new(
+            AssistantMessage {
+                text: "x".repeat(700000),
+                reasoning: String::new(),
+                tool_calls: vec![],
+                continuation_metadata: vec![],
+                usage: None,
+            },
+            vec![],
+        )
+        .unwrap();
+        store.append_batch(&id, &batch).unwrap();
+        let mut transcript = store.read(&id).unwrap().unwrap().transcript;
+        let original = transcript.clone();
+        let server =
+            crate::openai::fixture::Server::start(vec![crate::openai::fixture::text_reply(
+                &"oversized".repeat(100000),
+            )])
+            .await;
+        assert!(
+            !compact(
+                &store,
+                &server.client(),
+                &PromptCancellation::new(),
+                &id,
+                &parameters,
+                &mut transcript
+            )
+            .await
+            .unwrap()
+        );
+        assert_eq!(transcript, original);
+        assert_eq!(store.read(&id).unwrap().unwrap().transcript, original);
+    }
+
+    #[test]
+    fn openai_request_estimates_count_images_without_tokenizing_base64() {
+        let parameters = ModelRequestParameters::new(
+            crate::openai::fixture::DEFAULT_MODEL,
+            EffortLevel::Low,
+            "You are Ox.".to_owned(),
+            tools::Role::Main,
+        )
+        .unwrap();
+        let transcript = |data: &str| {
+            vec![TranscriptEntry::turn(UserMessage {
+                parts: vec![UserMessagePart::Image(ImageAttachment {
+                    mime_type: "image/png".to_owned(),
+                    data: data.to_owned(),
+                })],
+            })]
+        };
+        let small = transcript("YWJj");
+        let large = transcript(&"YWJj".repeat(20000));
+        assert_eq!(
+            request_tokens(&parameters, &small),
+            request_tokens(&parameters, &large)
+        );
+        assert!(has_images(Provider::OpenAI, &small));
+        let mut body = model::ordinary_body(&parameters, projection(Provider::OpenAI, &small));
+        body["input"][0]["content"][0]["image_url"] = serde_json::json!("[image]");
+        assert_eq!(
+            request_tokens(&parameters, &small),
+            to_tokens(serde_json::to_vec(&body).unwrap().len() + IMAGE_ESTIMATE_TOKENS * 3)
+        );
+    }
     use crate::{
         openrouter::fixture::{DEFAULT_MODEL, Reply, Server, text_reply},
         sessions::{
@@ -564,7 +675,7 @@ mod tests {
         assert!(
             compact(
                 &store,
-                &server.client(),
+                &server.client().into(),
                 &cancellation,
                 &id,
                 &parameters(),
@@ -584,7 +695,7 @@ mod tests {
         assert!(
             compact(
                 &store,
-                &server.client(),
+                &server.client().into(),
                 &cancellation,
                 &id,
                 &parameters(),
@@ -599,7 +710,7 @@ mod tests {
         assert!(
             compact(
                 &store,
-                &server.client(),
+                &server.client().into(),
                 &cancellation,
                 &id,
                 &parameters(),
@@ -615,7 +726,7 @@ mod tests {
             .count();
         assert_eq!(checkpoints, 3);
         assert_eq!(
-            projection(&transcript),
+            projection(Provider::OpenRouter, &transcript),
             vec![serde_json::json!({
                 "role": "user",
                 "content": "Compaction summary of earlier conversation:\nActive request carried; next tool complete.",
@@ -683,7 +794,7 @@ mod tests {
             TranscriptEntry::turn("recent".to_owned()),
             TranscriptEntry::AssistantBatch(answer("recent answer")),
         ];
-        let projected = projection(&transcript);
+        let projected = projection(Provider::OpenRouter, &transcript);
         assert_eq!(projected.len(), 3);
         assert_eq!(
             projected[0],
@@ -720,17 +831,20 @@ mod tests {
             projected_tokens(&parameters(), &transcript, cuts[0], &summary)
                 < projected_tokens(&parameters(), &transcript, cuts[1], &summary)
         );
-        let base = body_bytes(openrouter::ordinary_body(
+        let base = body_bytes(model::ordinary_body(
             &parameters(),
-            vec![summary_message(&summary)],
+            vec![summary_message(Provider::OpenRouter, &summary)],
         ));
         for &cut in &cuts {
-            let suffix: usize = transcript[cut..].iter().map(entry_bytes).sum();
+            let suffix: usize = transcript[cut..]
+                .iter()
+                .map(|entry| entry_bytes(Provider::OpenRouter, entry))
+                .sum();
             assert_eq!(
                 base + suffix,
-                body_bytes(openrouter::ordinary_body(
+                body_bytes(model::ordinary_body(
                     &parameters(),
-                    projection_at(&transcript, cut, &summary)
+                    projection_at(Provider::OpenRouter, &transcript, cut, &summary)
                 )),
                 "ranking counts the bytes of the projected request for cut {cut}"
             );
@@ -785,7 +899,11 @@ mod tests {
                 true,
             ),
         ] {
-            assert_eq!(has_images(&transcript), expected, "{case}");
+            assert_eq!(
+                has_images(Provider::OpenRouter, &transcript),
+                expected,
+                "{case}"
+            );
         }
     }
 
@@ -807,7 +925,7 @@ mod tests {
             ]),
         ];
         assert_eq!(
-            projection(&transcript)[2..],
+            projection(Provider::OpenRouter, &transcript)[2..],
             [
                 serde_json::json!({"role": "user", "content": "Final answer from subagent child-1:\nFixed the parser."}),
                 serde_json::json!({"role": "user", "content": "Failure of subagent child-2:\nThe model refused."}),
@@ -851,7 +969,7 @@ mod tests {
 
     #[test]
     fn summarizer_pieces_fit_the_context_limit_and_keep_all_material() {
-        let model = openrouter::catalog_model("acme/plain").unwrap();
+        let model = model::catalog_model("acme/plain").unwrap();
         let previous = "Earlier \"summary\".";
         let text = "Quote \" slash \\ tab \t bell \u{7} snow 雪\n".repeat(1_000);
         let transcript = vec![TranscriptEntry::turn(text.clone())];
@@ -862,10 +980,9 @@ mod tests {
         while !fields.is_empty() {
             let piece = next_piece(model, previous, &mut fields).unwrap();
             pieces += 1;
-            let body = openrouter::summarizer_body(model, previous, &piece);
+            let body = model::summarizer_body(model, previous, &piece);
             assert!(
-                to_tokens(serde_json::to_vec(&body).unwrap().len())
-                    + openrouter::SUMMARIZER_MAX_TOKENS
+                to_tokens(serde_json::to_vec(&body).unwrap().len()) + model::SUMMARIZER_MAX_TOKENS
                     <= model.context_limit,
                 "piece {pieces} fits the context limit"
             );
@@ -890,7 +1007,7 @@ mod tests {
     fn projected_images_count_as_a_fixed_allowance() {
         let mut transcript = image_transcript();
         assert_eq!(
-            projection_at(&transcript, 0, "summary")[1]["content"][1]["type"],
+            projection_at(Provider::OpenRouter, &transcript, 0, "summary")[1]["content"][1]["type"],
             "image_url"
         );
         let estimate = request_tokens(&parameters(), &transcript);
@@ -922,7 +1039,7 @@ mod tests {
         assert!(
             compact(
                 &store,
-                &server.client(),
+                &server.client().into(),
                 &PromptCancellation::new(),
                 &id,
                 &parameters(),
@@ -973,7 +1090,7 @@ mod tests {
         assert!(
             compact(
                 &store,
-                &server.client(),
+                &server.client().into(),
                 &PromptCancellation::new(),
                 &id,
                 &parameters(),
@@ -1016,7 +1133,7 @@ mod tests {
             assert!(
                 compact(
                     &small_store,
-                    &server.client(),
+                    &server.client().into(),
                     &PromptCancellation::new(),
                     &small_id,
                     &parameters(),
@@ -1045,7 +1162,7 @@ mod tests {
         assert!(
             compact(
                 &small_store,
-                &server.client(),
+                &server.client().into(),
                 &PromptCancellation::new(),
                 &small_id,
                 &parameters(),
@@ -1067,7 +1184,7 @@ mod tests {
         let work = async {
             compact(
                 &small_store,
-                &hanging.client(),
+                &hanging.client().into(),
                 &cancel,
                 &small_id,
                 &parameters(),
