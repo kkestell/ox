@@ -1008,7 +1008,7 @@ pub mod fixture {
 
     /// One request's lowercase header text and body; `None` once the client
     /// closes the connection.
-    async fn read_request(socket: &mut TcpStream) -> Option<(String, Vec<u8>)> {
+    pub(crate) async fn read_request(socket: &mut TcpStream) -> Option<(String, Vec<u8>)> {
         let mut bytes = Vec::new();
         let mut chunk = [0u8; 4096];
         loop {
@@ -1032,7 +1032,7 @@ pub mod fixture {
         }
     }
 
-    fn response(status: u16, content_type: &str, body: &str) -> String {
+    pub(crate) fn response(status: u16, content_type: &str, body: &str) -> String {
         let reason = match status {
             200 => "OK",
             401 => "Unauthorized",

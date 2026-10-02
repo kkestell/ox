@@ -20,6 +20,8 @@ use std::{
 };
 
 const ENDPOINT: &str = "https://api.openai.com/v1";
+// OpenAI filters newer models by Codex compatibility version, not Ox's version.
+const CATALOG_CLIENT_VERSION: &str = "0.160.0";
 const STALL_TIMEOUT: Duration = Duration::from_secs(120);
 const USAGE_URL: &str = "https://chatgpt.com/settings/usage";
 
@@ -125,7 +127,10 @@ impl Client {
         let token = self.authentication.access_token().await?;
         let response = self
             .http
-            .get(format!("{}/models", self.endpoint))
+            .get(format!(
+                "{}/models?client_version={CATALOG_CLIENT_VERSION}",
+                self.endpoint
+            ))
             .bearer_auth(token)
             .timeout(Duration::from_secs(15))
             .send()
@@ -709,12 +714,29 @@ mod tests {
 
     #[tokio::test]
     async fn authenticated_catalog_preserves_display_order_capabilities_and_absent_prices() {
-        let server = Server::start(vec![Reply::Status(200, fixture::CATALOG.to_owned())]).await;
-        let models = server
-            .http_client(STALL_TIMEOUT)
-            .fetch_catalog()
-            .await
-            .unwrap();
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let workspace = crate::tools::fixture::Workspace::new();
+        let mut client = Client::with_authentication(Authentication::fixture(workspace.0.clone()));
+        client.endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let request = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let (headers, _) = crate::openrouter::fixture::read_request(&mut socket)
+                .await
+                .unwrap();
+            let response =
+                crate::openrouter::fixture::response(200, "application/json", fixture::CATALOG);
+            socket.write_all(response.as_bytes()).await.unwrap();
+            headers
+        });
+        let models = client.fetch_catalog().await.unwrap();
+        assert!(
+            request
+                .await
+                .unwrap()
+                .starts_with("get /models?client_version=0.160.0 http/1.1\r\n")
+        );
         assert_eq!(
             models
                 .iter()
