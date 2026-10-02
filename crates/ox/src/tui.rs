@@ -1470,7 +1470,7 @@ mod tests {
             ]
         );
         assert_eq!(cursor, (21, 23));
-        assert_eq!((layout.height, layout.lines), (7, 9));
+        assert_eq!((layout.height, layout.lines), (7, 11));
         let colors = |x, y| {
             let cell = buffer.cell((x, y)).unwrap();
             (cell.fg, cell.bg)
@@ -1570,29 +1570,20 @@ mod tests {
         }
         let input = Input::default();
         let (rows, _, layout, _) = render(&mut screen(&mut view, &input, now), 40, 13);
-        assert_eq!((layout.height, layout.lines), (6, 39));
-        assert_eq!(rows[6], "  ❯ message 19");
+        assert_eq!((layout.height, layout.lines), (6, 79));
+        assert_eq!(rows[5], "   message 19");
         view.page_up(layout.height, layout.lines);
         let (rows, _, _, _) = render(&mut screen(&mut view, &input, now), 40, 13);
-        assert_eq!(rows[5..8], ["  ❯ message 16", "", ""]);
+        assert_eq!(rows[2], "   message 17");
+        assert_eq!(rows[6], "   message 18");
         view.user("message 20".to_owned(), now);
         let (rows, _, _, buffer) = render(&mut screen(&mut view, &input, now), 40, 13);
-        assert_eq!(
-            rows[..6],
-            [
-                "",
-                "  ❯ message 14",
-                "",
-                "  ❯ message 15",
-                "",
-                "  ❯ message 16"
-            ]
-        );
+        assert_eq!(rows[..6], ["", "", "   message 17", "", "", ""]);
         assert_eq!(rows[6], "              new activity");
         assert_eq!(buffer.cell((14, 6)).unwrap().fg, theme::LIGHT_YELLOW);
         view.end();
         let (rows, _, _, _) = render(&mut screen(&mut view, &input, now), 40, 13);
-        assert_eq!(rows[6], "  ❯ message 20");
+        assert_eq!(rows[5], "   message 20");
     }
 
     #[test]

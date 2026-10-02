@@ -317,7 +317,7 @@ fn resume_picker_shows_saved_session_and_replays_on_enter() {
     test.keys(&["Enter"]);
     test.wait_gone("Search");
     test.wait("you said: original transcript");
-    assert!(test.screen().contains("❯ original transcript"));
+    assert!(test.screen().contains(" original transcript"));
     test.prompt("after resume");
     test.wait("you said: after resume");
 }
@@ -442,7 +442,7 @@ fn terminal_keys_send_interrupt_approve_scroll_and_restore_the_shell() {
     test.wait("you said: interrupting");
     let screen = test.screen();
     assert!(
-        screen.contains("❯ interrupting\n\n  ● you said: interrupting"),
+        screen.contains("   interrupting\n\n\n  ● you said: interrupting"),
         "{screen}"
     );
     test.type_text("first");
@@ -536,7 +536,7 @@ fn the_transcript_view_renders_thinking_tools_and_wrapped_replies() {
     let screen = test.screen();
     let mut position = 0;
     for text in [
-        "❯ render",
+        " render",
         "● Thought for 0s",
         "● Shell ls",
         "● Read tallies/2026/september/archi…",

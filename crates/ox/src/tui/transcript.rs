@@ -372,7 +372,7 @@ fn item_lines(
     now: Instant,
 ) -> Vec<Line<'static>> {
     match item {
-        Item::User(text) => prefixed(markdown(text, Style::new()), width, "❯ ", "  "),
+        Item::User(text) => user_lines(text, width),
         Item::Thinking {
             text,
             started,
@@ -410,6 +410,30 @@ fn item_lines(
         }
         Item::Notice { text, color } => wrap(plain(text, Style::new().fg(*color)), width),
     }
+}
+
+/// A user message with one cell of padding and a background filling the
+/// transcript width.
+fn user_lines(text: &str, width: usize) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let style = Style::new().bg(theme::USER_MESSAGE);
+    let mut content = wrap(markdown(text, Style::new()), width.saturating_sub(2).max(1));
+    if content.is_empty() {
+        content.push(Line::default());
+    }
+
+    let padding = Line::styled(" ".repeat(width), style);
+    let mut lines = Vec::with_capacity(content.len() + 2);
+    lines.push(padding.clone());
+    for mut row in content {
+        let right = width.saturating_sub(row.width() + 1);
+        row.spans.insert(0, Span::styled(" ", style));
+        row.spans.push(Span::styled(" ".repeat(right), style));
+        row.style = row.style.patch(style);
+        lines.push(row);
+    }
+    lines.push(padding);
+    lines
 }
 
 fn placeholder(started: Instant, ended: Option<Instant>, now: Instant) -> String {
@@ -933,7 +957,19 @@ mod tests {
         user.user(text.to_owned(), now);
         assert_eq!(
             rows(&mut user, 12, false, now),
-            ["❯ first line", "  of text", "  second"]
+            [
+                "            ",
+                " first line ",
+                " of text    ",
+                " second     ",
+                "            ",
+            ]
+        );
+        let lines = user.lines(12, false, ToolOutput::Summary, now);
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.style.bg == Some(theme::USER_MESSAGE))
         );
         let mut response = view(vec![message(text)], now);
         assert_eq!(
@@ -1096,13 +1132,19 @@ mod tests {
         assert_eq!(
             rows(&mut view, 40, false, now),
             [
-                "❯ title",
+                "                                        ",
+                " title                                  ",
+                "                                        ",
                 "",
-                "❯ first question",
+                "                                        ",
+                " first question                         ",
+                "                                        ",
                 "",
                 "● first answer",
                 "",
-                "❯ second question",
+                "                                        ",
+                " second question                        ",
+                "                                        ",
                 "",
                 "● second answer",
             ]
@@ -1123,7 +1165,7 @@ mod tests {
             now,
         );
         view.update(read("same", "second.txt"), now);
-        assert_eq!(rows(&mut view, 40, false, now)[6], "● Read second.txt");
+        assert_eq!(rows(&mut view, 40, false, now)[10], "● Read second.txt");
         view.update(
             SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
                 "same",
@@ -1134,18 +1176,22 @@ mod tests {
         assert_eq!(
             rows(&mut view, 40, false, now),
             [
-                "❯ first",
+                "                                        ",
+                " first                                  ",
+                "                                        ",
                 "",
                 "● Read first.txt",
                 "",
-                "❯ second",
+                "                                        ",
+                " second                                 ",
+                "                                        ",
                 "",
                 "● Read second.txt",
             ]
         );
         let lines = view.lines(40, false, ToolOutput::Summary, now);
-        assert_eq!(lines[2].spans[0].style.fg, Some(theme::GREEN));
-        assert_eq!(lines[6].spans[0].style.fg, Some(theme::RED));
+        assert_eq!(lines[4].spans[0].style.fg, Some(theme::GREEN));
+        assert_eq!(lines[10].spans[0].style.fg, Some(theme::RED));
 
         view.end_turn(now);
         view.update(read("same", "third.txt"), now);
