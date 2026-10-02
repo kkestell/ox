@@ -296,6 +296,8 @@ def attempt_repetition(binary, api_key, args, identity, task, rep, run_dir):
         container,
         "--label",
         f"ox-bench={args.label}",
+        "-e",
+        "CARGO_TARGET_DIR=/tmp/ox-cargo-target",
         IMAGE,
         "sleep",
         "infinity",

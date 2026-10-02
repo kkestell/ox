@@ -30,7 +30,9 @@ inherits = "release"
 codegen-units = 16
 lto = false
 strip = "none"
-incremental = true
+incremental = false
 
 [profile.dev]
+debug = "line-tables-only"
+incremental = false
 split-debuginfo = "packed"
