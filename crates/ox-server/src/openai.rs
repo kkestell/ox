@@ -151,17 +151,16 @@ impl Client {
         let mut body = ordinary_body(parameters, input);
         // One key per session lets OpenAI route a session's requests, whose
         // transcripts share a growing prefix, to the same prompt cache.
+        // Subscription requests take that routing from the `session-id`
+        // header, as Codex sends it.
         body["prompt_cache_key"] = json!(session_id);
-        self.stream_body(&body).await
-    }
-
-    async fn stream_body(&self, body: &Value) -> io::Result<CompletionStream> {
         let token = self.authentication.access_token().await?;
         let request = self
             .http
             .post(format!("{}/responses", self.endpoint))
             .bearer_auth(token)
-            .json(body)
+            .header("session-id", session_id)
+            .json(&body)
             .send();
         let response = tokio::time::timeout(self.stall_timeout, request)
             .await
@@ -653,6 +652,9 @@ pub(crate) mod fixture {
         pub fn requests(&self) -> Vec<Value> {
             self.inner.requests()
         }
+        pub fn request_headers(&self) -> Vec<String> {
+            self.inner.request_headers()
+        }
     }
     pub fn completed(output: Vec<Value>) -> Value {
         json!({"type":"response.completed", "response":{"id":"resp_test", "status":"completed", "output":output,
@@ -840,6 +842,11 @@ mod tests {
         );
         assert_eq!(request["instructions"], "You are Ox.");
         assert_eq!(request["prompt_cache_key"], "session");
+        assert!(
+            server.request_headers()[0]
+                .lines()
+                .any(|line| line == "session-id: session")
+        );
         assert_eq!(request["include"], json!(["reasoning.encrypted_content"]));
         assert_eq!(
             request["input"][0]["content"]
