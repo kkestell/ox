@@ -55,8 +55,8 @@ text without expanding it.
 ## Backwards Compatibility
 
 Currently, there is none. Recreate `ox.db`, `ox.db-shm`, and `ox.db-wal` instead
-of adding migrations or versions. Their directory is `$OX_DATA_DIR`, else
-`$XDG_DATA_HOME/ox`, else `~/.local/share/ox`; local install targets do this.
+of adding migrations or versions. They live in `$OX_DATA_DIR`, else
+`$XDG_DATA_HOME/ox`, else `~/.local/share/ox`.
 
 ## Communication
 

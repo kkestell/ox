@@ -887,7 +887,8 @@ pub mod fixture {
 
     pub struct Server {
         url: String,
-        requests: Arc<Mutex<Vec<Value>>>,
+        /// Each request's lowercase header text and JSON body.
+        requests: Arc<Mutex<Vec<(String, Value)>>>,
         connections: Arc<AtomicUsize>,
         stall_timeout: std::time::Duration,
     }
@@ -934,7 +935,16 @@ pub mod fixture {
         }
 
         pub fn requests(&self) -> Vec<Value> {
-            self.requests.lock().unwrap().clone()
+            let requests = self.requests.lock().unwrap();
+            requests.iter().map(|(_, body)| body.clone()).collect()
+        }
+
+        pub fn request_headers(&self) -> Vec<String> {
+            let requests = self.requests.lock().unwrap();
+            requests
+                .iter()
+                .map(|(headers, _)| headers.clone())
+                .collect()
         }
 
         pub fn connections(&self) -> usize {
@@ -945,16 +955,16 @@ pub mod fixture {
     async fn serve(
         mut socket: TcpStream,
         replies: Arc<Mutex<VecDeque<Reply>>>,
-        seen: Arc<Mutex<Vec<Value>>>,
+        seen: Arc<Mutex<Vec<(String, Value)>>>,
     ) {
-        while let Some(body) = read_request(&mut socket).await {
+        while let Some((headers, body)) = read_request(&mut socket).await {
             let request = if body.is_empty() {
                 Value::Null
             } else {
                 serde_json::from_slice(&body).unwrap()
             };
             if !body.is_empty() {
-                seen.lock().unwrap().push(request.clone());
+                seen.lock().unwrap().push((headers, request.clone()));
             }
             let reply = replies.lock().unwrap().pop_front();
             let Some(mut reply) = reply else {
@@ -996,8 +1006,9 @@ pub mod fixture {
         socket.shutdown().await.ok();
     }
 
-    /// One request body; `None` once the client closes the connection.
-    async fn read_request(socket: &mut TcpStream) -> Option<Vec<u8>> {
+    /// One request's lowercase header text and body; `None` once the client
+    /// closes the connection.
+    async fn read_request(socket: &mut TcpStream) -> Option<(String, Vec<u8>)> {
         let mut bytes = Vec::new();
         let mut chunk = [0u8; 4096];
         loop {
@@ -1016,7 +1027,7 @@ pub mod fixture {
                 .map_or(0, |value| value.trim().parse::<usize>().unwrap());
             let body_start = end + 4;
             if bytes.len() >= body_start + length {
-                return Some(bytes[body_start..body_start + length].to_vec());
+                return Some((headers, bytes[body_start..body_start + length].to_vec()));
             }
         }
     }
