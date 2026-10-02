@@ -43,7 +43,7 @@ use crate::{
     settings::{self, Settings},
     shell_processes::ShellProcesses,
     skills::{self, Skill},
-    system_prompt, tools,
+    system_prompt,
 };
 use operations::{OperationGuard, SessionOperations};
 
@@ -171,10 +171,9 @@ struct ActiveSession {
     system_prompt: String,
     /// The skill catalog loaded when the session became active.
     skills: Vec<Skill>,
-    /// Background commands started by this session's agents. The main
-    /// agent's outlive prompt runs and repeated loads; each subagent's end
-    /// with it. All stop when the session is closed or deleted or the connection shuts
-    /// down.
+    /// Background commands started by this session. They outlive prompt runs
+    /// and repeated loads, and stop when the session is closed or deleted or
+    /// the connection shuts down.
     shell_processes: ShellProcesses,
 }
 
@@ -311,12 +310,10 @@ impl ServerState {
         request: &LoadSessionRequest,
         mut send_update: impl FnMut(SessionUpdate) -> Result<()>,
     ) -> Result<LoadSessionResponse> {
-        // A child session belongs to its main session and cannot be loaded.
         let stored = self
             .store
             .read(&request.session_id)
             .map_err(Error::into_internal_error)?
-            .filter(|stored| stored.summary.parent_session_id.is_none())
             .ok_or_else(|| not_found(&request.session_id))?;
         if stored.summary.workspace_path.as_os_str() != request.cwd.as_os_str() {
             return Err(Error::invalid_params().data(format!(
@@ -344,14 +341,9 @@ impl ServerState {
             &saved_settings.model,
             saved_settings.effort,
             system_prompt.clone(),
-            tools::Role::Main,
         )
         .map_err(Error::into_internal_error)?;
-        let children_cost = self
-            .store
-            .children_cost(&request.session_id)
-            .map_err(Error::into_internal_error)?;
-        let usage = convert::usage_update(&stored.transcript, &parameters, children_cost);
+        let usage = convert::usage_update(&stored.transcript, &parameters);
         self.activate(
             request.session_id.clone(),
             ActiveSession {
@@ -1106,7 +1098,7 @@ mod tests {
                 .active_session(&id)
                 .unwrap()
                 .shell_processes
-                .list(&id)
+                .list()
                 .len(),
             1
         );
@@ -1478,89 +1470,6 @@ mod tests {
             "{data}"
         );
         assert_eq!(state.store.list(None).unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn child_sessions_stay_behind_their_main_session_and_count_toward_its_cost() {
-        use crate::sessions::{
-            AssistantBatch, AssistantMessage, ModelUsage, SubagentMessage, SubagentMessageContent,
-        };
-        let workspace = Workspace::new();
-        let store = SessionStore::in_memory();
-        let id = store.create(&workspace.0).unwrap().id;
-        let child = store.create_child(&id, &workspace.0).unwrap().id;
-        let answer = |cost| {
-            AssistantBatch::new(
-                AssistantMessage {
-                    text: "Done.".to_owned(),
-                    reasoning: String::new(),
-                    tool_calls: vec![],
-                    continuation_metadata: vec![],
-                    usage: Some(ModelUsage {
-                        input_tokens: 10,
-                        cached_tokens: 0,
-                        output_tokens: 5,
-                        reasoning_tokens: 0,
-                        cost: Some(cost),
-                    }),
-                },
-                vec![],
-            )
-            .unwrap()
-        };
-        for (session, cost) in [(&id, 0.25), (&child, 0.5)] {
-            store
-                .append_turn_start(session, &TurnStart::test("Work.".to_owned()))
-                .unwrap();
-            store.append_batch(session, &answer(cost)).unwrap();
-        }
-        store
-            .append_subagent_messages(
-                &id,
-                &[SubagentMessage {
-                    subagent_id: child.to_string(),
-                    content: SubagentMessageContent::FinalAnswer("Done.".to_owned()),
-                }],
-            )
-            .unwrap();
-        let state = state_over(store.clone());
-
-        let listed = state
-            .list_sessions(&ListSessionsRequest::new())
-            .unwrap()
-            .sessions;
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].session_id, id);
-        let hidden = state
-            .load_session(
-                &LoadSessionRequest::new(child.clone(), &workspace.0),
-                |_| Ok(()),
-            )
-            .unwrap_err();
-        assert_eq!(hidden.code, ErrorCode::ResourceNotFound);
-
-        let mut updates = Vec::new();
-        state
-            .load_session(
-                &LoadSessionRequest::new(id.clone(), &workspace.0),
-                |update| {
-                    updates.push(update);
-                    Ok(())
-                },
-            )
-            .unwrap();
-        assert!(updates.iter().any(|update| matches!(update,
-            SessionUpdate::ToolCall(call) if call.title == format!("Final answer from subagent {child}"))));
-        assert!(
-            matches!(updates.last(), Some(SessionUpdate::UsageUpdate(usage))
-            if usage.cost.as_ref().is_some_and(|cost| cost.amount == 0.75))
-        );
-
-        state
-            .delete_session(&DeleteSessionRequest::new(id))
-            .await
-            .unwrap();
-        assert!(store.read(&child).unwrap().is_none());
     }
 
     #[test]
@@ -2220,9 +2129,6 @@ mod tests {
         /// `started` exists, a two-second `read` of the reader, and `stop` of
         /// a sleeper started before the prompt.
         Processes,
-        /// `start_subagent` on a child task whose model runs `touch first`
-        /// and `touch second`, then `wait` for its answer.
-        Subagent,
     }
 
     /// Starts `command` as a shell process of the active session `id`.
@@ -2238,7 +2144,7 @@ mod tests {
             .active_session(id)
             .unwrap()
             .shell_processes
-            .start(id, shell, command, 1024)
+            .start(shell, command, 1024)
             .unwrap()
     }
 
@@ -2279,7 +2185,7 @@ mod tests {
             let operations = state.operations.clone();
             let text = "Run commands";
             let targets = match calls {
-                Calls::Touch | Calls::Subagent => ["first", "second"],
+                Calls::Touch => ["first", "second"],
                 Calls::Processes => ["started", "received"],
             };
             let id = create_session(&state, &workspace.0);
@@ -2293,23 +2199,8 @@ mod tests {
                     .unwrap();
             }
             let mut processes = Vec::new();
-            let mut child_replies = Vec::new();
             let mut replies = match calls {
                 Calls::Touch => vec![shell_reply(&[("touch first", 5), ("touch second", 5)])],
-                Calls::Subagent => {
-                    child_replies = vec![
-                        shell_reply(&[("touch first", 5), ("touch second", 5)]),
-                        text_reply("Child done."),
-                    ];
-                    vec![
-                        calls_reply(&[(
-                            "start",
-                            tools::START_SUBAGENT,
-                            json!({"prompt": "Child task: create two files."}),
-                        )]),
-                        calls_reply(&[("wait", tools::WAIT, json!({"seconds": 600}))]),
-                    ]
-                }
                 Calls::Processes => {
                     for command in [
                         "read line; while [ ! -e started ]; do sleep 0.01; done; printf %s \"$line\" > received",
@@ -2352,7 +2243,7 @@ mod tests {
             if matches!(decision, "approve" | "auto" | "deny" | "mixed") {
                 replies.push(text_reply("Done"));
             }
-            let server = Server::routed(vec![("Child task", child_replies), ("", replies)]).await;
+            let server = Server::start(replies).await;
             state.clients = server.client().into();
             let (incoming_tx, incoming_rx) = mpsc::unbounded();
             let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<String>();
@@ -2618,47 +2509,6 @@ mod tests {
             "the batch is saved before responding"
         );
         assert!(run.session_free_after);
-    }
-
-    #[tokio::test]
-    async fn subagent_permission_requests_use_the_main_session_and_scoped_tool_call_ids() {
-        for (decision, created) in [("approve", true), ("deny", false)] {
-            let run = PermissionRun::with_calls(decision, Calls::Subagent).await;
-            let messages = run
-                .transcript
-                .iter()
-                .find_map(|entry| match entry {
-                    TranscriptEntry::SubagentMessages(messages) => Some(messages),
-                    _ => None,
-                })
-                .unwrap_or_else(|| panic!("{decision}: the child's answer was delivered"));
-            assert_eq!(messages[0].text(), "Child done.", "{decision}");
-            let child = &messages[0].subagent_id;
-            assert_eq!(run.requests.len(), 2, "{decision}");
-            for (index, request) in run.requests.iter().enumerate() {
-                assert_eq!(request.params["sessionId"], run.session_id.to_string());
-                let call = &request.params["toolCall"];
-                assert_eq!(call["toolCallId"], format!("{child}:shell-{index}"));
-                assert_eq!(call["_meta"]["subagent_id"], *child, "{decision}");
-                assert!(
-                    call["content"][0]["content"]["text"]
-                        .as_str()
-                        .unwrap()
-                        .starts_with(&format!("Subagent: {child}\n\nWorking directory: ")),
-                    "{decision}"
-                );
-                assert!(
-                    !request.announced,
-                    "{decision}: a subagent's calls are not shown"
-                );
-                assert!(request.session_busy, "{decision}");
-            }
-            for file in ["first", "second"] {
-                assert_eq!(run.workspace.0.join(file).exists(), created, "{decision}");
-            }
-            assert_eq!(run.response["result"]["stopReason"], "end_turn");
-            assert!(run.session_free_after);
-        }
     }
 
     #[tokio::test]
@@ -3211,7 +3061,7 @@ mod tests {
         .await;
         assert_eq!(output, prompt::PromptOutput::Cancelled);
         let shell_processes = state.active_session(&id).unwrap().shell_processes;
-        let process = shell_processes.list(&id).remove(0);
+        let process = shell_processes.list().remove(0);
         let process_id = process.id().to_owned();
         assert!(
             matches!(&outcomes[..], [outcome]
@@ -3235,7 +3085,7 @@ mod tests {
                 .active_session(&id)
                 .unwrap()
                 .shell_processes
-                .get(&id, &process_id)
+                .get(&process_id)
                 .is_some(),
             "a repeated load keeps the shell processes"
         );
@@ -3301,7 +3151,7 @@ mod tests {
                 .active_session(&id)
                 .unwrap()
                 .shell_processes
-                .list(&id)
+                .list()
                 .is_empty(),
             "loading saved observations creates no process"
         );

@@ -3,44 +3,27 @@
 
 use std::path::{Path, PathBuf};
 
-use agent_client_protocol::schema::v1::SessionId;
 use serde_json::Value;
 
 use crate::{
     sessions::{ToolCall, ToolContent, ToolOutcome},
     shell_processes::ShellProcesses,
-    subagents::Subagents,
 };
 
 mod file;
 mod read;
 mod search;
 mod shell;
-mod subagent;
 mod workspace;
 
 pub use shell::Permission;
 pub(crate) use shell::SHELL_PROGRAM;
 
-/// Which tools an agent has. The main agent also coordinates subagents,
-/// which have only the workspace and shell tools.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Role {
-    Main,
-    Subagent,
-}
-
-/// What running and classifying one call needs from the agent that made it.
+/// What running and classifying one call needs from the session that made it.
 pub struct ToolContext {
     pub workspace_path: PathBuf,
-    /// The agent session ID of the agent that made the call, which scopes the
-    /// shell processes it can start and reach.
-    pub session_id: SessionId,
-    /// The active session's shell processes, which outlive the call. Each
-    /// agent reaches only the ones it started.
+    /// The active session's shell processes, which outlive the call.
     pub shell_processes: ShellProcesses,
-    /// The main agent's subagents; `None` for a subagent.
-    pub subagents: Option<Subagents>,
 }
 
 pub const WRITE_FILE: &str = "write_file";
@@ -50,10 +33,6 @@ pub const GLOB: &str = "glob";
 pub const SHELL: &str = "shell";
 pub const SHELL_PROCESS: &str = "shell_process";
 pub const GREP: &str = "grep";
-pub const START_SUBAGENT: &str = "start_subagent";
-pub const SEND_MESSAGE: &str = "send_message";
-pub const STOP_SUBAGENT: &str = "stop_subagent";
-pub const WAIT: &str = "wait";
 pub(crate) const OUTPUT_LIMIT: usize = 16 * 1024;
 // Leave room for line numbers, continuation instructions, and truncation notices.
 pub(crate) const BODY_LIMIT: usize = OUTPUT_LIMIT - 256;
@@ -91,10 +70,9 @@ fn bounded_text(result: Result<String, String>) -> ToolOutcome {
     bounded_result(result.map(|text| (text, Vec::new())))
 }
 
-/// Every tool definition sent to OpenRouter for an agent with `role`, each
-/// owned by its tool's module.
-pub fn schemas(role: Role) -> Vec<Value> {
-    let mut schemas = vec![
+/// Every tool definition sent to the model, each owned by its tool's module.
+pub fn schemas() -> Vec<Value> {
+    vec![
         shell::schema(),
         shell::process_schema(),
         read::schema(),
@@ -102,16 +80,7 @@ pub fn schemas(role: Role) -> Vec<Value> {
         search::grep_schema(),
         file::write_schema(),
         file::edit_schema(),
-    ];
-    if role == Role::Main {
-        schemas.extend([
-            subagent::start_schema(),
-            subagent::send_schema(),
-            subagent::stop_schema(),
-            subagent::wait_schema(),
-        ]);
-    }
-    schemas
+    ]
 }
 
 /// What the ACP client shows for one call. Arguments come from the model and
@@ -133,10 +102,6 @@ fn default_tool_call_title(call: &ToolCall) -> String {
         GREP => "Search file contents".to_owned(),
         WRITE_FILE => "Write file".to_owned(),
         EDIT_FILE => "Edit file".to_owned(),
-        START_SUBAGENT => "Start subagent".to_owned(),
-        SEND_MESSAGE => "Message subagent".to_owned(),
-        STOP_SUBAGENT => "Stop subagent".to_owned(),
-        WAIT => "Wait for subagents".to_owned(),
         other => other.to_owned(),
     }
 }
@@ -184,16 +149,6 @@ fn describe(call: &ToolCall) -> Option<String> {
         }
         WRITE_FILE => Some(format!("Write {}", argument("path")?)),
         EDIT_FILE => Some(format!("Edit {}", argument("path")?)),
-        START_SUBAGENT => Some(format!(
-            "Start subagent: {}",
-            command_line(argument("prompt")?)?
-        )),
-        SEND_MESSAGE => Some(format!("Message subagent {}", argument("subagent_id")?)),
-        STOP_SUBAGENT => Some(format!("Stop subagent {}", argument("subagent_id")?)),
-        WAIT => {
-            let seconds = arguments.get("seconds").and_then(Value::as_f64)?;
-            Some(format!("Wait up to {seconds} seconds for subagents"))
-        }
         _ => None,
     }
 }
@@ -240,11 +195,7 @@ pub fn permission(context: &ToolContext, call: &ToolCall) -> Permission {
     match call.name.as_str() {
         // Every shell call needs permission, even one whose arguments are invalid.
         SHELL => Permission::Command,
-        SHELL_PROCESS => shell::process_permission(
-            &call.arguments,
-            &context.shell_processes,
-            &context.session_id,
-        ),
+        SHELL_PROCESS => shell::process_permission(&call.arguments, &context.shell_processes),
         _ => Permission::NotRequired,
     }
 }
@@ -264,31 +215,14 @@ pub async fn execute(
             return shell::execute(
                 workspace_path,
                 &context.shell_processes,
-                &context.session_id,
                 &call.arguments,
                 cancelled,
             )
             .await;
         }
         SHELL_PROCESS => {
-            return shell::execute_process(
-                &context.shell_processes,
-                &context.session_id,
-                &call.arguments,
-                cancelled,
-            )
-            .await;
-        }
-        // A stop finishes even if the prompt is cancelled; a wait observes
-        // cancellation itself.
-        START_SUBAGENT | SEND_MESSAGE | STOP_SUBAGENT | WAIT => {
-            return subagent::execute(
-                context.subagents.as_ref(),
-                &call.name,
-                &call.arguments,
-                cancelled,
-            )
-            .await;
+            return shell::execute_process(&context.shell_processes, &call.arguments, cancelled)
+                .await;
         }
         _ => {}
     }
@@ -344,9 +278,7 @@ mod tests {
     async fn execute(workspace: &Path, call: &ToolCall) -> ToolOutcome {
         let context = ToolContext {
             workspace_path: workspace.to_path_buf(),
-            session_id: SessionId::new("session"),
             shell_processes: ShellProcesses::default(),
-            subagents: None,
         };
         super::execute(&context, call, std::future::pending()).await
     }
@@ -388,7 +320,7 @@ mod tests {
                     ToolStatus::Failed
                 );
             }
-            let schema = schemas(Role::Subagent)
+            let schema = schemas()
                 .into_iter()
                 .find(|s| s["function"]["name"] == name)
                 .unwrap();
@@ -510,15 +442,13 @@ mod tests {
     }
 
     #[test]
-    fn tool_schemas_register_the_main_and_subagent_tools() {
-        let names = |role| {
-            schemas(role)
-                .into_iter()
-                .map(|schema| schema["function"]["name"].as_str().unwrap().to_owned())
-                .collect::<Vec<_>>()
-        };
+    fn tool_schemas_register_the_workspace_and_shell_tools() {
+        let names = schemas()
+            .into_iter()
+            .map(|schema| schema["function"]["name"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
         assert_eq!(
-            names(Role::Subagent),
+            names,
             [
                 SHELL,
                 SHELL_PROCESS,
@@ -529,23 +459,7 @@ mod tests {
                 EDIT_FILE
             ]
         );
-        assert_eq!(
-            names(Role::Main),
-            [
-                SHELL,
-                SHELL_PROCESS,
-                READ_FILE,
-                GLOB,
-                GREP,
-                WRITE_FILE,
-                EDIT_FILE,
-                START_SUBAGENT,
-                SEND_MESSAGE,
-                STOP_SUBAGENT,
-                WAIT
-            ]
-        );
-        let schemas = schemas(Role::Main);
+        let schemas = schemas();
         for schema in &schemas {
             assert_eq!(
                 schema["function"]["parameters"]["additionalProperties"],
@@ -642,27 +556,6 @@ mod tests {
             (WRITE_FILE, json!({"content":""}), "Write file"),
             (EDIT_FILE, json!({"path":3}), "Edit file"),
             (
-                START_SUBAGENT,
-                json!({"prompt":"Fix the parser.\nThen run the tests."}),
-                "Start subagent: Fix the parser. …",
-            ),
-            (
-                SEND_MESSAGE,
-                json!({"subagent_id":"s-1","message":"Yes."}),
-                "Message subagent s-1",
-            ),
-            (
-                STOP_SUBAGENT,
-                json!({"subagent_id":"s-1"}),
-                "Stop subagent s-1",
-            ),
-            (
-                WAIT,
-                json!({"seconds":2.5}),
-                "Wait up to 2.5 seconds for subagents",
-            ),
-            (WAIT, json!({}), "Wait for subagents"),
-            (
                 READ_FILE,
                 json!({"path": long_path}),
                 "Read aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa…",
@@ -671,21 +564,6 @@ mod tests {
             assert_eq!(
                 tool_call_title(&call(name, &arguments.to_string())),
                 expected
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn coordination_calls_from_a_subagent_fail_as_results() {
-        for (name, arguments) in [
-            (START_SUBAGENT, json!({"prompt": "Nest."})),
-            (SEND_MESSAGE, json!({"subagent_id": "a", "message": "Hi."})),
-            (STOP_SUBAGENT, json!({"subagent_id": "a"})),
-            (WAIT, json!({"seconds": 1})),
-        ] {
-            assert_eq!(
-                execute(Path::new("/workspace"), &call(name, &arguments.to_string())).await,
-                ToolOutcome::failed(format!("{name} is available only to the main agent."))
             );
         }
     }

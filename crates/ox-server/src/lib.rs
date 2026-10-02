@@ -10,7 +10,6 @@ mod sessions;
 mod settings;
 mod shell_processes;
 mod skills;
-mod subagents;
 mod system_prompt;
 mod text_file;
 mod tools;

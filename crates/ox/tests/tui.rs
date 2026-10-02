@@ -3,8 +3,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use ox_server::fixture::{
-    DEFAULT_MODEL, Reply, Server, calls_reply, catalog_reply, delta, echo_reply, shell_reply, sse,
-    text_reply, usage,
+    DEFAULT_MODEL, Reply, Server, catalog_reply, delta, echo_reply, shell_reply, sse, text_reply,
+    usage,
 };
 use serde_json::json;
 
@@ -258,17 +258,6 @@ fn streamed(parts: &[&str]) -> Reply {
 }
 
 fn render_replies() -> Vec<Reply> {
-    // The main agent and its subagent send their next requests concurrently, so
-    // each reply depends on which of them asked.
-    let after_start = || {
-        Reply::from(|request| {
-            if request["messages"][1]["content"] == "Render child" {
-                text_reply("Fixed.")
-            } else {
-                calls_reply(&[("wait", "wait", json!({"seconds":600}))])
-            }
-        })
-    };
     let calls = vec![
         json!({
             "index":0, "id":"run-1", "type":"function",
@@ -286,10 +275,6 @@ fn render_replies() -> Vec<Reply> {
             "index":3, "id":"edit-1", "type":"function",
             "function":{"name":"edit_file", "arguments":json!({"path":"a.tally", "old_text":"one", "new_text":"two"}).to_string()}
         }),
-        json!({
-            "index":4, "id":"child-1", "type":"function",
-            "function":{"name":"start_subagent", "arguments":json!({"prompt":"Render child"}).to_string()}
-        }),
     ];
     vec![
         Reply::Stream(sse(&[
@@ -302,8 +287,6 @@ fn render_replies() -> Vec<Reply> {
                 Some("tool_calls"),
             ),
         ])),
-        after_start(),
-        after_start(),
         text_reply("Two tallies were counted in the workspace:\n\na.tally and b.tally"),
     ]
 }
@@ -559,10 +542,6 @@ fn the_transcript_view_renders_thinking_tools_and_wrapped_replies() {
         "● Read tallies/2026/september/archi…",
         "● Shell printf 'a.tally\\nb.tally\\n'…",
         "● Edit a.tally",
-        "● Start subagent: Render child",
-        "● Wait up to 600 seconds for subage…",
-        "● Final answer from subagent",
-        "└ Fixed.",
         "● Two tallies were counted in the",
         "a.tally and b.tally",
     ] {
@@ -574,7 +553,6 @@ fn the_transcript_view_renders_thinking_tools_and_wrapped_replies() {
     let styled = test.styled_screen();
     let gray = |text: &str| styled.contains(&format!("\x1b[38;2;112;112;112m{text}"));
     assert!(gray("● Thought for 0s"), "{styled}");
-    assert!(gray("  └ Fixed."), "{styled}");
     assert!(!gray("● Two tallies"), "{styled}");
     test.keys(&["C-o"]);
     test.wait("Lines 1–2 of 2");
@@ -585,8 +563,6 @@ fn the_transcript_view_renders_thinking_tools_and_wrapped_replies() {
         "● Read tallies/2026/september/archi…\n    └ Lines 1–2 of 2",
         "● Edit a.tally\n    └ Modified a.tally",
         "      @@ -1 +1 @@\n      -one\n      +two",
-        "● Final answer from subagent",
-        "└ Fixed.",
     ] {
         assert!(screen.contains(text), "missing {text:?}:\n{screen}");
     }

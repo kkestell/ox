@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use crate::{
     model::{
         self, CatalogModel, Completion, InputContextOverflow, ModelRequestParameters, Stop,
-        StreamItem, skill_invocation_message, subagent_message_text,
+        StreamItem, skill_invocation_message,
     },
     sessions::{
         AssistantMessage, EffortLevel, ImageAttachment, ModelUsage, ToolCall, TranscriptEntry,
@@ -162,7 +162,7 @@ pub(crate) fn ordinary_body(parameters: &ModelRequestParameters, messages: Vec<V
     let mut body = json!({
         "model": parameters.model.id,
         "messages": messages,
-        "tools": tools::schemas(parameters.role),
+        "tools": tools::schemas(),
         "stream": true,
         "usage": { "include": true },
     });
@@ -359,12 +359,6 @@ pub(crate) fn chat_messages(transcript: &[TranscriptEntry]) -> Vec<Value> {
                         user_message(&skill_invocation_message(invocation))
                     }
                 }
-            }
-            TranscriptEntry::SubagentMessages(subagent_messages) => {
-                messages.extend(subagent_messages.iter().map(
-                    |message| json!({ "role": "user", "content": subagent_message_text(message) }),
-                ));
-                continue;
             }
             TranscriptEntry::AssistantBatch(batch) => {
                 let message = &batch.message;
@@ -872,14 +866,6 @@ pub mod fixture {
         }
     }
 
-    /// Scripts keyed by a marker in a request's first message after the
-    /// system prompt, each with its own replies in order. The first route
-    /// whose marker that message contains answers, so a route with an empty
-    /// marker answers every request no earlier route claims. For concurrent
-    /// agents, each agent's distinct first message selects its script
-    /// whatever order their requests arrive in.
-    type Routes = Arc<Mutex<Vec<(String, VecDeque<Reply>)>>>;
-
     pub fn shell_reply(commands: &[(&str, u64)]) -> Reply {
         let calls: Vec<_> = commands
             .iter()
@@ -910,28 +896,17 @@ pub mod fixture {
         /// Serves `replies` in request order, over as many connections as
         /// the client opens.
         pub async fn start(replies: Vec<Reply>) -> Self {
-            Self::routed(vec![("", replies)]).await
-        }
-
-        /// Serves each request from the first route whose marker its first
-        /// message after the system prompt contains.
-        pub async fn routed(routes: Vec<(&str, Vec<Reply>)>) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let url = format!("http://{}", listener.local_addr().unwrap());
             let requests = Arc::new(Mutex::new(Vec::new()));
             let connections = Arc::new(AtomicUsize::new(0));
-            let routes: Routes = Arc::new(Mutex::new(
-                routes
-                    .into_iter()
-                    .map(|(marker, replies)| (marker.to_owned(), VecDeque::from(replies)))
-                    .collect(),
-            ));
+            let replies = Arc::new(Mutex::new(VecDeque::from(replies)));
             let (seen, opened) = (requests.clone(), connections.clone());
             tokio::spawn(async move {
                 loop {
                     let (socket, _) = listener.accept().await.unwrap();
                     opened.fetch_add(1, Ordering::SeqCst);
-                    tokio::spawn(serve(socket, routes.clone(), seen.clone()));
+                    tokio::spawn(serve(socket, replies.clone(), seen.clone()));
                 }
             });
             Self {
@@ -962,57 +937,26 @@ pub mod fixture {
             self.requests.lock().unwrap().clone()
         }
 
-        /// The requests whose first message after the system prompt
-        /// contains `marker`, in arrival order.
-        pub fn requests_for(&self, marker: &str) -> Vec<Value> {
-            self.requests()
-                .into_iter()
-                .filter(|request| route_key(request).contains(marker))
-                .collect()
-        }
-
-        /// Waits until `count` requests for `marker` have arrived.
-        pub async fn wait_for_requests(&self, marker: &str, count: usize) {
-            tokio::time::timeout(std::time::Duration::from_secs(10), async {
-                while self.requests_for(marker).len() < count {
-                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                }
-            })
-            .await
-            .unwrap_or_else(|_| panic!("{count} requests for {marker:?} did not arrive"));
-        }
-
         pub fn connections(&self) -> usize {
             self.connections.load(Ordering::SeqCst)
         }
     }
 
-    /// The text a request is routed by.
-    fn route_key(request: &Value) -> String {
-        if request.get("input").is_some() {
-            request["input"][0]["content"].to_string()
-        } else {
-            request["messages"][1]["content"].to_string()
-        }
-    }
-
-    async fn serve(mut socket: TcpStream, routes: Routes, seen: Arc<Mutex<Vec<Value>>>) {
+    async fn serve(
+        mut socket: TcpStream,
+        replies: Arc<Mutex<VecDeque<Reply>>>,
+        seen: Arc<Mutex<Vec<Value>>>,
+    ) {
         while let Some(body) = read_request(&mut socket).await {
             let request = if body.is_empty() {
                 Value::Null
             } else {
                 serde_json::from_slice(&body).unwrap()
             };
-            let key = route_key(&request);
             if !body.is_empty() {
                 seen.lock().unwrap().push(request.clone());
             }
-            let reply = routes
-                .lock()
-                .unwrap()
-                .iter_mut()
-                .find(|(marker, _)| key.contains(marker.as_str()))
-                .and_then(|(_, replies)| replies.pop_front());
+            let reply = replies.lock().unwrap().pop_front();
             let Some(mut reply) = reply else {
                 break;
             };
@@ -1230,7 +1174,6 @@ mod tests {
             DEFAULT_MODEL,
             EffortLevel::Default,
             TEST_SYSTEM_PROMPT.to_owned(),
-            tools::Role::Main,
         )
         .unwrap()
     }
@@ -1330,7 +1273,6 @@ mod tests {
                     EffortLevel::Default,
                     "You are Ox.\n\n# Workspace instructions from AGENTS.md\n\nAnswer in French."
                         .to_owned(),
-                    tools::Role::Main,
                 )
                 .unwrap(),
                 chat_messages(&transcript),
@@ -1482,7 +1424,6 @@ mod tests {
                             &model.qualified_id(),
                             effort,
                             TEST_SYSTEM_PROMPT.to_owned(),
-                            tools::Role::Main,
                         )
                         .unwrap(),
                         vec![],
@@ -1520,7 +1461,6 @@ mod tests {
                 model,
                 effort: EffortLevel::Default,
                 system_prompt: TEST_SYSTEM_PROMPT.to_owned(),
-                role: tools::Role::Main,
             };
             let body = ordinary_body(&parameters, vec![]);
             assert_eq!(body.get("provider"), provider.as_ref(), "{}", model.id);

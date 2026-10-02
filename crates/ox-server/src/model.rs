@@ -2,11 +2,7 @@
 
 use crate::{
     openai, openrouter,
-    sessions::{
-        AssistantMessage, EffortLevel, SkillInvocation, SubagentMessage, UserMessage,
-        UserMessagePart,
-    },
-    tools,
+    sessions::{AssistantMessage, EffortLevel, SkillInvocation, UserMessage, UserMessagePart},
 };
 use serde::Deserialize;
 use std::io::{self, ErrorKind};
@@ -276,26 +272,19 @@ pub(crate) fn mark_temporary(status: reqwest::StatusCode, error: io::Error) -> i
     }
 }
 
-/// The validated catalog model, effort level, system prompt, and the tools of
-/// the agent's role, which every ordinary model request in a turn sends with
-/// the transcript.
+/// The validated catalog model, effort level, and system prompt, which every
+/// ordinary model request in a turn sends with the transcript.
 #[derive(Debug, Clone)]
 pub struct ModelRequestParameters {
     pub model: &'static CatalogModel,
     pub effort: EffortLevel,
     pub system_prompt: String,
-    pub role: tools::Role,
 }
 
 impl ModelRequestParameters {
     /// Rejects saved or selected settings the fetched model catalog no longer
     /// accepts.
-    pub fn new(
-        model_id: &str,
-        effort: EffortLevel,
-        system_prompt: String,
-        role: tools::Role,
-    ) -> io::Result<Self> {
+    pub fn new(model_id: &str, effort: EffortLevel, system_prompt: String) -> io::Result<Self> {
         let model = catalog_model(model_id).ok_or_else(|| {
             io::Error::new(
                 ErrorKind::InvalidData,
@@ -315,7 +304,6 @@ impl ModelRequestParameters {
             model,
             effort,
             system_prompt,
-            role,
         })
     }
 }
@@ -338,11 +326,6 @@ pub(crate) fn skill_invocation_message(invocation: &SkillInvocation) -> UserMess
             )
             .collect(),
     }
-}
-
-/// The user-role text that gives the main agent one subagent message.
-pub(crate) fn subagent_message_text(message: &SubagentMessage) -> String {
-    format!("{}:\n{}", message.label(), message.text())
 }
 
 #[cfg(test)]
