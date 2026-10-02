@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="878" height="844" viewBox="0 0 878 844">
+<style>
+text { font-family: system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif; font-size: 13px; fill: #0b0b0b; font-variant-numeric: tabular-nums; }
+.secondary { fill: #52514e; } .muted { fill: #898781; }
+.title { font-size: 18px; font-weight: 600; }
+.heading { font-size: 15px; font-weight: 600; } .strong { font-weight: 600; }
+.surface { fill: #fcfcfb; } .grid { stroke: #e1e0d9; } .base { stroke: #c3c2b7; }
+.good { fill: #0ca30c; } line.good { stroke: #0ca30c; }
+.bad { fill: #d03b3b; } line.bad { stroke: #d03b3b; }
+.neutral { fill: #898781; } line.neutral { stroke: #898781; }
+.good-text { fill: #006300; } .bad-text { fill: #b02a2a; } .neutral-text { fill: #52514e; }
+.tint { stroke: none; fill-opacity: 0.16; }
+circle { stroke: #fcfcfb; stroke-width: 2px; }
+@media (prefers-color-scheme: dark) {
+text { fill: #ffffff; } .secondary, .neutral-text { fill: #c3c2b7; }
+.good-text { fill: #0ca30c; } .bad-text { fill: #e06464; }
+.surface { fill: #1a1a19; } .grid { stroke: #2c2c2a; } .base { stroke: #383835; }
+.tint { fill-opacity: 0.28; } circle { stroke: #1a1a19; }
+}
+</style>
+<rect class="surface" width="878" height="844"/>
+<text class="title" x="24" y="40">Shell edits compared with Patch</text>
+<text class="secondary" x="24" y="62">openai:gpt-5.6-luna. Passed: Patch 36/36, <tspan class="neutral-text strong">Shell edits 36/36</tspan>.</text>
+<text class="heading" x="24" y="106">Across all tasks</text>
+<text class="secondary" x="24" y="124">Each dot is the geometric mean over tasks of the candidate's median over the base's median, with a 90% bootstrap interval.</text>
+<text class="secondary" x="24" y="142">Green is clearly lower, red is clearly higher, and gray is within the noise.</text>
+<line class="grid" x1="238.3" y1="158" x2="238.3" y2="308"/><text class="muted" x="238.3" y="322" text-anchor="middle">-33%</text>
+<line class="grid" x1="298.4" y1="158" x2="298.4" y2="308"/><text class="muted" x="298.4" y="322" text-anchor="middle">-20%</text>
+<line class="base" x1="374.0" y1="158" x2="374.0" y2="308"/><text class="muted" x="374.0" y="322" text-anchor="middle">0%</text>
+<line class="grid" x1="449.6" y1="158" x2="449.6" y2="308"/><text class="muted" x="449.6" y="322" text-anchor="middle">+25%</text>
+<line class="grid" x1="511.4" y1="158" x2="511.4" y2="308"/><text class="muted" x="511.4" y="322" text-anchor="middle">+50%</text>
+<text class="muted" x="194" y="340">← lower</text><text class="muted" x="554" y="340" text-anchor="end">higher →</text>
+<text class="strong" x="24" y="177.0">Cost</text><text class="muted" x="578" y="177.0">Unavailable</text>
+<g><title>Time: -8% (-17% to +2%)</title><rect x="24" y="188.0" width="830" height="30" fill="transparent"/><text class="strong" x="24" y="207.0">Time</text><line class="neutral" x1="309.6" y1="203.0" x2="382.2" y2="203.0" stroke-width="2" stroke-linecap="round"/><circle class="neutral" cx="344.9" cy="203.0" r="6"/><text x="578" y="207.0">-8% (-17% to +2%)</text><text class="neutral-text strong" x="734" y="207.0">No clear change</text></g>
+<g><title>Input tokens: -24% (-38% to -11%)</title><rect x="24" y="218.0" width="830" height="30" fill="transparent"/><text class="strong" x="24" y="237.0">Input tokens</text><line class="good" x1="210.4" y1="233.0" x2="333.4" y2="233.0" stroke-width="2" stroke-linecap="round"/><circle class="good" cx="279.4" cy="233.0" r="6"/><text x="578" y="237.0">-24% (-38% to -11%)</text><text class="good-text strong" x="734" y="237.0">Lower</text></g>
+<g><title>Output tokens: -4% (-10% to +10%)</title><rect x="24" y="248.0" width="830" height="30" fill="transparent"/><text class="strong" x="24" y="267.0">Output tokens</text><line class="neutral" x1="337.9" y1="263.0" x2="404.9" y2="263.0" stroke-width="2" stroke-linecap="round"/><circle class="neutral" cx="361.9" cy="263.0" r="6"/><text x="578" y="267.0">-4% (-10% to +10%)</text><text class="neutral-text strong" x="734" y="267.0">No clear change</text></g>
+<g><title>Requests: -14% (-24% to -5%)</title><rect x="24" y="278.0" width="830" height="30" fill="transparent"/><text class="strong" x="24" y="297.0">Requests</text><line class="good" x1="281.2" y1="293.0" x2="357.8" y2="293.0" stroke-width="2" stroke-linecap="round"/><circle class="good" cx="324.3" cy="293.0" r="6"/><text x="578" y="297.0">-14% (-24% to -5%)</text><text class="good-text strong" x="734" y="297.0">Lower</text></g>
+<text class="heading" x="24" y="380">By task</text>
+<text class="secondary" x="24" y="398">Each cell is the change in the task's median. A cell is colored only when every repetition of the candidate was lower (green)</text>
+<text class="secondary" x="24" y="416">or higher (red) than every repetition of the base; hover a cell for the values.</text>
+<text class="strong" x="292" y="450" text-anchor="end">Passed</text>
+<text class="strong" x="402" y="450" text-anchor="end">Cost</text>
+<text class="strong" x="512" y="450" text-anchor="end">Time</text>
+<text class="strong" x="622" y="450" text-anchor="end">Input tokens</text>
+<text class="strong" x="732" y="450" text-anchor="end">Output tokens</text>
+<text class="strong" x="842" y="450" text-anchor="end">Requests</text>
+<line class="grid" x1="24" y1="460" x2="854" y2="460"/><text x="24" y="479">coffee-site</text>
+<g><title>coffee-site, passed: Patch 3/3; Shell edits 3/3</title><rect x="194" y="460" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="479" text-anchor="end">3/3</text></g>
+<g><title>coffee-site, cost: Patch unavailable, unavailable, unavailable; Shell edits unavailable, unavailable, unavailable</title><rect x="304" y="460" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="479" text-anchor="end">-</text></g>
+<g><title>coffee-site, time: Patch 109, 111, 112; Shell edits 98, 102, 108</title><rect x="414" y="460" width="110" height="30" fill="transparent"/><rect class="good tint" x="418" y="463" width="102" height="24" rx="4"/><text class="strong" x="512" y="479" text-anchor="end">-8%</text></g>
+<g><title>coffee-site, input tokens: Patch 31257, 39447, 41023; Shell edits 15788, 28620, 28956</title><rect x="524" y="460" width="110" height="30" fill="transparent"/><rect class="good tint" x="528" y="463" width="102" height="24" rx="4"/><text class="strong" x="622" y="479" text-anchor="end">-27%</text></g>
+<g><title>coffee-site, output tokens: Patch 4640, 5046, 5394; Shell edits 4889, 5035, 5143</title><rect x="634" y="460" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="479" text-anchor="end">0%</text></g>
+<g><title>coffee-site, requests: Patch 6, 7, 7; Shell edits 4, 6, 6</title><rect x="744" y="460" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="479" text-anchor="end">-14%</text></g>
+<line class="grid" x1="24" y1="490" x2="854" y2="490"/><text x="24" y="509">csv-stats</text>
+<g><title>csv-stats, passed: Patch 3/3; Shell edits 3/3</title><rect x="194" y="490" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="509" text-anchor="end">3/3</text></g>
+<g><title>csv-stats, cost: Patch unavailable, unavailable, unavailable; Shell edits unavailable, unavailable, unavailable</title><rect x="304" y="490" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="509" text-anchor="end">-</text></g>
+<g><title>csv-stats, time: Patch 63, 87, 103; Shell edits 64, 66, 91</title><rect x="414" y="490" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="509" text-anchor="end">-24%</text></g>
+<g><title>csv-stats, input tokens: Patch 13834, 17143, 36542; Shell edits 7137, 12407, 19445</title><rect x="524" y="490" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="509" text-anchor="end">-28%</text></g>
+<g><title>csv-stats, output tokens: Patch 2930, 4128, 4765; Shell edits 2928, 3258, 4240</title><rect x="634" y="490" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="509" text-anchor="end">-21%</text></g>
+<g><title>csv-stats, requests: Patch 4, 4, 7; Shell edits 3, 4, 5</title><rect x="744" y="490" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="509" text-anchor="end">0%</text></g>
+<line class="grid" x1="24" y1="520" x2="854" y2="520"/><text x="24" y="539">inih-quoted</text>
+<g><title>inih-quoted, passed: Patch 3/3; Shell edits 3/3</title><rect x="194" y="520" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="539" text-anchor="end">3/3</text></g>
+<g><title>inih-quoted, cost: Patch unavailable, unavailable, unavailable; Shell edits unavailable, unavailable, unavailable</title><rect x="304" y="520" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="539" text-anchor="end">-</text></g>
+<g><title>inih-quoted, time: Patch 82, 83, 90; Shell edits 95, 103, 112</title><rect x="414" y="520" width="110" height="30" fill="transparent"/><rect class="bad tint" x="418" y="523" width="102" height="24" rx="4"/><text class="strong" x="512" y="539" text-anchor="end">+24%</text></g>
+<g><title>inih-quoted, input tokens: Patch 127456, 129713, 170703; Shell edits 154107, 166612, 189985</title><rect x="524" y="520" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="539" text-anchor="end">+28%</text></g>
+<g><title>inih-quoted, output tokens: Patch 2546, 2560, 2778; Shell edits 3512, 3557, 3713</title><rect x="634" y="520" width="110" height="30" fill="transparent"/><rect class="bad tint" x="638" y="523" width="102" height="24" rx="4"/><text class="strong" x="732" y="539" text-anchor="end">+39%</text></g>
+<g><title>inih-quoted, requests: Patch 12, 12, 13; Shell edits 12, 16, 16</title><rect x="744" y="520" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="539" text-anchor="end">+33%</text></g>
+<line class="grid" x1="24" y1="550" x2="854" y2="550"/><text x="24" y="569">itoa-boundaries</text>
+<g><title>itoa-boundaries, passed: Patch 3/3; Shell edits 3/3</title><rect x="194" y="550" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="569" text-anchor="end">3/3</text></g>
+<g><title>itoa-boundaries, cost: Patch unavailable, unavailable, unavailable; Shell edits unavailable, unavailable, unavailable</title><rect x="304" y="550" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="569" text-anchor="end">-</text></g>
+<g><title>itoa-boundaries, time: Patch 44, 49, 73; Shell edits 49, 72, 83</title><rect x="414" y="550" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="569" text-anchor="end">+48%</text></g>
+<g><title>itoa-boundaries, input tokens: Patch 42153, 49684, 74555; Shell edits 41276, 42878, 63875</title><rect x="524" y="550" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="569" text-anchor="end">-14%</text></g>
+<g><title>itoa-boundaries, output tokens: Patch 922, 1480, 1886; Shell edits 1634, 1810, 2503</title><rect x="634" y="550" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="569" text-anchor="end">+22%</text></g>
+<g><title>itoa-boundaries, requests: Patch 7, 7, 9; Shell edits 6, 6, 9</title><rect x="744" y="550" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="569" text-anchor="end">-14%</text></g>
+<line class="grid" x1="24" y1="580" x2="854" y2="580"/><text x="24" y="599">jsmn-rename</text>
+<g><title>jsmn-rename, passed: Patch 3/3; Shell edits 3/3</title><rect x="194" y="580" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="599" text-anchor="end">3/3</text></g>
+<g><title>jsmn-rename, cost: Patch unavailable, unavailable, unavailable; Shell edits unavailable, unavailable, unavailable</title><rect x="304" y="580" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="599" text-anchor="end">-</text></g>
+<g><title>jsmn-rename, time: Patch 26, 28, 33; Shell edits 23, 27, 29</title><rect x="414" y="580" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="599" text-anchor="end">-4%</text></g>
+<g><title>jsmn-rename, input tokens: Patch 27116, 28009, 40547; Shell edits 23985, 29276, 34860</title><rect x="524" y="580" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="599" text-anchor="end">+5%</text></g>
+<g><title>jsmn-rename, output tokens: Patch 616, 662, 735; Shell edits 674, 676, 680</title><rect x="634" y="580" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="599" text-anchor="end">+2%</text></g>
+<g><title>jsmn-rename, requests: Patch 6, 6, 8; Shell edits 6, 7, 7</title><rect x="744" y="580" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="599" text-anchor="end">+17%</text></g>
+<line class="grid" x1="24" y1="610" x2="854" y2="610"/><text x="24" y="629">mini-redis-docs</text>
+<g><title>mini-redis-docs, passed: Patch 3/3; Shell edits 3/3</title><rect x="194" y="610" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="629" text-anchor="end">3/3</text></g>
+<g><title>mini-redis-docs, cost: Patch unavailable, unavailable, unavailable; Shell edits unavailable, unavailable, unavailable</title><rect x="304" y="610" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="629" text-anchor="end">-</text></g>
+<g><title>mini-redis-docs, time: Patch 119, 168, 185; Shell edits 126, 127, 155</title><rect x="414" y="610" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="629" text-anchor="end">-24%</text></g>
+<g><title>mini-redis-docs, input tokens: Patch 285345, 433082, 450281; Shell edits 255717, 278533, 422311</title><rect x="524" y="610" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="629" text-anchor="end">-36%</text></g>
+<g><title>mini-redis-docs, output tokens: Patch 3669, 5180, 6204; Shell edits 3737, 4012, 4702</title><rect x="634" y="610" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="629" text-anchor="end">-23%</text></g>
+<g><title>mini-redis-docs, requests: Patch 14, 20, 20; Shell edits 13, 13, 17</title><rect x="744" y="610" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="629" text-anchor="end">-35%</text></g>
+<line class="grid" x1="24" y1="640" x2="854" y2="640"/><text x="24" y="659">pi-digit</text>
+<g><title>pi-digit, passed: Patch 3/3; Shell edits 3/3</title><rect x="194" y="640" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="659" text-anchor="end">3/3</text></g>
+<g><title>pi-digit, cost: Patch unavailable, unavailable, unavailable; Shell edits unavailable, unavailable, unavailable</title><rect x="304" y="640" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="659" text-anchor="end">-</text></g>
+<g><title>pi-digit, time: Patch 173, 245, 266; Shell edits 101, 153, 262</title><rect x="414" y="640" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="659" text-anchor="end">-38%</text></g>
+<g><title>pi-digit, input tokens: Patch 110119, 182151, 274498; Shell edits 27947, 63179, 166826</title><rect x="524" y="640" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="659" text-anchor="end">-65%</text></g>
+<g><title>pi-digit, output tokens: Patch 7613, 9477, 9913; Shell edits 4580, 6566, 10382</title><rect x="634" y="640" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="659" text-anchor="end">-31%</text></g>
+<g><title>pi-digit, requests: Patch 16, 23, 34; Shell edits 8, 12, 21</title><rect x="744" y="640" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="659" text-anchor="end">-48%</text></g>
+<line class="grid" x1="24" y1="670" x2="854" y2="670"/><text x="24" y="689">sds-startswith</text>
+<g><title>sds-startswith, passed: Patch 3/3; Shell edits 3/3</title><rect x="194" y="670" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="689" text-anchor="end">3/3</text></g>
+<g><title>sds-startswith, cost: Patch unavailable, unavailable, unavailable; Shell edits unavailable, unavailable, unavailable</title><rect x="304" y="670" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="689" text-anchor="end">-</text></g>
+<g><title>sds-startswith, time: Patch 43, 55, 61; Shell edits 46, 52, 57</title><rect x="414" y="670" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="689" text-anchor="end">-6%</text></g>
+<g><title>sds-startswith, input tokens: Patch 41875, 57980, 71696; Shell edits 49088, 79744, 115892</title><rect x="524" y="670" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="689" text-anchor="end">+38%</text></g>
+<g><title>sds-startswith, output tokens: Patch 1281, 1689, 1814; Shell edits 1419, 1796, 1932</title><rect x="634" y="670" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="689" text-anchor="end">+6%</text></g>
+<g><title>sds-startswith, requests: Patch 6, 9, 9; Shell edits 7, 8, 9</title><rect x="744" y="670" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="689" text-anchor="end">-11%</text></g>
+<line class="grid" x1="24" y1="700" x2="854" y2="700"/><text x="24" y="719">temp-cli</text>
+<g><title>temp-cli, passed: Patch 3/3; Shell edits 3/3</title><rect x="194" y="700" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="719" text-anchor="end">3/3</text></g>
+<g><title>temp-cli, cost: Patch unavailable, unavailable, unavailable; Shell edits unavailable, unavailable, unavailable</title><rect x="304" y="700" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="719" text-anchor="end">-</text></g>
+<g><title>temp-cli, time: Patch 32, 37, 59; Shell edits 25, 29, 33</title><rect x="414" y="700" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="719" text-anchor="end">-21%</text></g>
+<g><title>temp-cli, input tokens: Patch 11275, 15248, 22435; Shell edits 5846, 5920, 8493</title><rect x="524" y="700" width="110" height="30" fill="transparent"/><rect class="good tint" x="528" y="703" width="102" height="24" rx="4"/><text class="strong" x="622" y="719" text-anchor="end">-61%</text></g>
+<g><title>temp-cli, output tokens: Patch 1137, 1398, 1635; Shell edits 988, 1033, 1180</title><rect x="634" y="700" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="719" text-anchor="end">-26%</text></g>
+<g><title>temp-cli, requests: Patch 4, 5, 7; Shell edits 3, 3, 4</title><rect x="744" y="700" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="719" text-anchor="end">-40%</text></g>
+<line class="grid" x1="24" y1="730" x2="854" y2="730"/><text x="24" y="749">tinyexpr-clamp</text>
+<g><title>tinyexpr-clamp, passed: Patch 3/3; Shell edits 3/3</title><rect x="194" y="730" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="749" text-anchor="end">3/3</text></g>
+<g><title>tinyexpr-clamp, cost: Patch unavailable, unavailable, unavailable; Shell edits unavailable, unavailable, unavailable</title><rect x="304" y="730" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="749" text-anchor="end">-</text></g>
+<g><title>tinyexpr-clamp, time: Patch 43, 43, 64; Shell edits 33, 51, 96</title><rect x="414" y="730" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="749" text-anchor="end">+18%</text></g>
+<g><title>tinyexpr-clamp, input tokens: Patch 46202, 101805, 131465; Shell edits 41867, 85757, 111332</title><rect x="524" y="730" width="110" height="30" fill="transparent"/><text class="muted" x="622" y="749" text-anchor="end">-16%</text></g>
+<g><title>tinyexpr-clamp, output tokens: Patch 1161, 1228, 2040; Shell edits 1127, 1370, 1974</title><rect x="634" y="730" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="749" text-anchor="end">+12%</text></g>
+<g><title>tinyexpr-clamp, requests: Patch 6, 10, 11; Shell edits 6, 10, 11</title><rect x="744" y="730" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="749" text-anchor="end">0%</text></g>
+<line class="grid" x1="24" y1="760" x2="854" y2="760"/><text x="24" y="779">tinyexpr-precedence</text>
+<g><title>tinyexpr-precedence, passed: Patch 3/3; Shell edits 3/3</title><rect x="194" y="760" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="779" text-anchor="end">3/3</text></g>
+<g><title>tinyexpr-precedence, cost: Patch unavailable, unavailable, unavailable; Shell edits unavailable, unavailable, unavailable</title><rect x="304" y="760" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="779" text-anchor="end">-</text></g>
+<g><title>tinyexpr-precedence, time: Patch 58, 66, 66; Shell edits 53, 56, 63</title><rect x="414" y="760" width="110" height="30" fill="transparent"/><text class="muted" x="512" y="779" text-anchor="end">-16%</text></g>
+<g><title>tinyexpr-precedence, input tokens: Patch 186411, 241522, 279756; Shell edits 161650, 183766, 184145</title><rect x="524" y="760" width="110" height="30" fill="transparent"/><rect class="good tint" x="528" y="763" width="102" height="24" rx="4"/><text class="strong" x="622" y="779" text-anchor="end">-24%</text></g>
+<g><title>tinyexpr-precedence, output tokens: Patch 1439, 1622, 2032; Shell edits 1781, 1834, 1903</title><rect x="634" y="760" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="779" text-anchor="end">+13%</text></g>
+<g><title>tinyexpr-precedence, requests: Patch 11, 12, 14; Shell edits 10, 10, 10</title><rect x="744" y="760" width="110" height="30" fill="transparent"/><rect class="good tint" x="748" y="763" width="102" height="24" rx="4"/><text class="strong" x="842" y="779" text-anchor="end">-17%</text></g>
+<line class="grid" x1="24" y1="790" x2="854" y2="790"/><text x="24" y="809">todo-cli</text>
+<g><title>todo-cli, passed: Patch 3/3; Shell edits 3/3</title><rect x="194" y="790" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="809" text-anchor="end">3/3</text></g>
+<g><title>todo-cli, cost: Patch unavailable, unavailable, unavailable; Shell edits unavailable, unavailable, unavailable</title><rect x="304" y="790" width="110" height="30" fill="transparent"/><text class="muted" x="402" y="809" text-anchor="end">-</text></g>
+<g><title>todo-cli, time: Patch 59, 60, 62; Shell edits 46, 49, 54</title><rect x="414" y="790" width="110" height="30" fill="transparent"/><rect class="good tint" x="418" y="793" width="102" height="24" rx="4"/><text class="strong" x="512" y="809" text-anchor="end">-17%</text></g>
+<g><title>todo-cli, input tokens: Patch 13051, 13484, 25642; Shell edits 9936, 10189, 10386</title><rect x="524" y="790" width="110" height="30" fill="transparent"/><rect class="good tint" x="528" y="793" width="102" height="24" rx="4"/><text class="strong" x="622" y="809" text-anchor="end">-24%</text></g>
+<g><title>todo-cli, output tokens: Patch 2203, 2389, 2499; Shell edits 1935, 2142, 2371</title><rect x="634" y="790" width="110" height="30" fill="transparent"/><text class="muted" x="732" y="809" text-anchor="end">-10%</text></g>
+<g><title>todo-cli, requests: Patch 4, 4, 6; Shell edits 4, 4, 4</title><rect x="744" y="790" width="110" height="30" fill="transparent"/><text class="muted" x="842" y="809" text-anchor="end">0%</text></g>
+</svg>
