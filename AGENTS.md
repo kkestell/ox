@@ -1,5 +1,16 @@
 Keep this document accurate and short.
 
+## Code style
+
+- Do less. Keep correct code simple, ordinary, and cheap to change.
+- Use safe, idiomatic Rust. Let the compiler check cases; prefer owned data and
+  direct functions.
+- Give each concern a clear boundary and each lifecycle one owner.
+- Let real needs earn abstractions, dependencies, and configuration. Measure
+  before optimizing; harden against observed failures.
+- Return clear errors for bad input; fail loudly on broken invariants. Test
+  observable behavior; write comments that explain why.
+
 ## Code
 
 - `crates/ox-server/` — the Ox server: prompt run, tools, OpenRouter, OpenAI,
@@ -11,7 +22,7 @@ Keep this document accurate and short.
 - `scripts/export_session.py` — exports a session and its subagents to JSON.
 - `.github/workflows/` — the release build.
 - `research/` — research notes and reports.
-- `agents/` — agent docs, plans, and reviews.
+- `agents/` — plans, reviews, and work logs.
 
 ## Validation
 
@@ -26,34 +37,20 @@ Report any check that fails or is skipped.
 
 ## Documentation
 
-The code describes what the code does. Docs never restate it: no descriptions of
-files, functions, fields, or behavior, and no summaries of changes. Git history
-records the changes.
+Use only `README.md`, `AGENTS.md`, the code and its comments, plans, reviews,
+work logs, and Git history. Never create new documentation files.
 
-Most changes need no doc edits. Before editing any doc, check whether the change
-alters what that doc covers. If it does not, leave the doc alone, even when the
-doc mentions the feature. A fact lives in one place, never in several docs. When
-a doc passage is wrong, correct or delete it without expanding it. Add a doc or
-a section only when asked.
+`README.md` tells users how to install, configure, and use Ox. Update it only
+when those instructions change. `AGENTS.md` gives instructions to agents and
+should rarely change.
 
-- `AGENTS.md`: instructions for agents and the top-level directory map.
-- `agents/architecture.md`: the components, the boundaries between them, what
-  each owns, and the decisions that shape them.
-- `agents/testing.md`: how to run the tests, where each kind of test goes, and
-  test discipline.
-- `agents/glossary.md`: naming rules and one-line definitions of domain terms.
+The code describes the implementation. Comments explain non-obvious reasons or
+external rules; they never restate code. Plans, reviews, and work logs record
+work in `agents/`. Git history records changes.
 
-Use `YYYY-MM-DD-NNN-slug.md` filenames for plans in `agents/plans/` and code
-reviews in `agents/reviews/`. Plan reviews stay in the conversation. Do not
-create review documents for plans. Include this rule explicitly when asking
-Claude or another agent to review a plan.
-
-Read before planning and changing code:
-
-- `agents/architecture.md`
-- `agents/code-style.md`
-- `agents/glossary.md`
-- `agents/testing.md`
+A fact lives in one place. Do not duplicate it across these sources. Most
+changes need no documentation or comment edits. Correct or delete inaccurate
+text without expanding it.
 
 ## Backwards Compatibility
 
@@ -67,10 +64,3 @@ of adding migrations or versions. Their directory is `$OX_DATA_DIR`, else
 - Follow big idea up front and progressive disclosure
 - Never use jargon, invented terms, or shorthand
 - Never mix definitions or overload terms
-
-## Ox workflow
-
-Plans, work logs, reviews, and issues live in `agents/`. `/ox-plan` writes a
-plan, `/ox-work` implements it, and `/ox-review` records findings and fixes.
-Track open work in `agents/todo.md` and `agents/issues.csv`; append issue rows
-without reordering or deleting them because todo links use CSV line numbers.
