@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -30,7 +29,9 @@ pub struct Session {
     directory: PathBuf,
     can_resume: bool,
     events: UnboundedSender<Event>,
-    pub permission_requests: VecDeque<(
+    /// The server runs tool calls in order, so at most one request is
+    /// pending.
+    pub permission_request: Option<(
         RequestPermissionRequest,
         Responder<RequestPermissionResponse>,
     )>,
@@ -91,7 +92,7 @@ impl Session {
         self.busy = false;
         self.cancelling = false;
         self.queued = None;
-        self.permission_requests.clear();
+        self.permission_request = None;
         self.config_options.clear();
         self.commands.clear();
         self.usage = None;
@@ -173,13 +174,17 @@ impl Session {
                 RequestPermissionOutcome::Cancelled,
             ))?;
         } else {
-            self.permission_requests.push_back((request, responder));
+            assert!(
+                self.permission_request.is_none(),
+                "a permission request arrived while another was pending"
+            );
+            self.permission_request = Some((request, responder));
         }
         Ok(())
     }
 
     pub fn answer(&mut self, number: usize) -> anyhow::Result<bool> {
-        let Some((request, _)) = self.permission_requests.front() else {
+        let Some((request, _)) = &self.permission_request else {
             return Ok(false);
         };
         let Some(option) = number
@@ -191,8 +196,8 @@ impl Session {
         let outcome = RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
             option.option_id.clone(),
         ));
-        self.permission_requests
-            .pop_front()
+        self.permission_request
+            .take()
             .unwrap()
             .1
             .respond(RequestPermissionResponse::new(outcome))?;
@@ -201,7 +206,7 @@ impl Session {
 
     pub fn cancel(&mut self) -> anyhow::Result<()> {
         self.cancelling = self.busy;
-        while let Some((_, responder)) = self.permission_requests.pop_front() {
+        if let Some((_, responder)) = self.permission_request.take() {
             responder.respond(RequestPermissionResponse::new(
                 RequestPermissionOutcome::Cancelled,
             ))?;
@@ -216,7 +221,7 @@ impl Session {
     /// Ends the turn and sends the queued prompt, returning its text.
     pub fn finished(&mut self) -> anyhow::Result<Option<String>> {
         // A completed turn cannot leave an unanswered permission behind.
-        while let Some((_, responder)) = self.permission_requests.pop_front() {
+        if let Some((_, responder)) = self.permission_request.take() {
             responder.respond(RequestPermissionResponse::new(
                 RequestPermissionOutcome::Cancelled,
             ))?;
@@ -362,7 +367,7 @@ where
                         && capabilities.session_capabilities.list.is_some()
                         && capabilities.session_capabilities.close.is_some(),
                     events,
-                    permission_requests: VecDeque::new(),
+                    permission_request: None,
                     busy: false,
                     cancelling: false,
                     config_options: session.config_options.unwrap_or_default(),
@@ -382,8 +387,7 @@ where
 pub mod tests {
     use super::*;
     use ox_server::fixture::{
-        Reply, Server, calls_reply, delta, echo_reply, serve_connection, shell_reply, sse,
-        text_reply,
+        Reply, Server, delta, echo_reply, serve_connection, shell_reply, sse, text_reply,
     };
     use serde_json::json;
 
@@ -606,74 +610,18 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn simultaneous_permissions_keep_their_supplied_option_ids() {
-        let server = Server::routed(vec![
-            (
-                "First task",
-                vec![
-                    shell_reply(&[("touch first", 10)]),
-                    text_reply("first done"),
-                ],
-            ),
-            (
-                "Second task",
-                vec![
-                    shell_reply(&[("touch second", 10)]),
-                    text_reply("second done"),
-                ],
-            ),
-            (
-                "Coordinate",
-                vec![
-                    calls_reply(&[
-                        ("start-1", "start_subagent", json!({"prompt":"First task"})),
-                        ("start-2", "start_subagent", json!({"prompt":"Second task"})),
-                        ("wait-1", "wait", json!({"seconds":600})),
-                    ]),
-                    calls_reply(&[("wait-2", "wait", json!({"seconds":600}))]),
-                    text_reply("done"),
-                ],
-            ),
-        ])
-        .await;
-        with_server(server, async |mut session, mut events| {
-            session.prompt("Coordinate both tasks".into())?;
-            while session.permission_requests.len() < 2 {
-                if let Event::Permission(_, request, responder) = events.recv().await.unwrap() {
-                    session.permission(request, responder)?;
-                }
-            }
-            assert!(!session.answer(0)?);
-            assert!(!session.answer(3)?);
-            assert_eq!(session.permission_requests.len(), 2);
-            assert!(session.answer(2)?);
-            assert_eq!(session.permission_requests.len(), 1);
-            assert!(session.answer(1)?);
-            let (_text, ok) = turn(&mut session, &mut events, &[]).await;
-            assert!(ok);
-            assert_ne!(
-                session.directory.join("first").exists(),
-                session.directory.join("second").exists(),
-                "the deny and approve option IDs produce different outcomes"
-            );
-            Ok(())
-        })
-        .await;
-    }
-
-    #[tokio::test]
     async fn cancellation_answers_pending_permissions_before_next_prompt() {
         with_session(
             vec![shell_reply(&[("touch cancelled", 10)]), echo_reply()],
             async |mut session, mut events| {
                 session.prompt("run a command".into())?;
-                while session.permission_requests.is_empty() {
+                while session.permission_request.is_none() {
                     if let Event::Permission(_, request, responder) = events.recv().await.unwrap() {
                         session.permission(request, responder)?;
                     }
                 }
                 session.cancel()?;
-                assert!(session.permission_requests.is_empty());
+                assert!(session.permission_request.is_none());
                 let (_text, ok) = turn(&mut session, &mut events, &[]).await;
                 assert!(ok);
                 session.prompt("after".into())?;
@@ -724,12 +672,12 @@ pub mod tests {
                 session.close().await?;
                 session.create().await?;
                 session.prompt("run a command".into())?;
-                while session.permission_requests.is_empty() {
+                while session.permission_request.is_none() {
                     if let Event::Permission(_, request, responder) = events.recv().await.unwrap() {
                         session.permission(request, responder)?;
                     }
                 }
-                assert_eq!(session.permission_requests.len(), 1);
+                assert!(session.permission_request.is_some());
                 Ok(())
             },
         )
@@ -835,7 +783,7 @@ pub mod tests {
                 receiver,
                 async |mut session, mut events| {
                     session.prompt("run a command".into())?;
-                    while session.permission_requests.is_empty() {
+                    while session.permission_request.is_none() {
                         if let Event::Permission(_, request, responder) =
                             events.recv().await.unwrap()
                         {

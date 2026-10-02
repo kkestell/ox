@@ -29,16 +29,13 @@ const SCHEMA: &str = "
 BEGIN;
 
 CREATE TABLE IF NOT EXISTS sessions (
-    id                TEXT PRIMARY KEY,
-    parent_session_id TEXT REFERENCES sessions (id) ON DELETE CASCADE,
-    workspace_path    TEXT NOT NULL,
-    title             TEXT,
-    updated_at        TEXT NOT NULL
+    id             TEXT PRIMARY KEY,
+    workspace_path TEXT NOT NULL,
+    title          TEXT,
+    updated_at     TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS sessions_by_activity ON sessions (updated_at DESC, id);
-
-CREATE INDEX IF NOT EXISTS sessions_by_parent ON sessions (parent_session_id);
 
 CREATE TABLE IF NOT EXISTS transcript_entries (
     id         INTEGER PRIMARY KEY,
@@ -55,53 +52,13 @@ COMMIT;
 
 /// One entry in a session transcript. Every nonempty transcript opens with a
 /// turn start. Each assistant batch contains its message
-/// and one outcome per call, in call order. Subagent messages appear only in a
-/// main session's transcript.
+/// and one outcome per call, in call order.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TranscriptEntry {
     TurnStart(TurnStart),
     AssistantBatch(AssistantBatch),
-    SubagentMessages(Vec<SubagentMessage>),
     /// Why a turn ended with an error. It ends the turn's entries.
     TurnError(String),
-}
-
-/// A subagent's final answer or failure, published to the main agent.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SubagentMessage {
-    /// The subagent's child session ID.
-    pub subagent_id: String,
-    pub content: SubagentMessageContent,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", content = "text", rename_all = "snake_case")]
-pub enum SubagentMessageContent {
-    FinalAnswer(String),
-    Failure(String),
-}
-
-impl SubagentMessage {
-    /// The same attribution in model requests and ACP updates.
-    pub fn label(&self) -> String {
-        match self.content {
-            SubagentMessageContent::FinalAnswer(_) => {
-                format!("Final answer from subagent {}", self.subagent_id)
-            }
-            SubagentMessageContent::Failure(_) => {
-                format!("Failure of subagent {}", self.subagent_id)
-            }
-        }
-    }
-
-    pub fn text(&self) -> &str {
-        match &self.content {
-            SubagentMessageContent::FinalAnswer(text) | SubagentMessageContent::Failure(text) => {
-                text
-            }
-        }
-    }
 }
 
 /// The input that starts a turn, saved with the model, effort level, and
@@ -558,11 +515,6 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
         match entry {
             TranscriptEntry::TurnStart(turn_start) => turn_start.validate()?,
             TranscriptEntry::AssistantBatch(batch) => batch.validate()?,
-            TranscriptEntry::SubagentMessages(messages) => {
-                if messages.is_empty() {
-                    return Err(invalid_data("subagent messages entry is empty"));
-                }
-            }
             TranscriptEntry::TurnError(_) => {}
         }
     }
@@ -572,8 +524,6 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionSummary {
     pub id: SessionId,
-    /// The main session of a child session; `None` for a main session.
-    pub parent_session_id: Option<SessionId>,
     pub workspace_path: PathBuf,
     pub session_title: Option<String>,
     pub updated_at: String,
@@ -645,40 +595,20 @@ impl SessionStore {
         self.0.lock().expect("session store mutex poisoned")
     }
 
-    /// Creates an empty main session. Its settings are saved with its first
-    /// turn start.
+    /// Creates an empty session. Its settings are saved with its first turn
+    /// start.
     pub fn create(&self, workspace_path: &Path) -> io::Result<SessionSummary> {
-        self.insert(None, workspace_path)
-    }
-
-    /// Creates an empty child session of the main session `parent`. Deleting
-    /// the main session deletes it; it never appears in listing.
-    pub fn create_child(
-        &self,
-        parent: &SessionId,
-        workspace_path: &Path,
-    ) -> io::Result<SessionSummary> {
-        self.insert(Some(parent), workspace_path)
-    }
-
-    fn insert(
-        &self,
-        parent: Option<&SessionId>,
-        workspace_path: &Path,
-    ) -> io::Result<SessionSummary> {
         let path = validate_workspace_path(workspace_path)?;
         let id = SessionId::new(uuid::Uuid::new_v4().to_string());
         let at = now();
         self.lock()
             .execute(
-                "INSERT INTO sessions (id, parent_session_id, workspace_path, updated_at)
-             VALUES (?1, ?2, ?3, ?4)",
-                params![id.to_string(), parent.map(ToString::to_string), path, at],
+                "INSERT INTO sessions (id, workspace_path, updated_at) VALUES (?1, ?2, ?3)",
+                params![id.to_string(), path, at],
             )
             .map_err(io::Error::other)?;
         Ok(SessionSummary {
             id,
-            parent_session_id: parent.cloned(),
             workspace_path: workspace_path.to_path_buf(),
             session_title: None,
             updated_at: at,
@@ -707,18 +637,16 @@ impl SessionStore {
         }))
     }
 
-    /// Main sessions, most recently active first, ties broken by ID so the
+    /// Sessions, most recently active first, ties broken by ID so the
     /// order is stable.
     pub fn list(&self, workspace_path: Option<&Path>) -> io::Result<Vec<SessionSummary>> {
         let filter = workspace_path.map(|path| path.to_string_lossy().into_owned());
         let connection = self.lock();
         let mut statement = connection
             .prepare(
-                "SELECT sessions.id, sessions.parent_session_id, sessions.workspace_path,
-                        sessions.title, sessions.updated_at
+                "SELECT sessions.id, sessions.workspace_path, sessions.title, sessions.updated_at
                  FROM sessions
-                 WHERE sessions.parent_session_id IS NULL
-                   AND (?1 IS NULL OR sessions.workspace_path = ?1)
+                 WHERE ?1 IS NULL OR sessions.workspace_path = ?1
                  ORDER BY sessions.updated_at DESC, sessions.id ASC",
             )
             .map_err(io::Error::other)?;
@@ -764,52 +692,6 @@ impl SessionStore {
             .map(drop)
     }
 
-    /// Appends subagent messages to a main session and updates activity in
-    /// one transaction.
-    pub fn append_subagent_messages(
-        &self,
-        id: &SessionId,
-        messages: &[SubagentMessage],
-    ) -> io::Result<()> {
-        if messages.is_empty() {
-            return Err(invalid_data("subagent messages entry is empty"));
-        }
-        let mut connection = self.lock();
-        let tx = connection.transaction().map_err(io::Error::other)?;
-        if summary(&tx, id)
-            .map_err(io::Error::other)?
-            .is_some_and(|summary| summary.parent_session_id.is_some())
-        {
-            return Err(io::Error::new(
-                ErrorKind::InvalidInput,
-                "subagent messages belong only in a main session",
-            ));
-        }
-        write_entries(
-            &tx,
-            id,
-            None,
-            &[TranscriptEntry::SubagentMessages(messages.to_vec())],
-        )?;
-        tx.commit().map_err(io::Error::other)
-    }
-
-    /// The summed model usage cost saved in every child session of `id`, or
-    /// `None` when none reported a cost.
-    pub fn children_cost(&self, id: &SessionId) -> io::Result<Option<f64>> {
-        self.lock()
-            .query_row(
-                "SELECT SUM(json_extract(data, '$.message.usage.cost'))
-                 FROM transcript_entries
-                 JOIN sessions ON sessions.id = transcript_entries.session_id
-                 WHERE sessions.parent_session_id = ?1
-                   AND transcript_entries.kind = 'assistant_batch'",
-                params![id.to_string()],
-                |row| row.get(0),
-            )
-            .map_err(io::Error::other)
-    }
-
     fn append(
         &self,
         id: &SessionId,
@@ -823,13 +705,11 @@ impl SessionStore {
         Ok(summary)
     }
 
-    /// Removes a main session, its transcript, and its child sessions. An
-    /// absent session is a success; a child session is deleted only with its
-    /// main session.
+    /// Removes a session and its transcript. An absent session is a success.
     pub fn delete(&self, id: &SessionId) -> io::Result<()> {
         self.lock()
             .execute(
-                "DELETE FROM sessions WHERE id = ?1 AND parent_session_id IS NULL",
+                "DELETE FROM sessions WHERE id = ?1",
                 params![id.to_string()],
             )
             .map_err(io::Error::other)?;
@@ -854,8 +734,7 @@ fn validate_workspace_path(workspace_path: &Path) -> io::Result<String> {
 fn summary(connection: &Connection, id: &SessionId) -> rusqlite::Result<Option<SessionSummary>> {
     connection
         .query_row(
-            "SELECT sessions.id, sessions.parent_session_id, sessions.workspace_path,
-                    sessions.title, sessions.updated_at
+            "SELECT sessions.id, sessions.workspace_path, sessions.title, sessions.updated_at
              FROM sessions
              WHERE sessions.id = ?1",
             params![id.to_string()],
@@ -867,10 +746,9 @@ fn summary(connection: &Connection, id: &SessionId) -> rusqlite::Result<Option<S
 fn summary_row(row: &Row<'_>) -> rusqlite::Result<SessionSummary> {
     Ok(SessionSummary {
         id: SessionId::new(row.get::<_, String>(0)?),
-        parent_session_id: row.get::<_, Option<String>>(1)?.map(SessionId::new),
-        workspace_path: PathBuf::from(row.get::<_, String>(2)?),
-        session_title: row.get(3)?,
-        updated_at: row.get(4)?,
+        workspace_path: PathBuf::from(row.get::<_, String>(1)?),
+        session_title: row.get(2)?,
+        updated_at: row.get(3)?,
     })
 }
 
@@ -949,9 +827,6 @@ fn encode_entry(entry: &TranscriptEntry) -> (&'static str, String) {
     let (kind, data) = match entry {
         TranscriptEntry::TurnStart(turn_start) => ("turn_start", serde_json::to_string(turn_start)),
         TranscriptEntry::AssistantBatch(batch) => ("assistant_batch", serde_json::to_string(batch)),
-        TranscriptEntry::SubagentMessages(messages) => {
-            ("subagent_messages", serde_json::to_string(messages))
-        }
         TranscriptEntry::TurnError(text) => ("turn_error", serde_json::to_string(text)),
     };
     (kind, data.expect("transcript entries serialize"))
@@ -961,7 +836,6 @@ fn decode_entry(kind: &str, data: &str) -> io::Result<TranscriptEntry> {
     Ok(match kind {
         "turn_start" => TranscriptEntry::TurnStart(decode(kind, data)?),
         "assistant_batch" => TranscriptEntry::AssistantBatch(decode(kind, data)?),
-        "subagent_messages" => TranscriptEntry::SubagentMessages(decode(kind, data)?),
         "turn_error" => TranscriptEntry::TurnError(decode(kind, data)?),
         _ => {
             return Err(invalid_data(format!(
@@ -1514,115 +1388,6 @@ mod tests {
                 })
                 .unwrap()
         })
-    }
-
-    #[test]
-    fn child_sessions_are_hidden_and_deleted_only_with_their_main_session() {
-        let store = SessionStore::in_memory();
-        let main = store.create(workspace()).unwrap().id;
-        let child = store.create_child(&main, workspace()).unwrap();
-        assert_eq!(child.parent_session_id.as_ref(), Some(&main));
-        store
-            .append_turn_start(
-                &child.id,
-                &TurnStart::test("Inspect the parser.".to_owned()),
-            )
-            .unwrap();
-        assert_eq!(ids(&store.list(None).unwrap()), vec![main.to_string()]);
-        assert_eq!(
-            ids(&store.list(Some(workspace())).unwrap()),
-            vec![main.to_string()]
-        );
-        let read = store.read(&child.id).unwrap().unwrap().summary;
-        assert_eq!(read.parent_session_id, Some(main.clone()));
-        assert_eq!(read.session_title.as_deref(), Some("Inspect the parser."));
-
-        store.delete(&child.id).unwrap();
-        assert!(store.read(&child.id).unwrap().is_some());
-        store.delete(&main).unwrap();
-        assert!(store.read(&child.id).unwrap().is_none());
-        assert_eq!(transcript_entry_count(&store), 0);
-        assert!(
-            store.create_child(&main, workspace()).is_err(),
-            "a child session needs its main session"
-        );
-    }
-
-    #[test]
-    fn children_cost_sums_the_saved_costs_of_every_child_session() {
-        let store = SessionStore::in_memory();
-        let batch = |cost: Option<f64>| {
-            let mut message = message(vec![]);
-            message.usage = Some(ModelUsage {
-                input_tokens: 10,
-                cached_tokens: 0,
-                output_tokens: 5,
-                reasoning_tokens: 0,
-                cost,
-            });
-            AssistantBatch::new(message, vec![]).unwrap()
-        };
-        let session = |parent: Option<&SessionId>, costs: &[Option<f64>]| {
-            let id = match parent {
-                Some(parent) => store.create_child(parent, workspace()).unwrap().id,
-                None => store.create(workspace()).unwrap().id,
-            };
-            store
-                .append_turn_start(&id, &TurnStart::test("work".to_owned()))
-                .unwrap();
-            for cost in costs {
-                store.append_batch(&id, &batch(*cost)).unwrap();
-            }
-            id
-        };
-        let main = session(None, &[Some(1.0)]);
-        assert_eq!(store.children_cost(&main).unwrap(), None);
-        session(Some(&main), &[Some(0.25)]);
-        session(Some(&main), &[None]);
-        session(Some(&main), &[Some(0.5), None]);
-        let other = session(None, &[]);
-        session(Some(&other), &[Some(8.0)]);
-        assert_eq!(store.children_cost(&main).unwrap(), Some(0.75));
-    }
-
-    #[test]
-    fn subagent_messages_are_saved_only_in_main_transcripts() {
-        let store = SessionStore::in_memory();
-        let main = store.create(workspace()).unwrap().id;
-        let child = store.create_child(&main, workspace()).unwrap().id;
-        for id in [&main, &child] {
-            store
-                .append_turn_start(id, &TurnStart::test("work".to_owned()))
-                .unwrap();
-        }
-        let messages = vec![
-            SubagentMessage {
-                subagent_id: child.to_string(),
-                content: SubagentMessageContent::FinalAnswer("The parser is fixed.".to_owned()),
-            },
-            SubagentMessage {
-                subagent_id: child.to_string(),
-                content: SubagentMessageContent::Failure("The model refused.".to_owned()),
-            },
-        ];
-        store.append_subagent_messages(&main, &messages).unwrap();
-        assert_eq!(
-            store.read(&main).unwrap().unwrap().transcript[1],
-            TranscriptEntry::SubagentMessages(messages.clone())
-        );
-        assert_eq!(
-            store
-                .append_subagent_messages(&child, &messages)
-                .unwrap_err()
-                .kind(),
-            ErrorKind::InvalidInput
-        );
-        assert!(store.append_subagent_messages(&main, &[]).is_err());
-        let error = read_error(&[user_row(), ("subagent_messages", "[]".to_owned())]);
-        assert!(
-            error.ends_with("subagent messages entry is empty"),
-            "{error}"
-        );
     }
 
     #[test]

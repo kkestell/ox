@@ -362,7 +362,7 @@ fn gray() -> Style {
 }
 
 /// An item's rows. A named call shows as much of its content as `output`
-/// allows; a nameless call, such as a subagent's answer, always shows all of
+/// allows; a nameless call, such as a replayed turn error, always shows all of
 /// it.
 fn item_lines(
     item: &Item,
@@ -450,7 +450,7 @@ pub fn content_lines(
 }
 
 /// A call's content rows `width` columns wide. Text blocks wrap, as Markdown
-/// when the call is nameless, such as a subagent's answer; diff blocks are
+/// when the call is nameless, such as a replayed turn error; diff blocks are
 /// unified hunks, clipped so their indentation survives.
 fn content_rows(call: &ToolCall, width: usize, style: Style) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
@@ -855,9 +855,9 @@ mod tests {
         )
     }
 
-    fn answer(id: &str, text: &str) -> SessionUpdate {
+    fn turn_error(id: &str, text: &str) -> SessionUpdate {
         SessionUpdate::ToolCall(
-            ToolCall::new(id.to_owned(), "Final answer from subagent child-1")
+            ToolCall::new(id.to_owned(), "Turn error")
                 .status(ToolCallStatus::Completed)
                 .content(vec![ToolCallContent::from(ContentBlock::from(text))]),
         )
@@ -1019,7 +1019,10 @@ mod tests {
                 "# not a heading",
             ))]);
         let mut view = self::view(
-            vec![SessionUpdate::ToolCall(output), answer("a", "# heading")],
+            vec![
+                SessionUpdate::ToolCall(output),
+                turn_error("a", "# heading"),
+            ],
             now,
         );
         assert_eq!(
@@ -1028,10 +1031,10 @@ mod tests {
                 "● Read a.md",
                 "  └ # not a heading",
                 "",
-                "● Final answer from subagent child-1",
+                "● Turn error",
                 "  └ heading",
             ],
-            "named output stays plain and a nameless answer is Markdown"
+            "named output stays plain and a nameless call is Markdown"
         );
     }
 
@@ -1240,13 +1243,9 @@ mod tests {
             ),
             (
                 "nameless tool call with wrapped content",
-                vec![answer("a", "Fixed the tallies today.")],
+                vec![turn_error("a", "Fixed the tallies today.")],
                 24,
-                vec![
-                    "● Final answer from sub…",
-                    "  └ Fixed the tallies",
-                    "    today.",
-                ],
+                vec!["● Turn error", "  └ Fixed the tallies", "    today."],
             ),
             (
                 "a blank row between items except between named calls",
@@ -1254,7 +1253,7 @@ mod tests {
                     message("Checking"),
                     read("a", "a"),
                     shell("s", "ls -la", false, ToolCallStatus::Completed),
-                    answer("c", "Fixed."),
+                    turn_error("c", "Fixed."),
                     read("d", "d"),
                     message("Found it"),
                 ],
@@ -1265,7 +1264,7 @@ mod tests {
                     "● Read a",
                     "● Shell ls -la",
                     "",
-                    "● Final answer from subagent child-1",
+                    "● Turn error",
                     "  └ Fixed.",
                     "",
                     "● Read d",
@@ -1288,7 +1287,7 @@ mod tests {
                 "{output:?}"
             );
         }
-        let mut view = view(vec![answer("a", "Fixed.")], now);
+        let mut view = view(vec![turn_error("a", "Fixed.")], now);
         view.notice("Turn error: bad".to_owned(), theme::RED, now);
         view.notice("stderr line".to_owned(), theme::DIM, now);
         let lines = view.lines(40, false, ToolOutput::Summary, now);

@@ -225,11 +225,6 @@ pub(crate) fn input(transcript: &[TranscriptEntry]) -> Vec<Value> {
                     }
                 });
             }
-            TranscriptEntry::SubagentMessages(messages) => input.extend(
-                messages
-                    .iter()
-                    .map(|message| user_message(&model::subagent_message_text(message).into())),
-            ),
             TranscriptEntry::AssistantBatch(batch) => {
                 let message = &batch.message;
                 if turn_provider == Some(model::Provider::OpenAI) {
@@ -251,7 +246,7 @@ pub(crate) fn input(transcript: &[TranscriptEntry]) -> Vec<Value> {
 }
 
 pub(crate) fn ordinary_body(parameters: &ModelRequestParameters, input: Vec<Value>) -> Value {
-    let functions = tools::schemas(parameters.role)
+    let functions = tools::schemas()
         .into_iter()
         .map(|schema| {
             let mut function = schema["function"].clone();
@@ -263,7 +258,7 @@ pub(crate) fn ordinary_body(parameters: &ModelRequestParameters, input: Vec<Valu
     let mut body = json!({
         "model":parameters.model.id, "instructions":parameters.system_prompt, "input":input,
         "store":false, "stream":true, "include":["reasoning.encrypted_content"],
-        "tools":[{"type":"namespace", "name":"ox", "description":"Ox workspace, shell, and subagent tools.", "tools":functions}],
+        "tools":[{"type":"namespace", "name":"ox", "description":"Ox workspace and shell tools.", "tools":functions}],
     });
     if parameters.effort != crate::sessions::EffortLevel::Default {
         body["reasoning"] = json!({"effort":parameters.effort.id(), "summary":"auto"});
@@ -619,7 +614,7 @@ pub(crate) const FIXTURE_CATALOG: &str = r#"{"models":[
 #[cfg(test)]
 pub(crate) mod fixture {
     use super::*;
-    pub use crate::openrouter::fixture::{Gate, Reply, sse};
+    pub use crate::openrouter::fixture::{Reply, sse};
     use crate::tools::fixture::Workspace;
 
     pub const DEFAULT_MODEL: &str = "openai:gpt-6-astra";
@@ -633,13 +628,10 @@ pub(crate) mod fixture {
     }
     impl Server {
         pub async fn start(replies: Vec<Reply>) -> Self {
-            Self::routed(vec![("", replies)]).await
-        }
-        pub async fn routed(routes: Vec<(&str, Vec<Reply>)>) -> Self {
             let workspace = Workspace::new();
             let authentication = Authentication::fixture(workspace.0.clone());
             Self {
-                inner: crate::openrouter::fixture::Server::routed(routes).await,
+                inner: crate::openrouter::fixture::Server::start(replies).await,
                 authentication,
                 _workspace: workspace,
             }
@@ -660,9 +652,6 @@ pub(crate) mod fixture {
         }
         pub fn requests(&self) -> Vec<Value> {
             self.inner.requests()
-        }
-        pub async fn wait_for_requests(&self, marker: &str, count: usize) {
-            self.inner.wait_for_requests(marker, count).await;
         }
     }
     pub fn completed(output: Vec<Value>) -> Value {
@@ -685,11 +674,6 @@ pub(crate) mod fixture {
             completed(vec![]),
         ]))
     }
-    pub fn calls_reply(calls: Vec<Value>) -> Reply {
-        let mut events = calls.into_iter().enumerate().map(|(index, item)| json!({"type":"response.output_item.done","output_index":index,"item":item})).collect::<Vec<_>>();
-        events.push(completed(vec![]));
-        Reply::Stream(sse(&events))
-    }
 }
 
 #[cfg(test)]
@@ -706,7 +690,6 @@ mod tests {
             fixture::DEFAULT_MODEL,
             EffortLevel::Medium,
             "You are Ox.".to_owned(),
-            tools::Role::Main,
         )
         .unwrap()
     }
@@ -819,12 +802,6 @@ mod tests {
                 images: vec![image],
             }),
             TranscriptEntry::AssistantBatch(batch),
-            TranscriptEntry::SubagentMessages(vec![crate::sessions::SubagentMessage {
-                subagent_id: "child-1".to_owned(),
-                content: crate::sessions::SubagentMessageContent::FinalAnswer(
-                    "Found it.".to_owned(),
-                ),
-            }]),
         ];
         for entry in &mut transcript {
             if let TranscriptEntry::TurnStart(start) = entry {
@@ -883,10 +860,6 @@ mod tests {
         assert_eq!(request["input"][4]["call_id"], "call1");
         assert_eq!(request["input"][5]["namespace"], "ox");
         assert_eq!(request["input"][5]["output"], "Contents");
-        assert_eq!(
-            request["input"][6]["content"][0]["text"],
-            "Final answer from subagent child-1:\nFound it."
-        );
         assert_eq!(request["tools"][0]["type"], "namespace");
         assert_eq!(request["tools"][0]["name"], "ox");
         assert!(

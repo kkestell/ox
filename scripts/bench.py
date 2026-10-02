@@ -54,7 +54,6 @@ METRICS = [
     "cost",
     "max_input_tokens",
     "tool_output_chars",
-    "subagents",
 ]
 # The chart's metrics, where lower is better, and its axis tick sets from finest
 # to coarsest.
@@ -434,16 +433,12 @@ def transcript_metrics(database):
         "cost": 0.0,
         "max_input_tokens": 0,
         "tool_output_chars": 0,
-        "subagents": 0,
     }
     # Ox never opened its database when it failed before creating a session.
     if not database.exists():
         return metrics
     connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
     try:
-        metrics["subagents"] = connection.execute(
-            "SELECT count(*) FROM sessions WHERE parent_session_id IS NOT NULL"
-        ).fetchone()[0]
         rows = connection.execute(
             "SELECT session_id, kind, data FROM transcript_entries ORDER BY session_id, id"
         ).fetchall()

@@ -658,7 +658,7 @@ fn approval_lines(view: &TranscriptView, approval: &Approval, width: usize) -> V
         .cloned()
         .unwrap_or_else(|| ToolCall::new(id.clone(), ""));
     call.update(request.tool_call.fields.clone());
-    // Shell content names the subagent, if any, and everything being approved.
+    // Shell content names everything being approved.
     let (heading, body) = match call.name.as_deref() {
         Some("shell") => (
             "Would you like to run the following command?",
@@ -872,8 +872,8 @@ async fn key(
     }
     let control = key.modifiers.contains(KeyModifiers::CONTROL);
     let approval_option_count = session
-        .permission_requests
-        .front()
+        .permission_request
+        .as_ref()
         .map(|(request, _)| request.options.len());
     match key.code {
         KeyCode::Tab | KeyCode::BackTab
@@ -961,7 +961,7 @@ async fn key(
             }
         }
         KeyCode::Esc => {
-            if let Some((request, _)) = session.permission_requests.front() {
+            if let Some((request, _)) = session.permission_request.as_ref() {
                 let reject = request
                     .options
                     .iter()
@@ -1111,9 +1111,6 @@ fn answer(ui: &mut Ui, session: &mut Session, index: usize) -> anyhow::Result<()
     session.answer(index + 1)?;
     ui.approval_selected = 0;
     ui.approval_scroll = 0;
-    if !session.permission_requests.is_empty() {
-        ui.view.changed();
-    }
     Ok(())
 }
 
@@ -1139,9 +1136,8 @@ fn handle(
                 ))?;
                 return Ok(());
             }
-            let first = session.permission_requests.is_empty();
             session.permission(request, responder)?;
-            if first && !session.permission_requests.is_empty() {
+            if session.permission_request.is_some() {
                 ui.approval_selected = 0;
                 ui.approval_scroll = 0;
                 ui.view.changed();
@@ -1197,7 +1193,7 @@ pub async fn run(
                 PickerRows::Sessions(_) => "resume session",
                 PickerRows::Models(_) => "choose model",
             }
-        } else if !session.permission_requests.is_empty() {
+        } else if session.permission_request.is_some() {
             "needs permission"
         } else if session.busy {
             "working"
@@ -1215,8 +1211,8 @@ pub async fn run(
             input: &ui.input,
             commands: &commands,
             approval: session
-                .permission_requests
-                .front()
+                .permission_request
+                .as_ref()
                 .map(|(request, _)| Approval {
                     request,
                     selected: ui.approval_selected,
@@ -1496,12 +1492,12 @@ mod tests {
                     .map(|line| format!("detail {line:02}"))
                     .collect::<Vec<_>>()
                     .join("\n");
-                session.permission_requests.front_mut().unwrap().0 = request("shell", &details);
+                session.permission_request.as_mut().unwrap().0 = request("shell", &details);
                 let mut ui = Ui::default();
                 ui.input.paste("draft");
                 let now = Instant::now();
                 let show = |ui: &mut Ui, session: &Session| {
-                    let request = &session.permission_requests.front().unwrap().0;
+                    let request = &session.permission_request.as_ref().unwrap().0;
                     let mut display = Screen {
                         approval: Some(Approval {
                             request,
@@ -2240,7 +2236,7 @@ mod tests {
 
     /// Collects the next permission request.
     async fn collect_request(session: &mut Session, events: &mut UnboundedReceiver<AcpEvent>) {
-        while session.permission_requests.is_empty() {
+        while session.permission_request.is_none() {
             if let AcpEvent::Permission(_, request, responder) = events.recv().await.unwrap() {
                 session.permission(request, responder).unwrap();
             }
@@ -2396,8 +2392,8 @@ mod tests {
                 assert_eq!(ui.approval_selected, 1);
                 press(&mut ui, &mut session, KeyCode::Esc, now).await?;
                 assert_eq!(
-                    (session.permission_requests.len(), ui.approval_selected),
-                    (0, 0)
+                    (session.permission_request.is_none(), ui.approval_selected),
+                    (true, 0)
                 );
                 assert!(turn(&mut session, &mut events, &[]).await.1);
                 session.prompt("run another command".into())?;
@@ -2405,7 +2401,7 @@ mod tests {
                 press(&mut ui, &mut session, KeyCode::Up, now).await?;
                 press(&mut ui, &mut session, KeyCode::Down, now).await?;
                 press(&mut ui, &mut session, KeyCode::Enter, now).await?;
-                assert!(session.permission_requests.is_empty());
+                assert!(session.permission_request.is_none());
                 let (text, ok) = turn(&mut session, &mut events, &[]).await;
                 assert!(ok);
                 assert_eq!(text, "you said: run another command");
@@ -2414,7 +2410,7 @@ mod tests {
                 press(&mut ui, &mut session, KeyCode::Char('h'), now).await?;
                 press(&mut ui, &mut session, KeyCode::Char('i'), now).await?;
                 press(&mut ui, &mut session, KeyCode::Enter, now).await?;
-                assert!(session.permission_requests.is_empty());
+                assert!(session.permission_request.is_none());
                 assert_eq!(session.queued.as_deref(), Some("hi"));
                 assert!(ui.input.is_empty());
                 let queued = loop {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Exports a session and its subagent sessions from ox.db to a JSON file.
+# Exports a session from ox.db to a JSON file.
 # Entry data and tool call arguments are decoded from their stored JSON text.
 #   scripts/export_session.py 0792a899 -o session.json
 #   jq '.transcript[] | select(.kind == "turn_start") | .data.model' session.json
@@ -50,14 +50,7 @@ def session(database, id):
             (id,),
         )
     ]
-    subagents = [
-        session(database, child["id"])
-        for child in database.execute(
-            "SELECT id FROM sessions WHERE parent_session_id = ? ORDER BY updated_at",
-            (id,),
-        )
-    ]
-    return dict(row) | {"transcript": transcript, "subagents": subagents}
+    return dict(row) | {"transcript": transcript}
 
 
 def decode(value):

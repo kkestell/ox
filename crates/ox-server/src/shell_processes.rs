@@ -1,5 +1,5 @@
 //! The shell processes of one active session: background commands started by
-//! the shell tool, each belonging to the agent that started it. Each has one
+//! the shell tool. Each has one
 //! supervisor task that owns its child, process group, and output capture
 //! until the command ends and its group is cleaned up. `ShellProcesses` registers,
 //! looks up, kills, and shuts down shell processes.
@@ -11,7 +11,6 @@ use std::{
     time::Duration,
 };
 
-use agent_client_protocol::schema::v1::SessionId;
 use futures::{
     FutureExt,
     future::{BoxFuture, Shared, join_all},
@@ -25,7 +24,7 @@ use tokio::{
 
 use crate::process::{Capture, OutputPipes, ProcessGroup, Stream};
 
-/// The most shell processes one agent of an active session retains.
+/// The most shell processes one active session retains.
 const MAX_SHELL_PROCESSES: usize = 16;
 /// How long an explicit stop waits after SIGTERM before sending SIGKILL.
 const STOP_GRACE: Duration = Duration::from_secs(2);
@@ -48,8 +47,6 @@ struct Registry {
 #[derive(Clone)]
 pub struct ShellProcess {
     id: String,
-    /// The agent session ID of the agent that started it.
-    session_id: SessionId,
     command: String,
     output: Arc<Mutex<Output>>,
     stdin: Arc<tokio::sync::Mutex<Option<ChildStdin>>>,
@@ -65,7 +62,7 @@ enum Ending {
     None,
     /// An explicit stop: SIGTERM, then SIGKILL after the grace period.
     Stop,
-    /// Shutdown or the end of the subagent that started it: SIGKILL at once.
+    /// Shutdown: SIGKILL at once.
     Kill,
 }
 
@@ -75,8 +72,7 @@ pub enum State {
     Running,
     /// The command exited on its own.
     Exited(ExitStatus),
-    /// The command ended after an explicit stop, shutdown, or the end of
-    /// the subagent that started it.
+    /// The command ended after an explicit stop or shutdown.
     Stopped(ExitStatus),
     /// Reading its output failed, so Ox ended the command.
     Failed {
@@ -115,14 +111,12 @@ pub enum Interruption {
 
 impl ShellProcesses {
     /// Spawns `command` with piped stdin, stdout, and stderr in a new process
-    /// group and registers it under the agent session ID `session_id`,
-    /// keeping up to `output_limit` bytes of each stream. When that agent
-    /// already retains the most shell processes, its oldest finished one is
-    /// removed first. Fails without spawning when shutdown has begun or every
-    /// shell process that agent retains is running.
+    /// group and registers it, keeping up to `output_limit` bytes of each
+    /// stream. When the session already retains the most shell processes, its
+    /// oldest finished one is removed first. Fails without spawning when
+    /// shutdown has begun or every retained shell process is running.
     pub fn start(
         &self,
-        session_id: &SessionId,
         mut command: Command,
         command_text: &str,
         output_limit: usize,
@@ -135,19 +129,14 @@ impl ShellProcesses {
                 "this session's shell processes are shutting down",
             ));
         }
-        let retained = registry
-            .processes
-            .iter()
-            .filter(|process| &process.session_id == session_id)
-            .count();
-        let removable = if retained < MAX_SHELL_PROCESSES {
+        let removable = if registry.processes.len() < MAX_SHELL_PROCESSES {
             None
         } else {
             Some(
                 registry
                     .processes
                     .iter()
-                    .position(|process| &process.session_id == session_id && process.is_finished())
+                    .position(ShellProcess::is_finished)
                     .ok_or_else(|| {
                         io::Error::other(format!(
                             "{MAX_SHELL_PROCESSES} shell processes are running; stop one before starting another"
@@ -185,7 +174,6 @@ impl ShellProcesses {
         .shared();
         let process = ShellProcess {
             id: uuid::Uuid::new_v4().to_string(),
-            session_id: session_id.clone(),
             command: command_text.to_owned(),
             output,
             stdin,
@@ -196,50 +184,18 @@ impl ShellProcesses {
         Ok(process)
     }
 
-    /// Every shell process the agent session ID `session_id` retains, oldest
-    /// first.
-    pub fn list(&self, session_id: &SessionId) -> Vec<ShellProcess> {
+    /// Every retained shell process, oldest first.
+    pub fn list(&self) -> Vec<ShellProcess> {
+        self.lock().processes.clone()
+    }
+
+    /// The shell process `process_id`.
+    pub fn get(&self, process_id: &str) -> Option<ShellProcess> {
         self.lock()
             .processes
             .iter()
-            .filter(|process| &process.session_id == session_id)
+            .find(|process| process.id == process_id)
             .cloned()
-            .collect()
-    }
-
-    /// The shell process `process_id`, only when the agent session ID
-    /// `session_id` started it.
-    pub fn get(&self, session_id: &SessionId, process_id: &str) -> Option<ShellProcess> {
-        self.lock()
-            .processes
-            .iter()
-            .find(|process| &process.session_id == session_id && process.id == process_id)
-            .cloned()
-    }
-
-    /// Asks the supervisor of every shell process the agent session ID
-    /// `session_id` started to kill its group at once, without waiting.
-    pub fn kill(&self, session_id: &SessionId) {
-        for process in &self.lock().processes {
-            if &process.session_id == session_id {
-                process.ending.send_replace(Ending::Kill);
-            }
-        }
-    }
-
-    /// Kills every shell process the agent session ID `session_id` started,
-    /// waits until each group was cleaned up, and removes them.
-    pub async fn remove(&self, session_id: &SessionId) {
-        self.kill(session_id);
-        let supervisors: Vec<_> = self
-            .list(session_id)
-            .iter()
-            .map(|process| process.supervisor.clone())
-            .collect();
-        join_all(supervisors).await;
-        self.lock()
-            .processes
-            .retain(|process| &process.session_id != session_id);
     }
 
     /// Closes registration and asks every supervisor to kill its group at
@@ -452,10 +408,6 @@ mod tests {
 
     const LIMIT: usize = 1024;
 
-    fn agent() -> SessionId {
-        SessionId::new("agent")
-    }
-
     fn shell(workspace: &Path, command: &str) -> Command {
         let mut shell = Command::new("/bin/sh");
         shell.arg("-c").arg(command).current_dir(workspace);
@@ -463,17 +415,8 @@ mod tests {
     }
 
     fn start(shell_processes: &ShellProcesses, workspace: &Path, command: &str) -> ShellProcess {
-        start_as(shell_processes, &agent(), workspace, command)
-    }
-
-    fn start_as(
-        shell_processes: &ShellProcesses,
-        session_id: &SessionId,
-        workspace: &Path,
-        command: &str,
-    ) -> ShellProcess {
         shell_processes
-            .start(session_id, shell(workspace, command), command, LIMIT)
+            .start(shell(workspace, command), command, LIMIT)
             .unwrap()
     }
 
@@ -555,7 +498,7 @@ mod tests {
         );
         assert_eq!(
             shell_processes
-                .list(&agent())
+                .list()
                 .iter()
                 .map(ShellProcess::command)
                 .collect::<Vec<_>>(),
@@ -680,9 +623,6 @@ mod tests {
     async fn the_limit_removes_the_oldest_finished_process_and_never_a_running_one() {
         let workspace = Workspace::new();
         let shell_processes = ShellProcesses::default();
-        let other = SessionId::new("other");
-        let other_done = start_as(&shell_processes, &other, &workspace.0, "true");
-        finished(&other_done).await;
         let done = start(&shell_processes, &workspace.0, "true");
         finished(&done).await;
         let running: Vec<_> = (1..MAX_SHELL_PROCESSES)
@@ -690,21 +630,12 @@ mod tests {
             .collect();
         let replacement = start(&shell_processes, &workspace.0, "exec sleep 30");
         assert!(
-            shell_processes.get(&agent(), done.id()).is_none(),
+            shell_processes.get(done.id()).is_none(),
             "the finished process was removed"
         );
-        assert!(
-            shell_processes.get(&other, other_done.id()).is_some(),
-            "another agent's finished process was kept"
-        );
-        assert_eq!(shell_processes.list(&agent()).len(), MAX_SHELL_PROCESSES);
+        assert_eq!(shell_processes.list().len(), MAX_SHELL_PROCESSES);
         let refused = shell_processes
-            .start(
-                &agent(),
-                shell(&workspace.0, "touch spawned"),
-                "touch spawned",
-                LIMIT,
-            )
+            .start(shell(&workspace.0, "touch spawned"), "touch spawned", LIMIT)
             .map(|process| process.id().to_owned())
             .unwrap_err();
         assert!(
@@ -715,42 +646,11 @@ mod tests {
         assert!(
             running
                 .iter()
-                .all(|process| shell_processes.get(&agent(), process.id()).is_some())
+                .all(|process| shell_processes.get(process.id()).is_some())
         );
-        assert!(shell_processes.get(&agent(), replacement.id()).is_some());
-        let unaffected = start_as(&shell_processes, &other, &workspace.0, "exec sleep 30");
-        assert_eq!(unaffected.state(), State::Running);
-        assert_eq!(shell_processes.list(&other).len(), 2);
+        assert!(shell_processes.get(replacement.id()).is_some());
         shell_processes.shutdown().await;
         assert!(!workspace.0.join("spawned").exists(), "nothing was spawned");
-    }
-
-    #[tokio::test]
-    async fn removing_an_agent_session_kills_and_forgets_only_its_shell_processes() {
-        let workspace = Workspace::new();
-        let shell_processes = ShellProcesses::default();
-        let other = SessionId::new("other");
-        let removed = start(
-            &shell_processes,
-            &workspace.0,
-            &format!("trap '' TERM; {TREE}; printf ready; read line"),
-        );
-        let kept = start_as(&shell_processes, &other, &workspace.0, "exec sleep 30");
-        printed(&removed, "ready").await;
-        let start_time = Instant::now();
-        shell_processes.remove(&agent()).await;
-        assert!(start_time.elapsed() < STOP_GRACE, "no SIGTERM grace period");
-        assert_eq!(removed.state(), State::Stopped(ExitStatus::from_raw(9)));
-        assert_gone(&workspace.0.join("shell"), true).await;
-        assert_gone(&workspace.0.join("child"), false).await;
-        assert!(shell_processes.list(&agent()).is_empty());
-        assert_eq!(
-            shell_processes
-                .get(&other, kept.id())
-                .map(|process| process.state()),
-            Some(State::Running)
-        );
-        shell_processes.shutdown().await;
     }
 
     #[tokio::test]
@@ -1066,12 +966,7 @@ mod tests {
                     let command = format!("touch started-{index}; exec sleep 30");
                     (
                         index,
-                        shell_processes.start(
-                            &agent(),
-                            shell(&workspace, &command),
-                            &command,
-                            LIMIT,
-                        ),
+                        shell_processes.start(shell(&workspace, &command), &command, LIMIT),
                     )
                 })
             })
