@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
@@ -10,7 +11,7 @@ use crate::{
     shell_processes::ShellProcesses,
 };
 
-mod file;
+mod patch;
 mod read;
 mod search;
 mod shell;
@@ -26,8 +27,7 @@ pub struct ToolContext {
     pub shell_processes: ShellProcesses,
 }
 
-pub const WRITE_FILE: &str = "write_file";
-pub const EDIT_FILE: &str = "edit_file";
+pub const APPLY_PATCH: &str = "apply_patch";
 pub const READ_FILE: &str = "read_file";
 pub const GLOB: &str = "glob";
 pub const SHELL: &str = "shell";
@@ -78,9 +78,14 @@ pub fn schemas() -> Vec<Value> {
         read::schema(),
         search::glob_schema(),
         search::grep_schema(),
-        file::write_schema(),
-        file::edit_schema(),
+        patch::schema(),
     ]
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PatchArgs {
+    patch: String,
 }
 
 /// What the ACP client shows for one call. Arguments come from the model and
@@ -100,8 +105,7 @@ fn default_tool_call_title(call: &ToolCall) -> String {
         READ_FILE => "Read file".to_owned(),
         GLOB => "Find files".to_owned(),
         GREP => "Search file contents".to_owned(),
-        WRITE_FILE => "Write file".to_owned(),
-        EDIT_FILE => "Edit file".to_owned(),
+        APPLY_PATCH => "Apply patch".to_owned(),
         other => other.to_owned(),
     }
 }
@@ -147,8 +151,11 @@ fn describe(call: &ToolCall) -> Option<String> {
             }
             Some(description)
         }
-        WRITE_FILE => Some(format!("Write {}", argument("path")?)),
-        EDIT_FILE => Some(format!("Edit {}", argument("path")?)),
+        APPLY_PATCH => match patch::changed_paths(argument("patch")?).as_slice() {
+            [] => None,
+            [path] => Some(format!("Apply patch to {path}")),
+            paths => Some(format!("Apply patch to {} files", paths.len())),
+        },
         _ => None,
     }
 }
@@ -241,8 +248,10 @@ async fn execute_other(workspace_path: &Path, call: &ToolCall) -> ToolOutcome {
         GLOB | GREP => {
             bounded_result(search::execute(workspace_path, &call.name, &call.arguments).await)
         }
-        WRITE_FILE => bounded_result(file::write(workspace_path, &call.arguments)),
-        EDIT_FILE => bounded_result(file::edit(workspace_path, &call.arguments)),
+        APPLY_PATCH => match serde_json::from_str::<PatchArgs>(&call.arguments) {
+            Ok(args) => bounded_result(patch::apply(workspace_path, &args.patch)),
+            Err(error) => ToolOutcome::failed(format!("arguments: {error}")),
+        },
         other => ToolOutcome::failed(format!("Unknown tool: {other}")),
     }
 }
@@ -359,30 +368,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn file_tools_accept_absolute_paths_inside_the_workspace() {
+    async fn read_tools_accept_absolute_paths_inside_the_workspace() {
         let workspace = fixture::Workspace::new();
+        std::fs::write(workspace.0.join("file"), "needle\n").unwrap();
         let given = workspace.0.display().to_string();
         let canonical = workspace.0.canonicalize().unwrap().display().to_string();
         for (name, args) in [
-            (
-                WRITE_FILE,
-                json!({"path":format!("{given}/file"), "content":"needle\n"}),
-            ),
-            (
-                EDIT_FILE,
-                json!({"path":format!("{canonical}/file"), "old_text":"needle", "new_text":"needle!"}),
-            ),
             (READ_FILE, json!({"path":format!("{given}/file")})),
             (GLOB, json!({"path":given, "pattern":"*"})),
-            (GREP, json!({"path":canonical, "pattern":"needle!"})),
+            (GREP, json!({"path":canonical, "pattern":"needle"})),
         ] {
             let outcome = execute(&workspace.0, &call(name, &args.to_string())).await;
             assert_eq!(outcome.status, ToolStatus::Completed, "{name}: {outcome:?}");
         }
-        assert_eq!(
-            std::fs::read_to_string(workspace.0.join("file")).unwrap(),
-            "needle!\n"
-        );
     }
 
     #[cfg(unix)]
@@ -441,41 +439,46 @@ mod tests {
         assert!(pinned.read_file(&file).is_err());
     }
 
-    #[test]
-    fn tool_schemas_register_the_workspace_and_shell_tools() {
-        let names = schemas()
-            .into_iter()
-            .map(|schema| schema["function"]["name"].as_str().unwrap().to_owned())
+    #[tokio::test]
+    async fn tool_schemas_and_patch_argument_errors() {
+        let schemas = schemas();
+        let names = schemas
+            .iter()
+            .map(|schema| schema["function"]["name"].as_str().unwrap())
             .collect::<Vec<_>>();
         assert_eq!(
             names,
-            [
-                SHELL,
-                SHELL_PROCESS,
-                READ_FILE,
-                GLOB,
-                GREP,
-                WRITE_FILE,
-                EDIT_FILE
-            ]
+            [SHELL, SHELL_PROCESS, READ_FILE, GLOB, GREP, APPLY_PATCH]
         );
-        let schemas = schemas();
         for schema in &schemas {
             assert_eq!(
                 schema["function"]["parameters"]["additionalProperties"],
                 false
             );
         }
-        for (name, required) in [
-            (WRITE_FILE, json!(["path", "content"])),
-            (EDIT_FILE, json!(["path", "old_text", "new_text"])),
-        ] {
-            let schema = schemas
-                .iter()
-                .find(|schema| schema["function"]["name"] == name)
-                .unwrap();
-            assert_eq!(schema["function"]["parameters"]["required"], required);
+        let schema = schemas
+            .iter()
+            .find(|schema| schema["function"]["name"] == APPLY_PATCH)
+            .unwrap();
+        assert_eq!(
+            schema["function"]["parameters"]["required"],
+            json!(["patch"])
+        );
+        for arguments in ["{", "{}", r#"{"patch": 1}"#, r#"{"patch": "", "cwd": "/"}"#] {
+            let outcome = execute(Path::new("/unused"), &call(APPLY_PATCH, arguments)).await;
+            assert_eq!(outcome.status, ToolStatus::Failed);
+            assert!(outcome.text.starts_with("arguments:"), "{}", outcome.text);
         }
+        let workspace = fixture::Workspace::new();
+        let long_path = "雪".repeat(OUTPUT_LIMIT);
+        let patch = format!("*** Begin Patch\n*** Add File: {long_path}\n+x\n*** End Patch");
+        let outcome = execute(
+            &workspace.0,
+            &call(APPLY_PATCH, &json!({"patch":patch}).to_string()),
+        )
+        .await;
+        assert_eq!(outcome.status, ToolStatus::Failed);
+        assert!(outcome.text.len() <= OUTPUT_LIMIT);
     }
 
     #[test]
@@ -544,17 +547,21 @@ mod tests {
                 "Search for fn main in src (files matching *.rs)",
             ),
             (
-                WRITE_FILE,
-                json!({"path":"src/new.rs", "content":""}),
-                "Write src/new.rs",
+                APPLY_PATCH,
+                json!({"patch":"*** Begin Patch\n*** Delete File: src/old.rs\n*** End Patch\n"}),
+                "Apply patch to src/old.rs",
             ),
             (
-                EDIT_FILE,
-                json!({"path":"src/main.rs", "old_text":"a", "new_text":"b"}),
-                "Edit src/main.rs",
+                APPLY_PATCH,
+                json!({"patch":"*** Begin Patch\n*** Delete File: a\n*** Delete File: b\n*** End Patch\n"}),
+                "Apply patch to 2 files",
             ),
-            (WRITE_FILE, json!({"content":""}), "Write file"),
-            (EDIT_FILE, json!({"path":3}), "Edit file"),
+            (
+                APPLY_PATCH,
+                json!({"patch":"*** Begin Patch\n"}),
+                "Apply patch",
+            ),
+            (APPLY_PATCH, json!({"patch":3}), "Apply patch"),
             (
                 READ_FILE,
                 json!({"path": long_path}),
@@ -570,7 +577,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_tools_fail_as_results_and_keep_their_name_as_tool_call_title() {
-        for name in ["launch", "apply_patch"] {
+        for name in ["launch", "write_file", "edit_file"] {
             assert_eq!(
                 execute(Path::new("/workspace"), &call(name, "{}")).await,
                 ToolOutcome::failed(format!("Unknown tool: {name}"))

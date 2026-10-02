@@ -152,7 +152,7 @@ fn tool_kind(call: &ToolCall) -> ToolKind {
         tools::SHELL | tools::SHELL_PROCESS => ToolKind::Execute,
         tools::READ_FILE => ToolKind::Read,
         tools::GLOB | tools::GREP => ToolKind::Search,
-        tools::WRITE_FILE | tools::EDIT_FILE => ToolKind::Edit,
+        tools::APPLY_PATCH => ToolKind::Edit,
         _ => ToolKind::Other,
     }
 }
@@ -626,16 +626,12 @@ mod tests {
     #[test]
     fn tool_call_content_becomes_acp_blocks_and_raw_output_stays_the_text() {
         let call = ToolCall {
-            call_id: "write-1".to_owned(),
-            name: tools::WRITE_FILE.to_owned(),
+            call_id: "patch-1".to_owned(),
+            name: tools::APPLY_PATCH.to_owned(),
             arguments: "{}".to_owned(),
         };
-        let edit = ToolCall {
-            name: tools::EDIT_FILE.to_owned(),
-            ..call.clone()
-        };
-        assert_eq!(tool_kind(&edit), ToolKind::Edit);
-        let outcome = ToolOutcome::completed("Added a").with_content(vec![
+        assert_eq!(tool_kind(&call), ToolKind::Edit);
+        let outcome = ToolOutcome::completed("Applied patch.\nAdded a").with_content(vec![
             ToolContent::Text("Added a".to_owned()),
             ToolContent::Diff {
                 path: "/workspace/a".into(),
@@ -660,7 +656,7 @@ mod tests {
         assert_eq!(replayed.content, expected);
         assert_eq!(
             replayed.raw_output,
-            Some(Value::String("Added a".to_owned()))
+            Some(Value::String("Applied patch.\nAdded a".to_owned()))
         );
         let SessionUpdate::ToolCallUpdate(finished) = finished_tool_call_update(&call, &outcome)
         else {
@@ -669,7 +665,7 @@ mod tests {
         assert_eq!(finished.fields.content, Some(expected));
         assert_eq!(
             finished.fields.raw_output,
-            Some(Value::String("Added a".to_owned()))
+            Some(Value::String("Applied patch.\nAdded a".to_owned()))
         );
     }
 }

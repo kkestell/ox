@@ -977,7 +977,11 @@ mod tests {
     async fn separately_completed_items_require_a_successful_terminal_event() {
         let output = [
             reasoning(),
-            call("write", "write_file", json!({"path":"a","content":"b"})),
+            call(
+                "patch",
+                "apply_patch",
+                json!({"patch":"*** Begin Patch\n*** Add File: a\n+b\n*** End Patch"}),
+            ),
             message("Done."),
         ];
         let events = output.iter().enumerate().map(|(index, item)| json!({"type":"response.output_item.done","output_index":index,"item":item})).collect::<Vec<_>>();

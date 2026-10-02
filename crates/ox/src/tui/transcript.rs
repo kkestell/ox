@@ -1305,20 +1305,20 @@ mod tests {
         let now = Instant::now();
         let old = "fn main() {\n    let config = Config::load();\n    run(config)\n}\n";
         let new = "fn main() {\n    let config = Config::load()?;\n    run(config)\n}\n";
-        let call = ToolCall::new("p", "Edit a.rs")
-            .name("edit_file".to_owned())
+        let call = ToolCall::new("p", "Apply patch to a.rs")
+            .name("apply_patch".to_owned())
             .status(ToolCallStatus::Completed)
             .content(vec![
                 ToolCallContent::from(ContentBlock::from("Modified a.rs")),
                 ToolCallContent::from(Diff::new("/w/a.rs", new).old_text(old.to_owned())),
             ]);
         let mut view = view(vec![SessionUpdate::ToolCall(call)], now);
-        assert_eq!(rows(&mut view, 32, false, now), ["● Edit a.rs"]);
+        assert_eq!(rows(&mut view, 32, false, now), ["● Apply patch to a.rs"]);
         let lines = view.lines(32, false, ToolOutput::Full, now);
         assert_eq!(
             text(&lines),
             [
-                "● Edit a.rs",
+                "● Apply patch to a.rs",
                 "  └ Modified a.rs",
                 "    @@ -1,4 +1,4 @@",
                 "     fn main() {",
@@ -1341,8 +1341,8 @@ mod tests {
                 Some(theme::DIM),
             ]
         );
-        let added = ToolCall::new("a", "Write b")
-            .name("write_file".to_owned())
+        let added = ToolCall::new("a", "Apply patch to b")
+            .name("apply_patch".to_owned())
             .status(ToolCallStatus::Completed)
             .content(vec![ToolCallContent::from(Diff::new(
                 "/w/b",
@@ -1352,7 +1352,7 @@ mod tests {
         assert_eq!(
             text(&view.lines(40, false, ToolOutput::Full, now)),
             [
-                "● Write b",
+                "● Apply patch to b",
                 "  └ @@ -0,0 +1,2 @@",
                 "    +one",
                 "    +        two",

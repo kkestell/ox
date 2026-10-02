@@ -272,8 +272,8 @@ fn render_replies() -> Vec<Reply> {
             "function":{"name":"shell", "arguments":json!({"command":"printf 'a.tally\\nb.tally\\n'", "background":true}).to_string()}
         }),
         json!({
-            "index":3, "id":"edit-1", "type":"function",
-            "function":{"name":"edit_file", "arguments":json!({"path":"a.tally", "old_text":"one", "new_text":"two"}).to_string()}
+            "index":3, "id":"patch-1", "type":"function",
+            "function":{"name":"apply_patch", "arguments":json!({"patch":"*** Begin Patch\n*** Update File: a.tally\n@@\n-one\n+two\n*** End Patch"}).to_string()}
         }),
     ];
     vec![
@@ -541,7 +541,7 @@ fn the_transcript_view_renders_thinking_tools_and_wrapped_replies() {
         "● Shell ls",
         "● Read tallies/2026/september/archi…",
         "● Shell printf 'a.tally\\nb.tally\\n'…",
-        "● Edit a.tally",
+        "● Apply patch to a.tally",
         "● Two tallies were counted in the",
         "a.tally and b.tally",
     ] {
@@ -561,7 +561,7 @@ fn the_transcript_view_renders_thinking_tools_and_wrapped_replies() {
         "● Shell ls\n    └ Exit code: 0",
         "      a.tally\n      b.tally\n      tallies",
         "● Read tallies/2026/september/archi…\n    └ Lines 1–2 of 2",
-        "● Edit a.tally\n    └ Modified a.tally",
+        "● Apply patch to a.tally\n    └ Modified a.tally",
         "      @@ -1 +1 @@\n      -one\n      +two",
     ] {
         assert!(screen.contains(text), "missing {text:?}:\n{screen}");
