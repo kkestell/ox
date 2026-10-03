@@ -8,6 +8,8 @@
 #   scripts/bench.py compare base change    # writes agents/evals/base-vs-change.md
 #
 # Running an existing label again runs only its repetitions without a result.
+# OpenRouter models use OPENROUTER_API_KEY from .env; openai: models use the
+# host's ChatGPT sign-in from `ox auth login openai`.
 
 import argparse
 import concurrent.futures
@@ -289,6 +291,13 @@ def run_repetition(binary, api_key, args, identity, task, rep):
 def attempt_repetition(binary, api_key, args, identity, task, rep, run_dir):
     run_dir.mkdir(parents=True)
     container = f"ox-bench-{args.label}-{task['id']}-{rep}"
+    # ChatGPT subscription credentials rotate on refresh, so every container
+    # shares the host's credential directory and its lock instead of a copy.
+    credentials = (
+        ["-v", f"{Path.home() / '.config' / 'ox'}:/root/.config/ox"]
+        if args.model.startswith("openai:")
+        else []
+    )
     docker(
         "run",
         "-d",
@@ -298,6 +307,7 @@ def attempt_repetition(binary, api_key, args, identity, task, rep, run_dir):
         f"ox-bench={args.label}",
         "-e",
         "CARGO_TARGET_DIR=/tmp/ox-cargo-target",
+        *credentials,
         IMAGE,
         "sleep",
         "infinity",
