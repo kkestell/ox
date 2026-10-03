@@ -32,6 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent
 BENCH = ROOT / "bench"
 EVALS = ROOT / "agents" / "evals"
 TASKS = ROOT / "scripts" / "bench" / "tasks.toml"
+FIXTURES = ROOT / "scripts" / "bench" / "fixtures"
 IMAGE = "ox-bench"
 # Seconds between SIGTERM and SIGKILL for a timed-out run.
 KILL_GRACE = 30
@@ -152,7 +153,7 @@ def run(parser, args):
                     f" {'passed' if result['passed'] else 'failed check'},"
                     f" {result['requests']} requests,"
                     f" {result['tool_calls']} tool calls,"
-                    f" ${result['cost']:.4f}, {result['seconds']:.0f}s",
+                    f" {number('cost', result['cost'])}, {result['seconds']:.0f}s",
                     flush=True,
                 )
         except KeyboardInterrupt:
@@ -345,6 +346,12 @@ def attempt_repetition(binary, api_key, args, identity, task, rep, run_dir):
                 "--quiet",
                 commit,
             )
+        # The fixtures hold each task's expected results, so they are in the
+        # container only while setup and the check run.
+        if "setup" in task:
+            docker("cp", str(FIXTURES), f"{container}:/fixtures")
+            docker("exec", "-w", "/workspace", container, "sh", "-c", task["setup"])
+            docker("exec", container, "rm", "-rf", "/fixtures")
 
         started_at = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
         start = time.monotonic()
@@ -393,6 +400,8 @@ def attempt_repetition(binary, api_key, args, identity, task, rep, run_dir):
         else:
             status = "failed"
 
+        if "setup" in task:
+            docker("cp", str(FIXTURES), f"{container}:/fixtures")
         with open(run_dir / "check.txt", "w") as check:
             passed = (
                 subprocess.run(
@@ -470,7 +479,11 @@ def transcript_metrics(database):
                 metrics["cached_tokens"] += usage.get("cached_tokens", 0)
                 metrics["output_tokens"] += usage["output_tokens"]
                 metrics["reasoning_tokens"] += usage.get("reasoning_tokens", 0)
-                metrics["cost"] += usage["cost"]
+                # ChatGPT subscription responses have no cost.
+                if metrics["cost"] is not None:
+                    metrics["cost"] = (
+                        None if usage["cost"] is None else metrics["cost"] + usage["cost"]
+                    )
                 metrics["max_input_tokens"] = max(
                     metrics["max_input_tokens"], usage["input_tokens"]
                 )
@@ -490,7 +503,8 @@ def transcript_metrics(database):
                     metrics["repeated_calls"] += 1
                 seen_calls.add(key)
                 metrics["tool_output_chars"] += len(outcome["text"])
-    metrics["cost"] = round(metrics["cost"], 6)
+    if metrics["cost"] is not None:
+        metrics["cost"] = round(metrics["cost"], 6)
     return metrics
 
 
@@ -714,7 +728,14 @@ def chart_svg(results, base, candidate):
             (values(base, task_id, metric), values(candidate, task_id, metric))
             for task_id in task_ids
         ]
-        pairs = [(a, b) for a, b in pairs if a and b and min(a) > 0 and min(b) > 0]
+        pairs = [
+            (a, b)
+            for a, b in pairs
+            if a and b and None not in a + b and min(a) > 0 and min(b) > 0
+        ]
+        if not pairs:
+            overall[metric] = None
+            continue
 
         def mean_ratio(sample):
             return statistics.geometric_mean(
@@ -762,7 +783,8 @@ def chart_svg(results, base, candidate):
         out.append(f'<text class="secondary" x="{pad}" y="{y}">{line}</text>')
     left = pad + name_width
     reach = 1.1 * max(
-        math.log(1.1), *(abs(math.log(x)) for r in overall.values() for x in r)
+        math.log(1.1),
+        *(abs(math.log(x)) for r in overall.values() if r for x in r),
     )
 
     def x(ratio):
@@ -791,9 +813,16 @@ def chart_svg(results, base, candidate):
         ' text-anchor="end">higher →</text>'
     )
     for row, (metric, title) in enumerate(CHART_METRICS):
+        cy = rows_top + row * row_height + row_height / 2
+        if overall[metric] is None:
+            out.append(
+                f'<text class="strong" x="{pad}" y="{cy + 4}">{title}</text>'
+                f'<text class="muted" x="{left + plot_width + 24}" y="{cy + 4}">'
+                "unavailable</text>"
+            )
+            continue
         low, point, high = overall[metric]
         kind = verdict(low, high)
-        cy = rows_top + row * row_height + row_height / 2
         summary = f"{change(point)} ({change(low)} to {change(high)})"
         word = {"good": "Lower", "bad": "Higher", "neutral": "No clear change"}[kind]
         out.append(
@@ -839,13 +868,14 @@ def chart_svg(results, base, candidate):
                 kind = pass_verdict(pa, na, pb, nb)
                 tip = f"{base} {pa}/{na}; {candidate} {pb}/{nb}"
             else:
-                if not a or not b or not statistics.median(a):
+                if not a or not b or None in a + b or not statistics.median(a):
                     text, kind = "-", "neutral"
                 else:
                     text = change(statistics.median(b) / statistics.median(a))
                     kind = verdict(min(b) / max(a), max(b) / min(a))
                 tip = "; ".join(
-                    f"{label} " + ", ".join(number(metric, v) for v in sorted(vs))
+                    f"{label} "
+                    + ", ".join(number(metric, v) for v in sorted(vs, key=lambda v: v or 0))
                     for label, vs in ((base, a), (candidate, b))
                 )
             cell_left = left + column * column_width
@@ -931,13 +961,15 @@ def numeric_row(name, metric, values, totals):
     medians = []
     cells = []
     for label, label_values in values.items():
-        if not label_values:
+        if not label_values or None in label_values:
             medians.append(None)
-            cells.append("-")
+            cells.append("unavailable" if label_values else "-")
+            if label_values and metric:
+                totals[label][metric] = None
             continue
         median = statistics.median(label_values)
         medians.append(median)
-        if metric:
+        if metric and totals[label].get(metric, 0) is not None:
             totals[label][metric] = totals[label].get(metric, 0) + median
         low, high = min(label_values), max(label_values)
         cell = number(metric, median)
@@ -960,6 +992,8 @@ def with_changes(values, cells):
 
 
 def number(metric, value):
+    if value is None:
+        return "unavailable"
     if metric == "cost":
         return f"${value:.4f}"
     if metric == "seconds" or float(value).is_integer():
