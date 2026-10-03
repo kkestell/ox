@@ -400,7 +400,7 @@ def attempt_repetition(binary, api_key, args, identity, task, rep, run_dir):
         else:
             status = "failed"
 
-        if "setup" in task:
+        if "/fixtures/" in task["check"]:
             docker("cp", str(FIXTURES), f"{container}:/fixtures")
         with open(run_dir / "check.txt", "w") as check:
             passed = (

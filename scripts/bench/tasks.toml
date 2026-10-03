@@ -219,3 +219,17 @@ prompt = """
 Implement SPEC.md. Try the new option with python3 -m shop, and fix any \
 problems."""
 check = "python3 /fixtures/shop.py check lf"
+
+[[task]]
+id = "mini-redis-del"
+repo = "https://github.com/tokio-rs/mini-redis/commit/3d93b42bc363220f85af4fc9e1bebd35b588a4a3"
+prompt = """
+Add DEL and EXISTS commands to mini-redis, following how the existing commands \
+are built. `DEL key [key ...]` removes the keys and replies with the number of \
+keys removed. `EXISTS key [key ...]` replies with the number of the given keys \
+that exist, counting a key named twice twice. Add `del` and `exists` methods \
+to Client and BlockingClient that take `&[String]` and return \
+`crate::Result<u64>`, and add `del` and `exists` subcommands to \
+mini-redis-cli that take one or more keys and print `(integer) N`. Add tests \
+to tests/server.rs and tests/client.rs, run cargo test, and fix any failures."""
+check = "python3 /fixtures/mini_redis.py check"
