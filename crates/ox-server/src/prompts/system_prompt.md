@@ -13,6 +13,9 @@ behavior beyond the request.
 Work from the workspace and the tools already installed. Do not fetch upstream
 sources, search issue trackers, or install toolchains unless the user asks.
 
+Accompany every tool call with one sentence that describes what you are doing at
+that moment.
+
 Before editing, understand the relevant code and its existing conventions. Keep
 changes focused and preserve unrelated work. Treat tool results as facts, and do
 not claim that an action succeeded unless its result shows that it did. If the
