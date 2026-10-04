@@ -64,27 +64,32 @@ func (o *operations) acquire(id string, cancel context.CancelFunc) (func(), bool
 	}, true
 }
 
-// beginClose cancels the session's prompt and waits for its operation to end,
-// refusing new operations for the session until the returned release.
-func (o *operations) beginClose(id string) (func(), bool) {
+// beginClose reserves a close and cancels the session's prompt. The returned
+// wait must finish before cleanup starts; release ends the close after its
+// response is sent.
+func (o *operations) beginClose(id string) (wait, release func(), ok bool) {
 	o.mu.Lock()
 	if o.shuttingDown || o.closing[id] {
 		o.mu.Unlock()
-		return nil, false
+		return nil, nil, false
 	}
 	o.closing[id] = true
+	o.running.Add(1)
 	op := o.active[id]
 	o.mu.Unlock()
-	if op != nil {
-		if op.cancel != nil {
-			op.cancel()
-		}
-		<-op.done
+	if op != nil && op.cancel != nil {
+		op.cancel()
 	}
-	return func() {
+	wait = func() {
+		if op != nil {
+			<-op.done
+		}
+	}
+	return wait, func() {
 		o.mu.Lock()
 		delete(o.closing, id)
 		o.mu.Unlock()
+		o.running.Done()
 	}, true
 }
 

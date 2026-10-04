@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -357,6 +359,17 @@ func TestAStreamWithoutDataStallsAsATemporaryFailure(t *testing.T) {
 	_, err = stream.Next()
 	if err == nil || !openrouter.IsTemporary(err) || !strings.Contains(err.Error(), "no response data") {
 		t.Errorf("stall: %v", err)
+	}
+}
+
+func TestStreamPreservesTransportErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	endpoint := server.URL
+	server.Close()
+	client := openrouter.NewForEndpoint("test-key", endpoint)
+	_, err := client.Stream(context.Background(), request(defaultModel(), catalog.EffortDefault, userTurn("hi")))
+	if err == nil || errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "OpenRouter request failed") {
+		t.Fatalf("transport error = %v", err)
 	}
 }
 

@@ -131,6 +131,22 @@ func TestPatchHandlesEmptyFilesMarkerLikeLinesAndBinaryMoves(t *testing.T) {
 	}
 }
 
+func TestLargePatchSummaryIsBoundedAndKeepsEveryDiff(t *testing.T) {
+	tools := toolbox(t)
+	var body strings.Builder
+	const count = 180
+	for i := range count {
+		fmt.Fprintf(&body, "*** Add File: %03d-%s\n+content\n", i, strings.Repeat("雪", 32))
+	}
+	outcome := tools.call(ApplyPatch, object{"patch": wrapped(body.String())})
+	if outcome.Status != transcript.ToolCompleted || len(outcome.Text) > outputLimit || !strings.HasSuffix(outcome.Text, "Summary truncated.") {
+		t.Fatalf("summary: %s, %d bytes", outcome.Status, len(outcome.Text))
+	}
+	if len(outcome.Content) != count*2 || entries(t, tools.Workspace) != count {
+		t.Fatalf("content blocks = %d, files = %d", len(outcome.Content), entries(t, tools.Workspace))
+	}
+}
+
 func TestPatchMatchingIsExactLiteralAndForward(t *testing.T) {
 	for _, test := range []struct{ source, body, want string }{
 		{"x\nx\nx\n", "@@\n-x\n+y\n@@\n-x\n+z\n", "y\nz\nx\n"},

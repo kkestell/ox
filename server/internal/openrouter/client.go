@@ -131,7 +131,7 @@ func (c *Client) Stream(ctx context.Context, r Request) (*Stream, error) {
 	request.Header.Set("Content-Type", "application/json")
 	response, err := c.http.Do(request)
 	if err != nil {
-		stream.Close()
+		defer stream.Close()
 		return nil, stream.readFailure(err)
 	}
 	if response.StatusCode/100 != 2 {

@@ -302,6 +302,9 @@ func TestGlobsMatchLikeRipgrep(t *testing.T) {
 		{"*.{rs,go}", "./main.go", true},
 		{"!*.rs", "./main.go", true},
 		{"a.rs", "./src/xa.rs", false},
+		{"雪*.rs", "./src/雪.rs", true},
+		{"café/*.go", "./café/main.go", true},
+		{`\雪.rs`, "./雪.rs", true},
 	} {
 		matcher, err := compileGlob(test.glob)
 		if err != nil || matcher.match(test.path) != test.want {

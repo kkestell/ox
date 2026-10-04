@@ -277,13 +277,13 @@ func (s *Server) closeSession(r *acp.Request) *acp.Error {
 	if err := r.Params(&params); err != nil {
 		return err
 	}
+	wait, release, ok := s.ops.beginClose(params.SessionID)
+	if !ok {
+		return s.unavailable()
+	}
 	go func() {
-		release, ok := s.ops.beginClose(params.SessionID)
-		if !ok {
-			r.Fail(s.unavailable())
-			return
-		}
 		defer release()
+		wait()
 		session := s.session(params.SessionID)
 		if session == nil {
 			r.Fail(inactive(params.SessionID))
