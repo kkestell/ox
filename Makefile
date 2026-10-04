@@ -2,21 +2,21 @@
 
 # ox finds ox-server next to its own binary, so both build into bin/.
 build:
-	cd server && go build -trimpath -ldflags="-s -w" -o ../bin/ ./cmd/ox ./cmd/ox-server
+	go build -trimpath -ldflags="-s -w" -o bin/ ./cmd/ox ./cmd/ox-server
 
 check: check-docs
-	test -z "$$(gofmt -l server)" || (gofmt -l server && exit 1)
-	cd server && go vet ./...
-	cd server && go test ./...
+	test -z "$$(gofmt -l cmd internal)" || (gofmt -l cmd internal && exit 1)
+	go vet ./...
+	go test ./...
 
 e2e:
-	cd server && OX_E2E=1 go test -count=1 -run '^TestTerminal' ./cmd/ox
+	OX_E2E=1 go test -count=1 -run '^TestTerminal' ./cmd/ox
 
 check-docs:
 	dprint check
 
 format: format-docs
-	gofmt -w server
+	gofmt -w cmd internal
 
 format-docs:
 	dprint fmt
