@@ -133,26 +133,6 @@ func (d *driver) awaitMessage() {
 	}
 }
 
-// finish waits for the turn to end, holding permission requests, and returns
-// the queued prompt it sent.
-func (d *driver) finish() string {
-	d.t.Helper()
-	for {
-		switch event := d.next().(type) {
-		case *client.Permission:
-			if err := d.session.Ask(event); err != nil {
-				d.t.Fatal(err)
-			}
-		case client.Finished:
-			queued, err := d.session.Finished()
-			if err != nil {
-				d.t.Fatal(err)
-			}
-			return queued
-		}
-	}
-}
-
 // turn collects the turn's response text and reports whether it succeeded.
 func (d *driver) turn() (string, bool) {
 	d.t.Helper()
@@ -164,8 +144,8 @@ func (d *driver) turn() (string, bool) {
 				text.WriteString(content(chunk.Content))
 			}
 		case client.Finished:
-			if queued, err := d.session.Finished(); queued != "" || err != nil {
-				d.t.Fatalf("queued %q, %v", queued, err)
+			if err := d.session.Finished(); err != nil {
+				d.t.Fatal(err)
 			}
 			return text.String(), event.Err == nil
 		}
@@ -217,46 +197,28 @@ func TestModelKeysChooseAModelOrCancel(t *testing.T) {
 	equal(t, d.input.empty(), true)
 }
 
-func TestTheModelPickerOpensOnFavoritesAndLeftAndRightSwitchLists(t *testing.T) {
+// matchNames returns the names of the model picker's matches.
+func (d *driver) matchNames() []string {
+	var names []string
+	for _, index := range d.picker.matches {
+		names = append(names, d.picker.models[index].name)
+	}
+	return names
+}
+
+func TestTheModelPickerListsFavoritesFirstInTheSessionsOrder(t *testing.T) {
 	d := newDriver(t)
-	d.favorites = []string{"openrouter:z-ai/glm-5.3-flash", openroutertest.DefaultModel}
-	state := func() ([]int, int) { return d.picker.matches, d.picker.selected }
-	check := func(matches []int, selected int, context string) {
-		t.Helper()
-		gotMatches, gotSelected := state()
-		equal(t, gotMatches, matches, context)
-		equal(t, gotSelected, selected, context)
-	}
+	d.favorites = []string{"openrouter:acme/plain", "missing/model", "openrouter:z-ai/glm-5.3-flash"}
 	d.command("/model")
-	check([]int{1, 0}, 1, "opens on Favorites, in the order they were added, with the current model selected")
-	d.press(tea.KeyRight)
-	check([]int{0, 1, 2, 3}, 0, "Right shows All")
-	d.typeText("deep")
-	check([]int{0}, 0, "search")
+	equal(t, d.matchNames(), []string{"GLM 5.3 Flash", "Plain", "DeepSeek V4.1 Flash", "Muse Spark 1.3 Contributor"})
+	equal(t, d.picker.selected, 2, "the current model is selected")
 	d.press(tea.KeyLeft)
-	check([]int{0}, 0, "the query is kept across a switch")
-	for range 4 {
-		d.press(tea.KeyBackspace)
-	}
-	check([]int{1, 0}, 0, "cleared")
+	equal(t, d.matchNames(), []string{"GLM 5.3 Flash", "Plain", "DeepSeek V4.1 Flash", "Muse Spark 1.3 Contributor"}, "Left does not change the list")
+	d.typeText("flash")
+	equal(t, d.matchNames(), []string{"GLM 5.3 Flash", "DeepSeek V4.1 Flash"})
 	d.press(tea.KeyEnter)
 	equal(t, d.picker == nil, true)
 	equal(t, d.settings(), "Ask • GLM 5.3 Flash • Default")
-}
-
-func TestTheModelPickerShowsOnlyAllWithoutAnOfferedFavorite(t *testing.T) {
-	d := newDriver(t)
-	for _, favorites := range [][]string{nil, {"missing/model"}} {
-		d.favorites = favorites
-		d.command("/model")
-		d.press(tea.KeyLeft)
-		equal(t, d.picker.matches, []int{0, 1, 2, 3}, favorites)
-		s := testScreen(&transcript{}, &input{}, time.Now())
-		s.picker = d.picker
-		rows, _, _, _ := render(s, 40, 8)
-		equal(t, rows[2], "    Search", favorites)
-		d.press(tea.KeyEscape)
-	}
 }
 
 func TestControlFFavoritesAndUnfavoritesTheSelectedModelAndSavesTheFavorites(t *testing.T) {
@@ -265,7 +227,7 @@ func TestControlFFavoritesAndUnfavoritesTheSelectedModelAndSavesTheFavorites(t *
 	path := filepath.Join(directory, "ox/settings.json")
 	d.favorites = []string{"missing/model"}
 	d.configPath = path
-	check := func(favorites []string, matches []int, selected int, context string) {
+	check := func(favorites, names []string, selected string, context string) {
 		t.Helper()
 		saved, err := settings.ReadClient(path)
 		if err != nil {
@@ -273,29 +235,29 @@ func TestControlFFavoritesAndUnfavoritesTheSelectedModelAndSavesTheFavorites(t *
 		}
 		equal(t, saved.Favorites, d.favorites, context)
 		equal(t, d.favorites, favorites, context)
-		equal(t, d.picker.matches, matches, context)
-		equal(t, d.picker.selected, selected, context)
+		equal(t, d.matchNames(), names, context)
+		equal(t, d.matchNames()[d.picker.selected], selected, context)
 	}
 	glm := "openrouter:z-ai/glm-5.3-flash"
 	d.command("/model")
 	d.press(tea.KeyDown)
 	d.press('f', tea.ModCtrl)
-	check([]string{"missing/model", glm}, []int{0, 1, 2, 3}, 1, "favoriting keeps the selection")
-	d.press(tea.KeyUp)
+	check([]string{"missing/model", glm}, []string{"GLM 5.3 Flash", "DeepSeek V4.1 Flash", "Muse Spark 1.3 Contributor", "Plain"},
+		"GLM 5.3 Flash", "favoriting moves the model first and keeps it selected")
+	d.press(tea.KeyDown)
 	d.press('f', tea.ModCtrl)
-	d.press(tea.KeyLeft)
-	check([]string{"missing/model", glm, openroutertest.DefaultModel}, []int{1, 0}, 0, "favorites")
+	check([]string{"missing/model", glm, openroutertest.DefaultModel}, []string{"DeepSeek V4.1 Flash", "GLM 5.3 Flash", "Muse Spark 1.3 Contributor", "Plain"},
+		"DeepSeek V4.1 Flash", "favorites keep the session's order")
 	d.press('f', tea.ModCtrl)
-	check([]string{"missing/model", openroutertest.DefaultModel}, []int{0}, 0, "unfavoriting removes the row from Favorites")
-	d.press('f', tea.ModCtrl)
-	check([]string{"missing/model"}, []int{0, 1, 2, 3}, 0, "the last offered favorite's removal shows All")
+	check([]string{"missing/model", glm}, []string{"GLM 5.3 Flash", "DeepSeek V4.1 Flash", "Muse Spark 1.3 Contributor", "Plain"},
+		"DeepSeek V4.1 Flash", "unfavoriting moves the model back")
 	equal(t, d.input.empty(), true)
 	d.configPath = directory
 	d.press('f', tea.ModCtrl)
 	if !strings.HasPrefix(d.picker.err, "Favorite failed: ") {
 		t.Errorf("error %q", d.picker.err)
 	}
-	equal(t, d.favorites, []string{"missing/model"})
+	equal(t, d.favorites, []string{"missing/model", glm})
 }
 
 func TestResumeKeysCancelOrReloadTheCurrentSession(t *testing.T) {
@@ -342,36 +304,100 @@ func TestEnterRefusesAnUnknownSlashCommand(t *testing.T) {
 	}
 }
 
-func TestTheResumeWaitDoesNotQueueAnotherPrompt(t *testing.T) {
-	d := newDriver(t, hang("running"))
-	if _, err := d.session.Prompt("running"); err != nil {
-		t.Fatal(err)
+func TestATurnKeepsPromptsAndResumeInTheComposerUntilItEnds(t *testing.T) {
+	d := newDriver(t, hang("running"), openroutertest.Echo())
+	d.session.Prompt("running")
+	d.awaitMessage()
+	for _, text := range []string{"next", "/resume"} {
+		d.input.clear()
+		d.input.paste(text)
+		d.press(tea.KeyEnter)
+		equal(t, d.input.text, text)
+		equal(t, d.picker == nil, true)
 	}
-	d.command("/resume")
-	equal(t, d.resumeAfterTurn, true)
-	d.command("later")
-	equal(t, d.input.text, "later")
-	equal(t, d.session.Queued, "")
+	d.input.clear()
+	d.input.paste("next")
+	d.press(tea.KeyEscape)
+	if _, ok := d.turn(); !ok {
+		t.Error("the cancelled turn failed")
+	}
+	d.press(tea.KeyEnter)
+	equal(t, d.input.empty(), true)
+	text, _ := d.turn()
+	equal(t, text, "you said: next")
 }
 
-func TestASecondSubmissionStaysInTheComposerWhileAPromptIsQueued(t *testing.T) {
-	d := newDriver(t, hang("running"), openroutertest.Echo())
-	if _, err := d.session.Prompt("running"); err != nil {
-		t.Fatal(err)
+func TestRequestsDoNotHoldBackKeysOrServerEvents(t *testing.T) {
+	d := newDriver(t)
+	cmd := d.cycle(protocol.SessionConfigOptionCategoryMode, true, "Mode change failed")
+	d.send(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	equal(t, d.input.text, "x")
+	d.send(client.Diagnostic("diagnostic"))
+	equal(t, d.view.last().text, "diagnostic")
+	d.send(cmd())
+	equal(t, d.settings(), "Auto • DeepSeek V4.1 Flash • Default")
+}
+
+func TestQuickConfigChangesCycleFromTheShownChoiceAndTheLatestResultWins(t *testing.T) {
+	d := newDriver(t)
+	var cmds []tea.Cmd
+	for range 3 {
+		cmds = append(cmds, d.cycle(protocol.SessionConfigOptionCategoryThoughtLevel, true, "Effort change failed"))
 	}
-	d.awaitMessage()
-	now := time.Now()
-	d.input.paste("first")
-	d.submit(now)
-	equal(t, d.input.empty(), true)
-	d.input.paste("second")
-	d.submit(now)
-	equal(t, d.input.text, "second")
-	equal(t, d.session.Queued, "first")
-	equal(t, d.finish(), "first")
-	text, _ := d.turn()
-	equal(t, text, "you said: first")
-	equal(t, d.input.text, "second")
+	equal(t, d.settings(), "Ask • DeepSeek V4.1 Flash • High")
+	msgs := []tea.Msg{cmds[0](), cmds[1](), cmds[2]()}
+	d.send(msgs[2])
+	d.send(msgs[0])
+	equal(t, d.settings(), "Ask • DeepSeek V4.1 Flash • High")
+}
+
+func TestAConfigResultForAReplacedSessionIsIgnored(t *testing.T) {
+	d := newDriver(t)
+	option := selectOption(d.session.ConfigOptions, protocol.SessionConfigOptionCategoryMode)
+	applied := false
+	msg := d.setConfigOption(option.Id, "auto", func(*model, error) { applied = true })()
+	d.command("/new")
+	options := d.session.ConfigOptions
+	d.send(msg)
+	equal(t, applied, false)
+	equal(t, d.session.ConfigOptions, options)
+}
+
+func TestOpeningASessionHoldsServerEventsUntilItOpens(t *testing.T) {
+	d := newDriver(t, openroutertest.Echo())
+	d.session.Prompt("first")
+	if _, ok := d.turn(); !ok {
+		t.Fatal("the turn failed")
+	}
+	id := d.session.ID
+	d.command("/resume")
+	cmd := d.choose()
+	equal(t, d.opening, true)
+	d.press(tea.KeyEnter)
+	d.press(tea.KeyEscape)
+	if d.picker == nil {
+		t.Fatal("Escape closed the picker while the session opened")
+	}
+	result := cmd()
+	// The first replayed event arrives before the result and waits.
+	d.send(d.next())
+	equal(t, d.held != nil, true)
+	equal(t, len(d.view.items), 0)
+	_, deliver := d.model.Update(result)
+	d.send(deliver())
+	// The available commands follow the load's response.
+	for {
+		event := d.next()
+		d.send(event)
+		if update, ok := event.(client.Update); ok && update.Update.AvailableCommandsUpdate != nil {
+			break
+		}
+	}
+	equal(t, d.session.ID, id)
+	equal(t, d.opening, false)
+	equal(t, d.view.items[0].kind, userItem)
+	equal(t, d.view.items[0].text, "first")
+	equal(t, d.view.items[1].text, "you said: first")
 }
 
 func TestControlTTogglesThinkingAndControlOCyclesToolOutput(t *testing.T) {
@@ -454,14 +480,9 @@ func TestApprovalKeysMoveTheSelectionAndEnterAnswersOnlyWithAnEmptyInput(t *test
 	d := newDriver(t,
 		openroutertest.Shell("true"), openroutertest.Echo(),
 		openroutertest.Shell("true"), openroutertest.Echo(),
-		openroutertest.Shell("true"), openroutertest.Echo(),
+		openroutertest.Shell("true"), openroutertest.Echo(), openroutertest.Echo(),
 	)
-	prompt := func(text string) {
-		t.Helper()
-		if _, err := d.session.Prompt(text); err != nil {
-			t.Fatal(err)
-		}
-	}
+	prompt := d.session.Prompt
 	prompt("run a command")
 	d.collectRequest()
 	d.press(tea.KeyDown)
@@ -486,10 +507,11 @@ func TestApprovalKeysMoveTheSelectionAndEnterAnswersOnlyWithAnEmptyInput(t *test
 	d.collectRequest()
 	d.typeText("hi")
 	d.press(tea.KeyEnter)
-	equal(t, d.session.Permission == nil, true)
-	equal(t, d.session.Queued, "hi")
-	equal(t, d.input.empty(), true)
-	equal(t, d.finish(), "hi")
+	equal(t, d.session.Permission == nil, false)
+	equal(t, d.input.text, "hi")
+	d.press(tea.KeyEscape)
+	d.turn()
+	d.press(tea.KeyEnter)
 	text, ok = d.turn()
 	equal(t, text, "you said: hi")
 	equal(t, ok, true)

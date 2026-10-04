@@ -324,7 +324,7 @@ func TestModelPickerRowsAlignProviderAndPriceColumnsAndLeaveInvalidMetadataBlank
 		modelChoiceWith("other", "Other server model", map[string]any{"provider": 7.0, "inputPrice": "free", "contextLimit": 1.5}),
 		modelChoiceWith("missing", "Missing provider", map[string]any{"inputPrice": 1.5, "contextLimit": 8001.0}),
 	}
-	p := newModelPicker(newModelRows(models, nil))
+	p := newModelPicker(models, nil)
 	p.moveTo(1, 4)
 	s := testScreen(&transcript{}, &input{}, time.Now())
 	s.picker = p
@@ -343,31 +343,16 @@ func TestModelPickerRowsAlignProviderAndPriceColumnsAndLeaveInvalidMetadataBlank
 	equal(t, cursor, image.Pt(4, 2), "the cursor starts on the search placeholder")
 }
 
-func TestTheModelPickerSearchRowShowsTheActiveListInWhiteAndAllShowsFavoritesInBold(t *testing.T) {
+func TestTheModelPickerShowsFavoritesFirstInBold(t *testing.T) {
 	models := []modelChoice{modelChoiceWith("flash", "Flash", nil), modelChoiceWith("opus", "Opus", nil)}
-	p := newModelPicker(newModelRows(models, []string{"opus"}))
-	for _, test := range []struct {
-		showingFavorites bool
-		all, favorites   color.Color
-		shown            []string
-		bold             [2]bool
-	}{
-		{false, bright, dim, []string{"    Flash", "    Opus"}, [2]bool{false, true}},
-		{true, dim, bright, []string{"    Opus", ""}, [2]bool{false, false}},
-	} {
-		p.models.showingFavorites = test.showingFavorites
-		p.filter()
-		s := testScreen(&transcript{}, &input{}, time.Now())
-		s.picker = p
-		rows, cursor, _, buf := render(s, 40, 8)
-		equal(t, rows[2], fmt.Sprintf("    %-17sFavorites / All", "Search"))
-		equal(t, cursor, image.Pt(4, 2))
-		equal(t, []color.Color{buf.CellAt(21, 2).Style.Fg, buf.CellAt(31, 2).Style.Fg, buf.CellAt(33, 2).Style.Fg},
-			[]color.Color{test.favorites, dim, test.all}, "showing favorites ", test.showingFavorites)
-		equal(t, rows[4:6], test.shown)
-		isBold := func(y int) bool { return buf.CellAt(4, y).Style.Attrs&uv.AttrBold != 0 }
-		equal(t, [2]bool{isBold(4), isBold(5)}, test.bold, "showing favorites ", test.showingFavorites)
-	}
+	s := testScreen(&transcript{}, &input{}, time.Now())
+	s.picker = newModelPicker(models, []string{"opus"})
+	rows, cursor, _, buf := render(s, 40, 8)
+	equal(t, rows[2], "    Search")
+	equal(t, cursor, image.Pt(4, 2))
+	equal(t, rows[4:6], []string{"    Opus", "    Flash"})
+	isBold := func(y int) bool { return buf.CellAt(4, y).Style.Attrs&uv.AttrBold != 0 }
+	equal(t, [2]bool{isBold(4), isBold(5)}, [2]bool{true, false})
 }
 
 func TestAPickerScrollsAPreselectedRowIntoView(t *testing.T) {

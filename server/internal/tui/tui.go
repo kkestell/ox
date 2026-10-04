@@ -31,9 +31,7 @@ func Run(conn *client.Conn, session *client.Session, favorites []string, configP
 	return m.err
 }
 
-// model is the client's state. While a session request is in flight, it
-// defers every other message, so keys and server messages apply in order to
-// the session state the request produces.
+// model is the client's state.
 type model struct {
 	conn    *client.Conn
 	session *client.Session
@@ -47,8 +45,7 @@ type model struct {
 	showThinking     bool
 	toolOutput       toolOutput
 	picker           *picker
-	resumeAfterTurn  bool
-	// favorites are model IDs, in the order they were added.
+	// favorites are model IDs.
 	favorites  []string
 	configPath string
 
@@ -62,8 +59,15 @@ type model struct {
 	// was unfocused.
 	unseen string
 
-	waiting  bool
-	deferred []tea.Msg
+	// opening is set while a session is being created or loaded. The server
+	// sends the opening session's events on both sides of the request's
+	// response, so the model stops listening until the session opens: the
+	// event already received waits in held, and later ones in the connection.
+	opening bool
+	held    client.Event
+	// configRequests counts the config option requests sent. Only the latest
+	// request's result replaces the session's options.
+	configRequests int
 	// err ends the program when it is set.
 	err error
 }
@@ -82,29 +86,7 @@ func (m *model) tick() tea.Cmd {
 	return tea.Tick(time.Second, func(time.Time) tea.Msg { return tick{} })
 }
 
-// request runs work off the event loop and defers other messages until the
-// result it returns applies.
-func (m *model) request(work func() result) tea.Cmd {
-	m.waiting = true
-	return func() tea.Msg { return work() }
-}
-
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if m.waiting {
-		apply, ok := msg.(result)
-		if !ok {
-			m.deferred = append(m.deferred, msg)
-			return m, nil
-		}
-		m.waiting = false
-		cmds := []tea.Cmd{apply(m)}
-		for len(m.deferred) > 0 && !m.waiting {
-			next := m.deferred[0]
-			m.deferred = m.deferred[1:]
-			cmds = append(cmds, m.update(next))
-		}
-		return m, m.done(tea.Batch(cmds...))
-	}
 	return m, m.done(m.update(msg))
 }
 
@@ -143,18 +125,32 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 		return m.key(msg, now)
 	case tea.MouseWheelMsg:
 		m.mouse(msg.Mouse())
+	case result:
+		return msg(m)
 	case client.Event:
+		if m.opening {
+			m.held = msg
+			return nil
+		}
 		cmd := m.event(msg, now)
 		if _, closed := msg.(client.Closed); closed {
 			return cmd
 		}
-		if m.resumeAfterTurn && !m.session.Busy {
-			m.resumeAfterTurn = false
-			return tea.Batch(cmd, m.listen, m.openSessionPicker())
-		}
 		return tea.Batch(cmd, m.listen)
 	}
 	return nil
+}
+
+// opened ends opening a session and delivers the event held meanwhile, which
+// resumes listening.
+func (m *model) opened() tea.Cmd {
+	m.opening = false
+	held := m.held
+	m.held = nil
+	if held == nil {
+		return nil
+	}
+	return func() tea.Msg { return held }
 }
 
 // fail ends the program with the error.
@@ -201,8 +197,7 @@ func (m *model) event(event client.Event, now time.Time) tea.Cmd {
 		if !m.session.Accepts(event.SessionID) {
 			return nil
 		}
-		queued, err := m.session.Finished()
-		m.fail(err)
+		m.fail(m.session.Finished())
 		m.view.endTurn(now)
 		if !m.focused {
 			m.unseen = "finished"
@@ -212,9 +207,6 @@ func (m *model) event(event client.Event, now time.Time) tea.Cmd {
 		}
 		if event.Err != nil {
 			m.view.notice("Turn error: "+event.Err.Error(), red, now)
-		}
-		if queued != "" {
-			m.view.user(queued, now)
 		}
 		return m.bell()
 	case client.Closed:
@@ -313,9 +305,10 @@ func (m *model) key(key tea.KeyPressMsg, now time.Time) tea.Cmd {
 }
 
 // enter runs a slash command, sends the input, or answers the approval
-// dialog when the input is empty.
+// dialog when the input is empty. While a turn runs, a prompt or `/resume`
+// stays in the composer until the turn ends.
 func (m *model) enter(now time.Time) tea.Cmd {
-	if m.resumeAfterTurn {
+	if m.opening {
 		return nil
 	}
 	if m.input.empty() {
@@ -326,15 +319,12 @@ func (m *model) enter(now time.Time) tea.Cmd {
 	}
 	switch m.input.text {
 	case "/resume":
-		m.input.clear()
 		switch {
 		case !m.conn.CanResume:
+			m.input.clear()
 			m.view.notice("Session resume is unavailable", red, now)
-		case m.session.Busy:
-			m.session.Queued = ""
-			m.resumeAfterTurn = true
-			m.fail(m.session.Cancel())
-		default:
+		case !m.session.Busy:
+			m.input.clear()
 			return m.openSessionPicker()
 		}
 	case "/quit":
@@ -348,25 +338,18 @@ func (m *model) enter(now time.Time) tea.Cmd {
 	default:
 		if word := m.input.unknownCommand(m.commands()); word != "" {
 			m.view.notice("Unknown command "+word, red, now)
-		} else {
+		} else if !m.session.Busy {
 			m.submit(now)
 		}
 	}
 	return nil
 }
 
-// submit sends the input. During a turn the prompt is queued, and its message
-// joins the transcript when the turn finishes.
+// submit sends the input.
 func (m *model) submit(now time.Time) {
-	busy := m.session.Busy
-	sent, err := m.session.Prompt(m.input.text)
-	m.fail(err)
-	if sent {
-		text := m.input.take()
-		if !busy {
-			m.view.user(text, now)
-		}
-	}
+	text := m.input.take()
+	m.session.Prompt(text)
+	m.view.user(text, now)
 }
 
 func (m *model) answer(index int) {
@@ -401,19 +384,48 @@ func (m *model) cycle(category protocol.SessionConfigOptionCategory, forward boo
 }
 
 // setConfigOption sets a session config option, then calls done with the
-// request's error.
+// request's error unless the session has since closed. The choice shows at
+// once, so a following key press cycles from it; if the latest request fails,
+// the options return to what they were before it.
 func (m *model) setConfigOption(option protocol.SessionConfigId, value protocol.SessionConfigValueId, done func(*model, error)) tea.Cmd {
-	conn, id := m.conn, m.session.ID
-	return m.request(func() result {
-		options, err := conn.SetConfigOption(id, option, value)
-		return func(m *model) tea.Cmd {
-			if err == nil {
+	wait, err := m.conn.SetConfigOption(m.session.ID, option, value)
+	if err != nil {
+		done(m, err)
+		return nil
+	}
+	m.configRequests++
+	id, sent, before := m.session.ID, m.configRequests, m.session.ConfigOptions
+	m.session.ConfigOptions = chosen(before, option, value)
+	return func() tea.Msg {
+		options, err := wait()
+		return result(func(m *model) tea.Cmd {
+			if !m.session.Accepts(id) {
+				return nil
+			}
+			if sent == m.configRequests {
+				if err != nil {
+					options = before
+				}
 				m.session.ConfigOptions = options
 			}
 			done(m, err)
 			return nil
+		})
+	}
+}
+
+// chosen returns a copy of options with value as the select option's current
+// value.
+func chosen(options []protocol.SessionConfigOption, option protocol.SessionConfigId, value protocol.SessionConfigValueId) []protocol.SessionConfigOption {
+	options = slices.Clone(options)
+	for i, candidate := range options {
+		if candidate.Select != nil && candidate.Select.Id == option {
+			changed := *candidate.Select
+			changed.CurrentValue = value
+			options[i].Select = &changed
 		}
-	})
+	}
+	return options
 }
 
 func nextChoice(options []protocol.SessionConfigOption, category protocol.SessionConfigOptionCategory, forward bool) (protocol.SessionConfigId, protocol.SessionConfigValueId, bool) {
@@ -447,17 +459,18 @@ func closeSession(conn *client.Conn, active bool, id protocol.SessionId) (func(*
 }
 
 func (m *model) newSession() tea.Cmd {
+	m.opening = true
 	conn, active, id := m.conn, m.session.Active(), m.session.ID
-	return m.request(func() result {
+	return func() tea.Msg {
 		closed, err := closeSession(conn, active, id)
 		if err != nil {
-			return func(m *model) tea.Cmd {
+			return result(func(m *model) tea.Cmd {
 				m.notice("New session failed: "+err.Error(), red)
-				return nil
-			}
+				return m.opened()
+			})
 		}
 		created, err := conn.NewSession()
-		return func(m *model) tea.Cmd {
+		return result(func(m *model) tea.Cmd {
 			closed(m)
 			m.view = transcript{}
 			if err != nil {
@@ -465,28 +478,27 @@ func (m *model) newSession() tea.Cmd {
 			} else {
 				m.session.Opened(created.SessionId, created.ConfigOptions)
 			}
-			return nil
-		}
-	})
+			return m.opened()
+		})
+	}
 }
 
 func (m *model) openSessionPicker() tea.Cmd {
 	conn := m.conn
-	return m.request(func() result {
+	return func() tea.Msg {
 		sessions, err := conn.ListSessions()
-		return func(m *model) tea.Cmd {
+		return result(func(m *model) tea.Cmd {
 			if err != nil {
 				m.notice("Session list failed: "+err.Error(), red)
 			} else {
 				m.picker = newSessionPicker(sessions)
 			}
 			return nil
-		}
-	})
+		})
+	}
 }
 
-// openModelPicker opens the model picker on Favorites when the session offers
-// a favorite, else on All, with the current model selected when it is shown.
+// openModelPicker opens the model picker with the current model selected.
 func (m *model) openModelPicker() {
 	option := selectOption(m.session.ConfigOptions, protocol.SessionConfigOptionCategoryModel)
 	if option == nil {
@@ -498,7 +510,7 @@ func (m *model) openModelPicker() {
 		models = append(models, newModelChoice(choice))
 	}
 	current := slices.IndexFunc(models, func(model modelChoice) bool { return model.value == option.CurrentValue })
-	m.picker = newModelPicker(newModelRows(models, m.favorites))
+	m.picker = newModelPicker(models, m.favorites)
 	// The next frame scrolls it into view.
 	m.picker.selected = max(slices.Index(m.picker.matches, current), 0)
 }
@@ -507,7 +519,7 @@ func (m *model) pickerKey(key tea.KeyPressMsg, control, text bool) tea.Cmd {
 	p := m.picker
 	rows := m.layout.height
 	// The session picker stays open until a session is active.
-	closable := p.models != nil || m.session.Active()
+	closable := p.models != nil || (m.session.Active() && !m.opening)
 	switch {
 	case key.Code == tea.KeyUp:
 		p.moveTo(p.selected-1, rows)
@@ -521,11 +533,6 @@ func (m *model) pickerKey(key tea.KeyPressMsg, control, text bool) tea.Cmd {
 		p.moveTo(0, rows)
 	case key.Code == tea.KeyEnd:
 		p.moveTo(len(p.matches)-1, rows)
-	case key.Code == tea.KeyLeft || key.Code == tea.KeyRight:
-		if p.models != nil && p.models.hasFavorites() {
-			p.models.showingFavorites = key.Code == tea.KeyLeft
-			p.filter()
-		}
 	case control && key.Code == 'f':
 		m.toggleFavorite()
 	case key.Code == tea.KeyEscape && closable:
@@ -546,14 +553,15 @@ func (m *model) pickerKey(key tea.KeyPressMsg, control, text bool) tea.Cmd {
 	return nil
 }
 
-// toggleFavorite adds the selected model to the favorites or removes it, and
-// saves the favorites.
+// toggleFavorite adds the selected model to the favorites or removes it,
+// saves the favorites, and keeps the model selected.
 func (m *model) toggleFavorite() {
 	p := m.picker
 	if p.models == nil || p.selected >= len(p.matches) {
 		return
 	}
-	id := string(p.models.all[p.matches[p.selected]].value)
+	index := p.matches[p.selected]
+	id := string(p.models[index].value)
 	favorites := slices.Clone(m.favorites)
 	if position := slices.Index(favorites, id); position >= 0 {
 		favorites = slices.Delete(favorites, position, position+1)
@@ -564,11 +572,10 @@ func (m *model) toggleFavorite() {
 		p.err = "Favorite failed: " + err.Error()
 		return
 	}
-	p.models.setFavorites(favorites)
 	m.favorites = favorites
-	selected := p.selected
+	p.models[index].favorite = !p.models[index].favorite
 	p.filter()
-	p.moveTo(selected, m.layout.height)
+	p.moveTo(slices.Index(p.matches, index), m.layout.height)
 }
 
 // choose loads the selected session or chooses the selected model.
@@ -584,38 +591,45 @@ func (m *model) choose() tea.Cmd {
 			p.err = "Model choice is unavailable"
 			return nil
 		}
-		return m.setConfigOption(option.Id, p.models.all[index].value, func(m *model, err error) {
+		return m.setConfigOption(option.Id, p.models[index].value, func(m *model, err error) {
+			if m.picker != p {
+				return
+			}
 			if err != nil {
-				m.picker.err = "Model change failed: " + err.Error()
+				p.err = "Model change failed: " + err.Error()
 			} else {
 				m.picker = nil
 			}
 		})
 	}
+	if m.opening {
+		return nil
+	}
+	m.opening = true
 	id := p.sessions[index].SessionId
 	conn, active, current := m.conn, m.session.Active(), m.session.ID
-	return m.request(func() result {
+	return func() tea.Msg {
 		closed, err := closeSession(conn, active, current)
 		if err != nil {
-			return func(m *model) tea.Cmd {
-				m.picker.err = "Close failed: " + err.Error()
-				return nil
-			}
+			return result(func(m *model) tea.Cmd {
+				p.err = "Close failed: " + err.Error()
+				return m.opened()
+			})
 		}
 		loaded, err := conn.LoadSession(id)
-		return func(m *model) tea.Cmd {
+		return result(func(m *model) tea.Cmd {
 			closed(m)
 			m.view = transcript{}
 			if err != nil {
-				m.picker.err = "Load failed: " + err.Error()
-				return nil
+				p.err = "Load failed: " + err.Error()
+				return m.opened()
 			}
 			m.session.Opened(id, loaded.ConfigOptions)
 			m.picker = nil
 			m.input.clear()
-			return nil
-		}
-	})
+			return m.opened()
+		})
+	}
 }
 
 func (m *model) mouse(mouse tea.Mouse) {

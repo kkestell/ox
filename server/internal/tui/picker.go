@@ -28,7 +28,7 @@ func pickerRows(height int) int {
 // models when models is set.
 type picker struct {
 	sessions []protocol.SessionInfo
-	models   *modelRows
+	models   []modelChoice
 	query    string
 	// matches are the indexes of the shown rows that match the query, in the
 	// shown order.
@@ -45,36 +45,43 @@ func newSessionPicker(sessions []protocol.SessionInfo) *picker {
 	return p
 }
 
-func newModelPicker(models *modelRows) *picker {
+func newModelPicker(models []modelChoice, favorites []string) *picker {
+	for i := range models {
+		models[i].favorite = slices.Contains(favorites, string(models[i].value))
+	}
 	p := &picker{models: models}
 	p.filter()
 	return p
 }
 
 // filter keeps the rows whose name contains every word of the query,
-// ignoring case, and selects the first.
+// ignoring case, and selects the first. Favorite models come first; both
+// groups keep the session's order.
 func (p *picker) filter() {
 	words := strings.Fields(strings.ToLower(p.query))
 	var names []string
-	var shown []int
 	if p.models != nil {
-		for _, model := range p.models.all {
+		for _, model := range p.models {
 			names = append(names, model.name)
 		}
-		shown = p.models.shown()
 	} else {
-		for i, session := range p.sessions {
+		for _, session := range p.sessions {
 			names = append(names, sessionTitle(session))
-			shown = append(shown, i)
 		}
 	}
-	p.matches = nil
-	for _, index := range shown {
-		name := strings.ToLower(names[index])
-		if !slices.ContainsFunc(words, func(word string) bool { return !strings.Contains(name, word) }) {
-			p.matches = append(p.matches, index)
+	var favorites, others []int
+	for index, name := range names {
+		name = strings.ToLower(name)
+		if slices.ContainsFunc(words, func(word string) bool { return !strings.Contains(name, word) }) {
+			continue
+		}
+		if p.models != nil && p.models[index].favorite {
+			favorites = append(favorites, index)
+		} else {
+			others = append(others, index)
 		}
 	}
+	p.matches = append(favorites, others...)
 	p.selected, p.first = 0, 0
 }
 
@@ -89,49 +96,6 @@ func (p *picker) moveTo(selected, rows int) {
 	}
 }
 
-// modelRows are the model picker's two lists. All is every choice the session
-// offers, in its order. Favorites is the favorite models the session offers,
-// in the order they were added.
-type modelRows struct {
-	all []modelChoice
-	// favorites are indexes into all.
-	favorites        []int
-	showingFavorites bool
-}
-
-func newModelRows(all []modelChoice, favorites []string) *modelRows {
-	m := &modelRows{all: all}
-	m.setFavorites(favorites)
-	m.showingFavorites = m.hasFavorites()
-	return m
-}
-
-// setFavorites replaces the favorites, showing All when none is offered.
-func (m *modelRows) setFavorites(favorites []string) {
-	m.favorites = nil
-	for _, id := range favorites {
-		if index := slices.IndexFunc(m.all, func(model modelChoice) bool { return string(model.value) == id }); index >= 0 {
-			m.favorites = append(m.favorites, index)
-		}
-	}
-	m.showingFavorites = m.showingFavorites && m.hasFavorites()
-}
-
-// hasFavorites reports whether the picker offers the Favorites list.
-func (m *modelRows) hasFavorites() bool { return len(m.favorites) > 0 }
-
-// shown returns the indexes into all of the shown list, in order.
-func (m *modelRows) shown() []int {
-	if m.showingFavorites {
-		return slices.Clone(m.favorites)
-	}
-	indexes := make([]int, len(m.all))
-	for i := range indexes {
-		indexes[i] = i
-	}
-	return indexes
-}
-
 type modelChoice struct {
 	value    protocol.SessionConfigValueId
 	name     string
@@ -139,6 +103,7 @@ type modelChoice struct {
 	// inputPrice and outputPrice are USD per million tokens.
 	inputPrice, outputPrice *float64
 	contextLimit            *uint64
+	favorite                bool
 }
 
 // newModelChoice reads the provider, prices, and context limit Ox sends in

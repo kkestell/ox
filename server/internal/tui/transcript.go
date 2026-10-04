@@ -462,59 +462,37 @@ func contentRows(call *toolCall, width int, s style) []line {
 }
 
 // diffRows returns the unified hunks of a diff with three rows of context.
-// Hunk headers are dim, removed rows red, and added rows green; context rows
-// keep s.
+// Hunk headers and notes are dim, removed rows red, and added rows green;
+// context rows keep s.
 func diffRows(diff *protocol.ToolCallContentDiff, width int, s style) []line {
 	old := ""
 	if diff.OldText != nil {
 		old = *diff.OldText
 	}
-	unified, err := udiff.ToUnifiedDiff("", "", old, udiff.Lines(old, diff.NewText), 3)
+	unified, err := udiff.ToUnified("", "", old, udiff.Lines(old, diff.NewText), 3)
 	if err != nil {
 		return []line{styled(clip(err.Error(), width), fg(red))}
 	}
 	var rows []line
-	for _, hunk := range unified.Hunks {
-		rows = append(rows, styled(clip(hunkHeader(hunk), width), dimStyle))
-		for _, change := range hunk.Lines {
-			sign, changeStyle := " ", s
-			switch change.Kind {
-			case udiff.Delete:
-				sign, changeStyle = "-", fg(red)
-			case udiff.Insert:
-				sign, changeStyle = "+", fg(green)
-			}
-			text := expand(strings.TrimRight(change.Content, "\r\n"))
-			rows = append(rows, styled(clip(sign+text, width), changeStyle))
+	// The first two rows name the files.
+	for i, row := range strings.Split(strings.TrimSuffix(unified, "\n"), "\n") {
+		if i < 2 {
+			continue
 		}
+		rowStyle := s
+		switch {
+		case strings.HasPrefix(row, "@@"), strings.HasPrefix(row, "\\"):
+			rowStyle = dimStyle
+		case strings.HasPrefix(row, "-"):
+			rowStyle = fg(red)
+		case strings.HasPrefix(row, "+"):
+			rowStyle = fg(green)
+		}
+		// Tabs expand from the column after the sign.
+		row = strings.TrimSuffix(row, "\r")
+		rows = append(rows, styled(clip(row[:1]+expand(row[1:]), width), rowStyle))
 	}
 	return rows
-}
-
-// hunkHeader formats a hunk's line ranges as GNU diff does.
-func hunkHeader(hunk *udiff.Hunk) string {
-	from, to := 0, 0
-	for _, change := range hunk.Lines {
-		switch change.Kind {
-		case udiff.Delete:
-			from++
-		case udiff.Insert:
-			to++
-		default:
-			from++
-			to++
-		}
-	}
-	lineRange := func(sign string, start, count int) string {
-		switch {
-		case count > 1:
-			return fmt.Sprintf(" %s%d,%d", sign, start, count)
-		case start == 1 && count == 0:
-			return fmt.Sprintf(" %s0,0", sign)
-		}
-		return fmt.Sprintf(" %s%d", sign, start)
-	}
-	return "@@" + lineRange("-", hunk.FromLine, from) + lineRange("+", hunk.ToLine, to) + " @@"
 }
 
 func icon(call *toolCall) span {

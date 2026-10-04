@@ -293,13 +293,13 @@ func TestTerminalModelPickerShowsProvidersAndPricesAndChangesTheModel(t *testing
 			t.Errorf("missing %q:\n%s", row, screen)
 		}
 	}
-	if strings.Contains(screen, "0% • $0.00") || strings.Contains(screen, "Favorites / All") {
+	if strings.Contains(screen, "0% • $0.00") || strings.Index(screen, "GLM 5.3 Flash") < strings.Index(screen, "DeepSeek V4.1 Flash") {
 		t.Errorf("%s", screen)
 	}
 	x.keys("Down", "C-f")
-	x.wait("Favorites / All")
-	if screen := x.screen(); !strings.Contains(screen, fmt.Sprintf("    %-57sFavorites / All\n", "Search")) {
-		t.Errorf("%s", screen)
+	x.wait("1,310,720\n    DeepSeek V4.1 Flash")
+	if styled := x.styledScreen(); !strings.Contains(styled, "\x1b[1m") {
+		t.Errorf("the favorite is not bold: %q", styled)
 	}
 	var config map[string]any
 	data, _ := os.ReadFile(filepath.Join(x.root, ".config/ox/settings.json"))
@@ -309,37 +309,29 @@ func TestTerminalModelPickerShowsProvidersAndPricesAndChangesTheModel(t *testing
 	if config["model"] != openroutertest.DefaultModel || fmt.Sprint(config["favorites"]) != "[openrouter:z-ai/glm-5.3-flash]" {
 		t.Errorf("%v", config)
 	}
-	styled := x.styledScreen()
-	if !strings.Contains(styled, "\x1b[38;2;112;112;112mFavorites / \x1b[38;2;255;255;255mAll") || !strings.Contains(styled, "\x1b[1m") {
-		t.Errorf("%q", styled)
-	}
-	x.keys("Left")
-	x.waitGone("DeepSeek V4.1 Flash")
-	styled = x.styledScreen()
-	if !strings.Contains(styled, "\x1b[38;2;255;255;255mFavorites\x1b[38;2;112;112;112m / All") ||
-		!strings.Contains(styled, "GLM 5.3 Flash") || strings.Contains(styled, "\x1b[1m") {
-		t.Errorf("%q", styled)
-	}
 	x.keys("Enter")
 	x.waitGone("Search")
 	x.wait("Ask • GLM 5.3 Flash")
 	x.prompt("/model")
 	x.wait("Search")
-	if screen := x.screen(); !strings.Contains(screen, "GLM 5.3 Flash") || strings.Contains(screen, "DeepSeek V4.1 Flash") {
-		t.Errorf("the picker opens on Favorites:\n%s", screen)
+	if screen := x.screen(); strings.Index(screen, "GLM 5.3 Flash") > strings.Index(screen, "DeepSeek V4.1 Flash") {
+		t.Errorf("the favorite is not first:\n%s", screen)
 	}
 }
 
-func TestTerminalResumeDuringAPromptCancelsBeforeShowingThePicker(t *testing.T) {
+func TestTerminalResumeDuringAPromptWaitsForTheTurnToEnd(t *testing.T) {
 	x := startTmux(t, false, hang("running; waiting for cancellation"))
 	x.prompt("running")
 	x.wait("running; waiting for cancellation")
 	x.prompt("/resume")
-	x.wait("Search")
-	x.keys("Escape")
-	if strings.Contains(x.screen(), "you said: /resume") {
+	x.wait("❯ /resume")
+	if strings.Contains(x.screen(), "Search") {
 		t.Error(x.screen())
 	}
+	x.keys("Escape")
+	x.waitTitle("ox: ready")
+	x.keys("Enter")
+	x.wait("Search")
 }
 
 func TestTerminalKeysSendInterruptApproveScrollAndRestoreTheShell(t *testing.T) {
@@ -376,9 +368,14 @@ func TestTerminalKeysSendInterruptApproveScrollAndRestoreTheShell(t *testing.T) 
 	x.prompt("running")
 	x.wait("running one; waiting for cancellation")
 	x.keys("Escape")
+	x.waitTitle("ox: ready")
 	x.prompt("running")
 	x.wait("running two; waiting for cancellation")
 	x.prompt("interrupting")
+	x.wait("❯ interrupting")
+	x.keys("Escape")
+	x.waitTitle("ox: ready")
+	x.keys("Enter")
 	x.wait("you said: interrupting")
 	if screen := x.screen(); !strings.Contains(screen, "   interrupting\n\n\n  ● you said: interrupting") {
 		t.Errorf("%s", screen)
