@@ -43,27 +43,16 @@ jobs:
     steps:
       - name: Check out the tagged commit
         uses: actions/checkout@v4
-      - name: Install the stable Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-      - name: Restore the build cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
       - name: Install the Go toolchain
         uses: actions/setup-go@v5
         with:
           go-version-file: server/go.mod
           cache-dependency-path: server/go.sum
-      - name: Build the optimized client
-        run: cargo build --release --locked -p ox
-      - name: Build the server
+      - name: Build the binaries
         working-directory: server
-        run: go build -trimpath -ldflags="-s -w" -o ../target/release/ox-server ./cmd/ox-server
+        run: go build -trimpath -ldflags="-s -w" -o ../dist/ ./cmd/ox ./cmd/ox-server
       - name: Package the binaries
-        run: |
-          mkdir dist
-          cp target/release/ox target/release/ox-server dist/
-          tar -C dist -czf "ox-${GITHUB_REF_NAME#v}-${{ matrix.target }}.tar.gz" ox ox-server
+        run: tar -C dist -czf "ox-${GITHUB_REF_NAME#v}-${{ matrix.target }}.tar.gz" ox ox-server
       - name: Upload the archive
         uses: actions/upload-artifact@v4
         with:

@@ -3,8 +3,7 @@ Keep this document accurate and short.
 ## Code style
 
 - Do less. Keep correct code simple, ordinary, and cheap to change.
-- Write idiomatic Go in the server and safe, idiomatic Rust in the client.
-  Prefer plain data and direct functions.
+- Write idiomatic Go. Prefer plain data and direct functions.
 - Give each concern a clear boundary and each lifecycle one owner.
 - Let real needs earn abstractions, dependencies, and configuration. Measure
   before optimizing; harden against observed failures.
@@ -13,9 +12,9 @@ Keep this document accurate and short.
 
 ## Code
 
-- `server/` — the Ox server, `ox-server`, in Go: ACP, turns, tools, OpenRouter,
-  and session store. `server/internal/` holds one package per concern.
-- `crates/ox/` — the terminal client, `ox`, in Rust, and its terminal tests.
+- `server/` — the Go module. `cmd/ox-server` is the Ox server: ACP, turns,
+  tools, OpenRouter, and session store. `cmd/ox` is the terminal client and its
+  terminal tests. `server/internal/` holds one package per concern.
 - `server/internal/sysprompt/` — the built-in system prompt.
 - `examples/` — the example settings file.
 - `scripts/run.py` — runs one headless prompt in a temporary workspace.

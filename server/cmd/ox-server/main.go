@@ -14,13 +14,13 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"unicode"
 
 	"golang.org/x/term"
 
 	"ox/internal/acp"
 	"ox/internal/agent"
 	"ox/internal/catalog"
+	"ox/internal/control"
 	"ox/internal/keyring"
 	"ox/internal/openrouter"
 	"ox/internal/server"
@@ -44,7 +44,7 @@ ACP clients that append authentication commands can use
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintf(os.Stderr, "ox: %s\n", escapeControl(err.Error()))
+		fmt.Fprintf(os.Stderr, "ox: %s\n", control.Escape(err.Error()))
 		os.Exit(1)
 	}
 }
@@ -329,17 +329,4 @@ func logout() error {
 		fmt.Fprintln(os.Stderr, "OPENROUTER_API_KEY is still set and will continue to be used.")
 	}
 	return nil
-}
-
-// escapeControl keeps an error from changing the terminal's state.
-func escapeControl(text string) string {
-	var out strings.Builder
-	for _, r := range text {
-		if unicode.IsControl(r) && r != '\n' && r != '\t' {
-			fmt.Fprintf(&out, "\\u{%x}", r)
-		} else {
-			out.WriteRune(r)
-		}
-	}
-	return out.String()
 }
