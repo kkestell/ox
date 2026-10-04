@@ -102,7 +102,7 @@ func TestTitlesDescribeTheCallAndFallBackToTheToolName(t *testing.T) {
 	}
 }
 
-func TestReadToolsValidateArgumentsAndStayInsideTheWorkspace(t *testing.T) {
+func TestReadToolsValidateArgumentsAndAcceptOutsidePaths(t *testing.T) {
 	tools := toolbox(t)
 	outside := t.TempDir()
 	writeFile(t, filepath.Join(tools.Workspace, "file"), "needle\n")
@@ -115,7 +115,7 @@ func TestReadToolsValidateArgumentsAndStayInsideTheWorkspace(t *testing.T) {
 				t.Errorf("%s %v: %+v", name, arguments, outcome)
 			}
 		}
-		for _, path := range []string{"../file", "/etc/passwd", "", "missing", "escape/file", "escape"} {
+		for _, path := range []string{"", "missing"} {
 			arguments := object{"path": path, "pattern": "*"}
 			if name == ReadFile {
 				arguments = object{"path": path}
@@ -134,9 +134,9 @@ func TestReadToolsValidateArgumentsAndStayInsideTheWorkspace(t *testing.T) {
 		}
 	}
 	for name, arguments := range map[string]object{
-		ReadFile: {"path": filepath.Join(tools.Workspace, "alias")},
-		Glob:     {"path": tools.Workspace, "pattern": "*"},
-		Grep:     {"path": "alias", "pattern": "needle"},
+		ReadFile: {"path": filepath.Join(outside, "file")},
+		Glob:     {"path": outside, "pattern": "*"},
+		Grep:     {"path": "escape/file", "pattern": "needle"},
 	} {
 		if outcome := tools.call(name, arguments); outcome.Status != transcript.ToolCompleted {
 			t.Errorf("%s %v: %+v", name, arguments, outcome)
@@ -242,11 +242,12 @@ func TestSearchesFilterIgnoredFilesAndHandleLiteralArguments(t *testing.T) {
 	if strings.Contains(all.Text, "ignored") || strings.Contains(all.Text, ".hidden") || all.Content[0].Text != "3 matches in 3 files" {
 		t.Errorf("grep everything: %q %v", all.Text, all.Content)
 	}
-	for _, pattern := range []string{"ignored", ".hidden", "**/*"} {
-		if files := tools.call(Glob, object{"pattern": pattern}).Text; strings.Contains(files, "ignored") || strings.Contains(files, ".hidden") {
-			t.Errorf("%s listed %q", pattern, files)
+	for _, pattern := range []string{"ignored", ".hidden"} {
+		if files := tools.call(Glob, object{"pattern": pattern}).Text; files != "./"+pattern+"\n" {
+			t.Errorf("explicit glob %s: %q", pattern, files)
 		}
 	}
+
 	for _, name := range []string{Glob, Grep} {
 		if outcome := tools.call(name, object{"pattern": "["}); outcome.Status != transcript.ToolFailed {
 			t.Errorf("%s accepted [", name)
@@ -276,44 +277,9 @@ func TestSearchesCapTheirOutputAndReportUnreadableFiles(t *testing.T) {
 	os.Chmod(locked, 0)
 	outcome := tools.call(Grep, object{"pattern": "needle"})
 	os.Chmod(locked, 0o755)
-	for _, want := range []string{"./a.rs:1:needle", "./c.rs: ", "Some paths could not be searched:", "Ripgrep could not enumerate some paths."} {
+	for _, want := range []string{"./a.rs:1:needle", "./c.rs: ", "Some paths could not be searched:", "Permission denied"} {
 		if !strings.Contains(outcome.Text, want) {
 			t.Errorf("missing %q in %q", want, outcome.Text)
-		}
-	}
-}
-
-func TestGlobsMatchLikeRipgrep(t *testing.T) {
-	for _, test := range []struct {
-		glob, path string
-		want       bool
-	}{
-		{"*.rs", "./src/deep/a.rs", true},
-		{"src/*.rs", "./src/a.rs", true},
-		{"src/*.rs", "./src/deep/a.rs", false},
-		{"src/**/*.rs", "./src/a.rs", true},
-		{"src/**/*.rs", "./src/deep/a.rs", true},
-		{"**/a.rs", "./a.rs", true},
-		{"src/**", "./src/deep/a.rs", true},
-		{"/src/*.rs", "./src/a.rs", true},
-		{"a?.rs", "./ab.rs", true},
-		{"[!a]b.rs", "./ab.rs", false},
-		{"[]x]b.rs", "./]b.rs", true},
-		{"*.{rs,go}", "./main.go", true},
-		{"!*.rs", "./main.go", true},
-		{"a.rs", "./src/xa.rs", false},
-		{"雪*.rs", "./src/雪.rs", true},
-		{"café/*.go", "./café/main.go", true},
-		{`\雪.rs`, "./雪.rs", true},
-	} {
-		matcher, err := compileGlob(test.glob)
-		if err != nil || matcher.match(test.path) != test.want {
-			t.Errorf("%s %s: %v", test.glob, test.path, err)
-		}
-	}
-	for _, glob := range []string{"[", "{a,b", "{a,{b}}"} {
-		if _, err := compileGlob(glob); err == nil {
-			t.Errorf("%s compiled", glob)
 		}
 	}
 }

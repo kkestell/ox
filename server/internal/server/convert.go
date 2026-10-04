@@ -8,6 +8,8 @@ import (
 	"strings"
 	"unicode"
 
+	protocol "github.com/coder/acp-go-sdk"
+
 	"ox/internal/acp"
 	"ox/internal/agent"
 	"ox/internal/catalog"
@@ -24,29 +26,30 @@ const (
 
 // promptMessage converts prompt content to a user message, keeping text and
 // image order. Resource links contribute text and are not fetched.
-func promptMessage(blocks []acp.ContentBlock) (transcript.UserMessage, *acp.Error) {
+func promptMessage(blocks []protocol.ContentBlock) (transcript.UserMessage, *acp.Error) {
 	var message transcript.UserMessage
 	images, imageBytes := 0, 0
 	for _, block := range blocks {
-		switch block.Type {
-		case "text":
-			message.Parts = append(message.Parts, transcript.UserMessagePart{Text: block.Text})
-		case "resource_link":
-			message.Parts = append(message.Parts, transcript.UserMessagePart{Text: fmt.Sprintf("Resource link: %s\nURI: %s", block.Name, block.URI)})
-		case "image":
+		switch {
+		case block.Text != nil:
+			message.Parts = append(message.Parts, transcript.UserMessagePart{Text: block.Text.Text})
+		case block.ResourceLink != nil:
+			message.Parts = append(message.Parts, transcript.UserMessagePart{Text: fmt.Sprintf("Resource link: %s\nURI: %s", block.ResourceLink.Name, block.ResourceLink.Uri)})
+		case block.Image != nil:
+			image := block.Image
 			images++
 			if images > maxImages {
 				return message, acp.InvalidParams("prompt contains too many images")
 			}
-			switch block.MimeType {
+			switch image.MimeType {
 			case "image/png", "image/jpeg", "image/webp", "image/gif":
 			default:
 				return message, acp.InvalidParams("unsupported image MIME type")
 			}
-			if len(block.Data) > (maxImageBytes-imageBytes+2)/3*4+4 {
+			if len(image.Data) > (maxImageBytes-imageBytes+2)/3*4+4 {
 				return message, acp.InvalidParams("prompt images exceed 10 MiB")
 			}
-			decoded, err := base64.StdEncoding.DecodeString(block.Data)
+			decoded, err := base64.StdEncoding.DecodeString(image.Data)
 			if err != nil {
 				return message, acp.InvalidParams("image data is not valid base64")
 			}
@@ -55,7 +58,7 @@ func promptMessage(blocks []acp.ContentBlock) (transcript.UserMessage, *acp.Erro
 			}
 			imageBytes += len(decoded)
 			message.Parts = append(message.Parts, transcript.UserMessagePart{
-				Image: &transcript.ImageAttachment{Data: block.Data, MimeType: block.MimeType},
+				Image: &transcript.ImageAttachment{Data: image.Data, MimeType: image.MimeType},
 			})
 		default:
 			return message, acp.InvalidParams("prompts may contain only text, resource links, and images")
@@ -93,76 +96,106 @@ func dispatch(message transcript.UserMessage, catalog []skills.Skill) transcript
 	return transcript.TurnInput{Message: &message}
 }
 
-func availableCommands(catalog []skills.Skill) acp.AvailableCommandsUpdate {
-	update := acp.AvailableCommandsUpdate{SessionUpdate: "available_commands_update", AvailableCommands: []acp.AvailableCommand{}}
+func availableCommands(catalog []skills.Skill) protocol.SessionAvailableCommandsUpdate {
+	update := protocol.SessionAvailableCommandsUpdate{SessionUpdate: "available_commands_update", AvailableCommands: []protocol.AvailableCommand{}}
 	for _, skill := range catalog {
-		command := acp.AvailableCommand{Name: skill.Name, Description: skill.Description}
+		command := protocol.AvailableCommand{Name: skill.Name, Description: skill.Description}
 		if skill.ArgumentHint != "" {
-			command.Input = &acp.CommandInput{Hint: skill.ArgumentHint}
+			command.Input = &protocol.AvailableCommandInput{Unstructured: &protocol.UnstructuredCommandInput{Hint: skill.ArgumentHint}}
 		}
 		update.AvailableCommands = append(update.AvailableCommands, command)
 	}
 	return update
 }
 
-func configOptions(cat catalog.Catalog, selected settings.Settings) []acp.ConfigOption {
-	var models, efforts, modes []acp.ConfigChoice
+func configOptions(cat catalog.Catalog, selected settings.Settings) []protocol.SessionConfigOption {
+	var models, efforts, modes []protocol.SessionConfigSelectOption
 	for _, model := range cat {
-		choice := acp.ConfigChoice{Value: model.QualifiedID(), Name: model.Name, Meta: map[string]any{
+		choice := protocol.SessionConfigSelectOption{Value: protocol.SessionConfigValueId(model.QualifiedID()), Name: model.Name, Meta: map[string]any{
 			"contextLimit": model.ContextLimit,
 			"inputPrice":   model.InputPrice,
 			"outputPrice":  model.OutputPrice,
 			"provider":     "OpenRouter",
 		}}
 		if model.AcceptsImages {
-			choice.Description = "Accepts images"
+			choice.Description = protocol.Ptr("Accepts images")
 		}
 		models = append(models, choice)
 	}
 	for _, effort := range cat.Lookup(selected.Model).Efforts {
-		efforts = append(efforts, acp.ConfigChoice{Value: string(effort), Name: effort.Name()})
+		efforts = append(efforts, protocol.SessionConfigSelectOption{Value: protocol.SessionConfigValueId(effort), Name: effort.Name()})
 	}
 	for _, mode := range transcript.Modes {
-		modes = append(modes, acp.ConfigChoice{Value: string(mode), Name: mode.Name(), Description: mode.Description()})
+		modes = append(modes, protocol.SessionConfigSelectOption{Value: protocol.SessionConfigValueId(mode), Name: mode.Name(), Description: protocol.Ptr(mode.Description())})
 	}
-	return []acp.ConfigOption{
-		{ID: "model", Name: "Model", Category: "model", Type: "select", CurrentValue: selected.Model, Options: models},
-		{ID: "effort", Name: "Effort", Category: "thought_level", Type: "select", CurrentValue: string(selected.Effort), Options: efforts},
-		{ID: "mode", Name: "Mode", Category: "mode", Type: "select", CurrentValue: string(selected.Mode), Options: modes},
+	return []protocol.SessionConfigOption{
+		selectOption("model", "Model", "model", selected.Model, models),
+		selectOption("effort", "Effort", "thought_level", string(selected.Effort), efforts),
+		selectOption("mode", "Mode", "mode", string(selected.Mode), modes),
 	}
 }
 
-func chunk(kind, text string) acp.Chunk {
-	return acp.Chunk{SessionUpdate: kind, Content: acp.TextBlock(text)}
+func selectOption(id, name, category, value string, choices []protocol.SessionConfigSelectOption) protocol.SessionConfigOption {
+	options := protocol.SessionConfigSelectOptionsUngrouped(choices)
+	return protocol.SessionConfigOption{Select: &protocol.SessionConfigOptionSelect{
+		Id: protocol.SessionConfigId(id), Name: name, Category: protocol.Ptr(protocol.SessionConfigOptionCategory(category)), Type: "select",
+		CurrentValue: protocol.SessionConfigValueId(value), Options: protocol.SessionConfigSelectOptions{Ungrouped: &options},
+	}}
 }
 
-func usageUpdate(used uint64, size int, cost *float64) acp.UsageUpdate {
-	update := acp.UsageUpdate{SessionUpdate: "usage_update", Used: used, Size: size}
+func optionalText(text string) *string {
+	if text == "" {
+		return nil
+	}
+	return &text
+}
+
+func chunk(kind, text string) protocol.SessionUpdate {
+	switch kind {
+	case "user_message_chunk":
+		return protocol.UpdateUserMessageText(text)
+	case "agent_message_chunk":
+		return protocol.UpdateAgentMessageText(text)
+	case "agent_thought_chunk":
+		return protocol.UpdateAgentThoughtText(text)
+	}
+	panic("unknown message chunk " + kind)
+}
+
+func usageUpdate(used uint64, size int, cost *float64) protocol.SessionUsageUpdate {
+	update := protocol.SessionUsageUpdate{SessionUpdate: "usage_update", Used: int(used), Size: size}
 	if cost != nil {
-		update.Cost = &acp.Cost{Amount: *cost, Currency: "USD"}
+		update.Cost = &protocol.Cost{Amount: *cost, Currency: "USD"}
 	}
 	return update
+}
+
+func toolCall(call transcript.ToolCall) acp.ToolCall {
+	return acp.ToolCall{
+		SessionUpdateToolCall: protocol.SessionUpdateToolCall{
+			SessionUpdate: "tool_call", ToolCallId: protocol.ToolCallId(call.CallID), Title: tools.Title(call),
+			Kind: toolKind(call.Name), RawInput: rawInput(call),
+		},
+		Name: call.Name,
+	}
 }
 
 // update converts a turn event to an ACP session update.
 func update(event agent.Event) any {
 	switch event := event.(type) {
 	case agent.SessionInfo:
-		return acp.SessionInfoUpdate{SessionUpdate: "session_info_update", Title: event.Title, UpdatedAt: event.UpdatedAt}
+		return protocol.SessionSessionInfoUpdate{SessionUpdate: "session_info_update", Title: optionalText(event.Title), UpdatedAt: optionalText(event.UpdatedAt)}
 	case agent.TextDelta:
 		return chunk("agent_message_chunk", string(event))
 	case agent.ReasoningDelta:
 		return chunk("agent_thought_chunk", string(event))
 	case agent.ToolPending:
-		return acp.ToolCall{
-			SessionUpdate: "tool_call", ToolCallID: event.Call.CallID, Title: tools.Title(event.Call),
-			Name: event.Call.Name, Kind: toolKind(event.Call.Name), RawInput: rawInput(event.Call),
-		}
+		return toolCall(event.Call)
 	case agent.ToolStarted:
-		return acp.ToolCall{SessionUpdate: "tool_call_update", ToolCallID: event.Call.CallID, Status: "in_progress"}
+		return protocol.SessionToolCallUpdate{SessionUpdate: "tool_call_update", ToolCallId: protocol.ToolCallId(event.Call.CallID), Status: protocol.Ptr(protocol.ToolCallStatusInProgress)}
 	case agent.ToolFinished:
-		return acp.ToolCall{
-			SessionUpdate: "tool_call_update", ToolCallID: event.Call.CallID, Status: status(event.Outcome),
+		return protocol.SessionToolCallUpdate{
+			SessionUpdate: "tool_call_update", ToolCallId: protocol.ToolCallId(event.Call.CallID), Status: protocol.Ptr(status(event.Outcome)),
 			Content: outputContent(event.Outcome), RawOutput: event.Outcome.Text,
 		}
 	case agent.Usage:
@@ -173,7 +206,7 @@ func update(event agent.Event) any {
 
 // toolKind is what an ACP client uses to pick an icon for a call. Other, the
 // default, is omitted.
-func toolKind(name string) string {
+func toolKind(name string) protocol.ToolKind {
 	switch name {
 	case tools.Shell, tools.ShellProcess:
 		return "execute"
@@ -195,31 +228,29 @@ func rawInput(call transcript.ToolCall) any {
 	return input
 }
 
-func status(outcome transcript.ToolOutcome) string {
+func status(outcome transcript.ToolOutcome) protocol.ToolCallStatus {
 	if outcome.Status == transcript.ToolCompleted {
 		return "completed"
 	}
 	return "failed"
 }
 
-func textContent(text string) acp.ToolCallContent {
-	block := acp.TextBlock(text)
-	return acp.ToolCallContent{Type: "content", Content: &block}
+func textContent(text string) protocol.ToolCallContent {
+	return protocol.ToolContent(protocol.TextBlock(text))
 }
 
 // outputContent is the outcome's content blocks, or its text when it has none.
-func outputContent(outcome transcript.ToolOutcome) []acp.ToolCallContent {
+func outputContent(outcome transcript.ToolOutcome) []protocol.ToolCallContent {
 	if len(outcome.Content) == 0 {
-		return []acp.ToolCallContent{textContent(outcome.Text)}
+		return []protocol.ToolCallContent{textContent(outcome.Text)}
 	}
-	var content []acp.ToolCallContent
+	var content []protocol.ToolCallContent
 	for _, item := range outcome.Content {
 		if item.Diff == nil {
 			content = append(content, textContent(item.Text))
 			continue
 		}
-		newText := item.Diff.NewText
-		content = append(content, acp.ToolCallContent{Type: "diff", Path: item.Diff.Path, OldText: item.Diff.OldText, NewText: &newText})
+		content = append(content, protocol.ToolCallContent{Diff: &protocol.ToolCallContentDiff{Type: "diff", Path: item.Diff.Path, OldText: item.Diff.OldText, NewText: item.Diff.NewText}})
 	}
 	return content
 }
@@ -247,9 +278,9 @@ func replay(entries []transcript.Entry, send func(any) error) error {
 				}
 			}
 		case transcript.TurnError:
-			updates = append(updates, acp.ToolCall{
-				SessionUpdate: "tool_call", ToolCallID: "turn-error-" + rand.Text(), Title: "Turn error", Status: "failed",
-				Content: []acp.ToolCallContent{textContent(string(entry))}, RawOutput: string(entry),
+			updates = append(updates, protocol.SessionUpdateToolCall{
+				SessionUpdate: "tool_call", ToolCallId: protocol.ToolCallId("turn-error-" + rand.Text()), Title: "Turn error", Status: "failed",
+				Content: []protocol.ToolCallContent{textContent(string(entry))}, RawOutput: string(entry),
 			})
 		case *transcript.AssistantBatch:
 			if entry.Message.Reasoning != "" {
@@ -260,11 +291,9 @@ func replay(entries []transcript.Entry, send func(any) error) error {
 			}
 			for i, call := range entry.Message.ToolCalls {
 				outcome := entry.Outcomes[i]
-				updates = append(updates, acp.ToolCall{
-					SessionUpdate: "tool_call", ToolCallID: call.CallID, Title: tools.Title(call), Name: call.Name,
-					Kind: toolKind(call.Name), Status: status(outcome), Content: outputContent(outcome),
-					RawInput: rawInput(call), RawOutput: outcome.Text,
-				})
+				update := toolCall(call)
+				update.Status, update.Content, update.RawOutput = status(outcome), outputContent(outcome), outcome.Text
+				updates = append(updates, update)
 			}
 		}
 		for _, update := range updates {
@@ -276,8 +305,8 @@ func replay(entries []transcript.Entry, send func(any) error) error {
 	return nil
 }
 
-func imageChunk(image transcript.ImageAttachment) acp.Chunk {
-	return acp.Chunk{SessionUpdate: "user_message_chunk", Content: acp.ContentBlock{Type: "image", Data: image.Data, MimeType: image.MimeType}}
+func imageChunk(image transcript.ImageAttachment) protocol.SessionUpdate {
+	return protocol.UpdateUserMessage(protocol.ImageBlock(image.Data, image.MimeType))
 }
 
 // permissionRequest asks whether one shell command may run or one input may
@@ -312,14 +341,19 @@ func permissionRequest(sessionID, workspace string, call transcript.ToolCall, pe
 			permission.ProcessID, command, text, closes)
 	}
 	return acp.RequestPermissionRequest{
-		SessionID: sessionID,
-		ToolCall: acp.ToolCall{
-			ToolCallID: call.CallID, Title: tools.Title(call), Name: call.Name, Kind: toolKind(call.Name),
-			Status: "pending", RawInput: input, Content: []acp.ToolCallContent{textContent(content)},
+		RequestPermissionRequest: protocol.RequestPermissionRequest{
+			SessionId: protocol.SessionId(sessionID),
+			Options: []protocol.PermissionOption{
+				{OptionId: "approve", Name: "Yes", Kind: "allow_once"},
+				{OptionId: "deny", Name: "No", Kind: "reject_once"},
+			},
 		},
-		Options: []acp.PermissionOption{
-			{OptionID: "approve", Name: "Yes", Kind: "allow_once"},
-			{OptionID: "deny", Name: "No", Kind: "reject_once"},
+		ToolCall: acp.PermissionToolCall{
+			ToolCallUpdate: protocol.ToolCallUpdate{
+				ToolCallId: protocol.ToolCallId(call.CallID), Title: protocol.Ptr(tools.Title(call)), Kind: protocol.Ptr(toolKind(call.Name)),
+				Status: protocol.Ptr(protocol.ToolCallStatusPending), RawInput: input, Content: []protocol.ToolCallContent{textContent(content)},
+			},
+			Name: call.Name,
 		},
 	}
 }

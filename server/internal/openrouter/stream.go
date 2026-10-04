@@ -1,7 +1,6 @@
 package openrouter
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,6 +11,8 @@ import (
 	"slices"
 	"time"
 	"unicode/utf8"
+
+	"github.com/tmaxmax/go-sse"
 
 	"ox/internal/transcript"
 )
@@ -47,8 +48,8 @@ type Stream struct {
 	timer        *time.Timer
 	stallTimeout time.Duration
 	body         io.Closer
-	reader       *bufio.Reader
-	data         []byte
+	nextEvent    func() (sse.Event, error, bool)
+	stopEvents   func()
 	assembly     *assembly
 	finished     bool
 	items        []Item
@@ -63,13 +64,16 @@ func (s *Stream) Close() {
 	if s.body != nil {
 		s.body.Close()
 	}
+	if s.stopEvents != nil {
+		s.stopEvents()
+	}
 }
 
 // Next returns the next delta or the one validated completion. A stream that
 // ends before its completion is an error.
 func (s *Stream) Next() (Item, error) {
 	for len(s.items) == 0 {
-		more, err := s.readLine()
+		more, err := s.readEvent()
 		if err != nil {
 			return Item{}, err
 		}
@@ -82,7 +86,7 @@ func (s *Stream) Next() (Item, error) {
 		// them first, so the completion carries the usage and the connection
 		// returns to the pool.
 		for {
-			more, err := s.readLine()
+			more, err := s.readEvent()
 			if err != nil {
 				return Item{}, err
 			}
@@ -97,35 +101,22 @@ func (s *Stream) Next() (Item, error) {
 	return item, nil
 }
 
-// readLine reads one SSE line into stream items; false at the end of the body.
-func (s *Stream) readLine() (bool, error) {
-	line, err := s.reader.ReadBytes('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
+func (s *Stream) readEvent() (bool, error) {
+	event, err, more := s.nextEvent()
+	if err != nil {
 		return false, s.readFailure(err)
 	}
-	if len(line) == 0 {
+	if !more {
 		return false, nil
 	}
-	if !utf8.Valid(line) {
+	if event.Data == "" {
+		return true, nil
+	}
+	if !utf8.ValidString(event.Data) {
 		return false, errors.New("OpenRouter stream is not UTF-8")
 	}
-	line = bytes.TrimRight(line, "\r\n")
-	if len(line) == 0 {
-		if len(s.data) > 0 {
-			data := s.data
-			s.data = nil
-			if err := s.event(data); err != nil {
-				return false, err
-			}
-		}
-	} else if data, ok := bytes.CutPrefix(line, []byte("data:")); ok {
-		s.timer.Reset(s.stallTimeout)
-		if len(s.data) > 0 {
-			s.data = append(s.data, '\n')
-		}
-		s.data = append(s.data, bytes.TrimPrefix(data, []byte(" "))...)
-	}
-	return true, nil
+	s.timer.Reset(s.stallTimeout)
+	return true, s.event([]byte(event.Data))
 }
 
 // readFailure reports a stall, the caller's cancellation, or a transport error.

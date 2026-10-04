@@ -8,7 +8,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -257,60 +256,21 @@ func update(source string, chunks []chunk) (string, error) {
 	return contents, nil
 }
 
-// target resolves a patch path to its canonical workspace-relative path.
-// Existing components are resolved one at a time, so even a link followed by a
-// nonexistent child cannot lead outside the workspace. The target itself must
-// not be a link, and each target may appear once in a patch.
-func (w *workspace) target(name string, seen map[string]bool) (string, error) {
-	if filepath.IsAbs(name) {
-		return "", errors.New("expected a relative path without parent traversal")
+// target identifies a patch target and rejects duplicate operations on it.
+func target(root, name string, seen map[string]bool) (string, error) {
+	if name == "" {
+		return "", errors.New("file path is empty")
 	}
-	path := w.root
-	hasName, link := false, false
-	for _, component := range strings.Split(filepath.ToSlash(name), "/") {
-		switch component {
-		case "", ".":
-			continue
-		case "..":
-			return "", errors.New("expected a relative path without parent traversal")
-		}
-		hasName = true
-		path = filepath.Join(path, component)
-		info, err := os.Lstat(path)
-		switch {
-		case err == nil:
-			link = info.Mode()&fs.ModeSymlink != 0
-			if path, err = filepath.EvalSymlinks(path); err != nil {
-				return "", err
-			}
-		case errors.Is(err, fs.ErrNotExist):
-			link = false
-		default:
-			return "", err
-		}
-		if _, err := w.relative(path); err != nil {
-			return "", err
-		}
-	}
-	if !hasName || path == w.root {
-		return "", errors.New("path names the workspace root")
-	}
-	if link {
-		return "", errors.New("path is a symbolic link")
-	}
-	relative, err := w.relative(path)
-	if err != nil {
-		return "", err
-	}
-	if seen[relative] {
+	path := filePath(root, name)
+	if seen[path] {
 		return "", errors.New("duplicate target")
 	}
-	seen[relative] = true
-	return relative, nil
+	seen[path] = true
+	return path, nil
 }
 
-func (w *workspace) requireAbsent(path string) error {
-	_, err := w.dir.Lstat(path)
+func requireAbsent(path string) error {
+	_, err := os.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
@@ -320,8 +280,8 @@ func (w *workspace) requireAbsent(path string) error {
 	return errors.New("destination already exists")
 }
 
-func (w *workspace) readText(path string) (string, error) {
-	file, err := w.openRegular(path)
+func readFileText(path string) (string, error) {
+	file, err := openRegular(path)
 	if err != nil {
 		return "", err
 	}
@@ -336,17 +296,17 @@ type change struct {
 	// diff is what the client shows when the change alters a file's
 	// contents.
 	diff  *transcript.Diff
-	apply func(*workspace) error
+	apply func() error
 }
 
-// prepare checks every operation against the workspace and builds its change,
+// prepare checks every operation and builds its change,
 // so nothing touches the disk unless every operation can apply. The first
 // failing operation stops preparation with an error naming its path.
-func prepare(w *workspace, operations []fileOperation) ([]change, error) {
+func prepare(root string, operations []fileOperation) ([]change, error) {
 	seen := map[string]bool{}
 	var changes []change
 	for _, operation := range operations {
-		c, err := w.prepareOperation(operation, seen)
+		c, err := prepareOperation(root, operation, seen)
 		if err != nil {
 			return nil, fmt.Errorf("prepare: %s: %w", operation.path, err)
 		}
@@ -355,43 +315,43 @@ func prepare(w *workspace, operations []fileOperation) ([]change, error) {
 	return changes, nil
 }
 
-func (w *workspace) diff(path string, oldText *string, newText string) *transcript.Diff {
-	return &transcript.Diff{Path: filepath.Join(w.root, path), OldText: oldText, NewText: newText}
+func fileDiff(path string, oldText *string, newText string) *transcript.Diff {
+	return &transcript.Diff{Path: path, OldText: oldText, NewText: newText}
 }
 
-func (w *workspace) prepareOperation(operation fileOperation, seen map[string]bool) (change, error) {
-	path, err := w.target(operation.path, seen)
+func prepareOperation(root string, operation fileOperation, seen map[string]bool) (change, error) {
+	path, err := target(root, operation.path, seen)
 	if err != nil {
 		return change{}, err
 	}
 	switch operation.kind {
 	case addFile:
-		if err := w.requireAbsent(path); err != nil {
+		if err := requireAbsent(path); err != nil {
 			return change{}, err
 		}
 		contents := operation.contents
 		return change{
 			summary: "Added " + operation.path,
-			diff:    w.diff(path, nil, contents),
-			apply:   func(w *workspace) error { return w.writeFile(path, []byte(contents), true) },
+			diff:    fileDiff(path, nil, contents),
+			apply:   func() error { return writeContents(path, []byte(contents), true) },
 		}, nil
 	case deleteFile:
-		text, err := w.readText(path)
+		text, err := readFileText(path)
 		if err != nil {
 			return change{}, err
 		}
 		text = strings.ToValidUTF8(text, "�")
 		return change{
 			summary: "Deleted " + operation.path,
-			diff:    w.diff(path, &text, ""),
-			apply:   func(w *workspace) error { return w.remove(path) },
+			diff:    fileDiff(path, &text, ""),
+			apply:   func() error { return os.Remove(path) },
 		}, nil
 	}
-	return w.prepareUpdate(operation, path, seen)
+	return prepareUpdate(root, operation, path, seen)
 }
 
-func (w *workspace) prepareUpdate(operation fileOperation, path string, seen map[string]bool) (change, error) {
-	file, err := w.openRegular(path)
+func prepareUpdate(root string, operation fileOperation, path string, seen map[string]bool) (change, error) {
+	file, err := openRegular(path)
 	if err != nil {
 		return change{}, err
 	}
@@ -414,44 +374,44 @@ func (w *workspace) prepareUpdate(operation fileOperation, path string, seen map
 		changed = contents != source
 	}
 	if operation.destination != "" {
-		destination, err := w.target(operation.destination, seen)
+		destination, err := target(root, operation.destination, seen)
 		if err == nil {
-			err = w.requireAbsent(destination)
+			err = requireAbsent(destination)
 		}
 		if err != nil {
 			return change{}, fmt.Errorf("destination %s: %w", operation.destination, err)
 		}
 		c := change{
 			summary: fmt.Sprintf("Moved %s -> %s", operation.path, operation.destination),
-			apply:   func(w *workspace) error { return w.move(path, destination) },
+			apply:   func() error { return moveFile(path, destination) },
 		}
 		if changed {
-			c.diff = w.diff(destination, &source, contents)
-			c.apply = func(w *workspace) error {
-				if err := w.writeFile(destination, []byte(contents), true); err != nil {
+			c.diff = fileDiff(destination, &source, contents)
+			c.apply = func() error {
+				if err := writeContents(destination, []byte(contents), true); err != nil {
 					return err
 				}
-				return w.remove(path)
+				return os.Remove(path)
 			}
 		}
 		return c, nil
 	}
 	if !changed {
-		return change{summary: "Unchanged " + operation.path, apply: func(*workspace) error { return nil }}, nil
+		return change{summary: "Unchanged " + operation.path, apply: func() error { return nil }}, nil
 	}
 	return change{
 		summary: "Modified " + operation.path,
-		diff:    w.diff(path, &source, contents),
-		apply:   func(w *workspace) error { return w.writeFile(path, []byte(contents), false) },
+		diff:    fileDiff(path, &source, contents),
+		apply:   func() error { return writeContents(path, []byte(contents), false) },
 	}, nil
 }
 
 // applyChanges applies the changes in order. Success returns the model's
 // summary and, for the client, each operation's summary followed by its diff.
-func applyChanges(w *workspace, changes []change) (string, []transcript.ToolContent, error) {
+func applyChanges(changes []change) (string, []transcript.ToolContent, error) {
 	var completed []string
 	for i, c := range changes {
-		if err := c.apply(w); err != nil {
+		if err := c.apply(); err != nil {
 			var remaining []string
 			for _, later := range changes[i+1:] {
 				remaining = append(remaining, later.summary)
@@ -501,14 +461,9 @@ func applyPatch(root, input string) (string, []transcript.ToolContent, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	w, err := openWorkspace(root)
-	if err != nil {
-		return "", nil, fmt.Errorf("prepare: workspace: %w", err)
-	}
-	defer w.Close()
-	changes, err := prepare(w, operations)
+	changes, err := prepare(root, operations)
 	if err != nil {
 		return "", nil, err
 	}
-	return applyChanges(w, changes)
+	return applyChanges(changes)
 }

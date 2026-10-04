@@ -3,7 +3,10 @@ module ox
 go 1.27.1
 
 require (
+	github.com/coder/acp-go-sdk v0.13.5
 	github.com/ncruces/go-sqlite3 v0.35.6
+	github.com/sourcegraph/jsonrpc2 v0.2.3
+	github.com/tmaxmax/go-sse v0.11.0
 	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.46.0

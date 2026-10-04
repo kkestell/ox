@@ -19,11 +19,11 @@ var readSchema = compact(`{
   "type": "function",
   "function": {
     "name": "read_file",
-    "description": "Read a UTF-8 text file inside the workspace. Returns numbered lines, at most 16 KiB, with the next offset when more remains. An oversized line returns a marked prefix; its omitted portion cannot be retrieved through line pagination. Example: {\"path\":\"src/main.rs\",\"offset\":1,\"limit\":100}.",
+    "description": "Read a UTF-8 text file. Returns numbered lines, at most 16 KiB, with the next offset when more remains. An oversized line returns a marked prefix; its omitted portion cannot be retrieved through line pagination. Example: {\"path\":\"src/main.rs\",\"offset\":1,\"limit\":100}.",
     "parameters": {
       "type": "object",
       "properties": {
-        "path": {"type": "string", "description": "File path relative to the workspace or absolute inside it."},
+        "path": {"type": "string", "description": "File path relative to the workspace or absolute."},
         "offset": {"type": "integer", "minimum": 1, "default": 1, "description": "1-based starting line."},
         "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 1000, "description": "Maximum number of lines to return."}
       },
@@ -52,16 +52,10 @@ func read(root, arguments string) (string, []transcript.ToolContent, error) {
 	if args.Offset == 0 || args.Limit < 1 || args.Limit > maxReadLimit {
 		return "", nil, fmt.Errorf("offset must be at least 1 and limit must be between 1 and %d", maxReadLimit)
 	}
-	w, err := openWorkspace(root)
-	if err != nil {
-		return "", nil, err
+	if *args.Path == "" {
+		return "", nil, errors.New("file path is empty")
 	}
-	defer w.Close()
-	path, err := w.resolve(w.relativeName(*args.Path))
-	if err != nil {
-		return "", nil, fmt.Errorf("%s: %w", *args.Path, err)
-	}
-	file, err := w.openRegular(path)
+	file, err := openRegular(filePath(root, *args.Path))
 	if err != nil {
 		return "", nil, err
 	}

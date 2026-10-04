@@ -386,3 +386,21 @@ func TestVerifyChecksTheKeyWithoutGenerating(t *testing.T) {
 		t.Error("verification sent a body")
 	}
 }
+
+func TestStreamAcceptsSSEFramingAndLargeEvents(t *testing.T) {
+	text := strings.Repeat("雪", 30000)
+	delta, _ := json.Marshal(openroutertest.Delta(object{"content": text}, "stop"))
+	// Multiple data fields, a BOM, CR-only endings, comments, and a final usage
+	// event all go through the SSE parser before completion assembly.
+	payload := "\xef\xbb\xbf: keepalive\r\rid: 1\rdata: " + string(delta[:1]) + "\rdata: " + string(delta[1:]) + "\r\r"
+	usage, _ := json.Marshal(openroutertest.Usage(12, 34, 0.25))
+	payload += "data: " + string(usage) + "\r\rdata: [DONE]\r\r"
+	items, err := drain(t, openroutertest.Start(t, openroutertest.Stream(payload)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	completion := items[len(items)-1].Completion
+	if completion.Message.Text != text || completion.Message.Usage == nil || completion.Message.Usage.InputTokens != 12 {
+		t.Fatal("SSE framing lost text or final usage")
+	}
+}

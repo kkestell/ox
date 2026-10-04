@@ -3,17 +3,19 @@
 package openrouter
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"net/http"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/tmaxmax/go-sse"
 
 	"ox/internal/catalog"
 )
@@ -144,7 +146,7 @@ func (c *Client) Stream(ctx context.Context, r Request) (*Stream, error) {
 		return nil, statusError(response, string(detail))
 	}
 	stream.body = response.Body
-	stream.reader = bufio.NewReader(response.Body)
+	stream.nextEvent, stream.stopEvents = iter.Pull2(sse.Read(response.Body, &sse.ReadConfig{MaxEventSize: 16 * 1024 * 1024}))
 	return stream, nil
 }
 

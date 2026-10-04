@@ -1,9 +1,17 @@
+github.com/coder/acp-go-sdk v0.13.5 h1:LI9jq5xon7xslaYlnoktvTVyDlE37yIk2daT7N9ASYk=
+github.com/coder/acp-go-sdk v0.13.5/go.mod h1:yKzM/3R9uELp4+nBAwwtkS0aN1FOFjo11CNPy37yFko=
+github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=
+github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
 github.com/ncruces/go-sqlite3 v0.35.6 h1:0JGlMne89YzKNP2CJBuiH21EEzSQNuB7pfvCbKBn0Jg=
 github.com/ncruces/go-sqlite3 v0.35.6/go.mod h1:6MfWBOFbHJVSJxmTCIUKCJdLl4TKkgO895RHerlDVo8=
 github.com/ncruces/go-sqlite3-wasm/v6 v6.3.35304 h1:dBSZlcEFdtBMvNRg34y50mConBPO/petSddSwGQVlSI=
 github.com/ncruces/go-sqlite3-wasm/v6 v6.3.35304/go.mod h1:YvoJzbJpX6phd3BGdtiXu2NuD5RX6G8zsUdzt47GgOY=
 github.com/ncruces/julianday v1.0.0 h1:fH0OKwa7NWvniGQtxdJRxAgkBMolni2BjDHaWTxqt7M=
 github.com/ncruces/julianday v1.0.0/go.mod h1:Dusn2KvZrrovOMJuOt0TNXL6tB7U2E8kvza5fFc9G7g=
+github.com/sourcegraph/jsonrpc2 v0.2.3 h1:0VYp5WZ2irQvRK8OKKxZAbbplj6Pmda07MXm+Mdz3GQ=
+github.com/sourcegraph/jsonrpc2 v0.2.3/go.mod h1:0jBvyko0tdLpe6ntNSF/mvFalb/RPRXcmogoV47cEWc=
+github.com/tmaxmax/go-sse v0.11.0 h1:nogmJM6rJUoOLoAwEKeQe5XlVpt9l7N82SS1jI7lWFg=
+github.com/tmaxmax/go-sse v0.11.0/go.mod h1:u/2kZQR1tyngo1lKaNCj1mJmhXGZWS1Zs5yiSOD+Eg8=
 go.yaml.in/yaml/v3 v3.0.5 h1:N6y/pJk8buWs9NY5ERU2HSMfm+IuD/OtfdAnq6kESPw=
 go.yaml.in/yaml/v3 v3.0.5/go.mod h1:HVTZu1O7/Vkt2N+BFy8Zza+lnLsABggaTM2ZpNIGuKg=
 golang.org/x/sys v0.48.0 h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=
