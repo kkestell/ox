@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -19,17 +21,21 @@ import (
 
 // recorder records events and answers permission requests in order.
 type recorder struct {
-	mu      sync.Mutex
-	events  []Event
-	answers []bool
-	failAt  int
-	asked   chan transcript.ToolCall
+	mu              sync.Mutex
+	events          []Event
+	answers         []bool
+	failAt          int
+	asked           chan transcript.ToolCall
+	cancelAfterCall context.CancelFunc
 }
 
 func (r *recorder) Send(event Event) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.events = append(r.events, event)
+	if _, ok := event.(ToolFinished); ok && r.cancelAfterCall != nil {
+		r.cancelAfterCall()
+	}
 	if r.failAt > 0 && len(r.events) == r.failAt {
 		return errors.New("the client went away")
 	}
@@ -213,6 +219,58 @@ func TestCancellationDuringTheStreamDiscardsProvisionalOutput(t *testing.T) {
 	}
 	if entries := f.saved(t); len(entries) != 1 {
 		t.Errorf("saved = %v", entries)
+	}
+}
+
+func TestCancellationKeepsThePatchOutcomeAndSkipsLaterCalls(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		patch  string
+		status transcript.ToolStatus
+	}{
+		{"completed", "*** Add File: first\n+content\n*** Add File: second\n+second\n", transcript.ToolCompleted},
+		{"failed", "*** Add File: first\n+content\n*** Add File: first/child\n+child\n*** Add File: second\n+second\n", transcript.ToolFailed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newFixture(t, fake.Calls(
+				fake.Call{ID: "patch", Name: tools.ApplyPatch, Arguments: map[string]any{"patch": "*** Begin Patch\n" + test.patch + "*** End Patch\n"}},
+				fake.Call{ID: "later", Name: tools.ApplyPatch, Arguments: map[string]any{"patch": "*** Begin Patch\n*** Add File: never\n+never\n*** End Patch\n"}},
+			))
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			client := &recorder{cancelAfterCall: cancel}
+			result, err := f.run(t, ctx, f.input("Apply patches", transcript.ModeAuto), client)
+			if err != nil || result.Stop != Cancelled {
+				t.Fatalf("result %+v, %v", result, err)
+			}
+			entries := f.saved(t)
+			if len(entries) != 2 {
+				t.Fatalf("saved %d entries", len(entries))
+			}
+			batch := entries[1].(*transcript.AssistantBatch)
+			if len(batch.Outcomes) != 2 || batch.Outcomes[0].Status != test.status ||
+				batch.Outcomes[1].Status != transcript.ToolCancelled || batch.Outcomes[1].Text != "Cancelled before this tool was started." {
+				t.Fatalf("outcomes = %+v", batch.Outcomes)
+			}
+			outcome := batch.Outcomes[0]
+			if test.status == transcript.ToolCompleted {
+				if outcome.Text != "Applied patch.\nAdded first\nAdded second" || len(outcome.Content) != 4 {
+					t.Fatalf("completed patch = %+v", outcome)
+				}
+			} else if !strings.Contains(outcome.Text, "Completed:\nAdded first\nNot attempted:\nAdded second") {
+				t.Fatalf("failed patch = %+v", outcome)
+			}
+			data, err := os.ReadFile(filepath.Join(f.workspace, "first"))
+			if err != nil || string(data) != "content\n" {
+				t.Fatalf("completed file = %q, %v", data, err)
+			}
+			if _, err := os.Stat(filepath.Join(f.workspace, "never")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("later patch ran: %v", err)
+			}
+			if len(f.server.Bodies()) != 1 {
+				t.Fatal("cancelled turn made another model request")
+			}
+		})
 	}
 }
 

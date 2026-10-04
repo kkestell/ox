@@ -57,7 +57,13 @@ func (t *Toolbox) Execute(ctx context.Context, call transcript.ToolCall) transcr
 		return t.shell(ctx, call.Arguments)
 	case ShellProcess:
 		return t.shellProcess(ctx, call.Arguments)
-	case ReadFile, Glob, Grep, ApplyPatch:
+	case ApplyPatch:
+		if ctx.Err() != nil {
+			return transcript.Cancelled("Cancelled before this tool was started.")
+		}
+		// Keep ownership until all writes finish and their result is observed.
+		return bounded(t.run(ctx, call))
+	case ReadFile, Glob, Grep:
 	default:
 		return transcript.Failed("Unknown tool: " + call.Name)
 	}
