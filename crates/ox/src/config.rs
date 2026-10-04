@@ -28,10 +28,9 @@ pub struct ServerConfig {
 
 impl Config {
     fn bundled_server() -> anyhow::Result<ServerConfig> {
-        let command = std::env::current_exe()?;
         Ok(ServerConfig {
             name: "Ox".into(),
-            command: command.to_string_lossy().into_owned(),
+            command: server_binary()?.to_string_lossy().into_owned(),
             args: vec!["acp".into()],
         })
     }
@@ -123,7 +122,14 @@ fn write_favorites(path: &Path, favorites: &[String]) -> anyhow::Result<()> {
 }
 
 pub fn path() -> anyhow::Result<PathBuf> {
-    Ok(ox_server::global_path(&ox_server::home_dir()?))
+    let home = std::env::var_os("HOME").ok_or_else(|| anyhow!("HOME is not set"))?;
+    Ok(PathBuf::from(home).join(".config/ox/settings.json"))
+}
+
+/// The bundled Ox server, `ox-server`, installed next to `ox`.
+pub fn server_binary() -> anyhow::Result<PathBuf> {
+    let exe = std::env::current_exe()?;
+    Ok(exe.with_file_name("ox-server"))
 }
 
 #[cfg(test)]
@@ -162,7 +168,7 @@ mod tests {
 
     #[test]
     fn omitted_servers_mean_the_bundled_server_and_omitted_favorites_are_empty() {
-        let bundled = std::env::current_exe().unwrap();
+        let bundled = server_binary().unwrap();
         let bundled = bundled.to_str().unwrap();
         for (text, command, args, favorites) in [
             ("{}", bundled, vec!["acp"], vec![]),

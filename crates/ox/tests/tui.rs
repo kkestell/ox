@@ -2,9 +2,12 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use ox_server::fixture::{
-    DEFAULT_MODEL, Reply, Server, catalog_reply, delta, echo_reply, shell_reply, sse, text_reply,
-    usage,
+#[path = "../src/fixture.rs"]
+#[allow(dead_code)]
+mod fixture;
+
+use fixture::{
+    DEFAULT_MODEL, Reply, Server, delta, echo_reply, shell_reply, sse, text_reply, usage,
 };
 use serde_json::json;
 
@@ -25,7 +28,7 @@ impl Tmux {
         Self::with_skill(replies, false)
     }
 
-    fn with_skill(mut replies: Vec<Reply>, skill: bool) -> Self {
+    fn with_skill(replies: Vec<Reply>, skill: bool) -> Self {
         let root = tempfile::tempdir().unwrap();
         let socket = root.path().join("tmux.sock");
         let workspace = root.path().join("workspace");
@@ -46,7 +49,6 @@ impl Tmux {
             )
             .unwrap();
         }
-        replies.insert(0, catalog_reply());
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let openrouter = runtime.block_on(Server::start(replies));
         let endpoint = openrouter.endpoint().to_owned();

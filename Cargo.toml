@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ox", "crates/ox-server"]
+members = ["crates/ox"]
 resolver = "3"
 
 [workspace.dependencies]
@@ -16,7 +16,6 @@ tempfile = "3.27.0"
 tui-markdown = { version = "0.3", default-features = false }
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 unicode-width = "0.2"
-ox-server = { path = "crates/ox-server" }
 
 [profile.release]
 codegen-units = 1

@@ -1,13 +1,15 @@
 # Ox
 
-Ox is an ACP-native coding agent written in Rust. The Ox ACP server can be used
-with any ACP-compatible client, and the TUI can be used with any ACP-compatible
-server. Ox is a single binary.
+Ox is an ACP-native coding agent. The Ox ACP server, `ox-server`, can be used
+with any ACP-compatible client, and the TUI, `ox`, can be used with any
+ACP-compatible server. A release contains both binaries; keep them in the same
+directory.
 
 ## Quick Start
 
 Download the [latest release](https://github.com/kkestell/ox/releases), then
-extract `ox` into a directory on your `PATH`, such as `~/.local/bin`:
+extract `ox` and `ox-server` into a directory on your `PATH`, such as
+`~/.local/bin`:
 
 ```sh
 tar -xzf ox-*.tar.gz -C ~/.local/bin
@@ -19,8 +21,7 @@ Save your OpenRouter API key to the system keychain:
 ox auth login openrouter
 ```
 
-For a ChatGPT subscription, use the OpenAI setup under
-[Configuration](#configuration). Run the Ox TUI:
+Run the Ox TUI:
 
 ```sh
 cd /path/to/project
@@ -68,20 +69,17 @@ model must support it. Headless runs use `auto` mode.
 ### `ox auth`
 
 ```text
-ox auth login <openrouter|openai>
-ox auth logout <openrouter|openai>
+ox auth login openrouter
+ox auth logout openrouter
 ```
 
 OpenRouter login verifies an API key and saves it in the system keyring; logout
-removes that key. `OPENROUTER_API_KEY`, when set, takes precedence over the
-saved key. OpenAI login opens ChatGPT sign-in and saves protected credentials
-under `~/.config/ox/`. Login leaves settings unchanged. To replace a saved
-ChatGPT account, log out first and decline continuing with the saved account at
-the next login.
+removes that key. Login reads the key from the terminal without echoing it, or
+as one line of standard input. `OPENROUTER_API_KEY`, when set, takes precedence
+over the saved key. Login leaves settings unchanged.
 
-When the bundled server starts, it loads the model catalog for every provider
-whose credentials are available. At least one provider must be authenticated.
-Restart the server after a login, logout, or other credential change.
+When the server starts, it loads the OpenRouter model catalog, which requires an
+API key. Restart the server after a login, logout, or other credential change.
 
 ### `ox acp`
 
@@ -94,11 +92,13 @@ clients that append authentication commands to the configured server can use
 these aliases:
 
 ```text
-ox acp auth login <openrouter|openai>
-ox acp auth logout <openrouter|openai>
+ox acp auth login openrouter
+ox acp auth logout openrouter
 ```
 
-Every command supports `-h` or `--help`. `ox` also supports `-V` or `--version`.
+`ox run`, `ox acp`, and `ox auth` run the same commands of `ox-server`, which
+can also be invoked directly. Every command supports `-h` or `--help`. `ox` also
+supports `-V` or `--version`.
 
 ## Configuration
 
@@ -123,10 +123,9 @@ workspace value replaces the global value. Both files are optional.
 }
 ```
 
-- `model` is a qualified model ID in the form `<provider>:<provider-model-id>`.
-  When OpenRouter is available, the default is
-  `openrouter:~deepseek/deepseek-flash-latest`. With only OpenAI available, the
-  default is the first usable model in its catalog.
+- `model` is a qualified model ID in the form
+  `openrouter:<openrouter-model-id>`. It defaults to
+  `openrouter:~deepseek/deepseek-flash-latest`.
 - `effort` is `default`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or
   `max`. It defaults to `default` and must be supported by the selected model.
 - `mode` is `ask` or `auto`. It defaults to `ask`; `ask` requests permission
@@ -140,16 +139,4 @@ workspace value replaces the global value. Both files are optional.
 - `servers` configures ACP servers for the terminal client and can be set only
   in the global file. Each server requires a unique, nonempty `name` and a
   `command`; `args` is an optional list of arguments that defaults to empty. If
-  `servers` is absent or empty, the client starts the bundled Ox server.
-
-To use an eligible ChatGPT subscription, run `ox auth login openai` before
-starting the server. OpenAI models appear alongside OpenRouter models when both
-providers are authenticated, and the model picker can change providers between
-turns. Choose an OpenAI model there or configure its qualified model ID:
-
-```json
-{
-  "model": "openai:gpt-5.5",
-  "effort": "high"
-}
-```
+  `servers` is absent or empty, the client starts the `ox-server` next to `ox`.

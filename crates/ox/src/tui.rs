@@ -1280,7 +1280,7 @@ mod tests {
     use super::*;
     use crate::acp::Event as AcpEvent;
     use crate::acp::tests::{turn, with_session};
-    use ox_server::fixture::{DEFAULT_MODEL, Reply, echo_reply, shell_reply};
+    use crate::fixture::{DEFAULT_MODEL, Reply, echo_reply, shell_reply};
     use ratatui::backend::TestBackend;
     use serde_json::json;
 
@@ -1876,7 +1876,7 @@ mod tests {
             ui.input.paste("/model");
             press(&mut ui, &mut session, KeyCode::Enter, now).await?;
             for (typed, expected) in [
-                ("", vec![0, 1, 2, 3, 4, 5]),
+                ("", vec![0, 1, 2, 3]),
                 ("FLASH glm", vec![1]),
                 ("nonexistent", vec![]),
             ] {
@@ -1960,7 +1960,7 @@ mod tests {
                 "opens on Favorites, in the order they were added, with the current model selected"
             );
             press(&mut ui, &mut session, KeyCode::Right, now).await?;
-            assert_eq!(state(&ui), (vec![0, 1, 2, 3, 4, 5], 0), "Right shows All");
+            assert_eq!(state(&ui), (vec![0, 1, 2, 3], 0), "Right shows All");
             for c in "deep".chars() {
                 press(&mut ui, &mut session, KeyCode::Char(c), now).await?;
             }
@@ -2001,7 +2001,7 @@ mod tests {
                 press(&mut ui, &mut session, KeyCode::Enter, now).await?;
                 press(&mut ui, &mut session, KeyCode::Left, now).await?;
                 let picker = ui.picker.as_ref().unwrap();
-                assert_eq!(picker.matches, [0, 1, 2, 3, 4, 5], "{favorites:?}");
+                assert_eq!(picker.matches, [0, 1, 2, 3], "{favorites:?}");
                 let mut screen = Screen {
                     picker: Some(picker),
                     ..screen(&mut view, &input, now)
@@ -2050,7 +2050,7 @@ mod tests {
                         "missing/model".into(),
                         "openrouter:z-ai/glm-5.3-flash".into(),
                     ],
-                    vec![0, 1, 2, 3, 4, 5],
+                    vec![0, 1, 2, 3],
                     1
                 ),
                 "favoriting keeps the selection"
@@ -2083,7 +2083,7 @@ mod tests {
             control_f(&mut ui, &mut session).await?;
             assert_eq!(
                 state(&ui),
-                (vec!["missing/model".into()], vec![0, 1, 2, 3, 4, 5], 0),
+                (vec!["missing/model".into()], vec![0, 1, 2, 3], 0),
                 "the last offered favorite's removal shows All"
             );
             assert!(ui.input.is_empty());
@@ -2170,7 +2170,7 @@ mod tests {
     async fn resume_wait_does_not_queue_another_prompt() {
         let hang = Reply::Hang(format!(
             "data: {}\n\n",
-            ox_server::fixture::delta(json!({"role":"assistant", "content":"running"}), None)
+            crate::fixture::delta(json!({"role":"assistant", "content":"running"}), None)
         ));
         with_session(vec![hang], async |mut session, _events| {
             let mut ui = Ui::default();
@@ -2192,7 +2192,7 @@ mod tests {
     async fn second_submission_stays_in_the_composer_while_a_prompt_is_queued() {
         let hang = Reply::Hang(format!(
             "data: {}\n\n",
-            ox_server::fixture::delta(json!({"role":"assistant", "content":"running"}), None)
+            crate::fixture::delta(json!({"role":"assistant", "content":"running"}), None)
         ));
         with_session(vec![hang, echo_reply()], async |mut session, mut events| {
             session.prompt("running".into())?;

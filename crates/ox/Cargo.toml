@@ -9,7 +9,6 @@ anyhow.workspace = true
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 clap.workspace = true
 futures.workspace = true
-ox-server.workspace = true
 crossterm.workspace = true
 ratatui.workspace = true
 unicode-width.workspace = true
@@ -21,5 +20,6 @@ tokio.workspace = true
 tui-markdown.workspace = true
 
 [dev-dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 tempfile.workspace = true
-ox-server = { workspace = true, features = ["test-support"] }
+tokio = { workspace = true, features = ["io-util", "net"] }

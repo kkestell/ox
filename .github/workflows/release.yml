@@ -49,13 +49,21 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
-      - name: Build the optimized binary
+      - name: Install the Go toolchain
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Build the optimized client
         run: cargo build --release --locked -p ox
-      - name: Package the binary
+      - name: Build the server
+        working-directory: server
+        run: go build -trimpath -ldflags="-s -w" -o ../target/release/ox-server ./cmd/ox-server
+      - name: Package the binaries
         run: |
           mkdir dist
-          cp target/release/ox dist/ox
-          tar -C dist -czf "ox-${GITHUB_REF_NAME#v}-${{ matrix.target }}.tar.gz" ox
+          cp target/release/ox target/release/ox-server dist/
+          tar -C dist -czf "ox-${GITHUB_REF_NAME#v}-${{ matrix.target }}.tar.gz" ox ox-server
       - name: Upload the archive
         uses: actions/upload-artifact@v4
         with:
