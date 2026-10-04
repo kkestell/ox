@@ -20,8 +20,8 @@ func TestCaptureKeepsTheStartAndLatestEnd(t *testing.T) {
 		t.Errorf("head %q tail %q omitted %v total %d", head, tail, capture.Omitted, capture.Total)
 	}
 	small := NewCapture(8)
-	small.Write([]byte("abc\xff"))
-	if head, tail := small.Text(); head != "abc�" || tail != "" || small.Omitted {
+	small.Write([]byte("abc\xff\xfe"))
+	if head, tail := small.Text(); head != "abc��" || tail != "" || small.Omitted {
 		t.Errorf("small: %q %q", head, tail)
 	}
 	oneRead := NewCapture(4)

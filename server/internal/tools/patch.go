@@ -395,14 +395,16 @@ func (w *workspace) prepareUpdate(operation fileOperation, path string, seen map
 	if err != nil {
 		return change{}, err
 	}
-	file.Close()
+	defer file.Close()
 	// source and contents are set when the chunks change the file.
 	var source, contents string
 	changed := false
 	if len(operation.chunks) > 0 {
-		if source, err = w.readText(path); err != nil {
+		data, err := io.ReadAll(file)
+		if err != nil {
 			return change{}, err
 		}
+		source = string(data)
 		if !utf8.ValidString(source) {
 			return change{}, errors.New("stream did not contain valid UTF-8")
 		}

@@ -78,13 +78,7 @@ func lossy(b []byte) string {
 	if utf8.Valid(b) {
 		return string(b)
 	}
-	var out []rune
-	for len(b) > 0 {
-		r, size := utf8.DecodeRune(b)
-		out = append(out, r)
-		b = b[size:]
-	}
-	return string(out)
+	return string([]rune(string(b)))
 }
 
 // output reads a child's stdout and stderr into captures.

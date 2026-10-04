@@ -265,11 +265,9 @@ func renderProcess(id, command string, output shellproc.Output, stop bool) trans
 	header := fmt.Sprintf("Process ID: %s\nCommand: %s\n%s", id, shorten(commandLine(command)), state)
 	text, content := report(header, output.Stdout, output.Stderr, output.Diagnostics)
 	outcome := transcript.Completed(text)
-	switch {
-	case stop:
-	case succeeded:
+	if !stop && succeeded {
 		outcome.Content = content
-	default:
+	} else if !stop {
 		outcome.Status = transcript.ToolFailed
 	}
 	return outcome
