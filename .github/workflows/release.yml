@@ -46,11 +46,10 @@ jobs:
       - name: Install the Go toolchain
         uses: actions/setup-go@v5
         with:
-          go-version-file: server/go.mod
-          cache-dependency-path: server/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
       - name: Build the binaries
-        working-directory: server
-        run: go build -trimpath -ldflags="-s -w" -o ../dist/ ./cmd/ox ./cmd/ox-server
+        run: go build -trimpath -ldflags="-s -w" -o dist/ ./cmd/ox ./cmd/ox-server
       - name: Package the binaries
         run: tar -C dist -czf "ox-${GITHUB_REF_NAME#v}-${{ matrix.target }}.tar.gz" ox ox-server
       - name: Upload the archive

@@ -93,7 +93,7 @@ def main():
         return subprocess.run(
             command,
             env=os.environ | {"OPENROUTER_API_KEY": api_key},
-            cwd=root / "server",
+            cwd=root,
         ).returncode
     finally:
         if not args.keep:

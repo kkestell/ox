@@ -12,10 +12,11 @@ Keep this document accurate and short.
 
 ## Code
 
-- `server/` — the Go module. `cmd/ox-server` is the Ox server: ACP, turns,
-  tools, OpenRouter, and session store. `cmd/ox` is the terminal client and its
-  terminal tests. `server/internal/` holds one package per concern.
-- `server/internal/sysprompt/` — the built-in system prompt.
+- `cmd/ox-server/` — the Ox server: ACP, turns, tools, OpenRouter, and session
+  store.
+- `cmd/ox/` — the terminal client and its terminal tests.
+- `internal/` — one package per concern, shared by both commands.
+- `internal/sysprompt/` — the built-in system prompt.
 - `examples/` — the example settings file.
 - `scripts/run.py` — runs one headless prompt in a temporary workspace.
 - `scripts/bench.py` — benchmarks a build of `ox-server` and compares benchmark

@@ -239,7 +239,7 @@ def go_build(source, binary, label):
     partial = binary.with_name(f"{binary.name}.tmp-{label}")
     subprocess.run(
         ["go", "build", "-trimpath", "-o", str(partial), "./cmd/ox-server"],
-        cwd=source / "server",
+        cwd=source,
         env=os.environ | {"GOOS": "linux", "GOARCH": goarch, "CGO_ENABLED": "0"},
         check=True,
     )
