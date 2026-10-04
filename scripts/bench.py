@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-# Runs the benchmark tasks in scripts/bench/tasks.toml against one build of ox,
-# each repetition in its own Docker container, and compares labeled benchmark
-# runs.
+# Runs the small-c benchmark tasks in scripts/bench/tasks.toml against one build
+# of ox, each repetition in its own Docker container, validates the tasks, and
+# compares labeled benchmark runs.
 #
 #   scripts/bench.py run --label base --ref main --model MODEL_ID --effort LEVEL
-#   scripts/bench.py run --label change --model MODEL_ID --effort LEVEL
+#   scripts/bench.py run --label change --model MODEL_ID --effort LEVEL --tests hidden
+#   scripts/bench.py validate [--task ID ...]
 #   scripts/bench.py compare base change    # writes agents/evals/base-vs-change.md
 #
-# Running an existing label again runs only its repetitions without a result.
-# Models use OPENROUTER_API_KEY from .env.
+# `run --tests visible|examples|hidden` starts the workspace with all, the
+# task's examples, or none of the task's new test cases. Running an existing
+# label again runs only its repetitions without a result. Models use
+# OPENROUTER_API_KEY from .env.
 
 import argparse
 import concurrent.futures
@@ -31,16 +34,29 @@ ROOT = Path(__file__).resolve().parent.parent
 BENCH = ROOT / "bench"
 EVALS = ROOT / "agents" / "evals"
 TASKS = ROOT / "scripts" / "bench" / "tasks.toml"
-FIXTURES = ROOT / "scripts" / "bench" / "fixtures"
 IMAGE = "ox-bench"
 # Seconds between SIGTERM and SIGKILL for a timed-out run.
 KILL_GRACE = 30
 # Attempts per repetition. An attempt that times out or where Ox fails is
-# retried; a failed check is a result.
+# retried; failed tests are a result.
 ATTEMPTS = 4
+# Seconds allowed for scoring with `go test`.
+SCORE_TIMEOUT = 600
+# The sentence appended to the prompt for each `run --tests` setting.
+TEST_NOTES = {
+    "visible": "The tests/ directory includes every new test case that will score"
+    " this task.",
+    "examples": "The tests/ directory includes some of the new test cases that will"
+    " score this task; the others are held back.",
+    "hidden": "The new test cases that will score this task are held back; none of"
+    " them are in the tests/ directory.",
+}
 
 METRICS = [
     "passed",
+    "tests_passed",
+    "tests_total",
+    "regressions",
     "status",
     "seconds",
     "requests",
@@ -85,15 +101,20 @@ def main():
     run_parser.add_argument("--model", required=True, metavar="MODEL_ID")
     run_parser.add_argument("--effort", required=True, metavar="LEVEL")
     run_parser.add_argument("--ref", metavar="GIT_REF")
+    run_parser.add_argument("--tests", choices=list(TEST_NOTES), default="examples")
     run_parser.add_argument("--reps", type=int, default=3)
     run_parser.add_argument("--jobs", type=int, default=4)
-    run_parser.add_argument("--timeout", type=int, default=900, metavar="SECONDS")
+    run_parser.add_argument("--timeout", type=int, default=1800, metavar="SECONDS")
     run_parser.add_argument("--task", nargs="+", dest="tasks", metavar="ID")
+    validate_parser = commands.add_parser("validate")
+    validate_parser.add_argument("--task", nargs="+", dest="tasks", metavar="ID")
     compare_parser = commands.add_parser("compare")
     compare_parser.add_argument("labels", nargs="+", metavar="LABEL")
     args = parser.parse_args()
     if args.command == "run":
         run(parser, args)
+    elif args.command == "validate":
+        validate(parser, args)
     else:
         compare(parser, args.labels)
 
@@ -102,12 +123,13 @@ def run(parser, args):
     if not re.fullmatch(r"[A-Za-z0-9._-]+", args.label):
         parser.error("--label may contain only letters, digits, '.', '_', and '-'")
     label_dir = BENCH / "runs" / args.label
-    tasks = load_tasks()
-    if args.tasks:
-        unknown = set(args.tasks) - {task["id"] for task in tasks}
-        if unknown:
-            parser.error(f"unknown tasks: {', '.join(sorted(unknown))}")
-        tasks = [task for task in tasks if task["id"] in args.tasks]
+    repo, all_tasks = load_tasks()
+    tasks = select_tasks(parser, all_tasks, args.tasks)
+    for task in tasks:
+        try:
+            resolve_task(repo, task)
+        except TaskError as error:
+            parser.error(f"{task['id']}: {error}")
 
     binary, commit, dirty = build(args.ref, args.label)
     api_key = next(
@@ -121,18 +143,26 @@ def run(parser, args):
         "dirty": dirty,
         "model": args.model,
         "effort": args.effort,
+        "tests": args.tests,
         "providers": pinned_providers(args.model),
     }
-    saved_path = next(label_dir.glob("*/*/result.json"), None)
-    if saved_path:
+    solutions = {task["id"]: task["solution"] for task in tasks}
+    for saved_path in label_dir.glob("*/*/result.json"):
         saved = json.loads(saved_path.read_text())
         if any(
             saved.get(key) != identity[key]
-            for key in ("commit", "dirty", "model", "effort", "providers")
+            for key in ("commit", "dirty", "model", "effort", "tests", "providers")
         ):
             parser.error(
                 f"{label_dir} holds results for a different commit, model, effort,"
-                " or providers"
+                " tests setting, or providers"
+            )
+        if (
+            saved["task"] in solutions
+            and saved.get("solution") != solutions[saved["task"]]
+        ):
+            parser.error(
+                f"{label_dir} holds results for a different commit of task/{saved['task']}"
             )
     runs = []
     for rep in range(1, args.reps + 1):
@@ -141,7 +171,9 @@ def run(parser, args):
                 runs.append((task, rep))
     with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
         futures = [
-            pool.submit(run_repetition, binary, api_key, args, identity, task, rep)
+            pool.submit(
+                run_repetition, binary, api_key, args, identity, repo, task, rep
+            )
             for task, rep in runs
         ]
         try:
@@ -149,7 +181,9 @@ def run(parser, args):
                 result = future.result()
                 print(
                     f"{result['task']} {result['rep']}: {result['status']},"
-                    f" {'passed' if result['passed'] else 'failed check'},"
+                    f" {'passed' if result['passed'] else 'failed'},"
+                    f" {result['tests_passed']}/{result['tests_total']} tests,"
+                    f" {result['regressions']} regressions,"
                     f" {result['requests']} requests,"
                     f" {result['tool_calls']} tool calls,"
                     f" {number('cost', result['cost'])}, {result['seconds']:.0f}s",
@@ -159,12 +193,63 @@ def run(parser, args):
             # Removing the containers ends the running `docker exec` calls, so
             # the pool's threads finish instead of waiting on `sleep infinity`.
             pool.shutdown(wait=False, cancel_futures=True)
-            containers = docker(
-                "ps", "-aq", "--filter", f"label=ox-bench={args.label}"
-            ).split()
-            if containers:
-                docker("rm", "-f", *containers)
+            remove_containers(args.label)
             raise SystemExit(130)
+
+
+def validate(parser, args):
+    """Checks each task's tag, examples, and tests, and prints one line per task."""
+    repo, all_tasks = load_tasks()
+    tasks = select_tasks(parser, all_tasks, args.tasks)
+    build_image()
+    invalid = False
+    for task in tasks:
+        try:
+            validate_task(repo, task)
+        except TaskError as error:
+            invalid = True
+            print(f"{task['id']}: invalid: {error}", flush=True)
+        else:
+            print(f"{task['id']}: valid", flush=True)
+    if invalid:
+        raise SystemExit(1)
+
+
+def validate_task(repo, task):
+    """Raises TaskError unless the task's new tests fail at its base, its old
+    tests pass there, and every test passes at its commit."""
+    resolve_task(repo, task)
+    out_dir = BENCH / "validate" / task["id"]
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True)
+    all_tests = task["new_tests"] | task["old_tests"]
+    for tree in ("base", "solution"):
+        container = f"ox-bench-validate-{task['id']}-{tree}"
+        start_container(container, "validate")
+        try:
+            copy_tree(container, repo, task[tree])
+            check = out_dir / f"{tree}.txt"
+            fields, outcomes = score(container, repo, task, check)
+        finally:
+            docker("rm", "-f", container)
+        missing = sorted(all_tests - outcomes.keys())
+        if missing:
+            raise TaskError(
+                f"at the {tree}, no result for {', '.join(missing)}; see {check}"
+            )
+        if tree == "base":
+            failed_old = sorted(t for t in task["old_tests"] if outcomes[t] != "pass")
+            if failed_old:
+                raise TaskError(
+                    f"old tests fail at the base: {', '.join(failed_old)}; see {check}"
+                )
+            if fields["tests_passed"] == fields["tests_total"]:
+                raise TaskError(
+                    f"every new test already passes at the base; see {check}"
+                )
+        elif not fields["passed"]:
+            raise TaskError(f"tests fail at task/{task['id']}; see {check}")
 
 
 def pinned_providers(model):
@@ -176,19 +261,105 @@ def pinned_providers(model):
     return models.get(model, {}).get("providers", [])
 
 
+class TaskError(Exception):
+    """A problem with a task's definition or its commits in small-c."""
+
+
 def load_tasks():
-    tasks = tomllib.loads(TASKS.read_text())["task"]
-    for task in tasks:
-        if "repo" in task:
-            match = re.fullmatch(
-                r"https://github\.com/([^/]+)/([^/]+)/commit/([0-9a-fA-F]+)",
-                task["repo"].rstrip("/"),
-            )
-            if not match:
-                raise SystemExit(f"{task['id']}: repo must be a GitHub commit URL")
-            owner, name, commit = match.groups()
-            task["clone"] = (f"https://github.com/{owner}/{name}.git", commit)
-    return tasks
+    """Returns the small-c repository path and the task list."""
+    data = tomllib.loads(TASKS.read_text())
+    ids = [task["id"] for task in data["task"]]
+    duplicates = sorted({task_id for task_id in ids if ids.count(task_id) > 1})
+    if duplicates:
+        raise SystemExit(f"{TASKS}: duplicate task ids: {', '.join(duplicates)}")
+    return (ROOT / data["repo"]).resolve(), data["task"]
+
+
+def select_tasks(parser, tasks, ids):
+    if not ids:
+        return tasks
+    unknown = set(ids) - {task["id"] for task in tasks}
+    if unknown:
+        parser.error(f"unknown tasks: {', '.join(sorted(unknown))}")
+    return [task for task in tasks if task["id"] in ids]
+
+
+def resolve_task(repo, task):
+    """Adds the task's commits, new test files, and test names to the task."""
+    task["base"], task["solution"] = task_commits(repo, task)
+    task["new_files"] = new_test_files(repo, task["base"], task["solution"])
+    for example in task.get("examples", []):
+        if not any(
+            str(Path(path).relative_to("tests").with_suffix("")) == example
+            for path in task["new_files"]
+        ):
+            raise TaskError(f"the example {example} matches no new test")
+    task["new_tests"] = test_ids(task["new_files"])
+    all_files = git("ls-tree", "-r", "--name-only", task["solution"], "tests", cwd=repo)
+    task["old_tests"] = test_ids(all_files.splitlines()) - task["new_tests"]
+
+
+def task_commits(repo, task):
+    """The hashes of the task's base, the first parent of task/<id>, and of the
+    task commit."""
+    tag = f"task/{task['id']}"
+    hashes = []
+    for rev, problem in (
+        (f"refs/tags/{tag}^{{commit}}", f"the tag {tag} does not exist in {repo}"),
+        (f"refs/tags/{tag}^1", f"the commit tagged {tag} has no parent"),
+    ):
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", rev],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode:
+            raise TaskError(problem)
+        hashes.append(result.stdout.strip())
+    solution, base = hashes
+    return base, solution
+
+
+def new_test_files(repo, base, solution):
+    """The paths under tests/ that the task commit adds or modifies."""
+    return git(
+        "diff",
+        "--name-only",
+        "--no-renames",
+        "--diff-filter=AM",
+        base,
+        solution,
+        "--",
+        "tests",
+        cwd=repo,
+    ).splitlines()
+
+
+def test_ids(paths):
+    """The Go subtest names of the test cases among the paths. Files directly in
+    tests/ are the harness, not test cases."""
+    ids = set()
+    for path in paths:
+        parts = Path(path).parts
+        if len(parts) == 3 and parts[0] == "tests":
+            ids.add(f"TestCompiler/{parts[1]}/{Path(parts[2]).stem}")
+    return ids
+
+
+def visible_files(task, tests):
+    """The new test case files the workspace starts with under a --tests setting."""
+    if tests == "hidden":
+        return []
+    files = [path for path in task["new_files"] if len(Path(path).parts) == 3]
+    if tests == "visible":
+        return files
+    examples = set(task.get("examples", []))
+    return [
+        path
+        for path in files
+        if str(Path(path).relative_to("tests").with_suffix("")) in examples
+    ]
 
 
 def git(*args, cwd=ROOT):
@@ -203,9 +374,19 @@ def docker(*args):
     ).stdout.strip()
 
 
+def remove_containers(label):
+    containers = docker("ps", "-aq", "--filter", f"label=ox-bench={label}").split()
+    if containers:
+        docker("rm", "-f", *containers)
+
+
+def build_image():
+    subprocess.run(["docker", "build", "-t", IMAGE, str(TASKS.parent)], check=True)
+
+
 def build(ref, label):
     """Builds ox-server and returns the binary, its commit, and whether the tree was dirty."""
-    subprocess.run(["docker", "build", "-t", IMAGE, str(TASKS.parent)], check=True)
+    build_image()
     bin_dir = BENCH / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     if ref:
@@ -246,13 +427,15 @@ def go_build(source, binary, label):
     os.replace(partial, binary)
 
 
-def run_repetition(binary, api_key, args, identity, task, rep):
+def run_repetition(binary, api_key, args, identity, repo, task, rep):
     run_dir = BENCH / "runs" / args.label / task["id"] / str(rep)
     for attempt in range(1, ATTEMPTS + 1):
         # A directory without a result is from an interrupted or retried attempt.
         if run_dir.exists():
             shutil.rmtree(run_dir)
-        result = attempt_repetition(binary, api_key, args, identity, task, rep, run_dir)
+        result = attempt_repetition(
+            binary, api_key, args, identity, repo, task, rep, run_dir
+        )
         if result["status"] == "finished" or attempt == ATTEMPTS:
             break
         print(f"{task['id']} {rep}: {result['status']}, retrying", flush=True)
@@ -261,25 +444,142 @@ def run_repetition(binary, api_key, args, identity, task, rep):
     return result
 
 
-def attempt_repetition(binary, api_key, args, identity, task, rep, run_dir):
-    run_dir.mkdir(parents=True)
-    container = f"ox-bench-{args.label}-{task['id']}-{rep}"
+def start_container(name, label):
+    """Starts an idle benchmark container with an empty /workspace."""
     docker(
         "run",
         "-d",
         "--name",
-        container,
+        name,
         "--label",
-        f"ox-bench={args.label}",
-        "-e",
-        "CARGO_TARGET_DIR=/tmp/ox-cargo-target",
+        f"ox-bench={label}",
         IMAGE,
         "sleep",
         "infinity",
     )
+    docker("exec", name, "mkdir", "/workspace")
+
+
+def copy_tree(container, repo, commit, paths=()):
+    """Copies the paths, or the whole tree, at a small-c commit into /workspace."""
+    archive = subprocess.run(
+        ["git", "archive", "--format=tar", commit, "--", *paths],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    ).stdout
+    subprocess.run(
+        ["docker", "cp", "-", f"{container}:/workspace"],
+        input=archive,
+        check=True,
+        capture_output=True,
+    )
+
+
+def prepare_workspace(container, repo, task, tests, run_dir):
+    """Fills /workspace with the base tree, the task commit's test harness, and
+    the visible new test case files, as a repository with one commit, so the
+    task commit is out of the agent's reach."""
+    copy_tree(container, repo, task["base"])
+    docker(
+        "exec",
+        "-w",
+        "/workspace",
+        container,
+        "find",
+        "tests",
+        "-mindepth",
+        "1",
+        "-maxdepth",
+        "1",
+        "-type",
+        "f",
+        "-delete",
+    )
+    harness = [
+        line.split("\t", 1)[1]
+        for line in git("ls-tree", task["solution"], "tests/", cwd=repo).splitlines()
+        if line.split()[1] == "blob"
+    ]
+    copy_tree(container, repo, task["solution"], harness + visible_files(task, tests))
+    docker("exec", "-w", "/workspace", container, "git", "init", "-q")
+    docker("exec", "-w", "/workspace", container, "git", "add", "-A")
+    docker(
+        "exec",
+        "-w",
+        "/workspace",
+        container,
+        "git",
+        "-c",
+        "user.name=ox-bench",
+        "-c",
+        "user.email=ox-bench@localhost",
+        "commit",
+        "-q",
+        "-m",
+        "Start the task",
+    )
+    files = docker("exec", "-w", "/workspace", container, "git", "ls-files")
+    (run_dir / "start.txt").write_text(files + "\n")
+
+
+def score(container, repo, task, check_path):
+    """Restores the task commit's tests/, runs them, and writes their output to
+    check_path. Returns the result fields and each test's last action."""
+    docker("exec", container, "rm", "-rf", "/workspace/tests")
+    copy_tree(container, repo, task["solution"], ["tests"])
+    process = subprocess.run(
+        [
+            "docker",
+            "exec",
+            "-w",
+            "/workspace",
+            container,
+            "timeout",
+            str(SCORE_TIMEOUT),
+            "go",
+            "test",
+            "-json",
+            "-count=1",
+            "./tests",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+    )
+    outcomes = {}
+    output = []
+    for line in process.stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            output.append(line + "\n")
+            continue
+        output.append(event.get("Output", ""))
+        if "Test" in event and event.get("Action") in ("pass", "fail", "skip"):
+            outcomes[event["Test"]] = event["Action"]
+    check_path.write_text("".join(output) + process.stderr)
+    # A test case with no pass result, such as after a build failure, failed.
+    tests_passed = sum(outcomes.get(test) == "pass" for test in task["new_tests"])
+    regressions = sum(outcomes.get(test) != "pass" for test in task["old_tests"])
+    fields = {
+        "passed": tests_passed == len(task["new_tests"])
+        and regressions == 0
+        and process.returncode == 0,
+        "tests_passed": tests_passed,
+        "tests_total": len(task["new_tests"]),
+        "regressions": regressions,
+    }
+    return fields, outcomes
+
+
+def attempt_repetition(binary, api_key, args, identity, repo, task, rep, run_dir):
+    run_dir.mkdir(parents=True)
+    container = f"ox-bench-{args.label}-{task['id']}-{rep}"
+    start_container(container, args.label)
     try:
         docker("cp", str(binary), f"{container}:/usr/local/bin/ox-server")
-        docker("exec", container, "mkdir", "/workspace", "/data")
+        docker("exec", container, "mkdir", "/data")
         if identity["providers"]:
             settings = {"models": {args.model: {"providers": identity["providers"]}}}
             subprocess.run(
@@ -297,25 +597,7 @@ def attempt_repetition(binary, api_key, args, identity, task, rep, run_dir):
                 capture_output=True,
                 text=True,
             )
-        if "clone" in task:
-            url, commit = task["clone"]
-            docker("exec", container, "git", "clone", "--quiet", url, "/workspace")
-            docker(
-                "exec",
-                "-w",
-                "/workspace",
-                container,
-                "git",
-                "checkout",
-                "--quiet",
-                commit,
-            )
-        # The fixtures hold each task's expected results, so they are in the
-        # container only while setup and the check run.
-        if "setup" in task:
-            docker("cp", str(FIXTURES), f"{container}:/fixtures")
-            docker("exec", "-w", "/workspace", container, "sh", "-c", task["setup"])
-            docker("exec", container, "rm", "-rf", "/fixtures")
+        prepare_workspace(container, repo, task, args.tests, run_dir)
 
         started_at = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
         start = time.monotonic()
@@ -348,7 +630,7 @@ def attempt_repetition(binary, api_key, args, identity, task, rep, run_dir):
                     args.model,
                     "--effort",
                     args.effort,
-                    task["prompt"],
+                    f"{task['prompt']}\n\n{TEST_NOTES[args.tests]}",
                 ],
                 stdin=subprocess.DEVNULL,
                 stdout=answer,
@@ -364,29 +646,8 @@ def attempt_repetition(binary, api_key, args, identity, task, rep, run_dir):
         else:
             status = "failed"
 
-        if "/fixtures/" in task["check"]:
-            docker("cp", str(FIXTURES), f"{container}:/fixtures")
-        with open(run_dir / "check.txt", "w") as check:
-            passed = (
-                subprocess.run(
-                    [
-                        "docker",
-                        "exec",
-                        "-w",
-                        "/workspace",
-                        container,
-                        "sh",
-                        "-c",
-                        task["check"],
-                    ],
-                    stdin=subprocess.DEVNULL,
-                    stdout=check,
-                    stderr=subprocess.STDOUT,
-                ).returncode
-                == 0
-            )
-
         docker("cp", f"{container}:/workspace", str(run_dir / "workspace"))
+        fields, _ = score(container, repo, task, run_dir / "check.txt")
         docker("cp", f"{container}:/data", str(run_dir / "data"))
     finally:
         docker("rm", "-f", container)
@@ -394,12 +655,12 @@ def attempt_repetition(binary, api_key, args, identity, task, rep, run_dir):
     result = identity | {
         "task": task["id"],
         "rep": rep,
+        "solution": task["solution"],
         "started_at": started_at,
-        "passed": passed,
         "status": status,
         "seconds": round(seconds, 1),
     }
-    return result | transcript_metrics(run_dir / "data" / "ox.db")
+    return result | fields | transcript_metrics(run_dir / "data" / "ox.db")
 
 
 def transcript_metrics(database):
@@ -509,6 +770,7 @@ def compare(parser, labels):
                 "yes" if first["dirty"] else "no",
                 f"`{first['model']}`",
                 first["effort"],
+                first["tests"],
                 ", ".join(first.get("providers", [])) or "any",
                 str(len(label_results)),
             ]
@@ -607,7 +869,16 @@ def compare(parser, labels):
         "## Runs",
         "",
         *markdown_table(
-            ["Label", "Commit", "Dirty", "Model", "Effort", "Providers", "Results"],
+            [
+                "Label",
+                "Commit",
+                "Dirty",
+                "Model",
+                "Effort",
+                "Tests",
+                "Providers",
+                "Results",
+            ],
             runs_rows,
             numeric=False,
         ),
