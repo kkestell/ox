@@ -6,5 +6,5 @@
     "textWrap": "always"
   },
   "includes": ["**/*.{md,markdown}"],
-  "excludes": ["target", "server/internal/sysprompt", "server/internal/tools/apply_patch.md"]
+  "excludes": ["server/internal/sysprompt", "server/internal/tools/apply_patch.md"]
 }

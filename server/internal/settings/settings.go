@@ -2,8 +2,8 @@
 // `~/.config/ox/settings.json`, read once at startup, and the workspace settings
 // file `.ox/settings.json`, read when a session becomes active. Workspace keys
 // replace the same global keys. Neither file is required. Only the global file
-// can set `models`, the OpenRouter provider pins. The Ox client reads and writes
-// other fields of the global file.
+// can set `models`, the OpenRouter provider pins. The terminal client's fields,
+// `servers` and `favorites`, are read only from the global file.
 package settings
 
 import (
@@ -172,13 +172,19 @@ func Save(home, workspace string, selected Settings) (bool, error) {
 	if global {
 		path = GlobalPath(home)
 	}
-	if err := write(path, selected); err != nil {
+	err = update(path, func(fields map[string]any) {
+		fields["model"] = selected.Model
+		fields["effort"] = selected.Effort
+		fields["mode"] = selected.Mode
+	})
+	if err != nil {
 		return false, fmt.Errorf("%s: %w", path, err)
 	}
 	return global, nil
 }
 
-func write(path string, selected Settings) error {
+// update rewrites the settings file at path with set applied to its fields.
+func update(path string, set func(fields map[string]any)) error {
 	fields := map[string]any{}
 	text, err := textfile.Read(path)
 	if err == nil {
@@ -188,9 +194,7 @@ func write(path string, selected Settings) error {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	fields["model"] = selected.Model
-	fields["effort"] = selected.Effort
-	fields["mode"] = selected.Mode
+	set(fields)
 	data, err := json.MarshalIndent(fields, "", "  ")
 	if err != nil {
 		return err

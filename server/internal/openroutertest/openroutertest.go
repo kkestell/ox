@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"ox/internal/catalog"
 	"ox/internal/openrouter"
@@ -252,5 +253,31 @@ func Echo() Reply {
 			}
 		}
 		panic("an echo request has a user message")
+	}
+}
+
+// CurrentCatalog answers a catalog request with Catalog, dated so that a
+// server filtering at the current time keeps the models ParsedCatalog keeps:
+// those models are released now, and the others' release dates move by the
+// time since Now.
+func CurrentCatalog() Reply {
+	return func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		var catalog struct {
+			Data []map[string]any `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(Catalog), &catalog); err != nil {
+			panic(err)
+		}
+		kept := ParsedCatalog()
+		now := time.Now().Unix()
+		for _, model := range catalog.Data {
+			if kept.Lookup("openrouter:"+model["id"].(string)) != nil {
+				model["created"] = now
+			} else {
+				model["created"] = model["created"].(float64) + float64(now-Now)
+			}
+		}
+		data, _ := json.Marshal(catalog)
+		Status(http.StatusOK, string(data))(w, r, body)
 	}
 }
