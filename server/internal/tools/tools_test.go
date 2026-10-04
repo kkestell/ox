@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"ox/internal/shellproc"
 	"ox/internal/transcript"
@@ -45,6 +46,70 @@ func writeFile(t *testing.T, path, text string) {
 }
 
 type object = map[string]any
+
+func TestCancelledPatchDoesNotStart(t *testing.T) {
+	tools := toolbox(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	outcome := tools.Execute(ctx, call(ApplyPatch, object{"patch": wrapped("*** Add File: never\n+content\n")}))
+	if outcome.Status != transcript.ToolCancelled || entries(t, tools.Workspace) != 0 {
+		t.Fatalf("cancelled patch: %+v", outcome)
+	}
+}
+
+func TestCancellationWaitsForPatchAndKeepsItsResult(t *testing.T) {
+	tools := toolbox(t)
+	var body strings.Builder
+	const count = 800
+	for i := range count {
+		fmt.Fprintf(&body, "*** Add File: file-%03d\n+content\n", i)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan transcript.ToolOutcome, 1)
+	go func() { done <- tools.Execute(ctx, call(ApplyPatch, object{"patch": wrapped(body.String())})) }()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.After(10 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(tools.Workspace, "file-000")); err == nil {
+			if _, err := os.Stat(filepath.Join(tools.Workspace, "file-799")); err == nil {
+				t.Fatal("patch finished before the test could cancel it")
+			}
+			cancel()
+			break
+		}
+		select {
+		case outcome := <-done:
+			t.Fatalf("patch returned before cancellation: %+v", outcome)
+		case <-ticker.C:
+		case <-deadline:
+			t.Fatal("patch did not start writing")
+		}
+	}
+	select {
+	case outcome := <-done:
+		files := entries(t, tools.Workspace)
+		if outcome.Status != transcript.ToolCompleted || len(outcome.Content) != count*2 || files != count {
+			// Wait for remaining writes so a regression cannot race workspace cleanup.
+			for entries(t, tools.Workspace) != count {
+				select {
+				case <-ticker.C:
+				case <-deadline:
+					t.Fatal("patch did not finish writing")
+				}
+			}
+			t.Fatalf("patch returned %s with %d content blocks and %d files", outcome.Status, len(outcome.Content), files)
+		}
+		for i := range count {
+			if readText(t, filepath.Join(tools.Workspace, fmt.Sprintf("file-%03d", i))) != "content\n" {
+				t.Fatalf("file %d was incomplete when Execute returned", i)
+			}
+		}
+	case <-deadline:
+		t.Fatal("patch did not return after cancellation")
+	}
+}
 
 func TestSchemasRejectExtraPropertiesAndUnknownToolsFail(t *testing.T) {
 	var names []string
