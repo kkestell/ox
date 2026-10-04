@@ -6,5 +6,5 @@
     "textWrap": "always"
   },
   "includes": ["**/*.{md,markdown}"],
-  "excludes": ["target", "crates/ox-server/src/prompts"]
+  "excludes": ["target", "server/internal/sysprompt", "server/internal/tools/apply_patch.md"]
 }

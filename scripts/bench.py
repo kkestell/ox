@@ -8,8 +8,7 @@
 #   scripts/bench.py compare base change    # writes agents/evals/base-vs-change.md
 #
 # Running an existing label again runs only its repetitions without a result.
-# OpenRouter models use OPENROUTER_API_KEY from .env; openai: models use the
-# host's ChatGPT sign-in from `ox auth login openai`.
+# Models use OPENROUTER_API_KEY from .env.
 
 import argparse
 import concurrent.futures
@@ -205,73 +204,46 @@ def docker(*args):
 
 
 def build(ref, label):
-    """Builds ox and returns the binary, its commit, and whether the tree was dirty."""
+    """Builds ox-server and returns the binary, its commit, and whether the tree was dirty."""
     subprocess.run(["docker", "build", "-t", IMAGE, str(TASKS.parent)], check=True)
     bin_dir = BENCH / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     if ref:
         commit = git("rev-parse", "--verify", f"{ref}^{{commit}}")
         dirty = False
-        binary = bin_dir / f"ox-{commit}"
+        binary = bin_dir / f"ox-server-{commit}"
         if binary.exists():
             print(f"reusing {binary}", flush=True)
             return binary, commit, dirty
         worktree = BENCH / "worktree" / label
         git("worktree", "add", "--detach", str(worktree), commit)
         try:
-            cargo_build(worktree, binary, label)
+            go_build(worktree, binary, label)
         finally:
             git("worktree", "remove", "--force", str(worktree))
     else:
         commit = git("rev-parse", "HEAD")
         dirty = bool(git("status", "--porcelain", "--untracked-files=no"))
-        binary = bin_dir / f"ox-{label}"
-        cargo_build(ROOT, binary, label)
+        binary = bin_dir / f"ox-server-{label}"
+        go_build(ROOT, binary, label)
     return binary, commit, dirty
 
 
-def cargo_build(source, binary, label):
-    # Every build shares one target directory and one Cargo registry in Docker
-    # volumes. Cargo compares file times, not content, to decide whether Ox's
-    # crates are fresh, so a build cleans them first, holding a lock so that no
-    # other build replaces them before the binary is copied.
-    partial = f"{binary.name}.tmp-{label}"
-    script = (
-        "cargo clean --profile fast -p ox -p ox-server"
-        " && cargo build --profile fast -p ox"
-        f" && cp /target/fast/ox /out/{partial}"
-    )
+def go_build(source, binary, label):
+    """Cross-compiles ox-server for the Linux architecture of the containers."""
+    goarch = {"x86_64": "amd64", "aarch64": "arm64"}[
+        docker("info", "--format", "{{.Architecture}}")
+    ]
+    # A concurrent benchmark run that finds the binary never reads a partial
+    # file.
+    partial = binary.with_name(f"{binary.name}.tmp-{label}")
     subprocess.run(
-        [
-            "docker",
-            "run",
-            "--rm",
-            "-v",
-            f"{source}:/src:ro",
-            "-v",
-            "ox-bench-target:/target",
-            "-v",
-            "ox-bench-cargo:/usr/local/cargo/registry",
-            "-v",
-            f"{binary.parent}:/out",
-            "-w",
-            "/src",
-            "-e",
-            "CARGO_TARGET_DIR=/target",
-            IMAGE,
-            "flock",
-            "/target/bench.lock",
-            "sh",
-            "-c",
-            script,
-        ],
+        ["go", "build", "-trimpath", "-o", str(partial), "./cmd/ox-server"],
+        cwd=source / "server",
+        env=os.environ | {"GOOS": "linux", "GOARCH": goarch, "CGO_ENABLED": "0"},
         check=True,
     )
-    # Docker Desktop's file sharing can create the file without execute
-    # permission. A concurrent benchmark run that finds the binary never reads a
-    # partial file.
-    os.chmod(binary.parent / partial, 0o755)
-    os.replace(binary.parent / partial, binary)
+    os.replace(partial, binary)
 
 
 def run_repetition(binary, api_key, args, identity, task, rep):
@@ -292,13 +264,6 @@ def run_repetition(binary, api_key, args, identity, task, rep):
 def attempt_repetition(binary, api_key, args, identity, task, rep, run_dir):
     run_dir.mkdir(parents=True)
     container = f"ox-bench-{args.label}-{task['id']}-{rep}"
-    # ChatGPT subscription credentials rotate on refresh, so every container
-    # shares the host's credential directory and its lock instead of a copy.
-    credentials = (
-        ["-v", f"{Path.home() / '.config' / 'ox'}:/root/.config/ox"]
-        if args.model.startswith("openai:")
-        else []
-    )
     docker(
         "run",
         "-d",
@@ -308,13 +273,12 @@ def attempt_repetition(binary, api_key, args, identity, task, rep, run_dir):
         f"ox-bench={args.label}",
         "-e",
         "CARGO_TARGET_DIR=/tmp/ox-cargo-target",
-        *credentials,
         IMAGE,
         "sleep",
         "infinity",
     )
     try:
-        docker("cp", str(binary), f"{container}:/usr/local/bin/ox")
+        docker("cp", str(binary), f"{container}:/usr/local/bin/ox-server")
         docker("exec", container, "mkdir", "/workspace", "/data")
         if identity["providers"]:
             settings = {"models": {args.model: {"providers": identity["providers"]}}}
@@ -376,7 +340,7 @@ def attempt_repetition(binary, api_key, args, identity, task, rep, run_dir):
                     "--signal=TERM",
                     f"--kill-after={KILL_GRACE}",
                     str(args.timeout),
-                    "ox",
+                    "ox-server",
                     "run",
                     "--dir",
                     "/workspace",
@@ -479,7 +443,7 @@ def transcript_metrics(database):
                 metrics["cached_tokens"] += usage.get("cached_tokens", 0)
                 metrics["output_tokens"] += usage["output_tokens"]
                 metrics["reasoning_tokens"] += usage.get("reasoning_tokens", 0)
-                # ChatGPT subscription responses have no cost.
+                # One usage without a cost makes the run's cost unavailable.
                 if metrics["cost"] is not None:
                     metrics["cost"] = (
                         None if usage["cost"] is None else metrics["cost"] + usage["cost"]

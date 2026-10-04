@@ -84,7 +84,7 @@ def main():
         if repo:
             subprocess.run(["git", "clone", repo, workspace], check=True)
             subprocess.run(["git", "checkout", commit], cwd=workspace, check=True)
-        command = ["cargo", "run", "-p", "ox", "--", "run", "--dir", workspace]
+        command = ["go", "run", "./cmd/ox-server", "run", "--dir", workspace]
         if args.model:
             command.extend(["--model", args.model])
         if args.effort:
@@ -93,7 +93,7 @@ def main():
         return subprocess.run(
             command,
             env=os.environ | {"OPENROUTER_API_KEY": api_key},
-            cwd=root,
+            cwd=root / "server",
         ).returncode
     finally:
         if not args.keep:

@@ -1,12 +1,15 @@
 mod acp;
 mod config;
+#[cfg(test)]
+#[allow(dead_code)]
+mod fixture;
 mod tui;
 
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use clap::{Parser, Subcommand};
-use ox_server::{EffortLevel, Provider};
 
 #[derive(Parser)]
 #[command(
@@ -23,70 +26,27 @@ struct Args {
     dir: PathBuf,
 }
 
+/// The Ox server commands, which `ox-server` parses and runs.
 #[derive(Subcommand)]
 enum Command {
     /// Run one prompt and print the final answer.
+    #[command(disable_help_flag = true)]
     Run {
-        #[arg(long, default_value = ".")]
-        dir: PathBuf,
-        #[arg(long)]
-        model: Option<String>,
-        #[arg(long, default_value = "default", value_parser = effort)]
-        effort: EffortLevel,
-        #[arg(value_parser = prompt)]
-        prompt: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
     /// Serve the Ox server over stdin and stdout.
+    #[command(disable_help_flag = true)]
     Acp {
-        #[command(subcommand)]
-        command: Option<AcpCommand>,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
-    /// Sign in to or out of a model provider.
-    #[command(subcommand)]
-    Auth(Auth),
-}
-
-/// ACP terminal authentication appends the authentication command.
-#[derive(Subcommand)]
-enum AcpCommand {
-    /// Sign in to or out of a model provider.
-    #[command(subcommand)]
-    Auth(Auth),
-}
-
-#[derive(Clone, Copy, Subcommand)]
-enum Auth {
-    /// Sign in to ChatGPT or save an OpenRouter API key.
-    Login {
-        #[arg(value_parser = provider)]
-        provider: Provider,
+    /// Sign in to or out of OpenRouter.
+    #[command(disable_help_flag = true)]
+    Auth {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
-    /// Remove the saved credentials for the named provider.
-    Logout {
-        #[arg(value_parser = provider)]
-        provider: Provider,
-    },
-}
-
-fn provider(value: &str) -> Result<Provider, String> {
-    Provider::from_id(value)
-        .ok_or_else(|| format!("{value} is not a model provider; choose openrouter or openai"))
-}
-
-fn effort(value: &str) -> Result<EffortLevel, String> {
-    EffortLevel::from_id(value).ok_or_else(|| {
-        format!(
-            "{value} is not an effort level; choose one of {}",
-            EffortLevel::ALL.map(EffortLevel::id).join(", ")
-        )
-    })
-}
-
-fn prompt(value: &str) -> Result<String, String> {
-    if value.trim().is_empty() {
-        return Err("the prompt is blank".to_owned());
-    }
-    Ok(value.to_owned())
 }
 
 fn workspace(path: &Path) -> anyhow::Result<PathBuf> {
@@ -110,35 +70,18 @@ async fn main() {
 
 async fn start() -> anyhow::Result<()> {
     let args = Args::parse();
-    match args.command {
-        None => client(&args.dir, args.server.as_deref()).await,
-        Some(Command::Run {
-            dir,
-            model,
-            effort,
-            prompt,
-        }) => {
-            let answer = ox_server::run(&dir, model, effort, prompt)
-                .await
-                .map_err(|error| anyhow!("{error}"))?;
-            println!("{answer}");
-            Ok(())
-        }
-        Some(Command::Acp { command: None }) => {
-            ox_server::serve().await.map_err(|error| anyhow!("{error}"))
-        }
-        Some(
-            Command::Auth(auth)
-            | Command::Acp {
-                command: Some(AcpCommand::Auth(auth)),
-            },
-        ) => match auth {
-            Auth::Login { provider } => ox_server::login(provider)
-                .await
-                .map_err(|error| anyhow!("{error}")),
-            Auth::Logout { provider } => Ok(ox_server::logout(provider).await?),
-        },
-    }
+    let (name, args) = match args.command {
+        None => return client(&args.dir, args.server.as_deref()).await,
+        Some(Command::Run { args }) => ("run", args),
+        Some(Command::Acp { args }) => ("acp", args),
+        Some(Command::Auth { args }) => ("auth", args),
+    };
+    let server = config::server_binary()?;
+    let error = std::process::Command::new(&server)
+        .arg(name)
+        .args(args)
+        .exec();
+    Err(error).with_context(|| format!("running {}", server.display()))
 }
 
 async fn client(directory: &Path, server: Option<&str>) -> anyhow::Result<()> {
@@ -154,84 +97,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_commands() {
-        for args in [
-            &["ox"][..],
-            &["ox", "--dir", "d"],
-            &["ox", "--server", "X"],
-            &["ox", "acp"],
-        ] {
+    fn parses_client_options_and_passes_server_commands_through() {
+        for args in [&["ox"][..], &["ox", "--dir", "d"], &["ox", "--server", "X"]] {
             assert!(Args::try_parse_from(args).is_ok(), "{args:?}");
         }
         for (args, expected) in [
+            (&["ox", "acp"][..], ("acp", &[][..])),
             (
-                &["ox", "run", "Hello"][..],
-                (".", None, EffortLevel::Default, "Hello"),
+                &["ox", "run", "--dir", "w", "Fix", "--model", "m"],
+                ("run", &["--dir", "w", "Fix", "--model", "m"]),
+            ),
+            (&["ox", "run", "-h"], ("run", &["-h"])),
+            (
+                &["ox", "acp", "auth", "login", "openrouter"],
+                ("acp", &["auth", "login", "openrouter"]),
             ),
             (
-                &[
-                    "ox", "run", "--dir", "w", "Fix", "--model", "m", "--effort", "xhigh",
-                ],
-                ("w", Some("m"), EffortLevel::XHigh, "Fix"),
-            ),
-        ] {
-            let Some(Command::Run {
-                dir,
-                model,
-                effort,
-                prompt,
-            }) = Args::try_parse_from(args).unwrap().command
-            else {
-                panic!("{args:?} is not a run");
-            };
-            assert_eq!(
-                (dir.as_path(), model.as_deref(), effort, prompt.as_str()),
-                (Path::new(expected.0), expected.1, expected.2, expected.3),
-                "{args:?}"
-            );
-        }
-        for (args, error) in [
-            (&["ox", "login"][..], ""),
-            (&["ox", "run"], ""),
-            (&["ox", "run", ""], "blank"),
-            (&["ox", "run", "--dir"], ""),
-            (&["ox", "run", "Hello", "again"], ""),
-            (
-                &["ox", "run", "--effort", "huge", "Hello"],
-                "not an effort level",
+                &["ox", "auth", "logout", "openrouter"],
+                ("auth", &["logout", "openrouter"]),
             ),
         ] {
-            let Err(message) = Args::try_parse_from(args) else {
-                panic!("{args:?} parsed");
+            let (name, args) = match Args::try_parse_from(args).unwrap().command {
+                Some(Command::Run { args }) => ("run", args),
+                Some(Command::Acp { args }) => ("acp", args),
+                Some(Command::Auth { args }) => ("auth", args),
+                None => panic!("{args:?} is not a server command"),
             };
-            assert!(message.to_string().contains(error), "{args:?}: {message}");
+            assert_eq!(name, expected.0);
+            assert_eq!(args, expected.1);
         }
-    }
-
-    #[test]
-    fn authentication_requires_a_known_provider_for_commands_and_acp_aliases() {
-        for prefix in [vec!["ox", "auth"], vec!["ox", "acp", "auth"]] {
-            for action in ["login", "logout"] {
-                for provider in ["openrouter", "openai"] {
-                    let mut args = prefix.clone();
-                    args.extend([action, provider]);
-                    assert!(Args::try_parse_from(&args).is_ok(), "{args:?}");
-                }
-                let mut bare = prefix.clone();
-                bare.push(action);
-                let error = Args::try_parse_from(&bare).err().unwrap().to_string();
-                assert!(
-                    error.contains("Usage:") && error.contains("<PROVIDER>"),
-                    "{bare:?}: {error}"
-                );
-                bare.push("unknown");
-                let error = Args::try_parse_from(&bare).err().unwrap().to_string();
-                assert!(
-                    error.contains("choose openrouter or openai"),
-                    "{bare:?}: {error}"
-                );
-            }
-        }
+        assert!(Args::try_parse_from(["ox", "login"]).is_err());
     }
 
     #[test]

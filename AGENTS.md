@@ -3,8 +3,8 @@ Keep this document accurate and short.
 ## Code style
 
 - Do less. Keep correct code simple, ordinary, and cheap to change.
-- Use safe, idiomatic Rust. Let the compiler check cases; prefer owned data and
-  direct functions.
+- Write idiomatic Go in the server and safe, idiomatic Rust in the client.
+  Prefer plain data and direct functions.
 - Give each concern a clear boundary and each lifecycle one owner.
 - Let real needs earn abstractions, dependencies, and configuration. Measure
   before optimizing; harden against observed failures.
@@ -13,13 +13,14 @@ Keep this document accurate and short.
 
 ## Code
 
-- `crates/ox-server/` — the Ox server: prompt run, tools, OpenRouter, OpenAI,
-  and session store.
-- `crates/ox/` — the command line, the Ox client, and its terminal tests.
-- `crates/ox-server/src/prompts/` — the built-in prompts.
+- `server/` — the Ox server, `ox-server`, in Go: ACP, turns, tools, OpenRouter,
+  and session store. `server/internal/` holds one package per concern.
+- `crates/ox/` — the terminal client, `ox`, in Rust, and its terminal tests.
+- `server/internal/sysprompt/` — the built-in system prompt.
 - `examples/` — the example settings file.
 - `scripts/run.py` — runs one headless prompt in a temporary workspace.
-- `scripts/bench.py` — benchmarks a build of `ox` and compares benchmark runs.
+- `scripts/bench.py` — benchmarks a build of `ox-server` and compares benchmark
+  runs.
 - `scripts/export_session.py` — exports a session to JSON.
 - `scripts/bench/` — the benchmark tasks and the benchmark image.
 - `.github/workflows/` — the release build.

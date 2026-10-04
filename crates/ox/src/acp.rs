@@ -386,8 +386,8 @@ where
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use ox_server::fixture::{
-        Reply, Server, delta, echo_reply, serve_connection, shell_reply, sse, text_reply,
+    use crate::fixture::{
+        Reply, Server, delta, echo_reply, environment, server_binary, shell_reply, sse, text_reply,
     };
     use serde_json::json;
 
@@ -404,18 +404,22 @@ pub mod tests {
         F: FnOnce(Session, UnboundedReceiver<Event>) -> Fut + Send,
         Fut: Future<Output = anyhow::Result<()>> + Send,
     {
-        let workspace = tempfile::tempdir().unwrap();
-        let (client, transport) = agent_client_protocol::Channel::duplex();
-        let server_task = tokio::spawn(serve_connection(server.client(), transport));
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let agent = AcpAgent::new(
+            AcpAgentConfig::new(server_binary())
+                .arg("acp")
+                .envs(environment(root.path(), server.endpoint())),
+        );
         let (events, receiver) = unbounded_channel();
         tokio::time::timeout(
-            Duration::from_secs(5),
-            run(client, workspace.path().to_owned(), events, receiver, body),
+            Duration::from_secs(10),
+            run(agent, workspace, events, receiver, body),
         )
         .await
         .expect("ACP test timed out")
         .unwrap();
-        server_task.abort();
     }
 
     pub async fn turn(
@@ -770,15 +774,27 @@ pub mod tests {
 
     #[tokio::test]
     async fn server_exit_releases_pending_work() {
-        let (client, server) = agent_client_protocol::Channel::duplex();
         let openrouter = Server::start(vec![shell_reply(&[("touch pending", 10)])]).await;
-        let task = tokio::spawn(serve_connection(openrouter.client(), server));
+        let root = tempfile::tempdir().unwrap();
+        let pid = root.path().join("pid");
+        // The shell records its PID and becomes the server, so the test can
+        // stop the server.
+        let agent = AcpAgent::new(
+            AcpAgentConfig::new("/bin/sh")
+                .args([
+                    "-c".to_owned(),
+                    "echo $$ > \"$0\"; exec \"$1\" acp".to_owned(),
+                    pid.display().to_string(),
+                    server_binary().display().to_string(),
+                ])
+                .envs(environment(root.path(), openrouter.endpoint())),
+        );
         let (events, receiver) = unbounded_channel();
         let result = tokio::time::timeout(
-            Duration::from_secs(5),
+            Duration::from_secs(10),
             run(
-                client,
-                PathBuf::from("/"),
+                agent,
+                root.path().to_owned(),
                 events,
                 receiver,
                 async |mut session, mut events| {
@@ -790,7 +806,10 @@ pub mod tests {
                             session.permission(request, responder)?;
                         }
                     }
-                    task.abort();
+                    let pid = std::fs::read_to_string(&pid)?;
+                    std::process::Command::new("kill")
+                        .arg(pid.trim())
+                        .status()?;
                     session.closed().await;
                     Ok(())
                 },
