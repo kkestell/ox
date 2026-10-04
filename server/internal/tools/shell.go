@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"ox/internal/shellproc"
 	"ox/internal/transcript"
@@ -238,15 +239,19 @@ func (t *Toolbox) listProcesses() transcript.ToolOutcome {
 		state := process.State()
 		description := "running"
 		if !state.Running() {
-			verb := "exited"
-			if state.Stopped {
-				verb = "stopped"
-			}
-			description = fmt.Sprintf("%s (%s)", verb, shellproc.ExitText(state.Status))
+			description = fmt.Sprintf("%s (%s)", stateVerb(state), shellproc.ExitText(state.Status))
 		}
 		lines = append(lines, fmt.Sprintf("%s %s: %s", process.ID, description, shorten(commandLine(process.Command))))
 	}
 	return bounded(strings.Join(lines, "\n"), nil, nil)
+}
+
+// stateVerb names how a background command ended.
+func stateVerb(state shellproc.State) string {
+	if state.Stopped {
+		return "stopped"
+	}
+	return "exited"
 }
 
 // renderProcess reports a read or stop. A read follows the shell conventions
@@ -255,11 +260,7 @@ func (t *Toolbox) listProcesses() transcript.ToolOutcome {
 func renderProcess(id, command string, output shellproc.Output, stop bool) transcript.ToolOutcome {
 	state, succeeded := "State: running", true
 	if status := output.State.Status; status != nil {
-		verb := "exited"
-		if output.State.Stopped {
-			verb = "stopped"
-		}
-		state = fmt.Sprintf("State: %s\n%s", verb, shellproc.ExitText(status))
+		state = fmt.Sprintf("State: %s\n%s", stateVerb(output.State), shellproc.ExitText(status))
 		succeeded = status.Success()
 	}
 	header := fmt.Sprintf("Process ID: %s\nCommand: %s\n%s", id, shorten(commandLine(command)), state)
@@ -319,13 +320,11 @@ func excerpt(head, tail string, omitted bool, budget int) (string, bool) {
 // boundary.
 func trimFront(text string, limit int) string {
 	start := max(len(text)-limit, 0)
-	for start < len(text) && !isRuneStart(text[start]) {
+	for start < len(text) && !utf8.RuneStart(text[start]) {
 		start++
 	}
 	return text[start:]
 }
-
-func isRuneStart(b byte) bool { return b&0xC0 != 0x80 }
 
 // report returns status and diagnostics followed by the output excerpts,
 // within the tool output limit, and the client's blocks: the status, then each

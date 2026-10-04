@@ -127,6 +127,29 @@ func inactive(id string) *acp.Error {
 	return acp.InvalidRequest(fmt.Sprintf("session %s is not active; create or load it first", id))
 }
 
+// storedSession reads a saved session, mapping a missing one to a not-found
+// error.
+func (s *Server) storedSession(id string) (*store.Session, *acp.Error) {
+	session, err := s.agent.Store.Read(id)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return nil, acp.ResourceNotFound(id)
+	case err != nil:
+		return nil, internal(err)
+	}
+	return session, nil
+}
+
+// newActiveSession builds the process state a session gets when it becomes
+// active. Its selections are set by the caller.
+func (s *Server) newActiveSession(workspace string) (*activeSession, *acp.Error) {
+	systemPrompt, err := sysprompt.ForWorkspace(workspace, tools.ShellProgram)
+	if err != nil {
+		return nil, internal(err)
+	}
+	return &activeSession{systemPrompt: systemPrompt, skills: s.loadSkills(workspace), processes: &shellproc.Processes{}}, nil
+}
+
 // unavailable says why a session operation could not start.
 func (s *Server) unavailable() *acp.Error {
 	if s.ops.isShuttingDown() {
@@ -168,27 +191,26 @@ func (s *Server) newSession(r *acp.Request) *acp.Error {
 	if err := r.Params(&params); err != nil {
 		return err
 	}
-	systemPrompt, err := sysprompt.ForWorkspace(params.Cwd, tools.ShellProgram)
-	if err != nil {
-		return internal(err)
+	session, acpErr := s.newActiveSession(params.Cwd)
+	if acpErr != nil {
+		return acpErr
 	}
-	skillCatalog := s.loadSkills(params.Cwd)
 	selections, err := s.defaultsFor(params.Cwd)
 	if err != nil {
 		return internal(err)
 	}
+	session.selections = selections
 	summary, err := s.agent.Store.Create(params.Cwd)
 	if errors.Is(err, store.ErrRelativeWorkspace) {
 		return acp.InvalidParams(err.Error())
 	} else if err != nil {
 		return internal(err)
 	}
-	session := &activeSession{selections: selections, systemPrompt: systemPrompt, skills: skillCatalog, processes: &shellproc.Processes{}}
 	s.mu.Lock()
 	s.active[summary.ID] = session
 	s.mu.Unlock()
 	r.Respond(protocol.NewSessionResponse{SessionId: protocol.SessionId(summary.ID), ConfigOptions: configOptions(s.catalog, selections)})
-	s.notify(summary.ID, availableCommands(skillCatalog))
+	s.notify(summary.ID, availableCommands(session.skills))
 	return nil
 }
 
@@ -206,11 +228,9 @@ func (s *Server) loadSession(r *acp.Request) *acp.Error {
 		return s.unavailable()
 	}
 	defer release()
-	saved, err := s.agent.Store.Read(id)
-	if errors.Is(err, store.ErrNotFound) {
-		return acp.ResourceNotFound(id)
-	} else if err != nil {
-		return internal(err)
+	saved, acpErr := s.storedSession(id)
+	if acpErr != nil {
+		return acpErr
 	}
 	if saved.Summary.Workspace != params.Cwd {
 		return acp.InvalidParams(fmt.Sprintf("session %s belongs to workspace %s, not %s", id, saved.Summary.Workspace, params.Cwd))
@@ -224,11 +244,10 @@ func (s *Server) loadSession(r *acp.Request) *acp.Error {
 	}
 	session := s.session(id)
 	if session == nil {
-		systemPrompt, err := sysprompt.ForWorkspace(saved.Summary.Workspace, tools.ShellProgram)
-		if err != nil {
-			return internal(err)
+		session, acpErr = s.newActiveSession(saved.Summary.Workspace)
+		if acpErr != nil {
+			return acpErr
 		}
-		session = &activeSession{systemPrompt: systemPrompt, skills: s.loadSkills(saved.Summary.Workspace), processes: &shellproc.Processes{}}
 	}
 	model, err := agent.ModelSelection(s.catalog, selections.Model, selections.Effort)
 	if err != nil {
@@ -378,11 +397,9 @@ func (s *Server) setConfigOption(r *acp.Request) *acp.Error {
 	default:
 		return acp.InvalidParams("no configuration option " + string(params.ConfigId))
 	}
-	saved, err := s.agent.Store.Read(id)
-	if errors.Is(err, store.ErrNotFound) {
-		return acp.ResourceNotFound(id)
-	} else if err != nil {
-		return internal(err)
+	saved, acpErr := s.storedSession(id)
+	if acpErr != nil {
+		return acpErr
 	}
 	global, err := settings.Save(s.home, saved.Summary.Workspace, selected)
 	if err != nil {
