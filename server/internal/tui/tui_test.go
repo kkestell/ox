@@ -35,7 +35,7 @@ func newDriver(t *testing.T, replies ...openroutertest.Reply) *driver {
 		t.Fatal(err)
 	}
 	t.Cleanup(conn.Close)
-	m := &model{conn: conn, session: client.NewSession(conn, created), focused: true, layout: layout{height: 10}}
+	m := &model{conn: conn, session: client.NewSession(conn, created), input: newInput(), focused: true, layout: layout{height: 10}}
 	return &driver{t: t, model: m}
 }
 
@@ -91,7 +91,7 @@ func (d *driver) typeText(text string) {
 // command enters a slash command.
 func (d *driver) command(text string) {
 	d.t.Helper()
-	d.input.paste(text)
+	paste(&d.input, text)
 	d.press(tea.KeyEnter)
 }
 
@@ -194,7 +194,7 @@ func TestModelKeysChooseAModelOrCancel(t *testing.T) {
 	equal(t, d.settings(), "Ask • GLM 5.3 Flash • Default")
 	d.command("/model")
 	equal(t, d.picker.selected, 1, "the current model is selected")
-	equal(t, d.input.empty(), true)
+	equal(t, d.input.Value() == "", true)
 }
 
 // matchNames returns the names of the model picker's matches.
@@ -251,7 +251,7 @@ func TestControlFFavoritesAndUnfavoritesTheSelectedModelAndSavesTheFavorites(t *
 	d.press('f', tea.ModCtrl)
 	check([]string{"missing/model", glm}, []string{"GLM 5.3 Flash", "DeepSeek V4.1 Flash", "Muse Spark 1.3 Contributor", "Plain"},
 		"DeepSeek V4.1 Flash", "unfavoriting moves the model back")
-	equal(t, d.input.empty(), true)
+	equal(t, d.input.Value() == "", true)
 	d.configPath = directory
 	d.press('f', tea.ModCtrl)
 	if !strings.HasPrefix(d.picker.err, "Favorite failed: ") {
@@ -288,7 +288,7 @@ func TestNewCommandReplacesTheSessionAndQuitCommandQuits(t *testing.T) {
 	if d.session.ID == old {
 		t.Error("the session was not replaced")
 	}
-	equal(t, d.input.empty(), true)
+	equal(t, d.input.Value() == "", true)
 	d.command("/quit")
 	equal(t, d.quit, true)
 }
@@ -296,7 +296,7 @@ func TestNewCommandReplacesTheSessionAndQuitCommandQuits(t *testing.T) {
 func TestEnterRefusesAnUnknownSlashCommand(t *testing.T) {
 	d := newDriver(t)
 	d.command("/mo")
-	equal(t, d.input.text, "/mo")
+	equal(t, d.input.Value(), "/mo")
 	equal(t, d.session.Busy, false)
 	rows, _, _, _ := render(testScreen(&d.view, &d.input, time.Now()), 40, 10)
 	if !contains(rows, "Unknown command /mo") {
@@ -309,20 +309,20 @@ func TestATurnKeepsPromptsAndResumeInTheComposerUntilItEnds(t *testing.T) {
 	d.session.Prompt("running")
 	d.awaitMessage()
 	for _, text := range []string{"next", "/resume"} {
-		d.input.clear()
-		d.input.paste(text)
+		d.input.Reset()
+		paste(&d.input, text)
 		d.press(tea.KeyEnter)
-		equal(t, d.input.text, text)
+		equal(t, d.input.Value(), text)
 		equal(t, d.picker == nil, true)
 	}
-	d.input.clear()
-	d.input.paste("next")
+	d.input.Reset()
+	paste(&d.input, "next")
 	d.press(tea.KeyEscape)
 	if _, ok := d.turn(); !ok {
 		t.Error("the cancelled turn failed")
 	}
 	d.press(tea.KeyEnter)
-	equal(t, d.input.empty(), true)
+	equal(t, d.input.Value() == "", true)
 	text, _ := d.turn()
 	equal(t, text, "you said: next")
 }
@@ -331,7 +331,7 @@ func TestRequestsDoNotHoldBackKeysOrServerEvents(t *testing.T) {
 	d := newDriver(t)
 	cmd := d.cycle(protocol.SessionConfigOptionCategoryMode, true, "Mode change failed")
 	d.send(tea.KeyPressMsg{Code: 'x', Text: "x"})
-	equal(t, d.input.text, "x")
+	equal(t, d.input.Value(), "x")
 	d.send(client.Diagnostic("diagnostic"))
 	equal(t, d.view.last().text, "diagnostic")
 	d.send(cmd())
@@ -411,7 +411,7 @@ func TestControlTTogglesThinkingAndControlOCyclesToolOutput(t *testing.T) {
 		equal(t, d.showThinking, test.thinking, "Ctrl+", string(test.key))
 		equal(t, d.toolOutput, test.output, "Ctrl+", string(test.key))
 	}
-	equal(t, d.input.empty(), true)
+	equal(t, d.input.Value() == "", true)
 }
 
 func TestTabAndShiftTabCycleTheAvailableModes(t *testing.T) {
@@ -429,12 +429,12 @@ func TestTabAndShiftTabCycleTheAvailableModes(t *testing.T) {
 		d.press(tea.KeyTab, test.mod)
 		equal(t, d.settings(), test.want)
 	}
-	equal(t, d.input.empty(), true)
+	equal(t, d.input.Value() == "", true)
 }
 
 func TestControlECyclesEffortWithOrWithoutShift(t *testing.T) {
 	d := newDriver(t)
-	d.input.paste("draft")
+	paste(&d.input, "draft")
 	for _, test := range []struct {
 		code rune
 		mod  tea.KeyMod
@@ -444,7 +444,7 @@ func TestControlECyclesEffortWithOrWithoutShift(t *testing.T) {
 		if !strings.HasSuffix(d.settings(), test.want) {
 			t.Errorf("%s does not end with %s", d.settings(), test.want)
 		}
-		equal(t, d.input.text, "draft")
+		equal(t, d.input.Value(), "draft")
 	}
 }
 
@@ -463,16 +463,16 @@ func TestTabInsertsGhostTextAndOtherwiseCyclesTheMode(t *testing.T) {
 	d.session.Commands = []string{"tally"}
 	d.typeText("/ta")
 	d.press(tea.KeyTab, tea.ModShift)
-	if !strings.HasPrefix(d.settings(), "Auto") || d.input.text != "/ta" {
-		t.Errorf("Shift+Tab: %s, %q", d.settings(), d.input.text)
+	if !strings.HasPrefix(d.settings(), "Auto") || d.input.Value() != "/ta" {
+		t.Errorf("Shift+Tab: %s, %q", d.settings(), d.input.Value())
 	}
 	d.press(tea.KeyTab)
-	if !strings.HasPrefix(d.settings(), "Auto") || d.input.text != "/tally" {
-		t.Errorf("Tab with ghost text: %s, %q", d.settings(), d.input.text)
+	if !strings.HasPrefix(d.settings(), "Auto") || d.input.Value() != "/tally" {
+		t.Errorf("Tab with ghost text: %s, %q", d.settings(), d.input.Value())
 	}
 	d.press(tea.KeyTab)
-	if !strings.HasPrefix(d.settings(), "Ask") || d.input.text != "/tally" {
-		t.Errorf("Tab: %s, %q", d.settings(), d.input.text)
+	if !strings.HasPrefix(d.settings(), "Ask") || d.input.Value() != "/tally" {
+		t.Errorf("Tab: %s, %q", d.settings(), d.input.Value())
 	}
 }
 
@@ -508,7 +508,7 @@ func TestApprovalKeysMoveTheSelectionAndEnterAnswersOnlyWithAnEmptyInput(t *test
 	d.typeText("hi")
 	d.press(tea.KeyEnter)
 	equal(t, d.session.Permission == nil, false)
-	equal(t, d.input.text, "hi")
+	equal(t, d.input.Value(), "hi")
 	d.press(tea.KeyEscape)
 	d.turn()
 	d.press(tea.KeyEnter)

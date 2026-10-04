@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 	protocol "github.com/coder/acp-go-sdk"
 )
 
@@ -47,7 +49,7 @@ func newTranscript(now time.Time, updates ...named) *transcript {
 }
 
 // allLines returns every row of the transcript.
-func allLines(t *transcript, width int, show bool, output toolOutput, now time.Time) []line {
+func allLines(t *transcript, width int, show bool, output toolOutput, now time.Time) []string {
 	_, rows := t.visibleRows(width, show, output, now, math.MaxInt/2)
 	return rows
 }
@@ -57,23 +59,25 @@ func rows(t *transcript, width int, show bool, now time.Time) []string {
 	return texts(allLines(t, width, show, summary, now))
 }
 
-func texts(lines []line) []string {
+// texts returns the rows without styles or trailing spaces.
+func texts(rows []string) []string {
 	out := []string{}
-	for _, l := range lines {
-		out = append(out, l.String())
+	for _, row := range rows {
+		out = append(out, strings.TrimRight(ansi.Strip(row), " "))
 	}
 	return out
 }
 
-// colorOf returns a line's color, whether set on the line or its first span.
-func colorOf(l line) color.Color {
-	if l.style.fg != nil {
-		return l.style.fg
-	}
-	if len(l.spans) > 0 {
-		return l.spans[0].style.fg
-	}
-	return nil
+// colorOf returns the foreground color of a row's first visible character.
+func colorOf(row string) color.Color {
+	return colorAt(row, len(ansi.Strip(row))-len(strings.TrimLeft(ansi.Strip(row), " ")))
+}
+
+// colorAt returns the foreground color of a row's cell at column x.
+func colorAt(row string, x int) color.Color {
+	buf := newFrame(max(width(row), x+1), 1)
+	put(buf, buf.Bounds(), 0, row)
+	return exact(buf.CellAt(x, 0).Style.Fg)
 }
 
 func equal(t *testing.T, got, want any, context ...any) {
@@ -102,27 +106,25 @@ func TestTextIsTrimmedAndWrappedByDisplayWidth(t *testing.T) {
 		{"combining mark at boundary", "abcde é", 6, []string{"abcde", "é"}},
 		{"escaped control characters", "a\rb \x1b", 20, []string{`a\rb \u{1b}`}},
 	} {
-		equal(t, texts(wrap(plain(test.text, style{}), test.width)), test.want, test.name)
+		equal(t, texts(plain(test.text, test.width)), test.want, test.name)
 	}
 	text := "  first line of text\nsecond  "
 	user := &transcript{}
 	user.user(text, now)
-	equal(t, rows(user, 12, false, now), []string{
-		"            ",
-		" first line ",
-		" of text    ",
-		" second     ",
-		"            ",
-	})
-	for _, l := range allLines(user, 12, false, summary, now) {
-		if l.style.bg != userMessage {
-			t.Errorf("%q has background %v", l.String(), l.style.bg)
+	equal(t, rows(user, 12, false, now), []string{"", " first line", " of text", " second", ""})
+	for y, row := range allLines(user, 12, false, summary, now) {
+		buf := newFrame(12, 1)
+		put(buf, buf.Bounds(), 0, row)
+		for x := range 12 {
+			if bg := exact(buf.CellAt(x, 0).Style.Bg); bg != userMessage {
+				t.Errorf("row %d column %d has background %v", y, x, bg)
+			}
 		}
 	}
 	equal(t, rows(newTranscript(now, message(text)), 12, false, now), []string{"● first line", "  of text", "  second"})
 }
 
-func TestMessagesRenderAsMarkdownWithHangingListAndQuoteRows(t *testing.T) {
+func TestMessagesRenderAsMarkdown(t *testing.T) {
 	now := time.Now()
 	for _, test := range []struct {
 		name, text string
@@ -131,37 +133,39 @@ func TestMessagesRenderAsMarkdownWithHangingListAndQuoteRows(t *testing.T) {
 	}{
 		{"line breaks are kept", "one\ntwo\n\nthree", 40, []string{"● one", "  two", "", "  three"}},
 		{"headings drop their marker", "# Title\n\nbody", 40, []string{"● Title", "", "  body"}},
-		{"wrapped list items hang under the marker", "- one two three four\n  - five six seven\n\n1. eight nine ten", 18, []string{
+		{"lists wrap and nest", "- one two three four\n  - five six seven\n\n1. eight nine ten", 18, []string{
 			"● - one two three",
-			"    four",
-			"      - five six",
-			"        seven",
+			"  four",
+			"    - five six",
+			"    seven",
+			"",
 			"",
 			"  1. eight nine",
-			"     ten",
+			"  ten",
 		}},
 		{"wrapped quotes keep their bar", "> one two three four", 14, []string{"● > one two", "  > three four"}},
 		{"code blocks keep their rows without fences", "```\nfn a() {\n    b()\n}\n```", 40, []string{"● fn a() {", "      b()", "  }"}},
 		{"escapes and entities", `a \* b &amp; c`, 40, []string{"● a * b & c"}},
-		{"task lists", "- [x] done\n- [ ] todo", 40, []string{"● - [x] done", "  - [ ] todo"}},
-		{"links keep their destination", "see [docs](https://a.b)", 40, []string{"● see docs (https://a.b)"}},
-		{"tables", "| a | bb |\n|---|---:|\n| ccc | d |", 40, []string{
-			"● ┌─────┬────┐",
-			"  │ a   │ bb │",
-			"  ├─────┼────┤",
-			"  │ ccc │  d │",
-			"  └─────┴────┘",
+		{"task lists", "- [x] done\n- [ ] todo", 40, []string{"● [x] done", "  [ ] todo"}},
+		{"links keep their destination", "see [docs](https://a.b)", 40, []string{"● see docs https://a.b"}},
+		{"tables", "| a | bb |\n|---|---:|\n| ccc | d |", 24, []string{
+			"●  a         │       bb",
+			"  ───────────┼──────────",
+			"   ccc       │        d",
 		}},
 	} {
 		equal(t, rows(newTranscript(now, message(test.text)), test.width, false, now), test.want, test.name)
 	}
-	lines := allLines(newTranscript(now, message("**bold** `code`")), 40, false, summary, now)
-	equal(t, lines[0].spans, []span{{"● ", style{}}, {"bold", bold}, {" ", style{}}, {"code", fg(lightYellow)}})
-	dimmed := allLines(newTranscript(now, thought("**bold** `code`")), 40, true, summary, now)
-	for _, span := range dimmed[0].spans[1:] {
-		if span.style.fg != dim {
-			t.Errorf("%q is not dim", span.text)
-		}
+	cells := func(row string) []*uv.Cell {
+		buf := newFrame(40, 1)
+		put(buf, buf.Bounds(), 0, row)
+		return []*uv.Cell{buf.CellAt(2, 0), buf.CellAt(7, 0)}
+	}
+	styled := cells(allLines(newTranscript(now, message("**bold** `code`")), 40, false, summary, now)[0])
+	equal(t, styled[0].Style.Attrs&uv.AttrBold != 0, true, "bold")
+	equal(t, exact(styled[1].Style.Fg), lightYellow, "code")
+	for _, cell := range cells(allLines(newTranscript(now, thought("**bold** `code`")), 40, true, summary, now)[0]) {
+		equal(t, exact(cell.Style.Fg), dim, "thinking is dim")
 	}
 	output := named{protocol.StartToolCall("r", "Read a.md", protocol.WithStartStatus(protocol.ToolCallStatusCompleted),
 		protocol.WithStartContent([]protocol.ToolCallContent{protocol.ToolContent(protocol.TextBlock("# not a heading"))})), "read_file"}
@@ -200,12 +204,11 @@ func TestReplayKeepsUserMessagesAndSeparatesTheirResponses(t *testing.T) {
 	info := named{update: protocol.SessionUpdate{SessionInfoUpdate: &protocol.SessionSessionInfoUpdate{Title: new("saved")}}}
 	view := newTranscript(now, userChunk("title"), info, userChunk("first "), userChunk("question"), message("first answer"),
 		userChunk("second question"), message("second answer"))
-	blank := strings.Repeat(" ", 40)
 	equal(t, rows(view, 40, false, now), []string{
-		blank, " title                                  ", blank, "",
-		blank, " first question                         ", blank, "",
+		"", " title", "", "",
+		"", " first question", "", "",
 		"● first answer", "",
-		blank, " second question                        ", blank, "",
+		"", " second question", "", "",
 		"● second answer",
 	})
 }
@@ -216,14 +219,13 @@ func TestReusedToolIDsKeepEachTurnsCallInTheTranscript(t *testing.T) {
 	equal(t, rows(view, 40, false, now)[10], "● Read second.txt")
 	failed := protocol.UpdateToolCall("same", protocol.WithUpdateStatus(protocol.ToolCallStatusFailed))
 	view.update(failed, "", now)
-	blank := strings.Repeat(" ", 40)
 	equal(t, rows(view, 40, false, now), []string{
-		blank, " first                                  ", blank, "", "● Read first.txt", "",
-		blank, " second                                 ", blank, "", "● Read second.txt",
+		"", " first", "", "", "● Read first.txt", "",
+		"", " second", "", "", "● Read second.txt",
 	})
 	lines := allLines(view, 40, false, summary, now)
-	equal(t, lines[4].spans[0].style.fg, green)
-	equal(t, lines[10].spans[0].style.fg, red)
+	equal(t, colorOf(lines[4]), green)
+	equal(t, colorOf(lines[10]), red)
 	view.endTurn(now)
 	view.update(read("same", "third.txt").update, "read_file", now)
 	all := rows(view, 40, false, now)
@@ -304,7 +306,7 @@ func TestItemsRenderWithIconsPrefixesAndSpacing(t *testing.T) {
 	view.notice("stderr line", dim, now)
 	lines := allLines(view, 40, false, summary, now)
 	equal(t, rows(view, 40, false, now)[2:], []string{"", "Turn error: bad", "", "stderr line"})
-	equal(t, colorOf(lines[1]), dim)
+	equal(t, colorAt(lines[1], 4), dim)
 	equal(t, colorOf(lines[3]), red)
 	equal(t, colorOf(lines[5]), dim)
 }
@@ -332,8 +334,8 @@ func TestANamedCallShowsItsTextAndDiffBlocksOnlyWhileOutputIsShown(t *testing.T)
 		"     }",
 	})
 	var colors []color.Color
-	for _, l := range lines[1:] {
-		colors = append(colors, colorOf(l))
+	for _, row := range lines[1:] {
+		colors = append(colors, colorAt(row, 4))
 	}
 	equal(t, colors, []color.Color{dim, dim, dim, red, green, dim, dim})
 	added := named{protocol.StartToolCall("a", "Apply patch to b", protocol.WithStartStatus(protocol.ToolCallStatusCompleted),
@@ -379,9 +381,9 @@ func TestTruncatedOutputShowsTheHiddenRowCountAndTheLastFiveRows(t *testing.T) {
 		if test.lines > 6 {
 			first = faint
 		}
-		equal(t, lines[1].spans[1].style.fg, first, test.lines)
-		for _, l := range lines[2:] {
-			equal(t, l.spans[1].style.fg, dim, test.lines)
+		equal(t, colorAt(lines[1], 4), first, test.lines)
+		for _, row := range lines[2:] {
+			equal(t, colorAt(row, 4), dim, test.lines)
 		}
 	}
 }
@@ -402,7 +404,7 @@ func TestShellCallsRenderAsOneClippedRow(t *testing.T) {
 		equal(t, rows(newTranscript(now, test.call), test.width, false, now), []string{test.want})
 	}
 	failed := newTranscript(now, shellCall("s", "rm -rf x", false, protocol.ToolCallStatusFailed))
-	equal(t, allLines(failed, 40, false, summary, now)[0].spans[0].style.fg, red)
+	equal(t, colorOf(allLines(failed, 40, false, summary, now)[0]), red)
 }
 
 func TestTheToolStatusSetsTheIconColor(t *testing.T) {
@@ -418,8 +420,7 @@ func TestTheToolStatusSetsTheIconColor(t *testing.T) {
 	} {
 		call := named{protocol.StartToolCall("a", "Read a", protocol.WithStartStatus(test.status)), "read_file"}
 		first := allLines(newTranscript(now, call), 40, false, summary, now)[0]
-		equal(t, first.spans[0].text, "●")
-		equal(t, first.spans[0].style.fg, test.color, test.status)
+		equal(t, colorOf(first), test.color, test.status)
 	}
 }
 

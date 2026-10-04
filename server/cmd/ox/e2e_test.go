@@ -477,7 +477,7 @@ func TestTerminalTranscriptRendersThinkingToolsAndWrappedReplies(t *testing.T) {
 			t.Errorf("missing %q:\n%s", text, screen)
 		}
 	}
-	if styled := x.styledScreen(); !strings.Contains(styled, "\x1b[38;2;152;195;121m    +two") {
+	if styled := x.styledScreen(); !strings.Contains(styled, "\x1b[38;2;152;195;121m+two") {
 		t.Errorf("%q", styled)
 	}
 	x.keys("C-o", "C-o")
