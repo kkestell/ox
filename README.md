@@ -132,9 +132,9 @@ workspace value replaces the global value. Both files are optional.
   `max`. It defaults to `default` and must be supported by the selected model.
 - `mode` is `ask` or `auto`. It defaults to `ask`; `ask` requests permission
   before shell actions, while `auto` runs them without asking.
-- `favorites` is an ordered list of qualified model IDs. It applies only to the
-  terminal client, can be set only in the global file, and defaults to an empty
-  list.
+- `favorites` is a list of qualified model IDs that the terminal client's model
+  picker shows first. It can be set only in the global file and defaults to an
+  empty list.
 - `models` maps qualified OpenRouter model IDs to a `providers` list of
   OpenRouter provider slugs. Requests for that model go only to those providers,
   tried in order. It can be set only in the global file.

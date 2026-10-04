@@ -22,7 +22,7 @@ type Server struct {
 type Client struct {
 	// Servers is empty when the file configures none.
 	Servers []Server
-	// Favorites are model IDs, in the order they were added.
+	// Favorites are model IDs.
 	Favorites []string
 }
 

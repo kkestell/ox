@@ -72,9 +72,7 @@ func turn(t *testing.T, s *Session, choices ...int) (string, bool) {
 				choices = choices[1:]
 			}
 		case Finished:
-			if queued, err := s.Finished(); queued != "" || err != nil {
-				t.Fatalf("queued %q, %v", queued, err)
-			}
+			must(t, s.Finished())
 			return text.String(), event.Err == nil
 		case Closed:
 			t.Fatal("the server closed the connection")
@@ -119,13 +117,6 @@ func must(t *testing.T, err error) {
 	}
 }
 
-func prompt(t *testing.T, s *Session, text string) {
-	t.Helper()
-	if sent, err := s.Prompt(text); !sent || err != nil {
-		t.Fatalf("prompt %q: %v, %v", text, sent, err)
-	}
-}
-
 func hang(text string) openroutertest.Reply {
 	data, _ := json.Marshal(openroutertest.Delta(map[string]any{"role": "assistant", "content": text}, ""))
 	return openroutertest.Hang("data: " + string(data) + "\n\n")
@@ -139,11 +130,11 @@ func TestPromptsShareOneSessionAndStreamInOrder(t *testing.T) {
 	)
 	_, s := start(t, streamed, openroutertest.Echo())
 	id := s.ID
-	prompt(t, s, "stream")
+	s.Prompt("stream")
 	if text, ok := turn(t, s); text != "stream arrives in order\n" || !ok {
 		t.Errorf("%q, %v", text, ok)
 	}
-	prompt(t, s, "second")
+	s.Prompt("second")
 	if text, _ := turn(t, s); !strings.Contains(text, "second") {
 		t.Errorf("%q", text)
 	}
@@ -166,7 +157,7 @@ func TestResumeListsAndLoadsADifferentSessionAfterClose(t *testing.T) {
 		t.Errorf("commands %v", s.Commands)
 	}
 	old := s.ID
-	prompt(t, s, "First session")
+	s.Prompt("First session")
 	turn(t, s)
 	newer, err := conn.NewSession()
 	must(t, err)
@@ -207,7 +198,7 @@ func TestResumeListsAndLoadsADifferentSessionAfterClose(t *testing.T) {
 			t.Errorf("mode %s", option.Select.CurrentValue)
 		}
 	}
-	prompt(t, s, "after")
+	s.Prompt("after")
 	if text, _ := turn(t, s); text != "you said: after" {
 		t.Errorf("%q", text)
 	}
@@ -291,7 +282,7 @@ func TestRejectsAnUnsupportedProtocolVersion(t *testing.T) {
 
 func TestCancellationAnswersPendingPermissionsBeforeTheNextPrompt(t *testing.T) {
 	_, s := start(t, openroutertest.Shell("touch cancelled"), openroutertest.Echo())
-	prompt(t, s, "run a command")
+	s.Prompt("run a command")
 	awaitPermission(t, s)
 	must(t, s.Cancel())
 	if s.Permission != nil {
@@ -300,7 +291,7 @@ func TestCancellationAnswersPendingPermissionsBeforeTheNextPrompt(t *testing.T) 
 	if _, ok := turn(t, s); !ok {
 		t.Error("the cancelled turn failed")
 	}
-	prompt(t, s, "after")
+	s.Prompt("after")
 	if _, ok := turn(t, s); !ok {
 		t.Error("the next turn failed")
 	}
@@ -308,7 +299,7 @@ func TestCancellationAnswersPendingPermissionsBeforeTheNextPrompt(t *testing.T) 
 
 func TestARunningTurnAcceptsCancelWithoutAPermissionRequest(t *testing.T) {
 	conn, s := start(t, hang("cancelled"))
-	prompt(t, s, "running")
+	s.Prompt("running")
 	awaitMessage(t, conn)
 	must(t, s.Cancel())
 	if text, ok := turn(t, s); text != "" || !ok {
@@ -318,7 +309,7 @@ func TestARunningTurnAcceptsCancelWithoutAPermissionRequest(t *testing.T) {
 
 func TestClosingACancelledSessionHoldsTheNextPermissionRequest(t *testing.T) {
 	conn, s := start(t, hang("cancelled"), openroutertest.Shell("touch next"))
-	prompt(t, s, "running")
+	s.Prompt("running")
 	awaitMessage(t, conn)
 	must(t, s.Cancel())
 	must(t, conn.CloseSession(s.ID))
@@ -326,7 +317,7 @@ func TestClosingACancelledSessionHoldsTheNextPermissionRequest(t *testing.T) {
 	created, err := conn.NewSession()
 	must(t, err)
 	s.Opened(created.SessionId, created.ConfigOptions)
-	prompt(t, s, "run a command")
+	s.Prompt("run a command")
 	for s.Permission == nil {
 		if permission, ok := next(t, conn).(*Permission); ok && s.Accepts(permission.SessionID) {
 			must(t, s.Ask(permission))
@@ -334,52 +325,16 @@ func TestClosingACancelledSessionHoldsTheNextPermissionRequest(t *testing.T) {
 	}
 }
 
-func TestAPromptDuringATurnCancelsItAndIsSentAfterItFinishes(t *testing.T) {
-	conn, s := start(t, hang("cancelled"), openroutertest.Echo())
-	prompt(t, s, "running")
-	awaitMessage(t, conn)
-	prompt(t, s, "next")
-	if s.Queued != "next" {
-		t.Fatalf("queued %q", s.Queued)
-	}
-	var text strings.Builder
-	var queued string
-	for queued == "" {
-		switch event := next(t, conn).(type) {
-		case Update:
-			if chunk := event.Update.AgentMessageChunk; chunk != nil {
-				text.WriteString(chunk.Content.Text.Text)
-			}
-		case Finished:
-			if event.Err != nil {
-				t.Fatal(event.Err)
-			}
-			var err error
-			queued, err = s.Finished()
-			must(t, err)
-			if queued == "" {
-				t.Fatal("nothing was queued")
-			}
-		}
-	}
-	if text.Len() != 0 || queued != "next" || !s.Busy || s.Queued != "" {
-		t.Errorf("text %q, queued %q, %+v", text.String(), queued, s)
-	}
-	if text, ok := turn(t, s); text != "you said: next" || !ok {
-		t.Errorf("%q, %v", text, ok)
-	}
-}
-
 func TestRejectedAndFailedTurnsAllowAnotherPrompt(t *testing.T) {
 	failed := openroutertest.Chunks(openroutertest.Delta(map[string]any{"role": "assistant", "content": "failing"}, ""))
 	_, s := start(t, openroutertest.Status(400, "{}"), failed, openroutertest.Echo())
 	for _, text := range []string{"reject", "fail"} {
-		prompt(t, s, text)
+		s.Prompt(text)
 		if _, ok := turn(t, s); ok {
 			t.Errorf("%s succeeded", text)
 		}
 	}
-	prompt(t, s, "after")
+	s.Prompt("after")
 	if _, ok := turn(t, s); !ok {
 		t.Error("the turn after the failures failed")
 	}
@@ -393,7 +348,7 @@ func TestServerExitReleasesPendingWork(t *testing.T) {
 	conn, s := startServer(t, settings.Server{Command: "/bin/sh", Args: []string{
 		"-c", `echo $$ > "$0"; exec "$1" acp`, pid, server.Command,
 	}}, workspace)
-	prompt(t, s, "run a command")
+	s.Prompt("run a command")
 	awaitPermission(t, s)
 	data, err := os.ReadFile(pid)
 	must(t, err)

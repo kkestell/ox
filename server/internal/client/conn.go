@@ -293,13 +293,20 @@ func (c *Conn) CloseSession(id protocol.SessionId) error {
 	return c.call(context.Background(), acp.MethodCloseSession, protocol.CloseSessionRequest{SessionId: id}, &protocol.CloseSessionResponse{})
 }
 
-// SetConfigOption chooses a value of a session's select option and returns
-// the session's options.
-func (c *Conn) SetConfigOption(id protocol.SessionId, option protocol.SessionConfigId, value protocol.SessionConfigValueId) ([]protocol.SessionConfigOption, error) {
-	var response protocol.SetSessionConfigOptionResponse
+// SetConfigOption sends a choice of a value of a session's select option and
+// returns a function that waits for the session's options. Choices sent from
+// one goroutine reach the server in order.
+func (c *Conn) SetConfigOption(id protocol.SessionId, option protocol.SessionConfigId, value protocol.SessionConfigValueId) (func() ([]protocol.SessionConfigOption, error), error) {
 	request := protocol.SetSessionConfigOptionRequest{ValueId: &protocol.SetSessionConfigOptionValueId{SessionId: id, ConfigId: option, Value: value}}
-	err := c.call(context.Background(), acp.MethodSetConfigOption, request, &response)
-	return response.ConfigOptions, err
+	wait, err := c.rpc.Dispatch(context.Background(), acp.MethodSetConfigOption, request)
+	if err != nil {
+		return nil, err
+	}
+	return func() ([]protocol.SessionConfigOption, error) {
+		var response protocol.SetSessionConfigOptionResponse
+		err := describe(wait(context.Background(), &response))
+		return response.ConfigOptions, err
+	}, nil
 }
 
 func (c *Conn) prompt(id protocol.SessionId, text string) error {
@@ -311,10 +318,13 @@ func (c *Conn) cancel(id protocol.SessionId) error {
 	return c.rpc.Notify(acp.MethodCancel, protocol.CancelNotification{SessionId: id})
 }
 
-// call sends a request and describes an error response as its message and
-// data.
+// call sends a request and describes an error response.
 func (c *Conn) call(ctx context.Context, method string, params, result any) error {
-	err := c.rpc.Call(ctx, method, params, result)
+	return describe(c.rpc.Call(ctx, method, params, result))
+}
+
+// describe describes an error response as its message and data.
+func describe(err error) error {
 	var response *acp.Error
 	if !errors.As(err, &response) {
 		return err

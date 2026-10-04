@@ -97,8 +97,25 @@ func (c *Conn) Notify(method string, params any) error {
 }
 
 func (c *Conn) Call(ctx context.Context, method string, params, result any) error {
+	wait, err := c.Dispatch(ctx, method, params)
+	if err != nil {
+		return err
+	}
+	return wait(ctx, result)
+}
+
+// Dispatch sends a request and returns a function that waits for its result,
+// so requests dispatched from one goroutine are sent in order.
+func (c *Conn) Dispatch(ctx context.Context, method string, params any) (func(ctx context.Context, result any) error, error) {
 	<-c.ready
-	err := c.rpc.Call(ctx, method, params, result)
+	waiter, err := c.rpc.DispatchCall(ctx, method, params)
+	if err != nil {
+		return nil, err
+	}
+	return func(ctx context.Context, result any) error { return responseError(waiter.Wait(ctx, result)) }, nil
+}
+
+func responseError(err error) error {
 	var rpcErr *jsonrpc2.Error
 	if errors.As(err, &rpcErr) {
 		response := &Error{Code: int(rpcErr.Code), Message: rpcErr.Message}

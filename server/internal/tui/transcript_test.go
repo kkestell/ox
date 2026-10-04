@@ -344,6 +344,18 @@ func TestANamedCallShowsItsTextAndDiffBlocksOnlyWhileOutputIsShown(t *testing.T)
 		"    +one",
 		"    +        two",
 	}, "a new file diffs against nothing and tabs are expanded")
+	unterminated := named{protocol.StartToolCall("u", "Apply patch to c", protocol.WithStartStatus(protocol.ToolCallStatusCompleted),
+		protocol.WithStartContent([]protocol.ToolCallContent{protocol.ToolDiffContent("/w/c", "two", "one")})), "apply_patch"}
+	lines = allLines(newTranscript(now, unterminated), 40, false, full, now)
+	equal(t, texts(lines), []string{
+		"● Apply patch to c",
+		"  └ @@ -1 +1 @@",
+		"    -one",
+		"    \\ No newline at end of file",
+		"    +two",
+		"    \\ No newline at end of file",
+	}, "a file without a final newline")
+	equal(t, colorOf(lines[3]), dim)
 }
 
 func TestTruncatedOutputShowsTheHiddenRowCountAndTheLastFiveRows(t *testing.T) {

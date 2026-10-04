@@ -20,9 +20,6 @@ type Session struct {
 	// Commands are the names in the latest available commands update.
 	Commands []string
 	Usage    *protocol.SessionUsageUpdate
-	// Queued is the prompt sent during a turn, held until the cancelled turn
-	// finishes; empty when none is.
-	Queued string
 }
 
 // NewSession returns the state of a session the server just created.
@@ -57,21 +54,14 @@ func (s *Session) Closed() error {
 	return nil
 }
 
-// Prompt sends the prompt, or cancels the running turn and sends the prompt
-// when that turn finishes. It returns false while another prompt is already
-// queued.
-func (s *Session) Prompt(text string) (bool, error) {
+// Prompt sends the prompt. It must not be called while a turn runs.
+func (s *Session) Prompt(text string) {
 	if s.Busy {
-		if s.Queued != "" {
-			return false, nil
-		}
-		s.Queued = text
-		return true, s.Cancel()
+		panic("a prompt was sent while a turn was running")
 	}
 	s.Busy = true
 	conn, id := s.conn, s.ID
 	go func() { conn.push(Finished{SessionID: id, Err: conn.prompt(id, text)}) }()
-	return true, nil
 }
 
 // Ask holds a permission request for an answer, or cancels it while the turn
@@ -114,25 +104,16 @@ func (s *Session) Cancel() error {
 	return nil
 }
 
-// Finished ends the turn and sends the queued prompt, returning its text.
-func (s *Session) Finished() (string, error) {
+// Finished ends the turn.
+func (s *Session) Finished() error {
+	s.Busy = false
+	s.cancelling = false
 	// A completed turn cannot leave an unanswered permission behind.
 	if permission := s.Permission; permission != nil {
 		s.Permission = nil
-		if err := permission.Cancel(); err != nil {
-			return "", err
-		}
+		return permission.Cancel()
 	}
-	s.Busy = false
-	s.cancelling = false
-	queued := s.Queued
-	s.Queued = ""
-	if queued != "" {
-		if _, err := s.Prompt(queued); err != nil {
-			return "", err
-		}
-	}
-	return queued, nil
+	return nil
 }
 
 // Update records the session settings, available commands, and usage an

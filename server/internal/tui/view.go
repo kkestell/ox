@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"image"
 	"math"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -207,27 +206,13 @@ func pickerLines(p *picker, rowWidth, rows int) []line {
 	if p.query == "" {
 		search = line{spans: []span{{"Search", fg(dim)}}}
 	}
-	// The model picker's list toggle ends at the search row's right edge.
-	if p.models != nil && p.models.hasFavorites() {
-		all, favorites := bright, dim
-		if p.models.showingFavorites {
-			all, favorites = dim, bright
-		}
-		padding := max(rowWidth-search.width()-width("Favorites / All"), 0)
-		search.spans = append(search.spans,
-			span{text: strings.Repeat(" ", padding)},
-			span{"Favorites", fg(favorites)},
-			span{" / ", fg(dim)},
-			span{"All", fg(all)},
-		)
-	}
 	lines := []line{search, errorLine}
 	if p.models == nil && len(p.sessions) == 0 {
 		return append(lines, styled("No saved sessions", style{}))
 	}
 	var names []string
 	if p.models != nil {
-		names = modelNames(p.models.all, rowWidth)
+		names = modelNames(p.models, rowWidth)
 	} else {
 		names = sessionNames(p.sessions, rowWidth)
 	}
@@ -237,8 +222,7 @@ func pickerLines(p *picker, rowWidth, rows int) []line {
 		if i == p.selected {
 			s = fg(bright)
 		}
-		// All shows favorites in bold.
-		if p.models != nil && !p.models.showingFavorites && slices.Contains(p.models.favorites, row) {
+		if p.models != nil && p.models[row].favorite {
 			s = s.patch(bold)
 		}
 		lines = append(lines, styled(names[row], s))
