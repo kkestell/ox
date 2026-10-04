@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 
 	"ox/internal/control"
@@ -11,6 +12,21 @@ import (
 
 // width is the display width of text, which may hold styles.
 func width(text string) int { return ansi.StringWidth(text) }
+
+// wrap word-wraps styled text to width and returns self-contained rows: each
+// row reopens the styles a break interrupted, since rows are drawn alone.
+// Unstyled trailing spaces are dropped.
+func wrap(text string, rowWidth int) []string {
+	rowWidth = max(rowWidth, 1)
+	wrapped := ansi.Wrap(text, rowWidth, "")
+	buf := newFrame(rowWidth, strings.Count(wrapped, "\n")+1)
+	uv.NewStyledString(wrapped).Draw(buf, buf.Bounds())
+	rows := make([]string, len(buf.Lines))
+	for i, line := range buf.Lines {
+		rows[i] = strings.TrimRight(line.Render(), " ")
+	}
+	return rows
+}
 
 // styled renders each row in the style.
 func styled(s lipgloss.Style, rows ...string) []string {

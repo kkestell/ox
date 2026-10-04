@@ -124,7 +124,7 @@ func TestTextIsTrimmedAndWrappedByDisplayWidth(t *testing.T) {
 	equal(t, rows(newTranscript(now, message(text)), 12, false, now), []string{"● first line", "  of text", "  second"})
 }
 
-func TestMessagesRenderAsMarkdown(t *testing.T) {
+func TestMessagesRenderAsMarkdownWithHangingListAndQuoteRows(t *testing.T) {
 	now := time.Now()
 	for _, test := range []struct {
 		name, text string
@@ -133,25 +133,32 @@ func TestMessagesRenderAsMarkdown(t *testing.T) {
 	}{
 		{"line breaks are kept", "one\ntwo\n\nthree", 40, []string{"● one", "  two", "", "  three"}},
 		{"headings drop their marker", "# Title\n\nbody", 40, []string{"● Title", "", "  body"}},
-		{"lists wrap and nest", "- one two three four\n  - five six seven\n\n1. eight nine ten", 18, []string{
+		{"wrapped list items hang under the marker", "- one two three four\n  - five six seven\n\n1. eight nine ten", 18, []string{
 			"● - one two three",
-			"  four",
+			"    four",
 			"    - five six",
-			"    seven",
-			"",
+			"      seven",
 			"",
 			"  1. eight nine",
-			"  ten",
+			"     ten",
+		}},
+		{"a later paragraph in an item hangs under the marker", "- one\n\n  two three four", 14, []string{
+			"● - one",
+			"",
+			"    two three",
+			"    four",
 		}},
 		{"wrapped quotes keep their bar", "> one two three four", 14, []string{"● > one two", "  > three four"}},
 		{"code blocks keep their rows without fences", "```\nfn a() {\n    b()\n}\n```", 40, []string{"● fn a() {", "      b()", "  }"}},
 		{"escapes and entities", `a \* b &amp; c`, 40, []string{"● a * b & c"}},
-		{"task lists", "- [x] done\n- [ ] todo", 40, []string{"● [x] done", "  [ ] todo"}},
-		{"links keep their destination", "see [docs](https://a.b)", 40, []string{"● see docs https://a.b"}},
-		{"tables", "| a | bb |\n|---|---:|\n| ccc | d |", 24, []string{
-			"●  a         │       bb",
-			"  ───────────┼──────────",
-			"   ccc       │        d",
+		{"task lists", "- [x] done\n- [ ] todo", 40, []string{"● - [x] done", "  - [ ] todo"}},
+		{"links keep their destination", "see [docs](https://a.b)", 40, []string{"● see docs (https://a.b)"}},
+		{"tables", "| a | bb |\n|---|---:|\n| ccc | d |", 40, []string{
+			"● ┌─────┬────┐",
+			"  │ a   │ bb │",
+			"  ├─────┼────┤",
+			"  │ ccc │  d │",
+			"  └─────┴────┘",
 		}},
 	} {
 		equal(t, rows(newTranscript(now, message(test.text)), test.width, false, now), test.want, test.name)
@@ -167,6 +174,11 @@ func TestMessagesRenderAsMarkdown(t *testing.T) {
 	for _, cell := range cells(allLines(newTranscript(now, thought("**bold** `code`")), 40, true, summary, now)[0]) {
 		equal(t, exact(cell.Style.Fg), dim, "thinking is dim")
 	}
+	wrapped := allLines(newTranscript(now, message("**one two three**")), 9, false, summary, now)
+	equal(t, texts(wrapped), []string{"● one two", "  three"})
+	buf := newFrame(9, 1)
+	put(buf, buf.Bounds(), 0, wrapped[1])
+	equal(t, buf.CellAt(2, 0).Style.Attrs&uv.AttrBold != 0, true, "a wrapped bold span stays bold")
 	output := named{protocol.StartToolCall("r", "Read a.md", protocol.WithStartStatus(protocol.ToolCallStatusCompleted),
 		protocol.WithStartContent([]protocol.ToolCallContent{protocol.ToolContent(protocol.TextBlock("# not a heading"))})), "read_file"}
 	view := newTranscript(now, output, turnError("a", "# heading"))

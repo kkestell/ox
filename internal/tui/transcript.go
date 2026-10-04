@@ -364,11 +364,11 @@ func itemLines(i *item, width int, showThinking bool, output toolOutput, now tim
 		return userLines(i.text, width)
 	case thinkingItem:
 		if showThinking && strings.TrimSpace(i.text) != "" {
-			return prefixed(markdown(i.text, dimStyles, width-2), dimStyle.Render("● "), "  ")
+			return prefixed(markdown(i.text, dimStyle, width-2), dimStyle.Render("● "), "  ")
 		}
 		return styled(dimStyle, "● "+placeholder(i.started, i.ended, now))
 	case responseItem:
-		return prefixed(markdown(i.text, messageStyles, width-2), "● ", "  ")
+		return prefixed(markdown(i.text, lipgloss.NewStyle(), width-2), "● ", "  ")
 	case toolItem:
 		call := i.call
 		head, ok := shellLine(call, width)
@@ -400,7 +400,7 @@ func itemLines(i *item, width int, showThinking bool, output toolOutput, now tim
 func userLines(text string, width int) []string {
 	width = max(width, 1)
 	background := lipgloss.NewStyle().Background(userMessage)
-	content := markdown(text, userStyles, max(width-2, 1))
+	content := markdown(text, background, max(width-2, 1))
 	if len(content) == 0 {
 		content = []string{""}
 	}
@@ -441,9 +441,9 @@ func contentLines(call *toolCall, rowWidth int, first, rest string, dimmed bool)
 // as a replayed turn error; diff blocks are unified hunks, clipped so their
 // indentation survives.
 func contentRows(call *toolCall, width int, dimmed bool) []string {
-	text, styles := lipgloss.NewStyle(), messageStyles
+	text := lipgloss.NewStyle()
 	if dimmed {
-		text, styles = dimStyle, dimStyles
+		text = dimStyle
 	}
 	var rows []string
 	for _, block := range call.content {
@@ -451,7 +451,7 @@ func contentRows(call *toolCall, width int, dimmed bool) []string {
 		case block.Content != nil:
 			content := content(block.Content.Content)
 			if call.name == "" {
-				rows = append(rows, markdown(content, styles, width)...)
+				rows = append(rows, markdown(content, text, width)...)
 			} else {
 				rows = append(rows, styled(text, plain(content, width)...)...)
 			}
