@@ -1,4 +1,4 @@
-Apply a text patch to files in the session workspace. Paths are relative to the workspace. Supports Add File, Update File, Delete File, and Move to.
+Apply a text patch to files. Paths may be absolute or relative to the session workspace. Supports Add File, Update File, Delete File, and Move to.
 
 ```text
 *** Begin Patch
@@ -46,4 +46,4 @@ empty file; a nonempty Add ends with a newline. A source line that resembles a
 marker remains expressible because it has a context, removal, or addition
 prefix.
 
-Match source lines exactly, including whitespace. Chunks search forward from the preceding match. An anchor is matched literally, and chunk matching starts after it. An additions-only chunk inserts after its anchor or preceding chunk; with neither, it appends. An updated file keeps the line-ending style of its first line and whether it ended with a newline. Add and Move destinations must not exist; their missing parent directories are created. Sources must be regular files; updates require UTF-8. Absolute paths, parent traversal, paths reaching outside the workspace, paths naming the workspace root or a symbolic link, and duplicate targets are rejected. A no-op Update succeeds and reports `Unchanged path`. All operations are checked before changes start. Filesystem failures may leave earlier operations applied; the result reports completed, failed, and unattempted operations.
+Match source lines exactly, including whitespace. Chunks search forward from the preceding match. An anchor is matched literally, and chunk matching starts after it. An additions-only chunk inserts after its anchor or preceding chunk; with neither, it appends. An updated file keeps the line-ending style of its first line and whether it ended with a newline. Add and Move destinations must not exist; their missing parent directories are created. Sources must be regular files; updates require UTF-8. Duplicate targets are rejected. A no-op Update succeeds and reports `Unchanged path`. All operations are checked before changes start. Filesystem failures may leave earlier operations applied; the result reports completed, failed, and unattempted operations.

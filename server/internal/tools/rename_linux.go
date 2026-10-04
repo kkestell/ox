@@ -2,6 +2,6 @@ package tools
 
 import "golang.org/x/sys/unix"
 
-func renameNoReplace(fromFD int, source string, toFD int, destination string) error {
-	return unix.Renameat2(fromFD, source, toFD, destination, unix.RENAME_NOREPLACE)
+func renameNoReplace(source, destination string) error {
+	return unix.Renameat2(unix.AT_FDCWD, source, unix.AT_FDCWD, destination, unix.RENAME_NOREPLACE)
 }

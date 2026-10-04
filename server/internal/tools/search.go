@@ -4,12 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"ox/internal/transcript"
@@ -19,12 +19,12 @@ var globSchema = compact(`{
   "type": "function",
   "function": {
     "name": "glob",
-    "description": "Find files inside the workspace using a ripgrep glob. Returns ` + "`./`" + `-prefixed workspace-relative paths, at most 16 KiB. Narrow the pattern or path if truncated. Skips hidden and ignored files, whatever the pattern; does not follow symlinks during traversal. Example: {\"pattern\":\"*.rs\",\"path\":\"src\"}.",
+    "description": "Find files using a ripgrep glob. Returns file paths, at most 16 KiB. Narrow the pattern or path if truncated. Uses ripgrep ignore rules; an explicit glob can include hidden and ignored files; does not follow symlinks during traversal. Example: {\"pattern\":\"*.rs\",\"path\":\"src\"}.",
     "parameters": {
       "type": "object",
       "properties": {
         "pattern": {"type": "string", "description": "Ripgrep glob, e.g. *.rs or src/**/*.rs."},
-        "path": {"type": "string", "default": ".", "description": "Directory to search, relative to the workspace or absolute inside it. Globs are relative to the workspace."}
+        "path": {"type": "string", "default": ".", "description": "File or directory to search, relative to the workspace or absolute. Globs use ripgrep path matching."}
       },
       "required": ["pattern"],
       "additionalProperties": false
@@ -36,13 +36,13 @@ var grepSchema = compact(`{
   "type": "function",
   "function": {
     "name": "grep",
-    "description": "Search workspace text files with a case-sensitive RE2 regular expression in Go syntax; use (?i) for case-insensitivity. Returns path:line:content, at most 16 KiB. Narrow the pattern or path if truncated. Skips hidden and ignored files unless the path names one; does not follow symlinks during traversal. Example: {\"pattern\":\"fn main\",\"path\":\"src\",\"glob\":\"*.rs\"}.",
+    "description": "Search text files with a case-sensitive ripgrep regular expression; use (?i) for case-insensitivity. Returns path:line:content, at most 16 KiB. Narrow the pattern or path if truncated. Uses ripgrep ignore rules; explicit paths or globs can include hidden and ignored files; does not follow symlinks during traversal. Example: {\"pattern\":\"fn main\",\"path\":\"src\",\"glob\":\"*.rs\"}.",
     "parameters": {
       "type": "object",
       "properties": {
-        "pattern": {"type": "string", "description": "RE2 regular expression."},
-        "path": {"type": "string", "default": ".", "description": "File or directory to search, relative to the workspace or absolute inside it."},
-        "glob": {"type": "string", "description": "Optional filename glob, relative to the workspace, e.g. *.rs."}
+        "pattern": {"type": "string", "description": "Ripgrep regular expression."},
+        "path": {"type": "string", "default": ".", "description": "File or directory to search, relative to the workspace or absolute."},
+        "glob": {"type": "string", "description": "Optional ripgrep filename glob, e.g. *.rs."}
       },
       "required": ["pattern"],
       "additionalProperties": false
@@ -58,12 +58,7 @@ const matchLimit = bodyLimit - noticeLimit
 
 const diagnosticsLimit = 512
 
-// rgProgram is the ripgrep executable; tests replace it.
-var rgProgram = "rg"
-
-// search runs glob or grep. Ripgrep supplies candidate names and ignore
-// filtering; Ox opens each candidate through the workspace root before
-// reading or returning it.
+// search delegates traversal, ignore rules, globs, and content matching to ripgrep.
 func search(ctx context.Context, root, name, arguments string) (string, []transcript.ToolContent, error) {
 	args := struct {
 		Pattern *string `json:"pattern"`
@@ -90,49 +85,28 @@ func search(ctx context.Context, root, name, arguments string) (string, []transc
 	if args.Pattern == nil {
 		return "", nil, errors.New("arguments: missing field `pattern`")
 	}
-	var filter *globMatcher
-	var matcher *regexp.Regexp
+	if args.Path == "" {
+		return "", nil, errors.New("search path is empty")
+	}
+	scope := args.Path
+	if !filepath.IsAbs(scope) {
+		scope = filepath.Clean(scope)
+		if scope != "." {
+			scope = "./" + scope
+		}
+	}
+	command := []string{"--no-config"}
 	if name == Glob {
-		if filter, err = compileGlob(*args.Pattern); err != nil {
-			return "", nil, fmt.Errorf("pattern: %w", err)
-		}
+		command = append(command, "--files", "--null", "--glob", *args.Pattern)
 	} else {
-		if matcher, err = regexp.Compile(*args.Pattern); err != nil {
-			return "", nil, fmt.Errorf("pattern: %w", err)
-		}
+		command = append(command, "--json", "-e", *args.Pattern)
 		if args.Glob != nil {
-			if filter, err = compileGlob(*args.Glob); err != nil {
-				return "", nil, fmt.Errorf("glob: %w", err)
-			}
+			command = append(command, "--glob", *args.Glob)
 		}
 	}
-	w, err := openWorkspace(root)
-	if err != nil {
-		return "", nil, err
-	}
-	defer w.Close()
-	relative := w.relativeName(args.Path)
-	path, err := w.resolve(relative)
-	if err != nil {
-		return "", nil, fmt.Errorf("%s: %w", args.Path, err)
-	}
-	directory := w.isDirectory(path)
-	if name == Glob && !directory {
-		return "", nil, errors.New("glob path must name a directory")
-	}
-	if !directory && !w.isRegular(path) {
-		return "", nil, errors.New("search path must name a regular file or directory")
-	}
-	scope := "."
-	if relative = filepath.Clean(relative); relative != "." {
-		scope = "./" + relative
-	}
-	cmd := exec.CommandContext(ctx, rgProgram, "--no-config", "--files", "--null", "--", scope)
+	command = append(command, "--", scope)
+	cmd := exec.CommandContext(ctx, "rg", command...)
 	cmd.Dir = root
-	return run(cmd, w, filter, matcher)
-}
-
-func run(cmd *exec.Cmd, w *workspace, filter *globMatcher, matcher *regexp.Regexp) (string, []transcript.ToolContent, error) {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return "", nil, err
@@ -140,94 +114,90 @@ func run(cmd *exec.Cmd, w *workspace, filter *globMatcher, matcher *regexp.Regex
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
+		if ctx.Err() != nil {
+			return "", nil, ctx.Err()
+		}
 		return "", nil, fmt.Errorf("could not run rg; install ripgrep and ensure rg is on PATH: %w", err)
 	}
-	reader := bufio.NewReader(stdout)
-	out := searchOutput{workspace: w, filter: filter, matcher: matcher}
-	for !out.truncated {
-		candidate, err := reader.ReadString(0)
-		if candidate = strings.TrimSuffix(candidate, "\x00"); candidate != "" {
-			out.add(candidate)
+	out := searchOutput{grep: name == Grep}
+	if name == Glob {
+		reader := bufio.NewReader(stdout)
+		for !out.truncated {
+			candidate, readErr := reader.ReadString(0)
+			if candidate != "" {
+				out.files++
+				out.truncated = out.append(strings.TrimSuffix(candidate, "\x00") + "\n")
+			}
+			if readErr != nil {
+				err = readErr
+				break
+			}
 		}
-		if err != nil {
-			break
+	} else {
+		decoder := json.NewDecoder(stdout)
+		for !out.truncated {
+			var event struct {
+				Type string `json:"type"`
+				Data struct {
+					Path       rgText `json:"path"`
+					Lines      rgText `json:"lines"`
+					LineNumber int    `json:"line_number"`
+				} `json:"data"`
+			}
+			if err = decoder.Decode(&event); err != nil {
+				break
+			}
+			switch event.Type {
+			case "begin":
+				out.fileMatched = false
+			case "match":
+				if !out.fileMatched {
+					out.files++
+					out.fileMatched = true
+				}
+				out.matches++
+				text := fmt.Sprintf("%s:%d:%s", event.Data.Path.value(), event.Data.LineNumber, event.Data.Lines.value())
+				if !strings.HasSuffix(text, "\n") {
+					text += "\n"
+				}
+				out.truncated = out.append(strings.ToValidUTF8(text, "�"))
+			}
 		}
 	}
-	if out.truncated {
+	if out.truncated || err != nil && !errors.Is(err, io.EOF) {
 		cmd.Process.Kill()
 	}
 	io.Copy(io.Discard, stdout)
 	waitErr := cmd.Wait()
-	exitCode := cmd.ProcessState.ExitCode()
-	if !out.truncated && exitCode != 0 && exitCode != 1 && out.output.Len() == 0 {
-		if waitErr == nil {
-			waitErr = fmt.Errorf("exit status %d", exitCode)
-		}
-		return "", nil, fmt.Errorf("rg failed (%v); check the glob or search path", waitErr)
+	if ctx.Err() != nil {
+		return "", nil, ctx.Err()
 	}
-	return out.finish(stderr.Len() > 0)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", nil, fmt.Errorf("reading rg output: %w", err)
+	}
+	if !out.truncated && waitErr != nil && cmd.ProcessState.ExitCode() != 1 && out.output.Len() == 0 {
+		return "", nil, fmt.Errorf("rg: %s", strings.TrimSpace(stderr.String()))
+	}
+	return out.finish(strings.TrimSpace(stderr.String()))
 }
 
 type searchOutput struct {
-	workspace *workspace
-	filter    *globMatcher
-	matcher   *regexp.Regexp
-	output    strings.Builder
-	truncated bool
-	errors    string
-	// files counts the files listed, or the files with a match.
-	files   int
-	matches int
+	grep, fileMatched bool
+	output            strings.Builder
+	truncated         bool
+	files, matches    int
 }
 
-func (s *searchOutput) add(candidate string) {
-	if s.filter != nil && !s.filter.match(candidate) {
-		return
+type rgText struct {
+	Text  string `json:"text"`
+	Bytes []byte `json:"bytes"`
+}
+
+func (t rgText) value() string {
+	if t.Bytes != nil {
+		return string(t.Bytes)
 	}
-	relative, err := s.workspace.resolve(candidate)
-	if err != nil {
-		return
-	}
-	if s.matcher == nil {
-		if s.workspace.isRegular(relative) {
-			s.files++
-			s.truncated = s.append(candidate + "\n")
-		}
-		return
-	}
-	file, err := s.workspace.openRegular(relative)
-	if err != nil {
-		s.recordError(candidate, err)
-		return
-	}
-	defer file.Close()
-	reader := bufio.NewReader(file)
-	matches := 0
-	for number := 1; ; number++ {
-		line, err := reader.ReadBytes('\n')
-		searchable := bytes.TrimSuffix(line, []byte("\n"))
-		if len(line) > 0 && bytes.IndexByte(searchable, 0) < 0 && s.matcher.Match(searchable) {
-			matches++
-			text := fmt.Sprintf("%s:%d:%s", candidate, number, strings.ToValidUTF8(string(line), "�"))
-			if !strings.HasSuffix(text, "\n") {
-				text += "\n"
-			}
-			if s.append(text) {
-				s.truncated = true
-				break
-			}
-		}
-		if err != nil {
-			if !errors.Is(err, io.EOF) {
-				s.recordError(candidate, err)
-			}
-			break
-		}
-	}
-	s.matches += matches
-	if matches > 0 {
-		s.files++
-	}
+	return t.Text
 }
 
 // append adds text and reports whether the output reached its limit.
@@ -242,15 +212,9 @@ func (s *searchOutput) append(text string) bool {
 	return true
 }
 
-func (s *searchOutput) recordError(path string, err error) {
-	if len(s.errors) < diagnosticsLimit {
-		s.errors += fmt.Sprintf("%s: %v\n", path, err)
-	}
-}
-
 // finish returns the model's text and, when anything was found, a summary of
 // the counts for the client.
-func (s *searchOutput) finish(enumerationFailed bool) (string, []transcript.ToolContent, error) {
+func (s *searchOutput) finish(diagnostics string) (string, []transcript.ToolContent, error) {
 	text := s.output.String()
 	if s.truncated {
 		if !strings.HasSuffix(text, "\n") {
@@ -263,7 +227,7 @@ func (s *searchOutput) finish(enumerationFailed bool) (string, []transcript.Tool
 	var content []transcript.ToolContent
 	if s.files > 0 {
 		summary := fmt.Sprintf("%d files", s.files)
-		if s.matcher != nil {
+		if s.grep {
 			summary = fmt.Sprintf("%d matches in %d files", s.matches, s.files)
 		}
 		if s.truncated {
@@ -271,19 +235,12 @@ func (s *searchOutput) finish(enumerationFailed bool) (string, []transcript.Tool
 		}
 		content = append(content, transcript.ToolContent{Text: summary})
 	}
-	if enumerationFailed || s.errors != "" {
-		// Ripgrep may enumerate a path that changed during traversal. Its raw
-		// diagnostics can name files outside the workspace after such a swap,
-		// so only their presence is reported.
-		diagnostics := ""
-		if enumerationFailed {
-			diagnostics = "Ripgrep could not enumerate some paths.\n"
-		}
-		diagnostics = truncate(diagnostics+s.errors, diagnosticsLimit)
+	if diagnostics != "" {
 		if !strings.HasSuffix(text, "\n") {
 			text += "\n"
 		}
-		text += "Some paths could not be searched:\n" + strings.TrimRight(diagnostics, " \t\r\n") + "\n"
+		text += "Some paths could not be searched:\n" + truncate(diagnostics, diagnosticsLimit) + "\n"
 	}
+
 	return text, content, nil
 }

@@ -80,9 +80,8 @@ func TestPatchCreatesUpdatesMovesAndDeletesInOrder(t *testing.T) {
 	if text != "Applied patch.\nAdded notes.txt\nModified src/greeting.rs\nMoved old-name.txt -> new-name.txt\nDeleted obsolete.txt\nMoved same.txt -> moved.txt\nUnchanged kept.txt" {
 		t.Errorf("text = %q", text)
 	}
-	canonical, _ := filepath.EvalSymlinks(root)
 	diff := func(path string, old *string, new string) transcript.ToolContent {
-		return transcript.ToolContent{Diff: &transcript.Diff{Path: filepath.Join(canonical, path), OldText: old, NewText: new}}
+		return transcript.ToolContent{Diff: &transcript.Diff{Path: filepath.Join(root, path), OldText: old, NewText: new}}
 	}
 	ptr := func(s string) *string { return &s }
 	want := []transcript.ToolContent{
@@ -206,9 +205,6 @@ func TestPreparationRejectsInvalidOperationsWithoutChanges(t *testing.T) {
 	writeFile(t, filepath.Join(root, "binary"), "\xff")
 	os.Mkdir(filepath.Join(root, "directory"), 0o777)
 	for _, body := range []string{
-		"*** Add File: /outside\n+x\n",
-		"*** Add File: ../outside\n+x\n",
-		"*** Add File: directory/../outside\n+x\n",
 		"*** Add File: .\n+x\n",
 		"*** Delete File: missing\n",
 		"*** Update File: missing\n@@\n-x\n+y\n",
@@ -232,45 +228,29 @@ func TestPreparationRejectsInvalidOperationsWithoutChanges(t *testing.T) {
 	}
 }
 
-func TestPatchTargetsAreNeverLinksAndCannotEscape(t *testing.T) {
-	root, outside := t.TempDir(), t.TempDir()
-	writeFile(t, filepath.Join(outside, "file"), "outside")
-	writeFile(t, filepath.Join(root, "inside"), "inside\n")
-	os.Symlink(outside, filepath.Join(root, "escape"))
-	os.Symlink(filepath.Join(outside, "file"), filepath.Join(root, "file-link"))
-	os.Symlink(filepath.Join(outside, "missing"), filepath.Join(root, "dangling"))
-	os.Symlink(root, filepath.Join(root, "root-link"))
-	os.Symlink(filepath.Join(root, "inside"), filepath.Join(root, "inside-link"))
-	for _, body := range []string{
-		"*** Add File: escape/new/nested\n+x\n",
-		"*** Delete File: file-link\n",
-		"*** Add File: dangling\n+x\n",
-		"*** Delete File: root-link\n",
-		"*** Add File: name\n*** Add File: root-link/name\n",
-		"*** Delete File: inside-link\n",
-		"*** Update File: inside-link\n@@\n-inside\n+changed\n",
-		"*** Update File: inside-link\n*** Move to: moved\n",
-	} {
-		if _, _, err := applyPatch(root, wrapped(body)); err == nil || !strings.HasPrefix(err.Error(), "prepare:") {
-			t.Errorf("%q: %v", body, err)
-		}
-	}
-	if readText(t, filepath.Join(outside, "file")) != "outside" || entries(t, outside) != 1 || readText(t, filepath.Join(root, "inside")) != "inside\n" {
-		t.Fatal("a link redirected a change")
-	}
-
-	// A link swapped in after preparation cannot redirect the write outside.
-	operations, _ := parsePatch(wrapped("*** Update File: inside\n@@\n-inside\n+changed\n"))
-	w, _ := openWorkspace(root)
-	defer w.Close()
-	changes, err := prepare(w, operations)
-	if err != nil {
+func TestPatchAcceptsAbsoluteParentAndSymlinkPaths(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "workspace")
+	if err := os.Mkdir(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	os.Remove(filepath.Join(root, "inside"))
-	os.Symlink(filepath.Join(outside, "file"), filepath.Join(root, "inside"))
-	if _, _, err := applyChanges(w, changes); err == nil || readText(t, filepath.Join(outside, "file")) != "outside" {
-		t.Errorf("a swapped link redirected the write: %v", err)
+	outside := filepath.Join(parent, "outside")
+	writeFile(t, outside, "before\n")
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := applyPatch(root, wrapped("*** Update File: link\n@@\n-before\n+after\n*** Add File: ../added\n+parent\n")); err != nil {
+		t.Fatal(err)
+	}
+	if readText(t, outside) != "after\n" || readText(t, filepath.Join(parent, "added")) != "parent\n" {
+		t.Fatal("outside edits failed")
+	}
+	patch := fmt.Sprintf("*** Update File: %s\n*** Move to: %s\n", outside, filepath.Join(parent, "moved"))
+	if _, _, err := applyPatch(root, wrapped(patch)); err != nil {
+		t.Fatal(err)
+	}
+	if readText(t, filepath.Join(parent, "moved")) != "after\n" {
+		t.Fatal("outside move failed")
 	}
 }
 
@@ -290,11 +270,6 @@ func TestApplicationFailureReportsCompletedFailedAndUnattemptedOperations(t *tes
 
 func TestConcurrentMovesNeverReplaceTheDestination(t *testing.T) {
 	root := t.TempDir()
-	w, err := openWorkspace(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer w.Close()
 	const count = 32
 	for i := range count {
 		name := fmt.Sprintf("source-%d", i)
@@ -306,7 +281,7 @@ func TestConcurrentMovesNeverReplaceTheDestination(t *testing.T) {
 	for i := range count {
 		workers.Go(func() {
 			<-start
-			results[i] = w.move(fmt.Sprintf("source-%d", i), "nested/destination")
+			results[i] = moveFile(filepath.Join(root, fmt.Sprintf("source-%d", i)), filepath.Join(root, "nested/destination"))
 		})
 	}
 	close(start)
@@ -336,50 +311,5 @@ func TestConcurrentMovesNeverReplaceTheDestination(t *testing.T) {
 	}
 	if got := readText(t, filepath.Join(root, "nested/destination")); got != fmt.Sprintf("source-%d", winner) {
 		t.Fatalf("destination was replaced: %q", got)
-	}
-}
-
-func TestMoveRejectsParentLinksSwappedAfterPreparation(t *testing.T) {
-	for _, parent := range []string{"source", "destination"} {
-		t.Run(parent, func(t *testing.T) {
-			root, outside := t.TempDir(), t.TempDir()
-			writeFile(t, filepath.Join(root, "source/file"), "inside")
-			writeFile(t, filepath.Join(outside, "file"), "outside")
-			if err := os.Mkdir(filepath.Join(root, "destination"), 0o777); err != nil {
-				t.Fatal(err)
-			}
-			w, err := openWorkspace(root)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer w.Close()
-			operations, err := parsePatch(wrapped("*** Update File: source/file\n*** Move to: destination/file\n"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			changes, err := prepare(w, operations)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Rename(filepath.Join(root, parent), filepath.Join(root, "saved")); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Symlink(outside, filepath.Join(root, parent)); err != nil {
-				t.Fatal(err)
-			}
-			if _, _, err := applyChanges(w, changes); err == nil {
-				t.Fatal("move followed the swapped parent link")
-			}
-			if readText(t, filepath.Join(outside, "file")) != "outside" {
-				t.Fatal("move changed the outside file")
-			}
-			source := "source/file"
-			if parent == "source" {
-				source = "saved/file"
-			}
-			if readText(t, filepath.Join(root, source)) != "inside" {
-				t.Fatal("failed move changed the source")
-			}
-		})
 	}
 }

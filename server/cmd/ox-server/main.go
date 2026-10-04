@@ -6,11 +6,12 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"slices"
 	"strings"
 	"syscall"
 	"unicode"
@@ -49,11 +50,11 @@ func main() {
 }
 
 func run(args []string) error {
-	if slices.ContainsFunc(args, func(arg string) bool { return arg == "-h" || arg == "--help" }) ||
-		len(args) > 0 && args[0] == "help" {
+	if len(args) > 0 && (args[0] == "help" || args[0] == "-h" || args[0] == "--help" || len(args) == 2 && (args[1] == "-h" || args[1] == "--help")) {
 		fmt.Println(usage)
 		return nil
 	}
+
 	if len(args) >= 1 && args[0] == "acp" {
 		if len(args) == 1 {
 			return serveACP()
@@ -156,39 +157,41 @@ func serveACP() error {
 	return err
 }
 
+type runOptions struct{ dir, model, effort, prompt string }
+
+func parseRunOptions(args []string) (runOptions, error) {
+	var options runOptions
+	flags := flag.NewFlagSet("run", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&options.dir, "dir", ".", "workspace directory")
+	flags.StringVar(&options.model, "model", "", "model ID")
+	flags.StringVar(&options.effort, "effort", "default", "reasoning effort")
+	if err := flags.Parse(args); err != nil {
+		return options, err
+	}
+	if flags.NArg() != 1 {
+		return options, errors.New("expected one prompt after the options")
+	}
+	options.prompt = flags.Arg(0)
+	if strings.TrimSpace(options.prompt) == "" {
+		return options, errors.New("the prompt is blank")
+	}
+	return options, nil
+}
+
 // runHeadless runs one prompt in a new session in Auto mode and prints the
 // answer. Skills are not invoked.
 func runHeadless(args []string) error {
-	dir, model, effortID, prompt := ".", "", "default", ""
-	for i := 0; i < len(args); i++ {
-		name, value, hasValue := strings.Cut(args[i], "=")
-		switch name {
-		case "--dir", "--model", "--effort":
-			if !hasValue {
-				if i+1 == len(args) {
-					return usageError(name + " requires a value")
-				}
-				i++
-				value = args[i]
-			}
-			switch name {
-			case "--dir":
-				dir = value
-			case "--model":
-				model = value
-			case "--effort":
-				effortID = value
-			}
-		default:
-			if strings.HasPrefix(args[i], "-") || prompt != "" {
-				return usageError("unexpected argument " + args[i])
-			}
-			prompt = args[i]
-		}
+	options, err := parseRunOptions(args)
+	if errors.Is(err, flag.ErrHelp) {
+		fmt.Println(usage)
+		return nil
 	}
-	if strings.TrimSpace(prompt) == "" {
-		return usageError("the prompt is blank")
+	if err != nil {
+		return usageError(err.Error())
 	}
+	dir, model, effortID, prompt := options.dir, options.model, options.effort, options.prompt
+
 	effort, ok := catalog.ParseEffort(effortID)
 	if !ok {
 		names := make([]string, len(catalog.Efforts))

@@ -59,6 +59,8 @@ when more than one server is configured.
 ox run [--dir <DIR>] [--model <MODEL>] [--effort <EFFORT>] <PROMPT>
 ```
 
+Put options before the prompt. Use `--` before a prompt beginning with `-`.
+
 Runs one noninteractive prompt and prints the final answer. `--dir` selects the
 workspace and defaults to the current directory. `--model` accepts a qualified
 model ID such as `openrouter:deepseek/deepseek-v4.1-flash` and overrides the

@@ -10,6 +10,8 @@ import (
 	"os"
 	"sync"
 
+	protocol "github.com/coder/acp-go-sdk"
+
 	"ox/internal/acp"
 	"ox/internal/agent"
 	"ox/internal/catalog"
@@ -94,26 +96,23 @@ func (s *Server) HandleRequest(r *acp.Request) {
 
 // HandleNotification handles cancellation, the one notification Ox reads.
 func (s *Server) HandleNotification(method string, params json.RawMessage) {
-	var cancel acp.SessionRequest
+	var cancel protocol.CancelNotification
 	if method == acp.MethodCancel && json.Unmarshal(params, &cancel) == nil {
-		s.ops.cancel(cancel.SessionID)
+		s.ops.cancel(string(cancel.SessionId))
 	}
 }
 
 // initializeResponse names the one protocol version Ox speaks; a client that
 // needs another disconnects.
-var initializeResponse = map[string]any{
-	"protocolVersion": acp.ProtocolVersion,
-	"agentCapabilities": map[string]any{
-		"loadSession":        true,
-		"promptCapabilities": map[string]any{"image": true, "audio": false, "embeddedContext": false},
-		"mcpCapabilities":    map[string]any{"http": false, "sse": false},
-		"sessionCapabilities": map[string]any{
-			"list": map[string]any{}, "close": map[string]any{}, "delete": map[string]any{},
+var initializeResponse = protocol.InitializeResponse{
+	ProtocolVersion: acp.ProtocolVersion,
+	AgentCapabilities: protocol.AgentCapabilities{
+		LoadSession:        true,
+		PromptCapabilities: protocol.PromptCapabilities{Image: true},
+		SessionCapabilities: protocol.SessionCapabilities{
+			List: &protocol.SessionListCapabilities{}, Close: &protocol.SessionCloseCapabilities{}, Delete: &protocol.SessionDeleteCapabilities{},
 		},
-		"auth": map[string]any{},
 	},
-	"authMethods": []any{},
 }
 
 func internal(err error) *acp.Error {
@@ -165,7 +164,7 @@ func (s *Server) loadSkills(workspace string) []skills.Skill {
 }
 
 func (s *Server) newSession(r *acp.Request) *acp.Error {
-	var params acp.NewSessionRequest
+	var params protocol.NewSessionRequest
 	if err := r.Params(&params); err != nil {
 		return err
 	}
@@ -188,7 +187,7 @@ func (s *Server) newSession(r *acp.Request) *acp.Error {
 	s.mu.Lock()
 	s.active[summary.ID] = session
 	s.mu.Unlock()
-	r.Respond(acp.SessionResponse{SessionID: summary.ID, ConfigOptions: configOptions(s.catalog, selections)})
+	r.Respond(protocol.NewSessionResponse{SessionId: protocol.SessionId(summary.ID), ConfigOptions: configOptions(s.catalog, selections)})
 	s.notify(summary.ID, availableCommands(skillCatalog))
 	return nil
 }
@@ -197,23 +196,24 @@ func (s *Server) newSession(r *acp.Request) *acp.Error {
 // repeated load keeps the system prompt, skill catalog, and background
 // processes of the first load.
 func (s *Server) loadSession(r *acp.Request) *acp.Error {
-	var params acp.LoadSessionRequest
+	var params protocol.LoadSessionRequest
 	if err := r.Params(&params); err != nil {
 		return err
 	}
-	release, ok := s.ops.try(params.SessionID)
+	id := string(params.SessionId)
+	release, ok := s.ops.try(id)
 	if !ok {
 		return s.unavailable()
 	}
 	defer release()
-	saved, err := s.agent.Store.Read(params.SessionID)
+	saved, err := s.agent.Store.Read(id)
 	if errors.Is(err, store.ErrNotFound) {
-		return acp.ResourceNotFound(params.SessionID)
+		return acp.ResourceNotFound(id)
 	} else if err != nil {
 		return internal(err)
 	}
 	if saved.Summary.Workspace != params.Cwd {
-		return acp.InvalidParams(fmt.Sprintf("session %s belongs to workspace %s, not %s", params.SessionID, saved.Summary.Workspace, params.Cwd))
+		return acp.InvalidParams(fmt.Sprintf("session %s belongs to workspace %s, not %s", id, saved.Summary.Workspace, params.Cwd))
 	}
 	selections, err := s.defaultsFor(saved.Summary.Workspace)
 	if err != nil {
@@ -222,7 +222,7 @@ func (s *Server) loadSession(r *acp.Request) *acp.Error {
 	if start := transcript.LatestTurnStart(saved.Transcript); start != nil {
 		selections = settings.Settings{Model: start.Model, Effort: start.Effort, Mode: start.Mode}
 	}
-	session := s.session(params.SessionID)
+	session := s.session(id)
 	if session == nil {
 		systemPrompt, err := sysprompt.ForWorkspace(saved.Summary.Workspace, tools.ShellProgram)
 		if err != nil {
@@ -236,34 +236,38 @@ func (s *Server) loadSession(r *acp.Request) *acp.Error {
 	}
 	s.mu.Lock()
 	session.selections = selections
-	s.active[params.SessionID] = session
+	s.active[id] = session
 	s.mu.Unlock()
-	send := func(update any) error { return s.notify(params.SessionID, update) }
+	send := func(update any) error { return s.notify(id, update) }
 	if err := replay(saved.Transcript, send); err != nil {
 		return internal(err)
 	}
 	if used, cost, ok := transcript.UsageSummary(saved.Transcript); ok {
 		send(usageUpdate(used, model.ContextLimit, cost))
 	}
-	r.Respond(acp.SessionResponse{ConfigOptions: configOptions(s.catalog, selections)})
-	s.notify(params.SessionID, availableCommands(session.skills))
+	r.Respond(protocol.LoadSessionResponse{ConfigOptions: configOptions(s.catalog, selections)})
+	s.notify(id, availableCommands(session.skills))
 	return nil
 }
 
 // listSessions returns every matching session in one page.
 func (s *Server) listSessions(r *acp.Request) *acp.Error {
-	var params acp.ListSessionsRequest
+	var params protocol.ListSessionsRequest
 	if err := r.Params(&params); err != nil {
 		return err
 	}
-	summaries, err := s.agent.Store.List(params.Cwd)
+	cwd := ""
+	if params.Cwd != nil {
+		cwd = *params.Cwd
+	}
+	summaries, err := s.agent.Store.List(cwd)
 	if err != nil {
 		return internal(err)
 	}
-	response := acp.ListSessionsResponse{Sessions: []acp.SessionInfo{}}
+	response := protocol.ListSessionsResponse{Sessions: []protocol.SessionInfo{}}
 	for _, summary := range summaries {
-		response.Sessions = append(response.Sessions, acp.SessionInfo{
-			SessionID: summary.ID, Cwd: summary.Workspace, Title: summary.Title, UpdatedAt: summary.UpdatedAt,
+		response.Sessions = append(response.Sessions, protocol.SessionInfo{
+			SessionId: protocol.SessionId(summary.ID), Cwd: summary.Workspace, Title: optionalText(summary.Title), UpdatedAt: optionalText(summary.UpdatedAt),
 		})
 	}
 	r.Respond(response)
@@ -273,24 +277,25 @@ func (s *Server) listSessions(r *acp.Request) *acp.Error {
 // closeSession cancels the session's prompt, waits for it, and stops its
 // background processes, leaving the saved session loadable.
 func (s *Server) closeSession(r *acp.Request) *acp.Error {
-	var params acp.SessionRequest
+	var params protocol.CloseSessionRequest
 	if err := r.Params(&params); err != nil {
 		return err
 	}
-	wait, release, ok := s.ops.beginClose(params.SessionID)
+	id := string(params.SessionId)
+	wait, release, ok := s.ops.beginClose(id)
 	if !ok {
 		return s.unavailable()
 	}
 	go func() {
 		defer release()
 		wait()
-		session := s.session(params.SessionID)
+		session := s.session(id)
 		if session == nil {
-			r.Fail(inactive(params.SessionID))
+			r.Fail(inactive(id))
 			return
 		}
 		session.processes.Shutdown()
-		s.deactivate(params.SessionID)
+		s.deactivate(id)
 		r.Respond(struct{}{})
 	}()
 	return nil
@@ -300,24 +305,25 @@ func (s *Server) closeSession(r *acp.Request) *acp.Error {
 // database deletion succeeds. The session stays active until they are cleaned
 // up, so connection shutdown can still reach them.
 func (s *Server) deleteSession(r *acp.Request) *acp.Error {
-	var params acp.SessionRequest
+	var params protocol.CloseSessionRequest
 	if err := r.Params(&params); err != nil {
 		return err
 	}
-	release, ok := s.ops.try(params.SessionID)
+	id := string(params.SessionId)
+	release, ok := s.ops.try(id)
 	if !ok {
 		return s.unavailable()
 	}
 	go func() {
 		defer release()
-		if err := s.agent.Store.Delete(params.SessionID); err != nil {
+		if err := s.agent.Store.Delete(id); err != nil {
 			r.Fail(internal(err))
 			return
 		}
-		if session := s.session(params.SessionID); session != nil {
+		if session := s.session(id); session != nil {
 			session.processes.Shutdown()
 		}
-		s.deactivate(params.SessionID)
+		s.deactivate(id)
 		r.Respond(struct{}{})
 	}()
 	return nil
@@ -333,23 +339,21 @@ func (s *Server) deactivate(id string) {
 // workspace settings file when it exists, otherwise the global file, whose
 // values then become the defaults for new sessions.
 func (s *Server) setConfigOption(r *acp.Request) *acp.Error {
-	var params acp.SetConfigOptionRequest
+	var params protocol.SetSessionConfigOptionValueId
 	if err := r.Params(&params); err != nil {
 		return err
 	}
-	var value string
-	if json.Unmarshal(params.Value, &value) != nil {
-		return acp.InvalidParams("every configuration option is a selector")
-	}
+	id := string(params.SessionId)
+	value := string(params.Value)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	session := s.active[params.SessionID]
+	session := s.active[id]
 	if session == nil {
-		return inactive(params.SessionID)
+		return inactive(id)
 	}
 	selected := session.selections
-	notAChoice := acp.InvalidParams(fmt.Sprintf("%s is not a choice of configuration option %s", value, params.ConfigID))
-	switch params.ConfigID {
+	notAChoice := acp.InvalidParams(fmt.Sprintf("%s is not a choice of configuration option %s", value, params.ConfigId))
+	switch params.ConfigId {
 	case "model":
 		model := s.catalog.Lookup(value)
 		if model == nil {
@@ -372,11 +376,11 @@ func (s *Server) setConfigOption(r *acp.Request) *acp.Error {
 		}
 		selected.Mode = mode
 	default:
-		return acp.InvalidParams("no configuration option " + params.ConfigID)
+		return acp.InvalidParams("no configuration option " + string(params.ConfigId))
 	}
-	saved, err := s.agent.Store.Read(params.SessionID)
+	saved, err := s.agent.Store.Read(id)
 	if errors.Is(err, store.ErrNotFound) {
-		return acp.ResourceNotFound(params.SessionID)
+		return acp.ResourceNotFound(id)
 	} else if err != nil {
 		return internal(err)
 	}
@@ -388,36 +392,37 @@ func (s *Server) setConfigOption(r *acp.Request) *acp.Error {
 		s.defaults = selected
 	}
 	session.selections = selected
-	r.Respond(acp.SessionResponse{ConfigOptions: configOptions(s.catalog, selected)})
+	r.Respond(protocol.SetSessionConfigOptionResponse{ConfigOptions: configOptions(s.catalog, selected)})
 	return nil
 }
 
 // prompt rejects a prompt that cannot start, or starts a turn that responds
 // when it ends.
 func (s *Server) prompt(r *acp.Request) *acp.Error {
-	var params acp.PromptRequest
+	var params protocol.PromptRequest
 	if err := r.Params(&params); err != nil {
 		return err
 	}
+	id := string(params.SessionId)
 	message, acpErr := promptMessage(params.Prompt)
 	if acpErr != nil {
 		return acpErr
 	}
-	ctx, release, ok := s.ops.tryPrompt(params.SessionID)
+	ctx, release, ok := s.ops.tryPrompt(id)
 	if !ok {
 		return s.unavailable()
 	}
-	session := s.session(params.SessionID)
+	session := s.session(id)
 	if session == nil {
 		release()
-		return inactive(params.SessionID)
+		return inactive(id)
 	}
 	s.mu.Lock()
 	selections := session.selections
 	s.mu.Unlock()
-	client := &acpClient{server: s, sessionID: params.SessionID}
+	client := &acpClient{server: s, sessionID: id}
 	turn, err := s.agent.Start(ctx, agent.Input{
-		SessionID: params.SessionID, Input: dispatch(message, session.skills),
+		SessionID: id, Input: dispatch(message, session.skills),
 		Model: selections.Model, Effort: selections.Effort, Mode: selections.Mode,
 		SystemPrompt: session.systemPrompt, Processes: session.processes,
 	}, client)
@@ -427,7 +432,7 @@ func (s *Server) prompt(r *acp.Request) *acp.Error {
 		case errors.Is(err, agent.ErrImagesUnsupported):
 			return acp.InvalidParams(err.Error())
 		case errors.Is(err, store.ErrNotFound):
-			return acp.ResourceNotFound(params.SessionID)
+			return acp.ResourceNotFound(id)
 		}
 		return internal(err)
 	}
@@ -442,7 +447,7 @@ func (s *Server) prompt(r *acp.Request) *acp.Error {
 			r.Fail(internal(err))
 			return
 		}
-		r.Respond(acp.PromptResponse{StopReason: []string{"end_turn", "cancelled", "max_tokens", "refusal"}[result.Stop]})
+		r.Respond(protocol.PromptResponse{StopReason: []protocol.StopReason{"end_turn", "cancelled", "max_tokens", "refusal"}[result.Stop]})
 	}()
 	return nil
 }
@@ -489,22 +494,22 @@ func (c *acpClient) Send(event agent.Event) error {
 }
 
 func (c *acpClient) Approve(ctx context.Context, call transcript.ToolCall, permission tools.Permission) (bool, error) {
-	var response acp.RequestPermissionResponse
+	var response protocol.RequestPermissionResponse
 	request := permissionRequest(c.sessionID, c.workspace, call, permission)
 	if err := c.server.conn.Call(ctx, acp.MethodRequestPermission, request, &response); err != nil {
 		return false, err
 	}
-	switch response.Outcome.Outcome {
-	case "cancelled":
+	if response.Outcome.Cancelled != nil {
 		return false, agent.ErrCancelled
-	case "selected":
-		switch response.Outcome.OptionID {
+	}
+	if selected := response.Outcome.Selected; selected != nil {
+		switch selected.OptionId {
 		case "approve":
 			return true, nil
 		case "deny":
 			return false, nil
 		}
-		return false, acp.InternalError("Unknown shell permission option: " + response.Outcome.OptionID)
+		return false, acp.InternalError("Unknown shell permission option: " + string(selected.OptionId))
 	}
 	return false, acp.InternalError("Unsupported shell permission outcome")
 }

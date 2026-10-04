@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -80,5 +81,29 @@ func TestSignalsCancelStartupCatalogRequests(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestRunOptions(t *testing.T) {
+	for _, test := range []struct {
+		args []string
+		want runOptions
+	}{
+		{[]string{"hello"}, runOptions{".", "", "default", "hello"}},
+		{[]string{"--dir", "some dir", "--model=provider:model", "--effort", "high", "hello"}, runOptions{"some dir", "provider:model", "high", "hello"}},
+		{[]string{"--", "--help"}, runOptions{".", "", "default", "--help"}},
+	} {
+		got, err := parseRunOptions(test.args)
+		if err != nil || got != test.want {
+			t.Errorf("%q: %+v, %v", test.args, got, err)
+		}
+	}
+	for _, args := range [][]string{nil, {" "}, {"--dir"}, {"--unknown", "hi"}, {"one", "two"}, {"hello", "--model", "model"}} {
+		if _, err := parseRunOptions(args); err == nil {
+			t.Errorf("accepted %q", args)
+		}
+	}
+	if _, err := parseRunOptions([]string{"--help"}); err != flag.ErrHelp {
+		t.Errorf("help: %v", err)
 	}
 }
