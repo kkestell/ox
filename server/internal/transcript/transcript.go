@@ -396,21 +396,19 @@ func LatestTurnStart(entries []Entry) *TurnStart {
 // when it reported no usage) and the sum of every reported cost (nil when none
 // reported one). ok is false before the first assistant message.
 func UsageSummary(entries []Entry) (used uint64, cost *float64, ok bool) {
-	for i := len(entries) - 1; i >= 0 && !ok; i-- {
-		if batch, isBatch := entries[i].(*AssistantBatch); isBatch {
-			ok = true
-			if usage := batch.Message.Usage; usage != nil {
-				used = usage.InputTokens + usage.OutputTokens
-			}
-		}
-	}
+	var total float64
 	for _, entry := range entries {
-		if batch, isBatch := entry.(*AssistantBatch); isBatch && batch.Message.Usage != nil && batch.Message.Usage.Cost != nil {
-			total := *batch.Message.Usage.Cost
-			if cost != nil {
-				total += *cost
+		batch, isBatch := entry.(*AssistantBatch)
+		if !isBatch {
+			continue
+		}
+		used, ok = 0, true
+		if usage := batch.Message.Usage; usage != nil {
+			used = usage.InputTokens + usage.OutputTokens
+			if usage.Cost != nil {
+				total += *usage.Cost
+				cost = &total
 			}
-			cost = &total
 		}
 	}
 	return used, cost, ok
