@@ -133,12 +133,18 @@ func startup(ctx context.Context) (*agent.Agent, settings.Settings, string, erro
 	return agent.New(sessions, client, cat), defaults, home, nil
 }
 
+// signalContext returns a context cancelled by the termination signals that
+// begin shutdown.
+func signalContext() (context.Context, func()) {
+	return signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+}
+
 // serveACP serves one ACP connection until stdin closes or a termination
 // signal arrives. Either begins shutdown: new operations are rejected, active
 // prompts are cancelled, and background processes are stopped, while active
 // operations finish and respond.
 func serveACP() error {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	ctx, stop := signalContext()
 	defer stop()
 	a, defaults, home, err := startup(ctx)
 	if err != nil {
@@ -211,7 +217,7 @@ func runHeadless(args []string) error {
 		return fmt.Errorf("%s is not a directory", workspace)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	ctx, stop := signalContext()
 	defer stop()
 	a, defaults, _, err := startup(ctx)
 	if err != nil {

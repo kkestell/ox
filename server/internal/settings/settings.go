@@ -64,18 +64,15 @@ type file struct {
 // Load reads the global settings file at path and pins each listed model's
 // providers in cat.
 func Load(path string, cat catalog.Catalog) (Settings, error) {
-	f, err := read(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		f = file{}
-	} else if err != nil {
+	f, present, err := readSettings(path)
+	if err != nil {
 		return Settings{}, err
-	}
-	if f.provider {
-		return Settings{}, obsoleteProvider(path)
 	}
 	settings := Settings{Model: builtInModel, Effort: catalog.EffortDefault, Mode: transcript.ModeAsk}
-	if err := settings.apply(path, f); err != nil {
-		return Settings{}, err
+	if present {
+		if err := settings.apply(path, f); err != nil {
+			return Settings{}, err
+		}
 	}
 	if err := settings.validate(path, cat); err != nil {
 		return Settings{}, err
@@ -98,14 +95,12 @@ func Load(path string, cat catalog.Catalog) (Settings, error) {
 // workspace replaced. A missing file changes nothing.
 func (s Settings) ForWorkspace(workspace string, cat catalog.Catalog) (Settings, error) {
 	path := filepath.Join(workspace, ".ox/settings.json")
-	f, err := read(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return s, nil
-	} else if err != nil {
+	f, present, err := readSettings(path)
+	if err != nil {
 		return Settings{}, err
 	}
-	if f.provider {
-		return Settings{}, obsoleteProvider(path)
+	if !present {
+		return s, nil
 	}
 	if f.models != nil {
 		return Settings{}, invalid(path, "models can be set only in the global settings file")
@@ -114,6 +109,22 @@ func (s Settings) ForWorkspace(workspace string, cat catalog.Catalog) (Settings,
 		return Settings{}, err
 	}
 	return s, s.validate(path, cat)
+}
+
+// readSettings reads one settings file and rejects the obsolete provider key.
+// present is false when the file does not exist.
+func readSettings(path string) (f file, present bool, err error) {
+	f, err = read(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return file{}, false, nil
+	}
+	if err != nil {
+		return file{}, false, err
+	}
+	if f.provider {
+		return file{}, false, obsoleteProvider(path)
+	}
+	return f, true, nil
 }
 
 func (s *Settings) apply(path string, f file) error {
