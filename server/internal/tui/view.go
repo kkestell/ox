@@ -3,15 +3,19 @@ package tui
 import (
 	"fmt"
 	"image"
+	"image/color"
 	"math"
 	"strconv"
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/textarea"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 	protocol "github.com/coder/acp-go-sdk"
 
 	"ox/internal/client"
+	"ox/internal/control"
 )
 
 // Every region pads its content by one row above and below and two columns on
@@ -28,7 +32,7 @@ type layout struct {
 // screen is everything a frame shows.
 type screen struct {
 	view             *transcript
-	input            *input
+	input            *textarea.Model
 	commands         []string
 	approval         *client.Permission
 	approvalSelected int
@@ -48,54 +52,39 @@ func inset(r image.Rectangle, h, v int) image.Rectangle {
 	return inner
 }
 
-// patched returns a cell style with s applied over it.
-func patched(cell uv.Style, s style) uv.Style {
-	if s.fg != nil {
-		cell.Fg = s.fg
-	}
-	if s.bg != nil {
-		cell.Bg = s.bg
-	}
-	cell.Attrs |= s.attrs
-	if s.underline {
-		cell.Underline = uv.UnderlineSingle
-	}
-	return cell
+// newFrame returns a frame buffer that measures text as the rest of the
+// client does, by grapheme cluster.
+func newFrame(width, height int) uv.ScreenBuffer {
+	buf := uv.NewScreenBuffer(width, height)
+	buf.Method = ansi.GraphemeWidth
+	return buf
 }
 
-// fill applies s over every cell in area.
-func fill(buf *uv.Buffer, area image.Rectangle, s style) {
-	for y := area.Min.Y; y < area.Max.Y; y++ {
-		for x := area.Min.X; x < area.Max.X; x++ {
-			if cell := buf.CellAt(x, y); cell != nil {
-				cell.Style = patched(cell.Style, s)
-			}
-		}
-	}
-}
-
-// put writes a line on row y of area, clipped to it, applying each span's
-// style over the cells' styles.
-func put(buf *uv.Buffer, area image.Rectangle, y int, l line) {
+// put draws a row on row y of area, clipped to it.
+func put(buf uv.ScreenBuffer, area image.Rectangle, y int, row string) {
 	if y < 0 || y >= area.Dy() {
 		return
 	}
 	y += area.Min.Y
-	x := area.Min.X
-	for _, span := range l.spans {
-		s := l.style.patch(span.style)
-		full := false
-		graphemes(span.text, func(cluster string, w int) {
-			if full || w == 0 {
-				return
+	uv.NewStyledString(row).Draw(buf, image.Rect(area.Min.X, y, area.Max.X, y+1))
+}
+
+// fill gives every cell in area without a foreground the text color and every
+// cell without a background bg.
+func fill(buf uv.ScreenBuffer, area image.Rectangle, bg color.Color) {
+	for y := area.Min.Y; y < area.Max.Y; y++ {
+		for x := area.Min.X; x < area.Max.X; x++ {
+			cell := buf.CellAt(x, y)
+			if cell == nil {
+				continue
 			}
-			if x+w > area.Max.X {
-				full = true
-				return
+			if cell.Style.Fg == nil {
+				cell.Style.Fg = textColor
 			}
-			buf.SetCell(x, y, &uv.Cell{Content: cluster, Width: w, Style: patched(buf.CellAt(x, y).Style, s)})
-			x += w
-		})
+			if cell.Style.Bg == nil {
+				cell.Style.Bg = bg
+			}
+		}
 	}
 }
 
@@ -105,10 +94,8 @@ func cursorIn(area image.Rectangle, x, y int) image.Point {
 }
 
 // draw draws the screen and returns the cursor position and the layout.
-func draw(buf *uv.Buffer, s screen) (image.Point, layout) {
+func draw(buf uv.ScreenBuffer, s screen) (image.Point, layout) {
 	area := buf.Bounds()
-	// Unstyled cells would show the terminal's own colors.
-	fill(buf, area, style{fg: textColor, bg: background})
 	height := area.Dy()
 	rowWidth := inset(area, marginX, marginY).Dx()
 	// A picker fills the screen, hiding the approval dialog and the composer,
@@ -116,18 +103,20 @@ func draw(buf *uv.Buffer, s screen) (image.Point, layout) {
 	if s.picker != nil {
 		padded := inset(area, pickerPaddingX, pickerPaddingY)
 		rows := pickerRows(height)
-		for y, l := range pickerLines(s.picker, padded.Dx(), rows) {
-			put(buf, padded, y, l)
+		for y, row := range pickerLines(s.picker, padded.Dx(), rows) {
+			put(buf, padded, y, row)
 		}
+		fill(buf, area, background)
 		return cursorIn(padded, width(s.picker.query), 0), layout{height: rows}
 	}
-	input := s.input.rows(rowWidth)
-	var dialogLines []line
+	s.input.SetWidth(rowWidth)
+	var dialogLines []string
 	if s.approval != nil {
 		dialogLines = approvalLines(s.view, s.approval, s.approvalSelected, rowWidth)
 	}
 	// The composer holds the input, a blank row, and the status line.
-	composerHeight := len(input.lines) + 4
+	inputHeight := s.input.Height()
+	composerHeight := inputHeight + 4
 	composerTop := max(height-composerHeight, 0)
 	dialogHeight := 0
 	if dialogLines != nil {
@@ -139,28 +128,25 @@ func draw(buf *uv.Buffer, s screen) (image.Point, layout) {
 		top := min(y, height)
 		return image.Rect(area.Min.X, area.Min.Y+top, area.Max.X, area.Min.Y+top+min(rows, height-top))
 	}
-	view := region(0, space)
-	dialog := region(space, dialogHeight)
+	viewArea := region(0, space)
+	dialogArea := region(space, dialogHeight)
 	composerArea := region(composerTop, composerHeight)
-	fill(buf, dialog, style{bg: approval})
-	fill(buf, composerArea, style{bg: composer})
 
-	view = inset(view, marginX, marginY)
+	view := inset(viewArea, marginX, marginY)
 	viewHeight := view.Dy()
 	total, lines := s.view.visibleRows(rowWidth, s.showThinking, s.toolOutput, s.now, viewHeight)
-	for y, l := range lines {
-		put(buf, view, y, l)
+	for y, row := range lines {
+		put(buf, view, y, row)
 	}
 	if s.view.newActivity && viewHeight > 0 {
 		notice := "new activity"
 		left := max(rowWidth-len(notice), 0) / 2
-		centered := strings.Repeat(" ", left) + notice + strings.Repeat(" ", max(rowWidth-len(notice)-left, 0))
-		put(buf, view, viewHeight-1, styled(centered, fg(lightYellow)))
+		put(buf, view, viewHeight-1, fg(lightYellow).Render(strings.Repeat(" ", left)+notice))
 	}
 
 	l := layout{height: viewHeight, lines: total}
 	if dialogLines != nil {
-		dialog = inset(dialog, marginX, marginY)
+		dialog := inset(dialogArea, marginX, marginY)
 		options := len(s.approval.Options)
 		bodyEnd := len(dialogLines) - options - 1
 		body := dialogLines[2:bodyEnd]
@@ -177,38 +163,41 @@ func draw(buf *uv.Buffer, s screen) (image.Point, layout) {
 			if first+l.approvalHeight < len(body) {
 				hint = "↓ Page Down for more"
 			}
-			put(buf, dialog, footer, styled(hint, fg(dim)))
+			put(buf, dialog, footer, dimStyle.Render(hint))
 		}
 		for y, row := range dialogLines[bodyEnd+1:] {
 			put(buf, dialog, footer+1+y, row)
 		}
 	}
 
-	composerArea = inset(composerArea, marginX, marginY)
-	ghost := s.input.ghostText(s.commands)
-	for y, text := range input.lines {
-		row := line{spans: []span{{text: text}}}
-		if y == len(input.lines)-1 {
-			row.spans = append(row.spans, span{ghost, fg(dim)})
-		}
-		put(buf, composerArea, y, row)
+	inner := inset(composerArea, marginX, marginY)
+	for y, row := range strings.Split(s.input.View(), "\n") {
+		put(buf, inner, y, row)
 	}
-	put(buf, composerArea, len(input.lines)+1, styled(justified(s.settings, s.usage, rowWidth), fg(gray)))
-	return cursorIn(composerArea, input.column, input.row), l
+	cursor := s.input.Cursor().Position
+	if ghost := ghostText(s.input.Value(), atEnd(s.input), s.commands); ghost != "" {
+		put(buf, image.Rect(inner.Min.X+cursor.X, inner.Min.Y, inner.Max.X, inner.Max.Y), cursor.Y, dimStyle.Render(ghost))
+	}
+	put(buf, inner, inputHeight+1, fg(gray).Render(justified(s.settings, s.usage, rowWidth)))
+
+	fill(buf, viewArea, background)
+	fill(buf, dialogArea, approval)
+	fill(buf, composerArea, composer)
+	return cursorIn(inner, cursor.X, cursor.Y), l
 }
 
-func pickerLines(p *picker, rowWidth, rows int) []line {
-	errorLine := line{}
+func pickerLines(p *picker, rowWidth, rows int) []string {
+	errorLine := ""
 	if p.err != "" {
-		errorLine = styled(clip(p.err, rowWidth), fg(red))
+		errorLine = fg(red).Render(clip(p.err, rowWidth))
 	}
-	search := line{spans: []span{{text: p.query}}}
+	search := p.query
 	if p.query == "" {
-		search = line{spans: []span{{"Search", fg(dim)}}}
+		search = dimStyle.Render("Search")
 	}
-	lines := []line{search, errorLine}
+	lines := []string{search, errorLine}
 	if p.models == nil && len(p.sessions) == 0 {
-		return append(lines, styled("No saved sessions", style{}))
+		return append(lines, "No saved sessions")
 	}
 	var names []string
 	if p.models != nil {
@@ -223,9 +212,9 @@ func pickerLines(p *picker, rowWidth, rows int) []line {
 			s = fg(bright)
 		}
 		if p.models != nil && p.models[row].favorite {
-			s = s.patch(bold)
+			s = s.Bold(true)
 		}
-		lines = append(lines, styled(names[row], s))
+		lines = append(lines, s.Render(names[row]))
 	}
 	return lines
 }
@@ -234,7 +223,7 @@ func pickerLines(p *picker, rowWidth, rows int) []line {
 // the body, a blank row, and one row per option. draw slices the body and the
 // options by position. The request's tool call may carry only part of the
 // call, so the transcript's copy fills in the rest.
-func approvalLines(view *transcript, request *client.Permission, selected, rowWidth int) []line {
+func approvalLines(view *transcript, request *client.Permission, selected, rowWidth int) []string {
 	call := &toolCall{id: request.ToolCall.ToolCallId}
 	if known := view.tool(call.id); known != nil {
 		copied := *known
@@ -243,26 +232,26 @@ func approvalLines(view *transcript, request *client.Permission, selected, rowWi
 	call.apply(request.ToolCall, request.Name)
 	// Shell content names everything being approved.
 	var heading string
-	var body []line
+	var body []string
 	switch call.name {
 	case "shell":
 		heading = "Would you like to run the following command?"
-		body = contentLines(call, rowWidth, "  ", "  ", style{})
+		body = contentLines(call, rowWidth, "  ", "  ", false)
 	case "shell_process":
 		heading = "Would you like to send the following input?"
-		body = contentLines(call, rowWidth, "  ", "  ", style{})
+		body = contentLines(call, rowWidth, "  ", "  ", false)
 	default:
 		heading = "Would you like to allow the following?"
-		body = describedLines(call, rowWidth, style{})
+		body = describedLines(call, rowWidth)
 	}
-	lines := append([]line{styled(heading, style{}), {}}, body...)
-	lines = append(lines, line{})
+	lines := append([]string{heading, ""}, body...)
+	lines = append(lines, "")
 	for i, option := range request.Options {
 		marker := " "
 		if i == selected {
 			marker = "›"
 		}
-		lines = append(lines, styled(fmt.Sprintf("%s %d. %s", marker, i+1, option.Name), style{}))
+		lines = append(lines, fmt.Sprintf("%s %d. %s", marker, i+1, control.Escape(option.Name)))
 	}
 	return lines
 }

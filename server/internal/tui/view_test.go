@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 	protocol "github.com/coder/acp-go-sdk"
@@ -17,8 +18,8 @@ import (
 
 // render draws the screen and returns its rows, the cursor, the layout, and
 // the buffer.
-func render(s screen, w, h int) ([]string, image.Point, layout, *uv.Buffer) {
-	buf := uv.NewBuffer(w, h)
+func render(s screen, w, h int) ([]string, image.Point, layout, uv.ScreenBuffer) {
+	buf := newFrame(w, h)
 	cursor, l := draw(buf, s)
 	var rows []string
 	for y := range h {
@@ -31,12 +32,28 @@ func render(s screen, w, h int) ([]string, image.Point, layout, *uv.Buffer) {
 	return rows, cursor, l, buf
 }
 
-func colors(buf *uv.Buffer, x, y int) [2]color.Color {
+func colors(buf uv.ScreenBuffer, x, y int) [2]color.Color {
 	cell := buf.CellAt(x, y)
-	return [2]color.Color{cell.Style.Fg, cell.Style.Bg}
+	return [2]color.Color{exact(cell.Style.Fg), exact(cell.Style.Bg)}
 }
 
-func testScreen(view *transcript, in *input, now time.Time) screen {
+// exact returns a color as the theme writes it, whatever type parsing gave it.
+func exact(c color.Color) color.Color {
+	if c == nil {
+		return nil
+	}
+	r, g, b, _ := c.RGBA()
+	return rgb(uint8(r>>8), uint8(g>>8), uint8(b>>8))
+}
+
+// typed returns a composer holding text with the cursor at its end.
+func typed(text string) *textarea.Model {
+	in := newInput()
+	paste(&in, text)
+	return &in
+}
+
+func testScreen(view *transcript, in *textarea.Model, now time.Time) screen {
 	return screen{view: view, input: in, usage: "0% • $0.00", now: now}
 }
 
@@ -97,8 +114,8 @@ func TestTheFramePlacesTheTranscriptTheApprovalDialogAndTheComposer(t *testing.T
 	shell := protocol.StartToolCall("shell-0", "ls -la", protocol.WithStartStatus(protocol.ToolCallStatusCompleted), protocol.WithStartRawInput(map[string]any{"command": "ls -la"}))
 	view.update(shell, "shell", now)
 	view.update(message("Two tallies were counted in the workspace.").update, "", now)
-	in := &input{}
-	in.paste("Also check the docs\nwhen you are done")
+	in := typed("")
+	paste(in, "Also check the docs\nwhen you are done")
 	s := testScreen(view, in, now)
 	s.approval = permission("shell", "Working directory: /workspace\n\nCommand:\n\n    cargo test")
 	s.settings = "ask • deepseek/deepseek-v4-flash • high"
@@ -146,8 +163,7 @@ func TestALongApprovalKeepsTheOptionsAndComposerVisibleAndPagesThroughDetails(t 
 	for n := range 24 {
 		details = append(details, fmt.Sprintf("detail %02d", n))
 	}
-	m := &model{session: &client.Session{Permission: permission("shell", strings.Join(details, "\n"))}}
-	m.input.paste("draft")
+	m := &model{session: &client.Session{Permission: permission("shell", strings.Join(details, "\n"))}, input: *typed("draft")}
 	now := time.Now()
 	show := func() []string {
 		s := m.screen(now)
@@ -204,7 +220,7 @@ func TestTheNewActivityNoticeCoversTheLastRowOnlyWhileFollowingIsOff(t *testing.
 	for n := range 20 {
 		view.user(fmt.Sprintf("message %d", n), now)
 	}
-	in := &input{}
+	in := typed("")
 	rows, _, l, _ := render(testScreen(view, in, now), 40, 13)
 	equal(t, [2]int{l.height, l.lines}, [2]int{6, 79})
 	equal(t, rows[5], "   message 19")
@@ -226,14 +242,14 @@ func TestTheTranscriptKeepsGraphemesAtRowBoundaries(t *testing.T) {
 	now := time.Now()
 	for _, test := range []struct{ message, want string }{{"abcde👨‍👩‍👧‍👦", "👨‍👩‍👧‍👦"}, {"abcde e\u0301", "e\u0301"}} {
 		view := newTranscript(now, message(test.message))
-		_, _, _, buf := render(testScreen(view, &input{}, now), 12, 10)
+		_, _, _, buf := render(testScreen(view, typed(""), now), 12, 10)
 		equal(t, buf.CellAt(4, 2).Content, test.want, test.message)
 	}
 }
 
 func TestGhostTextIsDrawnDimAfterTheCursor(t *testing.T) {
-	in := &input{}
-	in.paste("/mo")
+	in := typed("")
+	paste(in, "/mo")
 	s := testScreen(&transcript{}, in, time.Now())
 	s.commands = []string{"model"}
 	rows, cursor, _, buf := render(s, 20, 6)
@@ -273,7 +289,7 @@ func TestTheStatusLineShowsSettingsOnTheLeftAndUsageOnTheRight(t *testing.T) {
 	equal(t, usageSummary(nil), "0% • $0.00")
 	equal(t, usageSummary(&protocol.SessionUsageUpdate{Used: 1200, Size: 8000, Cost: &protocol.Cost{Amount: 0.25, Currency: "USD"}}), "15% • $0.25")
 	equal(t, usageSummary(&protocol.SessionUsageUpdate{Used: 2, Size: 3}), "67% • $0.00")
-	s := testScreen(&transcript{}, &input{}, time.Now())
+	s := testScreen(&transcript{}, typed(""), time.Now())
 	s.settings, s.usage = "ask • deepseek • high", "15% • $0.25"
 	rows, cursor, _, buf := render(s, 40, 7)
 	equal(t, rows[5], fmt.Sprintf("  %-25s15%% • $0.25", "ask • deepseek • high"))
@@ -302,7 +318,7 @@ func TestTheSessionPickerSortsDatesAndKeepsTheSelectionVisible(t *testing.T) {
 		ids = append(ids, session.SessionId)
 	}
 	equal(t, ids, []protocol.SessionId{"b", "a", "c"})
-	s := testScreen(&transcript{}, &input{}, time.Now())
+	s := testScreen(&transcript{}, typed(""), time.Now())
 	s.picker = p
 	rows, _, l, _ := render(s, 40, 7)
 	equal(t, rows[4], fmt.Sprintf("    %-22s2026-09-27", "newer"))
@@ -326,7 +342,7 @@ func TestModelPickerRowsAlignProviderAndPriceColumnsAndLeaveInvalidMetadataBlank
 	}
 	p := newModelPicker(models, nil)
 	p.moveTo(1, 4)
-	s := testScreen(&transcript{}, &input{}, time.Now())
+	s := testScreen(&transcript{}, typed(""), time.Now())
 	s.picker = p
 	rows, cursor, _, _ := render(s, 68, 13)
 	equal(t, rows, []string{
@@ -345,7 +361,7 @@ func TestModelPickerRowsAlignProviderAndPriceColumnsAndLeaveInvalidMetadataBlank
 
 func TestTheModelPickerShowsFavoritesFirstInBold(t *testing.T) {
 	models := []modelChoice{modelChoiceWith("flash", "Flash", nil), modelChoiceWith("opus", "Opus", nil)}
-	s := testScreen(&transcript{}, &input{}, time.Now())
+	s := testScreen(&transcript{}, typed(""), time.Now())
 	s.picker = newModelPicker(models, []string{"opus"})
 	rows, cursor, _, buf := render(s, 40, 8)
 	equal(t, rows[2], "    Search")
@@ -363,7 +379,7 @@ func TestAPickerScrollsAPreselectedRowIntoView(t *testing.T) {
 	p := newSessionPicker(sessions)
 	p.selected = 9
 	p.moveTo(p.selected, pickerRows(12))
-	s := testScreen(&transcript{}, &input{}, time.Now())
+	s := testScreen(&transcript{}, typed(""), time.Now())
 	s.picker = p
 	if rows, _, _, _ := render(s, 40, 12); !contains(rows, "s9") {
 		t.Errorf("%q", rows)
@@ -373,7 +389,7 @@ func TestAPickerScrollsAPreselectedRowIntoView(t *testing.T) {
 func TestAPickerDrawsTheSelectedRowInWhiteAndTheOthersInGray(t *testing.T) {
 	p := newSessionPicker([]protocol.SessionInfo{sessionInfo("a", "older", ""), sessionInfo("b", "newer", "")})
 	p.moveTo(1, 2)
-	s := testScreen(&transcript{}, &input{}, time.Now())
+	s := testScreen(&transcript{}, typed(""), time.Now())
 	s.picker = p
 	_, _, _, buf := render(s, 40, 10)
 	equal(t, buf.CellAt(4, 5).Style.Fg, bright)

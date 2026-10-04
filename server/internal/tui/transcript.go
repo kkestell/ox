@@ -6,7 +6,9 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/lipgloss/v2"
 	"github.com/aymanbagabas/go-udiff"
+	"github.com/charmbracelet/x/ansi"
 	protocol "github.com/coder/acp-go-sdk"
 )
 
@@ -76,7 +78,7 @@ type item struct {
 	call           *toolCall
 	color          color.Color
 	// rows caches the item's rows while rendered is set.
-	rows     []line
+	rows     []string
 	rendered bool
 }
 
@@ -288,7 +290,7 @@ func page(height int) int { return max(height-1, 1) }
 // visibleRows returns the total row count and the rows shown in a view height
 // rows tall, with one blank row between items except between named calls
 // while their output is hidden.
-func (t *transcript) visibleRows(width int, showThinking bool, output toolOutput, now time.Time, height int) (int, []line) {
+func (t *transcript) visibleRows(width int, showThinking bool, output toolOutput, now time.Time, height int) (int, []string) {
 	key := rowsKey{width, showThinking, output}
 	if t.cacheKey != key {
 		for i := range t.items {
@@ -320,7 +322,7 @@ func (t *transcript) visibleRows(width int, showThinking bool, output toolOutput
 	end := first + height
 	row := 0
 	afterCall = false
-	var visible []line
+	var visible []string
 	for i := range t.items {
 		rows := t.items[i].rows
 		if len(rows) == 0 {
@@ -329,7 +331,7 @@ func (t *transcript) visibleRows(width int, showThinking bool, output toolOutput
 		call := hiddenCall(&t.items[i], output)
 		if needsBlankRow(row, afterCall, call) {
 			if row >= first && row < end {
-				visible = append(visible, line{})
+				visible = append(visible, "")
 			}
 			row++
 		}
@@ -353,64 +355,60 @@ func needsBlankRow(row int, afterCall, call bool) bool {
 	return row > 0 && !(afterCall && call)
 }
 
-var dimStyle = fg(dim)
-
 // itemLines returns an item's rows. A named call shows as much of its content
 // as output allows; a nameless call, such as a replayed turn error, always
 // shows all of it.
-func itemLines(i *item, width int, showThinking bool, output toolOutput, now time.Time) []line {
+func itemLines(i *item, width int, showThinking bool, output toolOutput, now time.Time) []string {
 	switch i.kind {
 	case userItem:
 		return userLines(i.text, width)
 	case thinkingItem:
 		if showThinking && strings.TrimSpace(i.text) != "" {
-			return prefixed(markdown(i.text, dimStyle), width, "● ", "  ")
+			return prefixed(markdown(i.text, dimStyles, width-2), dimStyle.Render("● "), "  ")
 		}
-		return []line{styled("● "+placeholder(i.started, i.ended, now), dimStyle)}
+		return styled(dimStyle, "● "+placeholder(i.started, i.ended, now))
 	case responseItem:
-		return prefixed(markdown(i.text, style{}), width, "● ", "  ")
+		return prefixed(markdown(i.text, messageStyles, width-2), "● ", "  ")
 	case toolItem:
 		call := i.call
 		head, ok := shellLine(call, width)
 		if !ok {
 			head = toolLine(call, call.title, width)
 		}
-		lines := []line{head}
+		lines := []string{head}
 		switch {
 		case call.name == "" || output == full:
-			lines = append(lines, contentLines(call, width, "  └ ", "    ", dimStyle)...)
+			lines = append(lines, contentLines(call, width, "  └ ", "    ", true)...)
 		case output == truncated:
-			rows := contentRows(call, width-4, dimStyle)
+			rows := contentRows(call, width-4, true)
 			// Hiding a single row would not save a row.
 			if len(rows) > truncatedRows+1 {
 				hidden := len(rows) - truncatedRows
-				count := styled(fmt.Sprintf("...%d more lines", hidden), fg(faint))
-				rows = append([]line{count}, rows[hidden:]...)
+				count := fg(faint).Render(fmt.Sprintf("...%d more lines", hidden))
+				rows = append([]string{count}, rows[hidden:]...)
 			}
-			lines = append(lines, prefixed(rows, width, "  └ ", "    ")...)
+			lines = append(lines, prefixed(rows, "  └ ", "    ")...)
 		}
 		return lines
 	default:
-		return wrap(plain(i.text, fg(i.color)), width)
+		return styled(fg(i.color), plain(i.text, width)...)
 	}
 }
 
 // userLines returns a user message with one cell of padding and a background
 // filling the transcript width.
-func userLines(text string, width int) []line {
+func userLines(text string, width int) []string {
 	width = max(width, 1)
-	background := style{bg: userMessage}
-	content := wrap(markdown(text, style{}), max(width-2, 1))
+	background := lipgloss.NewStyle().Background(userMessage)
+	content := markdown(text, userStyles, max(width-2, 1))
 	if len(content) == 0 {
-		content = []line{{}}
+		content = []string{""}
 	}
-	padding := styled(strings.Repeat(" ", width), background)
-	lines := []line{padding}
+	padding := background.Render(strings.Repeat(" ", width))
+	lines := []string{padding}
 	for _, row := range content {
-		right := max(width-row.width()-1, 0)
-		row.spans = append(append([]span{{" ", background}}, row.spans...), span{strings.Repeat(" ", right), background})
-		row.style = row.style.patch(background)
-		lines = append(lines, row)
+		right := max(width-ansi.StringWidth(row)-1, 0)
+		lines = append(lines, background.Render(" ")+row+background.Render(strings.Repeat(" ", right)))
 	}
 	return append(lines, padding)
 }
@@ -428,58 +426,63 @@ func placeholder(started, ended, now time.Time) string {
 
 // describedLines returns a call's `●` row and its content, indented by two
 // columns.
-func describedLines(call *toolCall, width int, s style) []line {
-	return append([]line{toolLine(call, call.title, width)}, contentLines(call, width, "  ", "  ", s)...)
+func describedLines(call *toolCall, width int) []string {
+	return append([]string{toolLine(call, call.title, width)}, contentLines(call, width, "  ", "  ", false)...)
 }
 
 // contentLines returns a call's content rows with first before the first row
 // and rest, of the same width, before the others.
-func contentLines(call *toolCall, rowWidth int, first, rest string, s style) []line {
-	return prefixed(contentRows(call, rowWidth-width(first), s), rowWidth, first, rest)
+func contentLines(call *toolCall, rowWidth int, first, rest string, dimmed bool) []string {
+	return prefixed(contentRows(call, rowWidth-width(first), dimmed), first, rest)
 }
 
-// contentRows returns a call's content rows width columns wide. Text blocks
-// wrap, as Markdown when the call is nameless, such as a replayed turn error;
-// diff blocks are unified hunks, clipped so their indentation survives.
-func contentRows(call *toolCall, width int, s style) []line {
-	var lines []line
+// contentRows returns a call's content rows width columns wide, dim when
+// dimmed is set. Text blocks wrap, as Markdown when the call is nameless, such
+// as a replayed turn error; diff blocks are unified hunks, clipped so their
+// indentation survives.
+func contentRows(call *toolCall, width int, dimmed bool) []string {
+	text, styles := lipgloss.NewStyle(), messageStyles
+	if dimmed {
+		text, styles = dimStyle, dimStyles
+	}
+	var rows []string
 	for _, block := range call.content {
 		switch {
 		case block.Content != nil:
-			text := content(block.Content.Content)
+			content := content(block.Content.Content)
 			if call.name == "" {
-				lines = append(lines, markdown(text, s)...)
+				rows = append(rows, markdown(content, styles, width)...)
 			} else {
-				lines = append(lines, plain(text, s)...)
+				rows = append(rows, styled(text, plain(content, width)...)...)
 			}
 		case block.Diff != nil:
-			lines = append(lines, diffRows(block.Diff, width, s)...)
+			rows = append(rows, diffRows(block.Diff, width, text)...)
 		default:
-			lines = append(lines, styled("[non-text content]", s))
+			rows = append(rows, text.Render("[non-text content]"))
 		}
 	}
-	return wrap(lines, width)
+	return rows
 }
 
 // diffRows returns the unified hunks of a diff with three rows of context.
 // Hunk headers and notes are dim, removed rows red, and added rows green;
-// context rows keep s.
-func diffRows(diff *protocol.ToolCallContentDiff, width int, s style) []line {
+// context rows keep the context style.
+func diffRows(diff *protocol.ToolCallContentDiff, width int, context lipgloss.Style) []string {
 	old := ""
 	if diff.OldText != nil {
 		old = *diff.OldText
 	}
 	unified, err := udiff.ToUnified("", "", old, udiff.Lines(old, diff.NewText), 3)
 	if err != nil {
-		return []line{styled(clip(err.Error(), width), fg(red))}
+		return styled(fg(red), clip(err.Error(), width))
 	}
-	var rows []line
+	var rows []string
 	// The first two rows name the files.
 	for i, row := range strings.Split(strings.TrimSuffix(unified, "\n"), "\n") {
 		if i < 2 {
 			continue
 		}
-		rowStyle := s
+		rowStyle := context
 		switch {
 		case strings.HasPrefix(row, "@@"), strings.HasPrefix(row, "\\"):
 			rowStyle = dimStyle
@@ -490,36 +493,36 @@ func diffRows(diff *protocol.ToolCallContentDiff, width int, s style) []line {
 		}
 		// Tabs expand from the column after the sign.
 		row = strings.TrimSuffix(row, "\r")
-		rows = append(rows, styled(clip(row[:1]+expand(row[1:]), width), rowStyle))
+		rows = append(rows, rowStyle.Render(clip(row[:1]+expand(row[1:]), width)))
 	}
 	return rows
 }
 
-func icon(call *toolCall) span {
+func icon(call *toolCall) string {
 	switch call.status {
 	case protocol.ToolCallStatusPending, "":
-		return span{"●", fg(yellow)}
+		return fg(yellow).Render("●")
 	case protocol.ToolCallStatusCompleted:
-		return span{"●", fg(green)}
+		return fg(green).Render("●")
 	case protocol.ToolCallStatusFailed:
-		return span{"●", fg(red)}
+		return fg(red).Render("●")
 	}
-	return span{text: "●"}
+	return "●"
 }
 
-func toolLine(call *toolCall, title string, width int) line {
-	return line{spans: []span{icon(call), {text: " "}, {text: clip(title, width-2)}}}
+func toolLine(call *toolCall, title string, width int) string {
+	return icon(call) + " " + clip(title, width-2)
 }
 
 // shellLine returns the one-row `● Shell` line of a shell call.
-func shellLine(call *toolCall, width int) (line, bool) {
+func shellLine(call *toolCall, width int) (string, bool) {
 	input, ok := call.rawInput.(map[string]any)
 	if call.name != "shell" || !ok {
-		return line{}, false
+		return "", false
 	}
 	command, ok := input["command"].(string)
 	if !ok {
-		return line{}, false
+		return "", false
 	}
 	title := "Shell " + strings.Join(strings.Fields(command), " ")
 	if background, _ := input["background"].(bool); background {

@@ -9,9 +9,9 @@ import (
 	"time"
 	"unicode"
 
+	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
-	uv "github.com/charmbracelet/ultraviolet"
 	protocol "github.com/coder/acp-go-sdk"
 
 	"ox/internal/client"
@@ -21,7 +21,7 @@ import (
 // Run shows the session until the user quits or the server closes the
 // connection. favorites are saved to the global settings file at configPath.
 func Run(conn *client.Conn, session *client.Session, favorites []string, configPath string) error {
-	m := &model{conn: conn, session: session, favorites: favorites, configPath: configPath, focused: true}
+	m := &model{conn: conn, session: session, input: newInput(), favorites: favorites, configPath: configPath, focused: true}
 	m.listen = func() tea.Msg { return conn.Next() }
 	// The theme's exact colors look the same under every terminal color
 	// scheme, so they are never reduced to a palette.
@@ -39,7 +39,7 @@ type model struct {
 	// again, so events arrive one at a time and in order.
 	listen           tea.Cmd
 	view             transcript
-	input            input
+	input            textarea.Model
 	approvalSelected int
 	approvalScroll   int
 	showThinking     bool
@@ -119,7 +119,7 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 			}
 			m.picker.filter()
 		} else {
-			m.input.paste(msg.Content)
+			return paste(&m.input, msg.Content)
 		}
 	case tea.KeyPressMsg:
 		return m.key(msg, now)
@@ -228,20 +228,19 @@ func (m *model) quit() tea.Cmd {
 	return tea.Quit
 }
 
-// key handles one key press.
+// key handles one key press. The composer gets the keys Ox does not use.
 func (m *model) key(key tea.KeyPressMsg, now time.Time) tea.Cmd {
 	control := key.Mod.Contains(tea.ModCtrl)
-	text := key.Text != "" && !key.Mod.Contains(tea.ModCtrl) && !key.Mod.Contains(tea.ModAlt)
 	if m.picker != nil {
+		text := key.Text != "" && !control && !key.Mod.Contains(tea.ModAlt)
 		return m.pickerKey(key, control, text)
 	}
 	approving := m.session.Permission != nil
 	switch {
 	case key.Code == tea.KeyTab && !control && !key.Mod.Contains(tea.ModAlt):
 		forward := !key.Mod.Contains(tea.ModShift)
-		if ghost := m.input.ghostText(m.commands()); forward && ghost != "" {
-			m.input.paste(ghost)
-			return nil
+		if ghost := ghostText(m.input.Value(), atEnd(&m.input), m.commands()); forward && ghost != "" {
+			return paste(&m.input, ghost)
 		}
 		return m.cycle(protocol.SessionConfigOptionCategoryMode, forward, "Mode change failed")
 	case control && (key.Code == 'c' || key.Code == 'd'):
@@ -253,12 +252,8 @@ func (m *model) key(key tea.KeyPressMsg, now time.Time) tea.Cmd {
 	case control && key.Code == 'o':
 		m.toolOutput = m.toolOutput.next()
 	case control && key.Code == 'u':
-		m.input.clear()
-	case text:
-		m.input.insert(key.Text)
-	case key.Code == tea.KeyEnter && key.Mod.Contains(tea.ModShift):
-		m.input.newline()
-	case key.Code == tea.KeyEnter:
+		m.input.Reset()
+	case key.Code == tea.KeyEnter && !key.Mod.Contains(tea.ModShift):
 		return m.enter(now)
 	case key.Code == tea.KeyEscape:
 		if approving {
@@ -266,31 +261,10 @@ func (m *model) key(key tea.KeyPressMsg, now time.Time) tea.Cmd {
 		} else if m.session.Busy {
 			m.fail(m.session.Cancel())
 		}
-	case key.Code == tea.KeyUp:
-		if approving {
-			m.approvalSelected = max(m.approvalSelected-1, 0)
-		} else {
-			m.input.up()
-		}
-	case key.Code == tea.KeyDown:
-		if approving {
-			m.approvalSelected = min(m.approvalSelected+1, max(len(m.session.Permission.Options)-1, 0))
-		} else {
-			m.input.down()
-		}
-	case key.Code == tea.KeyLeft:
-		m.input.left()
-	case key.Code == tea.KeyRight:
-		m.input.right()
-	case key.Code == tea.KeyHome:
-		m.input.home()
-	case key.Code == tea.KeyEnd:
-		m.input.end()
-		m.view.end()
-	case key.Code == tea.KeyBackspace:
-		m.input.backspace()
-	case key.Code == tea.KeyDelete:
-		m.input.delete()
+	case key.Code == tea.KeyUp && approving:
+		m.approvalSelected = max(m.approvalSelected-1, 0)
+	case key.Code == tea.KeyDown && approving:
+		m.approvalSelected = min(m.approvalSelected+1, max(len(m.session.Permission.Options)-1, 0))
 	case key.Code == tea.KeyPgUp && approving:
 		m.approvalScroll = max(m.approvalScroll-page(m.layout.approvalHeight), 0)
 	case key.Code == tea.KeyPgDown && approving:
@@ -300,6 +274,13 @@ func (m *model) key(key tea.KeyPressMsg, now time.Time) tea.Cmd {
 		m.view.pageUp(m.layout.height, m.layout.lines)
 	case key.Code == tea.KeyPgDown:
 		m.view.pageDown(m.layout.height, m.layout.lines)
+	default:
+		if key.Code == tea.KeyEnd {
+			m.view.end()
+		}
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(key)
+		return cmd
 	}
 	return nil
 }
@@ -311,32 +292,32 @@ func (m *model) enter(now time.Time) tea.Cmd {
 	if m.opening {
 		return nil
 	}
-	if m.input.empty() {
+	if m.input.Value() == "" {
 		if m.session.Permission != nil {
 			m.answer(m.approvalSelected)
 		}
 		return nil
 	}
-	switch m.input.text {
+	switch m.input.Value() {
 	case "/resume":
 		switch {
 		case !m.conn.CanResume:
-			m.input.clear()
+			m.input.Reset()
 			m.view.notice("Session resume is unavailable", red, now)
 		case !m.session.Busy:
-			m.input.clear()
+			m.input.Reset()
 			return m.openSessionPicker()
 		}
 	case "/quit":
 		return m.quit()
 	case "/new":
-		m.input.clear()
+		m.input.Reset()
 		return m.newSession()
 	case "/model":
-		m.input.clear()
+		m.input.Reset()
 		m.openModelPicker()
 	default:
-		if word := m.input.unknownCommand(m.commands()); word != "" {
+		if word := unknownCommand(m.input.Value(), m.commands()); word != "" {
 			m.view.notice("Unknown command "+word, red, now)
 		} else if !m.session.Busy {
 			m.submit(now)
@@ -347,7 +328,8 @@ func (m *model) enter(now time.Time) tea.Cmd {
 
 // submit sends the input.
 func (m *model) submit(now time.Time) {
-	text := m.input.take()
+	text := m.input.Value()
+	m.input.Reset()
 	m.session.Prompt(text)
 	m.view.user(text, now)
 }
@@ -626,7 +608,7 @@ func (m *model) choose() tea.Cmd {
 			}
 			m.session.Opened(id, loaded.ConfigOptions)
 			m.picker = nil
-			m.input.clear()
+			m.input.Reset()
 			return m.opened()
 		})
 	}
@@ -671,7 +653,7 @@ func (m *model) View() tea.View {
 	if m.picker != nil {
 		m.picker.moveTo(m.picker.selected, pickerRows(m.height))
 	}
-	buf := uv.NewBuffer(m.width, m.height)
+	buf := newFrame(m.width, m.height)
 	cursor, layout := draw(buf, m.screen(time.Now()))
 	m.layout = layout
 	m.approvalScroll = min(m.approvalScroll, max(layout.approvalBodyLines-layout.approvalHeight, 0))
