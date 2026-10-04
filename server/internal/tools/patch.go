@@ -460,6 +460,9 @@ func applyChanges(w *workspace, changes []change) (string, []transcript.ToolCont
 		completed = append(completed, c.summary)
 	}
 	summary := strings.Join(append([]string{"Applied patch."}, completed...), "\n")
+	if len(summary) > outputLimit {
+		summary = truncate(summary, bodyLimit) + "\nSummary truncated."
+	}
 	var content []transcript.ToolContent
 	for _, c := range changes {
 		content = append(content, transcript.ToolContent{Text: c.summary})

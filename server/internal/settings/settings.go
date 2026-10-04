@@ -171,7 +171,7 @@ func write(path string, selected Settings) error {
 	fields := map[string]any{}
 	text, err := textfile.Read(path)
 	if err == nil {
-		if err := json.Unmarshal([]byte(text), &fields); err != nil {
+		if err := json.Unmarshal([]byte(text), &fields); err != nil || fields == nil {
 			return errors.New("settings must be a JSON object")
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
@@ -211,6 +211,9 @@ func read(path string) (file, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(text), &fields); err != nil {
 		return file{}, fmt.Errorf("%s: %w", path, err)
+	}
+	if fields == nil {
+		return file{}, invalid(path, "settings must be a JSON object")
 	}
 	var f file
 	_, f.provider = fields["provider"]

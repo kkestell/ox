@@ -83,6 +83,7 @@ func TestWorkspaceSettingsReplaceGlobalKeys(t *testing.T) {
 		t.Errorf("mode only: %+v", got)
 	}
 	for _, test := range []struct{ text, want string }{
+		{`null`, "settings must be a JSON object"},
 		{`{"models":{}}`, "models can be set only in the global settings file"},
 		{`{"model":"openrouter:acme/plain"}`, "effort high is not supported"},
 		{`{"provider":"openai"}`, "provider is no longer supported"},
@@ -92,6 +93,20 @@ func TestWorkspaceSettingsReplaceGlobalKeys(t *testing.T) {
 		if err == nil || !strings.HasPrefix(err.Error(), path+": ") || !strings.Contains(err.Error(), test.want) {
 			t.Errorf("%s: %v", test.text, err)
 		}
+	}
+}
+
+func TestSavingNullSettingsReturnsAnError(t *testing.T) {
+	home, workspace := t.TempDir(), t.TempDir()
+	path := filepath.Join(workspace, ".ox/settings.json")
+	write(t, path, "null")
+	selected := settings.Settings{Model: model, Effort: catalog.EffortLow, Mode: transcript.ModeAuto}
+	if _, err := settings.Save(home, workspace, selected); err == nil || !strings.Contains(err.Error(), "settings must be a JSON object") {
+		t.Fatalf("save = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "null" {
+		t.Fatalf("invalid settings changed: %q, %v", data, err)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // globMatcher matches workspace-relative file paths the way ripgrep's `--glob`
@@ -116,9 +117,13 @@ func translate(glob string, inGroup bool) (string, string, error) {
 			if i+1 < len(glob) {
 				i++
 			}
-			out.WriteString(regexp.QuoteMeta(glob[i : i+1]))
+			_, size := utf8.DecodeRuneInString(glob[i:])
+			out.WriteString(regexp.QuoteMeta(glob[i : i+size]))
+			i += size - 1
 		default:
-			out.WriteString(regexp.QuoteMeta(string(c)))
+			_, size := utf8.DecodeRuneInString(glob[i:])
+			out.WriteString(regexp.QuoteMeta(glob[i : i+size]))
+			i += size - 1
 		}
 	}
 	return out.String(), "", nil
