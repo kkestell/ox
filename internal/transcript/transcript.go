@@ -219,9 +219,15 @@ func (s *SkillInvocation) CommandText() string {
 }
 
 // Message is the user message that gives the model the invocation: its text
-// followed by its images.
+// followed by its images. Skills written for Claude Code mark where arguments
+// go with `$ARGUMENTS`; instructions without it get the arguments appended.
 func (s *SkillInvocation) Message() UserMessage {
-	text := fmt.Sprintf("Skill /%s invoked.\n\nInstructions:\n%s\n\nArguments:\n%s", s.Name, s.Instructions, s.Arguments)
+	var text string
+	if strings.Contains(s.Instructions, "$ARGUMENTS") {
+		text = fmt.Sprintf("Skill /%s invoked.\n\nInstructions:\n%s", s.Name, strings.ReplaceAll(s.Instructions, "$ARGUMENTS", s.Arguments))
+	} else {
+		text = fmt.Sprintf("Skill /%s invoked.\n\nInstructions:\n%s\n\nArguments:\n%s", s.Name, s.Instructions, s.Arguments)
+	}
 	message := TextMessage(text)
 	for i := range s.Images {
 		message.Parts = append(message.Parts, UserMessagePart{Image: &s.Images[i]})

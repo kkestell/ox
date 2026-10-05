@@ -36,3 +36,19 @@ func TestUsageSummaryKeepsLatestTokensAndTotalReportedCost(t *testing.T) {
 		})
 	}
 }
+
+func TestSkillMessagePlacesArguments(t *testing.T) {
+	for _, test := range []struct {
+		name, instructions, want string
+	}{
+		{"placeholder", "Plan <task>$ARGUMENTS</task>.", "Skill /plan invoked.\n\nInstructions:\nPlan <task>mode switching</task>."},
+		{"no placeholder", "Plan it.", "Skill /plan invoked.\n\nInstructions:\nPlan it.\n\nArguments:\nmode switching"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			skill := SkillInvocation{Name: "plan", Arguments: "mode switching", Instructions: test.instructions}
+			if text := skill.Message().Text(); text != test.want {
+				t.Errorf("text = %q, want %q", text, test.want)
+			}
+		})
+	}
+}
