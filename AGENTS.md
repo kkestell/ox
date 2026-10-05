@@ -62,7 +62,7 @@ Each task builds on the one before it:
        in the `return` expression.
 2. [x] `control-flow` — the comparison operators and nested `if`/`else`, with
        one `return` in each branch.
-3. [ ] `locals` — local `int` variables, assignment, and bodies with several
+3. [x] `locals` — local `int` variables, assignment, and bodies with several
        statements.
 4. [ ] `loops` — `while`, `break`, and `continue`.
 5. [ ] `functions` — functions with parameters, and calls.

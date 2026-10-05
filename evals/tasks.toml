@@ -20,3 +20,35 @@ left, and unary minus binds tighter than any binary operator. Division and \
 remainder follow C on negative operands. Add test cases for the new features \
 and run make check."""
 examples = ["programs/precedence", "programs/division"]
+
+[[task]]
+id = "control-flow"
+prompt = """
+Extend main so its body may be an `if` statement with `else` and nested `if`
+statements. Conditions use the C comparison operators ==, !=, <, <=, >, and
+>=, with arithmetic expressions binding more tightly, relational operators
+binding more tightly than equality operators, and operators at each level
+grouping from the left. Any nonzero condition is true. Each branch is a block
+containing one returning statement, which may itself be a nested if/else.
+Keep return expressions working, add test cases for comparisons and control
+flow, and run make check.
+"""
+examples = ["programs/comparisons", "programs/conditional"]
+
+[[task]]
+id = "locals"
+prompt = """
+Add local int variables and assignment. Every block, including the body of main
+and the branches of if/else statements, may start with declarations such as
+`int a, b = 2;`, where each variable has an optional initializer, and continue
+with any number of statements. A statement is a block, a return, an if/else
+statement, or an expression followed by a semicolon. Follow C89 scoping: a
+variable is visible from its declaration to the end of its block and hides any
+variable of the same name from an outer block. Assignment with = is an
+expression whose value is the assigned value; it has the lowest precedence and
+groups from the right. If/else branches no longer have to return, but main must
+still return on every path. Report an error for an undeclared variable or for a
+variable declared twice in one block. Keep the existing features working, add
+test cases for the new features, and run make check.
+"""
+examples = ["programs/locals", "programs/scopes"]
