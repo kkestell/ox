@@ -4,5 +4,4 @@
 .env
 .DS_Store
 __pycache__/
-agents/experiments/compaction/results
 .africot/
