@@ -123,8 +123,6 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 		}
 	case tea.KeyPressMsg:
 		return m.key(msg, now)
-	case tea.MouseWheelMsg:
-		m.mouse(msg.Mouse())
 	case result:
 		return msg(m)
 	case client.Event:
@@ -614,18 +612,6 @@ func (m *model) choose() tea.Cmd {
 	}
 }
 
-func (m *model) mouse(mouse tea.Mouse) {
-	if m.picker != nil || m.layout.height == 0 || mouse.Y >= m.layout.height+2*marginY {
-		return
-	}
-	switch mouse.Button {
-	case tea.MouseWheelUp:
-		m.view.scrollUp(m.layout.height, m.layout.lines, 1)
-	case tea.MouseWheelDown:
-		m.view.scrollDown(m.layout.height, m.layout.lines, 1)
-	}
-}
-
 // status is the terminal title's state.
 func (m *model) status() string {
 	switch {
@@ -646,7 +632,7 @@ func (m *model) status() string {
 // View draws the frame and keeps its layout, since paging and scrolling
 // move by what the last frame showed.
 func (m *model) View() tea.View {
-	view := tea.View{AltScreen: true, ReportFocus: true, MouseMode: tea.MouseModeCellMotion, WindowTitle: "ox: " + m.status()}
+	view := tea.View{AltScreen: true, ReportFocus: true, WindowTitle: "ox: " + m.status()}
 	if m.width == 0 || m.height == 0 {
 		return view
 	}

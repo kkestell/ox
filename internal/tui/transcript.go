@@ -242,29 +242,21 @@ func (t *transcript) changed() {
 }
 
 func (t *transcript) pageUp(height, total int) {
-	t.scrollUp(height, total, page(height))
-}
-
-func (t *transcript) scrollUp(height, total, rows int) {
 	if total <= height {
 		return
 	}
 	if !t.scrolled {
 		t.top = total - height
 	}
-	t.top = max(t.top-rows, 0)
+	t.top = max(t.top-page(height), 0)
 	t.scrolled = true
 }
 
 func (t *transcript) pageDown(height, total int) {
-	t.scrollDown(height, total, page(height))
-}
-
-func (t *transcript) scrollDown(height, total, rows int) {
 	if !t.scrolled {
 		return
 	}
-	if next := t.top + rows; next >= max(total-height, 0) {
+	if next := t.top + page(height); next >= max(total-height, 0) {
 		t.end()
 	} else {
 		t.top = next
