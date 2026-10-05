@@ -20,6 +20,7 @@ Keep this document accurate and short.
 - `examples/` — the example settings file.
 - `scripts/run.py` — runs one headless prompt in a temporary workspace.
 - `scripts/export_session.py` — exports a session to JSON.
+- `scripts/top_programs.py` — lists the programs Claude Code runs most often.
 - `.github/workflows/` — the release build.
 - `research/` — research notes and reports.
 - `agents/` — plans, reviews, and work logs.
