@@ -236,8 +236,13 @@ func TestReusedToolIDsKeepEachTurnsCallInTheTranscript(t *testing.T) {
 		"", " second", "", "", "● Read second.txt",
 	})
 	lines := allLines(view, 40, false, summary, now)
-	equal(t, colorOf(lines[4]), green)
-	equal(t, colorOf(lines[10]), red)
+	var toolColors []color.Color
+	for _, line := range lines {
+		if c := colorOf(line); c != nil {
+			toolColors = append(toolColors, c)
+		}
+	}
+	equal(t, toolColors, []color.Color{green, red})
 	view.endTurn(now)
 	view.update(read("same", "third.txt").update, "read_file", now)
 	all := rows(view, 40, false, now)
@@ -304,7 +309,7 @@ func TestItemsRenderWithIconsPrefixesAndSpacing(t *testing.T) {
 			message("Checking"), read("a", "a"), shellCall("s", "ls -la", false, protocol.ToolCallStatusCompleted),
 			turnError("c", "Fixed."), read("d", "d"), message("Found it"),
 		}, 40, []string{
-			"● Checking", "", "● Read a", "● Shell ls -la", "", "● Turn error", "  └ Fixed.", "", "● Read d", "", "● Found it",
+			"● Checking", "", "● Turn error", "  └ Fixed.", "", "● Found it",
 		}},
 	} {
 		equal(t, rows(newTranscript(now, test.updates...), test.width, false, now), test.want, test.name)
@@ -321,6 +326,61 @@ func TestItemsRenderWithIconsPrefixesAndSpacing(t *testing.T) {
 	equal(t, colorAt(lines[1], 4), dim)
 	equal(t, colorOf(lines[3]), red)
 	equal(t, colorOf(lines[5]), dim)
+}
+
+func TestHiddenToolLoopUpdatesOneProgressItemAndKeepsTheFinalAnswer(t *testing.T) {
+	now := time.Now()
+	view := &transcript{}
+	descriptions := []string{
+		"I’ll inspect the failing test and its setup.",
+		"I’ll trace the function the test exercises.",
+		"I’ll check the recent changes around that function.",
+		"I’ll run the focused test to confirm the failure.",
+		"I’ll inspect the error path and compare expected behavior.",
+	}
+	for index, description := range descriptions {
+		view.update(message(description).update, "", now)
+		view.update(read(fmt.Sprintf("call-%d", index), fmt.Sprintf("file-%d.go", index)).update, "read_file", now)
+	}
+	view.update(message("The test fails because the error path returns before updating the result.").update, "", now)
+	equal(t, rows(view, 80, false, now), []string{
+		"● I’ll inspect the error path and compare expected behavior.",
+		"",
+		"● The test fails because the error path returns before updating the result.",
+	}, "summary mode collapses five tool iterations and preserves the final answer")
+	full := texts(allLines(view, 80, false, full, now))
+	if !reflect.DeepEqual(full, []string{
+		"● I’ll inspect the failing test and its setup.", "", "● Read file-0.go",
+		"", "● I’ll trace the function the test exercises.", "", "● Read file-1.go",
+		"", "● I’ll check the recent changes around that function.", "", "● Read file-2.go",
+		"", "● I’ll run the focused test to confirm the failure.", "", "● Read file-3.go",
+		"", "● I’ll inspect the error path and compare expected behavior.", "", "● Read file-4.go",
+		"", "● The test fails because the error path returns before updating the result.",
+	}) {
+		t.Errorf("full mode should retain each description and tool call:\ngot  %#v", full)
+	}
+}
+
+func TestHiddenToolLoopUsesOneItemForMultipleCallsAndFallsBackToATitle(t *testing.T) {
+	now := time.Now()
+	multiple := newTranscript(now, message("Checking two files"), read("a", "a.go"), read("b", "b.go"))
+	equal(t, rows(multiple, 40, false, now), []string{"● Checking two files"}, "multiple calls share one progress item")
+	noDescription := newTranscript(now, read("c", "c.go"))
+	equal(t, rows(noDescription, 40, false, now), []string{"● Read c.go"}, "the first tool title is the fallback")
+	noText := newTranscript(now, named{update: protocol.UpdateAgentMessageText("")}, read("d", "d.go"))
+	equal(t, rows(noText, 40, false, now), []string{"● Read d.go"}, "an empty assistant message uses the fallback")
+	emptyIterations := newTranscript(now, read("e", "first.go"), named{update: protocol.SessionUpdate{UsageUpdate: &protocol.SessionUsageUpdate{}}}, read("f", "second.go"))
+	equal(t, rows(emptyIterations, 40, false, now), []string{"● Read second.go"}, "a later empty batch replaces the fallback title")
+}
+
+func TestHiddenToolLoopReplayAndModeChangesKeepCallRecords(t *testing.T) {
+	now := time.Now()
+	view := newTranscript(now, message("Checking the source"), read("a", "a.go"), message("Checking the test"), read("b", "a_test.go"))
+	equal(t, rows(view, 40, false, now), []string{"● Checking the test"}, "replayed updates collapse like live updates")
+	equal(t, texts(allLines(view, 40, false, full, now)), []string{
+		"● Checking the source", "", "● Read a.go", "", "● Checking the test", "", "● Read a_test.go",
+	}, "switching to full output restores descriptions and calls")
+	equal(t, rows(view, 40, false, now), []string{"● Checking the test"}, "switching back restores the persistent summary")
 }
 
 func TestANamedCallShowsItsTextAndDiffBlocksOnlyWhileOutputIsShown(t *testing.T) {
