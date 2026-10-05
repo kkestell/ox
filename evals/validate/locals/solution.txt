@@ -1,0 +1,110 @@
+=== RUN   TestCompiler
+=== RUN   TestCompiler/errors
+=== PAUSE TestCompiler/errors
+=== RUN   TestCompiler/programs
+=== PAUSE TestCompiler/programs
+=== CONT  TestCompiler/errors
+=== RUN   TestCompiler/errors/assign_to_constant
+=== PAUSE TestCompiler/errors/assign_to_constant
+=== RUN   TestCompiler/errors/missing_else
+=== CONT  TestCompiler/programs
+=== RUN   TestCompiler/programs/assignment
+=== PAUSE TestCompiler/programs/assignment
+=== RUN   TestCompiler/programs/associativity
+=== PAUSE TestCompiler/programs/associativity
+=== RUN   TestCompiler/programs/branches
+=== PAUSE TestCompiler/programs/branches
+=== RUN   TestCompiler/programs/comparisons
+=== PAUSE TestCompiler/programs/comparisons
+=== RUN   TestCompiler/programs/conditional
+=== PAUSE TestCompiler/programs/conditional
+=== RUN   TestCompiler/programs/division
+=== PAUSE TestCompiler/programs/division
+=== RUN   TestCompiler/programs/false_condition
+=== PAUSE TestCompiler/programs/false_condition
+=== RUN   TestCompiler/programs/locals
+=== PAUSE TestCompiler/programs/locals
+=== RUN   TestCompiler/programs/parentheses
+=== PAUSE TestCompiler/programs/parentheses
+=== RUN   TestCompiler/programs/precedence
+=== PAUSE TestCompiler/programs/precedence
+=== RUN   TestCompiler/programs/return_integer
+=== PAUSE TestCompiler/programs/return_integer
+=== RUN   TestCompiler/programs/returns_in_block
+=== PAUSE TestCompiler/programs/returns_in_block
+=== RUN   TestCompiler/programs/scopes
+=== PAUSE TestCompiler/programs/scopes
+=== RUN   TestCompiler/programs/unary_minus
+=== PAUSE TestCompiler/programs/unary_minus
+=== PAUSE TestCompiler/errors/missing_else
+=== RUN   TestCompiler/errors/missing_semicolon
+=== PAUSE TestCompiler/errors/missing_semicolon
+=== RUN   TestCompiler/errors/out_of_scope
+=== PAUSE TestCompiler/errors/out_of_scope
+=== RUN   TestCompiler/errors/redeclared_variable
+=== PAUSE TestCompiler/errors/redeclared_variable
+=== RUN   TestCompiler/errors/unbalanced_parens
+=== PAUSE TestCompiler/errors/unbalanced_parens
+=== RUN   TestCompiler/errors/undeclared_variable
+=== PAUSE TestCompiler/errors/undeclared_variable
+=== CONT  TestCompiler/programs/assignment
+=== CONT  TestCompiler/programs/division
+=== CONT  TestCompiler/programs/unary_minus
+=== CONT  TestCompiler/programs/scopes
+=== CONT  TestCompiler/programs/returns_in_block
+=== CONT  TestCompiler/programs/return_integer
+=== CONT  TestCompiler/programs/precedence
+=== CONT  TestCompiler/programs/parentheses
+=== CONT  TestCompiler/programs/locals
+=== CONT  TestCompiler/programs/false_condition
+--- PASS: TestCompiler/programs/scopes (0.01s)
+=== CONT  TestCompiler/programs/conditional
+--- PASS: TestCompiler/programs/assignment (0.01s)
+=== CONT  TestCompiler/programs/comparisons
+--- PASS: TestCompiler/programs/division (0.01s)
+=== CONT  TestCompiler/programs/branches
+--- PASS: TestCompiler/programs/unary_minus (0.02s)
+=== CONT  TestCompiler/programs/associativity
+--- PASS: TestCompiler/programs/return_integer (0.02s)
+=== CONT  TestCompiler/errors/assign_to_constant
+    compiler_test.go:124: smallc output:
+        errors/assign_to_constant.c:4: expected ";", found "="
+--- PASS: TestCompiler/errors/assign_to_constant (0.00s)
+=== CONT  TestCompiler/errors/redeclared_variable
+--- PASS: TestCompiler/programs/locals (0.02s)
+=== CONT  TestCompiler/errors/unbalanced_parens
+--- PASS: TestCompiler/programs/precedence (0.02s)
+=== CONT  TestCompiler/errors/undeclared_variable
+    compiler_test.go:124: smallc output:
+        errors/redeclared_variable.c:4: "x" is already declared in this block
+--- PASS: TestCompiler/errors/redeclared_variable (0.00s)
+=== CONT  TestCompiler/errors/missing_else
+--- PASS: TestCompiler/programs/false_condition (0.02s)
+=== CONT  TestCompiler/errors/out_of_scope
+    compiler_test.go:124: smallc output:
+        errors/unbalanced_parens.c:3: expected ")", found ";"
+    compiler_test.go:124: smallc output:
+        errors/undeclared_variable.c:4: undeclared variable "y"
+--- PASS: TestCompiler/errors/undeclared_variable (0.00s)
+=== CONT  TestCompiler/errors/missing_semicolon
+--- PASS: TestCompiler/errors/unbalanced_parens (0.00s)
+--- PASS: TestCompiler/programs/parentheses (0.02s)
+    compiler_test.go:124: smallc output:
+        errors/out_of_scope.c:6: undeclared variable "x"
+--- PASS: TestCompiler/errors/out_of_scope (0.00s)
+    compiler_test.go:124: smallc output:
+        errors/missing_else.c:6: expected "else", found "}"
+--- PASS: TestCompiler/errors/missing_else (0.00s)
+    compiler_test.go:124: smallc output:
+        errors/missing_semicolon.c:4: expected ";", found "}"
+--- PASS: TestCompiler/errors/missing_semicolon (0.00s)
+--- PASS: TestCompiler/errors (0.00s)
+--- PASS: TestCompiler/programs/returns_in_block (0.02s)
+--- PASS: TestCompiler/programs/comparisons (0.02s)
+--- PASS: TestCompiler/programs/branches (0.02s)
+--- PASS: TestCompiler/programs/conditional (0.02s)
+--- PASS: TestCompiler/programs/associativity (0.02s)
+--- PASS: TestCompiler/programs (0.00s)
+--- PASS: TestCompiler (0.00s)
+PASS
+ok  	github.com/kkestell/small-c/tests	0.129s

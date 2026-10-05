@@ -1,0 +1,72 @@
+=== RUN   TestCompiler
+=== RUN   TestCompiler/errors
+=== PAUSE TestCompiler/errors
+=== RUN   TestCompiler/programs
+=== PAUSE TestCompiler/programs
+=== CONT  TestCompiler/errors
+=== RUN   TestCompiler/errors/missing_else
+=== PAUSE TestCompiler/errors/missing_else
+=== RUN   TestCompiler/errors/missing_semicolon
+=== PAUSE TestCompiler/errors/missing_semicolon
+=== RUN   TestCompiler/errors/unbalanced_parens
+=== PAUSE TestCompiler/errors/unbalanced_parens
+=== CONT  TestCompiler/errors/missing_else
+=== CONT  TestCompiler/errors/unbalanced_parens
+=== CONT  TestCompiler/errors/missing_semicolon
+=== CONT  TestCompiler/programs
+=== RUN   TestCompiler/programs/associativity
+=== PAUSE TestCompiler/programs/associativity
+=== RUN   TestCompiler/programs/comparisons
+=== PAUSE TestCompiler/programs/comparisons
+=== RUN   TestCompiler/programs/conditional
+=== PAUSE TestCompiler/programs/conditional
+=== RUN   TestCompiler/programs/division
+=== PAUSE TestCompiler/programs/division
+=== RUN   TestCompiler/programs/false_condition
+=== PAUSE TestCompiler/programs/false_condition
+=== RUN   TestCompiler/programs/parentheses
+=== PAUSE TestCompiler/programs/parentheses
+=== RUN   TestCompiler/programs/precedence
+=== PAUSE TestCompiler/programs/precedence
+=== RUN   TestCompiler/programs/return_integer
+=== PAUSE TestCompiler/programs/return_integer
+=== RUN   TestCompiler/programs/unary_minus
+=== PAUSE TestCompiler/programs/unary_minus
+=== CONT  TestCompiler/programs/associativity
+=== CONT  TestCompiler/programs/parentheses
+=== CONT  TestCompiler/programs/division
+=== CONT  TestCompiler/programs/false_condition
+    compiler_test.go:124: smallc output:
+        errors/missing_else.c:3: expected "return", found "if"
+--- PASS: TestCompiler/errors/missing_else (0.00s)
+=== CONT  TestCompiler/programs/comparisons
+=== CONT  TestCompiler/programs/conditional
+    compiler_test.go:124: smallc output:
+        errors/unbalanced_parens.c:3: expected ")", found ";"
+--- PASS: TestCompiler/errors/unbalanced_parens (0.00s)
+=== CONT  TestCompiler/programs/return_integer
+=== CONT  TestCompiler/programs/unary_minus
+    compiler_test.go:124: smallc output:
+        errors/missing_semicolon.c:4: expected ";", found "}"
+=== CONT  TestCompiler/programs/precedence
+--- PASS: TestCompiler/errors/missing_semicolon (0.00s)
+--- PASS: TestCompiler/errors (0.00s)
+    compiler_test.go:134: smallc -o /tmp/TestCompilerprogramsconditional1942547721/001/program.ssa programs/conditional.c: exit status 1
+        programs/conditional.c:4: unexpected character '>'
+--- FAIL: TestCompiler/programs/conditional (0.00s)
+    compiler_test.go:134: smallc -o /tmp/TestCompilerprogramsfalse_condition15257106/001/program.ssa programs/false_condition.c: exit status 1
+        programs/false_condition.c:3: expected "return", found "if"
+--- FAIL: TestCompiler/programs/false_condition (0.00s)
+    compiler_test.go:134: smallc -o /tmp/TestCompilerprogramscomparisons4170909808/001/program.ssa programs/comparisons.c: exit status 1
+        programs/comparisons.c:4: unexpected character '='
+--- FAIL: TestCompiler/programs/comparisons (0.00s)
+--- PASS: TestCompiler/programs/division (0.03s)
+--- PASS: TestCompiler/programs/return_integer (0.03s)
+--- PASS: TestCompiler/programs/associativity (0.04s)
+--- PASS: TestCompiler/programs/parentheses (0.04s)
+--- PASS: TestCompiler/programs/precedence (0.03s)
+--- PASS: TestCompiler/programs/unary_minus (0.03s)
+--- FAIL: TestCompiler/programs (0.00s)
+--- FAIL: TestCompiler (0.00s)
+FAIL
+FAIL	github.com/kkestell/small-c/tests	0.119s
