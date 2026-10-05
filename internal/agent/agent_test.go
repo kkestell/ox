@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"ox/internal/catalog"
+	"ox/internal/openrouter"
 	fake "ox/internal/openroutertest"
 	"ox/internal/shellproc"
 	"ox/internal/store"
@@ -152,6 +153,104 @@ func TestAnAnswerIsSavedAndReported(t *testing.T) {
 	}
 	if usage := client.events[3].(Usage); usage.Used != 15 || usage.Size != 1048576 || *usage.Cost != cost {
 		t.Errorf("usage = %+v", usage)
+	}
+}
+
+func TestCompactionDecisionUsesReportedInputTokens(t *testing.T) {
+	response := func(input uint64) *transcript.AssistantBatch {
+		return &transcript.AssistantBatch{Message: transcript.AssistantMessage{Usage: &transcript.Usage{InputTokens: input}}}
+	}
+	maxLimit := int(^uint(0) >> 1)
+	tests := []struct {
+		name    string
+		limit   int
+		entries []transcript.Entry
+		want    bool
+	}{
+		{"empty transcript", 1000, nil, false},
+		{"no assistant response", 1000, []transcript.Entry{&transcript.TurnStart{}}, false},
+		{"below threshold", 1000, []transcript.Entry{response(799)}, false},
+		{"at threshold", 1000, []transcript.Entry{response(800)}, true},
+		{"above threshold", 1000, []transcript.Entry{response(801)}, true},
+		{"above context limit", 1000, []transcript.Entry{response(1500)}, true},
+		{"fraction below threshold", 101, []transcript.Entry{response(80)}, false},
+		{"fraction at threshold", 101, []transcript.Entry{response(81)}, true},
+		{"zero context limit", 0, []transcript.Entry{response(800)}, false},
+		{"negative context limit", -1, []transcript.Entry{response(800)}, false},
+		{"large context limit", maxLimit, []transcript.Entry{response(uint64(maxLimit) / 2)}, false},
+		{"latest response is below threshold", 1000, []transcript.Entry{response(900), response(100)}, false},
+		{"latest response is above threshold", 1000, []transcript.Entry{response(100), response(900)}, true},
+		{"latest response has no usage", 1000, []transcript.Entry{response(900), &transcript.AssistantBatch{}}, false},
+		{"trailing turn start and error", 1000, []transcript.Entry{response(800), &transcript.TurnStart{}, transcript.TurnError("failed")}, true},
+		{"other token counts are not added", 1000, []transcript.Entry{&transcript.AssistantBatch{
+			Message: transcript.AssistantMessage{Usage: &transcript.Usage{
+				InputTokens: 799, CachedTokens: 799, OutputTokens: 1000, ReasoningTokens: 999,
+			}},
+		}}, false},
+		{"cached input is not subtracted", 1000, []transcript.Entry{&transcript.AssistantBatch{
+			Message: transcript.AssistantMessage{Usage: &transcript.Usage{InputTokens: 800, CachedTokens: 800}},
+		}}, true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			turn := &Turn{request: openrouter.Request{Model: &catalog.Model{ContextLimit: test.limit}, Transcript: test.entries}}
+			if got := turn.needsCompaction(); got != test.want {
+				t.Fatalf("needsCompaction() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestCompactionDecisionUsesSavedResponseOnNewTurn(t *testing.T) {
+	f := newFixture(t, fake.Chunks(
+		fake.Delta(map[string]any{"role": "assistant", "content": "Hello."}, "stop"),
+		fake.Usage(800, 50, 0.25),
+	))
+	f.agent.Catalog.Lookup(fake.DefaultModel).ContextLimit = 1000
+	if _, err := f.run(t, context.Background(), f.input("Hi"), &recorder{mode: transcript.ModeAsk}); err != nil {
+		t.Fatal(err)
+	}
+	turn, err := f.agent.Start(context.Background(), f.input("Continue"), &recorder{mode: transcript.ModeAsk})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !turn.needsCompaction() {
+		t.Fatal("the new turn did not use the saved response's input tokens")
+	}
+	in := f.input("Use a larger context")
+	in.Model = "openrouter:acme/plain"
+	f.agent.Catalog.Lookup(in.Model).ContextLimit = 2000
+	turn, err = f.agent.Start(context.Background(), in, &recorder{mode: transcript.ModeAsk})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if turn.needsCompaction() {
+		t.Fatal("the decision did not use the newly selected model's context limit")
+	}
+}
+
+func TestCompactionDecisionUsesSavedToolResponse(t *testing.T) {
+	f := newFixture(t)
+	f.agent.Catalog.Lookup(fake.DefaultModel).ContextLimit = 1000
+	turn, err := f.agent.Start(context.Background(), f.input("Run a command"), &recorder{mode: transcript.ModeAuto})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if turn.needsCompaction() {
+		t.Fatal("a turn without a response needs compaction")
+	}
+	message := transcript.AssistantMessage{
+		ToolCalls: []transcript.ToolCall{{CallID: "shell-0", Name: tools.Shell, Arguments: `{"command":"printf ready"}`}},
+		Usage:     &transcript.Usage{InputTokens: 800},
+	}
+	if err := turn.processBatch(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	if !turn.needsCompaction() {
+		t.Fatal("the saved tool response did not supply the next compaction decision")
+	}
+	if got := outcomes(f.saved(t)); fmt.Sprint(got) != "[completed: Exit code: 0]" {
+		t.Fatalf("outcomes = %q", got)
 	}
 }
 
