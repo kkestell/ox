@@ -149,7 +149,7 @@ func TestRequestsGroupMessagesAndSendContinuationMetadata(t *testing.T) {
 	}
 }
 
-func TestRequestsSendTheTranscriptFromTheLatestCompaction(t *testing.T) {
+func TestRequestsSendTheLatestCompactionAndTheUserMessageBeforeIt(t *testing.T) {
 	server := openroutertest.Start(t, openroutertest.Text("ok"))
 	details := []json.RawMessage{json.RawMessage(`{"data":"opaque","type":"reasoning.encrypted"}`)}
 	entries := []transcript.Entry{
@@ -168,6 +168,7 @@ func TestRequestsSendTheTranscriptFromTheLatestCompaction(t *testing.T) {
 	want := []any{
 		object{"role": "system", "content": "You are Ox."},
 		object{"role": "user", "content": "The earlier part of this session was replaced by this summary:\n\nThe parser is fixed."},
+		object{"role": "user", "content": "Fix the parser."},
 		object{"role": "assistant", "content": "Done."},
 	}
 	if messages := server.Bodies()[0]["messages"]; !reflect.DeepEqual(messages, want) {

@@ -8,8 +8,7 @@ import (
 )
 
 // Request is one model request: the model, effort, system prompt, tool
-// definitions, and the saved transcript, which is sent from its latest
-// compaction onward.
+// definitions, and the saved transcript, whose request entries are sent.
 type Request struct {
 	Model        *catalog.Model
 	Effort       catalog.Effort
@@ -39,12 +38,11 @@ func (r Request) body() map[string]any {
 	return body
 }
 
-// chatMessages encodes the transcript from its latest compaction onward as
-// chat messages. Visible reasoning is sent only when no continuation metadata
-// carries it.
+// chatMessages encodes the transcript's request entries as chat messages.
+// Visible reasoning is sent only when no continuation metadata carries it.
 func chatMessages(entries []transcript.Entry) []any {
 	var messages []any
-	for _, entry := range transcript.SinceCompaction(entries) {
+	for _, entry := range transcript.RequestEntries(entries) {
 		switch entry := entry.(type) {
 		case *transcript.TurnStart:
 			messages = append(messages, map[string]any{"role": "user", "content": userContent(entry.Input.ModelMessage())})

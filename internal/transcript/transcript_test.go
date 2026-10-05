@@ -78,18 +78,19 @@ func TestACompactionEncodesAndValidates(t *testing.T) {
 	}
 }
 
-func TestSinceCompactionStartsAtTheLatestCompaction(t *testing.T) {
-	start, batch := &TurnStart{}, &AssistantBatch{}
+func TestRequestEntriesKeepTheLatestTurnStartAfterTheLatestCompaction(t *testing.T) {
+	start, later, batch := &TurnStart{Effort: "low"}, &TurnStart{Effort: "high"}, &AssistantBatch{}
 	first, second := &Compaction{Summary: "first"}, &Compaction{Summary: "second"}
 	for _, test := range []struct {
 		name          string
 		entries, want []Entry
 	}{
 		{"none", []Entry{start, batch}, []Entry{start, batch}},
-		{"one", []Entry{start, first, batch}, []Entry{first, batch}},
-		{"two", []Entry{start, first, batch, second, batch}, []Entry{second, batch}},
+		{"one", []Entry{start, batch, first, batch}, []Entry{first, start, batch}},
+		{"two", []Entry{start, first, later, batch, second, batch}, []Entry{second, later, batch}},
+		{"two in one turn", []Entry{start, first, batch, second, batch}, []Entry{second, start, batch}},
 	} {
-		if got := SinceCompaction(test.entries); !reflect.DeepEqual(got, test.want) {
+		if got := RequestEntries(test.entries); !reflect.DeepEqual(got, test.want) {
 			t.Errorf("%s: entries = %v", test.name, got)
 		}
 	}

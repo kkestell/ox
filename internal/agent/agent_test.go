@@ -506,6 +506,7 @@ func TestCompactionReplacesTheTranscriptInLaterRequests(t *testing.T) {
 	want := []any{
 		map[string]any{"role": "system", "content": "You are Ox."},
 		map[string]any{"role": "user", "content": compaction.Message().Text()},
+		map[string]any{"role": "user", "content": "Continue"},
 	}
 	if messages := bodies[2]["messages"]; fmt.Sprint(messages) != fmt.Sprint(want) {
 		t.Errorf("request after compaction = %v", messages)
@@ -570,22 +571,36 @@ func TestCancellationDuringCompactionSavesNothing(t *testing.T) {
 	}
 }
 
-func TestImagesBeforeTheLatestCompactionDoNotRejectATextModel(t *testing.T) {
+func TestImagesRejectATextModelOnlyWhileRequestsSendThem(t *testing.T) {
 	f := newFixture(t)
-	start := &transcript.TurnStart{Model: fake.DefaultModel, Effort: catalog.EffortDefault, Mode: transcript.ModeAsk,
+	image := &transcript.TurnStart{Model: fake.DefaultModel, Effort: catalog.EffortDefault, Mode: transcript.ModeAsk,
 		Input: transcript.TurnInput{Message: &transcript.UserMessage{Parts: []transcript.UserMessagePart{
 			{Image: &transcript.ImageAttachment{Data: "aGk=", MimeType: "image/png"}},
 		}}}}
-	if _, err := f.agent.Store.AppendTurnStart(f.session, start); err != nil {
+	text := &transcript.TurnStart{Model: fake.DefaultModel, Effort: catalog.EffortDefault, Mode: transcript.ModeAsk,
+		Input: transcript.TurnInput{Message: new(transcript.TextMessage("Next"))}}
+	compaction := &transcript.Compaction{Summary: "The user sent a screenshot."}
+	start := func() error {
+		_, err := f.agent.Start(context.Background(), f.input("Continue"), &recorder{mode: transcript.ModeAsk})
+		return err
+	}
+	// The latest turn start before a compaction is still sent.
+	if _, err := f.agent.Store.AppendTurnStart(f.session, image); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.agent.Start(context.Background(), f.input("Continue"), &recorder{mode: transcript.ModeAsk}); !errors.Is(err, ErrImagesUnsupported) {
-		t.Fatalf("an earlier image did not reject the model: %v", err)
-	}
-	if err := f.agent.Store.AppendCompaction(f.session, &transcript.Compaction{Summary: "The user sent a screenshot."}); err != nil {
+	if err := f.agent.Store.AppendCompaction(f.session, compaction); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.agent.Start(context.Background(), f.input("Continue"), &recorder{mode: transcript.ModeAsk}); err != nil {
-		t.Errorf("an image before the compaction rejected the model: %v", err)
+	if err := start(); !errors.Is(err, ErrImagesUnsupported) {
+		t.Fatalf("an image the requests still send did not reject the model: %v", err)
+	}
+	if _, err := f.agent.Store.AppendTurnStart(f.session, text); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.agent.Store.AppendCompaction(f.session, compaction); err != nil {
+		t.Fatal(err)
+	}
+	if err := start(); err != nil {
+		t.Errorf("an image the compaction replaced rejected the model: %v", err)
 	}
 }

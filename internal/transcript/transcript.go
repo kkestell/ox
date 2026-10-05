@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"ox/internal/catalog"
@@ -68,8 +69,9 @@ type TurnStart struct {
 // TurnError is why a turn ended with an error. It ends the turn's entries.
 type TurnError string
 
-// Compaction is a summary that replaces every entry before it in model
-// requests. The entries it replaces stay saved and are still replayed.
+// Compaction is a summary that replaces the entries before it in model
+// requests, except the latest turn start. The entries it replaces stay saved
+// and are still replayed.
 type Compaction struct {
 	Summary string `json:"summary"`
 	// Usage is what the provider reported for the request that produced the
@@ -425,13 +427,19 @@ func LatestTurnStart(entries []Entry) *TurnStart {
 	return nil
 }
 
-// SinceCompaction returns the entries model requests read: those from the
-// latest compaction onward, or every entry when there is none.
-func SinceCompaction(entries []Entry) []Entry {
+// RequestEntries returns the entries model requests read: every entry, or,
+// after a compaction, the compaction, the latest turn start before it, and the
+// entries after it. The turn start is kept so the model reads the user's latest
+// message word for word instead of through the summary.
+func RequestEntries(entries []Entry) []Entry {
 	for i := len(entries) - 1; i >= 0; i-- {
-		if _, ok := entries[i].(*Compaction); ok {
-			return entries[i:]
+		if _, ok := entries[i].(*Compaction); !ok {
+			continue
 		}
+		if start := LatestTurnStart(entries[:i]); start != nil {
+			return slices.Concat(entries[i:i+1], []Entry{start}, entries[i+1:])
+		}
+		return entries[i:]
 	}
 	return entries
 }

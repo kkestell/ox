@@ -25,8 +25,9 @@ import (
 // transcript in later requests.
 const compactionPrompt = `The conversation above is the session so far between the user and you, Ox, a
 coding agent working in the user's workspace. It will be replaced by your
-summary. A model that sees only your summary and the messages that follow it
-must be able to continue the work without asking the user to repeat anything.
+summary followed by the user's last message above, word for word. A model that
+sees only those and the messages that follow them must be able to continue the
+work without asking the user to repeat anything.
 
 Write the summary. Include:
 
@@ -215,7 +216,7 @@ func (a *Agent) Start(ctx context.Context, in Input, client Client) (*Turn, erro
 	}
 	start := &transcript.TurnStart{Model: model.QualifiedID(), Effort: in.Effort, Mode: t.client.Mode(), Input: in.Input}
 	// An earlier image fails every request to a model without image input.
-	if !model.AcceptsImages && (start.Input.HasImages() || hasImages(transcript.SinceCompaction(session.Transcript))) {
+	if !model.AcceptsImages && (start.Input.HasImages() || hasImages(transcript.RequestEntries(session.Transcript))) {
 		return nil, ErrImagesUnsupported
 	}
 	updated, err := a.Store.AppendTurnStart(in.SessionID, start)
