@@ -54,7 +54,8 @@ To add a task:
 4. Run `python3 evals/bench.py validate --task <id>`. A task is valid when at
    least one new test fails at its base, every old test passes there, and every
    test passes at the tagged commit.
-5. Check the task below, and commit `evals/tasks.toml` and this file.
+5. Check the task below, and commit `evals/tasks.toml`, `evals/validate/<id>/`,
+   and this file.
 
 Each task builds on the one before it:
 
