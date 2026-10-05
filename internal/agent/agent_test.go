@@ -19,10 +19,13 @@ import (
 	"ox/internal/transcript"
 )
 
-// recorder records events and answers permission requests in order.
+// recorder records events, reports its mode, and answers permission requests
+// in order.
 type recorder struct {
 	mu              sync.Mutex
 	events          []Event
+	mode            transcript.Mode
+	modeAfterCall   transcript.Mode
 	answers         []bool
 	failAt          int
 	asked           chan transcript.ToolCall
@@ -36,10 +39,19 @@ func (r *recorder) Send(event Event) error {
 	if _, ok := event.(ToolFinished); ok && r.cancelAfterCall != nil {
 		r.cancelAfterCall()
 	}
+	if _, ok := event.(ToolFinished); ok && r.modeAfterCall != "" {
+		r.mode, r.modeAfterCall = r.modeAfterCall, ""
+	}
 	if r.failAt > 0 && len(r.events) == r.failAt {
 		return errors.New("the client went away")
 	}
 	return nil
+}
+
+func (r *recorder) Mode() transcript.Mode {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.mode
 }
 
 func (r *recorder) Approve(ctx context.Context, call transcript.ToolCall, _ tools.Permission) (bool, error) {
@@ -82,10 +94,10 @@ func newFixture(t *testing.T, replies ...fake.Reply) *fixture {
 		server: server, session: summary.ID, workspace: workspace, processes: processes}
 }
 
-func (f *fixture) input(text string, mode transcript.Mode) Input {
+func (f *fixture) input(text string) Input {
 	message := transcript.TextMessage(text)
 	return Input{SessionID: f.session, Input: transcript.TurnInput{Message: &message}, Model: fake.DefaultModel,
-		Effort: catalog.EffortDefault, Mode: mode, SystemPrompt: "You are Ox.", Processes: f.processes}
+		Effort: catalog.EffortDefault, SystemPrompt: "You are Ox.", Processes: f.processes}
 }
 
 func (f *fixture) run(t *testing.T, ctx context.Context, in Input, client Client) (Result, error) {
@@ -124,8 +136,8 @@ func TestAnAnswerIsSavedAndReported(t *testing.T) {
 		fake.Delta(map[string]any{"content": "Hello."}, "stop"),
 		fake.Usage(10, 5, 0.25),
 	))
-	client := &recorder{}
-	result, err := f.run(t, context.Background(), f.input("Hi", transcript.ModeAsk), client)
+	client := &recorder{mode: transcript.ModeAsk}
+	result, err := f.run(t, context.Background(), f.input("Hi"), client)
 	if err != nil || result != (Result{Stop: EndTurn, Answer: "Hello."}) {
 		t.Fatalf("result %+v, %v", result, err)
 	}
@@ -145,8 +157,8 @@ func TestAnAnswerIsSavedAndReported(t *testing.T) {
 
 func TestToolCallsRunInOrderWithAskModePermission(t *testing.T) {
 	f := newFixture(t, fake.Shell("printf one", "printf two", "printf three"), fake.Text("Done."))
-	client := &recorder{answers: []bool{true, false, true}}
-	result, err := f.run(t, context.Background(), f.input("Run them", transcript.ModeAsk), client)
+	client := &recorder{mode: transcript.ModeAsk, answers: []bool{true, false, true}}
+	result, err := f.run(t, context.Background(), f.input("Run them"), client)
 	if err != nil || result.Answer != "Done." {
 		t.Fatalf("result %+v, %v", result, err)
 	}
@@ -170,9 +182,30 @@ func TestToolCallsRunInOrderWithAskModePermission(t *testing.T) {
 	}
 }
 
+func TestAModeChangeAppliesFromTheNextBatch(t *testing.T) {
+	f := newFixture(t, fake.Shell("printf one", "printf two"), fake.Shell("printf three"), fake.Text("Done."))
+	// The recorder has no third answer, so a third permission request fails
+	// the test.
+	client := &recorder{mode: transcript.ModeAsk, modeAfterCall: transcript.ModeAuto, answers: []bool{true, true}}
+	if _, err := f.run(t, context.Background(), f.input("Run them"), client); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"completed: Exit code: 0", "completed: Exit code: 0", "completed: Exit code: 0"}
+	saved := f.saved(t)
+	if got := outcomes(saved); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("outcomes = %q", got)
+	}
+	if len(client.answers) != 0 {
+		t.Errorf("the first batch did not ask for both calls: %v answers left", len(client.answers))
+	}
+	if mode := saved[0].(*transcript.TurnStart).Mode; mode != transcript.ModeAsk {
+		t.Errorf("turn start mode = %s", mode)
+	}
+}
+
 func TestAutoModeRunsShellCallsWithoutAsking(t *testing.T) {
 	f := newFixture(t, fake.Shell("printf ok"), fake.Text("Done."))
-	if _, err := f.run(t, context.Background(), f.input("Run it", transcript.ModeAuto), &recorder{}); err != nil {
+	if _, err := f.run(t, context.Background(), f.input("Run it"), &recorder{mode: transcript.ModeAuto}); err != nil {
 		t.Fatal(err)
 	}
 	if got := outcomes(f.saved(t)); len(got) != 1 || got[0] != "completed: Exit code: 0" {
@@ -183,8 +216,8 @@ func TestAutoModeRunsShellCallsWithoutAsking(t *testing.T) {
 func TestCancellationWhileAskingSavesEveryCallAsCancelled(t *testing.T) {
 	f := newFixture(t, fake.Shell("printf done", "printf asking", "printf never"))
 	ctx, cancel := context.WithCancel(context.Background())
-	client := &recorder{asked: make(chan transcript.ToolCall)}
-	in := f.input("Run them", transcript.ModeAsk)
+	client := &recorder{mode: transcript.ModeAsk, asked: make(chan transcript.ToolCall)}
+	in := f.input("Run them")
 	turn, err := f.agent.Start(ctx, in, client)
 	if err != nil {
 		t.Fatal(err)
@@ -208,8 +241,8 @@ func TestCancellationWhileAskingSavesEveryCallAsCancelled(t *testing.T) {
 func TestCancellationDuringTheStreamDiscardsProvisionalOutput(t *testing.T) {
 	f := newFixture(t, fake.Hang(fake.SSE(fake.Delta(map[string]any{"content": "partial"}, ""))[len(": OPENROUTER PROCESSING\n\n"):]))
 	ctx, cancel := context.WithCancel(context.Background())
-	client := &recorder{}
-	turn, err := f.agent.Start(ctx, f.input("Hi", transcript.ModeAsk), client)
+	client := &recorder{mode: transcript.ModeAsk}
+	turn, err := f.agent.Start(ctx, f.input("Hi"), client)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,8 +271,8 @@ func TestCancellationKeepsThePatchOutcomeAndSkipsLaterCalls(t *testing.T) {
 			))
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			client := &recorder{cancelAfterCall: cancel}
-			result, err := f.run(t, ctx, f.input("Apply patches", transcript.ModeAuto), client)
+			client := &recorder{mode: transcript.ModeAuto, cancelAfterCall: cancel}
+			result, err := f.run(t, ctx, f.input("Apply patches"), client)
 			if err != nil || result.Stop != Cancelled {
 				t.Fatalf("result %+v, %v", result, err)
 			}
@@ -276,11 +309,11 @@ func TestCancellationKeepsThePatchOutcomeAndSkipsLaterCalls(t *testing.T) {
 
 func TestTemporaryFailuresAreRetriedUpToTheAttemptLimit(t *testing.T) {
 	f := newFixture(t, fake.Status(503, `{}`), fake.Status(429, `{}`), fake.Text("Recovered."))
-	if result, err := f.run(t, context.Background(), f.input("Hi", transcript.ModeAsk), &recorder{}); err != nil || result.Answer != "Recovered." {
+	if result, err := f.run(t, context.Background(), f.input("Hi"), &recorder{mode: transcript.ModeAsk}); err != nil || result.Answer != "Recovered." {
 		t.Errorf("result %+v, %v", result, err)
 	}
 	f = newFixture(t, fake.Status(503, `{}`), fake.Status(503, `{}`), fake.Status(503, `{}`), fake.Text("Never."))
-	_, err := f.run(t, context.Background(), f.input("Hi", transcript.ModeAsk), &recorder{})
+	_, err := f.run(t, context.Background(), f.input("Hi"), &recorder{mode: transcript.ModeAsk})
 	if err == nil || !strings.HasPrefix(err.Error(), "the model request failed: OpenRouter returned 503") {
 		t.Fatalf("error = %v", err)
 	}
@@ -289,7 +322,7 @@ func TestTemporaryFailuresAreRetriedUpToTheAttemptLimit(t *testing.T) {
 		t.Errorf("saved = %v", entries)
 	}
 	f = newFixture(t, fake.Status(400, `{}`))
-	if _, err := f.run(t, context.Background(), f.input("Hi", transcript.ModeAsk), &recorder{}); len(f.server.Bodies()) != 1 || err == nil {
+	if _, err := f.run(t, context.Background(), f.input("Hi"), &recorder{mode: transcript.ModeAsk}); len(f.server.Bodies()) != 1 || err == nil {
 		t.Errorf("a permanent failure was retried: %v", err)
 	}
 }
@@ -297,8 +330,8 @@ func TestTemporaryFailuresAreRetriedUpToTheAttemptLimit(t *testing.T) {
 func TestAnUpdateFailureStillCommitsTheBatch(t *testing.T) {
 	f := newFixture(t, fake.Shell("printf one", "printf two"))
 	// Event 1 is the session info and events 2 and 3 announce the calls.
-	client := &recorder{failAt: 5, answers: []bool{true}}
-	_, err := f.run(t, context.Background(), f.input("Run them", transcript.ModeAsk), client)
+	client := &recorder{mode: transcript.ModeAsk, failAt: 5, answers: []bool{true}}
+	_, err := f.run(t, context.Background(), f.input("Run them"), client)
 	if err == nil || !strings.HasPrefix(err.Error(), "sending an ACP update failed") {
 		t.Fatalf("error = %v", err)
 	}
@@ -310,18 +343,18 @@ func TestAnUpdateFailureStillCommitsTheBatch(t *testing.T) {
 
 func TestStartRejectsImagesForATextModelAndContextOverflowEndsTheTurn(t *testing.T) {
 	f := newFixture(t)
-	in := f.input("", transcript.ModeAsk)
+	in := f.input("")
 	in.Input = transcript.TurnInput{Message: &transcript.UserMessage{Parts: []transcript.UserMessagePart{
 		{Image: &transcript.ImageAttachment{Data: "aGk=", MimeType: "image/png"}},
 	}}}
-	if _, err := f.agent.Start(context.Background(), in, &recorder{}); !errors.Is(err, ErrImagesUnsupported) {
+	if _, err := f.agent.Start(context.Background(), in, &recorder{mode: transcript.ModeAsk}); !errors.Is(err, ErrImagesUnsupported) {
 		t.Errorf("error = %v", err)
 	}
 	if entries := f.saved(t); len(entries) != 0 {
 		t.Errorf("a rejected prompt was saved: %v", entries)
 	}
 	f = newFixture(t, fake.Status(400, `{"error":{"message":"This model's maximum context length is 8192 tokens"}}`))
-	_, err := f.run(t, context.Background(), f.input("Hi", transcript.ModeAsk), &recorder{})
+	_, err := f.run(t, context.Background(), f.input("Hi"), &recorder{mode: transcript.ModeAsk})
 	if err == nil || !strings.Contains(err.Error(), "the session exceeds the model context limit; start a new session") {
 		t.Errorf("error = %v", err)
 	}

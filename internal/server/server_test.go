@@ -280,6 +280,37 @@ func TestConfigurationSelectionsValidateSaveAndApplyToTheNextTurn(t *testing.T) 
 	}
 }
 
+func TestAModeChangeDuringAPromptAppliesFromTheNextBatch(t *testing.T) {
+	c := connect(t, fake.Shell("printf one"), fake.Shell("printf two"), fake.Text("Done."))
+	id := c.newSession()
+	c.next()
+	prompt := c.request(acp.MethodPrompt, object{"sessionId": id, "prompt": []any{object{"type": "text", "text": "Run them"}}})
+	var permission message
+	for permission.Method != acp.MethodRequestPermission {
+		permission = c.next()
+	}
+	// The server reads the mode change before the answer, so the second
+	// batch starts in Auto mode.
+	c.request(acp.MethodSetConfigOption, object{"sessionId": id, "configId": "mode", "value": "auto"})
+	c.send(object{"id": permission.ID, "result": object{"outcome": object{"outcome": "selected", "optionId": "approve"}}})
+	response, after := c.await(prompt, "approve")
+	if response.Result["stopReason"] != "end_turn" {
+		t.Fatalf("prompt = %+v", response)
+	}
+	for _, m := range after {
+		if m.Method == acp.MethodRequestPermission {
+			t.Errorf("the second batch asked for permission: %v", m.Params)
+		}
+	}
+	var statuses []string
+	for _, update := range updates(after, "tool_call_update") {
+		statuses = append(statuses, update["status"].(string))
+	}
+	if strings.Join(statuses, " ") != "in_progress completed in_progress completed" {
+		t.Errorf("tool statuses = %v", statuses)
+	}
+}
+
 func TestSlashCommandsInvokeSkills(t *testing.T) {
 	c := connect(t, fake.Echo(), fake.Echo())
 	id := c.newSession()

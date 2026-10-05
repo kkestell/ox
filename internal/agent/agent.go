@@ -65,9 +65,14 @@ func (ToolStarted) event()    {}
 func (ToolFinished) event()   {}
 func (Usage) event()          {}
 
-// Client receives a turn's events and answers Ask mode permission requests.
+// Client receives a turn's events, reports the session's mode, and answers Ask
+// mode permission requests.
 type Client interface {
 	Send(Event) error
+	// Mode returns the session's current mode. The turn reads it when the
+	// turn starts and before each batch of tool calls, so a change during the
+	// turn applies from the next batch.
+	Mode() transcript.Mode
 	// Approve asks whether call may run. It returns ErrCancelled when the
 	// client cancelled the request.
 	Approve(ctx context.Context, call transcript.ToolCall, permission tools.Permission) (bool, error)
@@ -100,11 +105,10 @@ func New(s *store.Store, client *openrouter.Client, cat catalog.Catalog) *Agent 
 type Input struct {
 	SessionID string
 	Input     transcript.TurnInput
-	// Model, Effort, and Mode are the session's selections, used for every
-	// model request in the turn.
+	// Model and Effort are the session's selections, used for every model
+	// request in the turn.
 	Model        string
 	Effort       catalog.Effort
-	Mode         transcript.Mode
 	SystemPrompt string
 	// Processes are the session's background processes, which outlive the
 	// turn.
@@ -132,7 +136,6 @@ type Turn struct {
 	agent   *Agent
 	client  Client
 	request openrouter.Request
-	mode    transcript.Mode
 	summary store.Summary
 	toolbox *tools.Toolbox
 	info    *SessionInfo
@@ -151,8 +154,8 @@ func ModelSelection(cat catalog.Catalog, model string, effort catalog.Effort) (*
 	return selected, nil
 }
 
-// Start reads the session and saves the turn start with the selected model,
-// effort, and mode before any model request. Nothing is saved when ctx is
+// Start reads the session and saves the turn start with the selected model and
+// effort and the client's current mode before any model request. Nothing is saved when ctx is
 // already done; the turn then runs as cancelled.
 func (a *Agent) Start(ctx context.Context, in Input, client Client) (*Turn, error) {
 	session, err := a.Store.Read(in.SessionID)
@@ -169,14 +172,13 @@ func (a *Agent) Start(ctx context.Context, in Input, client Client) (*Turn, erro
 		request: openrouter.Request{
 			Model: model, Effort: in.Effort, SystemPrompt: in.SystemPrompt, Tools: tools.Schemas(), Transcript: session.Transcript,
 		},
-		mode:    in.Mode,
 		summary: session.Summary,
 		toolbox: &tools.Toolbox{Workspace: session.Summary.Workspace, Processes: in.Processes},
 	}
 	if ctx.Err() != nil {
 		return t, nil
 	}
-	start := &transcript.TurnStart{Model: model.QualifiedID(), Effort: in.Effort, Mode: in.Mode, Input: in.Input}
+	start := &transcript.TurnStart{Model: model.QualifiedID(), Effort: in.Effort, Mode: t.client.Mode(), Input: in.Input}
 	// An earlier image fails every request to a model without image input.
 	if !model.AcceptsImages && (start.Input.HasImages() || hasImages(session.Transcript)) {
 		return nil, ErrImagesUnsupported
@@ -346,11 +348,12 @@ func (t *Turn) execute(ctx context.Context, batch *transcript.AssistantBatch) er
 			return updateFailure(err)
 		}
 	}
+	mode := t.client.Mode()
 	for _, call := range batch.Message.ToolCalls {
 		if ctx.Err() != nil {
 			return ErrCancelled
 		}
-		denial, err := t.approve(ctx, call)
+		denial, err := t.approve(ctx, call, mode)
 		if err != nil {
 			return err
 		}
@@ -374,9 +377,9 @@ func (t *Turn) execute(ctx context.Context, batch *transcript.AssistantBatch) er
 
 // approve requests Ask mode permission when the call needs it, and returns the
 // denial message when the user denies it.
-func (t *Turn) approve(ctx context.Context, call transcript.ToolCall) (string, error) {
+func (t *Turn) approve(ctx context.Context, call transcript.ToolCall, mode transcript.Mode) (string, error) {
 	permission := t.toolbox.Permission(call)
-	if permission.Kind == tools.PermissionNone || t.mode == transcript.ModeAuto {
+	if permission.Kind == tools.PermissionNone || mode == transcript.ModeAuto {
 		return "", nil
 	}
 	approved, err := t.client.Approve(ctx, call, permission)
