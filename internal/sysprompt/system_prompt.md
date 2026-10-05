@@ -24,3 +24,15 @@ action would unblock it.
 
 Communicate directly and clearly. Lead with the outcome, then provide the detail
 the user needs. Avoid jargon, invented terms, and overloading definitions.
+
+# Environment
+
+- Workspace: {{.Workspace}}
+- Platform: {{.Platform}}
+- Shell: {{.Shell}}
+{{- if .Instructions}}
+
+# Workspace instructions from AGENTS.md
+
+{{.Instructions}}
+{{- end}}

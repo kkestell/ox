@@ -1,5 +1,5 @@
-// Package sysprompt builds Ox's system prompt from its built-in prompt, the
-// environment, and workspace instructions.
+// Package sysprompt builds Ox's system prompt by filling its built-in template
+// with the environment and workspace instructions.
 package sysprompt
 
 import (
@@ -10,12 +10,15 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"text/template"
 
 	"ox/internal/textfile"
 )
 
 //go:embed system_prompt.md
 var builtIn string
+
+var promptTemplate = template.Must(template.New("system_prompt.md").Parse(builtIn))
 
 const instructionsFile = "AGENTS.md"
 
@@ -26,13 +29,19 @@ func ForWorkspace(workspace, shell string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	prompt := strings.TrimRight(builtIn, " \t\r\n") + fmt.Sprintf(
-		"\n\n# Environment\n\n- Workspace: %s\n- Platform: %s (%s)\n- Shell: %s",
-		workspace, runtime.GOOS, runtime.GOARCH, shell)
-	if instructions != "" {
-		prompt += "\n\n# Workspace instructions from AGENTS.md\n\n" + strings.TrimRight(instructions, " \t\r\n")
+	var prompt strings.Builder
+	err = promptTemplate.Execute(&prompt, struct {
+		Workspace, Platform, Shell, Instructions string
+	}{
+		Workspace:    workspace,
+		Platform:     runtime.GOOS + " (" + runtime.GOARCH + ")",
+		Shell:        shell,
+		Instructions: instructions,
+	})
+	if err != nil {
+		return "", err
 	}
-	return prompt, nil
+	return strings.TrimRight(prompt.String(), " \t\r\n"), nil
 }
 
 // readInstructions reads `<workspace>/AGENTS.md`: empty when the file is
