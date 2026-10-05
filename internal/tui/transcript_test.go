@@ -328,6 +328,21 @@ func TestItemsRenderWithIconsPrefixesAndSpacing(t *testing.T) {
 	equal(t, colorOf(lines[5]), dim)
 }
 
+func TestHiddenToolLoopHidesAlreadyRenderedMessagesAndThoughts(t *testing.T) {
+	now := time.Now()
+	view := &transcript{}
+	usage := named{update: protocol.SessionUpdate{UsageUpdate: &protocol.SessionUsageUpdate{}}}
+	for _, update := range []named{
+		thought("First pass"), message("Checking the tools."), read("a", "first.go"), usage,
+		thought("Second pass"), message("Checking the tools."), read("b", "second.go"), usage,
+		message("All three tools passed."),
+	} {
+		view.update(update.update, update.name, now)
+		rows(view, 80, false, now)
+	}
+	equal(t, rows(view, 80, false, now), []string{"● Checking the tools.", "", "● All three tools passed."})
+}
+
 func TestHiddenToolLoopUpdatesOneProgressItemAndKeepsTheFinalAnswer(t *testing.T) {
 	now := time.Now()
 	view := &transcript{}
@@ -339,6 +354,7 @@ func TestHiddenToolLoopUpdatesOneProgressItemAndKeepsTheFinalAnswer(t *testing.T
 		"I’ll inspect the error path and compare expected behavior.",
 	}
 	for index, description := range descriptions {
+		view.update(thought(fmt.Sprintf("reasoning for pass %d", index)).update, "", now)
 		view.update(message(description).update, "", now)
 		view.update(read(fmt.Sprintf("call-%d", index), fmt.Sprintf("file-%d.go", index)).update, "read_file", now)
 	}
@@ -349,16 +365,36 @@ func TestHiddenToolLoopUpdatesOneProgressItemAndKeepsTheFinalAnswer(t *testing.T
 		"● The test fails because the error path returns before updating the result.",
 	}, "summary mode collapses five tool iterations and preserves the final answer")
 	full := texts(allLines(view, 80, false, full, now))
-	if !reflect.DeepEqual(full, []string{
-		"● I’ll inspect the failing test and its setup.", "", "● Read file-0.go",
-		"", "● I’ll trace the function the test exercises.", "", "● Read file-1.go",
-		"", "● I’ll check the recent changes around that function.", "", "● Read file-2.go",
-		"", "● I’ll run the focused test to confirm the failure.", "", "● Read file-3.go",
-		"", "● I’ll inspect the error path and compare expected behavior.", "", "● Read file-4.go",
-		"", "● The test fails because the error path returns before updating the result.",
-	}) {
-		t.Errorf("full mode should retain each description and tool call:\ngot  %#v", full)
+	wantFull := []string{}
+	for index, description := range descriptions {
+		if index > 0 {
+			wantFull = append(wantFull, "")
+		}
+		wantFull = append(wantFull, "● Thought for 0s", "", "● "+description, "", fmt.Sprintf("● Read file-%d.go", index))
 	}
+	wantFull = append(wantFull, "", "● The test fails because the error path returns before updating the result.")
+	if !reflect.DeepEqual(full, wantFull) {
+		t.Errorf("full mode should retain each description and tool call:\ngot  %#v\nwant %#v", full, wantFull)
+	}
+}
+
+func TestHiddenToolLoopGroupsThinkingAndInterleavedMessageChunks(t *testing.T) {
+	now := time.Now()
+	view := newTranscript(now,
+		thought("I am comparing the paths."),
+		message("Checking the "),
+		thought("I should inspect the edge case."),
+		message("edge cases."),
+		read("a", "handler.go"),
+		thought("I am comparing the paths."),
+		message("Checking the edge cases."),
+		read("b", "handler_test.go"),
+	)
+	equal(t, rows(view, 60, false, now), []string{"● Checking the edge cases."}, "thoughts are hidden and each batch replaces the same progress item")
+	equal(t, texts(allLines(view, 60, false, full, now)), []string{
+		"● Thought for 0s", "", "● Checking the", "", "● Thought for 0s", "", "● edge cases.", "", "● Read handler.go",
+		"", "● Thought for 0s", "", "● Checking the edge cases.", "", "● Read handler_test.go",
+	}, "expanded mode retains thought chunks, message chunks, and calls")
 }
 
 func TestHiddenToolLoopUsesOneItemForMultipleCallsAndFallsBackToATitle(t *testing.T) {
@@ -381,6 +417,25 @@ func TestHiddenToolLoopReplayAndModeChangesKeepCallRecords(t *testing.T) {
 		"● Checking the source", "", "● Read a.go", "", "● Checking the test", "", "● Read a_test.go",
 	}, "switching to full output restores descriptions and calls")
 	equal(t, rows(view, 40, false, now), []string{"● Checking the test"}, "switching back restores the persistent summary")
+}
+
+func TestHiddenToolLoopKeepsThinkingAvailableWhenRequested(t *testing.T) {
+	now := time.Now()
+	view := newTranscript(now, thought("Compare the files"), message("Checking the source"), read("a", "a.go"))
+	equal(t, rows(view, 40, false, now), []string{"● Checking the source"})
+	equal(t, rows(view, 40, true, now), []string{"● Compare the files", "", "● Checking the source"})
+	equal(t, rows(view, 40, false, now), []string{"● Checking the source"})
+}
+
+func TestHiddenToolLoopFallbackUsesOnlyItsOwnCallUpdates(t *testing.T) {
+	now := time.Now()
+	view := newTranscript(now, read("a", "a.go"), read("b", "b.go"))
+	rows(view, 40, false, now)
+	view.update(protocol.UpdateToolCall("b", protocol.WithUpdateTitle("Read other.go")), "", now)
+	equal(t, rows(view, 40, false, now), []string{"● Read a.go"})
+	view.update(protocol.UpdateToolCall("a", protocol.WithUpdateTitle("Read updated.go"), protocol.WithUpdateStatus(protocol.ToolCallStatusFailed)), "", now)
+	equal(t, rows(view, 40, false, now), []string{"● Read updated.go"})
+	equal(t, colorOf(allLines(view, 40, false, summary, now)[0]), red)
 }
 
 func TestANamedCallShowsItsTextAndDiffBlocksOnlyWhileOutputIsShown(t *testing.T) {

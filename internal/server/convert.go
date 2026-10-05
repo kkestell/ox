@@ -258,8 +258,8 @@ func outputContent(outcome transcript.ToolOutcome) []protocol.ToolCallContent {
 // replay sends the saved transcript as displayable content and final tool
 // states. The model and continuation metadata are never shown. A saved turn
 // error is shown as a failed tool call, so it stays apart from model text.
-func replay(entries []transcript.Entry, send func(any) error) error {
-	for _, entry := range entries {
+func replay(entries []transcript.Entry, contextLimit int, send func(any) error) error {
+	for index, entry := range entries {
 		var updates []any
 		switch entry := entry.(type) {
 		case *transcript.TurnStart:
@@ -295,6 +295,8 @@ func replay(entries []transcript.Entry, send func(any) error) error {
 				update.Status, update.Content, update.RawOutput = status(outcome), outputContent(outcome), outcome.Text
 				updates = append(updates, update)
 			}
+			used, cost, _ := transcript.UsageSummary(entries[:index+1])
+			updates = append(updates, usageUpdate(used, contextLimit, cost))
 		}
 		for _, update := range updates {
 			if err := send(update); err != nil {

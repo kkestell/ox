@@ -78,12 +78,8 @@ type item struct {
 	started, ended time.Time
 	call           *toolCall
 	color          color.Color
-	// loopID groups the assistant descriptions and tool calls from one turn's
-	// tool loop. The progress item is the single row shown in summary mode.
-	loopID            int
-	loopProgress      bool
-	loopText          string
-	loopTextAssistant bool
+	// hiddenSummary keeps the original item available in expanded modes.
+	hiddenSummary bool
 	// rows caches the item's rows while rendered is set.
 	rows     []string
 	rendered bool
@@ -105,14 +101,12 @@ type transcript struct {
 	cacheKey rowsKey
 	// tools maps the current turn's call IDs to their items.
 	tools map[protocol.ToolCallId]int
-	// nextLoopID gives each turn's tool loop a stable ID in the transcript.
-	nextLoopID  int
-	activeLoop  int
-	batchLoop   int
-	progressAt  int
-	hasProgress bool
-	messageAt   int
-	hasMessage  bool
+	// batchStart bounds the current assistant response, including interleaved
+	// thought and message chunks. progressAt is the turn's summary item.
+	batchStart    int
+	batchHasTools bool
+	progressAt    int
+	hasProgress   bool
 	// userChunkOpen is set when the last update was a user message chunk.
 	userChunkOpen bool
 	// top is the first row shown while scrolled is set; otherwise the view
@@ -139,6 +133,7 @@ func (t *transcript) user(text string, now time.Time) {
 	clear(t.tools)
 	t.resetToolLoop()
 	t.push(item{kind: userItem, text: text})
+	t.batchStart = len(t.items)
 	t.changed()
 }
 
@@ -154,11 +149,20 @@ func (t *transcript) endTurn(now time.Time) {
 	t.endThinking(now)
 	clear(t.tools)
 	t.resetToolLoop()
+	t.batchStart = len(t.items)
 }
 
 func (t *transcript) resetToolLoop() {
-	t.activeLoop, t.batchLoop = 0, 0
-	t.hasProgress, t.hasMessage = false, false
+	t.batchStart = len(t.items)
+	t.batchHasTools, t.hasProgress = false, false
+}
+
+// Replayed batches may start without a usage update between them.
+func (t *transcript) startAssistant() {
+	if t.batchHasTools {
+		t.batchStart = len(t.items)
+		t.batchHasTools = false
+	}
 }
 
 // update adds a session update to the transcript. name is the tool name Ox
@@ -178,8 +182,10 @@ func (t *transcript) update(update protocol.SessionUpdate, name string, now time
 			clear(t.tools)
 			t.resetToolLoop()
 			t.push(item{kind: userItem, text: text})
+			t.batchStart = len(t.items)
 		}
 	case update.AgentThoughtChunk != nil:
+		t.startAssistant()
 		text := content(update.AgentThoughtChunk.Content)
 		if last != nil && last.thinking() {
 			last.text += text
@@ -188,18 +194,15 @@ func (t *transcript) update(update protocol.SessionUpdate, name string, now time
 			t.push(item{kind: thinkingItem, text: text, started: now})
 		}
 	case update.AgentMessageChunk != nil:
+		t.startAssistant()
 		t.endThinking(now)
 		text := content(update.AgentMessageChunk.Content)
 		if last != nil && last.kind == responseItem {
 			last.text += text
 			last.rendered = false
-			t.messageAt = len(t.items) - 1
 		} else {
 			t.push(item{kind: responseItem, text: text})
-			t.messageAt = len(t.items) - 1
-			t.batchLoop = 0
 		}
-		t.hasMessage = true
 	case update.ToolCall != nil:
 		t.endThinking(now)
 		created := update.ToolCall
@@ -217,11 +220,7 @@ func (t *transcript) update(update protocol.SessionUpdate, name string, now time
 		if index, ok := t.tools[changed.ToolCallId]; ok {
 			t.items[index].call.apply(changed, name)
 			t.items[index].rendered = false
-			if t.hasProgress {
-				t.items[t.progressAt].rendered = false
-			}
-			if changed.Title != nil && t.hasProgress && t.items[t.progressAt].kind == toolProgressItem {
-				t.items[t.progressAt].loopText = *changed.Title
+			if t.hasProgress && t.items[t.progressAt].call == t.items[index].call {
 				t.items[t.progressAt].rendered = false
 			}
 		} else {
@@ -234,8 +233,8 @@ func (t *transcript) update(update protocol.SessionUpdate, name string, now time
 		}
 	case update.UsageUpdate != nil:
 		t.endThinking(now)
-		t.batchLoop = 0
-		t.hasMessage = false
+		t.batchHasTools = false
+		t.batchStart = len(t.items)
 	default:
 		t.endThinking(now)
 		return
@@ -243,52 +242,38 @@ func (t *transcript) update(update protocol.SessionUpdate, name string, now time
 	t.changed()
 }
 
-// associateTool groups a call and its assistant description with the current
-// tool loop. The original items stay in place for truncated and full modes.
+// associateTool collapses a batch while preserving its original items for
+// expanded modes. Invalidate rows when hiding items that may already be on screen.
 func (t *transcript) associateTool(index int, call *toolCall) {
-	if t.batchLoop == 0 {
-		if t.activeLoop == 0 {
-			t.nextLoopID++
-			t.activeLoop = t.nextLoopID
-		}
-		t.batchLoop = t.activeLoop
-		if t.hasMessage && t.messageAt >= 0 && t.messageAt < len(t.items) && t.items[t.messageAt].kind == responseItem {
-			message := &t.items[t.messageAt]
-			message.loopID = t.activeLoop
-			text := strings.TrimSpace(message.text)
-			if !t.hasProgress {
-				message.loopProgress = true
-				message.loopText = message.text
-				if text == "" {
-					message.loopText = call.title
-				}
-				t.progressAt, t.hasProgress = t.messageAt, true
-			} else {
-				progress := &t.items[t.progressAt]
-				progress.loopText = call.title
-				progress.loopTextAssistant = false
-				if text != "" {
-					progress.loopText = message.text
-					progress.loopTextAssistant = true
-				}
-				progress.rendered = false
+	if !t.batchHasTools {
+		var text strings.Builder
+		for i := t.batchStart; i < len(t.items); i++ {
+			it := &t.items[i]
+			if it.kind != thinkingItem && it.kind != responseItem {
+				continue
 			}
-		} else if !t.hasProgress {
-			t.push(item{kind: toolProgressItem, call: call, loopID: t.activeLoop, loopProgress: true, loopText: call.title})
-			t.progressAt, t.hasProgress = len(t.items)-1, true
-		} else {
-			progress := &t.items[t.progressAt]
-			progress.loopText = call.title
-			progress.loopTextAssistant = false
-			progress.call = call
-			progress.rendered = false
+			it.hiddenSummary = true
+			it.rendered = false
+			if it.kind == responseItem {
+				text.WriteString(it.text)
+			}
 		}
-		t.hasMessage = false
+		if !t.hasProgress {
+			t.progressAt = len(t.items)
+			t.push(item{kind: toolProgressItem})
+			t.hasProgress = true
+		}
+		progress := &t.items[t.progressAt]
+		progress.text = text.String()
+		progress.call = nil
+		if strings.TrimSpace(progress.text) == "" {
+			progress.call = call
+		}
+		progress.rendered = false
+		t.batchHasTools = true
 	}
-	if index >= 0 && index < len(t.items) {
-		t.items[index].loopID = t.activeLoop
-		t.items[index].rendered = false
-	}
+	t.items[index].hiddenSummary = true
+	t.items[index].rendered = false
 }
 
 // setTool replaces the current turn's call with the same ID, or adds the call.
@@ -371,9 +356,38 @@ func (t *transcript) firstRow(height, total int) int {
 
 func page(height int) int { return max(height-1, 1) }
 
+// revealTools brings the affected turn into view when an output mode change
+// would otherwise change only rows above a long final answer.
+func (t *transcript) revealTools(width int, showThinking bool, output toolOutput, now time.Time, height int) {
+	if t.scrolled || width <= 0 || height <= 0 {
+		return
+	}
+	total, _ := t.visibleRows(width, showThinking, output, now, height)
+	row, userRow, toolRow, turnRow := 0, 0, -1, 0
+	for i := range t.items {
+		it := &t.items[i]
+		if len(it.rows) == 0 {
+			continue
+		}
+		if row > 0 {
+			row++
+		}
+		if it.kind == userItem {
+			userRow = row
+		}
+		if it.kind == toolProgressItem || it.kind == toolItem && it.call.name != "" {
+			toolRow, turnRow = row, userRow
+		}
+		row += len(it.rows)
+	}
+	if toolRow >= 0 && toolRow < t.firstRow(height, total) {
+		t.top, t.scrolled = turnRow, true
+		t.newActivity = false
+	}
+}
+
 // visibleRows returns the total row count and the rows shown in a view height
-// rows tall, with one blank row between items except between named calls
-// while their output is hidden.
+// rows tall, with one blank row between items.
 func (t *transcript) visibleRows(width int, showThinking bool, output toolOutput, now time.Time, height int) (int, []string) {
 	key := rowsKey{width, showThinking, output}
 	if t.cacheKey != key {
@@ -383,7 +397,6 @@ func (t *transcript) visibleRows(width int, showThinking bool, output toolOutput
 		t.cacheKey = key
 	}
 	total := 0
-	afterCall := false
 	for i := range t.items {
 		it := &t.items[i]
 		// A running placeholder shows the time, so it renders every time.
@@ -395,31 +408,26 @@ func (t *transcript) visibleRows(width int, showThinking bool, output toolOutput
 		if len(it.rows) == 0 {
 			continue
 		}
-		call := hiddenCall(it, output)
-		if needsBlankRow(total, afterCall, call) {
+		if total > 0 {
 			total++
 		}
-		afterCall = call
 		total += len(it.rows)
 	}
 	first := t.firstRow(height, total)
 	end := first + height
 	row := 0
-	afterCall = false
 	var visible []string
 	for i := range t.items {
 		rows := t.items[i].rows
 		if len(rows) == 0 {
 			continue
 		}
-		call := hiddenCall(&t.items[i], output)
-		if needsBlankRow(row, afterCall, call) {
+		if row > 0 {
 			if row >= first && row < end {
 				visible = append(visible, "")
 			}
 			row++
 		}
-		afterCall = call
 		from := min(max(first-row, 0), len(rows))
 		to := min(max(end-row, 0), len(rows))
 		visible = append(visible, rows[from:to]...)
@@ -428,22 +436,11 @@ func (t *transcript) visibleRows(width int, showThinking bool, output toolOutput
 	return total, visible
 }
 
-// hiddenCall reports whether an item is a named call whose output is hidden.
-func hiddenCall(i *item, output toolOutput) bool {
-	return output == summary && i.kind == toolItem && i.call.name != ""
-}
-
-// needsBlankRow reports whether a blank row sits before an item. Consecutive
-// hidden calls stack without one.
-func needsBlankRow(row int, afterCall, call bool) bool {
-	return row > 0 && !(afterCall && call)
-}
-
 // itemLines returns an item's rows. A named call shows as much of its content
 // as output allows; a nameless call, such as a replayed turn error, always
 // shows all of it.
 func itemLines(i *item, width int, showThinking bool, output toolOutput, now time.Time) []string {
-	if output == summary && i.loopID != 0 && !i.loopProgress {
+	if output == summary && i.hiddenSummary && (i.kind != thinkingItem || !showThinking) {
 		return nil
 	}
 	switch i.kind {
@@ -455,22 +452,18 @@ func itemLines(i *item, width int, showThinking bool, output toolOutput, now tim
 		}
 		return styled(dimStyle, "● "+placeholder(i.started, i.ended, now))
 	case responseItem:
-		text := i.text
-		if output == summary && i.loopProgress {
-			text = i.loopText
-		}
-		return prefixed(markdown(text, lipgloss.NewStyle(), width-2), "● ", "  ")
+		return prefixed(markdown(i.text, lipgloss.NewStyle(), width-2), "● ", "  ")
 	case toolProgressItem:
 		if output != summary {
 			return nil
 		}
-		if i.call != nil && !i.loopTextAssistant {
+		if i.call != nil {
 			if row, ok := shellLine(i.call, width); ok {
 				return []string{row}
 			}
-			return []string{toolLine(i.call, i.loopText, width)}
+			return []string{toolLine(i.call, i.call.title, width)}
 		}
-		return prefixed(markdown(i.loopText, lipgloss.NewStyle(), width-2), "● ", "  ")
+		return prefixed(markdown(i.text, lipgloss.NewStyle(), width-2), "● ", "  ")
 	case toolItem:
 		call := i.call
 		head, ok := shellLine(call, width)

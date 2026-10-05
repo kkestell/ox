@@ -249,6 +249,7 @@ func (m *model) key(key tea.KeyPressMsg, now time.Time) tea.Cmd {
 		return m.cycle(protocol.SessionConfigOptionCategoryThoughtLevel, true, "Effort change failed")
 	case control && key.Code == 'o':
 		m.toolOutput = m.toolOutput.next()
+		m.view.revealTools(m.width-2*marginX, m.showThinking, m.toolOutput, now, m.layout.height)
 	case control && key.Code == 'u':
 		m.input.Reset()
 	case key.Code == tea.KeyEnter && !key.Mod.Contains(tea.ModShift):

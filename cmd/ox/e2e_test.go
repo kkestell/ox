@@ -420,11 +420,7 @@ func TestTerminalTranscriptRendersThinkingToolsAndWrappedReplies(t *testing.T) {
 	position := 0
 	for _, text := range []string{
 		" render",
-		"● Thought for 0s",
 		"● Shell ls",
-		"● Read tallies/2026/september/archi…",
-		`● Shell printf 'a.tally\nb.tally\n'…`,
-		"● Apply patch to a.tally",
 		"● Two tallies were counted in the",
 		"a.tally and b.tally",
 	} {
@@ -436,7 +432,7 @@ func TestTerminalTranscriptRendersThinkingToolsAndWrappedReplies(t *testing.T) {
 	}
 	styled := x.styledScreen()
 	gray := func(text string) bool { return strings.Contains(styled, "\x1b[38;2;112;112;112m"+text) }
-	if !gray("● Thought for 0s") || gray("● Two tallies") {
+	if strings.Contains(screen, "● Thought for") || strings.Contains(screen, "● Read tallies") || gray("● Two tallies") {
 		t.Errorf("%q", styled)
 	}
 	x.keys("C-o")
@@ -458,6 +454,66 @@ func TestTerminalTranscriptRendersThinkingToolsAndWrappedReplies(t *testing.T) {
 	}
 	x.keys("C-o", "C-o")
 	x.waitGone("Lines 1–2 of 2")
+}
+
+func TestTerminalToolLoopsCollapseExpandAndReplayWithALongFinalAnswer(t *testing.T) {
+	var replies []openroutertest.Reply
+	for index, test := range []struct {
+		description, name string
+		arguments         map[string]any
+	}{
+		{"Inspecting the workspace.", "glob", map[string]any{"pattern": "*.tally"}},
+		{"Checking the search results.", "grep", map[string]any{"pattern": "one"}},
+		{"Checking file contents.", "read_file", map[string]any{"path": "a.tally"}},
+		{"Checking tool edge cases.", "glob", map[string]any{"pattern": "missing-*"}},
+		{"Checking tool edge cases.", "grep", map[string]any{"pattern": "two"}},
+	} {
+		arguments, _ := json.Marshal(test.arguments)
+		replies = append(replies, openroutertest.Chunks(
+			openroutertest.Delta(map[string]any{"reasoning": "Check the next tool result."}, ""),
+			openroutertest.Delta(map[string]any{"content": test.description}, ""),
+			openroutertest.Delta(map[string]any{"tool_calls": []any{map[string]any{
+				"index": 0, "id": fmt.Sprintf("call-%d", index), "type": "function",
+				"function": map[string]any{"name": test.name, "arguments": string(arguments)},
+			}}}, "tool_calls"),
+		))
+	}
+	answer := "All three tools work.\n\n" + strings.Repeat("- One check returned the expected result.\n", 20) + "\nFinal answer complete."
+	replies = append(replies, openroutertest.Text(answer))
+	x := startTmux(t, false, replies...)
+	createTallies(x)
+	x.call("resize-window", "-t", "test:0", "-x", "80", "-y", "25")
+	x.prompt("Please test glob, grep, and read file.")
+	x.wait("Final answer complete.")
+	x.keys("C-o")
+	x.wait("Please test glob, grep, and read file.")
+	x.wait("● Find files matching *.tally")
+	x.wait("3 files")
+	x.keys("C-o")
+	x.call("resize-window", "-t", "test:0", "-x", "80", "-y", "100")
+	x.wait("● Read a.tally")
+	x.wait("Lines 1–1 of 1")
+	x.keys("C-o")
+	x.waitGone("● Read a.tally")
+	checkSummary := func() {
+		t.Helper()
+		screen := x.screen()
+		for _, text := range []string{"Please test glob, grep, and read file.", "● Checking tool edge cases.", "● All three tools work.", "Final answer complete."} {
+			if !strings.Contains(screen, text) {
+				t.Errorf("missing %q:\n%s", text, screen)
+			}
+		}
+		if strings.Count(screen, "● Checking tool edge cases.") != 1 || strings.Contains(screen, "● Thought for") || strings.Contains(screen, "● Inspecting the workspace.") {
+			t.Errorf("tool loop was not collapsed:\n%s", screen)
+		}
+	}
+	checkSummary()
+	x.prompt("/resume")
+	x.wait("Search")
+	x.keys("Enter")
+	x.waitGone("Search")
+	x.wait("Final answer complete.")
+	checkSummary()
 }
 
 func TestTerminalStatusLineShowsTheSessionSettingsAndUsage(t *testing.T) {

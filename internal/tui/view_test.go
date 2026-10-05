@@ -103,8 +103,8 @@ func TestTheFramePlacesTheTranscriptTheApprovalDialogAndTheComposer(t *testing.T
 	equal(t, rows, []string{
 		"",
 		"",
+		"   Run the tests!",
 		"",
-		"  ● Thought for 12s",
 		"",
 		"  ● Read Makefile",
 		"",
@@ -130,7 +130,7 @@ func TestTheFramePlacesTheTranscriptTheApprovalDialogAndTheComposer(t *testing.T
 		"",
 	})
 	equal(t, cursor, image.Pt(21, 23))
-	equal(t, [2]int{l.height, l.lines}, [2]int{7, 9})
+	equal(t, [2]int{l.height, l.lines}, [2]int{7, 7})
 	equal(t, colors(buf, 0, 8), [2]color.Color{textColor, background})
 	equal(t, colors(buf, 0, 9), [2]color.Color{textColor, approval})
 	equal(t, colors(buf, 8, 16), [2]color.Color{textColor, approval})

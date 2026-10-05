@@ -259,11 +259,8 @@ func (s *Server) loadSession(r *acp.Request) *acp.Error {
 	s.active[id] = session
 	s.mu.Unlock()
 	send := func(update any) error { return s.notify(id, update) }
-	if err := replay(saved.Transcript, send); err != nil {
+	if err := replay(saved.Transcript, model.ContextLimit, send); err != nil {
 		return internal(err)
-	}
-	if used, cost, ok := transcript.UsageSummary(saved.Transcript); ok {
-		send(usageUpdate(used, model.ContextLimit, cost))
 	}
 	r.Respond(protocol.LoadSessionResponse{ConfigOptions: configOptions(s.catalog, selections)})
 	s.notify(id, availableCommands(session.skills))

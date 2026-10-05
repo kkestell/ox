@@ -414,6 +414,50 @@ func TestControlTTogglesThinkingAndControlOCyclesToolOutput(t *testing.T) {
 	equal(t, d.input.Value() == "", true)
 }
 
+func TestToolLoopLiveRenderingAndReplayMatch(t *testing.T) {
+	batch := func(id, description string) openroutertest.Reply {
+		return openroutertest.Chunks(
+			openroutertest.Delta(map[string]any{"reasoning": "Check the workspace"}, ""),
+			openroutertest.Delta(map[string]any{"content": description}, ""),
+			openroutertest.Delta(map[string]any{"tool_calls": []any{map[string]any{
+				"index": 0, "id": id, "type": "function",
+				"function": map[string]any{"name": "glob", "arguments": `{"pattern":"**/*"}`},
+			}}}, "tool_calls"),
+		)
+	}
+	d := newDriver(t, batch("a", "Checking the source."), batch("b", ""), batch("c", "Checking the final path."), openroutertest.Text("All three batches finished."))
+	d.send(tea.WindowSizeMsg{Width: 80, Height: 25})
+	d.command("Please test the tools.")
+	for {
+		event := d.next()
+		d.send(event)
+		d.View()
+		if _, done := event.(client.Finished); done {
+			break
+		}
+	}
+	now := time.Now()
+	want := []string{"", " Please test the tools.", "", "", "● Checking the final path.", "", "● All three batches finished."}
+	equal(t, rows(&d.view, 76, false, now), want)
+	if _, err := d.conn.LoadSession(d.session.ID); err != nil {
+		t.Fatal(err)
+	}
+	d.view = transcript{}
+	for {
+		event := d.next()
+		d.send(event)
+		d.View()
+		if update, ok := event.(client.Update); ok && update.Update.AvailableCommandsUpdate != nil {
+			break
+		}
+	}
+	equal(t, rows(&d.view, 76, false, now), want)
+	for _, output := range []toolOutput{truncated, full} {
+		lines := strings.Join(texts(allLines(&d.view, 76, false, output, now)), "\n")
+		equal(t, strings.Count(lines, "● Find files matching **/*"), 3)
+	}
+}
+
 func TestTabAndShiftTabCycleTheAvailableModes(t *testing.T) {
 	d := newDriver(t)
 	equal(t, d.settings(), "Ask • DeepSeek V4.1 Flash • Default")

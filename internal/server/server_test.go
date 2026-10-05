@@ -219,7 +219,7 @@ func TestSessionsCanBePromptedReplayedListedClosedAndDeleted(t *testing.T) {
 	for _, m := range replay {
 		kinds = append(kinds, m.Params["update"].(map[string]any)["sessionUpdate"].(string))
 	}
-	if strings.Join(kinds, " ") != "user_message_chunk tool_call agent_message_chunk usage_update" {
+	if strings.Join(kinds, " ") != "user_message_chunk tool_call usage_update agent_message_chunk usage_update" {
 		t.Errorf("replay = %v", kinds)
 	}
 	c.next() // available commands
