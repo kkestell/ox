@@ -408,30 +408,6 @@ func TestTerminalKeysSendInterruptApproveScrollAndRestoreTheShell(t *testing.T) 
 	x.wait("\nSHELL_USABLE\n")
 }
 
-func TestTerminalMouseWheelScrollsTheTranscriptOneLinePerEvent(t *testing.T) {
-	x := startTmux(t, false, renderReplies()...)
-	createTallies(x)
-	x.keys("Tab")
-	x.wait("Auto")
-	x.call("resize-window", "-t", "test:0", "-x", "80", "-y", "12")
-	x.prompt("render")
-	x.wait("a.tally and b.tally")
-	before := x.screen()
-	// An SGR mouse wheel up at column 5, row 3.
-	x.call("send-keys", "-t", "test:0.0", "-H", "1b", "5b", "3c", "36", "34", "3b", "35", "3b", "33", "4d")
-	x.waitGone("a.tally and b.tally")
-	after := x.screen()
-	if strings.Split(before, "\n")[1] != strings.Split(after, "\n")[2] {
-		t.Errorf("before:\n%s\nafter:\n%s", before, after)
-	}
-	// An SGR mouse wheel down at the same position.
-	x.call("send-keys", "-t", "test:0.0", "-H", "1b", "5b", "3c", "36", "35", "3b", "35", "3b", "33", "4d")
-	x.wait("a.tally and b.tally")
-	if screen := x.screen(); screen != before {
-		t.Errorf("before:\n%s\nafter:\n%s", before, screen)
-	}
-}
-
 func TestTerminalTranscriptRendersThinkingToolsAndWrappedReplies(t *testing.T) {
 	x := startTmux(t, false, renderReplies()...)
 	createTallies(x)

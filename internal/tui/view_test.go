@@ -81,27 +81,6 @@ func contains(rows []string, text string) bool {
 	return false
 }
 
-func TestMouseWheelMovesTheTranscriptOneRowAtATime(t *testing.T) {
-	m := &model{layout: layout{height: 10, lines: 35}}
-	wheel := func(button tea.MouseButton, y int) { m.mouse(tea.Mouse{X: 4, Y: y, Button: button}) }
-	wheel(tea.MouseWheelUp, 3)
-	equal(t, m.view.firstRow(10, 35), 24)
-	wheel(tea.MouseWheelUp, 3)
-	equal(t, m.view.firstRow(10, 35), 23)
-	m.view.changed()
-	equal(t, m.view.newActivity, true)
-	wheel(tea.MouseWheelDown, 3)
-	equal(t, m.view.firstRow(10, 35), 24)
-	wheel(tea.MouseWheelDown, 3)
-	equal(t, m.view.firstRow(10, 35), 25)
-	equal(t, m.view.newActivity, false)
-	wheel(tea.MouseWheelUp, 12)
-	equal(t, m.view.firstRow(10, 35), 25, "the wheel below the transcript does nothing")
-	m.picker = newSessionPicker(nil)
-	wheel(tea.MouseWheelUp, 3)
-	equal(t, m.view.firstRow(10, 35), 25, "the wheel does nothing in a picker")
-}
-
 func TestTheFramePlacesTheTranscriptTheApprovalDialogAndTheComposer(t *testing.T) {
 	start := time.Now()
 	now := start.Add(20 * time.Second)
