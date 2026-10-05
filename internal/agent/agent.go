@@ -253,6 +253,9 @@ func (t *Turn) loop(ctx context.Context) (Result, error) {
 		if ctx.Err() != nil {
 			return Result{}, ErrCancelled
 		}
+		if t.needsCompaction() {
+			// TODO: compact the transcript before the next model request.
+		}
 		completion, err := t.requestWithRetries(ctx)
 		if err != nil {
 			return Result{}, err
@@ -273,6 +276,22 @@ func (t *Turn) loop(ctx context.Context) (Result, error) {
 			return Result{Stop: Refusal}, nil
 		}
 	}
+}
+
+func (t *Turn) needsCompaction() bool {
+	if t.request.Model.ContextLimit <= 0 {
+		return false
+	}
+	limit := uint64(t.request.Model.ContextLimit)
+	for i := len(t.request.Transcript) - 1; i >= 0; i-- {
+		batch, ok := t.request.Transcript[i].(*transcript.AssistantBatch)
+		if !ok {
+			continue
+		}
+		usage := batch.Message.Usage
+		return usage != nil && usage.InputTokens >= limit-limit/5
+	}
+	return false
 }
 
 // requestWithRetries makes one model request, retrying a temporary failure.
