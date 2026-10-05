@@ -47,7 +47,7 @@ concurrent permission requests, and the TUI's rendering of nameless tool calls.
 - `crates/ox/src/tui/transcript.rs` — `item_lines` and `content_rows` render
   nameless calls (subagent messages) in full as Markdown.
 - `crates/ox/tests/tui.rs` — `render_replies` starts a subagent.
-- `scripts/bench.py` — the `subagents` metric.
+- `evals/bench.py` — the `subagents` metric.
 - `scripts/export_session.py` — exports child sessions.
 
 ## Decisions
@@ -156,7 +156,7 @@ concurrent permission requests, and the TUI's rendering of nameless tool calls.
     "names the subagent, if any" comment in `approval_lines`. Delete the
     nameless-call branches and their comments in `tui/transcript.rs`. Update
     `crates/ox/tests/tui.rs`.
-12. `scripts/bench.py`: remove the `subagents` metric and its query.
+12. `evals/bench.py`: remove the `subagents` metric and its query.
     `scripts/export_session.py`: export one session with no `subagents` field,
     and update its header comment.
 

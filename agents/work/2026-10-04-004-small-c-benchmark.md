@@ -8,7 +8,7 @@
 
 small-c exists at `~/src/small-c` with the commits "Scaffold the Small-C
 compiler" (`e930c36`) and "Compile integer expressions" (`4e266f2`, tagged
-`task/expressions`). `scripts/bench.py` loads tasks from small-c's tags, builds
+`task/expressions`). `evals/bench.py` loads tasks from small-c's tags, builds
 each workspace from the base tree without history, scores with the task commit's
 `tests/`, and gains `run --tests` and `validate`. The plan's goal is met:
 `validate` reports `expressions` as valid, and Ox passed it under all three
@@ -29,7 +29,7 @@ each workspace from the base tree without history, scores with the task commit's
 - `resolve_task` stores the commits, new test files, and new and old test names
   in the task dict once per invocation.
 - `validate` writes the `go test` output of each tree to
-  `bench/validate/<id>/base.txt` and `solution.txt`, and names the file in its
+  `evals/validate/<id>/base.txt` and `solution.txt`, and names the file in its
   failure messages.
 - `check.txt` holds the `Output` text of the `go test -json` events, not the raw
   JSON.
@@ -46,7 +46,7 @@ each workspace from the base tree without history, scores with the task commit's
 - small-c `make check` — Passed at `e930c36` and at `task/expressions`.
 - small-c `go test ./tests -update` — Left every `.out` file unchanged.
 - ox `make check` — Passed.
-- `ruff check scripts/bench.py` — Same findings as before the change, plus
+- `ruff check evals/bench.py` — Same findings as before the change, plus
   `PLW1510` on the two `subprocess.run` calls whose exit status is read.
 
 ## Manual verification
@@ -54,7 +54,7 @@ each workspace from the base tree without history, scores with the task commit's
 1. Validated the task.
 
    ```sh
-   python3 scripts/bench.py validate
+   python3 evals/bench.py validate
    ```
 
    `expressions: valid`. In the image, the base failed the five new `programs`
@@ -70,7 +70,7 @@ each workspace from the base tree without history, scores with the task commit's
    ```
    missing: invalid: the tag task/missing does not exist in /Users/kyle/src/small-c
    badexample: invalid: the example programs/nope matches no new test
-   scratch: invalid: every new test already passes at the base; see .../bench/validate/scratch/base.txt
+   scratch: invalid: every new test already passes at the base; see .../evals/validate/scratch/base.txt
    ```
 
    The command exited with status 1.
@@ -79,7 +79,7 @@ each workspace from the base tree without history, scores with the task commit's
 
    ```sh
    for t in visible examples hidden; do
-     python3 scripts/bench.py run --label smallc-$t-20261004 \
+     python3 evals/bench.py run --label smallc-$t-20261004 \
        --model openrouter:deepseek/deepseek-v4.1-flash --effort default \
        --task expressions --reps 1 --tests $t
    done
@@ -99,7 +99,7 @@ each workspace from the base tree without history, scores with the task commit's
 5. Compared two labels.
 
    ```sh
-   python3 scripts/bench.py compare smallc-examples-20261004 smallc-hidden-20261004
+   python3 evals/bench.py compare smallc-examples-20261004 smallc-hidden-20261004
    ```
 
    The report had a Tests column in the Runs table and `tests_passed`,

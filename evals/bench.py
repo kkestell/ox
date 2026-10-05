@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-# Runs the small-c benchmark tasks in scripts/bench/tasks.toml against one build
+# Runs the small-c benchmark tasks in evals/tasks.toml against one build
 # of ox, each repetition in its own Docker container, validates the tasks, and
 # compares labeled benchmark runs.
 #
-#   scripts/bench.py run --label base --ref main --model MODEL_ID --effort LEVEL
-#   scripts/bench.py run --label change --model MODEL_ID --effort LEVEL --tests hidden
-#   scripts/bench.py validate [--task ID ...]
-#   scripts/bench.py compare base change    # writes agents/evals/base-vs-change.md
+#   evals/bench.py run --label base --ref main --model MODEL_ID --effort LEVEL
+#   evals/bench.py run --label change --model MODEL_ID --effort LEVEL --tests hidden
+#   evals/bench.py validate [--task ID ...]
+#   evals/bench.py compare base change    # writes evals/reports/base-vs-change.md
 #
 # `run --tests visible|examples|hidden` starts the workspace with all, the
 # task's examples, or none of the task's new test cases. Running an existing
@@ -25,15 +25,16 @@ import shutil
 import sqlite3
 import statistics
 import subprocess
+import tempfile
 import textwrap
 import time
 import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-BENCH = ROOT / "bench"
-EVALS = ROOT / "agents" / "evals"
-TASKS = ROOT / "scripts" / "bench" / "tasks.toml"
+EVALS = ROOT / "evals"
+REPORTS = EVALS / "reports"
+TASKS = EVALS / "tasks.toml"
 IMAGE = "ox-bench"
 # Seconds between SIGTERM and SIGKILL for a timed-out run.
 KILL_GRACE = 30
@@ -122,7 +123,7 @@ def main():
 def run(parser, args):
     if not re.fullmatch(r"[A-Za-z0-9._-]+", args.label):
         parser.error("--label may contain only letters, digits, '.', '_', and '-'")
-    label_dir = BENCH / "runs" / args.label
+    label_dir = EVALS / "runs" / args.label
     repo, all_tasks = load_tasks()
     tasks = select_tasks(parser, all_tasks, args.tasks)
     for task in tasks:
@@ -131,70 +132,71 @@ def run(parser, args):
         except TaskError as error:
             parser.error(f"{task['id']}: {error}")
 
-    binary, commit, dirty = build(args.ref, args.label)
-    api_key = next(
-        line.split("=", 1)[1]
-        for line in (ROOT / ".env").read_text().splitlines()
-        if line.startswith("OPENROUTER_API_KEY=")
-    )
-    identity = {
-        "label": args.label,
-        "commit": commit,
-        "dirty": dirty,
-        "model": args.model,
-        "effort": args.effort,
-        "tests": args.tests,
-        "providers": pinned_providers(args.model),
-    }
-    solutions = {task["id"]: task["solution"] for task in tasks}
-    for saved_path in label_dir.glob("*/*/result.json"):
-        saved = json.loads(saved_path.read_text())
-        if any(
-            saved.get(key) != identity[key]
-            for key in ("commit", "dirty", "model", "effort", "tests", "providers")
-        ):
-            parser.error(
-                f"{label_dir} holds results for a different commit, model, effort,"
-                " tests setting, or providers"
-            )
-        if (
-            saved["task"] in solutions
-            and saved.get("solution") != solutions[saved["task"]]
-        ):
-            parser.error(
-                f"{label_dir} holds results for a different commit of task/{saved['task']}"
-            )
-    runs = []
-    for rep in range(1, args.reps + 1):
-        for task in tasks:
-            if not (label_dir / task["id"] / str(rep) / "result.json").exists():
-                runs.append((task, rep))
-    with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
-        futures = [
-            pool.submit(
-                run_repetition, binary, api_key, args, identity, repo, task, rep
-            )
-            for task, rep in runs
-        ]
-        try:
-            for future in concurrent.futures.as_completed(futures):
-                result = future.result()
-                print(
-                    f"{result['task']} {result['rep']}: {result['status']},"
-                    f" {'passed' if result['passed'] else 'failed'},"
-                    f" {result['tests_passed']}/{result['tests_total']} tests,"
-                    f" {result['regressions']} regressions,"
-                    f" {result['requests']} requests,"
-                    f" {result['tool_calls']} tool calls,"
-                    f" {number('cost', result['cost'])}, {result['seconds']:.0f}s",
-                    flush=True,
+    with tempfile.TemporaryDirectory(prefix="ox-eval-") as directory:
+        binary, commit, dirty = build(args.ref, Path(directory) / "ox-server")
+        api_key = next(
+            line.split("=", 1)[1]
+            for line in (ROOT / ".env").read_text().splitlines()
+            if line.startswith("OPENROUTER_API_KEY=")
+        )
+        identity = {
+            "label": args.label,
+            "commit": commit,
+            "dirty": dirty,
+            "model": args.model,
+            "effort": args.effort,
+            "tests": args.tests,
+            "providers": pinned_providers(args.model),
+        }
+        solutions = {task["id"]: task["solution"] for task in tasks}
+        for saved_path in label_dir.glob("*/*/result.json"):
+            saved = json.loads(saved_path.read_text())
+            if any(
+                saved.get(key) != identity[key]
+                for key in ("commit", "dirty", "model", "effort", "tests", "providers")
+            ):
+                parser.error(
+                    f"{label_dir} holds results for a different commit, model, effort,"
+                    " tests setting, or providers"
                 )
-        except KeyboardInterrupt:
-            # Removing the containers ends the running `docker exec` calls, so
-            # the pool's threads finish instead of waiting on `sleep infinity`.
-            pool.shutdown(wait=False, cancel_futures=True)
-            remove_containers(args.label)
-            raise SystemExit(130)
+            if (
+                saved["task"] in solutions
+                and saved.get("solution") != solutions[saved["task"]]
+            ):
+                parser.error(
+                    f"{label_dir} holds results for a different commit of task/{saved['task']}"
+                )
+        runs = []
+        for rep in range(1, args.reps + 1):
+            for task in tasks:
+                if not (label_dir / task["id"] / str(rep) / "result.json").exists():
+                    runs.append((task, rep))
+        with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
+            futures = [
+                pool.submit(
+                    run_repetition, binary, api_key, args, identity, repo, task, rep
+                )
+                for task, rep in runs
+            ]
+            try:
+                for future in concurrent.futures.as_completed(futures):
+                    result = future.result()
+                    print(
+                        f"{result['task']} {result['rep']}: {result['status']},"
+                        f" {'passed' if result['passed'] else 'failed'},"
+                        f" {result['tests_passed']}/{result['tests_total']} tests,"
+                        f" {result['regressions']} regressions,"
+                        f" {result['requests']} requests,"
+                        f" {result['tool_calls']} tool calls,"
+                        f" {number('cost', result['cost'])}, {result['seconds']:.0f}s",
+                        flush=True,
+                    )
+            except KeyboardInterrupt:
+                # Removing the containers ends the running `docker exec` calls, so
+                # the pool's threads finish instead of waiting on `sleep infinity`.
+                pool.shutdown(wait=False, cancel_futures=True)
+                remove_containers(args.label)
+                raise SystemExit(130)
 
 
 def validate(parser, args):
@@ -219,7 +221,7 @@ def validate_task(repo, task):
     """Raises TaskError unless the task's new tests fail at its base, its old
     tests pass there, and every test passes at its commit."""
     resolve_task(repo, task)
-    out_dir = BENCH / "validate" / task["id"]
+    out_dir = EVALS / "validate" / task["id"]
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True)
@@ -384,62 +386,50 @@ def build_image():
     subprocess.run(["docker", "build", "-t", IMAGE, str(TASKS.parent)], check=True)
 
 
-def build(ref, label):
+def build(ref, binary):
     """Builds ox-server and returns the binary, its commit, and whether the tree was dirty."""
     build_image()
-    bin_dir = BENCH / "bin"
-    bin_dir.mkdir(parents=True, exist_ok=True)
     if ref:
         commit = git("rev-parse", "--verify", f"{ref}^{{commit}}")
         dirty = False
-        binary = bin_dir / f"ox-server-{commit}"
-        if binary.exists():
-            print(f"reusing {binary}", flush=True)
-            return binary, commit, dirty
-        worktree = BENCH / "worktree" / label
+        worktree = binary.parent / "source"
         git("worktree", "add", "--detach", str(worktree), commit)
         try:
-            go_build(worktree, binary, label)
+            go_build(worktree, binary)
         finally:
             git("worktree", "remove", "--force", str(worktree))
     else:
         commit = git("rev-parse", "HEAD")
         dirty = bool(git("status", "--porcelain", "--untracked-files=no"))
-        binary = bin_dir / f"ox-server-{label}"
-        go_build(ROOT, binary, label)
+        go_build(ROOT, binary)
     return binary, commit, dirty
 
 
-def go_build(source, binary, label):
+def go_build(source, binary):
     """Cross-compiles ox-server for the Linux architecture of the containers."""
     goarch = {"x86_64": "amd64", "aarch64": "arm64"}[
         docker("info", "--format", "{{.Architecture}}")
     ]
-    # A concurrent benchmark run that finds the binary never reads a partial
-    # file.
-    partial = binary.with_name(f"{binary.name}.tmp-{label}")
     subprocess.run(
-        ["go", "build", "-trimpath", "-o", str(partial), "./cmd/ox-server"],
+        ["go", "build", "-trimpath", "-o", str(binary), "./cmd/ox-server"],
         cwd=source,
         env=os.environ | {"GOOS": "linux", "GOARCH": goarch, "CGO_ENABLED": "0"},
         check=True,
     )
-    os.replace(partial, binary)
 
 
 def run_repetition(binary, api_key, args, identity, repo, task, rep):
-    run_dir = BENCH / "runs" / args.label / task["id"] / str(rep)
+    run_dir = EVALS / "runs" / args.label / task["id"] / str(rep)
     for attempt in range(1, ATTEMPTS + 1):
-        # A directory without a result is from an interrupted or retried attempt.
-        if run_dir.exists():
-            shutil.rmtree(run_dir)
-        result = attempt_repetition(
-            binary, api_key, args, identity, repo, task, rep, run_dir
-        )
+        with tempfile.TemporaryDirectory(prefix="ox-eval-run-") as directory:
+            result = attempt_repetition(
+                binary, api_key, args, identity, repo, task, rep, Path(directory)
+            )
         if result["status"] == "finished" or attempt == ATTEMPTS:
             break
         print(f"{task['id']} {rep}: {result['status']}, retrying", flush=True)
     result["attempts"] = attempt
+    run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "result.json").write_text(json.dumps(result, indent=2) + "\n")
     return result
 
@@ -476,7 +466,7 @@ def copy_tree(container, repo, commit, paths=()):
     )
 
 
-def prepare_workspace(container, repo, task, tests, run_dir):
+def prepare_workspace(container, repo, task, tests):
     """Fills /workspace with the base tree, the task commit's test harness, and
     the visible new test case files, as a repository with one commit, so the
     task commit is out of the agent's reach."""
@@ -519,8 +509,6 @@ def prepare_workspace(container, repo, task, tests, run_dir):
         "-m",
         "Start the task",
     )
-    files = docker("exec", "-w", "/workspace", container, "git", "ls-files")
-    (run_dir / "start.txt").write_text(files + "\n")
 
 
 def score(container, repo, task, check_path):
@@ -574,7 +562,6 @@ def score(container, repo, task, check_path):
 
 
 def attempt_repetition(binary, api_key, args, identity, repo, task, rep, run_dir):
-    run_dir.mkdir(parents=True)
     container = f"ox-bench-{args.label}-{task['id']}-{rep}"
     start_container(container, args.label)
     try:
@@ -597,7 +584,7 @@ def attempt_repetition(binary, api_key, args, identity, repo, task, rep, run_dir
                 capture_output=True,
                 text=True,
             )
-        prepare_workspace(container, repo, task, args.tests, run_dir)
+        prepare_workspace(container, repo, task, args.tests)
 
         started_at = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
         start = time.monotonic()
@@ -646,7 +633,6 @@ def attempt_repetition(binary, api_key, args, identity, repo, task, rep, run_dir
         else:
             status = "failed"
 
-        docker("cp", f"{container}:/workspace", str(run_dir / "workspace"))
         fields, _ = score(container, repo, task, run_dir / "check.txt")
         docker("cp", f"{container}:/data", str(run_dir / "data"))
     finally:
@@ -734,10 +720,10 @@ def transcript_metrics(database):
 
 
 def compare(parser, labels):
-    """Writes a Markdown comparison of the labels to agents/evals/ and prints its path."""
+    """Writes a Markdown comparison of the labels to evals/reports/ and prints its path."""
     results = {}
     for label in labels:
-        paths = sorted((BENCH / "runs" / label).glob("*/*/result.json"))
+        paths = sorted((EVALS / "runs" / label).glob("*/*/result.json"))
         if not paths:
             parser.error(f"no results for {label}")
         results[label] = [json.loads(path.read_text()) for path in paths]
@@ -917,11 +903,11 @@ def compare(parser, labels):
         "## Tasks",
         *task_sections,
     ]
-    report = EVALS / f"{'-vs-'.join(labels)}.md"
-    EVALS.mkdir(parents=True, exist_ok=True)
+    report = REPORTS / f"{'-vs-'.join(labels)}.md"
+    REPORTS.mkdir(parents=True, exist_ok=True)
     report.write_text("\n".join(lines) + "\n")
     for label in labels[1:]:
-        svg = EVALS / f"{labels[0]}-vs-{label}.svg"
+        svg = REPORTS / f"{labels[0]}-vs-{label}.svg"
         svg.write_text(chart_svg(results, labels[0], label))
         subprocess.run(
             ["rsvg-convert", "--zoom", "2", "-o", str(svg.with_suffix(".png")), str(svg)],

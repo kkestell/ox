@@ -19,10 +19,8 @@ Keep this document accurate and short.
 - `internal/sysprompt/` — the built-in system prompt.
 - `examples/` — the example settings file.
 - `scripts/run.py` — runs one headless prompt in a temporary workspace.
-- `scripts/bench.py` — benchmarks a build of `ox-server` on the small-c tasks,
-  validates the tasks, and compares benchmark runs.
+- `evals/` — the small-c evaluation runner, tasks, image, and results.
 - `scripts/export_session.py` — exports a session to JSON.
-- `scripts/bench/` — the task list and the benchmark image.
 - `.github/workflows/` — the release build.
 - `research/` — research notes and reports.
 - `agents/` — plans, reviews, and work logs.

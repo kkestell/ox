@@ -10,23 +10,22 @@ scores the result with the tests the commit adds, and counts any older tests it
 breaks.
 
 When the work is done, small-c exists as its own repository with a scaffold
-commit and one task, `scripts/bench.py validate` confirms that the task is
-sound, and `scripts/bench.py run` scores Ox on it with the new tests visible,
-partly visible, or hidden. Token, tool-call, and cost metrics and the comparison
-report work as before.
+commit and one task, `evals/bench.py validate` confirms that the task is sound,
+and `evals/bench.py run` scores Ox on it with the new tests visible, partly
+visible, or hidden. Token, tool-call, and cost metrics and the comparison report
+work as before.
 
 ## Related code
 
-- `scripts/bench.py` — the current runner. Keep `build`, `go_build`, the
+- `evals/bench.py` — the current runner. Keep `build`, `go_build`, the
   repetition loop and retries in `run` and `run_repetition`,
   `transcript_metrics`, `compare`, `chart_svg`, and the report helpers. Replace
   `load_tasks` and the workspace setup and check in `attempt_repetition` (clone,
   fixtures, `setup`, `check`).
-- `scripts/bench/tasks.toml`, `scripts/bench/fixtures/` — the current tasks;
-  deleted.
-- `scripts/bench/Dockerfile` — the current Rust image; replaced.
-- `AGENTS.md` — describes `scripts/bench.py` and `scripts/bench/`.
-- `.gitignore` — `/bench/` already ignores the runner's results.
+- `evals/tasks.toml`, `evals/fixtures/` — the current tasks; deleted.
+- `evals/Dockerfile` — the current Rust image; replaced.
+- `AGENTS.md` — describes `evals/bench.py` and `evals/`.
+- `.gitignore` — evaluation files are not ignored.
 
 ## small-c conventions
 
@@ -61,8 +60,8 @@ These rules are the contract between small-c and the runner. small-c's
 - **`smallc` emits QBE intermediate language only.** The test driver runs `qbe`
   and `cc`, as the original Small-C emitted assembly for an external assembler.
 - **Task definitions live in ox.** Prompts and example lists are in
-  `scripts/bench/tasks.toml`, so the agent never sees them and small-c stays an
-  ordinary repository.
+  `evals/tasks.toml`, so the agent never sees them and small-c stays an ordinary
+  repository.
 - **The workspace has no history.** The runner exports the base tree with
   `git archive` into `/workspace` and creates a fresh repository there with one
   commit, so the agent cannot reach the task commit through Git.
@@ -161,17 +160,17 @@ These rules are the contract between small-c and the runner. small-c's
 
 ### ox
 
-3. The ox working tree has uncommitted edits to `scripts/bench/tasks.toml` and
-   `scripts/bench/fixtures/`. Ask the user to commit or discard them, then
-   delete `scripts/bench/fixtures/`.
-4. Replace `scripts/bench/Dockerfile`: start from `golang:1.27-bookworm`, whose
-   `gcc` provides `cc`; install `procps`, `python3`, `ripgrep`, and `xz-utils`;
+3. The ox working tree has uncommitted edits to `evals/tasks.toml` and
+   `evals/fixtures/`. Ask the user to commit or discard them, then delete
+   `evals/fixtures/`.
+4. Replace `evals/Dockerfile`: start from `golang:1.27-bookworm`, whose `gcc`
+   provides `cc`; install `procps`, `python3`, `ripgrep`, and `xz-utils`;
    download the QBE 1.2 release tarball from `c9x.me` and build and install it.
-5. Rewrite `scripts/bench/tasks.toml`: a header comment describing the format,
+5. Rewrite `evals/tasks.toml`: a header comment describing the format,
    `repo = "../small-c"`, and one `[[task]]` with `id = "expressions"`, a
    `prompt` describing the feature without naming test files, and
    `examples = ["programs/precedence", "programs/division"]`.
-6. Change `scripts/bench.py`:
+6. Change `evals/bench.py`:
    - Update the header comment's usage lines for `run --tests` and `validate`.
      Remove `FIXTURES`; add `TEST_NOTES`, the prompt sentence for each `--tests`
      setting.
@@ -209,6 +208,6 @@ These rules are the contract between small-c and the runner. small-c's
 
 ## Documentation updates
 
-- `AGENTS.md` — `scripts/bench.py` benchmarks a build of `ox-server` on the
-  small-c tasks, validates the tasks, and compares benchmark runs;
-  `scripts/bench/` holds the task list and the benchmark image.
+- `AGENTS.md` — `evals/bench.py` benchmarks a build of `ox-server` on the
+  small-c tasks, validates the tasks, and compares benchmark runs; `evals/`
+  holds the task list and the benchmark image.

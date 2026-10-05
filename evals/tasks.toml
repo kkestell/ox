@@ -1,4 +1,4 @@
-# Benchmark tasks for scripts/bench.py, taken from the Git history of small-c.
+# Benchmark tasks for evals/bench.py, taken from the Git history of small-c.
 #
 # `repo` is the path of the small-c repository relative to the ox root. Each
 # task's commit is tagged task/<id> there, and its first parent is the base the

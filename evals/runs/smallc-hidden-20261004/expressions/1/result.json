@@ -1,0 +1,48 @@
+{
+  "label": "smallc-hidden-20261004",
+  "commit": "62af4e8e0d6cbd8fba53e760535479f7f7f7d18a",
+  "dirty": true,
+  "model": "openrouter:deepseek/deepseek-v4.1-flash",
+  "effort": "default",
+  "tests": "hidden",
+  "providers": [
+    "deepseek"
+  ],
+  "task": "expressions",
+  "rep": 1,
+  "solution": "4e266f2de01fbf550467a4ac5e4a57fcc324517b",
+  "started_at": "2026-10-04T23:54:34+00:00",
+  "status": "finished",
+  "seconds": 39.3,
+  "passed": true,
+  "tests_passed": 6,
+  "tests_total": 6,
+  "regressions": 0,
+  "requests": 11,
+  "tool_calls": 14,
+  "failed_calls": 0,
+  "cancelled_calls": 0,
+  "calls_by_tool": {
+    "shell": {
+      "calls": 8,
+      "failed": 0
+    },
+    "read_file": {
+      "calls": 4,
+      "failed": 0
+    },
+    "apply_patch": {
+      "calls": 2,
+      "failed": 0
+    }
+  },
+  "repeated_calls": 0,
+  "input_tokens": 118864,
+  "cached_tokens": 108160,
+  "output_tokens": 6241,
+  "reasoning_tokens": 3426,
+  "cost": 0.005675,
+  "max_input_tokens": 15575,
+  "tool_output_chars": 18703,
+  "attempts": 1
+}
