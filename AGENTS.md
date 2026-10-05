@@ -36,6 +36,48 @@ Keep this document accurate and short.
 
 Report any check that fails or is skipped.
 
+## Evaluation tasks
+
+The evaluation tasks are commits in small-c, at `../small-c`, listed in
+`evals/tasks.toml`. The agent under evaluation works in a copy of small-c's
+tree, so instructions for adding tasks live here and not in small-c.
+
+To add a task:
+
+1. Take the first unchecked task below.
+2. In small-c, starting from `main`, implement the feature and its test cases in
+   one commit, following small-c's `AGENTS.md`. Write the `.out` files with
+   `go test ./tests -update`, run `make check`, and tag the commit `task/<id>`.
+3. Add a `[[task]]` to `evals/tasks.toml` with the id, a prompt that describes
+   the feature without naming test files, and `examples` naming two of the new
+   `programs` test cases.
+4. Run `python3 evals/bench.py validate --task <id>`. A task is valid when at
+   least one new test fails at its base, every old test passes there, and every
+   test passes at the tagged commit.
+5. Check the task below, and commit `evals/tasks.toml` and this file.
+
+Each task builds on the one before it:
+
+1. [x] `expressions` — integer literals, unary `-`, `* / % + -`, and parentheses
+       in the `return` expression.
+2. [x] `control-flow` — the comparison operators and nested `if`/`else`, with
+       one `return` in each branch.
+3. [ ] `locals` — local `int` variables, assignment, and bodies with several
+       statements.
+4. [ ] `loops` — `while`, `break`, and `continue`.
+5. [ ] `functions` — functions with parameters, and calls.
+6. [ ] `externals` — calls to external functions such as `putchar`.
+7. [ ] `globals` — global variables.
+8. [ ] `logical` — `!`, `&&`, and `||`.
+9. [ ] `pointers` — `&`, `*`, and pointer arithmetic.
+10. [ ] `arrays` — arrays.
+11. [ ] `chars` — `char`, character constants, and string literals.
+12. [ ] `assignment-operators` — compound assignment, `++`, and `--`.
+13. [ ] `bitwise` — bitwise operators and shifts.
+14. [ ] `conditional` — the `?:` operator.
+15. [ ] `switch` — `switch`.
+16. [ ] `preprocessor` — `#define` and `#include`.
+
 ## Documentation
 
 Use only `README.md`, `AGENTS.md`, the code and its comments, plans, reviews,
