@@ -46,8 +46,9 @@ type Server struct {
 
 // activeSession is the process state of one session.
 type activeSession struct {
-	// selections are the latest ACP selections. A prompt copies them when it
-	// starts, so changes during the prompt apply to the next turn.
+	// selections are the latest ACP selections. A prompt copies the model and
+	// effort when it starts, so changing them during the prompt applies to the
+	// next turn; the turn reads the mode before each batch of tool calls.
 	selections   settings.Settings
 	systemPrompt string
 	skills       []skills.Skill
@@ -437,10 +438,10 @@ func (s *Server) prompt(r *acp.Request) *acp.Error {
 	s.mu.Lock()
 	selections := session.selections
 	s.mu.Unlock()
-	client := &acpClient{server: s, sessionID: id}
+	client := &acpClient{server: s, sessionID: id, session: session}
 	turn, err := s.agent.Start(ctx, agent.Input{
 		SessionID: id, Input: dispatch(message, session.skills),
-		Model: selections.Model, Effort: selections.Effort, Mode: selections.Mode,
+		Model: selections.Model, Effort: selections.Effort,
 		SystemPrompt: session.systemPrompt, Processes: session.processes,
 	}, client)
 	if err != nil {
@@ -503,11 +504,20 @@ func (s *Server) Shutdown() {
 type acpClient struct {
 	server    *Server
 	sessionID string
+	// session stays active while its prompt runs, since close and delete
+	// wait for the prompt.
+	session   *activeSession
 	workspace string
 }
 
 func (c *acpClient) Send(event agent.Event) error {
 	return c.server.notify(c.sessionID, update(event))
+}
+
+func (c *acpClient) Mode() transcript.Mode {
+	c.server.mu.Lock()
+	defer c.server.mu.Unlock()
+	return c.session.selections.Mode
 }
 
 func (c *acpClient) Approve(ctx context.Context, call transcript.ToolCall, permission tools.Permission) (bool, error) {

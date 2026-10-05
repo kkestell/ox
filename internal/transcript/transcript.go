@@ -54,8 +54,8 @@ func (m Mode) Description() string {
 // TurnError. Every nonempty transcript opens with a turn start.
 type Entry interface{ entry() }
 
-// TurnStart is the input that starts a turn, saved with the model, effort
-// level, and session mode captured for that turn.
+// TurnStart is the input that starts a turn, saved with the model and effort
+// level captured for that turn and the session mode when the turn started.
 type TurnStart struct {
 	Model  string         `json:"model"`
 	Effort catalog.Effort `json:"effort"`

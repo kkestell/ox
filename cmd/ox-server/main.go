@@ -256,7 +256,7 @@ func runHeadless(args []string) error {
 	defer stopShutdown()
 	turn, err := a.Start(ctx, agent.Input{
 		SessionID: session.ID, Input: transcript.TurnInput{Message: new(transcript.TextMessage(prompt))},
-		Model: model, Effort: effort, Mode: transcript.ModeAuto, SystemPrompt: systemPrompt, Processes: processes,
+		Model: model, Effort: effort, SystemPrompt: systemPrompt, Processes: processes,
 	}, headless{})
 	if err != nil {
 		return err
@@ -276,6 +276,8 @@ func runHeadless(args []string) error {
 type headless struct{}
 
 func (headless) Send(agent.Event) error { return nil }
+
+func (headless) Mode() transcript.Mode { return transcript.ModeAuto }
 
 func (headless) Approve(context.Context, transcript.ToolCall, tools.Permission) (bool, error) {
 	panic("a headless run uses Auto mode and never asks for permission")
