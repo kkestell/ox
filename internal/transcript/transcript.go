@@ -1,5 +1,6 @@
 // Package transcript defines a session transcript: the turn starts, assistant
-// batches, and turn errors that make up a conversation, and their stored JSON.
+// batches, compactions, and turn errors that make up a conversation, and their
+// stored JSON.
 package transcript
 
 import (
@@ -50,8 +51,9 @@ func (m Mode) Description() string {
 	return "Ask before running each shell command or sending input to one."
 }
 
-// Entry is one transcript entry: a *TurnStart, an *AssistantBatch, or a
-// TurnError. Every nonempty transcript opens with a turn start.
+// Entry is one transcript entry: a *TurnStart, an *AssistantBatch, a
+// *Compaction, or a TurnError. Every nonempty transcript opens with a turn
+// start.
 type Entry interface{ entry() }
 
 // TurnStart is the input that starts a turn, saved with the model and effort
@@ -66,9 +68,32 @@ type TurnStart struct {
 // TurnError is why a turn ended with an error. It ends the turn's entries.
 type TurnError string
 
+// Compaction is a summary that replaces every entry before it in model
+// requests. The entries it replaces stay saved and are still replayed.
+type Compaction struct {
+	Summary string `json:"summary"`
+	// Usage is what the provider reported for the request that produced the
+	// summary, or nil when it reported none.
+	Usage *Usage `json:"usage"`
+}
+
 func (*TurnStart) entry()      {}
 func (*AssistantBatch) entry() {}
+func (*Compaction) entry()     {}
 func (TurnError) entry()       {}
+
+// Validate rejects an empty summary.
+func (c *Compaction) Validate() error {
+	if strings.TrimSpace(c.Summary) == "" {
+		return errors.New("compaction summary is empty")
+	}
+	return nil
+}
+
+// Message is the user message that gives the model the summary.
+func (c *Compaction) Message() UserMessage {
+	return TextMessage("The earlier part of this session was replaced by this summary:\n\n" + c.Summary)
+}
 
 // Validate rejects a turn start whose model, effort, or mode is not one Ox
 // knows.
@@ -380,6 +405,8 @@ func Validate(entries []Entry) error {
 			err = entry.Validate()
 		case *AssistantBatch:
 			err = entry.Validate()
+		case *Compaction:
+			err = entry.Validate()
 		}
 		if err != nil {
 			return err
@@ -398,23 +425,39 @@ func LatestTurnStart(entries []Entry) *TurnStart {
 	return nil
 }
 
+// SinceCompaction returns the entries model requests read: those from the
+// latest compaction onward, or every entry when there is none.
+func SinceCompaction(entries []Entry) []Entry {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if _, ok := entries[i].(*Compaction); ok {
+			return entries[i:]
+		}
+	}
+	return entries
+}
+
 // UsageSummary returns the context tokens of the latest assistant message (0
-// when it reported no usage) and the sum of every reported cost (nil when none
-// reported one). ok is false before the first assistant message.
+// when it reported no usage or a compaction followed it) and the sum of every
+// reported cost, compactions included (nil when none reported one). ok is
+// false before the first assistant message.
 func UsageSummary(entries []Entry) (used uint64, cost *float64, ok bool) {
 	var total float64
 	for _, entry := range entries {
-		batch, isBatch := entry.(*AssistantBatch)
-		if !isBatch {
-			continue
-		}
-		used, ok = 0, true
-		if usage := batch.Message.Usage; usage != nil {
-			used = usage.InputTokens + usage.OutputTokens
-			if usage.Cost != nil {
-				total += *usage.Cost
-				cost = &total
+		var usage *Usage
+		switch entry := entry.(type) {
+		case *AssistantBatch:
+			usage, used, ok = entry.Message.Usage, 0, true
+			if usage != nil {
+				used = usage.InputTokens + usage.OutputTokens
 			}
+		case *Compaction:
+			// The summary request's tokens describe the replaced context, and
+			// the next response reports the new one.
+			usage, used = entry.Usage, 0
+		}
+		if usage != nil && usage.Cost != nil {
+			total += *usage.Cost
+			cost = &total
 		}
 	}
 	return used, cost, ok
@@ -428,6 +471,8 @@ func Encode(entry Entry) (string, string, error) {
 		kind = "turn_start"
 	case *AssistantBatch:
 		kind = "assistant_batch"
+	case *Compaction:
+		kind = "compaction"
 	case TurnError:
 		kind = "turn_error"
 	}
@@ -443,6 +488,8 @@ func Decode(kind, data string) (Entry, error) {
 		entry = new(TurnStart)
 	case "assistant_batch":
 		entry = new(AssistantBatch)
+	case "compaction":
+		entry = new(Compaction)
 	case "turn_error":
 		var text TurnError
 		if err := strictUnmarshal([]byte(data), &text); err != nil {

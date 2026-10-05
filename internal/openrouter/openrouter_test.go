@@ -149,6 +149,33 @@ func TestRequestsGroupMessagesAndSendContinuationMetadata(t *testing.T) {
 	}
 }
 
+func TestRequestsSendTheTranscriptFromTheLatestCompaction(t *testing.T) {
+	server := openroutertest.Start(t, openroutertest.Text("ok"))
+	details := []json.RawMessage{json.RawMessage(`{"data":"opaque","type":"reasoning.encrypted"}`)}
+	entries := []transcript.Entry{
+		userTurn("Fix the parser."),
+		&transcript.AssistantBatch{Message: transcript.AssistantMessage{Text: "Looking.", ContinuationMetadata: details}},
+		&transcript.Compaction{Summary: "An old summary."},
+		&transcript.AssistantBatch{Message: transcript.AssistantMessage{Text: "Still looking."}},
+		&transcript.Compaction{Summary: "The parser is fixed."},
+		&transcript.AssistantBatch{Message: transcript.AssistantMessage{Text: "Done."}},
+	}
+	stream, err := server.Client().Stream(context.Background(), request(defaultModel(), catalog.EffortDefault, entries...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream.Close()
+	want := []any{
+		object{"role": "system", "content": "You are Ox."},
+		object{"role": "user", "content": "The earlier part of this session was replaced by this summary:\n\nThe parser is fixed."},
+		object{"role": "assistant", "content": "Done."},
+	}
+	if messages := server.Bodies()[0]["messages"]; !reflect.DeepEqual(messages, want) {
+		got, _ := json.MarshalIndent(messages, "", " ")
+		t.Errorf("messages = %s", got)
+	}
+}
+
 func TestRequestsOmitDefaultEffortAndKeepImageOrder(t *testing.T) {
 	server := openroutertest.Start(t, openroutertest.Text("ok"))
 	image := transcript.ImageAttachment{Data: "aGVsbG8=", MimeType: "image/png"}

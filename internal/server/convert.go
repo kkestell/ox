@@ -180,6 +180,10 @@ func toolCall(call transcript.ToolCall) acp.ToolCall {
 	}
 }
 
+// compactionTitle names a compaction, which the client shows as a tool call
+// with no tool name.
+const compactionTitle = "Context compaction"
+
 // update converts a turn event to an ACP session update.
 func update(event agent.Event) any {
 	switch event := event.(type) {
@@ -196,6 +200,15 @@ func update(event agent.Event) any {
 	case agent.ToolFinished:
 		return protocol.SessionToolCallUpdate{
 			SessionUpdate: "tool_call_update", ToolCallId: protocol.ToolCallId(event.Call.CallID), Status: protocol.Ptr(status(event.Outcome)),
+			Content: outputContent(event.Outcome), RawOutput: event.Outcome.Text,
+		}
+	case agent.CompactionStarted:
+		return protocol.SessionUpdateToolCall{
+			SessionUpdate: "tool_call", ToolCallId: protocol.ToolCallId(event.ID), Title: compactionTitle, Status: protocol.ToolCallStatusInProgress,
+		}
+	case agent.CompactionFinished:
+		return protocol.SessionToolCallUpdate{
+			SessionUpdate: "tool_call_update", ToolCallId: protocol.ToolCallId(event.ID), Status: protocol.Ptr(status(event.Outcome)),
 			Content: outputContent(event.Outcome), RawOutput: event.Outcome.Text,
 		}
 	case agent.Usage:
@@ -257,7 +270,8 @@ func outputContent(outcome transcript.ToolOutcome) []protocol.ToolCallContent {
 
 // replay sends the saved transcript as displayable content and final tool
 // states. The model and continuation metadata are never shown. A saved turn
-// error is shown as a failed tool call, so it stays apart from model text.
+// error is shown as a failed tool call, so it stays apart from model text, and
+// a compaction as a completed one.
 func replay(entries []transcript.Entry, send func(any) error) error {
 	for _, entry := range entries {
 		var updates []any
@@ -281,6 +295,11 @@ func replay(entries []transcript.Entry, send func(any) error) error {
 			updates = append(updates, protocol.SessionUpdateToolCall{
 				SessionUpdate: "tool_call", ToolCallId: protocol.ToolCallId("turn-error-" + rand.Text()), Title: "Turn error", Status: "failed",
 				Content: []protocol.ToolCallContent{textContent(string(entry))}, RawOutput: string(entry),
+			})
+		case *transcript.Compaction:
+			updates = append(updates, protocol.SessionUpdateToolCall{
+				SessionUpdate: "tool_call", ToolCallId: protocol.ToolCallId("compaction-" + rand.Text()), Title: compactionTitle, Status: "completed",
+				Content: []protocol.ToolCallContent{textContent(entry.Summary)}, RawOutput: entry.Summary,
 			})
 		case *transcript.AssistantBatch:
 			if entry.Message.Reasoning != "" {

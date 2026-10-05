@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -182,6 +183,8 @@ func TestCompactionDecisionUsesReportedInputTokens(t *testing.T) {
 		{"latest response is above threshold", 1000, []transcript.Entry{response(100), response(900)}, true},
 		{"latest response has no usage", 1000, []transcript.Entry{response(900), &transcript.AssistantBatch{}}, false},
 		{"trailing turn start and error", 1000, []transcript.Entry{response(800), &transcript.TurnStart{}, transcript.TurnError("failed")}, true},
+		{"compaction after the latest response", 1000, []transcript.Entry{response(900), &transcript.Compaction{Summary: "s"}}, false},
+		{"response after a compaction", 1000, []transcript.Entry{response(100), &transcript.Compaction{Summary: "s"}, response(900)}, true},
 		{"other token counts are not added", 1000, []transcript.Entry{&transcript.AssistantBatch{
 			Message: transcript.AssistantMessage{Usage: &transcript.Usage{
 				InputTokens: 799, CachedTokens: 799, OutputTokens: 1000, ReasoningTokens: 999,
@@ -456,5 +459,133 @@ func TestStartRejectsImagesForATextModelAndContextOverflowEndsTheTurn(t *testing
 	_, err := f.run(t, context.Background(), f.input("Hi"), &recorder{mode: transcript.ModeAsk})
 	if err == nil || !strings.Contains(err.Error(), "the session exceeds the model context limit; start a new session") {
 		t.Errorf("error = %v", err)
+	}
+}
+
+// answer replies with text and reports input tokens, 10 output tokens, and a
+// cost of 0.25.
+func answer(text string, input int) fake.Reply {
+	return fake.Chunks(fake.Delta(map[string]any{"role": "assistant", "content": text}, ""), fake.Usage(input, 10, 0.25))
+}
+
+// compactionFixture is a session whose saved answer used 800 of 1,000 context
+// tokens, followed by replies.
+func compactionFixture(t *testing.T, replies ...fake.Reply) *fixture {
+	t.Helper()
+	f := newFixture(t, append([]fake.Reply{answer("Hello.", 800)}, replies...)...)
+	f.agent.Catalog.Lookup(fake.DefaultModel).ContextLimit = 1000
+	if _, err := f.run(t, context.Background(), f.input("Hi"), &recorder{mode: transcript.ModeAsk}); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+func TestCompactionReplacesTheTranscriptInLaterRequests(t *testing.T) {
+	f := compactionFixture(t, answer("The user said hi.", 900), fake.Text("Done."))
+	client := &recorder{mode: transcript.ModeAsk}
+	turn, err := f.agent.Start(context.Background(), f.input("Continue"), client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := turn.Run(context.Background()); err != nil || result.Answer != "Done." {
+		t.Fatalf("result %+v, %v", result, err)
+	}
+	if turn.needsCompaction() {
+		t.Error("the turn needs compaction again after compacting")
+	}
+	entries := f.saved(t)
+	compaction, ok := entries[3].(*transcript.Compaction)
+	if len(entries) != 5 || !ok || compaction.Summary != "The user said hi." || compaction.Usage.InputTokens != 900 {
+		t.Fatalf("saved = %v", entries)
+	}
+	bodies := f.server.Bodies()
+	summaryRequest := bodies[1]["messages"].([]any)
+	if len(summaryRequest) != 5 || summaryRequest[4].(map[string]any)["content"] != compactionPrompt {
+		t.Errorf("summary request = %v", summaryRequest)
+	}
+	want := []any{
+		map[string]any{"role": "system", "content": "You are Ox."},
+		map[string]any{"role": "user", "content": compaction.Message().Text()},
+	}
+	if messages := bodies[2]["messages"]; fmt.Sprint(messages) != fmt.Sprint(want) {
+		t.Errorf("request after compaction = %v", messages)
+	}
+	started := client.events[1].(CompactionStarted)
+	finished := client.events[2].(CompactionFinished)
+	if !strings.HasPrefix(started.ID, "compaction-") || finished.ID != started.ID || !reflect.DeepEqual(finished.Outcome, transcript.Completed("The user said hi.")) {
+		t.Errorf("compaction events = %+v, %+v", started, finished)
+	}
+	if usage := client.events[3].(Usage); usage.Used != 0 || *usage.Cost != 0.5 {
+		t.Errorf("usage after compaction = %+v", usage)
+	}
+	if fmt.Sprintf("%T %T", client.events[4], client.events[5]) != "agent.TextDelta agent.Usage" || client.events[4] != TextDelta("Done.") {
+		t.Errorf("events = %v", client.events)
+	}
+}
+
+func TestAnIncompleteSummaryFailsTheTurnWithoutCompacting(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		reply  fake.Reply
+		reason string
+	}{
+		{"token limit", fake.Chunks(fake.Delta(map[string]any{"role": "assistant", "content": "The user"}, "length")), "the summary reached the output token limit"},
+		{"empty", fake.Text(" "), "the model returned an empty summary"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := compactionFixture(t, test.reply)
+			client := &recorder{mode: transcript.ModeAsk}
+			_, err := f.run(t, context.Background(), f.input("Continue"), client)
+			if want := "compacting the session failed: " + test.reason; err == nil || err.Error() != want {
+				t.Fatalf("error = %v, want %s", err, want)
+			}
+			entries := f.saved(t)
+			if turnError, ok := entries[len(entries)-1].(transcript.TurnError); !ok || string(turnError) != err.Error() || len(entries) != 4 {
+				t.Errorf("saved = %v", entries)
+			}
+			if finished := client.events[len(client.events)-1].(CompactionFinished); !reflect.DeepEqual(finished.Outcome, transcript.Failed(err.Error())) {
+				t.Errorf("finished = %+v", finished)
+			}
+		})
+	}
+}
+
+func TestCancellationDuringCompactionSavesNothing(t *testing.T) {
+	f := compactionFixture(t, fake.Hang(": OPENROUTER PROCESSING\n\n"))
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &recorder{mode: transcript.ModeAsk}
+	turn, err := f.agent.Start(ctx, f.input("Continue"), client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.AfterFunc(200*time.Millisecond, cancel)
+	if result, err := turn.Run(ctx); err != nil || result.Stop != Cancelled {
+		t.Errorf("result %+v, %v", result, err)
+	}
+	if entries := f.saved(t); len(entries) != 3 {
+		t.Errorf("saved = %v", entries)
+	}
+	if finished := client.events[len(client.events)-1].(CompactionFinished); finished.Outcome.Status != transcript.ToolCancelled {
+		t.Errorf("finished = %+v", finished)
+	}
+}
+
+func TestImagesBeforeTheLatestCompactionDoNotRejectATextModel(t *testing.T) {
+	f := newFixture(t)
+	start := &transcript.TurnStart{Model: fake.DefaultModel, Effort: catalog.EffortDefault, Mode: transcript.ModeAsk,
+		Input: transcript.TurnInput{Message: &transcript.UserMessage{Parts: []transcript.UserMessagePart{
+			{Image: &transcript.ImageAttachment{Data: "aGk=", MimeType: "image/png"}},
+		}}}}
+	if _, err := f.agent.Store.AppendTurnStart(f.session, start); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.agent.Start(context.Background(), f.input("Continue"), &recorder{mode: transcript.ModeAsk}); !errors.Is(err, ErrImagesUnsupported) {
+		t.Fatalf("an earlier image did not reject the model: %v", err)
+	}
+	if err := f.agent.Store.AppendCompaction(f.session, &transcript.Compaction{Summary: "The user sent a screenshot."}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.agent.Start(context.Background(), f.input("Continue"), &recorder{mode: transcript.ModeAsk}); err != nil {
+		t.Errorf("an image before the compaction rejected the model: %v", err)
 	}
 }

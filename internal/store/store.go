@@ -204,6 +204,16 @@ func (s *Store) AppendBatch(id string, batch *transcript.AssistantBatch) error {
 	return err
 }
 
+// AppendCompaction appends a compaction and updates activity in one
+// transaction.
+func (s *Store) AppendCompaction(id string, compaction *transcript.Compaction) error {
+	if err := compaction.Validate(); err != nil {
+		return err
+	}
+	_, err := s.append(id, "", compaction)
+	return err
+}
+
 // AppendTurnError appends a turn error and updates activity in one
 // transaction.
 func (s *Store) AppendTurnError(id, text string) error {

@@ -1,6 +1,9 @@
 package transcript
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestUsageSummaryKeepsLatestTokensAndTotalReportedCost(t *testing.T) {
 	firstCost, secondCost, zeroCost := 0.25, 0.5, 0.0
@@ -24,6 +27,8 @@ func TestUsageSummaryKeepsLatestTokensAndTotalReportedCost(t *testing.T) {
 		{"latest tokens and total cost", []Entry{first, &TurnStart{}, second, TurnError("failed")}, 27, new(0.75), true},
 		{"latest lacks usage", []Entry{first, second, unreported}, 0, new(0.75), true},
 		{"latest lacks price", []Entry{first, unpriced}, 39, &firstCost, true},
+		{"compaction after the latest", []Entry{first, &Compaction{Summary: "s", Usage: &Usage{InputTokens: 50, OutputTokens: 5, Cost: &secondCost}}}, 0, new(0.75), true},
+		{"response after a compaction", []Entry{first, &Compaction{Summary: "s"}, second}, 27, new(0.75), true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			used, cost, ok := UsageSummary(test.entries)
@@ -50,5 +55,42 @@ func TestSkillMessagePlacesArguments(t *testing.T) {
 				t.Errorf("text = %q, want %q", text, test.want)
 			}
 		})
+	}
+}
+
+func TestACompactionEncodesAndValidates(t *testing.T) {
+	cost := 0.5
+	compaction := &Compaction{Summary: "Fixed the parser.", Usage: &Usage{InputTokens: 900, OutputTokens: 40, Cost: &cost}}
+	kind, data, err := Encode(compaction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := Decode(kind, data)
+	if err != nil || kind != "compaction" || !reflect.DeepEqual(decoded, compaction) {
+		t.Errorf("decoded %s %s = %+v, %v", kind, data, decoded, err)
+	}
+	start := &TurnStart{Model: "openrouter:a/b", Effort: "default", Mode: ModeAsk, Input: TurnInput{Message: new(TextMessage("hi"))}}
+	if err := Validate([]Entry{start, compaction}); err != nil {
+		t.Error(err)
+	}
+	if err := Validate([]Entry{start, &Compaction{Summary: " \n"}}); err == nil {
+		t.Error("an empty summary was valid")
+	}
+}
+
+func TestSinceCompactionStartsAtTheLatestCompaction(t *testing.T) {
+	start, batch := &TurnStart{}, &AssistantBatch{}
+	first, second := &Compaction{Summary: "first"}, &Compaction{Summary: "second"}
+	for _, test := range []struct {
+		name          string
+		entries, want []Entry
+	}{
+		{"none", []Entry{start, batch}, []Entry{start, batch}},
+		{"one", []Entry{start, first, batch}, []Entry{first, batch}},
+		{"two", []Entry{start, first, batch, second, batch}, []Entry{second, batch}},
+	} {
+		if got := SinceCompaction(test.entries); !reflect.DeepEqual(got, test.want) {
+			t.Errorf("%s: entries = %v", test.name, got)
+		}
 	}
 }

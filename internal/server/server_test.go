@@ -241,6 +241,49 @@ func TestSessionsCanBePromptedReplayedListedClosedAndDeleted(t *testing.T) {
 	}
 }
 
+func TestACompactionIsShownAsAToolCallLiveAndOnReplay(t *testing.T) {
+	answer := func(text string, input int) fake.Reply {
+		return fake.Chunks(fake.Delta(object{"role": "assistant", "content": text}, ""), fake.Usage(input, 10, 0.25))
+	}
+	// The first answer uses more than 80% of the default model's context.
+	c := connect(t, answer("Hello.", 900000), answer("The user said hi.", 900000), fake.Text("Done."))
+	id := c.newSession()
+	c.next() // available commands
+	c.prompt(id, "Hi")
+	response, live := c.prompt(id, "Continue")
+	if response.Result["stopReason"] != "end_turn" {
+		t.Fatalf("prompt = %+v", response)
+	}
+	started, finished := updates(live, "tool_call"), updates(live, "tool_call_update")
+	if len(started) != 1 || started[0]["title"] != "Context compaction" || started[0]["status"] != "in_progress" {
+		t.Errorf("started = %v", started)
+	}
+	if len(finished) != 1 || finished[0]["toolCallId"] != started[0]["toolCallId"] || finished[0]["status"] != "completed" ||
+		finished[0]["rawOutput"] != "The user said hi." {
+		t.Errorf("finished = %v", finished)
+	}
+	for _, chunk := range updates(live, "agent_message_chunk") {
+		if chunk["content"].(map[string]any)["text"] != "Done." {
+			t.Errorf("the summary was streamed: %v", chunk)
+		}
+	}
+
+	_, replay := c.call(acp.MethodLoadSession, object{"sessionId": id, "cwd": c.workspace, "mcpServers": []any{}})
+	var kinds []string
+	for _, m := range replay {
+		kinds = append(kinds, m.Params["update"].(map[string]any)["sessionUpdate"].(string))
+	}
+	if strings.Join(kinds, " ") != "user_message_chunk agent_message_chunk user_message_chunk tool_call agent_message_chunk usage_update" {
+		t.Errorf("replay = %v", kinds)
+	}
+	if call := updates(replay, "tool_call")[0]; call["title"] != "Context compaction" || call["status"] != "completed" || call["rawOutput"] != "The user said hi." {
+		t.Errorf("replayed compaction = %v", call)
+	}
+	if usage := updates(replay, "usage_update")[0]; usage["cost"].(map[string]any)["amount"] != 0.5 {
+		t.Errorf("usage = %v", usage)
+	}
+}
+
 func TestConfigurationSelectionsValidateSaveAndApplyToTheNextTurn(t *testing.T) {
 	c := connect(t, fake.Text("one"), fake.Text("two"))
 	id := c.newSession()

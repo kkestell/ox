@@ -1,12 +1,16 @@
 // Package agent runs one turn of a session: it saves the user message or skill
 // invocation, makes model requests, runs tools in call order, saves each
-// complete assistant batch, and returns the answer when the turn finishes.
+// complete assistant batch, compacts the session when its context fills, and
+// returns the answer when the turn finishes.
 package agent
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"ox/internal/catalog"
@@ -16,6 +20,24 @@ import (
 	"ox/internal/tools"
 	"ox/internal/transcript"
 )
+
+// compactionPrompt asks the model for the summary that replaces the
+// transcript in later requests.
+const compactionPrompt = `The conversation above is the session so far between the user and you, Ox, a
+coding agent working in the user's workspace. It will be replaced by your
+summary. A model that sees only your summary and the messages that follow it
+must be able to continue the work without asking the user to repeat anything.
+
+Write the summary. Include:
+
+- The user's requests and instructions, quoted where the exact words matter.
+- What has been done: files read or changed, commands run, and their results.
+- Decisions made and the reasons for them.
+- The current state of the work and what remains to be done.
+- Facts the work depends on: file paths, names, errors, and values.
+
+Leave out anything the rest of the work does not need. Write plain text, not a
+reply to the user. Do not call tools.`
 
 // modelRequestAttempts is how many times a model request that ends in a
 // temporary failure is tried.
@@ -49,21 +71,34 @@ type ToolFinished struct {
 	Outcome transcript.ToolOutcome
 }
 
+// CompactionStarted reports that the session is being compacted. ID names the
+// compaction in its updates.
+type CompactionStarted struct{ ID string }
+
+// CompactionFinished reports how a compaction ended: completed with the
+// summary as its text, failed, or cancelled.
+type CompactionFinished struct {
+	ID      string
+	Outcome transcript.ToolOutcome
+}
+
 // Usage reports the context tokens, the context limit, and the session cost
-// after each saved batch.
+// after each saved batch and compaction.
 type Usage struct {
 	Used uint64
 	Size int
 	Cost *float64
 }
 
-func (SessionInfo) event()    {}
-func (TextDelta) event()      {}
-func (ReasoningDelta) event() {}
-func (ToolPending) event()    {}
-func (ToolStarted) event()    {}
-func (ToolFinished) event()   {}
-func (Usage) event()          {}
+func (SessionInfo) event()        {}
+func (TextDelta) event()          {}
+func (ReasoningDelta) event()     {}
+func (ToolPending) event()        {}
+func (ToolStarted) event()        {}
+func (ToolFinished) event()       {}
+func (CompactionStarted) event()  {}
+func (CompactionFinished) event() {}
+func (Usage) event()              {}
 
 // Client receives a turn's events, reports the session's mode, and answers Ask
 // mode permission requests.
@@ -180,7 +215,7 @@ func (a *Agent) Start(ctx context.Context, in Input, client Client) (*Turn, erro
 	}
 	start := &transcript.TurnStart{Model: model.QualifiedID(), Effort: in.Effort, Mode: t.client.Mode(), Input: in.Input}
 	// An earlier image fails every request to a model without image input.
-	if !model.AcceptsImages && (start.Input.HasImages() || hasImages(session.Transcript)) {
+	if !model.AcceptsImages && (start.Input.HasImages() || hasImages(transcript.SinceCompaction(session.Transcript))) {
 		return nil, ErrImagesUnsupported
 	}
 	updated, err := a.Store.AppendTurnStart(in.SessionID, start)
@@ -254,9 +289,11 @@ func (t *Turn) loop(ctx context.Context) (Result, error) {
 			return Result{}, ErrCancelled
 		}
 		if t.needsCompaction() {
-			// TODO: compact the transcript before the next model request.
+			if err := t.compact(ctx); err != nil {
+				return Result{}, err
+			}
 		}
-		completion, err := t.requestWithRetries(ctx)
+		completion, err := t.requestWithRetries(ctx, t.request, true)
 		if err != nil {
 			return Result{}, err
 		}
@@ -284,21 +321,83 @@ func (t *Turn) needsCompaction() bool {
 	}
 	limit := uint64(t.request.Model.ContextLimit)
 	for i := len(t.request.Transcript) - 1; i >= 0; i-- {
-		batch, ok := t.request.Transcript[i].(*transcript.AssistantBatch)
-		if !ok {
-			continue
+		switch entry := t.request.Transcript[i].(type) {
+		case *transcript.Compaction:
+			return false
+		case *transcript.AssistantBatch:
+			usage := entry.Message.Usage
+			return usage != nil && usage.InputTokens >= limit-limit/5
 		}
-		usage := batch.Message.Usage
-		return usage != nil && usage.InputTokens >= limit-limit/5
 	}
 	return false
 }
 
+// compact replaces the transcript in later requests with a summary the model
+// writes. Nothing is saved when it fails or is cancelled.
+func (t *Turn) compact(ctx context.Context) error {
+	id := "compaction-" + rand.Text()
+	if err := t.client.Send(CompactionStarted{id}); err != nil {
+		return updateFailure(err)
+	}
+	compaction, err := t.summarize(ctx)
+	var outcome transcript.ToolOutcome
+	switch {
+	case errors.Is(err, ErrCancelled):
+		outcome = transcript.Cancelled("Cancelled before the compaction finished.")
+	case err != nil:
+		outcome = transcript.Failed(err.Error())
+	default:
+		outcome = transcript.Completed(compaction.Summary)
+	}
+	// A compaction error ends the turn whether or not its update is sent.
+	if sendErr := t.client.Send(CompactionFinished{id, outcome}); err != nil {
+		return err
+	} else if sendErr != nil {
+		return updateFailure(sendErr)
+	}
+	used, cost, _ := transcript.UsageSummary(t.request.Transcript)
+	if err := t.client.Send(Usage{Used: used, Size: t.request.Model.ContextLimit, Cost: cost}); err != nil {
+		return updateFailure(err)
+	}
+	return nil
+}
+
+// summarize asks the model for a summary of the transcript and saves it as a
+// compaction.
+func (t *Turn) summarize(ctx context.Context) (*transcript.Compaction, error) {
+	prompt := transcript.TextMessage(compactionPrompt)
+	request := t.request
+	// The prompt exists only in this request and is never saved.
+	request.Transcript = slices.Concat(t.request.Transcript, []transcript.Entry{&transcript.TurnStart{Input: transcript.TurnInput{Message: &prompt}}})
+	completion, err := t.requestWithRetries(ctx, request, false)
+	if err != nil {
+		return nil, err
+	}
+	var reason string
+	switch {
+	case completion.Stop == openrouter.StopTokenLimit:
+		reason = "the summary reached the output token limit"
+	case completion.Stop == openrouter.StopRefused:
+		reason = "the model refused to write a summary"
+	case strings.TrimSpace(completion.Message.Text) == "":
+		reason = "the model returned an empty summary"
+	}
+	if reason != "" {
+		return nil, &failure{"compacting the session failed", errors.New(reason)}
+	}
+	compaction := &transcript.Compaction{Summary: completion.Message.Text, Usage: completion.Message.Usage}
+	if err := t.agent.Store.AppendCompaction(t.summary.ID, compaction); err != nil {
+		return nil, storageFailure(err)
+	}
+	t.request.Transcript = append(t.request.Transcript, compaction)
+	return compaction, nil
+}
+
 // requestWithRetries makes one model request, retrying a temporary failure.
 // Provisional output of a failed attempt stays on screen.
-func (t *Turn) requestWithRetries(ctx context.Context) (*openrouter.Completion, error) {
+func (t *Turn) requestWithRetries(ctx context.Context, request openrouter.Request, forward bool) (*openrouter.Completion, error) {
 	for attempt := 1; ; attempt++ {
-		completion, err := t.complete(ctx)
+		completion, err := t.complete(ctx, request, forward)
 		var f *failure
 		if attempt == modelRequestAttempts || !errors.As(err, &f) || !openrouter.IsTemporary(f.err) {
 			return completion, err
@@ -311,10 +410,10 @@ func (t *Turn) requestWithRetries(ctx context.Context) (*openrouter.Completion, 
 	}
 }
 
-// complete makes one model request, forwards provisional output, and returns
-// the validated completion.
-func (t *Turn) complete(ctx context.Context) (*openrouter.Completion, error) {
-	stream, err := t.agent.OpenRouter.Stream(ctx, t.request)
+// complete makes one model request, forwards provisional output when forward
+// is set, and returns the validated completion.
+func (t *Turn) complete(ctx context.Context, request openrouter.Request, forward bool) (*openrouter.Completion, error) {
+	stream, err := t.agent.OpenRouter.Stream(ctx, request)
 	if ctx.Err() != nil {
 		return nil, ErrCancelled
 	}
@@ -333,6 +432,7 @@ func (t *Turn) complete(ctx context.Context) (*openrouter.Completion, error) {
 		switch {
 		case item.Completion != nil:
 			return item.Completion, nil
+		case !forward:
 		case item.Text != "":
 			err = t.client.Send(TextDelta(item.Text))
 		case item.Reasoning != "":

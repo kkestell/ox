@@ -73,9 +73,11 @@ func TestABatchSurvivesReopenInOrder(t *testing.T) {
 	skill := &transcript.TurnStart{Model: "openrouter:z-ai/glm-5.3-flash", Effort: catalog.EffortLow, Mode: transcript.ModeAuto,
 		Input: transcript.TurnInput{Skill: &transcript.SkillInvocation{Name: "goal", Arguments: "Pass the tests.", Instructions: "Complete."}}}
 	first := turn("Weather in Chicago and Denver?")
+	compaction := &transcript.Compaction{Summary: "Chicago is sunny.", Usage: &transcript.Usage{InputTokens: 200, OutputTokens: 20, Cost: &cost}}
 	for _, step := range []func() error{
 		func() error { _, err := s.AppendTurnStart(id, first); return err },
 		func() error { return s.AppendBatch(id, batch) },
+		func() error { return s.AppendCompaction(id, compaction) },
 		func() error { _, err := s.AppendTurnStart(id, skill); return err },
 		func() error { return s.AppendTurnError(id, "the model request failed: OpenRouter returned 503") },
 	} {
@@ -97,7 +99,7 @@ func TestABatchSurvivesReopenInOrder(t *testing.T) {
 	if session.Summary.Workspace != workspace || session.Summary.Title != "Weather in Chicago and Denver?" {
 		t.Errorf("summary = %+v", session.Summary)
 	}
-	want := []transcript.Entry{first, batch, skill, transcript.TurnError("the model request failed: OpenRouter returned 503")}
+	want := []transcript.Entry{first, batch, compaction, skill, transcript.TurnError("the model request failed: OpenRouter returned 503")}
 	// Decoding writes empty lists where the originals had none, so compare
 	// the stored form.
 	var got, expected [][2]string
@@ -191,6 +193,17 @@ func TestAppendsValidateAndNeverCreateASession(t *testing.T) {
 	}
 	if err := s.AppendBatch(id, &transcript.AssistantBatch{Message: transcript.AssistantMessage{ToolCalls: calls("a")}}); err == nil {
 		t.Error("a batch without its outcome was appended")
+	}
+	if err := s.AppendCompaction(id, &transcript.Compaction{}); err == nil {
+		t.Error("an empty compaction was appended")
+	}
+	s.AppendTurnStart(id, turn("hello"))
+	s.db.Exec("UPDATE sessions SET updated_at = '2026-01-01T00:00:00.000Z' WHERE id = ?", id)
+	if err := s.AppendCompaction(id, &transcript.Compaction{Summary: "Said hello."}); err != nil {
+		t.Fatal(err)
+	}
+	if session, _ := s.Read(id); session.Summary.UpdatedAt == "2026-01-01T00:00:00.000Z" {
+		t.Error("a compaction did not update activity")
 	}
 	if _, err := s.AppendTurnStart("missing", turn("hello")); err == nil {
 		t.Error("appending created a session")
