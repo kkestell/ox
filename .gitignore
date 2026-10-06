@@ -5,3 +5,7 @@
 .DS_Store
 __pycache__/
 .africot/
+/evals/bin/
+/evals/repos/
+/evals/runs/
+/evals/worktree/

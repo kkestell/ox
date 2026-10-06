@@ -21,6 +21,7 @@ Keep this document accurate and short.
 - `scripts/run.py` — runs one headless prompt in a temporary workspace.
 - `scripts/export_session.py` — exports a session to JSON.
 - `scripts/top_programs.py` — lists the programs Claude Code runs most often.
+- `evals/` — runs a task against two builds of Ox in Docker and compares them.
 - `.github/workflows/` — the release build.
 - `research/` — research notes and reports.
 - `agents/` — plans, reviews, and work logs.

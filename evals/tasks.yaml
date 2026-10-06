@@ -1,0 +1,1024 @@
+# Evaluation tasks for evals/eval.py. A task starts in a workspace holding the
+# first parent of its commit. A run passes when `make` and `make test` succeed
+# in the workspace and the compiler there builds the task's program, whose
+# files are compiled from Main.Mod, into one that exits 0 and prints exactly
+# the task's output. A task's timeout, in seconds, replaces `run --timeout`.
+# `evals/eval.py validate` checks that each program passes with its commit and
+# fails with the commit's first parent.
+
+- id: oberon-integer-modules
+  repository: https://github.com/kkestell/oberon.git
+  commit: 335639d7d5a0ad7ef3e50112ac139992ce922467
+  prompt: >
+    This directory holds the Oberon-07 Report in references/ and vendored
+    copies of QBE and BDWGC in vendor/. Write a compiler in Rust for a first
+    subset of Oberon-07. `make` must build the compiler at
+    target/release/oberon, which runs from the repository root as
+    `target/release/oberon -o OUTPUT SOURCE` and writes a native executable to
+    OUTPUT. A module is stored in a file named after it, such as Hello.Mod for
+    MODULE Hello.
+
+
+    The subset is one module with CONST, TYPE, and VAR declarations of
+    INTEGER, a 32-bit signed integer, and a body of assignments and calls to
+    Out, a built-in module that a program imports with IMPORT Out. Expressions
+    are decimal and hexadecimal literals, constants, variables, parentheses,
+    unary minus, and +, -, *, DIV, and MOD, as the Report defines them.
+    Out.Int(i, n) writes i in decimal, padded on the left with spaces to at
+    least n characters, and Out.Ln writes a newline. DIV or MOD by zero ends
+    the program with a message on standard error and a nonzero exit status.
+
+
+    Add tests under tests/corpus for programs and their expected output,
+    tests/errors for programs that must fail to compile, and tests/failures
+    for programs that must fail at runtime. `make test` must run them. Run
+    `make test` before you finish.
+  program:
+    Main.Mod: |
+      MODULE Main;
+        IMPORT Out;
+        CONST
+          Base = 10;
+          Limit = Base * Base - 1;
+          Mask = 0FFH;
+          Big = 7FFFFFFFH;
+        TYPE
+          Count = INTEGER;
+        VAR
+          a, b: INTEGER;
+          n: Count;
+      BEGIN
+        a := Limit;
+        b := -(a + 1) DIV 7;
+        Out.Int(a, 0); Out.Int(b, 5); Out.Ln;
+        a := -7; b := 2;
+        Out.Int(a DIV b, 0); Out.Int(a MOD b, 3); Out.Ln;
+        n := 17; a := -n;
+        Out.Int(a DIV 5, 0); Out.Int(a MOD 5, 3); Out.Ln;
+        Out.Int(Mask + 1, 6); Out.Ln;
+        Out.Int((3 + 4) * (5 - 9), 0); Out.Ln;
+        Out.Int(Big, 0); Out.Int(-Big - 1, 12); Out.Ln
+      END Main.
+  output: |2
+    99  -14
+    -4  1
+    -4  3
+       256
+    -28
+    2147483647 -2147483648
+
+- id: oberon-control-flow
+  repository: https://github.com/kkestell/oberon.git
+  commit: d06077cb22f0e2eff7eb041321f8efd507c3b903
+  prompt: >
+    This directory is an Oberon-07 compiler written in Rust, with the Oberon-07
+    Report in references/. Add BOOLEAN with TRUE and FALSE, the relations =, #,
+    <, <=, >, and >=, the operators &, OR, and ~, and the IF, WHILE, and REPEAT
+    statements, as the Report defines them. Add tests for them under
+    tests/corpus, tests/errors, and tests/failures, and run `make test` before
+    you finish.
+  program:
+    Main.Mod: |
+      MODULE Main;
+        IMPORT Out;
+        VAR a, b, n, steps, d: INTEGER; found, even: BOOLEAN;
+      BEGIN
+        a := 84; b := 36;
+        WHILE a > b DO a := a - b
+        ELSIF b > a DO b := b - a
+        END;
+        Out.Int(a, 0); Out.Ln;
+        n := 27; steps := 0;
+        REPEAT
+          IF n MOD 2 = 0 THEN n := n DIV 2 ELSE n := 3 * n + 1 END;
+          steps := steps + 1
+        UNTIL n = 1;
+        Out.Int(steps, 0); Out.Ln;
+        d := 0;
+        IF (d # 0) & (10 DIV d > 1) THEN Out.Int(1, 0) ELSE Out.Int(0, 0) END;
+        IF (d = 0) OR (10 DIV d > 1) THEN Out.Int(1, 2) ELSE Out.Int(0, 2) END;
+        Out.Ln;
+        found := FALSE; n := 1;
+        WHILE ~found & (n < 100) DO
+          IF (n * n > 50) & ~(n MOD 2 = 0) THEN found := TRUE ELSE n := n + 1 END
+        END;
+        even := n MOD 2 = 0;
+        IF found & (even = FALSE) & (even # found) THEN Out.Int(n, 0) END;
+        Out.Ln;
+        n := -5;
+        REPEAT
+          IF n < 0 THEN Out.Int(-1, 3)
+          ELSIF n = 0 THEN Out.Int(0, 3)
+          ELSIF (n >= 1) & (n <= 2) THEN Out.Int(1, 3)
+          ELSE Out.Int(2, 3)
+          END;
+          n := n + 2
+        UNTIL n > 5;
+        Out.Ln
+      END Main.
+  output: |2
+    12
+    111
+    0 1
+    9
+     -1 -1 -1  1  2  2
+
+- id: oberon-scalar-procedures
+  repository: https://github.com/kkestell/oberon.git
+  commit: 2bfedba50deae21f76976c6e9df3c868974bdd15
+  prompt: >
+    This directory is an Oberon-07 compiler written in Rust, with the Oberon-07
+    Report in references/. Add procedures declared at module level, as the
+    Report defines them: proper procedures and function procedures, value and
+    VAR parameters, local declarations, RETURN, and calls as statements and
+    inside expressions. Add tests for them under tests/corpus, tests/errors,
+    and tests/failures, and run `make test` before you finish.
+  program:
+    Main.Mod: |
+      MODULE Main;
+        IMPORT Out;
+        VAR x, y, total: INTEGER;
+
+        PROCEDURE Fib(n: INTEGER): INTEGER;
+          VAR r: INTEGER;
+        BEGIN
+          IF n < 2 THEN r := n ELSE r := Fib(n - 1) + Fib(n - 2) END
+          RETURN r
+        END Fib;
+
+        PROCEDURE Swap(VAR a, b: INTEGER);
+          VAR t: INTEGER;
+        BEGIN
+          t := a; a := b; b := t
+        END Swap;
+
+        PROCEDURE Add(n: INTEGER);
+        BEGIN
+          total := total + n
+        END Add;
+
+        PROCEDURE CountDown(n: INTEGER);
+        BEGIN
+          WHILE n > 0 DO Add(n); n := n - 1 END
+        END CountDown;
+
+        PROCEDURE Max(a, b: INTEGER): INTEGER;
+          TYPE Num = INTEGER;
+          VAR m: Num;
+        BEGIN
+          IF a > b THEN m := a ELSE m := b END
+          RETURN m
+        END Max;
+
+        PROCEDURE Square(n: INTEGER): INTEGER;
+          CONST Unit = 1;
+        RETURN n * n * Unit
+        END Square;
+
+      BEGIN
+        Out.Int(Fib(20), 0); Out.Ln;
+        x := 3; y := 9; Swap(x, y);
+        Out.Int(x, 0); Out.Int(y, 3); Out.Ln;
+        total := 0; x := 4; CountDown(x);
+        Out.Int(total, 0); Out.Int(x, 3); Out.Ln;
+        Out.Int(Max(Square(4), Square(-5)) - Max(1, 2), 0); Out.Ln
+      END Main.
+  output: |2
+    6765
+    9  3
+    10  4
+    23
+
+- id: oberon-nested-procedures
+  repository: https://github.com/kkestell/oberon.git
+  commit: fe2f2fa149971e1d343ac3a944990c945d6cab79
+  prompt: >
+    This directory is an Oberon-07 compiler written in Rust, with the Oberon-07
+    Report in references/. Add procedures declared inside procedures, with the
+    scope rules the Report gives them. Add tests for them under tests/corpus,
+    tests/errors, and tests/failures, and run `make test` before you finish.
+  program:
+    Main.Mod: |
+      MODULE Main;
+        IMPORT Out;
+        VAR x, count: INTEGER;
+
+        PROCEDURE Outer(n: INTEGER): INTEGER;
+          CONST Scale = 10;
+          TYPE Num = INTEGER;
+          VAR result: Num;
+
+          PROCEDURE Triple(k: Num): Num;
+          BEGIN
+            count := count + 1
+            RETURN 3 * k
+          END Triple;
+
+          PROCEDURE Deep(k: INTEGER): INTEGER;
+            PROCEDURE Deeper(j: INTEGER): INTEGER;
+            RETURN Triple(j) + Scale
+            END Deeper;
+          RETURN Deeper(k) * 2
+          END Deep;
+
+        BEGIN
+          result := Deep(n) + Triple(1)
+          RETURN result
+        END Outer;
+
+        PROCEDURE SumTo(n: INTEGER): INTEGER;
+          PROCEDURE Sum(k: INTEGER): INTEGER;
+            VAR s: INTEGER;
+          BEGIN
+            IF k = 0 THEN s := 0 ELSE s := k + Sum(k - 1) END
+            RETURN s
+          END Sum;
+        RETURN Sum(n)
+        END SumTo;
+
+        PROCEDURE Shadow(): INTEGER;
+          VAR x: INTEGER;
+          PROCEDURE Inner(): INTEGER;
+            VAR x: INTEGER;
+          BEGIN
+            x := 3
+            RETURN x
+          END Inner;
+        BEGIN
+          x := 2
+          RETURN x * 10 + Inner()
+        END Shadow;
+
+        PROCEDURE A(): INTEGER;
+          PROCEDURE Helper(): INTEGER;
+          RETURN 1
+          END Helper;
+        RETURN Helper()
+        END A;
+
+        PROCEDURE B(): INTEGER;
+          PROCEDURE Helper(): INTEGER;
+          RETURN 2
+          END Helper;
+        RETURN Helper()
+        END B;
+
+      BEGIN
+        count := 0; x := 1;
+        Out.Int(Outer(5), 0); Out.Int(count, 3); Out.Ln;
+        Out.Int(SumTo(10), 0); Out.Ln;
+        Out.Int(Shadow() * 10 + x, 0); Out.Ln;
+        Out.Int(A() * 10 + B(), 0); Out.Ln
+      END Main.
+  output: |2
+    53  2
+    55
+    231
+    12
+
+- id: oberon-case-for-assert
+  repository: https://github.com/kkestell/oberon.git
+  commit: bc7bd8f07ddcf585a2f940243268479473d47454
+  timeout: 1200
+  prompt: >
+    This directory is an Oberon-07 compiler written in Rust, with the Oberon-07
+    Report in references/. Add the CASE statement over INTEGER, the FOR
+    statement, and the predefined procedures ABS, ODD, LSL, ASR, ROR, ORD, INC,
+    DEC, and ASSERT, as the Report defines them. A CASE whose value matches no
+    label and a failed ASSERT each end the program with a message on standard
+    error and a nonzero exit status. Add tests for them under tests/corpus,
+    tests/errors, and tests/failures, and run `make test` before you finish.
+  program:
+    Main.Mod: |
+      MODULE Main;
+        IMPORT Out;
+        CONST Seven = 7;
+        VAR i, sum, x: INTEGER;
+
+        PROCEDURE Kind(n: INTEGER): INTEGER;
+          VAR k: INTEGER;
+        BEGIN
+          CASE n OF
+            0: k := 0
+          | 1, 3, 5: k := 1
+          | 2, 4: k := 2
+          | 6..Seven: k := 3
+          | 8..20: k := 4
+          END
+          RETURN k
+        END Kind;
+
+      BEGIN
+        FOR i := 0 TO 12 BY 2 DO Out.Int(Kind(i), 2) END;
+        Out.Int(Kind(Seven), 2); Out.Ln;
+        sum := 0;
+        FOR i := 10 TO 1 BY -3 DO INC(sum, i) END;
+        FOR i := 1 TO 0 DO INC(sum) END;
+        FOR i := 1 TO 5 DO DEC(sum) END;
+        Out.Int(sum, 0); Out.Ln;
+        x := -17;
+        Out.Int(ABS(x), 0); Out.Int(LSL(3, 4), 4); Out.Int(ASR(x, 2), 4);
+        Out.Int(ROR(1, 1), 12); Out.Ln;
+        IF ODD(x) & ~ODD(sum + 1) THEN Out.Int(ORD(ODD(x)) + ORD(FALSE), 0) END;
+        Out.Ln;
+        ASSERT(sum = 17);
+        Out.Int(99, 0); Out.Ln
+      END Main.
+  output: |2
+     0 2 2 3 4 4 4 3
+    17
+    17  48  -5 -2147483648
+    1
+    99
+
+- id: oberon-modules
+  repository: https://github.com/kkestell/oberon.git
+  commit: 0ad59d72ab5d6208055580c09fe9e76b809b237c
+  prompt: >
+    This directory is an Oberon-07 compiler written in Rust, with the Oberon-07
+    Report in references/. Add programs of several modules, as the Report
+    defines them: import lists, including aliases such as IMPORT A := M,
+    export marks, qualified use of imported constants, types, variables, and
+    procedures, and module bodies. The compiler compiles every module that the
+    program imports from source, and finds module M in the file M.Mod in the
+    directory of the source file it was given. Out stays built in. Each
+    module's body runs once, after the bodies of the modules it imports, and
+    the modules of an import list are initialized in the order they are
+    listed. A client cannot assign to an imported variable. Add tests for them
+    under tests/corpus, tests/errors, and tests/failures, and run `make test`
+    before you finish.
+  program:
+    Main.Mod: |
+      MODULE Main;
+        IMPORT Out, Left, R := Right, Leaf;
+        CONST Double = Leaf.Base * 2;
+        VAR n: Leaf.Num;
+      BEGIN
+        n := Left.Twice(5) + R.Offset(1);
+        Out.Int(n, 0); Out.Ln;
+        Out.Int(Leaf.calls, 0); Out.Int(Double, 4); Out.Ln
+      END Main.
+    Leaf.Mod: |
+      MODULE Leaf;
+        IMPORT Out;
+        CONST Base* = 100;
+        TYPE Num* = INTEGER;
+        VAR calls*: INTEGER;
+
+        PROCEDURE Bump*(n: INTEGER): INTEGER;
+        BEGIN
+          calls := calls + 1
+          RETURN n + Base
+        END Bump;
+
+      BEGIN
+        calls := 0;
+        Out.Int(1, 0); Out.Ln
+      END Leaf.
+    Left.Mod: |
+      MODULE Left;
+        IMPORT Out, Leaf;
+
+        PROCEDURE Twice*(n: INTEGER): INTEGER;
+        RETURN Leaf.Bump(n) * 2
+        END Twice;
+
+      BEGIN
+        Out.Int(2, 0); Out.Ln
+      END Left.
+    Right.Mod: |
+      MODULE Right;
+        IMPORT Out, L := Leaf;
+        VAR offset: L.Num;
+
+        PROCEDURE Offset*(n: INTEGER): INTEGER;
+        RETURN L.Bump(n) - L.Base + offset
+        END Offset;
+
+      BEGIN
+        offset := 7;
+        Out.Int(3, 0); Out.Ln
+      END Right.
+  output: |2
+    1
+    2
+    3
+    218
+    2 200
+
+- id: oberon-sets
+  repository: https://github.com/kkestell/oberon.git
+  commit: 251c2b393d283e54eb760f3b32a59d24eb1e9286
+  prompt: >
+    This directory is an Oberon-07 compiler written in Rust, with the Oberon-07
+    Report in references/. Add SET, as the Report defines it: set constructors
+    with elements and ranges, +, -, *, /, unary minus, IN, INCL, EXCL, and ORD
+    of a SET. A SET holds the elements 0 to 31, and ORD of a SET is the
+    INTEGER whose bit n is 1 exactly when n is in the set. An element outside 0
+    to 31 is a compile error when it is constant and a runtime failure
+    otherwise. Add tests for them under tests/corpus, tests/errors, and
+    tests/failures, and run `make test` before you finish.
+  program:
+    Main.Mod: |
+      MODULE Main;
+        IMPORT Out;
+        CONST Low = {0..3}; Odd = {1, 3, 5, 7};
+        VAR s, t: SET; lo, hi: INTEGER;
+
+        PROCEDURE Show(s: SET);
+          VAR i: INTEGER;
+        BEGIN
+          FOR i := 0 TO 31 DO
+            IF i IN s THEN Out.Int(i, 3) END
+          END;
+          Out.Ln
+        END Show;
+
+      BEGIN
+        Show(Low + Odd);
+        Show(Low - Odd);
+        Show(Low * Odd);
+        Show(Low / Odd);
+        lo := 28; hi := 31;
+        s := {lo..hi, 10};
+        Show(s);
+        INCL(s, 0); EXCL(s, 29);
+        Show(s);
+        t := -s;
+        IF (5 IN t) & ~(10 IN t) & (s * t = {}) & (s + t = -{}) THEN Out.Int(1, 0) END;
+        IF {hi..lo} = {} THEN Out.Int(2, 2) END;
+        Out.Ln;
+        Out.Int(ORD({0, 2, 4}), 0); Out.Int(ORD(-{}), 3); Out.Int(ORD({31}), 12); Out.Ln
+      END Main.
+  output: |2
+      0  1  2  3  5  7
+      0  2
+      1  3
+      0  2  5  7
+     10 28 29 30 31
+      0 10 28 30 31
+    1 2
+    21 -1 -2147483648
+
+- id: oberon-reals
+  repository: https://github.com/kkestell/oberon.git
+  commit: 4fb2ba386b18444812ebcbb88c823d87091cfab5
+  timeout: 1200
+  prompt: >
+    This directory is an Oberon-07 compiler written in Rust, with the Oberon-07
+    Report in references/. Add REAL, as the Report defines it: real literals
+    with scale factors, +, -, *, /, the relations, ABS of a REAL, FLT, FLOOR,
+    PACK, and UNPK. A REAL is an IEEE 754 binary32 number. Add tests for them
+    under tests/corpus, tests/errors, and tests/failures, and run `make test`
+    before you finish.
+  program:
+    Main.Mod: |
+      MODULE Main;
+        IMPORT Out;
+        CONST Half = 0.5; Big = 1.5E3; Quarter = 25.0E-2;
+        VAR x, y: REAL; e: INTEGER;
+
+        PROCEDURE Sqrt(a: REAL): REAL;
+          VAR g: REAL; i: INTEGER;
+        BEGIN
+          g := a;
+          FOR i := 1 TO 20 DO g := (g + a / g) * Half END
+          RETURN g
+        END Sqrt;
+
+      BEGIN
+        Out.Int(FLOOR(Sqrt(2.0) * 10000.0), 0); Out.Ln;
+        Out.Int(FLOOR(Big + Quarter), 0); Out.Int(FLOOR(-2.5), 3); Out.Ln;
+        x := FLT(7) / 2.0;
+        Out.Int(FLOOR(x * 10.0), 0); Out.Ln;
+        y := ABS(-x);
+        IF (y = x) & (y > 3.4) & (y <= 3.5) & (y # 3.0) & (-y < 0.0) THEN Out.Int(1, 0) END;
+        Out.Ln;
+        x := 12.0; UNPK(x, e);
+        Out.Int(FLOOR(x * 100.0), 0); Out.Int(e, 3); Out.Ln;
+        PACK(x, 4);
+        Out.Int(FLOOR(x), 0); Out.Ln
+      END Main.
+  output: |2
+    14142
+    1500 -3
+    35
+    1
+    150  3
+    24
+
+- id: oberon-fixed-arrays
+  repository: https://github.com/kkestell/oberon.git
+  commit: adbb63ad4d7285853ec6a52732bf638b470f5f81
+  prompt: >
+    This directory is an Oberon-07 compiler written in Rust, with the Oberon-07
+    Report in references/. Add array types of constant length, as the Report
+    defines them: indexing, arrays of several dimensions, LEN, assignment of
+    whole arrays, and array parameters. An index out of range is a runtime
+    failure. Add tests for them under tests/corpus, tests/errors, and
+    tests/failures, and run `make test` before you finish.
+  program:
+    Main.Mod: |
+      MODULE Main;
+        IMPORT Out;
+        CONST N = 30;
+        TYPE
+          Vec = ARRAY 5 OF INTEGER;
+          Grid = ARRAY 3, 4 OF INTEGER;
+        VAR
+          sieve: ARRAY N OF BOOLEAN;
+          v, w: Vec;
+          g: Grid;
+          i, j: INTEGER;
+
+        PROCEDURE Sum(a: Vec): INTEGER;
+          VAR i, s: INTEGER;
+        BEGIN
+          s := 0;
+          FOR i := 0 TO LEN(a) - 1 DO s := s + a[i] END
+          RETURN s
+        END Sum;
+
+        PROCEDURE Reverse(VAR a: Vec);
+          VAR i, t: INTEGER;
+        BEGIN
+          FOR i := 0 TO LEN(a) DIV 2 - 1 DO
+            t := a[i]; a[i] := a[LEN(a) - 1 - i]; a[LEN(a) - 1 - i] := t
+          END
+        END Reverse;
+
+      BEGIN
+        FOR i := 0 TO N - 1 DO sieve[i] := i >= 2 END;
+        FOR i := 2 TO N - 1 DO
+          IF sieve[i] THEN
+            j := i * i;
+            WHILE j < N DO sieve[j] := FALSE; j := j + i END
+          END
+        END;
+        FOR i := 0 TO N - 1 DO
+          IF sieve[i] THEN Out.Int(i, 3) END
+        END;
+        Out.Ln;
+        FOR i := 0 TO 4 DO v[i] := i * i END;
+        w := v; Reverse(v);
+        FOR i := 0 TO 4 DO Out.Int(v[i], 3) END;
+        Out.Int(Sum(w), 4); Out.Ln;
+        FOR i := 0 TO 2 DO
+          FOR j := 0 TO 3 DO g[i, j] := i * 10 + j END
+        END;
+        g[1][2] := -1; g[0] := g[2];
+        Out.Int(g[2, 3] + g[1, 2], 0); Out.Int(g[0, 1], 3);
+        Out.Int(LEN(g), 3); Out.Int(LEN(g[0]), 3); Out.Ln
+      END Main.
+  output: |2
+      2  3  5  7 11 13 17 19 23 29
+     16  9  4  1  0  30
+    22 21  3  4
+
+- id: oberon-strings
+  repository: https://github.com/kkestell/oberon.git
+  commit: 0b5126652538768970c4cf3a3b07025bcebca987
+  timeout: 1200
+  prompt: >
+    This directory is an Oberon-07 compiler written in Rust, with the Oberon-07
+    Report in references/. Add CHAR, BYTE, string literals, string constants,
+    arrays of CHAR, CHR, ORD of a CHAR, CASE over CHAR, and comparison of
+    strings and character arrays, as the Report defines them. A CHAR is one
+    byte. Add Out.Char(ch), which writes the character ch. Add tests for them
+    under tests/corpus, tests/errors, and tests/failures, and run `make test`
+    before you finish.
+  program:
+    Main.Mod: |
+      MODULE Main;
+        IMPORT Out;
+        CONST Greeting = "Hello"; Bang = 21X;
+        TYPE Text = ARRAY 16 OF CHAR;
+        VAR s: Text; t: ARRAY 8 OF CHAR; c: CHAR; b: BYTE; i, vowels: INTEGER;
+
+        PROCEDURE Write(s: Text);
+          VAR i: INTEGER;
+        BEGIN
+          i := 0;
+          WHILE (i < LEN(s)) & (s[i] # 0X) DO Out.Char(s[i]); INC(i) END
+        END Write;
+
+      BEGIN
+        s := Greeting; Write(s); Out.Char(Bang); Out.Ln;
+        c := "a";
+        Out.Int(ORD(c), 0); Out.Char(CHR(ORD(c) + 1)); Out.Char(41X); Out.Ln;
+        s := "programming"; vowels := 0; i := 0;
+        WHILE s[i] # 0X DO
+          CASE s[i] OF
+            "a", "e", "i", "o", "u": INC(vowels)
+          | "b".."d", "f".."h", "j".."n", "p".."t", "v".."z":
+          END;
+          INC(i)
+        END;
+        Out.Int(vowels, 0); Out.Int(i, 3); Out.Ln;
+        t := "abc";
+        IF (t < "abd") & (t = "abc") & ("b" > "a") & (t # s) THEN Out.Char("y") END;
+        Out.Ln;
+        b := 200; Out.Int(b + 100, 0); Out.Ln;
+        s := "shout"; i := 0;
+        WHILE s[i] # 0X DO s[i] := CHR(ORD(s[i]) - 32); INC(i) END;
+        Write(s); Out.Ln
+      END Main.
+  output: |2
+    Hello!
+    97bA
+    3 11
+    y
+    300
+    SHOUT
+
+- id: oberon-records
+  repository: https://github.com/kkestell/oberon.git
+  commit: 8e37b64a3ca58198dd024efd6c0333ab3f9a7a98
+  prompt: >
+    This directory is an Oberon-07 compiler written in Rust, with the Oberon-07
+    Report in references/. Add record types, as the Report defines them: field
+    selection, fields of any type, assignment of whole records, and record
+    parameters. Record extension is not part of this change. Add tests for
+    them under tests/corpus, tests/errors, and tests/failures, and run
+    `make test` before you finish.
+  program:
+    Main.Mod: |
+      MODULE Main;
+        IMPORT Out;
+        TYPE
+          Point = RECORD x, y: INTEGER END;
+          Rect = RECORD min, max: Point; name: ARRAY 8 OF CHAR END;
+        VAR p, q: Point; r: Rect; pts: ARRAY 3 OF Point; i: INTEGER;
+
+        PROCEDURE Area(r: Rect): INTEGER;
+        RETURN (r.max.x - r.min.x) * (r.max.y - r.min.y)
+        END Area;
+
+        PROCEDURE Move(VAR p: Point; dx, dy: INTEGER);
+        BEGIN
+          p.x := p.x + dx; p.y := p.y + dy
+        END Move;
+
+      BEGIN
+        p.x := 1; p.y := 2; q := p; Move(q, 10, 20);
+        Out.Int(p.x, 0); Out.Int(p.y, 3); Out.Int(q.x, 4); Out.Int(q.y, 4); Out.Ln;
+        r.min := p; r.max := q; r.name := "box";
+        Out.Int(Area(r), 0); Out.Char(" "); Out.Char(r.name[0]); Out.Ln;
+        FOR i := 0 TO 2 DO pts[i].x := i; pts[i].y := i * i END;
+        pts[0] := pts[2]; Move(pts[1], 5, 5);
+        FOR i := 0 TO 2 DO Out.Int(pts[i].x * 100 + pts[i].y, 5) END;
+        Out.Ln;
+        Move(r.max, -1, -1);
+        Out.Int(Area(r), 0); Out.Ln
+      END Main.
+  output: |2
+    1  2  11  22
+    200 b
+      204  606  204
+    171
+
+- id: oberon-pointers
+  repository: https://github.com/kkestell/oberon.git
+  commit: 93854d5878f367f6469fefbb29b588a536d42bce
+  timeout: 1200
+  prompt: >
+    This directory is an Oberon-07 compiler written in Rust, with the Oberon-07
+    Report in references/. Add pointer types, as the Report defines them:
+    POINTER TO a record type, NIL, NEW, and explicit and implicit dereference.
+    A program never frees memory, so the heap is garbage collected.
+    Dereferencing NIL is a runtime failure. Add tests for them under
+    tests/corpus, tests/errors, and tests/failures, and run `make test` before
+    you finish.
+  program:
+    Main.Mod: |
+      MODULE Main;
+        IMPORT Out;
+        TYPE
+          List = POINTER TO Node;
+          Node = RECORD value: INTEGER; next: List END;
+          Tree = POINTER TO TreeNode;
+          TreeNode = RECORD key: INTEGER; left, right: Tree END;
+          Block = POINTER TO RECORD data: ARRAY 64 OF INTEGER END;
+        VAR head, p: List; root: Tree; b: Block; i, sum: INTEGER;
+
+        PROCEDURE Insert(VAR t: Tree; key: INTEGER);
+        BEGIN
+          IF t = NIL THEN
+            NEW(t); t.key := key; t.left := NIL; t.right := NIL
+          ELSIF key < t.key THEN Insert(t.left, key)
+          ELSE Insert(t^.right, key)
+          END
+        END Insert;
+
+        PROCEDURE Walk(t: Tree);
+        BEGIN
+          IF t # NIL THEN Walk(t.left); Out.Int(t^.key, 3); Walk(t.right) END
+        END Walk;
+
+      BEGIN
+        head := NIL;
+        FOR i := 1 TO 5 DO NEW(p); p.value := i * i; p.next := head; head := p END;
+        sum := 0; p := head;
+        WHILE p # NIL DO sum := sum + p^.value; p := p.next END;
+        Out.Int(sum, 0); Out.Int(head.value, 4); Out.Ln;
+        root := NIL;
+        Insert(root, 50); Insert(root, 30); Insert(root, 70);
+        Insert(root, 20); Insert(root, 40); Insert(root, 60);
+        Walk(root); Out.Ln;
+        sum := 0;
+        FOR i := 1 TO 1000000 DO
+          NEW(b); b.data[0] := i; b.data[63] := 1; sum := sum + b.data[63]
+        END;
+        Out.Int(sum, 0); Out.Ln;
+        head.next.next := NIL; p := head; i := 0;
+        WHILE p # NIL DO INC(i); p := p.next END;
+        Out.Int(i, 0); Out.Ln
+      END Main.
+  output: |2
+    55  25
+     20 30 40 50 60 70
+    1000000
+    2
+
+- id: oberon-open-arrays
+  repository: https://github.com/kkestell/oberon.git
+  commit: c4c4b7b7fc2ca2abbd3982c69f8ae5a63f77f8eb
+  timeout: 1200
+  prompt: >
+    This directory is an Oberon-07 compiler written in Rust, with the Oberon-07
+    Report in references/. Add open array parameters, as the Report defines
+    them: formal types ARRAY OF T with one or more open dimensions, LEN of an
+    open array, passing a string to an ARRAY OF CHAR, and assigning an open
+    array to a fixed array. Add tests for them under tests/corpus,
+    tests/errors, and tests/failures, and run `make test` before you finish.
+  program:
+    Main.Mod: |
+      MODULE Main;
+        IMPORT Out;
+        VAR
+          a: ARRAY 5 OF INTEGER;
+          b: ARRAY 3 OF INTEGER;
+          m: ARRAY 2, 3 OF INTEGER;
+          s: ARRAY 10 OF CHAR;
+          i: INTEGER;
+
+        PROCEDURE Sum(v: ARRAY OF INTEGER): INTEGER;
+          VAR i, s: INTEGER;
+        BEGIN
+          s := 0;
+          FOR i := 0 TO LEN(v) - 1 DO s := s + v[i] END
+          RETURN s
+        END Sum;
+
+        PROCEDURE Fill(VAR v: ARRAY OF INTEGER; x: INTEGER);
+          VAR i: INTEGER;
+        BEGIN
+          FOR i := 0 TO LEN(v) - 1 DO v[i] := x + i END
+        END Fill;
+
+        PROCEDURE Total(g: ARRAY OF ARRAY OF INTEGER): INTEGER;
+          VAR i, t: INTEGER;
+        BEGIN
+          t := 0;
+          FOR i := 0 TO LEN(g) - 1 DO t := t + Sum(g[i]) * (i + 1) END
+          RETURN t * 100 + LEN(g[0])
+        END Total;
+
+        PROCEDURE Write(s: ARRAY OF CHAR);
+          VAR i: INTEGER;
+        BEGIN
+          i := 0;
+          WHILE (i < LEN(s)) & (s[i] # 0X) DO Out.Char(s[i]); INC(i) END
+        END Write;
+
+        PROCEDURE Count(s: ARRAY OF CHAR; c: CHAR): INTEGER;
+          VAR i, n: INTEGER;
+        BEGIN
+          n := 0;
+          FOR i := 0 TO LEN(s) - 1 DO
+            IF s[i] = c THEN INC(n) END
+          END
+          RETURN n
+        END Count;
+
+        PROCEDURE Rotate(VAR v: ARRAY OF INTEGER);
+          VAR copy: ARRAY 3 OF INTEGER; i: INTEGER;
+        BEGIN
+          copy := v;
+          FOR i := 0 TO 2 DO v[i] := copy[(i + 1) MOD 3] END
+        END Rotate;
+
+      BEGIN
+        Fill(a, 10); Fill(b, 1);
+        Out.Int(Sum(a), 0); Out.Int(Sum(b), 4); Out.Int(LEN(a), 3); Out.Ln;
+        FOR i := 0 TO 1 DO Fill(m[i], i * 3) END;
+        Out.Int(Total(m), 0); Out.Ln;
+        s := "open"; Write(s); Out.Char(" "); Write("arrays"); Out.Ln;
+        Out.Int(Count("banana", "a"), 0); Out.Ln;
+        Rotate(b);
+        FOR i := 0 TO 2 DO Out.Int(b[i], 2) END;
+        Out.Ln
+      END Main.
+  output: |2
+    60   6  5
+    2703
+    open arrays
+    3
+     2 3 1
+
+- id: oberon-record-extension
+  repository: https://github.com/kkestell/oberon.git
+  commit: f87d4b471dface341f922131ac47e647cac70031
+  timeout: 1200
+  prompt: >
+    This directory is an Oberon-07 compiler written in Rust, with the Oberon-07
+    Report in references/. Add record extension, as the Report defines it:
+    extended record types and the pointer types bound to them, assignment of
+    an extension to its base type, type tests with IS, type guards, and CASE
+    over the dynamic type of a pointer or a record VAR parameter. A failed type
+    guard is a runtime failure. Add tests for them under tests/corpus,
+    tests/errors, and tests/failures, and run `make test` before you finish.
+  program:
+    Main.Mod: |
+      MODULE Main;
+        IMPORT Out;
+        TYPE
+          Shape = POINTER TO ShapeDesc;
+          ShapeDesc = RECORD id: INTEGER END;
+          Circle = POINTER TO CircleDesc;
+          CircleDesc = RECORD (ShapeDesc) r: INTEGER END;
+          Square = POINTER TO SquareDesc;
+          SquareDesc = RECORD (ShapeDesc) side: INTEGER END;
+          Cube = POINTER TO CubeDesc;
+          CubeDesc = RECORD (SquareDesc) depth: INTEGER END;
+        VAR
+          shapes: ARRAY 4 OF Shape;
+          c: Circle; s: Square; k: Cube;
+          base: ShapeDesc; sd: SquareDesc;
+          i: INTEGER;
+
+        PROCEDURE Area(sh: Shape): INTEGER;
+          VAR a: INTEGER;
+        BEGIN
+          CASE sh OF
+            Circle: a := 3 * sh.r * sh.r
+          | Square: a := sh.side * sh.side
+          END
+          RETURN a
+        END Area;
+
+        PROCEDURE Kind(VAR d: ShapeDesc): INTEGER;
+          VAR n: INTEGER;
+        BEGIN
+          IF d IS CubeDesc THEN n := 3
+          ELSIF d IS SquareDesc THEN n := 2
+          ELSE n := 1
+          END
+          RETURN n
+        END Kind;
+
+      BEGIN
+        NEW(c); c.id := 1; c.r := 2;
+        NEW(s); s.id := 2; s.side := 3;
+        NEW(k); k.id := 3; k.side := 2; k.depth := 5;
+        shapes[0] := c; shapes[1] := s; shapes[2] := k;
+        NEW(shapes[3]); shapes[3].id := 4;
+        Out.Int(Area(shapes[0]), 0); Out.Int(Area(shapes[1]), 3); Out.Ln;
+        FOR i := 0 TO 3 DO
+          IF shapes[i] IS Square THEN Out.Int(shapes[i](Square).side, 3)
+          ELSE Out.Int(0, 3)
+          END
+        END;
+        Out.Ln;
+        FOR i := 0 TO 3 DO Out.Int(Kind(shapes[i]^), 2) END;
+        Out.Ln;
+        sd.id := 7; sd.side := 9; base := sd;
+        Out.Int(base.id, 0); Out.Int(Kind(base), 2); Out.Int(Kind(sd), 2); Out.Ln;
+        s := k;
+        Out.Int(s(Cube).depth, 0); Out.Int(shapes[2](Cube).depth + shapes[2].id, 3); Out.Ln
+      END Main.
+  output: |2
+    12  9
+      0  3  2  0
+     1 2 3 1
+    7 1 2
+    5  8
+
+- id: oberon-procedure-types
+  repository: https://github.com/kkestell/oberon.git
+  commit: 227c4bfb7e84f4d62af4a5206ec89a3f7488dede
+  prompt: >
+    This directory is an Oberon-07 compiler written in Rust, with the Oberon-07
+    Report in references/. Add procedure types, as the Report defines them:
+    variables and parameters of procedure types, assigning procedures and NIL
+    to them, comparing them with = and #, and calling through them. Calling NIL
+    is a runtime failure. Add tests for them under tests/corpus, tests/errors,
+    and tests/failures, and run `make test` before you finish.
+  program:
+    Main.Mod: |
+      MODULE Main;
+        IMPORT Out;
+        TYPE
+          BinOp = PROCEDURE (a, b: INTEGER): INTEGER;
+          Action = PROCEDURE (VAR n: INTEGER);
+        VAR op: BinOp; act: Action; ops: ARRAY 3 OF BinOp; i, n: INTEGER;
+
+        PROCEDURE Add(a, b: INTEGER): INTEGER;
+        RETURN a + b
+        END Add;
+
+        PROCEDURE Mul(a, b: INTEGER): INTEGER;
+        RETURN a * b
+        END Mul;
+
+        PROCEDURE Sub(x, y: INTEGER): INTEGER;
+        RETURN x - y
+        END Sub;
+
+        PROCEDURE Double(VAR n: INTEGER);
+        BEGIN
+          n := n * 2
+        END Double;
+
+        PROCEDURE Fold(f: BinOp; start, count: INTEGER): INTEGER;
+          VAR i, acc: INTEGER;
+        BEGIN
+          acc := start;
+          FOR i := 1 TO count DO acc := f(acc, i) END
+          RETURN acc
+        END Fold;
+
+        PROCEDURE Apply(f: Action; VAR n: INTEGER; times: INTEGER);
+          VAR i: INTEGER;
+        BEGIN
+          FOR i := 1 TO times DO f(n) END
+        END Apply;
+
+      BEGIN
+        Out.Int(Fold(Add, 0, 10), 0); Out.Int(Fold(Mul, 1, 5), 5); Out.Ln;
+        ops[0] := Add; ops[1] := Mul; ops[2] := Sub;
+        FOR i := 0 TO 2 DO Out.Int(ops[i](7, 3), 4) END;
+        Out.Ln;
+        op := Mul;
+        IF (op = Mul) & (op # Add) THEN Out.Int(1, 0) END;
+        op := NIL;
+        IF op = NIL THEN Out.Int(2, 2) END;
+        Out.Ln;
+        n := 3; act := Double; Apply(act, n, 4); Out.Int(n, 0);
+        Apply(Double, n, 1); Out.Int(n, 4); Out.Ln
+      END Main.
+  output: |2
+    55  120
+      10  21   4
+    1 2
+    48  96
+
+- id: oberon-standard-library
+  repository: https://github.com/kkestell/oberon.git
+  commit: d6cac8831d9a463895e3ec8eab8bca0b7c3326b5
+  timeout: 1200
+  prompt: |
+    This directory is an Oberon-07 compiler written in Rust, with the Oberon-07 Report in references/. Add a standard library of Oberon modules that is built and installed with the compiler: Out, In, Math, Strings, Files, and Program. Out replaces the built-in Out. The compiler looks for an imported module in the directory of the program's source file first, so a program can supply its own module of the same name. The modules follow the Oakwood Guidelines and export these interfaces:
+
+    Out: Open; Char(ch: CHAR); String(s: ARRAY OF CHAR); Int(i, n: INTEGER); Hex(i: INTEGER); Real(x: REAL; n: INTEGER); Ln.
+    In: VAR Done: BOOLEAN; Open; Char(VAR ch: CHAR); Int(VAR i: INTEGER); Real(VAR x: REAL); String(VAR str: ARRAY OF CHAR); Name(VAR name: ARRAY OF CHAR); Line(VAR line: ARRAY OF CHAR). They read standard input.
+    Math: CONST pi, e; sqrt, power(base, exp), exp, ln, log(x, base), round, sin, cos, tan, arcsin, arccos, arctan, sinh, cosh, tanh, arcsinh, arccosh, arctanh, each with REAL arguments and a REAL result.
+    Strings: Length(s: ARRAY OF CHAR): INTEGER; Insert(source: ARRAY OF CHAR; pos: INTEGER; VAR dest: ARRAY OF CHAR); Append(extra: ARRAY OF CHAR; VAR dest: ARRAY OF CHAR); Delete(VAR s: ARRAY OF CHAR; pos, n: INTEGER); Replace(source: ARRAY OF CHAR; pos: INTEGER; VAR dest: ARRAY OF CHAR); Extract(source: ARRAY OF CHAR; pos, n: INTEGER; VAR dest: ARRAY OF CHAR); Pos(pattern, s: ARRAY OF CHAR; pos: INTEGER): INTEGER, which is -1 when pattern does not occur; Cap(VAR s: ARRAY OF CHAR).
+    Files: TYPE File; TYPE Rider = RECORD eof: BOOLEAN; res: INTEGER END; Old(name: ARRAY OF CHAR): File; New(name: ARRAY OF CHAR): File; Register(f: File); Close(f: File); Purge(f: File); Delete(name: ARRAY OF CHAR; VAR res: INTEGER); Rename(old, new: ARRAY OF CHAR; VAR res: INTEGER); Length(f: File): INTEGER; GetDate(f: File; VAR t, d: INTEGER); Set(VAR r: Rider; f: File; pos: INTEGER); Pos(VAR r: Rider): INTEGER; Base(VAR r: Rider): File; Read(VAR r: Rider; VAR x: BYTE); ReadInt(VAR r: Rider; VAR i: INTEGER); ReadReal(VAR r: Rider; VAR x: REAL); ReadNum(VAR r: Rider; VAR i: INTEGER); ReadString(VAR r: Rider; VAR s: ARRAY OF CHAR); ReadSet(VAR r: Rider; VAR s: SET); ReadBool(VAR r: Rider; VAR b: BOOLEAN); ReadBytes(VAR r: Rider; VAR buf: ARRAY OF BYTE; n: INTEGER); Write(VAR r: Rider; x: BYTE); WriteInt(VAR r: Rider; i: INTEGER); WriteReal(VAR r: Rider; x: REAL); WriteNum(VAR r: Rider; i: INTEGER); WriteString(VAR r: Rider; s: ARRAY OF CHAR); WriteSet(VAR r: Rider; s: SET); WriteBool(VAR r: Rider; b: BOOLEAN); WriteBytes(VAR r: Rider; VAR buf: ARRAY OF BYTE; n: INTEGER); GetError(VAR msg: ARRAY OF CHAR).
+    Program: VAR count: INTEGER, the number of command-line arguments; Arg(n: INTEGER; VAR arg: ARRAY OF CHAR; VAR res: INTEGER); Exit(status: INTEGER).
+
+    Add tests for them under tests/corpus, tests/errors, and tests/failures, and run `make test` before you finish.
+  program:
+    Main.Mod: |
+      MODULE Main;
+        IMPORT Out, Strings, Math, Files;
+        VAR
+          s, t: ARRAY 32 OF CHAR;
+          f: Files.File; r: Files.Rider;
+          i, j, sum: INTEGER;
+      BEGIN
+        s := "hello"; Strings.Append(" world", s);
+        Out.String(s); Out.Ln;
+        Out.Int(Strings.Length(s), 0); Out.Int(Strings.Pos("world", s, 0), 3);
+        Out.Int(Strings.Pos("moon", s, 0), 3); Out.Ln;
+        Strings.Extract(s, 6, 5, t); Strings.Cap(t);
+        Out.String(t); Out.Ln;
+        Strings.Delete(s, 0, 6); Strings.Insert("big ", 0, s);
+        Out.String(s); Out.Ln;
+        Out.Int(FLOOR(Math.sqrt(2.0) * 1000.0), 0); Out.Int(FLOOR(Math.pi * 100.0), 5); Out.Ln;
+        f := Files.New("numbers.dat"); Files.Set(r, f, 0);
+        FOR i := 1 TO 5 DO Files.WriteInt(r, i * i) END;
+        Files.WriteString(r, "done");
+        Files.Register(f); Files.Close(f);
+        f := Files.Old("numbers.dat"); Files.Set(r, f, 0); sum := 0;
+        FOR i := 1 TO 5 DO Files.ReadInt(r, j); sum := sum + j END;
+        Files.ReadString(r, t);
+        Out.Int(sum, 0); Out.Char(" "); Out.String(t); Out.Ln
+      END Main.
+  output: |2
+    hello world
+    11  6 -1
+    WORLD
+    big world
+    1414  314
+    55 done
