@@ -350,6 +350,9 @@ func TestAgentProcess(t *testing.T) {
 	if os.Getenv("OX_TEST_AGENT") == "" {
 		return
 	}
+	if os.Getenv("OX_TEST_AGENT_VERBOSE") != "" {
+		fmt.Fprintln(os.Stderr, strings.Repeat("x", 1<<20))
+	}
 	fmt.Fprintln(os.Stderr, "agent started")
 	acp.NewConn(os.Stdout).Serve(os.Stdin, exitingAgent{fakeAgent{protocol.InitializeResponse{ProtocolVersion: acp.ProtocolVersion}}})
 	os.Exit(0)
@@ -399,6 +402,17 @@ func TestAServerExitFinishesThePromptAndClosesTheConnection(t *testing.T) {
 
 func TestDiagnosticsArriveFromStandardError(t *testing.T) {
 	conn, _ := startProcess(t)
+	if event := next(t, conn); event != Diagnostic("agent started") {
+		t.Errorf("%#v", event)
+	}
+}
+
+func TestStartupDrainsStandardError(t *testing.T) {
+	t.Setenv("OX_TEST_AGENT_VERBOSE", "1")
+	conn, _ := startProcess(t)
+	if event := next(t, conn); event != Diagnostic(strings.Repeat("x", 1<<20)) {
+		t.Fatal("startup diagnostics were lost")
+	}
 	if event := next(t, conn); event != Diagnostic("agent started") {
 		t.Errorf("%#v", event)
 	}

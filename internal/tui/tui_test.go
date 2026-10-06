@@ -426,8 +426,13 @@ func TestEnterRefusesAnUnknownSlashCommand(t *testing.T) {
 }
 
 func TestATurnKeepsPromptsAndResumeInTheComposerUntilItEnds(t *testing.T) {
-	d := newDriver(t, hang, echo)
+	started := make(chan struct{})
+	d := newDriver(t, func(t turn) {
+		close(started)
+		hang(t)
+	}, echo)
 	d.session.Prompt("running")
+	<-started
 	for _, text := range []string{"next", "/resume"} {
 		d.input.Reset()
 		paste(&d.input, text)
