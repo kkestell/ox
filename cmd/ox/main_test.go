@@ -3,16 +3,12 @@ package main
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"ox/internal/servertest"
 	"ox/internal/settings"
 )
-
-func TestMain(m *testing.M) { os.Exit(servertest.Run(m)) }
 
 func TestParseOptions(t *testing.T) {
 	for _, test := range []struct {
@@ -33,13 +29,6 @@ func TestParseOptions(t *testing.T) {
 		if _, err := parseOptions(args); err == nil {
 			t.Errorf("accepted %q", args)
 		}
-	}
-}
-
-func TestServerCommandsRunTheBundledServer(t *testing.T) {
-	output, err := exec.Command(servertest.Binary("ox"), "run", "-h").CombinedOutput()
-	if err != nil || !strings.Contains(string(output), "ox-server run") {
-		t.Errorf("%v: %s", err, output)
 	}
 }
 

@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"ox/internal/catalog"
 	"ox/internal/openrouter"
@@ -25,23 +24,24 @@ const DefaultModel = "openrouter:deepseek/deepseek-v4.1-flash"
 const Now = 1_790_121_600
 
 // Catalog is an OpenRouter `GET /models` response, out of name order. The
-// last five models fail the catalog filter.
+// last five models fail the catalog filter at Now. The first four are dated
+// 2100, so they pass it at any time before then.
 const Catalog = `{"data": [
-  {"id": "acme/plain", "name": "Plain", "context_length": 8001, "created": 1774310400,
+  {"id": "acme/plain", "name": "Plain", "context_length": 8001, "created": 4102444800,
    "pricing": {"prompt": "0", "completion": "0"},
    "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
    "supported_parameters": ["tools"], "reasoning": {"mandatory": false}},
-  {"id": "z-ai/glm-5.3-flash", "name": "GLM 5.3 Flash", "context_length": 1310720, "created": 1788393600,
+  {"id": "z-ai/glm-5.3-flash", "name": "GLM 5.3 Flash", "context_length": 1310720, "created": 4102444800,
    "pricing": {"prompt": "0.00000004", "completion": "0.00000014"},
    "architecture": {"input_modalities": ["text", "image"], "output_modalities": ["text"]},
    "supported_parameters": ["tools"],
    "reasoning": {"supported_efforts": ["future", "max", "xhigh", "high", "medium", "low"]}},
-  {"id": "deepseek/deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash", "context_length": 1048576, "created": 1789689600,
+  {"id": "deepseek/deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash", "context_length": 1048576, "created": 4102444800,
    "pricing": {"prompt": "0.00000003", "completion": "0.0000006"},
    "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
    "supported_parameters": ["reasoning", "tools"],
    "reasoning": {"supported_efforts": ["max", "high", "medium", "low"], "default_effort": "high"}},
-  {"id": "meta/muse-spark-1.3-contributor", "name": "Muse Spark 1.3 Contributor", "context_length": 1048576, "created": 1788998400,
+  {"id": "meta/muse-spark-1.3-contributor", "name": "Muse Spark 1.3 Contributor", "context_length": 1048576, "created": 4102444800,
    "pricing": {"prompt": "0.000001", "completion": "0.000004"},
    "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
    "supported_parameters": ["tools"],
@@ -253,31 +253,5 @@ func Echo() Reply {
 			}
 		}
 		panic("an echo request has a user message")
-	}
-}
-
-// CurrentCatalog answers a catalog request with Catalog, dated so that a
-// server filtering at the current time keeps the models ParsedCatalog keeps:
-// those models are released now, and the others' release dates move by the
-// time since Now.
-func CurrentCatalog() Reply {
-	return func(w http.ResponseWriter, r *http.Request, body map[string]any) {
-		var catalog struct {
-			Data []map[string]any `json:"data"`
-		}
-		if err := json.Unmarshal([]byte(Catalog), &catalog); err != nil {
-			panic(err)
-		}
-		kept := ParsedCatalog()
-		now := time.Now().Unix()
-		for _, model := range catalog.Data {
-			if kept.Lookup("openrouter:"+model["id"].(string)) != nil {
-				model["created"] = now
-			} else {
-				model["created"] = model["created"].(float64) + float64(now-Now)
-			}
-		}
-		data, _ := json.Marshal(catalog)
-		Status(http.StatusOK, string(data))(w, r, body)
 	}
 }

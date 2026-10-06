@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
-	"os"
+	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,32 +13,192 @@ import (
 	tea "charm.land/bubbletea/v2"
 	protocol "github.com/coder/acp-go-sdk"
 
+	"ox/internal/acp"
 	"ox/internal/client"
 	"ox/internal/openroutertest"
-	"ox/internal/servertest"
 	"ox/internal/settings"
 )
 
-func TestMain(m *testing.M) { os.Exit(servertest.Run(m)) }
+// agent is a scripted ACP server. It answers session requests from its
+// fields and each prompt with the next reply.
+type agent struct {
+	conn     *acp.Conn
+	options  []protocol.SessionConfigOption
+	sessions []protocol.SessionInfo
+	// replay is the updates a session load sends before its response.
+	replay  []protocol.SessionUpdate
+	replies []reply
+	// cancels closes when the running prompt is cancelled.
+	cancels chan struct{}
+}
 
-// driver runs a model against ox-server the way the program does, except that
-// it runs each command at once and leaves server events to the test.
+// turn is one prompt as a reply sees it. send delivers a session update, ask
+// sends a permission request and returns the chosen option ID, or "" when
+// the request was cancelled, and cancelled closes when the prompt is
+// cancelled.
+type turn struct {
+	text      string
+	send      func(protocol.SessionUpdate)
+	ask       func() string
+	cancelled <-chan struct{}
+}
+
+// reply answers one prompt.
+type reply func(turn)
+
+func echo(t turn) { t.send(protocol.UpdateAgentMessageText("you said: " + t.text)) }
+
+func hang(t turn) { <-t.cancelled }
+
+// ask sends one permission request and then runs then.
+func ask(then reply) reply {
+	return func(t turn) {
+		t.ask()
+		then(t)
+	}
+}
+
+func (a *agent) HandleRequest(r *acp.Request) {
+	switch r.Method {
+	case acp.MethodInitialize:
+		r.Respond(protocol.InitializeResponse{ProtocolVersion: acp.ProtocolVersion, AgentCapabilities: protocol.AgentCapabilities{
+			LoadSession:         true,
+			SessionCapabilities: protocol.SessionCapabilities{List: &protocol.SessionListCapabilities{}, Close: &protocol.SessionCloseCapabilities{}},
+		}})
+	case acp.MethodNewSession:
+		var params protocol.NewSessionRequest
+		r.Params(&params)
+		id := protocol.SessionId(fmt.Sprintf("session-%d", len(a.sessions)+1))
+		a.sessions = append(a.sessions, protocol.SessionInfo{SessionId: id, Cwd: params.Cwd})
+		r.Respond(protocol.NewSessionResponse{SessionId: id, ConfigOptions: a.options})
+	case acp.MethodLoadSession:
+		var params protocol.LoadSessionRequest
+		r.Params(&params)
+		for _, update := range a.replay {
+			a.send(params.SessionId, update)
+		}
+		r.Respond(protocol.LoadSessionResponse{ConfigOptions: a.options})
+		a.send(params.SessionId, protocol.SessionUpdate{AvailableCommandsUpdate: &protocol.SessionAvailableCommandsUpdate{
+			SessionUpdate: "available_commands_update", AvailableCommands: []protocol.AvailableCommand{},
+		}})
+	case acp.MethodSetConfigOption:
+		var params protocol.SetSessionConfigOptionValueId
+		r.Params(&params)
+		a.options = chosen(a.options, params.ConfigId, params.Value)
+		r.Respond(protocol.SetSessionConfigOptionResponse{ConfigOptions: a.options})
+	case acp.MethodListSessions:
+		r.Respond(protocol.ListSessionsResponse{Sessions: a.sessions})
+	case acp.MethodCloseSession:
+		r.Respond(protocol.CloseSessionResponse{})
+	case acp.MethodPrompt:
+		var params protocol.PromptRequest
+		r.Params(&params)
+		if len(a.replies) == 0 {
+			r.Fail(&acp.Error{Code: -32603, Message: "no scripted reply"})
+			return
+		}
+		reply := a.replies[0]
+		a.replies = a.replies[1:]
+		cancelled := make(chan struct{})
+		a.cancels = cancelled
+		t := turn{
+			text:      params.Prompt[0].Text.Text,
+			send:      func(update protocol.SessionUpdate) { a.send(params.SessionId, update) },
+			ask:       func() string { return a.ask(params.SessionId) },
+			cancelled: cancelled,
+		}
+		// The reply runs apart from the connection, which must keep reading
+		// answers and cancellations.
+		go func() {
+			reply(t)
+			stop := protocol.StopReasonEndTurn
+			select {
+			case <-cancelled:
+				stop = protocol.StopReasonCancelled
+			default:
+			}
+			r.Respond(protocol.PromptResponse{StopReason: stop})
+		}()
+	default:
+		r.Fail(&acp.Error{Code: -32601, Message: "Method not found"})
+	}
+}
+
+func (a *agent) HandleNotification(method string, _ json.RawMessage) {
+	if method == acp.MethodCancel && a.cancels != nil {
+		close(a.cancels)
+		a.cancels = nil
+	}
+}
+
+func (*agent) Shutdown() {}
+
+func (a *agent) send(id protocol.SessionId, update protocol.SessionUpdate) {
+	a.conn.Notify(acp.MethodUpdate, acp.SessionNotification{SessionID: string(id), Update: update})
+}
+
+func (a *agent) ask(id protocol.SessionId) string {
+	p := permission("shell", "true")
+	request := acp.RequestPermissionRequest{
+		RequestPermissionRequest: protocol.RequestPermissionRequest{SessionId: id, Options: p.Options},
+		ToolCall:                 acp.PermissionToolCall{ToolCallUpdate: p.ToolCall, Name: p.Name},
+	}
+	var response protocol.RequestPermissionResponse
+	if a.conn.Call(context.Background(), acp.MethodRequestPermission, request, &response) != nil || response.Outcome.Selected == nil {
+		return ""
+	}
+	return string(response.Outcome.Selected.OptionId)
+}
+
+// configOptions returns the options of a new session on openroutertest's
+// default model in Ask mode, with the model metadata the server sends.
+func configOptions() []protocol.SessionConfigOption {
+	models := selectConfig("model", openroutertest.DefaultModel, protocol.SessionConfigOptionCategoryModel)
+	efforts := selectConfig("effort", "default", protocol.SessionConfigOptionCategoryThoughtLevel)
+	modes := selectConfig("mode", "ask", protocol.SessionConfigOptionCategoryMode)
+	catalog := openroutertest.ParsedCatalog()
+	var modelChoices, effortChoices protocol.SessionConfigSelectOptionsUngrouped
+	for _, model := range catalog {
+		modelChoices = append(modelChoices, protocol.SessionConfigSelectOption{
+			Value: protocol.SessionConfigValueId(model.QualifiedID()), Name: model.Name,
+			Meta: map[string]any{"contextLimit": model.ContextLimit, "inputPrice": model.InputPrice, "outputPrice": model.OutputPrice, "provider": "OpenRouter"},
+		})
+	}
+	for _, effort := range catalog.Lookup(openroutertest.DefaultModel).Efforts {
+		effortChoices = append(effortChoices, protocol.SessionConfigSelectOption{Value: protocol.SessionConfigValueId(effort), Name: effort.Name()})
+	}
+	models.Select.Options.Ungrouped = &modelChoices
+	efforts.Select.Options.Ungrouped = &effortChoices
+	modes.Select.Options.Ungrouped = &protocol.SessionConfigSelectOptionsUngrouped{{Value: "ask", Name: "Ask"}, {Value: "auto", Name: "Auto"}}
+	return []protocol.SessionConfigOption{models, efforts, modes}
+}
+
+// driver runs a model against a scripted agent the way the program does,
+// except that it runs each command at once and leaves server events to the
+// test.
 type driver struct {
 	t *testing.T
 	*model
-	quit bool
+	agent *agent
+	quit  bool
 }
 
-func newDriver(t *testing.T, replies ...openroutertest.Reply) *driver {
+func newDriver(t *testing.T, replies ...reply) *driver {
 	t.Helper()
-	server, workspace := servertest.Start(t, replies...)
-	conn, created, err := client.Start(server, workspace, "test")
+	clientIn, agentOut := io.Pipe()
+	agentIn, clientOut := io.Pipe()
+	a := &agent{conn: acp.NewConn(agentOut), options: configOptions(), replies: replies}
+	go func() {
+		a.conn.Serve(agentIn, a)
+		agentOut.Close()
+	}()
+	conn, created, err := client.Connect(clientIn, clientOut, t.TempDir(), "test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(conn.Close)
 	m := &model{conn: conn, session: client.NewSession(conn, created), input: newInput(), focused: true, layout: layout{height: 10}}
-	return &driver{t: t, model: m}
+	return &driver{t: t, model: m, agent: a}
 }
 
 // send updates the model with msg and the messages its commands produce.
@@ -97,64 +259,23 @@ func (d *driver) command(text string) {
 
 func (d *driver) settings() string { return settingsSummary(d.session.ConfigOptions) }
 
-// next waits for the next server event.
-func (d *driver) next() client.Event {
-	d.t.Helper()
-	events := make(chan client.Event, 1)
-	go func() { events <- d.conn.Next() }()
-	select {
-	case event := <-events:
-		return event
-	case <-time.After(10 * time.Second):
-		d.t.Fatal("no event within 10 seconds")
-		return nil
-	}
-}
-
-// collectRequest holds the next permission request.
-func (d *driver) collectRequest() {
-	d.t.Helper()
-	for d.session.Permission == nil {
-		if permission, ok := d.next().(*client.Permission); ok {
-			if err := d.session.Ask(permission); err != nil {
-				d.t.Fatal(err)
-			}
-		}
-	}
-}
-
-// awaitMessage waits for the first response chunk.
-func (d *driver) awaitMessage() {
-	d.t.Helper()
-	for {
-		if update, ok := d.next().(client.Update); ok && update.Update.AgentMessageChunk != nil {
-			return
-		}
-	}
-}
-
-// turn collects the turn's response text and reports whether it succeeded.
-func (d *driver) turn() (string, bool) {
+// finish sends server events to the model until the turn ends, and returns
+// the response text and whether the turn succeeded.
+func (d *driver) finish() (string, bool) {
 	d.t.Helper()
 	var text strings.Builder
 	for {
-		switch event := d.next().(type) {
+		event := d.conn.Next()
+		d.send(event)
+		switch event := event.(type) {
 		case client.Update:
 			if chunk := event.Update.AgentMessageChunk; chunk != nil {
 				text.WriteString(content(chunk.Content))
 			}
 		case client.Finished:
-			if err := d.session.Finished(); err != nil {
-				d.t.Fatal(err)
-			}
 			return text.String(), event.Err == nil
 		}
 	}
-}
-
-func hang(text string) openroutertest.Reply {
-	data, _ := json.Marshal(openroutertest.Delta(map[string]any{"role": "assistant", "content": text}, ""))
-	return openroutertest.Hang("data: " + string(data) + "\n\n")
 }
 
 func TestPickerSearchKeepsRowsContainingEveryWordAndEnterChoosesAMatch(t *testing.T) {
@@ -305,9 +426,8 @@ func TestEnterRefusesAnUnknownSlashCommand(t *testing.T) {
 }
 
 func TestATurnKeepsPromptsAndResumeInTheComposerUntilItEnds(t *testing.T) {
-	d := newDriver(t, hang("running"), openroutertest.Echo())
+	d := newDriver(t, hang, echo)
 	d.session.Prompt("running")
-	d.awaitMessage()
 	for _, text := range []string{"next", "/resume"} {
 		d.input.Reset()
 		paste(&d.input, text)
@@ -318,12 +438,12 @@ func TestATurnKeepsPromptsAndResumeInTheComposerUntilItEnds(t *testing.T) {
 	d.input.Reset()
 	paste(&d.input, "next")
 	d.press(tea.KeyEscape)
-	if _, ok := d.turn(); !ok {
+	if _, ok := d.finish(); !ok {
 		t.Error("the cancelled turn failed")
 	}
 	d.press(tea.KeyEnter)
 	equal(t, d.input.Value() == "", true)
-	text, _ := d.turn()
+	text, _ := d.finish()
 	equal(t, text, "you said: next")
 }
 
@@ -364,11 +484,8 @@ func TestAConfigResultForAReplacedSessionIsIgnored(t *testing.T) {
 }
 
 func TestOpeningASessionHoldsServerEventsUntilItOpens(t *testing.T) {
-	d := newDriver(t, openroutertest.Echo())
-	d.session.Prompt("first")
-	if _, ok := d.turn(); !ok {
-		t.Fatal("the turn failed")
-	}
+	d := newDriver(t)
+	d.agent.replay = []protocol.SessionUpdate{protocol.UpdateUserMessageText("first"), protocol.UpdateAgentMessageText("you said: first")}
 	id := d.session.ID
 	d.command("/resume")
 	cmd := d.choose()
@@ -380,14 +497,14 @@ func TestOpeningASessionHoldsServerEventsUntilItOpens(t *testing.T) {
 	}
 	result := cmd()
 	// The first replayed event arrives before the result and waits.
-	d.send(d.next())
+	d.send(d.conn.Next())
 	equal(t, d.held != nil, true)
 	equal(t, len(d.view.items), 0)
 	_, deliver := d.model.Update(result)
 	d.send(deliver())
 	// The available commands follow the load's response.
 	for {
-		event := d.next()
+		event := d.conn.Next()
 		d.send(event)
 		if update, ok := event.(client.Update); ok && update.Update.AvailableCommandsUpdate != nil {
 			break
@@ -477,42 +594,38 @@ func TestTabInsertsGhostTextAndOtherwiseCyclesTheMode(t *testing.T) {
 }
 
 func TestApprovalKeysMoveTheSelectionAndEnterAnswersOnlyWithAnEmptyInput(t *testing.T) {
-	d := newDriver(t,
-		openroutertest.Shell("true"), openroutertest.Echo(),
-		openroutertest.Shell("true"), openroutertest.Echo(),
-		openroutertest.Shell("true"), openroutertest.Echo(), openroutertest.Echo(),
-	)
+	d := newDriver(t, ask(echo), ask(echo), ask(echo), echo)
 	prompt := d.session.Prompt
 	prompt("run a command")
-	d.collectRequest()
+	d.send(d.conn.Next())
 	d.press(tea.KeyDown)
 	d.press(tea.KeyDown)
 	equal(t, d.approvalSelected, 1)
 	d.press(tea.KeyEscape)
 	equal(t, d.session.Permission == nil, true)
 	equal(t, d.approvalSelected, 0)
-	if _, ok := d.turn(); !ok {
+	if _, ok := d.finish(); !ok {
 		t.Error("the rejected turn failed")
 	}
 	prompt("run another command")
-	d.collectRequest()
+	d.send(d.conn.Next())
 	d.press(tea.KeyUp)
 	d.press(tea.KeyDown)
 	d.press(tea.KeyEnter)
 	equal(t, d.session.Permission == nil, true)
-	text, ok := d.turn()
+	text, ok := d.finish()
 	equal(t, text, "you said: run another command")
 	equal(t, ok, true)
 	prompt("run a third command")
-	d.collectRequest()
+	d.send(d.conn.Next())
 	d.typeText("hi")
 	d.press(tea.KeyEnter)
 	equal(t, d.session.Permission == nil, false)
 	equal(t, d.input.Value(), "hi")
 	d.press(tea.KeyEscape)
-	d.turn()
+	d.finish()
 	d.press(tea.KeyEnter)
-	text, ok = d.turn()
+	text, ok = d.finish()
 	equal(t, text, "you said: hi")
 	equal(t, ok, true)
 }

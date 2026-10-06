@@ -106,13 +106,13 @@ func Start(server settings.Server, directory, version string) (*Conn, protocol.N
 	if err := cmd.Start(); err != nil {
 		return nil, protocol.NewSessionResponse{}, fmt.Errorf("starting %s: %w", server.Command, err)
 	}
+	c, session, err := Connect(stdout, stdin, directory, version)
 	exited := make(chan struct{})
-	c := newConn(stdout, stdin, directory)
 	go func() {
 		lines := bufio.NewReader(stderr)
 		for {
 			line, err := lines.ReadString('\n')
-			if line != "" {
+			if line != "" && c != nil {
 				c.push(Diagnostic(strings.TrimSuffix(line, "\n")))
 			}
 			if err != nil {
@@ -123,7 +123,7 @@ func Start(server settings.Server, directory, version string) (*Conn, protocol.N
 		close(exited)
 	}()
 	// The server shuts down when its input ends; one that does not is killed.
-	c.stop = func() {
+	stop := func() {
 		stdin.Close()
 		select {
 		case <-exited:
@@ -132,19 +132,25 @@ func Start(server settings.Server, directory, version string) (*Conn, protocol.N
 			<-exited
 		}
 	}
+	if err != nil {
+		stop()
+		return nil, protocol.NewSessionResponse{}, err
+	}
+	c.stop = stop
+	return c, session, nil
+}
+
+// Connect initializes a connection to a server that reads out and writes in,
+// and creates a session in directory. Closing the connection closes out.
+func Connect(in io.Reader, out io.WriteCloser, directory, version string) (*Conn, protocol.NewSessionResponse, error) {
+	c := &Conn{rpc: acp.NewConn(out), directory: directory, stop: func() { out.Close() }, ready: make(chan struct{}, 1)}
+	go c.rpc.Serve(in, c)
 	session, err := c.initialize(version)
 	if err != nil {
 		c.Close()
 		return nil, protocol.NewSessionResponse{}, err
 	}
 	return c, session, nil
-}
-
-// newConn serves a connection to a server that reads out and writes in.
-func newConn(in io.Reader, out io.Writer, directory string) *Conn {
-	c := &Conn{rpc: acp.NewConn(out), directory: directory, ready: make(chan struct{}, 1)}
-	go c.rpc.Serve(in, c)
-	return c
 }
 
 func (c *Conn) initialize(version string) (protocol.NewSessionResponse, error) {

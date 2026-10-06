@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"ox/internal/catalog"
 	"ox/internal/openrouter"
@@ -22,24 +21,31 @@ import (
 )
 
 // recorder records events, reports its mode, and answers permission requests
-// in order.
+// in order. It calls cancel on the first event cancelOn accepts.
 type recorder struct {
-	mu              sync.Mutex
-	events          []Event
-	mode            transcript.Mode
-	modeAfterCall   transcript.Mode
-	answers         []bool
-	failAt          int
-	asked           chan transcript.ToolCall
-	cancelAfterCall context.CancelFunc
+	mu            sync.Mutex
+	events        []Event
+	mode          transcript.Mode
+	modeAfterCall transcript.Mode
+	answers       []bool
+	failAt        int
+	asked         chan transcript.ToolCall
+	cancel        context.CancelFunc
+	cancelOn      func(Event) bool
+}
+
+// is reports whether event is a T.
+func is[T Event](event Event) bool {
+	_, ok := event.(T)
+	return ok
 }
 
 func (r *recorder) Send(event Event) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.events = append(r.events, event)
-	if _, ok := event.(ToolFinished); ok && r.cancelAfterCall != nil {
-		r.cancelAfterCall()
+	if r.cancelOn != nil && r.cancelOn(event) {
+		r.cancel()
 	}
 	if _, ok := event.(ToolFinished); ok && r.modeAfterCall != "" {
 		r.mode, r.modeAfterCall = r.modeAfterCall, ""
@@ -343,12 +349,12 @@ func TestCancellationWhileAskingSavesEveryCallAsCancelled(t *testing.T) {
 func TestCancellationDuringTheStreamDiscardsProvisionalOutput(t *testing.T) {
 	f := newFixture(t, fake.Hang(fake.SSE(fake.Delta(map[string]any{"content": "partial"}, ""))[len(": OPENROUTER PROCESSING\n\n"):]))
 	ctx, cancel := context.WithCancel(context.Background())
-	client := &recorder{mode: transcript.ModeAsk}
+	defer cancel()
+	client := &recorder{mode: transcript.ModeAsk, cancel: cancel, cancelOn: is[TextDelta]}
 	turn, err := f.agent.Start(ctx, f.input("Hi"), client)
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.AfterFunc(200*time.Millisecond, cancel)
 	if result, err := turn.Run(ctx); err != nil || result.Stop != Cancelled {
 		t.Errorf("result %+v, %v", result, err)
 	}
@@ -373,7 +379,7 @@ func TestCancellationKeepsThePatchOutcomeAndSkipsLaterCalls(t *testing.T) {
 			))
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			client := &recorder{mode: transcript.ModeAuto, cancelAfterCall: cancel}
+			client := &recorder{mode: transcript.ModeAuto, cancel: cancel, cancelOn: is[ToolFinished]}
 			result, err := f.run(t, ctx, f.input("Apply patches"), client)
 			if err != nil || result.Stop != Cancelled {
 				t.Fatalf("result %+v, %v", result, err)
@@ -554,12 +560,12 @@ func TestAnIncompleteSummaryFailsTheTurnWithoutCompacting(t *testing.T) {
 func TestCancellationDuringCompactionSavesNothing(t *testing.T) {
 	f := compactionFixture(t, fake.Hang(": OPENROUTER PROCESSING\n\n"))
 	ctx, cancel := context.WithCancel(context.Background())
-	client := &recorder{mode: transcript.ModeAsk}
+	defer cancel()
+	client := &recorder{mode: transcript.ModeAsk, cancel: cancel, cancelOn: is[CompactionStarted]}
 	turn, err := f.agent.Start(ctx, f.input("Continue"), client)
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.AfterFunc(200*time.Millisecond, cancel)
 	if result, err := turn.Run(ctx); err != nil || result.Stop != Cancelled {
 		t.Errorf("result %+v, %v", result, err)
 	}

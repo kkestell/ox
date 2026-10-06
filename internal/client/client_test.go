@@ -2,10 +2,9 @@ package client
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,28 +12,45 @@ import (
 	protocol "github.com/coder/acp-go-sdk"
 
 	"ox/internal/acp"
+	"ox/internal/agent"
+	"ox/internal/catalog"
 	"ox/internal/openroutertest"
-	"ox/internal/servertest"
+	"ox/internal/server"
 	"ox/internal/settings"
+	"ox/internal/store"
+	"ox/internal/transcript"
 )
 
-func TestMain(m *testing.M) { os.Exit(servertest.Run(m)) }
-
-// start runs ox-server in a new workspace against a scripted OpenRouter that
-// answers the catalog request and then replies in order.
+// start runs the server in process in a new workspace against a scripted
+// OpenRouter that replies in order.
 func start(t *testing.T, replies ...openroutertest.Reply) (*Conn, *Session) {
 	t.Helper()
-	server, workspace := servertest.Start(t, replies...)
-	return startServer(t, server, workspace)
-}
-
-func startServer(t *testing.T, server settings.Server, workspace string) (*Conn, *Session) {
-	t.Helper()
-	conn, created, err := Start(server, workspace, "test")
+	sessions, err := store.OpenMemory()
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(conn.Close)
+	openrouter := openroutertest.Start(t, replies...)
+	a := &agent.Agent{Store: sessions, OpenRouter: openrouter.Client(), Catalog: openroutertest.ParsedCatalog()}
+	serverIn, clientOut := io.Pipe()
+	clientIn, serverOut := io.Pipe()
+	rpc := acp.NewConn(serverOut)
+	srv := server.New(rpc, a, settings.Settings{Model: openroutertest.DefaultModel, Effort: catalog.EffortDefault, Mode: transcript.ModeAsk}, t.TempDir())
+	done := make(chan struct{})
+	go func() {
+		rpc.Serve(serverIn, srv)
+		srv.Shutdown()
+		serverOut.Close()
+		sessions.Close()
+		close(done)
+	}()
+	conn, created, err := Connect(clientIn, clientOut, t.TempDir(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		conn.Close()
+		<-done
+	})
 	return conn, NewSession(conn, created)
 }
 
@@ -100,16 +116,6 @@ func awaitMessage(t *testing.T, conn *Conn) {
 	}
 }
 
-// awaitCommands returns the next available commands update.
-func awaitCommands(t *testing.T, conn *Conn) Update {
-	t.Helper()
-	for {
-		if update, ok := next(t, conn).(Update); ok && update.Update.AvailableCommandsUpdate != nil {
-			return update
-		}
-	}
-}
-
 func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
@@ -148,9 +154,9 @@ func TestResumeListsAndLoadsADifferentSessionAfterClose(t *testing.T) {
 	if !conn.CanResume || len(s.Commands) != 0 {
 		t.Fatalf("can resume %v, commands %v", conn.CanResume, s.Commands)
 	}
-	update := awaitCommands(t, conn)
-	if update.SessionID != s.ID {
-		t.Errorf("commands for %s", update.SessionID)
+	update, _ := next(t, conn).(Update)
+	if update.SessionID != s.ID || update.Update.AvailableCommandsUpdate == nil {
+		t.Errorf("first event %+v", update)
 	}
 	s.Update(update.Update)
 	if len(s.Commands) != 0 {
@@ -161,8 +167,8 @@ func TestResumeListsAndLoadsADifferentSessionAfterClose(t *testing.T) {
 	turn(t, s)
 	newer, err := conn.NewSession()
 	must(t, err)
-	if update := awaitCommands(t, conn); update.SessionID != newer.SessionId {
-		t.Errorf("commands for %s", update.SessionID)
+	if update, _ := next(t, conn).(Update); update.SessionID != newer.SessionId || update.Update.AvailableCommandsUpdate == nil {
+		t.Errorf("event after a new session %+v", update)
 	}
 	listed, err := conn.ListSessions()
 	must(t, err)
@@ -185,9 +191,9 @@ func TestResumeListsAndLoadsADifferentSessionAfterClose(t *testing.T) {
 	loaded, err := conn.LoadSession(newer.SessionId)
 	must(t, err)
 	s.Opened(newer.SessionId, loaded.ConfigOptions)
-	update = awaitCommands(t, conn)
-	if update.SessionID != newer.SessionId {
-		t.Errorf("commands for %s", update.SessionID)
+	update, _ = next(t, conn).(Update)
+	if update.SessionID != newer.SessionId || update.Update.AvailableCommandsUpdate == nil {
+		t.Errorf("event after a load %+v", update)
 	}
 	s.Update(update.Update)
 	if !s.Active() || s.ID != newer.SessionId || len(s.ConfigOptions) != 3 {
@@ -258,10 +264,7 @@ func connectFake(agent fakeAgent) (*Conn, protocol.NewSessionResponse, error) {
 	clientIn, agentOut := io.Pipe()
 	agentIn, clientOut := io.Pipe()
 	go acp.NewConn(agentOut).Serve(agentIn, agent)
-	conn := newConn(clientIn, clientOut, "/")
-	conn.stop = func() { clientOut.Close() }
-	created, err := conn.initialize("test")
-	return conn, created, err
+	return Connect(clientIn, clientOut, "/", "test")
 }
 
 func TestResumeRequiresAdvertisedListLoadAndCloseCapabilities(t *testing.T) {
@@ -340,22 +343,63 @@ func TestRejectedAndFailedTurnsAllowAnotherPrompt(t *testing.T) {
 	}
 }
 
-func TestServerExitReleasesPendingWork(t *testing.T) {
-	server, workspace := servertest.Start(t, openroutertest.Shell("touch pending"))
-	pid := filepath.Join(t.TempDir(), "pid")
-	// The shell records its PID and becomes the server, so the test can stop
-	// the server.
-	conn, s := startServer(t, settings.Server{Command: "/bin/sh", Args: []string{
-		"-c", `echo $$ > "$0"; exec "$1" acp`, pid, server.Command,
-	}}, workspace)
-	s.Prompt("run a command")
-	awaitPermission(t, s)
-	data, err := os.ReadFile(pid)
+// TestAgentProcess is the server of the Start tests when OX_TEST_AGENT is
+// set. It writes one line to standard error, serves fakeAgent until its input
+// ends, and exits when a prompt arrives.
+func TestAgentProcess(t *testing.T) {
+	if os.Getenv("OX_TEST_AGENT") == "" {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "agent started")
+	acp.NewConn(os.Stdout).Serve(os.Stdin, exitingAgent{fakeAgent{protocol.InitializeResponse{ProtocolVersion: acp.ProtocolVersion}}})
+	os.Exit(0)
+}
+
+// exitingAgent is fakeAgent that exits when prompted.
+type exitingAgent struct{ fakeAgent }
+
+func (a exitingAgent) HandleRequest(r *acp.Request) {
+	if r.Method == acp.MethodPrompt {
+		os.Exit(1)
+	}
+	a.fakeAgent.HandleRequest(r)
+}
+
+// startProcess starts the test binary as the server in TestAgentProcess.
+func startProcess(t *testing.T) (*Conn, *Session) {
+	t.Helper()
+	executable, err := os.Executable()
 	must(t, err)
-	must(t, exec.Command("kill", strings.TrimSpace(string(data))).Run())
+	t.Setenv("OX_TEST_AGENT", "1")
+	conn, created, err := Start(settings.Server{Command: executable, Args: []string{"-test.run=^TestAgentProcess$"}}, t.TempDir(), "test")
+	must(t, err)
+	t.Cleanup(conn.Close)
+	return conn, NewSession(conn, created)
+}
+
+func TestAServerExitFinishesThePromptAndClosesTheConnection(t *testing.T) {
+	conn, s := startProcess(t)
+	s.Prompt("exit")
+	// The connection can report Closed before it fails the prompt.
+	var finished *Finished
 	for {
-		if _, ok := next(t, conn).(Closed); ok {
-			return
+		switch event := next(t, conn).(type) {
+		case Finished:
+			finished = &event
+		case Closed:
+			if finished != nil {
+				if finished.Err == nil {
+					t.Error("the prompt succeeded")
+				}
+				return
+			}
 		}
+	}
+}
+
+func TestDiagnosticsArriveFromStandardError(t *testing.T) {
+	conn, _ := startProcess(t)
+	if event := next(t, conn); event != Diagnostic("agent started") {
+		t.Errorf("%#v", event)
 	}
 }

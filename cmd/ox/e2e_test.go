@@ -11,8 +11,63 @@ import (
 	"time"
 
 	"ox/internal/openroutertest"
-	"ox/internal/servertest"
 )
+
+// directory holds the built ox and ox-server.
+var directory string
+
+func TestMain(m *testing.M) { os.Exit(runTests(m)) }
+
+// runTests runs the tests, first building ox and ox-server into a temporary
+// directory when OX_E2E is set.
+func runTests(m *testing.M) int {
+	if os.Getenv("OX_E2E") == "" {
+		return m.Run()
+	}
+	var err error
+	directory, err = os.MkdirTemp("", "ox-e2e-bin-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer os.RemoveAll(directory)
+	build := exec.Command("go", "build", "-o", directory+string(filepath.Separator), "ox/cmd/ox", "ox/cmd/ox-server")
+	if output, err := build.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "building the Ox binaries: %v\n%s", err, output)
+		return 1
+	}
+	return m.Run()
+}
+
+// binary returns the path of the built ox or ox-server.
+func binary(name string) string {
+	return filepath.Join(directory, name)
+}
+
+// environment writes global settings naming openroutertest.DefaultModel under
+// root and returns the variables that give ox-server root as its home and data
+// directory and point it at endpoint.
+func environment(t *testing.T, root, endpoint string) []string {
+	t.Helper()
+	data, _ := json.Marshal(map[string]string{"model": openroutertest.DefaultModel})
+	write(t, filepath.Join(root, ".config/ox/settings.json"), string(data))
+	return []string{
+		"HOME=" + root,
+		"OX_DATA_DIR=" + filepath.Join(root, "data"),
+		"OPENROUTER_API_KEY=test-key",
+		"OX_OPENROUTER_ENDPOINT=" + endpoint,
+	}
+}
+
+func TestServerCommandsRunTheBundledServer(t *testing.T) {
+	if os.Getenv("OX_E2E") == "" {
+		t.Skip("set OX_E2E to run the tests of the built binaries; run make e2e")
+	}
+	output, err := exec.Command(binary("ox"), "run", "-h").CombinedOutput()
+	if err != nil || !strings.Contains(string(output), "ox-server run") {
+		t.Errorf("%v: %s", err, output)
+	}
+}
 
 // tmux runs ox in a detached tmux session against a scripted OpenRouter.
 type tmux struct {
@@ -36,7 +91,7 @@ func write(t *testing.T, path, text string) {
 
 // startTmux starts ox in an 80 by 24 pane. The pane's shell reports whether
 // ox restored the terminal and how it exited, then stays usable.
-func startTmux(t *testing.T, skill bool, replies ...openroutertest.Reply) *tmux {
+func startTmux(t *testing.T, replies ...openroutertest.Reply) *tmux {
 	t.Helper()
 	if os.Getenv("OX_E2E") == "" {
 		t.Skip("set OX_E2E to run the tmux tests; run make e2e")
@@ -52,20 +107,17 @@ func startTmux(t *testing.T, skill bool, replies ...openroutertest.Reply) *tmux 
 	if err := os.Mkdir(x.workspace, 0o777); err != nil {
 		t.Fatal(err)
 	}
-	openrouter := openroutertest.Start(t, append([]openroutertest.Reply{openroutertest.CurrentCatalog()}, replies...)...)
-	environment := servertest.Environment(t, root, openrouter.URL)
-	if skill {
-		write(t, filepath.Join(root, ".config/ox/skills/tally/SKILL.md"), "---\nname: tally\ndescription: Count tallies.\n---\nCount them.\n")
-	}
+	openrouter := openroutertest.Start(t, append([]openroutertest.Reply{openroutertest.Status(200, openroutertest.Catalog)}, replies...)...)
+	variables := environment(t, root, openrouter.URL)
 	// The comparison leaves out the first line, the window size, and pendin,
 	// which the kernel sets when canonical input returns and clears at the
 	// next read.
 	script := filepath.Join(root, "shell.sh")
 	write(t, script, fmt.Sprintf("settings() { stty -a | sed -e 1d -e 's/-*pendin//'; }\nbefore=$(settings)\n%s --dir %s\nresult=$?\n"+
 		"[ \"$(settings)\" = \"$before\" ] && echo TERMINAL_RESTORED\necho EXIT_$result\nexec /bin/sh\n",
-		quote(servertest.Binary("ox")), quote(x.workspace)))
+		quote(binary("ox")), quote(x.workspace)))
 	command := []string{"env", "XDG_STATE_HOME=" + quote(filepath.Join(root, "state"))}
-	for _, variable := range environment {
+	for _, variable := range variables {
 		name, value, _ := strings.Cut(variable, "=")
 		command = append(command, name+"="+quote(value))
 	}
@@ -105,9 +157,6 @@ func (x *tmux) call(args ...string) string {
 
 // screen returns the pane's current screen, one line per row.
 func (x *tmux) screen() string { return x.call("capture-pane", "-p", "-t", "test:0.0") }
-
-// styledScreen returns the pane's current screen with its ANSI attributes.
-func (x *tmux) styledScreen() string { return x.call("capture-pane", "-p", "-e", "-t", "test:0.0") }
 
 func (x *tmux) wait(text string)     { x.t.Helper(); x.waitFor(text, true) }
 func (x *tmux) waitGone(text string) { x.t.Helper(); x.waitFor(text, false) }
@@ -230,35 +279,8 @@ func streamed(parts ...string) openroutertest.Reply {
 	return openroutertest.Chunks(chunks...)
 }
 
-// renderReplies think, call four tools, and answer.
-func renderReplies() []openroutertest.Reply {
-	call := func(index int, id, name string, arguments map[string]any) map[string]any {
-		data, _ := json.Marshal(arguments)
-		return map[string]any{"index": index, "id": id, "type": "function", "function": map[string]any{"name": name, "arguments": string(data)}}
-	}
-	calls := []any{
-		call(0, "run-1", "shell", map[string]any{"command": "ls"}),
-		call(1, "read-1", "read_file", map[string]any{"path": "tallies/2026/september/archive/a.tally"}),
-		call(2, "run-2", "shell", map[string]any{"command": `printf 'a.tally\nb.tally\n'`, "background": true}),
-		call(3, "patch-1", "apply_patch", map[string]any{"patch": "*** Begin Patch\n*** Update File: a.tally\n@@\n-one\n+two\n*** End Patch"}),
-	}
-	return []openroutertest.Reply{
-		openroutertest.Chunks(
-			openroutertest.Delta(map[string]any{"role": "assistant", "reasoning": "weighing the tallies"}, ""),
-			openroutertest.Delta(map[string]any{"role": "assistant", "tool_calls": calls}, "tool_calls"),
-		),
-		openroutertest.Text("Two tallies were counted in the workspace:\n\na.tally and b.tally"),
-	}
-}
-
-func createTallies(x *tmux) {
-	write(x.t, filepath.Join(x.workspace, "a.tally"), "one\n")
-	write(x.t, filepath.Join(x.workspace, "b.tally"), "two\n")
-	write(x.t, filepath.Join(x.workspace, "tallies/2026/september/archive/a.tally"), "one\ntwo\n")
-}
-
 func TestTerminalResumePickerShowsASavedSessionAndReplaysOnEnter(t *testing.T) {
-	x := startTmux(t, false, openroutertest.Echo(), openroutertest.Echo())
+	x := startTmux(t, openroutertest.Echo(), openroutertest.Echo())
 	x.prompt("original transcript")
 	x.wait("you said: original transcript")
 	x.prompt("/resume")
@@ -280,62 +302,8 @@ func TestTerminalResumePickerShowsASavedSessionAndReplaysOnEnter(t *testing.T) {
 	x.wait("you said: after resume")
 }
 
-func TestTerminalModelPickerShowsProvidersAndPricesAndChangesTheModel(t *testing.T) {
-	x := startTmux(t, false)
-	x.prompt("/model")
-	x.wait("Search")
-	screen := x.screen()
-	for _, row := range []string{
-		"DeepSeek V4.1 Flash                  OpenRouter  $0.03  $0.60  1,048,576",
-		"GLM 5.3 Flash                        OpenRouter  $0.04  $0.14  1,310,720",
-	} {
-		if !strings.Contains(screen, row) {
-			t.Errorf("missing %q:\n%s", row, screen)
-		}
-	}
-	if strings.Contains(screen, "0% • $0.00") || strings.Index(screen, "GLM 5.3 Flash") < strings.Index(screen, "DeepSeek V4.1 Flash") {
-		t.Errorf("%s", screen)
-	}
-	x.keys("Down", "C-f")
-	x.wait("1,310,720\n    DeepSeek V4.1 Flash")
-	if styled := x.styledScreen(); !strings.Contains(styled, "\x1b[1m") {
-		t.Errorf("the favorite is not bold: %q", styled)
-	}
-	var config map[string]any
-	data, _ := os.ReadFile(filepath.Join(x.root, ".config/ox/settings.json"))
-	if err := json.Unmarshal(data, &config); err != nil {
-		t.Fatal(err)
-	}
-	if config["model"] != openroutertest.DefaultModel || fmt.Sprint(config["favorites"]) != "[openrouter:z-ai/glm-5.3-flash]" {
-		t.Errorf("%v", config)
-	}
-	x.keys("Enter")
-	x.waitGone("Search")
-	x.wait("Ask • GLM 5.3 Flash")
-	x.prompt("/model")
-	x.wait("Search")
-	if screen := x.screen(); strings.Index(screen, "GLM 5.3 Flash") > strings.Index(screen, "DeepSeek V4.1 Flash") {
-		t.Errorf("the favorite is not first:\n%s", screen)
-	}
-}
-
-func TestTerminalResumeDuringAPromptWaitsForTheTurnToEnd(t *testing.T) {
-	x := startTmux(t, false, hang("running; waiting for cancellation"))
-	x.prompt("running")
-	x.wait("running; waiting for cancellation")
-	x.prompt("/resume")
-	x.wait("❯ /resume")
-	if strings.Contains(x.screen(), "Search") {
-		t.Error(x.screen())
-	}
-	x.keys("Escape")
-	x.waitTitle("ox: ready")
-	x.keys("Enter")
-	x.wait("Search")
-}
-
 func TestTerminalKeysSendInterruptApproveScrollAndRestoreTheShell(t *testing.T) {
-	x := startTmux(t, false,
+	x := startTmux(t,
 		streamed("stream ", "arrives ", "in order\n"),
 		openroutertest.Shell("printf denied"),
 		openroutertest.Text("selected deny"),
@@ -408,108 +376,8 @@ func TestTerminalKeysSendInterruptApproveScrollAndRestoreTheShell(t *testing.T) 
 	x.wait("\nSHELL_USABLE\n")
 }
 
-func TestTerminalTranscriptRendersThinkingToolsAndWrappedReplies(t *testing.T) {
-	x := startTmux(t, false, renderReplies()...)
-	createTallies(x)
-	x.keys("Tab")
-	x.wait("Auto")
-	x.call("resize-window", "-t", "test:0", "-x", "40", "-y", "80")
-	x.prompt("render")
-	x.wait("a.tally and b.tally")
-	screen := x.screen()
-	position := 0
-	for _, text := range []string{
-		" render",
-		"● Thought for 0s",
-		"● Shell ls",
-		"● Read tallies/2026/september/archi…",
-		`● Shell printf 'a.tally\nb.tally\n'…`,
-		"● Apply patch to a.tally",
-		"● Two tallies were counted in the",
-		"a.tally and b.tally",
-	} {
-		found := strings.Index(screen[position:], text)
-		if found < 0 {
-			t.Fatalf("missing %q:\n%s", text, screen)
-		}
-		position += found + len(text)
-	}
-	styled := x.styledScreen()
-	gray := func(text string) bool { return strings.Contains(styled, "\x1b[38;2;112;112;112m"+text) }
-	if !gray("● Thought for 0s") || gray("● Two tallies") {
-		t.Errorf("%q", styled)
-	}
-	x.keys("C-o")
-	x.wait("Lines 1–2 of 2")
-	screen = x.screen()
-	for _, text := range []string{
-		"● Shell ls\n    └ Exit code: 0",
-		"      a.tally\n      b.tally\n      tallies",
-		"● Read tallies/2026/september/archi…\n    └ Lines 1–2 of 2",
-		"● Apply patch to a.tally\n    └ Modified a.tally",
-		"      @@ -1 +1 @@\n      -one\n      +two",
-	} {
-		if !strings.Contains(screen, text) {
-			t.Errorf("missing %q:\n%s", text, screen)
-		}
-	}
-	if styled := x.styledScreen(); !strings.Contains(styled, "\x1b[38;2;152;195;121m+two") {
-		t.Errorf("%q", styled)
-	}
-	x.keys("C-o", "C-o")
-	x.waitGone("Lines 1–2 of 2")
-}
-
-func TestTerminalStatusLineShowsTheSessionSettingsAndUsage(t *testing.T) {
-	reply := openroutertest.Chunks(
-		openroutertest.Delta(map[string]any{"role": "assistant", "content": "usage recorded"}, "stop"),
-		openroutertest.Usage(157_286, 1, 0.25),
-	)
-	x := startTmux(t, false, reply)
-	x.keys("Tab", "C-e", "C-e", "C-e")
-	x.wait("Auto • DeepSeek V4.1 Flash • High")
-	x.prompt("usage")
-	x.wait("15% • $0.25")
-	lines := strings.Split(strings.TrimSuffix(x.screen(), "\n"), "\n")
-	status, last := lines[len(lines)-2], lines[len(lines)-1]
-	if !strings.HasPrefix(status, "  Auto • DeepSeek V4.1 Flash • High") || !strings.HasSuffix(status, "15% • $0.25") || strings.TrimSpace(last) != "" {
-		t.Errorf("%q", lines)
-	}
-}
-
-func TestTerminalTabAndShiftTabCycleModes(t *testing.T) {
-	x := startTmux(t, false)
-	x.wait("Ask")
-	x.keys("Tab")
-	x.wait("Auto")
-	x.keys("S-Tab")
-	x.wait("Ask")
-}
-
-func TestTerminalControlECyclesEffort(t *testing.T) {
-	x := startTmux(t, false)
-	x.wait("DeepSeek V4.1 Flash • Default")
-	x.keys("C-e")
-	x.wait("DeepSeek V4.1 Flash • Low")
-	x.keys("C-e")
-	x.wait("DeepSeek V4.1 Flash • Medium")
-}
-
-func TestTerminalTabCompletesASlashCommandFromGhostText(t *testing.T) {
-	x := startTmux(t, true, openroutertest.Echo())
-	x.wait("Ask")
-	x.keys("/", "t", "a")
-	x.wait("/tally")
-	x.keys("Tab")
-	x.keys("Enter")
-	x.wait("you said: Skill /tally invoked.")
-	if !strings.Contains(x.screen(), "Ask") {
-		t.Error(x.screen())
-	}
-}
-
 func TestTerminalPermissionSurvivesDisconnectAndServerFailureRestoresTheShell(t *testing.T) {
-	x := startTmux(t, false,
+	x := startTmux(t,
 		openroutertest.Echo(),
 		openroutertest.Shell("printf pending"),
 		openroutertest.Text("selected deny"),
@@ -546,7 +414,7 @@ func TestTerminalPermissionSurvivesDisconnectAndServerFailureRestoresTheShell(t 
 }
 
 func TestTerminalPaneTitleShowsStatusAndKeepsUnseenResultsUntilFocus(t *testing.T) {
-	x := startTmux(t, false,
+	x := startTmux(t,
 		hang("running"),
 		openroutertest.Shell("printf denied"),
 		openroutertest.Text("denied"),

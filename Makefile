@@ -10,7 +10,7 @@ check: check-docs
 	go test ./...
 
 e2e:
-	OX_E2E=1 go test -count=1 -run '^TestTerminal' ./cmd/ox
+	OX_E2E=1 go test -count=1 ./cmd/ox
 
 check-docs:
 	dprint check

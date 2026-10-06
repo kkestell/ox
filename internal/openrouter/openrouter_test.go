@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -83,13 +84,24 @@ func TestCatalogKeepsRecentUsableModelsByNameWithKnownEfforts(t *testing.T) {
 	if !reflect.DeepEqual(models[3].Efforts, []catalog.Effort{"default"}) {
 		t.Errorf("plain efforts = %v", models[3].Efforts)
 	}
+	cutoff := openroutertest.Now - 183*24*60*60
+	dated := `{"data": [
+  {"id": "acme/edge", "name": "Edge", "context_length": 1, "created": %d, "pricing": {"prompt": "0", "completion": "0"},
+   "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]}, "supported_parameters": ["tools"]},
+  {"id": "acme/older", "name": "Older", "context_length": 1, "created": %d, "pricing": {"prompt": "0", "completion": "0"},
+   "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]}, "supported_parameters": ["tools"]}
+]}`
+	recent, err := openrouter.ParseCatalog([]byte(fmt.Sprintf(dated, cutoff, cutoff-1)), openroutertest.Now)
+	if err != nil || len(recent) != 1 || recent[0].ID != "acme/edge" {
+		t.Errorf("recent = %v, %v", recent, err)
+	}
 	for _, text := range []string{`{"data": []}`, `{"data": [{"id": "a/b"}]}`} {
 		if _, err := openrouter.ParseCatalog([]byte(text), openroutertest.Now); err == nil {
 			t.Errorf("%s parsed", text)
 		}
 	}
 	unpriced := strings.Replace(openroutertest.Catalog, `"prompt": "0.00000003"`, `"prompt": "free"`, 1)
-	_, err := openrouter.ParseCatalog([]byte(unpriced), openroutertest.Now)
+	_, err = openrouter.ParseCatalog([]byte(unpriced), openroutertest.Now)
 	if err == nil || !strings.HasPrefix(err.Error(), `malformed OpenRouter model catalog: price "free" is not a decimal number`) {
 		t.Errorf("unpriced: %v", err)
 	}
