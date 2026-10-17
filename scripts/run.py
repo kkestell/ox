@@ -61,7 +61,7 @@ def main():
             command.extend(["--model", args.model])
         if args.effort:
             command.extend(["--effort", args.effort])
-        command.append(args.prompt)
+        command.extend(["--", args.prompt])
         return subprocess.run(
             command,
             env=os.environ | {"OPENROUTER_API_KEY": api_key},

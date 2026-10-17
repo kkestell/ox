@@ -75,7 +75,9 @@ type Conn struct {
 	directory string
 	// CanResume reports whether the server lists, loads, and closes sessions.
 	CanResume bool
-	stop      func()
+	// CanClose reports whether the server closes sessions.
+	CanClose bool
+	stop     func()
 
 	mu     sync.Mutex
 	events []Event
@@ -129,6 +131,8 @@ func Start(server settings.Server, directory, version string) (*Conn, protocol.N
 		case <-exited:
 		case <-time.After(2 * time.Second):
 			cmd.Process.Kill()
+			// A descendant can keep stderr open after the server exits.
+			stderr.Close()
 			<-exited
 		}
 	}
@@ -170,7 +174,8 @@ func (c *Conn) initialize(version string) (protocol.NewSessionResponse, error) {
 			return session, fmt.Errorf("the server uses ACP version %d; ox supports only version %d", initialized.ProtocolVersion, acp.ProtocolVersion)
 		}
 		capabilities := initialized.AgentCapabilities
-		c.CanResume = capabilities.LoadSession && capabilities.SessionCapabilities.List != nil && capabilities.SessionCapabilities.Close != nil
+		c.CanClose = capabilities.SessionCapabilities.Close != nil
+		c.CanResume = capabilities.LoadSession && capabilities.SessionCapabilities.List != nil && c.CanClose
 		err = c.call(ctx, acp.MethodNewSession, protocol.NewSessionRequest{Cwd: c.directory, McpServers: []protocol.McpServer{}}, &session)
 	}
 	if errors.Is(err, context.DeadlineExceeded) {

@@ -386,9 +386,14 @@ func prepareUpdate(root string, operation fileOperation, path string, seen map[s
 			apply:   func() error { return moveFile(path, destination) },
 		}
 		if changed {
+			info, err := file.Stat()
+			if err != nil {
+				return change{}, err
+			}
+			mode := info.Mode().Perm()
 			c.diff = fileDiff(destination, &source, contents)
 			c.apply = func() error {
-				if err := writeContents(destination, []byte(contents), true); err != nil {
+				if err := writeMovedContents(destination, []byte(contents), mode); err != nil {
 					return err
 				}
 				return os.Remove(path)

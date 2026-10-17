@@ -310,6 +310,7 @@ func replay(entries []transcript.Entry, send func(any) error) error {
 			}
 			for i, call := range entry.Message.ToolCalls {
 				outcome := entry.Outcomes[i]
+				call.CallID = "tool-" + rand.Text()
 				update := toolCall(call)
 				update.Status, update.Content, update.RawOutput = status(outcome), outputContent(outcome), outcome.Text
 				updates = append(updates, update)

@@ -432,13 +432,21 @@ func closeSession(conn *client.Conn, active bool, id protocol.SessionId) (func(*
 	if !active {
 		return func(*model) {}, nil
 	}
-	if err := conn.CloseSession(id); err != nil {
-		return nil, err
+	if conn.CanClose {
+		if err := conn.CloseSession(id); err != nil {
+			return nil, err
+		}
 	}
 	return func(m *model) { m.fail(m.session.Closed()) }, nil
 }
 
 func (m *model) newSession() tea.Cmd {
+	if m.session.Active() && !m.conn.CanClose {
+		m.fail(m.session.Cancel())
+		if m.err != nil {
+			return nil
+		}
+	}
 	m.opening = true
 	conn, active, id := m.conn, m.session.Active(), m.session.ID
 	return func() tea.Msg {

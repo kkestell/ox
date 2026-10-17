@@ -83,8 +83,7 @@ func (s *Stream) Next() (Item, error) {
 	}
 	if s.items[0].Completion != nil {
 		// The finish chunk may be followed by a usage chunk and `[DONE]`. Read
-		// them first, so the completion carries the usage and the connection
-		// returns to the pool.
+		// them first, so the completion carries the usage.
 		for {
 			more, err := s.readEvent()
 			if err != nil {
@@ -107,6 +106,9 @@ func (s *Stream) readEvent() (bool, error) {
 		return false, s.readFailure(err)
 	}
 	if !more {
+		return false, nil
+	}
+	if event.Data == "[DONE]" {
 		return false, nil
 	}
 	if event.Data == "" {
@@ -164,9 +166,6 @@ type toolCallDelta struct {
 }
 
 func (s *Stream) event(data []byte) error {
-	if string(data) == "[DONE]" {
-		return nil
-	}
 	var c chunk
 	if err := json.Unmarshal(data, &c); err != nil {
 		return fmt.Errorf("malformed OpenRouter stream chunk: %w", err)

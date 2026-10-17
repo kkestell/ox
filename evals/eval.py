@@ -31,6 +31,7 @@ import statistics
 import subprocess
 import tempfile
 import textwrap
+import threading
 import time
 from pathlib import Path
 
@@ -76,6 +77,7 @@ CHART_METRICS = [
 CHART_TICKS = [0.1, 0.2, 0.25, 1 / 3, 0.5, 2 / 3, 0.8, 0.9, 1]
 CHART_TICKS += [1.1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 10]
 BOOTSTRAP_SAMPLES = 2000
+MIRROR_LOCK = threading.Lock()
 
 
 def main():
@@ -191,13 +193,14 @@ def git(*args, cwd=ROOT):
 def mirror(task):
     """A mirror clone of the task's repository that holds its commit."""
     path = REPOS / Path(task["repository"]).name
-    if not path.exists():
-        REPOS.mkdir(parents=True, exist_ok=True)
-        git("clone", "--mirror", "--quiet", task["repository"], str(path))
-    elif subprocess.run(
-        ["git", "cat-file", "-e", f"{task['commit']}^{{commit}}"], cwd=path
-    ).returncode:
-        git("fetch", "--quiet", cwd=path)
+    with MIRROR_LOCK:
+        if not path.exists():
+            REPOS.mkdir(parents=True, exist_ok=True)
+            git("clone", "--mirror", "--quiet", task["repository"], str(path))
+        elif subprocess.run(
+            ["git", "cat-file", "-e", f"{task['commit']}^{{commit}}"], cwd=path
+        ).returncode:
+            git("fetch", "--quiet", cwd=path)
     return path
 
 
@@ -541,22 +544,23 @@ def transcript_metrics(database):
         # A compaction is a model request too: the one that wrote its summary.
         usage = entry["usage"] if kind == "compaction" else entry["message"]["usage"]
         metrics["requests"] += 1
+        if usage is None or usage["cost"] is None:
+            metrics["cost"] = None
         if usage:
             metrics["input_tokens"] += usage["input_tokens"]
             metrics["cached_tokens"] += usage["cached_tokens"]
             metrics["output_tokens"] += usage["output_tokens"]
             metrics["reasoning_tokens"] += usage["reasoning_tokens"]
-            # One usage without a cost makes the run's cost unavailable.
             if metrics["cost"] is not None:
-                metrics["cost"] = (
-                    None if usage["cost"] is None else metrics["cost"] + usage["cost"]
-                )
+                metrics["cost"] += usage["cost"]
             metrics["max_input_tokens"] = max(
                 metrics["max_input_tokens"], usage["input_tokens"]
             )
         if kind == "compaction":
             continue
-        for call, outcome in zip(entry["message"]["tool_calls"], entry["outcomes"]):
+        for call, outcome in zip(
+            entry["message"]["tool_calls"] or [], entry["outcomes"] or []
+        ):
             metrics["tool_calls"] += 1
             by_tool = metrics["calls_by_tool"].setdefault(
                 call["name"], {"calls": 0, "failed": 0}
@@ -978,7 +982,11 @@ def chart_svg(results, base, candidate):
                     text, kind = "-", "neutral"
                 else:
                     text = change(statistics.median(b) / statistics.median(a))
-                    kind = verdict(min(b) / max(a), max(b) / min(a))
+                    kind = (
+                        "good" if max(b) < min(a)
+                        else "bad" if min(b) > max(a)
+                        else "neutral"
+                    )
                 tip = "; ".join(
                     f"{label} "
                     + ", ".join(number(metric, v) for v in sorted(vs, key=lambda v: v or 0))
@@ -1131,4 +1139,5 @@ def markdown_table(header, rows, numeric=True):
     return [line(header), "| " + " | ".join(divider) + " |", *map(line, rows)]
 
 
-raise SystemExit(main())
+if __name__ == "__main__":
+    raise SystemExit(main())

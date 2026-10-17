@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -508,9 +509,30 @@ type acpClient struct {
 	// wait for the prompt.
 	session   *activeSession
 	workspace string
+	// Providers can reuse call IDs in later batches. ACP IDs identify each
+	// invocation throughout its updates and permission request.
+	toolCallIDs map[string]string
 }
 
 func (c *acpClient) Send(event agent.Event) error {
+	switch e := event.(type) {
+	case agent.ToolPending:
+		if c.toolCallIDs == nil {
+			c.toolCallIDs = make(map[string]string)
+		}
+		id := "tool-" + rand.Text()
+		c.toolCallIDs[e.Call.CallID] = id
+		e.Call.CallID = id
+		event = e
+	case agent.ToolStarted:
+		e.Call.CallID = c.toolCallIDs[e.Call.CallID]
+		event = e
+	case agent.ToolFinished:
+		id := c.toolCallIDs[e.Call.CallID]
+		delete(c.toolCallIDs, e.Call.CallID)
+		e.Call.CallID = id
+		event = e
+	}
 	return c.server.notify(c.sessionID, update(event))
 }
 
@@ -522,6 +544,7 @@ func (c *acpClient) Mode() transcript.Mode {
 
 func (c *acpClient) Approve(ctx context.Context, call transcript.ToolCall, permission tools.Permission) (bool, error) {
 	var response protocol.RequestPermissionResponse
+	call.CallID = c.toolCallIDs[call.CallID]
 	request := permissionRequest(c.sessionID, c.workspace, call, permission)
 	if err := c.server.conn.Call(ctx, acp.MethodRequestPermission, request, &response); err != nil {
 		return false, err

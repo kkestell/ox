@@ -8,6 +8,7 @@ check: check-docs
 	test -z "$$(gofmt -l cmd internal)" || (gofmt -l cmd internal && exit 1)
 	go vet ./...
 	go test ./...
+	uv run --with pyyaml python -m unittest discover -s evals
 
 e2e:
 	OX_E2E=1 go test -count=1 ./cmd/ox
@@ -29,4 +30,4 @@ install: build
 	install -m 755 bin/ox $(PREFIX)/ox
 	install -m 755 bin/ox-server $(PREFIX)/ox-server
 	mkdir -p $(OX_CONFIG_DIR)
-	cp examples/settings.json $(OX_CONFIG_DIR)/settings.json
+	test -e "$(OX_CONFIG_DIR)/settings.json" || cp examples/settings.json "$(OX_CONFIG_DIR)/settings.json"

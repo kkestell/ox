@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	"ox/internal/transcript"
@@ -127,6 +128,41 @@ func TestPatchHandlesEmptyFilesMarkerLikeLinesAndBinaryMoves(t *testing.T) {
 	}
 	if readText(t, filepath.Join(root, "moved/bytes")) != "\xff\r\n\x00" {
 		t.Error("a move-only update changed the bytes")
+	}
+}
+
+func TestEditedMovesPreserveSourcePermissions(t *testing.T) {
+	for _, mode := range []os.FileMode{0o755, 0o700, 0o600} {
+		for _, mask := range []int{0o022, 0o077} {
+			t.Run(fmt.Sprintf("%04o/umask-%04o", mode, mask), func(t *testing.T) {
+				root := t.TempDir()
+				source := filepath.Join(root, "source")
+				writeFile(t, source, "before\n")
+				if err := os.Chmod(source, mode); err != nil {
+					t.Fatal(err)
+				}
+				previous := syscall.Umask(mask)
+				defer syscall.Umask(previous)
+				_, _, err := applyPatch(root, wrapped("*** Update File: source\n*** Move to: nested/destination\n@@\n-before\n+after\n"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				destination := filepath.Join(root, "nested/destination")
+				info, err := os.Stat(destination)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if info.Mode().Perm() != mode {
+					t.Errorf("destination mode = %04o, want %04o", info.Mode().Perm(), mode)
+				}
+				if text := readText(t, destination); text != "after\n" {
+					t.Errorf("destination contents = %q", text)
+				}
+				if _, err := os.Lstat(source); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("source remains: %v", err)
+				}
+			})
+		}
 	}
 }
 

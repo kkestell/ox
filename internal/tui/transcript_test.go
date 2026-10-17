@@ -151,6 +151,7 @@ func TestMessagesRenderAsMarkdownWithHangingListAndQuoteRows(t *testing.T) {
 		{"wrapped quotes keep their bar", "> one two three four", 14, []string{"● > one two", "  > three four"}},
 		{"code blocks keep their rows without fences", "```\nfn a() {\n    b()\n}\n```", 40, []string{"● fn a() {", "      b()", "  }"}},
 		{"escapes and entities", `a \* b &amp; c`, 40, []string{"● a * b & c"}},
+		{"entities cannot introduce terminal controls", `a &#x1b;[8mb`, 40, []string{`● a \u{1b}[8mb`}},
 		{"task lists", "- [x] done\n- [ ] todo", 40, []string{"● - [x] done", "  - [ ] todo"}},
 		{"links keep their destination", "see [docs](https://a.b)", 40, []string{"● see docs (https://a.b)"}},
 		{"tables", "| a | bb |\n|---|---:|\n| ccc | d |", 40, []string{

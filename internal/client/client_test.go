@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -271,8 +273,22 @@ func TestResumeRequiresAdvertisedListLoadAndCloseCapabilities(t *testing.T) {
 	conn, created, err := connectFake(fakeAgent{protocol.InitializeResponse{ProtocolVersion: acp.ProtocolVersion}})
 	must(t, err)
 	defer conn.Close()
-	if conn.CanResume || !NewSession(conn, created).Active() {
+	if conn.CanResume || conn.CanClose || !NewSession(conn, created).Active() {
 		t.Errorf("can resume %v", conn.CanResume)
+	}
+}
+
+func TestCloseCapabilityDoesNotRequireResumeCapabilities(t *testing.T) {
+	conn, _, err := connectFake(fakeAgent{protocol.InitializeResponse{
+		ProtocolVersion: acp.ProtocolVersion,
+		AgentCapabilities: protocol.AgentCapabilities{SessionCapabilities: protocol.SessionCapabilities{
+			Close: &protocol.SessionCloseCapabilities{},
+		}},
+	}})
+	must(t, err)
+	defer conn.Close()
+	if !conn.CanClose || conn.CanResume {
+		t.Errorf("can close %v, can resume %v", conn.CanClose, conn.CanResume)
 	}
 }
 
@@ -350,6 +366,14 @@ func TestAgentProcess(t *testing.T) {
 	if os.Getenv("OX_TEST_AGENT") == "" {
 		return
 	}
+	if os.Getenv("OX_TEST_AGENT_HOLD_STDERR") != "" {
+		child := exec.Command("sleep", "30")
+		child.Stderr = os.Stderr
+		if err := child.Start(); err != nil {
+			panic(err)
+		}
+		fmt.Fprintln(os.Stderr, "stderr holder:", child.Process.Pid)
+	}
 	if os.Getenv("OX_TEST_AGENT_VERBOSE") != "" {
 		fmt.Fprintln(os.Stderr, strings.Repeat("x", 1<<20))
 	}
@@ -415,5 +439,26 @@ func TestStartupDrainsStandardError(t *testing.T) {
 	}
 	if event := next(t, conn); event != Diagnostic("agent started") {
 		t.Errorf("%#v", event)
+	}
+}
+
+func TestClosingDoesNotWaitForADescendantToCloseStandardError(t *testing.T) {
+	t.Setenv("OX_TEST_AGENT_HOLD_STDERR", "1")
+	conn, _ := startProcess(t)
+	line, ok := next(t, conn).(Diagnostic)
+	if !ok {
+		t.Fatalf("expected stderr holder diagnostic, got %T", line)
+	}
+	pid, err := strconv.Atoi(strings.TrimPrefix(string(line), "stderr holder: "))
+	must(t, err)
+	child, err := os.FindProcess(pid)
+	must(t, err)
+	t.Cleanup(func() { child.Kill() })
+	done := make(chan struct{})
+	go func() { conn.Close(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("closing waited for the server's descendant")
 	}
 }

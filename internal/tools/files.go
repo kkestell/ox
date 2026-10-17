@@ -66,3 +66,20 @@ func moveFile(source, destination string) error {
 	}
 	return renameNoReplace(source, destination)
 }
+
+func writeMovedContents(name string, contents []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(name), 0o777); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	// Creation applies the umask; a move must retain the source permissions.
+	if err := file.Chmod(mode); err != nil {
+		return err
+	}
+	_, err = file.Write(contents)
+	return err
+}

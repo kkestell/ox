@@ -28,6 +28,8 @@ type agent struct {
 	// replay is the updates a session load sends before its response.
 	replay  []protocol.SessionUpdate
 	replies []reply
+	noClose bool
+	closed  []protocol.SessionId
 	// cancels closes when the running prompt is cancelled.
 	cancels chan struct{}
 }
@@ -61,10 +63,14 @@ func ask(then reply) reply {
 func (a *agent) HandleRequest(r *acp.Request) {
 	switch r.Method {
 	case acp.MethodInitialize:
-		r.Respond(protocol.InitializeResponse{ProtocolVersion: acp.ProtocolVersion, AgentCapabilities: protocol.AgentCapabilities{
+		capabilities := protocol.AgentCapabilities{
 			LoadSession:         true,
 			SessionCapabilities: protocol.SessionCapabilities{List: &protocol.SessionListCapabilities{}, Close: &protocol.SessionCloseCapabilities{}},
-		}})
+		}
+		if a.noClose {
+			capabilities.SessionCapabilities.Close = nil
+		}
+		r.Respond(protocol.InitializeResponse{ProtocolVersion: acp.ProtocolVersion, AgentCapabilities: capabilities})
 	case acp.MethodNewSession:
 		var params protocol.NewSessionRequest
 		r.Params(&params)
@@ -89,6 +95,13 @@ func (a *agent) HandleRequest(r *acp.Request) {
 	case acp.MethodListSessions:
 		r.Respond(protocol.ListSessionsResponse{Sessions: a.sessions})
 	case acp.MethodCloseSession:
+		if a.noClose {
+			r.Fail(&acp.Error{Code: -32601, Message: "Method not found"})
+			return
+		}
+		var params protocol.CloseSessionRequest
+		r.Params(&params)
+		a.closed = append(a.closed, params.SessionId)
 		r.Respond(protocol.CloseSessionResponse{})
 	case acp.MethodPrompt:
 		var params protocol.PromptRequest
@@ -185,9 +198,14 @@ type driver struct {
 
 func newDriver(t *testing.T, replies ...reply) *driver {
 	t.Helper()
+	return newDriverWithAgent(t, &agent{options: configOptions(), replies: replies})
+}
+
+func newDriverWithAgent(t *testing.T, a *agent) *driver {
+	t.Helper()
 	clientIn, agentOut := io.Pipe()
 	agentIn, clientOut := io.Pipe()
-	a := &agent{conn: acp.NewConn(agentOut), options: configOptions(), replies: replies}
+	a.conn = acp.NewConn(agentOut)
 	go func() {
 		a.conn.Serve(agentIn, a)
 		agentOut.Close()
@@ -409,9 +427,39 @@ func TestNewCommandReplacesTheSessionAndQuitCommandQuits(t *testing.T) {
 	if d.session.ID == old {
 		t.Error("the session was not replaced")
 	}
+	equal(t, d.agent.closed, []protocol.SessionId{old})
 	equal(t, d.input.Value() == "", true)
 	d.command("/quit")
 	equal(t, d.quit, true)
+}
+
+func TestNewCommandCancelsTheTurnWhenTheServerCannotCloseSessions(t *testing.T) {
+	d := newDriverWithAgent(t, &agent{noClose: true, options: configOptions(), replies: []reply{ask(hang)}})
+	equal(t, d.conn.CanClose, false)
+	old := d.session.ID
+	d.command("work")
+	for d.session.Permission == nil {
+		d.send(d.conn.Next())
+	}
+	cancelled := d.agent.cancels
+	d.command("/new")
+	if d.session.ID == old || !d.session.Active() || d.session.Busy || d.session.Permission != nil {
+		t.Fatalf("session was not replaced: %+v", d.session)
+	}
+	select {
+	case <-cancelled:
+	default:
+		t.Fatal("the old turn was not cancelled")
+	}
+	for {
+		event := d.conn.Next()
+		d.send(event)
+		if finished, ok := event.(client.Finished); ok && finished.SessionID == old {
+			break
+		}
+	}
+	equal(t, d.session.Busy, false)
+	equal(t, len(d.agent.closed), 0)
 }
 
 func TestEnterRefusesAnUnknownSlashCommand(t *testing.T) {

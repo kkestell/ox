@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -354,6 +355,75 @@ func TestAModeChangeDuringAPromptAppliesFromTheNextBatch(t *testing.T) {
 	}
 }
 
+func TestReusedProviderCallIDsStayDistinctInUpdatesPermissionsAndReplay(t *testing.T) {
+	answer := func(w http.ResponseWriter, r *http.Request, body object) {
+		calls, outcomes := 0, 0
+		for _, value := range body["messages"].([]any) {
+			message := value.(object)
+			if encoded, ok := message["tool_calls"].([]any); ok {
+				for _, value := range encoded {
+					calls++
+					if value.(object)["id"] != "shell-0" {
+						t.Error("ACP call ID replaced the provider ID in model history")
+					}
+				}
+			}
+			if message["role"] == "tool" {
+				outcomes++
+				if message["tool_call_id"] != "shell-0" {
+					t.Error("ACP call ID replaced the provider ID in model outcomes")
+				}
+			}
+		}
+		if calls != 2 || outcomes != 2 {
+			t.Errorf("model history has %d calls and %d outcomes", calls, outcomes)
+		}
+		fake.Text("Done.")(w, r, body)
+	}
+	c := connect(t, fake.Shell("printf one"), fake.Shell("printf two"), answer)
+	id := c.newSession()
+	c.next()
+	response, before := c.prompt(id, "Run both", "approve", "approve")
+	if response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	started := updates(before, "tool_call")
+	if len(started) != 2 || started[0]["toolCallId"] == started[1]["toolCallId"] {
+		t.Fatalf("tool calls are not distinct: %v", started)
+	}
+	var permissionIDs []any
+	for _, message := range before {
+		if message.Method == acp.MethodRequestPermission {
+			permissionIDs = append(permissionIDs, message.Params["toolCall"].(object)["toolCallId"])
+		}
+	}
+	if len(permissionIDs) != 2 || permissionIDs[0] != started[0]["toolCallId"] || permissionIDs[1] != started[1]["toolCallId"] {
+		t.Fatalf("permissions %v do not match calls %v", permissionIDs, started)
+	}
+	finished := updates(before, "tool_call_update")
+	if len(finished) != 4 {
+		t.Fatalf("tool updates = %v", finished)
+	}
+	for i, update := range finished {
+		if update["toolCallId"] != started[i/2]["toolCallId"] {
+			t.Errorf("tool update %v does not match its invocation", update)
+		}
+	}
+	loaded, replay := c.call(acp.MethodLoadSession, object{"sessionId": id, "cwd": c.workspace})
+	if loaded.Error != nil {
+		t.Fatal(loaded.Error)
+	}
+	replayed := updates(replay, "tool_call")
+	if len(replayed) != 2 || replayed[0]["toolCallId"] == replayed[1]["toolCallId"] {
+		t.Fatalf("replayed tool calls are not distinct: %v", replayed)
+	}
+	for i := range started {
+		if replayed[i]["title"] != started[i]["title"] || replayed[i]["status"] != "completed" {
+			t.Errorf("replayed tool call = %v", replayed[i])
+		}
+	}
+}
+
 func TestSlashCommandsInvokeSkills(t *testing.T) {
 	c := connect(t, fake.Echo(), fake.Echo())
 	id := c.newSession()
@@ -443,11 +513,22 @@ func TestClosingCancelsTheRunningPromptAndWaitsForIt(t *testing.T) {
 		}
 	}
 	closing := c.request(acp.MethodCloseSession, object{"sessionId": id})
-	response, _ := c.await(prompt)
+	response, before := c.await(prompt)
 	if response.Result["stopReason"] != "cancelled" {
 		t.Errorf("prompt = %+v", response)
 	}
-	if closed, _ := c.await(closing); closed.Error != nil {
+	// The close can respond as soon as the turn finishes, before the prompt
+	// goroutine writes its own response.
+	var closed message
+	for _, m := range before {
+		if string(m.ID) == string(closing) && m.Method == "" {
+			closed = m
+		}
+	}
+	if len(closed.ID) == 0 {
+		closed, _ = c.await(closing)
+	}
+	if closed.Error != nil {
 		t.Errorf("close = %+v", closed)
 	}
 	if response, _ := c.prompt(id, "Again"); response.Error == nil {

@@ -402,6 +402,44 @@ func TestAStreamWithoutDataStallsAsATemporaryFailure(t *testing.T) {
 	}
 }
 
+func TestDoneEndsTheStreamWithoutWaitingForHTTPClosure(t *testing.T) {
+	for _, finished := range []bool{false, true} {
+		t.Run(fmt.Sprint(finished), func(t *testing.T) {
+			reason := ""
+			if finished {
+				reason = "stop"
+			}
+			usage := openroutertest.Usage(10, 2, 0.1)
+			usage["choices"] = []any{}
+			server := openroutertest.Start(t, openroutertest.Hang(openroutertest.SSE(
+				openroutertest.Delta(object{"content": "Done."}, reason),
+				usage,
+			)))
+			client := server.Client()
+			client.StallTimeout = 100 * time.Millisecond
+			stream, err := client.Stream(context.Background(), request(defaultModel(), catalog.EffortDefault, userTurn("hi")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stream.Close()
+			if _, err := stream.Next(); err != nil {
+				t.Fatal(err)
+			}
+			item, err := stream.Next()
+			if !finished {
+				if err == nil || !strings.Contains(err.Error(), "ended before") {
+					t.Fatalf("unfinished response: %+v, %v", item, err)
+				}
+				return
+			}
+			if err != nil || item.Completion == nil || item.Completion.Message.Text != "Done." ||
+				item.Completion.Message.Usage == nil || item.Completion.Message.Usage.InputTokens != 10 {
+				t.Fatalf("finished response: %+v, %v", item, err)
+			}
+		})
+	}
+}
+
 func TestStreamPreservesTransportErrors(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	endpoint := server.URL

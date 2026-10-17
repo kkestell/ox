@@ -183,7 +183,7 @@ func (w *markdownWriter) visit(n ast.Node, entering bool) (ast.WalkStatus, error
 			if !n.IsRaw() {
 				value = util.UnescapePunctuations(util.ResolveNumericReferences(util.ResolveEntityNames(value)))
 			}
-			w.text(string(value))
+			w.text(control.Escape(string(value)))
 			if n.HardLineBreak() {
 				w.pushLine()
 			} else if n.SoftLineBreak() {
