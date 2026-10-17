@@ -135,6 +135,10 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 			return cmd
 		}
 		return tea.Batch(cmd, m.listen)
+	default:
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return cmd
 	}
 	return nil
 }

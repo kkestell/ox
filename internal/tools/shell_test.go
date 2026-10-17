@@ -56,6 +56,10 @@ func TestShellArgumentsAreValidatedBeforeAnythingRuns(t *testing.T) {
 	tools := toolbox(t)
 	for _, arguments := range []string{
 		"{", "{}", `{"command":1}`,
+		`{"command":"touch wrong"}}`,
+		`{"command":"touch wrong"}]`,
+		`{"command":"touch wrong"} {}`,
+		`{"command":"touch wrong"} true`,
 		`{"command":"touch wrong","extra":1}`,
 		`{"command":"touch wrong","timeout_seconds":0}`,
 		`{"command":"touch wrong","timeout_seconds":601}`,

@@ -186,11 +186,18 @@ func Save(home, workspace string, selected Settings) (bool, error) {
 // update rewrites the settings file at path with set applied to its fields.
 func update(path string, set func(fields map[string]any)) error {
 	fields := map[string]any{}
+	mode := os.FileMode(0o666)
 	text, err := textfile.Read(path)
+	present := err == nil
 	if err == nil {
 		if err := json.Unmarshal([]byte(text), &fields); err != nil || fields == nil {
 			return errors.New("settings must be a JSON object")
 		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		mode = info.Mode().Perm()
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
@@ -204,14 +211,17 @@ func update(path string, set func(fields map[string]any)) error {
 		return err
 	}
 	temporary := filepath.Join(directory, ".settings-"+rand.Text()+".tmp")
-	if err := os.WriteFile(temporary, append(data, '\n'), 0o666); err != nil {
+	defer os.Remove(temporary)
+	if err := os.WriteFile(temporary, append(data, '\n'), mode); err != nil {
 		return err
 	}
-	if err := os.Rename(temporary, path); err != nil {
-		os.Remove(temporary)
-		return err
+	if present {
+		// Replacing an existing file must preserve its permissions despite umask.
+		if err := os.Chmod(temporary, mode); err != nil {
+			return err
+		}
 	}
-	return nil
+	return os.Rename(temporary, path)
 }
 
 // read reads one settings file. Every error except a missing file names it.

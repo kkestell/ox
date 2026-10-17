@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"unicode/utf8"
 
@@ -132,7 +133,8 @@ func decodeArguments(arguments string, value any) error {
 	if err := decoder.Decode(value); err != nil {
 		return fmt.Errorf("arguments: %w", err)
 	}
-	if decoder.More() {
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
 		return errors.New("arguments: trailing characters after the JSON object")
 	}
 	return nil

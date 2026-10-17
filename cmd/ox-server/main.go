@@ -268,8 +268,8 @@ func runHeadless(args []string) error {
 	if result.Stop != agent.EndTurn {
 		return fmt.Errorf("prompt stopped: %s", []string{"", "cancelled", "the model reached its token limit", "the model refused"}[result.Stop])
 	}
-	fmt.Println(result.Answer)
-	return nil
+	_, err = fmt.Println(result.Answer)
+	return err
 }
 
 // headless sends no updates. Auto mode never asks for permission.

@@ -2,15 +2,19 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
+
+	fake "ox/internal/openroutertest"
 )
 
 func TestStartupSignalHelper(t *testing.T) {
@@ -105,5 +109,34 @@ func TestRunOptions(t *testing.T) {
 	}
 	if _, err := parseRunOptions([]string{"--help"}); err != flag.ErrHelp {
 		t.Errorf("help: %v", err)
+	}
+}
+
+func TestHeadlessReportsAnAnswerWriteFailure(t *testing.T) {
+	provider := fake.Start(t, fake.Status(200, fake.Catalog), fake.Text("An answer that must reach stdout."))
+	t.Setenv("OPENROUTER_API_KEY", "test")
+	t.Setenv("OX_OPENROUTER_ENDPOINT", provider.URL)
+	t.Setenv("OX_DATA_DIR", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	settingsDir := filepath.Join(home, ".config/ox")
+	if err := os.MkdirAll(settingsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(settingsDir, "settings.json"), []byte(`{"model":"`+fake.DefaultModel+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := os.CreateTemp(t.TempDir(), "closed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := output.Close(); err != nil {
+		t.Fatal(err)
+	}
+	previous := os.Stdout
+	os.Stdout = output
+	t.Cleanup(func() { os.Stdout = previous })
+	if err := runHeadless([]string{"--dir", t.TempDir(), "hello"}); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("runHeadless error = %v, want a closed-output error", err)
 	}
 }

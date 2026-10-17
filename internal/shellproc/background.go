@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -278,20 +277,29 @@ func (p *Process) Write(ctx context.Context, text []byte, closeStdin bool) Writt
 	if p.stdin == nil {
 		return Written{StdinClosed: true, Interruption: StdinClosed}
 	}
+	if ctx.Err() != nil {
+		return Written{Interruption: WriteCancelled}
+	}
 	stdin := p.stdin
 	stdin.SetWriteDeadline(time.Now().Add(writeTimeout))
-	var cancelled atomic.Bool
+	cancelled := false
+	watcherDone := make(chan struct{})
 	stopWatching := context.AfterFunc(ctx, func() {
-		cancelled.Store(true)
+		cancelled = true
 		stdin.SetWriteDeadline(time.Unix(1, 0))
+		close(watcherDone)
 	})
 	n, err := stdin.Write(text)
-	stopWatching()
+	// An already-running callback must finish before the next write can set
+	// its deadline.
+	if !stopWatching() {
+		<-watcherDone
+	}
 	stdin.SetWriteDeadline(time.Time{})
 	written := Written{Bytes: n}
 	switch {
 	case err == nil:
-	case errors.Is(err, os.ErrDeadlineExceeded) && cancelled.Load():
+	case errors.Is(err, os.ErrDeadlineExceeded) && cancelled:
 		written.Interruption = WriteCancelled
 	case errors.Is(err, os.ErrDeadlineExceeded):
 		written.Interruption = WriteTimedOut

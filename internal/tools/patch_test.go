@@ -349,3 +349,41 @@ func TestConcurrentMovesNeverReplaceTheDestination(t *testing.T) {
 		t.Fatalf("destination was replaced: %q", got)
 	}
 }
+
+func TestPatchRejectsAliasedUpdatesBeforeWriting(t *testing.T) {
+	for name, link := range map[string]func(string, string) error{
+		"symlink":  os.Symlink,
+		"hardlink": os.Link,
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "file")
+			writeFile(t, path, "one\ntwo\n")
+			if err := link(path, filepath.Join(root, "alias")); err != nil {
+				t.Fatal(err)
+			}
+			_, _, err := applyPatch(root, wrapped("*** Add File: first\n+created\n*** Update File: file\n@@\n-one\n+ONE\n*** Update File: alias\n@@\n-two\n+TWO\n"))
+			if err == nil || !strings.Contains(err.Error(), "duplicate target") {
+				t.Fatalf("aliased updates: %v", err)
+			}
+			if entries(t, root) != 2 || readText(t, path) != "one\ntwo\n" {
+				t.Fatal("rejected patch changed files")
+			}
+		})
+	}
+}
+
+func TestPatchCanDeleteSeparateHardlinks(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "file")
+	writeFile(t, path, "content\n")
+	if err := os.Link(path, filepath.Join(root, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := applyPatch(root, wrapped("*** Delete File: file\n*** Delete File: alias\n")); err != nil {
+		t.Fatal(err)
+	}
+	if entries(t, root) != 0 {
+		t.Fatal("files remain after deletion")
+	}
+}

@@ -110,6 +110,35 @@ func TestSavingNullSettingsReturnsAnError(t *testing.T) {
 	}
 }
 
+func TestSavingPreservesFilePermissions(t *testing.T) {
+	for _, mode := range []os.FileMode{0o600, 0o640} {
+		t.Run(mode.String(), func(t *testing.T) {
+			home, workspace := t.TempDir(), t.TempDir()
+			path := settings.GlobalPath(home)
+			write(t, path, `{}`)
+			if err := os.Chmod(path, mode); err != nil {
+				t.Fatal(err)
+			}
+			selected := settings.Settings{Model: model, Effort: catalog.EffortLow, Mode: transcript.ModeAuto}
+			for _, save := range []func() error{
+				func() error { return settings.SaveFavorites(path, []string{model}) },
+				func() error { _, err := settings.Save(home, workspace, selected); return err },
+			} {
+				if err := save(); err != nil {
+					t.Fatal(err)
+				}
+				info, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := info.Mode().Perm(); got != mode {
+					t.Fatalf("permissions = %04o, want %04o", got, mode)
+				}
+			}
+		})
+	}
+}
+
 func TestSavingKeepsOtherFieldsAndPrefersTheWorkspaceFile(t *testing.T) {
 	home, workspace := t.TempDir(), t.TempDir()
 	global := settings.GlobalPath(home)

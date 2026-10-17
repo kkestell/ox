@@ -297,6 +297,9 @@ type change struct {
 	// contents.
 	diff  *transcript.Diff
 	apply func() error
+	// modifiedFile identifies an in-place update so aliases cannot overwrite
+	// another update prepared from the same original contents.
+	modifiedFile os.FileInfo
 }
 
 // prepare checks every operation and builds its change,
@@ -309,6 +312,13 @@ func prepare(root string, operations []fileOperation) ([]change, error) {
 		c, err := prepareOperation(root, operation, seen)
 		if err != nil {
 			return nil, fmt.Errorf("prepare: %s: %w", operation.path, err)
+		}
+		if c.modifiedFile != nil {
+			for _, earlier := range changes {
+				if earlier.modifiedFile != nil && os.SameFile(earlier.modifiedFile, c.modifiedFile) {
+					return nil, fmt.Errorf("prepare: %s: duplicate target through a file alias", operation.path)
+				}
+			}
 		}
 		changes = append(changes, c)
 	}
@@ -404,10 +414,15 @@ func prepareUpdate(root string, operation fileOperation, path string, seen map[s
 	if !changed {
 		return change{summary: "Unchanged " + operation.path, apply: func() error { return nil }}, nil
 	}
+	info, err := file.Stat()
+	if err != nil {
+		return change{}, err
+	}
 	return change{
-		summary: "Modified " + operation.path,
-		diff:    fileDiff(path, &source, contents),
-		apply:   func() error { return writeContents(path, []byte(contents), false) },
+		summary:      "Modified " + operation.path,
+		diff:         fileDiff(path, &source, contents),
+		apply:        func() error { return writeContents(path, []byte(contents), false) },
+		modifiedFile: info,
 	}, nil
 }
 

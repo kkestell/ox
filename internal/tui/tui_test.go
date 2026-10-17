@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -509,6 +511,20 @@ func TestRequestsDoNotHoldBackKeysOrServerEvents(t *testing.T) {
 	equal(t, d.view.last().text, "diagnostic")
 	d.send(cmd())
 	equal(t, d.settings(), "Auto • DeepSeek V4.1 Flash • Default")
+}
+
+func TestControlVPastesTheClipboardCommandResult(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the fake clipboard command uses macOS pbpaste")
+	}
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "pbpaste"), []byte("#!/bin/sh\nprintf 'pasted text'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", directory)
+	d := newDriver(t)
+	d.press('v', tea.ModCtrl)
+	equal(t, d.input.Value(), "pasted text")
 }
 
 func TestQuickConfigChangesCycleFromTheShownChoiceAndTheLatestResultWins(t *testing.T) {

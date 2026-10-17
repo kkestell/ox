@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"syscall"
 	"unicode/utf8"
 )
 
@@ -15,11 +16,18 @@ const MaxBytes = 32 * 1024
 
 // Read reads a UTF-8 text file of at most MaxBytes.
 func Read(path string) (string, error) {
-	file, err := os.Open(path)
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("path must name a regular file")
+	}
 	data, err := io.ReadAll(io.LimitReader(file, MaxBytes+1))
 	if err != nil {
 		return "", err

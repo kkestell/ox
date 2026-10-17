@@ -132,3 +132,28 @@ func TestWritesReportTimeoutsCancellationAndClosedStdin(t *testing.T) {
 		t.Errorf("after closing = %+v", written)
 	}
 }
+
+func TestCancelledWriteDoesNotSendInputOrCloseStdin(t *testing.T) {
+	processes := &Processes{}
+	defer processes.Shutdown()
+	process, err := processes.Start(shell(t.TempDir(), "cat"), "cat", 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, text := range []string{"cancelled\n", ""} {
+		written := process.Write(ctx, []byte(text), true)
+		if written.Bytes != 0 || written.StdinClosed || written.Interruption != WriteCancelled {
+			t.Fatalf("cancelled write = %+v", written)
+		}
+	}
+	written := process.Write(context.Background(), []byte("accepted\n"), true)
+	if written.Bytes != len("accepted\n") || !written.StdinClosed || written.Interruption != NotInterrupted {
+		t.Fatalf("next write = %+v", written)
+	}
+	process.Wait(context.Background(), 5*time.Second)
+	if process.State().Running() || stdout(process) != "accepted\n" {
+		t.Fatalf("state = %+v, stdout = %q", process.State(), stdout(process))
+	}
+}
