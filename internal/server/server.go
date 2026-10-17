@@ -16,6 +16,7 @@ import (
 	"ox/internal/acp"
 	"ox/internal/agent"
 	"ox/internal/catalog"
+	"ox/internal/mcpclient"
 	"ox/internal/settings"
 	"ox/internal/shellproc"
 	"ox/internal/skills"
@@ -57,6 +58,8 @@ type activeSession struct {
 	// outlive prompts and repeated loads, and stop when the session is closed
 	// or deleted or the connection shuts down.
 	processes *shellproc.Processes
+	mcp       *mcpclient.Clients
+	acpMCP    map[string]settings.MCPServer
 }
 
 // New returns a server that writes to conn.
@@ -144,12 +147,16 @@ func (s *Server) storedSession(id string) (*store.Session, *acp.Error) {
 
 // newActiveSession builds the process state a session gets when it becomes
 // active. Its selections are set by the caller.
-func (s *Server) newActiveSession(workspace string) (*activeSession, *acp.Error) {
+func (s *Server) newActiveSession(workspace string, definitions map[string]settings.MCPServer) (*activeSession, *acp.Error) {
 	systemPrompt, err := sysprompt.ForWorkspace(workspace, tools.ShellProgram)
 	if err != nil {
 		return nil, internal(err)
 	}
-	return &activeSession{systemPrompt: systemPrompt, skills: s.loadSkills(workspace), processes: &shellproc.Processes{}}, nil
+	configured, err := s.mcpServers(workspace, definitions)
+	if err != nil {
+		return nil, internal(err)
+	}
+	return &activeSession{systemPrompt: systemPrompt, skills: s.loadSkills(workspace), processes: &shellproc.Processes{}, mcp: mcpclient.New(workspace, configured), acpMCP: definitions}, nil
 }
 
 // unavailable says why a session operation could not start.
@@ -193,7 +200,11 @@ func (s *Server) newSession(r *acp.Request) *acp.Error {
 	if err := r.Params(&params); err != nil {
 		return err
 	}
-	session, acpErr := s.newActiveSession(params.Cwd)
+	definitions, err := acpMCPServers(params.McpServers)
+	if err != nil {
+		return acp.InvalidParams(err.Error())
+	}
+	session, acpErr := s.newActiveSession(params.Cwd, definitions)
 	if acpErr != nil {
 		return acpErr
 	}
@@ -244,9 +255,16 @@ func (s *Server) loadSession(r *acp.Request) *acp.Error {
 	if start := transcript.LatestTurnStart(saved.Transcript); start != nil {
 		selections = settings.Settings{Model: start.Model, Effort: start.Effort, Mode: start.Mode}
 	}
+	definitions, err := acpMCPServers(params.McpServers)
+	if err != nil {
+		return acp.InvalidParams(err.Error())
+	}
 	session := s.session(id)
+	if session != nil && !sameMCPServers(session.acpMCP, definitions) {
+		return acp.InvalidParams("MCP definitions changed; close and reload the session")
+	}
 	if session == nil {
-		session, acpErr = s.newActiveSession(saved.Summary.Workspace)
+		session, acpErr = s.newActiveSession(saved.Summary.Workspace, definitions)
 		if acpErr != nil {
 			return acpErr
 		}
@@ -316,6 +334,7 @@ func (s *Server) closeSession(r *acp.Request) *acp.Error {
 			return
 		}
 		session.processes.Shutdown()
+		session.mcp.Close()
 		s.deactivate(id)
 		r.Respond(struct{}{})
 	}()
@@ -343,6 +362,7 @@ func (s *Server) deleteSession(r *acp.Request) *acp.Error {
 		}
 		if session := s.session(id); session != nil {
 			session.processes.Shutdown()
+			session.mcp.Close()
 		}
 		s.deactivate(id)
 		r.Respond(struct{}{})
@@ -440,30 +460,38 @@ func (s *Server) prompt(r *acp.Request) *acp.Error {
 	selections := session.selections
 	s.mu.Unlock()
 	client := &acpClient{server: s, sessionID: id, session: session}
-	turn, err := s.agent.Start(ctx, agent.Input{
-		SessionID: id, Input: dispatch(message, session.skills),
-		Model: selections.Model, Effort: selections.Effort,
-		SystemPrompt: session.systemPrompt, Processes: session.processes,
-	}, client)
-	if err != nil {
-		release()
-		switch {
-		case errors.Is(err, agent.ErrImagesUnsupported):
-			return acp.InvalidParams(err.Error())
-		case errors.Is(err, store.ErrNotFound):
-			return acp.ResourceNotFound(id)
-		}
-		return internal(err)
-	}
-	client.workspace = turn.Workspace()
 	s.prompts.Add(1)
 	go func() {
 		defer s.prompts.Done()
-		result, err := turn.Run(ctx)
+		result, err := func() (agent.Result, error) {
+			catalog, err := session.mcp.Prepare(ctx)
+			if ctx.Err() != nil {
+				return agent.Result{Stop: agent.Cancelled}, nil
+			}
+			if err != nil {
+				return agent.Result{}, err
+			}
+			turn, err := s.agent.Start(ctx, agent.Input{
+				SessionID: id, Input: dispatch(message, session.skills), Model: selections.Model, Effort: selections.Effort,
+				SystemPrompt: session.systemPrompt, Processes: session.processes, MCP: catalog,
+			}, client)
+			if err != nil {
+				return agent.Result{}, err
+			}
+			client.workspace = turn.Workspace()
+			return turn.Run(ctx)
+		}()
 		// The client may send its next prompt as soon as it reads the response.
 		release()
 		if err != nil {
-			r.Fail(internal(err))
+			switch {
+			case errors.Is(err, agent.ErrImagesUnsupported):
+				r.Fail(acp.InvalidParams(err.Error()))
+			case errors.Is(err, store.ErrNotFound):
+				r.Fail(acp.ResourceNotFound(id))
+			default:
+				r.Fail(internal(err))
+			}
 			return
 		}
 		r.Respond(protocol.PromptResponse{StopReason: []protocol.StopReason{"end_turn", "cancelled", "max_tokens", "refusal"}[result.Stop]})
@@ -487,16 +515,13 @@ func (s *Server) Shutdown() {
 	s.ops.shutdown()
 	s.prompts.Wait()
 	// Sessions activated while operations finished are included too.
+	var wait sync.WaitGroup
 	s.mu.Lock()
-	all = all[:0]
 	for _, session := range s.active {
-		all = append(all, session.processes)
+		wait.Go(session.processes.Shutdown)
+		wait.Go(session.mcp.Close)
 	}
 	s.mu.Unlock()
-	var wait sync.WaitGroup
-	for _, processes := range all {
-		wait.Go(processes.Shutdown)
-	}
 	wait.Wait()
 }
 
@@ -559,7 +584,7 @@ func (c *acpClient) Approve(ctx context.Context, call transcript.ToolCall, permi
 		case "deny":
 			return false, nil
 		}
-		return false, acp.InternalError("Unknown shell permission option: " + string(selected.OptionId))
+		return false, acp.InternalError("Unknown tool permission option: " + string(selected.OptionId))
 	}
-	return false, acp.InternalError("Unsupported shell permission outcome")
+	return false, acp.InternalError("Unsupported tool permission outcome")
 }

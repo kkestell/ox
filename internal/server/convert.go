@@ -329,13 +329,14 @@ func imageChunk(image transcript.ImageAttachment) protocol.SessionUpdate {
 	return protocol.UpdateUserMessage(protocol.ImageBlock(image.Data, image.MimeType))
 }
 
-// permissionRequest asks whether one shell command may run or one input may
-// be sent to a background process. Clients can omit rawInput from the
+// permissionRequest asks whether a tool may run. Clients can omit rawInput from the
 // approval UI, so the content shows everything being approved.
 func permissionRequest(sessionID, workspace string, call transcript.ToolCall, permission tools.Permission) acp.RequestPermissionRequest {
 	input := rawInput(call)
 	var content string
 	switch permission.Kind {
+	case tools.PermissionMCP:
+		content = fmt.Sprintf("MCP server: %s\n\nTool: %s\n\nArguments:\n\n%s", permission.Server, permission.Tool, indented(call.Arguments))
 	case tools.PermissionCommand:
 		label, text := "Arguments", call.Arguments
 		if arguments, ok := input.(map[string]any); ok {

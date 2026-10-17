@@ -11,9 +11,13 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"ox/internal/catalog"
+	"ox/internal/mcpclient"
+	"ox/internal/mcptest"
 	"ox/internal/openrouter"
 	fake "ox/internal/openroutertest"
+	"ox/internal/settings"
 	"ox/internal/shellproc"
 	"ox/internal/store"
 	"ox/internal/tools"
@@ -608,5 +612,92 @@ func TestImagesRejectATextModelOnlyWhileRequestsSendThem(t *testing.T) {
 	}
 	if err := start(); err != nil {
 		t.Errorf("an image the compaction replaced rejected the model: %v", err)
+	}
+}
+
+func TestMCPHelper(t *testing.T) { mcptest.Run() }
+
+func TestMCPToolsApprovalOrderAndSavedResults(t *testing.T) {
+	for _, mode := range []transcript.Mode{transcript.ModeAsk, transcript.ModeAuto} {
+		t.Run(string(mode), func(t *testing.T) {
+			marker := t.TempDir() + "/calls"
+			definition, _ := mcptest.Definition(t, mcptest.Config{Tools: []*mcp.Tool{mcptest.Tool("read", true), mcptest.Tool("write", false)}, Marker: marker})
+			clients := mcpclient.New(t.TempDir(), map[string]settings.MCPServer{"project": definition})
+			defer clients.Close()
+			catalog, err := clients.Prepare(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := newFixture(t, fake.Calls(
+				fake.Call{ID: "one", Name: "mcp__project__read", Arguments: map[string]any{"number": 1}},
+				fake.Call{ID: "two", Name: "mcp__project__write", Arguments: map[string]any{"number": 2}},
+				fake.Call{ID: "three", Name: "mcp__project__write", Arguments: map[string]any{"number": 3}},
+			), fake.Text("Done"))
+			in := f.input("Use MCP")
+			in.MCP = catalog
+			client := &recorder{mode: mode, answers: []bool{true, false}}
+			result, err := f.run(t, context.Background(), in, client)
+			if err != nil || result.Answer != "Done" {
+				t.Fatalf("turn: %+v %v", result, err)
+			}
+			body := f.server.Bodies()[0]
+			found := false
+			for _, raw := range body["tools"].([]any) {
+				function := raw.(map[string]any)["function"].(map[string]any)
+				if function["name"] == "mcp__project__read" {
+					found = true
+					if function["description"] != "Test read" || function["parameters"].(map[string]any)["type"] != "object" {
+						t.Fatal(function)
+					}
+				}
+			}
+			if !found {
+				t.Fatal("model did not receive MCP tools")
+			}
+			got := outcomes(f.saved(t))
+			if len(got) != 3 {
+				t.Fatal(got)
+			}
+			if mode == transcript.ModeAsk && !strings.Contains(got[2], "denied permission to call this MCP tool") {
+				t.Fatal(got)
+			}
+			data, _ := os.ReadFile(marker)
+			calls := string(data)
+			wantCalls := 3
+			if mode == transcript.ModeAsk {
+				wantCalls = 2
+			}
+			if strings.Count(calls, "call ") != wantCalls || strings.Index(calls, "call read") > strings.Index(calls, "call write") {
+				t.Fatalf("calls: %s", calls)
+			}
+		})
+	}
+}
+
+func TestMCPCancelledBeforeExecutionIsSavedWithoutInvocation(t *testing.T) {
+	marker := t.TempDir() + "/calls"
+	definition, _ := mcptest.Definition(t, mcptest.Config{Tools: []*mcp.Tool{mcptest.Tool("read", true)}, Marker: marker})
+	clients := mcpclient.New(t.TempDir(), map[string]settings.MCPServer{"project": definition})
+	defer clients.Close()
+	catalog, err := clients.Prepare(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newFixture(t, fake.Calls(fake.Call{ID: "one", Name: "mcp__project__read", Arguments: map[string]any{}}))
+	in := f.input("Use MCP")
+	in.MCP = catalog
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := &recorder{mode: transcript.ModeAsk, cancel: cancel, cancelOn: is[ToolStarted]}
+	result, err := f.run(t, ctx, in, client)
+	if err != nil || result.Stop != Cancelled {
+		t.Fatalf("turn: %+v %v", result, err)
+	}
+	if got := outcomes(f.saved(t)); len(got) != 1 || !strings.HasPrefix(got[0], "cancelled:") {
+		t.Fatal(got)
+	}
+	data, _ := os.ReadFile(marker)
+	if strings.Contains(string(data), "call ") {
+		t.Fatalf("cancelled call invoked: %s", data)
 	}
 }

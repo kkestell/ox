@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"ox/internal/catalog"
+	"ox/internal/mcpclient"
 	"ox/internal/openrouter"
 	"ox/internal/shellproc"
 	"ox/internal/store"
@@ -149,6 +150,7 @@ type Input struct {
 	// Processes are the session's background processes, which outlive the
 	// turn.
 	Processes *shellproc.Processes
+	MCP       *mcpclient.Catalog
 }
 
 // Stop is why a turn ended without an error.
@@ -202,14 +204,15 @@ func (a *Agent) Start(ctx context.Context, in Input, client Client) (*Turn, erro
 	if err != nil {
 		return nil, err
 	}
+	toolbox := &tools.Toolbox{Workspace: session.Summary.Workspace, Processes: in.Processes, MCP: in.MCP}
 	t := &Turn{
 		agent:  a,
 		client: client,
 		request: openrouter.Request{
-			Model: model, Effort: in.Effort, SystemPrompt: in.SystemPrompt, Tools: tools.Schemas(), Transcript: session.Transcript,
+			Model: model, Effort: in.Effort, SystemPrompt: in.SystemPrompt, Tools: toolbox.Schemas(), Transcript: session.Transcript,
 		},
 		summary: session.Summary,
-		toolbox: &tools.Toolbox{Workspace: session.Summary.Workspace, Processes: in.Processes},
+		toolbox: toolbox,
 	}
 	if ctx.Err() != nil {
 		return t, nil
@@ -256,7 +259,7 @@ const updateFailed = "sending an ACP update failed"
 func updateFailure(err error) error { return &failure{updateFailed, err} }
 
 func permissionFailure(err error) error {
-	return &failure{"requesting shell permission failed", err}
+	return &failure{"requesting tool permission failed", err}
 }
 
 func storageFailure(err error) error { return &failure{"saving the transcript failed", err} }
@@ -510,6 +513,8 @@ func (t *Turn) approve(ctx context.Context, call transcript.ToolCall, mode trans
 		return "", permissionFailure(err)
 	case approved:
 		return "", nil
+	case permission.Kind == tools.PermissionMCP:
+		return "User denied permission to call this MCP tool.", nil
 	case permission.Kind == tools.PermissionInput:
 		return "User denied permission to send this input.", nil
 	}
@@ -538,7 +543,7 @@ func (t *Turn) completeInterrupted(batch *transcript.AssistantBatch, err error) 
 			placeholder = transcript.Failed("Not started: the client connection failed before this tool ran.")
 			connectionFailed = true
 		} else {
-			placeholder = transcript.Failed("Not started: requesting shell permission failed: " + f.err.Error())
+			placeholder = transcript.Failed("Not started: requesting tool permission failed: " + f.err.Error())
 		}
 	}
 	remaining := batch.Message.ToolCalls[len(batch.Outcomes):]

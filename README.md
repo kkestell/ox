@@ -105,8 +105,8 @@ supports `-V` or `--version`.
 ## Configuration
 
 Global settings live in `~/.config/ox/settings.json`. A workspace can override
-`model`, `effort`, and `mode` in `<workspace>/.ox/settings.json`; each present
-workspace value replaces the global value. Both files are optional.
+`model`, `effort`, `mode`, and `mcpServers` in `<workspace>/.ox/settings.json`;
+each present workspace value replaces the global value. Both files are optional.
 
 ```json
 {
@@ -131,7 +131,8 @@ workspace value replaces the global value. Both files are optional.
 - `effort` is `default`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or
   `max`. It defaults to `default` and must be supported by the selected model.
 - `mode` is `ask` or `auto`. It defaults to `ask`; `ask` requests permission
-  before shell actions, while `auto` runs them without asking.
+  before shell actions and MCP tools that are not marked read-only, while `auto`
+  runs them without asking.
 - `favorites` is a list of qualified model IDs that the terminal client's model
   picker shows first. It can be set only in the global file and defaults to an
   empty list.
@@ -142,3 +143,54 @@ workspace value replaces the global value. Both files are optional.
   in the global file. Each server requires a unique, nonempty `name` and a
   `command`; `args` is an optional list of arguments that defaults to empty. If
   `servers` is absent or empty, the client starts the `ox-server` next to `ox`.
+
+### MCP tools
+
+`ox-server` supports tools from local MCP servers over stdio. Configure them in
+`mcpServers`, separately from the terminal client's `servers` list:
+
+```json
+{
+  "mcpServers": {
+    "project": {
+      "command": "project-mcp",
+      "args": ["--stdio"],
+      "env": { "PROJECT_PROFILE": "development" }
+    }
+  }
+}
+```
+
+Each server needs a nonempty name and command. Arguments and environment values
+must be strings. An absent workspace `mcpServers` key inherits the global map; a
+present map replaces it entirely, and `{}` disables settings-defined servers.
+ACP clients may also supply stdio servers; a matching name replaces the whole
+settings definition. Remote transports are not supported. The terminal client
+does not forward these settings to other ACP agents.
+
+Configuration is read when a session is created or first loaded, or once per
+headless run. Servers start on the first prompt, in the session's workspace, and
+remain connected across turns and repeated loads. Tools and their permissions
+are refreshed before each turn. Close and reload a session to pick up
+configuration changes or recover a disconnected server. Commands and environment
+values are not saved in session history.
+
+Commands run directly with their argument arrays. They inherit Ox's environment
+except `OPENROUTER_API_KEY`, then apply configured `env` values. Stdout carries
+only MCP traffic; stderr goes to Ox's stderr. Configuration authorizes server
+startup. In Ask mode, only tools explicitly marked `readOnlyHint: true` run
+without approval. This trusts the configured server's annotation; Ox does not
+verify that the tool is read-only. Other MCP calls show the server, tool, and
+complete arguments for approval. Headless runs use Auto mode.
+
+Initialization and complete tool discovery are limited to 30 seconds per server;
+each call is limited to 120 seconds. Cancellation is forwarded to the server,
+but does not undo remote effects. Failed or cancelled calls are never
+automatically repeated. Closing or deleting a session, disconnecting its ACP
+client, or exiting a headless run stops its server processes and their children.
+
+Results preserve text, embedded text resources, resource-link metadata, and
+structured JSON. Images, audio, and binary resources receive omission notices.
+The complete text result is limited to 16 KiB; omissions do not change the
+server's success or failure status. Resource links are not fetched. Standalone
+resources, prompts, sampling, and elicitation are not supported.

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"ox/internal/mcpclient"
 	"ox/internal/shellproc"
 	"ox/internal/transcript"
 )
@@ -39,6 +40,7 @@ const maxTitleChars = 80
 // Toolbox runs calls for one session.
 type Toolbox struct {
 	Workspace string
+	MCP       *mcpclient.Catalog
 	// Processes are the session's background processes, which outlive calls.
 	Processes *shellproc.Processes
 }
@@ -46,6 +48,34 @@ type Toolbox struct {
 // Schemas returns every tool definition sent to the model.
 func Schemas() []json.RawMessage {
 	return []json.RawMessage{shellSchema, shellProcessSchema, readSchema, globSchema, grepSchema, patchSchema()}
+}
+
+// Schemas combines built-ins with the immutable catalog for this turn.
+func (t *Toolbox) Schemas() []json.RawMessage {
+	schemas := Schemas()
+	names := map[string]bool{}
+	for _, raw := range schemas {
+		var definition struct {
+			Function struct {
+				Name string `json:"name"`
+			} `json:"function"`
+		}
+		if err := json.Unmarshal(raw, &definition); err != nil {
+			panic(err)
+		}
+		names[definition.Function.Name] = true
+	}
+	for _, tool := range t.MCP.Tools() {
+		if names[tool.Name] {
+			panic("MCP tool collides with built-in: " + tool.Name)
+		}
+		raw, err := json.Marshal(map[string]any{"type": "function", "function": map[string]any{"name": tool.Name, "description": tool.Description, "parameters": tool.InputSchema}})
+		if err != nil {
+			panic(err)
+		}
+		schemas = append(schemas, raw)
+	}
+	return schemas
 }
 
 // Execute runs one call. Unknown names and invalid arguments are failed
@@ -66,6 +96,9 @@ func (t *Toolbox) Execute(ctx context.Context, call transcript.ToolCall) transcr
 		return bounded(t.run(ctx, call))
 	case ReadFile, Glob, Grep:
 	default:
+		if _, ok := t.MCP.Lookup(call.Name); ok {
+			return t.mcp(ctx, call)
+		}
 		return transcript.Failed("Unknown tool: " + call.Name)
 	}
 	result := make(chan transcript.ToolOutcome, 1)
@@ -143,7 +176,8 @@ func decodeArguments(arguments string, value any) error {
 // Permission is what Ask mode must request before a call runs.
 type Permission struct {
 	// Kind is PermissionNone when the call runs without asking.
-	Kind PermissionKind
+	Kind         PermissionKind
+	Server, Tool string
 	// For PermissionInput: the process ID, its command (empty when the ID
 	// names no process), and the text and stdin closure being sent.
 	ProcessID  string
@@ -160,11 +194,18 @@ const (
 	PermissionCommand
 	// PermissionInput is sending text to a background process's stdin.
 	PermissionInput
+	PermissionMCP
 )
 
 // Permission classifies a call by the same argument validation its execution
 // uses.
 func (t *Toolbox) Permission(call transcript.ToolCall) Permission {
+	if tool, ok := t.MCP.Lookup(call.Name); ok {
+		if tool.ReadOnly {
+			return Permission{}
+		}
+		return Permission{Kind: PermissionMCP, Server: tool.Server, Tool: tool.OriginalName}
+	}
 	switch call.Name {
 	case Shell:
 		// Every shell call needs permission, even one whose arguments are

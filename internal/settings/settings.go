@@ -1,6 +1,7 @@
 // Package settings reads and writes the global settings file
 // `~/.config/ox/settings.json`, read once at startup, and the workspace settings
-// file `.ox/settings.json`, read when a session becomes active. Workspace keys
+// file `.ox/settings.json`, read when a session becomes active. MCP settings in
+// both files are read separately at session activation. Workspace keys
 // replace the same global keys. Neither file is required. Only the global file
 // can set `models`, the OpenRouter provider pins. The terminal client's fields,
 // `servers` and `favorites`, are read only from the global file.

@@ -22,6 +22,7 @@ import (
 	"ox/internal/catalog"
 	"ox/internal/control"
 	"ox/internal/keyring"
+	"ox/internal/mcpclient"
 	"ox/internal/openrouter"
 	"ox/internal/server"
 	"ox/internal/settings"
@@ -219,7 +220,7 @@ func runHeadless(args []string) error {
 
 	ctx, stop := signalContext()
 	defer stop()
-	a, defaults, _, err := startup(ctx)
+	a, defaults, home, err := startup(ctx)
 	if err != nil {
 		return err
 	}
@@ -254,9 +255,22 @@ func runHeadless(args []string) error {
 	defer processes.Shutdown()
 	stopShutdown := context.AfterFunc(ctx, processes.BeginShutdown)
 	defer stopShutdown()
+	definitions, err := settings.LoadMCPServers(home, workspace)
+	if err != nil {
+		return err
+	}
+	clients := mcpclient.New(workspace, definitions)
+	defer clients.Close()
+	mcpCatalog, err := clients.Prepare(ctx)
+	if ctx.Err() != nil {
+		return errors.New("prompt stopped: cancelled")
+	}
+	if err != nil {
+		return err
+	}
 	turn, err := a.Start(ctx, agent.Input{
 		SessionID: session.ID, Input: transcript.TurnInput{Message: new(transcript.TextMessage(prompt))},
-		Model: model, Effort: effort, SystemPrompt: systemPrompt, Processes: processes,
+		Model: model, Effort: effort, SystemPrompt: systemPrompt, Processes: processes, MCP: mcpCatalog,
 	}, headless{})
 	if err != nil {
 		return err

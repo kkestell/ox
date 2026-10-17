@@ -2,13 +2,19 @@ package server_test
 
 import (
 	"bufio"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
+	"ox/internal/mcptest"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -49,6 +55,11 @@ func connect(t *testing.T, replies ...fake.Reply) *client {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return connectWithStore(t, sessions, replies...)
+}
+
+func connectWithStore(t *testing.T, sessions *store.Store, replies ...fake.Reply) *client {
+	t.Helper()
 	openrouter := fake.Start(t, replies...)
 	a := &agent.Agent{Store: sessions, OpenRouter: openrouter.Client(), Catalog: fake.ParsedCatalog()}
 	home := t.TempDir()
@@ -534,4 +545,274 @@ func TestClosingCancelsTheRunningPromptAndWaitsForIt(t *testing.T) {
 	if response, _ := c.prompt(id, "Again"); response.Error == nil {
 		t.Error("a closed session accepted a prompt")
 	}
+}
+
+func TestMCPHelper(t *testing.T) { mcptest.Run() }
+
+func writeMCPSettings(t *testing.T, path string, definitions map[string]settings.MCPServer) {
+	t.Helper()
+	data, err := json.Marshal(object{"model": fake.DefaultModel, "mcpServers": definitions})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func stdioDefinition(name string, definition settings.MCPServer) object {
+	env := []any{}
+	for key, value := range definition.Env {
+		env = append(env, object{"name": key, "value": value})
+	}
+	return object{"name": name, "command": definition.Command, "args": definition.Args, "env": env}
+}
+
+func TestMCPConfigurationReusePermissionReplayAndCleanup(t *testing.T) {
+	marker := t.TempDir() + "/events"
+	definition, path := mcptest.Definition(t, mcptest.Config{Tools: []*mcp.Tool{mcptest.Tool("write", false)}, Marker: marker})
+	call := fake.Calls(fake.Call{ID: "one", Name: "mcp__project__write", Arguments: object{"number": 7}})
+	c := connect(t, call, fake.Text("First"), call, fake.Text("Second"), call, fake.Text("Third"))
+	// Workspace replaces global, then ACP replaces the complete workspace definition.
+	writeMCPSettings(t, settings.GlobalPath(c.home), map[string]settings.MCPServer{"bad": {Command: "/nonexistent-global"}})
+	writeMCPSettings(t, filepath.Join(c.workspace, ".ox/settings.json"), map[string]settings.MCPServer{"project": {Command: "/nonexistent-workspace", Env: map[string]string{"SHOULD_NOT_MERGE": "yes"}}})
+	definitions := []any{stdioDefinition("project", definition)}
+	response, _ := c.call(acp.MethodNewSession, object{"cwd": c.workspace, "mcpServers": definitions})
+	if response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	id := response.Result["sessionId"].(string)
+	response, before := c.prompt(id, "Call MCP", "approve")
+	if response.Error != nil || response.Result["stopReason"] != "end_turn" {
+		t.Fatalf("prompt: %+v", response)
+	}
+	permissions := 0
+	for _, m := range before {
+		if m.Method == acp.MethodRequestPermission {
+			permissions++
+			raw, _ := json.Marshal(m.Params)
+			for _, want := range []string{"MCP server: project", "Tool: write", `\"number\":7`} {
+				if !strings.Contains(string(raw), want) {
+					t.Fatalf("permission missing %s: %s", want, raw)
+				}
+			}
+		}
+	}
+	if permissions != 1 {
+		t.Fatal("missing permission")
+	}
+	// Changed settings do not alter active sessions, including repeated loads.
+	writeMCPSettings(t, filepath.Join(c.workspace, ".ox/settings.json"), map[string]settings.MCPServer{"bad": {Command: "/new-missing"}})
+	response, before = c.call(acp.MethodLoadSession, object{"sessionId": id, "cwd": c.workspace, "mcpServers": definitions})
+	if response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	if len(updates(before, "tool_call")) == 0 {
+		t.Fatal("MCP transcript was not replayed")
+	}
+	changed := []any{stdioDefinition("other", definition)}
+	response, _ = c.call(acp.MethodLoadSession, object{"sessionId": id, "cwd": c.workspace, "mcpServers": changed})
+	if response.Error == nil || !strings.Contains(response.Error.Error(), "close and reload") {
+		t.Fatalf("changed definitions: %+v", response)
+	}
+	response, _ = c.prompt(id, "Again", "deny")
+	if response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	data, _ := os.ReadFile(marker)
+	if strings.Count(string(data), "start ") != 1 || strings.Count(string(data), "call write") != 1 {
+		t.Fatalf("reuse or denial: %s", data)
+	}
+	response, _ = c.call(acp.MethodCloseSession, object{"sessionId": id})
+	if response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	assertMCPParentsGone(t, marker)
+	writeMCPSettings(t, filepath.Join(c.workspace, ".ox/settings.json"), map[string]settings.MCPServer{})
+	// Loading replays without starting the now unavailable executable.
+	unavailable := definition
+	unavailable.Command = "/missing-on-replay"
+	response, before = c.call(acp.MethodLoadSession, object{"sessionId": id, "cwd": c.workspace, "mcpServers": []any{stdioDefinition("project", unavailable)}})
+	if response.Error != nil || len(updates(before, "tool_call")) == 0 {
+		t.Fatalf("offline replay: %+v", response)
+	}
+	c.call(acp.MethodCloseSession, object{"sessionId": id})
+	response, _ = c.call(acp.MethodLoadSession, object{"sessionId": id, "cwd": c.workspace, "mcpServers": definitions})
+	if response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	mcptest.Write(t, path, mcptest.Config{Tools: []*mcp.Tool{mcptest.Tool("write", true)}, Marker: marker})
+	response, _ = c.prompt(id, "Fresh connection")
+	if response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	response, _ = c.call(acp.MethodDeleteSession, object{"sessionId": id})
+	if response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	assertMCPParentsGone(t, marker)
+	data, _ = os.ReadFile(marker)
+	if strings.Count(string(data), "start ") != 2 {
+		t.Fatalf("reload did not reconnect: %s", data)
+	}
+}
+
+func assertMCPParentsGone(t *testing.T, marker string) {
+	t.Helper()
+	data, _ := os.ReadFile(marker)
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "start ") {
+			pid, err := strconv.Atoi(strings.TrimPrefix(line, "start "))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+				t.Fatalf("MCP process %d survived: %v", pid, err)
+			}
+		}
+	}
+}
+
+func TestMCPInvalidACPDefinitions(t *testing.T) {
+	c := connect(t)
+	for _, definitions := range [][]any{
+		{object{"type": "http", "name": "remote", "url": "https://example.invalid", "headers": []any{}}},
+		{object{"type": "sse", "name": "remote", "url": "https://example.invalid", "headers": []any{}}},
+		{object{"name": "x", "command": "", "args": []any{}, "env": []any{}}},
+		{object{"name": "x", "command": "x", "args": []any{}, "env": []any{}}, object{"name": "x", "command": "x", "args": []any{}, "env": []any{}}},
+	} {
+		response, _ := c.call(acp.MethodNewSession, object{"cwd": c.workspace, "mcpServers": definitions})
+		if response.Error == nil {
+			t.Fatalf("accepted %v", definitions)
+		}
+	}
+}
+
+func TestMCPCancelDuringPreparationAndConnectionShutdown(t *testing.T) {
+	for _, action := range []string{"cancel", "close", "disconnect"} {
+		t.Run(action, func(t *testing.T) {
+			marker := t.TempDir() + "/events"
+			definition, _ := mcptest.Definition(t, mcptest.Config{Startup: "wait", Marker: marker})
+			c := connect(t, func(w http.ResponseWriter, r *http.Request, body object) {
+				t.Error("cancelled preparation made a model request")
+				fake.Text("unexpected")(w, r, body)
+			})
+			writeMCPSettings(t, settings.GlobalPath(c.home), map[string]settings.MCPServer{"slow": definition})
+			id := c.newSession()
+			prompt := c.request(acp.MethodPrompt, object{"sessionId": id, "prompt": []any{object{"type": "text", "text": "hello"}}})
+			mcptest.WaitFor(t, marker, "start ")
+			switch action {
+			case "cancel":
+				c.send(object{"method": acp.MethodCancel, "params": object{"sessionId": id}})
+				response, _ := c.await(prompt)
+				if response.Result["stopReason"] != "cancelled" {
+					t.Fatalf("cancel: %+v", response)
+				}
+			case "close":
+				closeID := c.request(acp.MethodCloseSession, object{"sessionId": id})
+				gotPrompt, gotClose := false, false
+				for !gotPrompt || !gotClose {
+					response := c.next()
+					if string(response.ID) == string(prompt) {
+						gotPrompt = true
+						if response.Result["stopReason"] != "cancelled" {
+							t.Fatal(response)
+						}
+					}
+					if string(response.ID) == string(closeID) {
+						gotClose = true
+						if response.Error != nil {
+							t.Fatal(response.Error)
+						}
+					}
+				}
+			case "disconnect":
+				c.in.Close()
+				select {
+				case <-c.done:
+				case <-time.After(5 * time.Second):
+					t.Fatal("shutdown blocked")
+				}
+			}
+			assertMCPParentsGone(t, marker)
+		})
+	}
+}
+
+func TestMCPFailedDeleteKeepsConnectionUsable(t *testing.T) {
+	path := t.TempDir() + "/ox.db"
+	sessions, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.Exec(`CREATE TRIGGER reject_delete BEFORE DELETE ON sessions BEGIN SELECT RAISE(ABORT, 'test deletion failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	marker := t.TempDir() + "/events"
+	definition, _ := mcptest.Definition(t, mcptest.Config{Tools: []*mcp.Tool{mcptest.Tool("read", true)}, Marker: marker})
+	call := fake.Calls(fake.Call{ID: "one", Name: "mcp__project__read", Arguments: object{}})
+	c := connectWithStore(t, sessions, call, fake.Text("one"), call, fake.Text("two"))
+	writeMCPSettings(t, settings.GlobalPath(c.home), map[string]settings.MCPServer{"project": definition})
+	id := c.newSession()
+	if response, _ := c.prompt(id, "first"); response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	response, _ := c.call(acp.MethodDeleteSession, object{"sessionId": id})
+	if response.Error == nil {
+		t.Fatal("delete unexpectedly succeeded")
+	}
+	if response, _ := c.prompt(id, "second"); response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	data, _ := os.ReadFile(marker)
+	if strings.Count(string(data), "start ") != 1 || strings.Count(string(data), "call read") != 2 {
+		t.Fatalf("connection lost after failed delete: %s", data)
+	}
+}
+
+func TestMCPSessionsRemainIsolatedAndRefreshPermissions(t *testing.T) {
+	marker := t.TempDir() + "/events"
+	config := mcptest.Config{Tools: []*mcp.Tool{mcptest.Tool("read", true)}, Marker: marker}
+	definition, path := mcptest.Definition(t, config)
+	call := fake.Calls(fake.Call{ID: "one", Name: "mcp__project__read", Arguments: object{}})
+	c := connect(t, call, fake.Text("one"), call, fake.Text("two"), call, fake.Text("three"))
+	writeMCPSettings(t, settings.GlobalPath(c.home), map[string]settings.MCPServer{"project": definition})
+	one, two := c.newSession(), c.newSession()
+	if response, _ := c.prompt(one, "first"); response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	if response, _ := c.prompt(two, "second"); response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	c.call(acp.MethodCloseSession, object{"sessionId": one})
+	config.Tools[0].Annotations.ReadOnlyHint = false
+	mcptest.Write(t, path, config)
+	response, before := c.prompt(two, "third", "deny")
+	if response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	asked := false
+	for _, m := range before {
+		if m.Method == acp.MethodRequestPermission {
+			asked = true
+		}
+	}
+	if !asked {
+		t.Fatal("changed annotation did not require permission")
+	}
+	data, _ := os.ReadFile(marker)
+	if strings.Count(string(data), "start ") != 2 || strings.Count(string(data), "call read") != 2 {
+		t.Fatalf("isolation or refresh: %s", data)
+	}
+	c.in.Close()
+	<-c.done
+	assertMCPParentsGone(t, marker)
 }
