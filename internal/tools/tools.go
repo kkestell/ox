@@ -24,6 +24,7 @@ const (
 	Grep         = "grep"
 	Shell        = "shell"
 	ShellProcess = "shell_process"
+	WebFetch     = "web_fetch"
 )
 
 // outputLimit bounds every result the model reads.
@@ -47,7 +48,7 @@ type Toolbox struct {
 
 // Schemas returns every tool definition sent to the model.
 func Schemas() []json.RawMessage {
-	return []json.RawMessage{shellSchema, shellProcessSchema, readSchema, globSchema, grepSchema, patchSchema()}
+	return []json.RawMessage{shellSchema, shellProcessSchema, readSchema, globSchema, grepSchema, patchSchema(), webFetchSchema}
 }
 
 // Schemas combines built-ins with the immutable catalog for this turn.
@@ -88,6 +89,14 @@ func (t *Toolbox) Execute(ctx context.Context, call transcript.ToolCall) transcr
 		return t.shell(ctx, call.Arguments)
 	case ShellProcess:
 		return t.shellProcess(ctx, call.Arguments)
+	case WebFetch:
+		// Wait for cancellation to finish before returning: large pages may
+		// be written to a file for later reading.
+		text, content, err := webFetch(ctx, t.Workspace, call.Arguments)
+		if errors.Is(err, context.Canceled) {
+			return transcript.Cancelled("Cancelled while fetching the page.")
+		}
+		return bounded(text, content, err)
 	case ApplyPatch:
 		if ctx.Err() != nil {
 			return transcript.Cancelled("Cancelled before this tool was started.")
@@ -245,6 +254,8 @@ func Title(call transcript.ToolCall) string {
 		return "Search file contents"
 	case ApplyPatch:
 		return "Apply patch"
+	case WebFetch:
+		return "Fetch web page"
 	}
 	return call.Name
 }
@@ -286,6 +297,10 @@ func describe(call transcript.ToolCall) string {
 	case ReadFile:
 		if path := argument("path"); path != "" {
 			return "Read " + path
+		}
+	case WebFetch:
+		if url := argument("url"); url != "" {
+			return "Fetch " + url
 		}
 	case Glob:
 		pattern := argument("pattern")

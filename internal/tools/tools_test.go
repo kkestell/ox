@@ -127,7 +127,7 @@ func TestSchemasRejectExtraPropertiesAndUnknownToolsFail(t *testing.T) {
 		}
 		names = append(names, decoded.Function.Name)
 	}
-	if want := []string{Shell, ShellProcess, ReadFile, Glob, Grep, ApplyPatch}; !reflect.DeepEqual(names, want) {
+	if want := []string{Shell, ShellProcess, ReadFile, Glob, Grep, ApplyPatch, WebFetch}; !reflect.DeepEqual(names, want) {
 		t.Errorf("names = %v", names)
 	}
 	tools := toolbox(t)
@@ -153,6 +153,8 @@ func TestTitlesDescribeTheCallAndFallBackToTheToolName(t *testing.T) {
 		{ShellProcess, object{"action": "write", "process_id": "p-1", "text": "y\n"}, "Write to shell process p-1"},
 		{ShellProcess, object{"action": "stop"}, "Use shell process"},
 		{ReadFile, object{"path": "src/main.rs"}, "Read src/main.rs"},
+		{WebFetch, object{"url": "https://example.com"}, "Fetch https://example.com"},
+		{WebFetch, "not json", "Fetch web page"},
 		{Glob, object{"pattern": "*.rs", "path": "."}, "Find files matching *.rs"},
 		{Glob, object{"pattern": "*.rs", "path": "src"}, "Find files matching *.rs in src"},
 		{Grep, object{"pattern": "fn main", "path": "src", "glob": "*.rs"}, "Search for fn main in src (files matching *.rs)"},

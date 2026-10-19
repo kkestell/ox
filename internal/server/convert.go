@@ -225,6 +225,8 @@ func toolKind(name string) protocol.ToolKind {
 		return "execute"
 	case tools.ReadFile:
 		return "read"
+	case tools.WebFetch:
+		return "fetch"
 	case tools.Glob, tools.Grep:
 		return "search"
 	case tools.ApplyPatch:
