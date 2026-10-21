@@ -144,6 +144,13 @@ each present workspace value replaces the global value. Both files are optional.
   `command`; `args` is an optional list of arguments that defaults to empty. If
   `servers` is absent or empty, the client starts the `ox-server` next to `ox`.
 
+### Instructions
+
+Ox adds two optional instruction files to its system prompt:
+`~/.config/ox/AGENTS.md`, which applies to every workspace, followed by
+`<workspace>/AGENTS.md`. Each must be UTF-8 text of at most 32 KiB. They are
+read when a session is created or first loaded, or once per headless run.
+
 ### MCP tools
 
 `ox-server` supports tools from local MCP servers over stdio. Configure them in

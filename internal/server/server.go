@@ -148,7 +148,7 @@ func (s *Server) storedSession(id string) (*store.Session, *acp.Error) {
 // newActiveSession builds the process state a session gets when it becomes
 // active. Its selections are set by the caller.
 func (s *Server) newActiveSession(workspace string, definitions map[string]settings.MCPServer) (*activeSession, *acp.Error) {
-	systemPrompt, err := sysprompt.ForWorkspace(workspace, tools.ShellProgram)
+	systemPrompt, err := sysprompt.ForWorkspace(s.home, workspace, tools.ShellProgram)
 	if err != nil {
 		return nil, internal(err)
 	}

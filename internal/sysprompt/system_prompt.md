@@ -30,6 +30,12 @@ the user needs. Avoid jargon, invented terms, and overloading definitions.
 - Workspace: {{.Workspace}}
 - Platform: {{.Platform}}
 - Shell: {{.Shell}}
+{{- if .UserInstructions}}
+
+# User instructions from ~/.config/ox/AGENTS.md
+
+{{.UserInstructions}}
+{{- end}}
 {{- if .Instructions}}
 
 # Workspace instructions from AGENTS.md

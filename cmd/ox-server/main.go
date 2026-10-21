@@ -243,7 +243,7 @@ func runHeadless(args []string) error {
 		}
 		return fmt.Errorf("%s does not accept effort %s; choose one of %s", model, effort, strings.Join(names, ", "))
 	}
-	systemPrompt, err := sysprompt.ForWorkspace(workspace, tools.ShellProgram)
+	systemPrompt, err := sysprompt.ForWorkspace(home, workspace, tools.ShellProgram)
 	if err != nil {
 		return err
 	}
