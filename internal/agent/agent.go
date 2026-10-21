@@ -1,7 +1,7 @@
 // Package agent runs one turn of a session: it saves the user message or skill
-// invocation, makes model requests, runs tools in call order, saves each
-// complete assistant batch, compacts the session when its context fills, and
-// returns the answer when the turn finishes.
+// invocation, makes model requests, runs tools in call order and the hooks
+// that follow them, saves each complete assistant batch, compacts the session
+// when its context fills, and returns the answer when the turn finishes.
 package agent
 
 import (
@@ -16,6 +16,7 @@ import (
 	"ox/internal/catalog"
 	"ox/internal/mcpclient"
 	"ox/internal/openrouter"
+	"ox/internal/settings"
 	"ox/internal/shellproc"
 	"ox/internal/store"
 	"ox/internal/tools"
@@ -127,6 +128,9 @@ type Agent struct {
 	Store      *store.Store
 	OpenRouter *openrouter.Client
 	Catalog    catalog.Catalog
+	// Hooks run during every turn, in Ask and Auto mode alike, without
+	// approval: they come from the user's own global settings.
+	Hooks settings.Hooks
 	// RetryDelays are the waits before the second and third attempts of a
 	// model request, since retrying a temporary failure at once tends to fail
 	// the same way.
@@ -488,7 +492,7 @@ func (t *Turn) execute(ctx context.Context, batch *transcript.AssistantBatch) er
 			if ctx.Err() != nil {
 				return ErrCancelled
 			}
-			outcome = t.toolbox.Execute(ctx, call)
+			outcome = t.postToolUse(ctx, call, t.toolbox.Execute(ctx, call))
 		}
 		batch.Outcomes = append(batch.Outcomes, outcome)
 		if err := t.client.Send(ToolFinished{call, outcome}); err != nil {

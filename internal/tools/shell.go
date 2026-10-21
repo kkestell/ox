@@ -65,9 +65,11 @@ var shellProcessSchema = compact(`{
   }
 }`)
 
-func (t *Toolbox) command(text string) *exec.Cmd {
+// ShellCommand returns a command that runs text with ShellProgram in
+// workspace, with Ox's environment except `OPENROUTER_API_KEY`.
+func ShellCommand(workspace, text string) *exec.Cmd {
 	cmd := exec.Command(ShellProgram, "-c", text)
-	cmd.Dir = t.Workspace
+	cmd.Dir = workspace
 	for _, variable := range os.Environ() {
 		if !strings.HasPrefix(variable, "OPENROUTER_API_KEY=") {
 			cmd.Env = append(cmd.Env, variable)
@@ -103,7 +105,7 @@ func (t *Toolbox) shell(ctx context.Context, arguments string) transcript.ToolOu
 	if ctx.Err() != nil {
 		return transcript.Cancelled("Cancelled before this tool was started.")
 	}
-	cmd := t.command(*args.Command)
+	cmd := ShellCommand(t.Workspace, *args.Command)
 	if args.Background {
 		// Once started, the start is the observed outcome; later
 		// cancellation does not undo it.

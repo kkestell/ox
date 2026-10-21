@@ -3,8 +3,9 @@
 // file `.ox/settings.json`, read when a session becomes active. MCP settings in
 // both files are read separately at session activation. Workspace keys
 // replace the same global keys. Neither file is required. Only the global file
-// can set `models`, the OpenRouter provider pins. The terminal client's fields,
-// `servers` and `favorites`, are read only from the global file.
+// can set `models`, the OpenRouter provider pins, and `hooks`, the commands Ox
+// runs during turns. The terminal client's fields, `servers` and `favorites`,
+// are read only from the global file.
 package settings
 
 import (
@@ -54,6 +55,7 @@ func GlobalPath(home string) string {
 // file is the format of both settings files.
 type file struct {
 	provider bool
+	hooks    bool
 	model    *string
 	effort   *string
 	mode     *string
@@ -105,6 +107,9 @@ func (s Settings) ForWorkspace(workspace string, cat catalog.Catalog) (Settings,
 	}
 	if f.models != nil {
 		return Settings{}, invalid(path, "models can be set only in the global settings file")
+	}
+	if f.hooks {
+		return Settings{}, invalid(path, "hooks can be set only in the global settings file")
 	}
 	if err := s.apply(path, f); err != nil {
 		return Settings{}, err
@@ -243,6 +248,7 @@ func read(path string) (file, error) {
 	}
 	var f file
 	_, f.provider = fields["provider"]
+	_, f.hooks = fields["hooks"]
 	for key, target := range map[string]any{"model": &f.model, "effort": &f.effort, "mode": &f.mode, "models": &f.models} {
 		if raw, ok := fields[key]; ok {
 			if err := json.Unmarshal(raw, target); err != nil {

@@ -222,11 +222,11 @@ type Result struct {
 	Diagnostics string
 }
 
-// Run starts cmd with stdin from /dev/null in a new process group and
-// captures up to limit bytes of each stream until the child exits, timeout
-// passes, or ctx is done. The whole group is then killed, even after a normal
-// exit, because the child may leave background processes. It fails only when
-// the child cannot start.
+// Run starts cmd in a new process group, with stdin from /dev/null unless
+// cmd.Stdin is set, and captures up to limit bytes of each stream until the
+// child exits, timeout passes, or ctx is done. The whole group is then killed,
+// even after a normal exit, because the child may leave background processes.
+// It fails only when the child cannot start.
 func Run(ctx context.Context, cmd *exec.Cmd, limit int, timeout time.Duration) (Result, error) {
 	result := Result{Stdout: NewCapture(limit), Stderr: NewCapture(limit)}
 	out, err := start(cmd, nil, &sync.Mutex{}, result.Stdout, result.Stderr)

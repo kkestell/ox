@@ -201,3 +201,53 @@ structured JSON. Images, audio, and binary resources receive omission notices.
 The complete text result is limited to 16 KiB; omissions do not change the
 server's success or failure status. Resource links are not fetched. Standalone
 resources, prompts, sampling, and elicitation are not supported.
+
+### Hooks
+
+`hooks` configures commands that `ox-server` runs during turns. It follows
+Claude Code's hook schema and can be set only in the global file. The only event
+is `PostToolUse`, and the only hook type is `command`:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [{ "type": "command", "command": "my-hook", "timeout": 10 }]
+      }
+    ]
+  }
+}
+```
+
+`matcher` is a regular expression matched against the whole tool name, such as
+`shell|apply_patch`; an absent or empty matcher, or `*`, matches every tool.
+`timeout` is in seconds and defaults to 60. Settings are read when the server
+starts.
+
+After each tool call that runs, Ox runs every matching hook in order, in Ask and
+Auto mode alike and without approval. Each command runs with `bash -c` in the
+session's workspace, with Ox's environment except `OPENROUTER_API_KEY`. Stdin is
+a JSON object with `session_id`, `cwd`, `hook_event_name` (`PostToolUse`),
+`tool_name`, `tool_input` (the call's arguments), `tool_use_id`, and
+`tool_response`, an object with the outcome's `status` (`completed`, `failed`,
+or `cancelled`) and `text`.
+
+A hook adds context to the turn by printing a JSON object:
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PostToolUse",
+    "additionalContext": "Text for the model."
+  }
+}
+```
+
+Ox appends the text to the tool result, which the model reads in its next
+request, the client shows, and the session saves. Empty output adds nothing. A
+hook that exits nonzero, prints anything other than such an object, or exceeds
+its timeout is reported on Ox's stderr and otherwise ignored; Ox kills a hook's
+process group when it times out or the turn is cancelled. Anything a hook writes
+to stderr is also reported on Ox's stderr.

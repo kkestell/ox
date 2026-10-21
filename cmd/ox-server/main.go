@@ -104,7 +104,7 @@ func apiKey() (string, error) {
 }
 
 // startup authenticates, fetches the model catalog, and reads the global
-// settings against it.
+// settings, hooks included, against it.
 func startup(ctx context.Context) (*agent.Agent, settings.Settings, string, error) {
 	key, err := apiKey()
 	if err != nil {
@@ -123,6 +123,10 @@ func startup(ctx context.Context) (*agent.Agent, settings.Settings, string, erro
 	if err != nil {
 		return nil, settings.Settings{}, "", err
 	}
+	hooks, err := settings.LoadHooks(settings.GlobalPath(home))
+	if err != nil {
+		return nil, settings.Settings{}, "", err
+	}
 	path, err := store.DatabasePath()
 	if err != nil {
 		return nil, settings.Settings{}, "", err
@@ -131,7 +135,9 @@ func startup(ctx context.Context) (*agent.Agent, settings.Settings, string, erro
 	if err != nil {
 		return nil, settings.Settings{}, "", err
 	}
-	return agent.New(sessions, client, cat), defaults, home, nil
+	a := agent.New(sessions, client, cat)
+	a.Hooks = hooks
+	return a, defaults, home, nil
 }
 
 // signalContext returns a context cancelled by the termination signals that
