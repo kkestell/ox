@@ -162,6 +162,16 @@ func chunk(kind, text string) protocol.SessionUpdate {
 	panic("unknown message chunk " + kind)
 }
 
+// promptUsage reports a turn's tokens with cached input tokens apart from the
+// rest, as Anthropic's usage counts them.
+func promptUsage(tokens agent.Tokens) *protocol.Usage {
+	cached, reasoning := int(tokens.Cached), int(tokens.Reasoning)
+	return &protocol.Usage{
+		InputTokens: int(tokens.Input) - cached, CachedReadTokens: &cached, OutputTokens: int(tokens.Output),
+		ThoughtTokens: &reasoning, TotalTokens: int(tokens.Input + tokens.Output),
+	}
+}
+
 func usageUpdate(used uint64, size int, cost *float64) protocol.SessionUsageUpdate {
 	update := protocol.SessionUsageUpdate{SessionUpdate: "usage_update", Used: int(used), Size: size}
 	if cost != nil {

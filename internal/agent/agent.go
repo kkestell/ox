@@ -172,10 +172,27 @@ const (
 	Refusal
 )
 
-// Result is how a turn ended, with the answer when it finished.
+// Result is how a turn ended, with the answer when it finished and the tokens
+// its model requests used.
 type Result struct {
 	Stop   Stop
 	Answer string
+	Tokens Tokens
+}
+
+// Tokens counts the tokens of model requests. Input includes Cached, and
+// Output includes Reasoning, as OpenRouter reports them.
+type Tokens struct {
+	Input, Cached, Output, Reasoning uint64
+}
+
+func (t *Tokens) add(usage *transcript.Usage) {
+	if usage != nil {
+		t.Input += usage.InputTokens
+		t.Cached += usage.CachedTokens
+		t.Output += usage.OutputTokens
+		t.Reasoning += usage.ReasoningTokens
+	}
 }
 
 // Turn is one turn whose turn start is saved.
@@ -186,6 +203,7 @@ type Turn struct {
 	summary store.Summary
 	toolbox *tools.Toolbox
 	info    *SessionInfo
+	tokens  Tokens
 }
 
 // ModelSelection returns the catalog model for a session's selections,
@@ -281,7 +299,7 @@ func (t *Turn) Run(ctx context.Context) (Result, error) {
 	}
 	result, err := t.loop(ctx)
 	if errors.Is(err, ErrCancelled) {
-		return Result{Stop: Cancelled}, nil
+		return Result{Stop: Cancelled, Tokens: t.tokens}, nil
 	}
 	if err != nil {
 		if saveErr := t.agent.Store.AppendTurnError(t.summary.ID, err.Error()); saveErr != nil {
@@ -290,6 +308,7 @@ func (t *Turn) Run(ctx context.Context) (Result, error) {
 		t.request.Transcript = append(t.request.Transcript, transcript.TurnError(err.Error()))
 		return Result{}, err
 	}
+	result.Tokens = t.tokens
 	return result, nil
 }
 
@@ -444,6 +463,7 @@ func (t *Turn) complete(ctx context.Context, request openrouter.Request, forward
 		}
 		switch {
 		case item.Completion != nil:
+			t.tokens.add(item.Completion.Message.Usage)
 			return item.Completion, nil
 		case !forward:
 		case item.Text != "":

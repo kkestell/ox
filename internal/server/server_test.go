@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"ox/internal/mcptest"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -815,4 +816,16 @@ func TestMCPSessionsRemainIsolatedAndRefreshPermissions(t *testing.T) {
 	c.in.Close()
 	<-c.done
 	assertMCPParentsGone(t, marker)
+}
+
+func TestPromptResponseReportsTheTurnsTokens(t *testing.T) {
+	usage := fake.Usage(100, 20, 0.5)
+	usage["usage"].(map[string]any)["prompt_tokens_details"] = object{"cached_tokens": 60}
+	usage["usage"].(map[string]any)["completion_tokens_details"] = object{"reasoning_tokens": 5}
+	c := connect(t, fake.Chunks(fake.Delta(object{"role": "assistant", "content": "Done."}, ""), usage))
+	response, _ := c.prompt(c.newSession(), "Hi")
+	want := object{"inputTokens": 40.0, "cachedReadTokens": 60.0, "outputTokens": 20.0, "thoughtTokens": 5.0, "totalTokens": 120.0}
+	if got := response.Result["usage"]; !reflect.DeepEqual(got, map[string]any(want)) {
+		t.Errorf("usage = %v", got)
+	}
 }

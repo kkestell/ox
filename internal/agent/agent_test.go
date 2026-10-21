@@ -150,7 +150,7 @@ func TestAnAnswerIsSavedAndReported(t *testing.T) {
 	))
 	client := &recorder{mode: transcript.ModeAsk}
 	result, err := f.run(t, context.Background(), f.input("Hi"), client)
-	if err != nil || result != (Result{Stop: EndTurn, Answer: "Hello."}) {
+	if err != nil || result != (Result{Stop: EndTurn, Answer: "Hello.", Tokens: Tokens{Input: 10, Output: 5}}) {
 		t.Fatalf("result %+v, %v", result, err)
 	}
 	entries := f.saved(t)

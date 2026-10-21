@@ -494,7 +494,10 @@ func (s *Server) prompt(r *acp.Request) *acp.Error {
 			}
 			return
 		}
-		r.Respond(protocol.PromptResponse{StopReason: []protocol.StopReason{"end_turn", "cancelled", "max_tokens", "refusal"}[result.Stop]})
+		r.Respond(protocol.PromptResponse{
+			StopReason: []protocol.StopReason{"end_turn", "cancelled", "max_tokens", "refusal"}[result.Stop],
+			Usage:      promptUsage(result.Tokens),
+		})
 	}()
 	return nil
 }
