@@ -42,15 +42,20 @@ func captureStderr(t *testing.T, run func()) string {
 	return <-read
 }
 
-func toolMessage(t *testing.T, body map[string]any) string {
+// toolMessage returns the request's tool result and the message after it.
+func toolMessage(t *testing.T, body map[string]any) (result string, next map[string]any) {
 	t.Helper()
-	for _, message := range body["messages"].([]any) {
+	messages := body["messages"].([]any)
+	for i, message := range messages {
 		if message := message.(map[string]any); message["role"] == "tool" {
-			return message["content"].(string)
+			if i+1 < len(messages) {
+				next = messages[i+1].(map[string]any)
+			}
+			return message["content"].(string), next
 		}
 	}
 	t.Fatal("the request has no tool result")
-	return ""
+	return "", nil
 }
 
 func TestHookContextReachesTheNextModelRequest(t *testing.T) {
@@ -67,18 +72,26 @@ func TestHookContextReachesTheNextModelRequest(t *testing.T) {
 	if err != nil || result.Answer != "Done." {
 		t.Fatalf("result %+v, %v", result, err)
 	}
-	read := toolMessage(t, f.server.Bodies()[1])
-	if !strings.HasPrefix(read, "Exit code: 0") || !strings.HasSuffix(read, "(empty)\n\nPostToolUse hook additional context:\nMessage from the operator") {
-		t.Errorf("the model read %q, want the result followed by the context", read)
+	want := "Context added by the user's PostToolUse hook:\n\nMessage from the operator"
+	read, next := toolMessage(t, f.server.Bodies()[1])
+	if !strings.HasPrefix(read, "Exit code: 0") || strings.Contains(read, "operator") {
+		t.Errorf("the tool result read %q, want it without the context", read)
 	}
-	saved := f.saved(t)[1].(*transcript.AssistantBatch).Outcomes[0]
-	if saved.Text != read {
-		t.Errorf("saved %q", saved.Text)
+	if next["role"] != "user" || next["content"] != want {
+		t.Errorf("the message after the tool result is %v, want the context as a user message", next)
 	}
+	saved := f.saved(t)[1].(*transcript.AssistantBatch)
+	if saved.Outcomes[0].Text != read || len(saved.HookContext) != 1 || saved.HookContext[0] != "Message from the operator" {
+		t.Errorf("saved %+v", saved)
+	}
+	var sent []HookContext
 	for _, event := range client.events {
-		if finished, ok := event.(ToolFinished); ok && finished.Outcome.Text != saved.Text {
-			t.Errorf("the client was sent %q", finished.Outcome.Text)
+		if context, ok := event.(HookContext); ok {
+			sent = append(sent, context)
 		}
+	}
+	if len(sent) != 1 || string(sent[0]) != want {
+		t.Errorf("the client was sent %q", sent)
 	}
 	var input map[string]any
 	data, _ := os.ReadFile(filepath.Join(f.workspace, "input.json"))
@@ -121,8 +134,8 @@ func TestFailedHooksAreReportedAndIgnored(t *testing.T) {
 	if elapsed := time.Since(started); elapsed > 10*time.Second {
 		t.Errorf("the timed-out hook was not stopped: %s", elapsed)
 	}
-	if got := toolMessage(t, f.server.Bodies()[1]); !strings.HasSuffix(got, "\n\nPostToolUse hook additional context:\nstill delivered") || strings.Count(got, "PostToolUse") != 1 {
-		t.Errorf("the model read %q", got)
+	if _, next := toolMessage(t, f.server.Bodies()[1]); next["content"] != "Context added by the user's PostToolUse hook:\n\nstill delivered" {
+		t.Errorf("the message after the tool result is %v", next)
 	}
 	want := `ox: PostToolUse hook "echo broken >&2; exit 3": Exit code: 3; stderr: broken
 ox: PostToolUse hook "echo not json": output is not a JSON object with hookSpecificOutput: invalid character 'o' in literal null (expecting 'u')

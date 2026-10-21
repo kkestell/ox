@@ -74,6 +74,10 @@ type ToolFinished struct {
 	Outcome transcript.ToolOutcome
 }
 
+// HookContext reports the text PostToolUse hooks added after a call, as the
+// model reads it.
+type HookContext string
+
 // CompactionStarted reports that the session is being compacted. ID names the
 // compaction in its updates.
 type CompactionStarted struct{ ID string }
@@ -99,6 +103,7 @@ func (ReasoningDelta) event()     {}
 func (ToolPending) event()        {}
 func (ToolStarted) event()        {}
 func (ToolFinished) event()       {}
+func (HookContext) event()        {}
 func (CompactionStarted) event()  {}
 func (CompactionFinished) event() {}
 func (Usage) event()              {}
@@ -485,6 +490,7 @@ func (t *Turn) execute(ctx context.Context, batch *transcript.AssistantBatch) er
 			return err
 		}
 		outcome := transcript.Failed(denial)
+		var added []string
 		if denial == "" {
 			if err := t.client.Send(ToolStarted{call}); err != nil {
 				return updateFailure(err)
@@ -492,11 +498,18 @@ func (t *Turn) execute(ctx context.Context, batch *transcript.AssistantBatch) er
 			if ctx.Err() != nil {
 				return ErrCancelled
 			}
-			outcome = t.postToolUse(ctx, call, t.toolbox.Execute(ctx, call))
+			outcome = t.toolbox.Execute(ctx, call)
+			added = t.postToolUse(ctx, call, outcome)
 		}
 		batch.Outcomes = append(batch.Outcomes, outcome)
 		if err := t.client.Send(ToolFinished{call, outcome}); err != nil {
 			return updateFailure(err)
+		}
+		if len(added) > 0 {
+			batch.HookContext = append(batch.HookContext, added...)
+			if err := t.client.Send(HookContext(transcript.HookMessage(added))); err != nil {
+				return updateFailure(err)
+			}
 		}
 	}
 	return nil

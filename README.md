@@ -245,9 +245,10 @@ A hook adds context to the turn by printing a JSON object:
 }
 ```
 
-Ox appends the text to the tool result, which the model reads in its next
-request, the client shows, and the session saves. Empty output adds nothing. A
-hook that exits nonzero, prints anything other than such an object, or exceeds
-its timeout is reported on Ox's stderr and otherwise ignored; Ox kills a hook's
-process group when it times out or the turn is cancelled. Anything a hook writes
-to stderr is also reported on Ox's stderr.
+Ox adds the text to the turn as a user message after the tool results, which the
+model reads in its next request, the client is sent as a user message, and the
+session saves. Empty output adds nothing. A hook that exits nonzero, prints
+anything other than such an object, or exceeds its timeout is reported on Ox's
+stderr and otherwise ignored; Ox kills a hook's process group when it times out
+or the turn is cancelled. Anything a hook writes to stderr is also reported on
+Ox's stderr.

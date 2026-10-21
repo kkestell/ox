@@ -379,6 +379,16 @@ func (c *ToolContent) UnmarshalJSON(data []byte) error {
 type AssistantBatch struct {
 	Message  AssistantMessage `json:"message"`
 	Outcomes []ToolOutcome    `json:"outcomes"`
+	// HookContext is the text PostToolUse hooks added after the batch's tool
+	// calls, in order.
+	HookContext []string `json:"hookContext,omitempty"`
+}
+
+// HookMessage is how hook context reads to the model: a user message after
+// the tool results. Models distrust instructions inside tool output, and this
+// comes from the user's own configuration.
+func HookMessage(context []string) string {
+	return "Context added by the user's PostToolUse hook:\n\n" + strings.Join(context, "\n\n")
 }
 
 // Validate checks the message and requires one outcome per call.

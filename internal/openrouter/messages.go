@@ -78,6 +78,9 @@ func chatMessages(entries []transcript.Entry) []any {
 					"content":      entry.Outcomes[i].Text,
 				})
 			}
+			if len(entry.HookContext) > 0 {
+				messages = append(messages, map[string]any{"role": "user", "content": transcript.HookMessage(entry.HookContext)})
+			}
 		}
 	}
 	return messages

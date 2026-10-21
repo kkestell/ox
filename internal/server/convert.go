@@ -193,6 +193,8 @@ func update(event agent.Event) any {
 		return chunk("agent_message_chunk", string(event))
 	case agent.ReasoningDelta:
 		return chunk("agent_thought_chunk", string(event))
+	case agent.HookContext:
+		return chunk("user_message_chunk", string(event))
 	case agent.ToolPending:
 		return toolCall(event.Call)
 	case agent.ToolStarted:
@@ -316,6 +318,9 @@ func replay(entries []transcript.Entry, send func(any) error) error {
 				update := toolCall(call)
 				update.Status, update.Content, update.RawOutput = status(outcome), outputContent(outcome), outcome.Text
 				updates = append(updates, update)
+			}
+			if len(entry.HookContext) > 0 {
+				updates = append(updates, chunk("user_message_chunk", transcript.HookMessage(entry.HookContext)))
 			}
 		}
 		for _, update := range updates {

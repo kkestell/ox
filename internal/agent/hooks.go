@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"slices"
 	"strings"
 	"time"
 
@@ -40,10 +39,11 @@ type toolResponse struct {
 }
 
 // postToolUse runs the PostToolUse hooks that match call, in order, and
-// returns outcome with the context they add appended. A failed hook is
-// reported on stderr and otherwise ignored, so a hook never ends a turn.
-func (t *Turn) postToolUse(ctx context.Context, call transcript.ToolCall, outcome transcript.ToolOutcome) transcript.ToolOutcome {
+// returns the context they add. A failed hook is reported on stderr and
+// otherwise ignored, so a hook never ends a turn.
+func (t *Turn) postToolUse(ctx context.Context, call transcript.ToolCall, outcome transcript.ToolOutcome) []string {
 	var input []byte
+	var context []string
 	for _, hook := range t.agent.Hooks.PostToolUse {
 		if !hook.Matches(call.Name) || ctx.Err() != nil {
 			continue
@@ -64,10 +64,10 @@ func (t *Turn) postToolUse(ctx context.Context, call transcript.ToolCall, outcom
 			fmt.Fprintf(os.Stderr, "ox: PostToolUse hook %q: %s\n", hook.Command, control.Escape(problem))
 		}
 		if added != "" {
-			outcome = withHookContext(outcome, added)
+			context = append(context, added)
 		}
 	}
-	return outcome
+	return context
 }
 
 // runHook runs one command hook with input on stdin and returns the
@@ -114,15 +114,4 @@ func runHook(ctx context.Context, hook settings.Hook, workspace string, input []
 		return added, "stderr: " + stderr
 	}
 	return added, ""
-}
-
-// withHookContext appends hook context to the text the model reads and to the
-// content the client shows, so the saved outcome carries it for both.
-func withHookContext(outcome transcript.ToolOutcome, added string) transcript.ToolOutcome {
-	block := "PostToolUse hook additional context:\n" + added
-	outcome.Text += "\n\n" + block
-	if len(outcome.Content) > 0 {
-		outcome.Content = slices.Concat(outcome.Content, []transcript.ToolContent{{Text: block}})
-	}
-	return outcome
 }
