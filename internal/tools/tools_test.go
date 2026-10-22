@@ -3,13 +3,11 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"ox/internal/shellproc"
 	"ox/internal/transcript"
@@ -47,68 +45,22 @@ func writeFile(t *testing.T, path, text string) {
 
 type object = map[string]any
 
-func TestCancelledPatchDoesNotStart(t *testing.T) {
-	tools := toolbox(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	outcome := tools.Execute(ctx, call(ApplyPatch, object{"patch": wrapped("*** Add File: never\n+content\n")}))
-	if outcome.Status != transcript.ToolCancelled || entries(t, tools.Workspace) != 0 {
-		t.Fatalf("cancelled patch: %+v", outcome)
+func readText(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
 	}
+	return string(data)
 }
 
-func TestCancellationWaitsForPatchAndKeepsItsResult(t *testing.T) {
-	tools := toolbox(t)
-	var body strings.Builder
-	const count = 800
-	for i := range count {
-		fmt.Fprintf(&body, "*** Add File: file-%03d\n+content\n", i)
+func entries(t *testing.T, dir string) int {
+	t.Helper()
+	list, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan transcript.ToolOutcome, 1)
-	go func() { done <- tools.Execute(ctx, call(ApplyPatch, object{"patch": wrapped(body.String())})) }()
-	ticker := time.NewTicker(time.Millisecond)
-	defer ticker.Stop()
-	deadline := time.After(10 * time.Second)
-	for {
-		if _, err := os.Stat(filepath.Join(tools.Workspace, "file-000")); err == nil {
-			if _, err := os.Stat(filepath.Join(tools.Workspace, "file-799")); err == nil {
-				t.Fatal("patch finished before the test could cancel it")
-			}
-			cancel()
-			break
-		}
-		select {
-		case outcome := <-done:
-			t.Fatalf("patch returned before cancellation: %+v", outcome)
-		case <-ticker.C:
-		case <-deadline:
-			t.Fatal("patch did not start writing")
-		}
-	}
-	select {
-	case outcome := <-done:
-		files := entries(t, tools.Workspace)
-		if outcome.Status != transcript.ToolCompleted || len(outcome.Content) != count*2 || files != count {
-			// Wait for remaining writes so a regression cannot race workspace cleanup.
-			for entries(t, tools.Workspace) != count {
-				select {
-				case <-ticker.C:
-				case <-deadline:
-					t.Fatal("patch did not finish writing")
-				}
-			}
-			t.Fatalf("patch returned %s with %d content blocks and %d files", outcome.Status, len(outcome.Content), files)
-		}
-		for i := range count {
-			if readText(t, filepath.Join(tools.Workspace, fmt.Sprintf("file-%03d", i))) != "content\n" {
-				t.Fatalf("file %d was incomplete when Execute returned", i)
-			}
-		}
-	case <-deadline:
-		t.Fatal("patch did not return after cancellation")
-	}
+	return len(list)
 }
 
 func TestSchemasRejectExtraPropertiesAndUnknownToolsFail(t *testing.T) {
@@ -127,11 +79,11 @@ func TestSchemasRejectExtraPropertiesAndUnknownToolsFail(t *testing.T) {
 		}
 		names = append(names, decoded.Function.Name)
 	}
-	if want := []string{Shell, ShellProcess, ReadFile, Glob, Grep, ApplyPatch, WebFetch}; !reflect.DeepEqual(names, want) {
+	if want := []string{Shell, ShellProcess, WebFetch}; !reflect.DeepEqual(names, want) {
 		t.Errorf("names = %v", names)
 	}
 	tools := toolbox(t)
-	for _, name := range []string{"launch", "write_file"} {
+	for _, name := range []string{"launch", "write_file", "read_file", "glob", "grep", "apply_patch"} {
 		if outcome := tools.call(name, "{}"); !reflect.DeepEqual(outcome, transcript.Failed("Unknown tool: "+name)) || Title(call(name, "{}")) != name {
 			t.Errorf("%s: %+v", name, outcome)
 		}
@@ -152,201 +104,12 @@ func TestTitlesDescribeTheCallAndFallBackToTheToolName(t *testing.T) {
 		{ShellProcess, object{"action": "list"}, "List shell processes"},
 		{ShellProcess, object{"action": "write", "process_id": "p-1", "text": "y\n"}, "Write to shell process p-1"},
 		{ShellProcess, object{"action": "stop"}, "Use shell process"},
-		{ReadFile, object{"path": "src/main.rs"}, "Read src/main.rs"},
 		{WebFetch, object{"url": "https://example.com"}, "Fetch https://example.com"},
 		{WebFetch, "not json", "Fetch web page"},
-		{Glob, object{"pattern": "*.rs", "path": "."}, "Find files matching *.rs"},
-		{Glob, object{"pattern": "*.rs", "path": "src"}, "Find files matching *.rs in src"},
-		{Grep, object{"pattern": "fn main", "path": "src", "glob": "*.rs"}, "Search for fn main in src (files matching *.rs)"},
-		{ApplyPatch, object{"patch": "*** Begin Patch\n*** Delete File: src/old.rs\n*** End Patch\n"}, "Apply patch to src/old.rs"},
-		{ApplyPatch, object{"patch": "*** Begin Patch\n*** Delete File: a\n*** Delete File: b\n*** End Patch\n"}, "Apply patch to 2 files"},
-		{ApplyPatch, object{"patch": "*** Begin Patch\n"}, "Apply patch"},
-		{ReadFile, object{"path": strings.Repeat("a", 200)}, "Read " + strings.Repeat("a", 74) + "…"},
+		{Shell, object{"command": strings.Repeat("a", 200)}, strings.Repeat("a", 79) + "…"},
 	} {
 		if got := Title(call(test.name, test.arguments)); got != test.want {
 			t.Errorf("%s %v: %q", test.name, test.arguments, got)
-		}
-	}
-}
-
-func TestReadToolsValidateArgumentsAndAcceptOutsidePaths(t *testing.T) {
-	tools := toolbox(t)
-	outside := t.TempDir()
-	writeFile(t, filepath.Join(tools.Workspace, "file"), "needle\n")
-	writeFile(t, filepath.Join(outside, "file"), "needle\n")
-	os.Symlink(outside, filepath.Join(tools.Workspace, "escape"))
-	os.Symlink(filepath.Join(tools.Workspace, "file"), filepath.Join(tools.Workspace, "alias"))
-	for _, name := range []string{ReadFile, Glob, Grep} {
-		for _, arguments := range []any{"{", "{}", object{"path": 2, "pattern": 2}, object{"path": "file", "pattern": "*", "extra": true}} {
-			if outcome := tools.call(name, arguments); outcome.Status != transcript.ToolFailed {
-				t.Errorf("%s %v: %+v", name, arguments, outcome)
-			}
-		}
-		for _, path := range []string{"", "missing"} {
-			arguments := object{"path": path, "pattern": "*"}
-			if name == ReadFile {
-				arguments = object{"path": path}
-			}
-			if outcome := tools.call(name, arguments); outcome.Status != transcript.ToolFailed {
-				t.Errorf("%s %q: %+v", name, path, outcome)
-			}
-		}
-	}
-	for _, arguments := range []object{
-		{"path": "file", "offset": 0}, {"path": "file", "limit": 0}, {"path": "file", "limit": 1001},
-		{"path": "file", "offset": -1}, {"path": "."},
-	} {
-		if outcome := tools.call(ReadFile, arguments); outcome.Status != transcript.ToolFailed {
-			t.Errorf("read %v: %+v", arguments, outcome)
-		}
-	}
-	for name, arguments := range map[string]object{
-		ReadFile: {"path": filepath.Join(outside, "file")},
-		Glob:     {"path": outside, "pattern": "*"},
-		Grep:     {"path": "escape/file", "pattern": "needle"},
-	} {
-		if outcome := tools.call(name, arguments); outcome.Status != transcript.ToolCompleted {
-			t.Errorf("%s %v: %+v", name, arguments, outcome)
-		}
-	}
-	result := tools.call(ReadFile, object{"path": strings.Repeat("雪", outputLimit)})
-	if result.Status != transcript.ToolFailed || len(result.Text) > outputLimit {
-		t.Errorf("long path error is not bounded: %d bytes", len(result.Text))
-	}
-}
-
-func readPage(t *testing.T, tools *Toolbox, offset, limit int) (string, []transcript.ToolContent) {
-	t.Helper()
-	outcome := tools.call(ReadFile, object{"path": "text", "offset": offset, "limit": limit})
-	if outcome.Status != transcript.ToolCompleted {
-		t.Fatalf("read %d: %s", offset, outcome.Text)
-	}
-	return outcome.Text, outcome.Content
-}
-
-func TestReadPagesLinesWithinTheByteBudget(t *testing.T) {
-	tools := toolbox(t)
-	path := filepath.Join(tools.Workspace, "text")
-	writeFile(t, path, "one\r\n雪\nlast")
-	if text, content := readPage(t, tools, 1, 2); text != "1: one\n2: 雪\nMore content remains. Continue with offset=3.\n" ||
-		!reflect.DeepEqual(content, []transcript.ToolContent{{Text: "Lines 1–2"}}) {
-		t.Errorf("first page: %q %v", text, content)
-	}
-	if text, content := readPage(t, tools, 3, 2); text != "3: last\n" || content[0].Text != "Lines 3–3 of 3" {
-		t.Errorf("last page: %q %v", text, content)
-	}
-	if text, _ := readPage(t, tools, 4, 2); text != "Offset is past end of file." {
-		t.Errorf("past the end: %q", text)
-	}
-	writeFile(t, path, "")
-	if text, _ := readPage(t, tools, 1, 2); text != "File is empty." {
-		t.Errorf("empty: %q", text)
-	}
-
-	long := strings.Repeat("x", bodyLimit-4)
-	writeFile(t, path, long+"\nend\n")
-	if text, _ := readPage(t, tools, 1, 200); !strings.HasPrefix(text, "1: "+long+"\n") || !strings.HasSuffix(text, "offset=2.\n") || len(text) > outputLimit {
-		t.Errorf("a line that fits is kept whole")
-	}
-	writeFile(t, path, "small\n"+strings.Repeat("雪", 20_000)+"\nend")
-	if text, _ := readPage(t, tools, 1, 200); !strings.HasSuffix(text, "offset=2.\n") {
-		t.Errorf("an oversized line is deferred: %.80q", text)
-	}
-	preview, _ := readPage(t, tools, 2, 200)
-	if !strings.Contains(preview, "Line truncated") || !strings.HasSuffix(preview, "offset=3.\n") ||
-		strings.ContainsRune(preview, '�') || len(preview) > outputLimit {
-		t.Errorf("an oversized line is previewed: %d bytes", len(preview))
-	}
-	if text, _ := readPage(t, tools, 3, 200); text != "3: end\n" {
-		t.Errorf("after the long line: %q", text)
-	}
-
-	for _, bad := range [][]byte{{0}, {255}, {0xe2, 0x82}} {
-		contents := append([]byte(strings.Repeat("x", bodyLimit*2)), bad...)
-		writeFile(t, path, string(append(contents, "\nnext"...)))
-		for _, offset := range []int{1, 2} {
-			if outcome := tools.call(ReadFile, object{"path": "text", "offset": offset}); !strings.Contains(outcome.Text, "unsupported text file") {
-				t.Errorf("%v at offset %d: %.80q", bad, offset, outcome.Text)
-			}
-		}
-	}
-}
-
-func TestSearchesFilterIgnoredFilesAndHandleLiteralArguments(t *testing.T) {
-	tools := toolbox(t)
-	for path, text := range map[string]string{
-		".ignore": "ignored\n", "src/a.rs": "Hello\nneedle\n", "src/b.txt": "needle\n", "ignored": "needle\n",
-		".hidden": "needle\n", "- file": "-needle\n", "-": "dash\n",
-	} {
-		writeFile(t, filepath.Join(tools.Workspace, path), text)
-	}
-	for _, test := range []struct {
-		name      string
-		arguments object
-		want      string
-		summary   string
-	}{
-		{Glob, object{"pattern": "*.rs", "path": "src"}, "./src/a.rs\n", "1 files"},
-		{Glob, object{"pattern": "src/**/*.rs"}, "./src/a.rs\n", "1 files"},
-		{Glob, object{"pattern": "{a,c}.{rs,go}"}, "./src/a.rs\n", "1 files"},
-		{Grep, object{"pattern": "(?i)hello", "glob": "*.rs"}, "./src/a.rs:1:Hello\n", "1 matches in 1 files"},
-		{Grep, object{"pattern": "-needle", "path": "- file"}, "./- file:1:-needle\n", "1 matches in 1 files"},
-		{Grep, object{"pattern": "dash", "path": "-"}, "./-:1:dash\n", "1 matches in 1 files"},
-		{Grep, object{"pattern": "^needle$", "path": "src/a.rs"}, "./src/a.rs:2:needle\n", "1 matches in 1 files"},
-		{Grep, object{"pattern": "needle", "path": ".hidden"}, "./.hidden:1:needle\n", "1 matches in 1 files"},
-		{Grep, object{"pattern": "nothing-matches"}, "No matches found.", ""},
-	} {
-		outcome := tools.call(test.name, test.arguments)
-		var summary string
-		if len(outcome.Content) > 0 {
-			summary = outcome.Content[0].Text
-		}
-		if outcome.Text != test.want || summary != test.summary {
-			t.Errorf("%s %v: %q %q", test.name, test.arguments, outcome.Text, summary)
-		}
-	}
-	all := tools.call(Grep, object{"pattern": "needle"})
-	if strings.Contains(all.Text, "ignored") || strings.Contains(all.Text, ".hidden") || all.Content[0].Text != "3 matches in 3 files" {
-		t.Errorf("grep everything: %q %v", all.Text, all.Content)
-	}
-	for _, pattern := range []string{"ignored", ".hidden"} {
-		if files := tools.call(Glob, object{"pattern": pattern}).Text; files != "./"+pattern+"\n" {
-			t.Errorf("explicit glob %s: %q", pattern, files)
-		}
-	}
-
-	for _, name := range []string{Glob, Grep} {
-		if outcome := tools.call(name, object{"pattern": "["}); outcome.Status != transcript.ToolFailed {
-			t.Errorf("%s accepted [", name)
-		}
-	}
-}
-
-func TestSearchesCapTheirOutputAndReportUnreadableFiles(t *testing.T) {
-	tools := toolbox(t)
-	for i := range 300 {
-		writeFile(t, filepath.Join(tools.Workspace, fmt.Sprintf("%d-%s", i, strings.Repeat("x", 100))), strings.Repeat("雪", 100))
-	}
-	for name, pattern := range map[string]string{Glob: "*", Grep: "雪"} {
-		outcome := tools.call(name, object{"pattern": pattern})
-		if len(outcome.Text) > outputLimit || !strings.HasSuffix(outcome.Text, "Output truncated. Narrow the search path or pattern.") ||
-			strings.ContainsRune(outcome.Text, '�') || !strings.HasSuffix(outcome.Content[0].Text, " files, truncated") {
-			t.Errorf("%s: %d bytes, %v", name, len(outcome.Text), outcome.Content)
-		}
-	}
-
-	tools = toolbox(t)
-	writeFile(t, filepath.Join(tools.Workspace, "a.rs"), "needle\n")
-	writeFile(t, filepath.Join(tools.Workspace, "c.rs"), "needle\n")
-	os.Chmod(filepath.Join(tools.Workspace, "c.rs"), 0)
-	locked := filepath.Join(tools.Workspace, "locked")
-	writeFile(t, filepath.Join(locked, "b.rs"), "needle\n")
-	os.Chmod(locked, 0)
-	outcome := tools.call(Grep, object{"pattern": "needle"})
-	os.Chmod(locked, 0o755)
-	for _, want := range []string{"./a.rs:1:needle", "./c.rs: ", "Some paths could not be searched:", "Permission denied"} {
-		if !strings.Contains(outcome.Text, want) {
-			t.Errorf("missing %q in %q", want, outcome.Text)
 		}
 	}
 }

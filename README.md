@@ -222,7 +222,7 @@ is `PostToolUse`, and the only hook type is `command`:
 ```
 
 `matcher` is a regular expression matched against the whole tool name, such as
-`shell|apply_patch`; an absent or empty matcher, or `*`, matches every tool.
+`shell|shell_process`; an absent or empty matcher, or `*`, matches every tool.
 `timeout` is in seconds and defaults to 60. Settings are read when the server
 starts.
 

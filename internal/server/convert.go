@@ -235,14 +235,8 @@ func toolKind(name string) protocol.ToolKind {
 	switch name {
 	case tools.Shell, tools.ShellProcess:
 		return "execute"
-	case tools.ReadFile:
-		return "read"
 	case tools.WebFetch:
 		return "fetch"
-	case tools.Glob, tools.Grep:
-		return "search"
-	case tools.ApplyPatch:
-		return "edit"
 	}
 	return ""
 }

@@ -31,7 +31,7 @@ var webFetchSchema = compact(`{
   "type": "function",
   "function": {
     "name": "web_fetch",
-    "description": "Fetch an HTTP(S) URL. Converts HTML to Markdown and preserves plain text. Follows redirects, without executing JavaScript. Returns at most 16 KiB; larger pages are saved under .ox/tmp/ with a preview and a path to read using read_file. Requests time out after 30 seconds; responses over 10 MiB and binary content are rejected. Example: {\"url\":\"https://example.com\"}.",
+    "description": "Fetch an HTTP(S) URL. Converts HTML to Markdown and preserves plain text. Follows redirects, without executing JavaScript. Returns at most 16 KiB; larger pages are saved under .ox/tmp/ with a preview and a path to read using shell. Requests time out after 30 seconds; responses over 10 MiB and binary content are rejected. Example: {\"url\":\"https://example.com\"}.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -134,6 +134,6 @@ func webFetch(ctx context.Context, root, arguments string) (string, []transcript
 		return "", nil, err
 	}
 	path := filepath.Join(".ox", "tmp", filepath.Base(file.Name()))
-	text := fmt.Sprintf("%s%s; saved to %s.\nUse read_file with offset/limit to read the full page.\n\n%s", header, summary, path, truncate(markdown, 2048))
+	text := fmt.Sprintf("%s%s; saved to %s.\nUse shell with sed or Python to read sections of the full page.\n\n%s", header, summary, path, truncate(markdown, 2048))
 	return text, content, nil
 }

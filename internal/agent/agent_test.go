@@ -367,24 +367,24 @@ func TestCancellationDuringTheStreamDiscardsProvisionalOutput(t *testing.T) {
 	}
 }
 
-func TestCancellationKeepsThePatchOutcomeAndSkipsLaterCalls(t *testing.T) {
+func TestCancellationKeepsTheShellOutcomeAndSkipsLaterCalls(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		patch  string
-		status transcript.ToolStatus
+		name    string
+		command string
+		status  transcript.ToolStatus
 	}{
-		{"completed", "*** Add File: first\n+content\n*** Add File: second\n+second\n", transcript.ToolCompleted},
-		{"failed", "*** Add File: first\n+content\n*** Add File: first/child\n+child\n*** Add File: second\n+second\n", transcript.ToolFailed},
+		{"completed", "printf 'content\n' > first", transcript.ToolCompleted},
+		{"failed", "printf 'content\n' > first; exit 1", transcript.ToolFailed},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newFixture(t, fake.Calls(
-				fake.Call{ID: "patch", Name: tools.ApplyPatch, Arguments: map[string]any{"patch": "*** Begin Patch\n" + test.patch + "*** End Patch\n"}},
-				fake.Call{ID: "later", Name: tools.ApplyPatch, Arguments: map[string]any{"patch": "*** Begin Patch\n*** Add File: never\n+never\n*** End Patch\n"}},
+				fake.Call{ID: "shell", Name: tools.Shell, Arguments: map[string]any{"command": test.command}},
+				fake.Call{ID: "later", Name: tools.Shell, Arguments: map[string]any{"command": "touch never"}},
 			))
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			client := &recorder{mode: transcript.ModeAuto, cancel: cancel, cancelOn: is[ToolFinished]}
-			result, err := f.run(t, ctx, f.input("Apply patches"), client)
+			result, err := f.run(t, ctx, f.input("Run commands"), client)
 			if err != nil || result.Stop != Cancelled {
 				t.Fatalf("result %+v, %v", result, err)
 			}
@@ -397,20 +397,12 @@ func TestCancellationKeepsThePatchOutcomeAndSkipsLaterCalls(t *testing.T) {
 				batch.Outcomes[1].Status != transcript.ToolCancelled || batch.Outcomes[1].Text != "Cancelled before this tool was started." {
 				t.Fatalf("outcomes = %+v", batch.Outcomes)
 			}
-			outcome := batch.Outcomes[0]
-			if test.status == transcript.ToolCompleted {
-				if outcome.Text != "Applied patch.\nAdded first\nAdded second" || len(outcome.Content) != 4 {
-					t.Fatalf("completed patch = %+v", outcome)
-				}
-			} else if !strings.Contains(outcome.Text, "Completed:\nAdded first\nNot attempted:\nAdded second") {
-				t.Fatalf("failed patch = %+v", outcome)
-			}
 			data, err := os.ReadFile(filepath.Join(f.workspace, "first"))
 			if err != nil || string(data) != "content\n" {
 				t.Fatalf("completed file = %q, %v", data, err)
 			}
 			if _, err := os.Stat(filepath.Join(f.workspace, "never")); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("later patch ran: %v", err)
+				t.Fatalf("later command ran: %v", err)
 			}
 			if len(f.server.Bodies()) != 1 {
 				t.Fatal("cancelled turn made another model request")

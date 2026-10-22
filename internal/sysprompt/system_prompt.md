@@ -13,6 +13,22 @@ behavior beyond the request.
 Work from the workspace and the tools already installed. Do not fetch upstream
 sources, search issue trackers, or install toolchains unless the user asks.
 
+Use the shell tool to read, search, and edit files:
+
+- Find files with `rg --files -g '*.rs'` and search their contents with
+  `rg -n 'pattern' path`. Use `rg -F` for literal text and quote patterns so the
+  shell does not expand them. Ripgrep exits 1 when it finds no matches.
+- Read small files with `cat` and sections with `sed -n '20,80p' file`. Narrow
+  searches and reads when output is truncated.
+- Use Python's `pathlib` for file operations and precise text edits. For a
+  replacement, assert that the old text occurs the expected number of times
+  before writing. Use a quoted heredoc, such as `python3 - <<'PY'`, to keep the
+  shell from expanding Python code. Preserve unrelated content.
+- Use `mkdir`, `mv`, and `cp` for ordinary filesystem operations. Quote paths
+  and use `--` where supported for names beginning with a dash.
+- Inspect `git diff` after editing and run the relevant checks. Each shell
+  call starts in the workspace; directory changes do not carry between calls.
+
 Accompany every tool call with one sentence that describes what you are doing at
 that moment.
 

@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="878" height="544" viewBox="0 0 878 544">
+<style>
+text { font-family: system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif; font-size: 13px; fill: #0b0b0b; font-variant-numeric: tabular-nums; }
+.secondary { fill: #52514e; } .muted { fill: #898781; }
+.title { font-size: 18px; font-weight: 600; }
+.heading { font-size: 15px; font-weight: 600; } .strong { font-weight: 600; }
+.surface { fill: #fcfcfb; } .grid { stroke: #e1e0d9; } .base { stroke: #c3c2b7; }
+.good { fill: #0ca30c; } line.good { stroke: #0ca30c; }
+.bad { fill: #d03b3b; } line.bad { stroke: #d03b3b; }
+.neutral { fill: #898781; } line.neutral { stroke: #898781; }
+.good-text { fill: #006300; } .bad-text { fill: #b02a2a; } .neutral-text { fill: #52514e; }
+.tint { stroke: none; fill-opacity: 0.16; }
+circle { stroke: #fcfcfb; stroke-width: 2px; }
+@media (prefers-color-scheme: dark) {
+text { fill: #ffffff; } .secondary, .neutral-text { fill: #c3c2b7; }
+.good-text { fill: #0ca30c; } .bad-text { fill: #e06464; }
+.surface { fill: #1a1a19; } .grid { stroke: #2c2c2a; } .base { stroke: #383835; }
+.tint { fill-opacity: 0.28; } circle { stroke: #1a1a19; }
+}
+</style>
+<rect class="surface" width="878" height="544"/>
+<text class="title" x="24" y="40">shell-files compared with shell-control</text>
+<text class="secondary" x="24" y="62">openrouter:deepseek/deepseek-v4.1-flash. Passed: shell-control 2/2, <tspan class="neutral-text strong">shell-files 2/2</tspan>.</text>
+<text class="heading" x="24" y="106">Across all tasks</text>
+<text class="secondary" x="24" y="124">Each dot is the geometric mean over tasks of the candidate's median over the base's median, with a 90% bootstrap interval. Green</text>
+<text class="secondary" x="24" y="142">is clearly lower, red is clearly higher, and gray is within the noise.</text>
+<line class="base" x1="620.5" y1="158" x2="620.5" y2="308"/><text class="muted" x="620.5" y="322" text-anchor="middle">0%</text>
+<line class="grid" x1="545.6" y1="158" x2="545.6" y2="308"/><text class="muted" x="545.6" y="322" text-anchor="middle">-10%</text>
+<line class="grid" x1="461.9" y1="158" x2="461.9" y2="308"/><text class="muted" x="461.9" y="322" text-anchor="middle">-20%</text>
+<line class="grid" x1="332.2" y1="158" x2="332.2" y2="308"/><text class="muted" x="332.2" y="322" text-anchor="middle">-33%</text>
+<text class="muted" x="612.5" y="340" text-anchor="end">← lower</text><text class="muted" x="628.5" y="340">higher →</text>
+<g><title>Cost: -24% (-24% to -24%)</title><rect x="24" y="158.0" width="830" height="30" fill="transparent"/><text class="strong" x="24" y="177.0">Cost</text><line class="good" x1="425.9" y1="173.0" x2="425.9" y2="173.0" stroke-width="2" stroke-linecap="round"/><circle class="good" cx="425.9" cy="173.0" r="6"/><text x="803" y="177.0" text-anchor="end">-24% (-24% to -24%)</text><text class="good-text strong" x="819" y="177.0">Lower</text></g>
+<g><title>Time: -31% (-31% to -31%)</title><rect x="24" y="188.0" width="830" height="30" fill="transparent"/><text class="strong" x="24" y="207.0">Time</text><line class="good" x1="357.4" y1="203.0" x2="357.4" y2="203.0" stroke-width="2" stroke-linecap="round"/><circle class="good" cx="357.4" cy="203.0" r="6"/><text x="803" y="207.0" text-anchor="end">-31% (-31% to -31%)</text><text class="good-text strong" x="819" y="207.0">Lower</text></g>
+<g><title>Input tokens: -48% (-48% to -48%)</title><rect x="24" y="218.0" width="830" height="30" fill="transparent"/><text class="strong" x="24" y="237.0">Input tokens</text><line class="good" x1="155.0" y1="233.0" x2="155.0" y2="233.0" stroke-width="2" stroke-linecap="round"/><circle class="good" cx="155.0" cy="233.0" r="6"/><text x="803" y="237.0" text-anchor="end">-48% (-48% to -48%)</text><text class="good-text strong" x="819" y="237.0">Lower</text></g>
+<g><title>Output tokens: -7% (-7% to -7%)</title><rect x="24" y="248.0" width="830" height="30" fill="transparent"/><text class="strong" x="24" y="267.0">Output tokens</text><line class="good" x1="568.5" y1="263.0" x2="568.5" y2="263.0" stroke-width="2" stroke-linecap="round"/><circle class="good" cx="568.5" cy="263.0" r="6"/><text x="803" y="267.0" text-anchor="end">-7% (-7% to -7%)</text><text class="good-text strong" x="819" y="267.0">Lower</text></g>
+<g><title>Requests: -42% (-42% to -42%)</title><rect x="24" y="278.0" width="830" height="30" fill="transparent"/><text class="strong" x="24" y="297.0">Requests</text><line class="good" x1="238.9" y1="293.0" x2="238.9" y2="293.0" stroke-width="2" stroke-linecap="round"/><circle class="good" cx="238.9" cy="293.0" r="6"/><text x="803" y="297.0" text-anchor="end">-42% (-42% to -42%)</text><text class="good-text strong" x="819" y="297.0">Lower</text></g>
+<text class="heading" x="24" y="380">By task</text>
+<text class="secondary" x="24" y="398">Each cell is the change in the task's median. A cell is colored only when every repetition of the candidate was lower (green) or</text>
+<text class="secondary" x="24" y="416">higher (red) than every repetition of the base; hover a cell for the values.</text>
+<text class="strong" x="292" y="450" text-anchor="end">Passed</text>
+<text class="strong" x="402" y="450" text-anchor="end">Cost</text>
+<text class="strong" x="512" y="450" text-anchor="end">Time</text>
+<text class="strong" x="622" y="450" text-anchor="end">Input tokens</text>
+<text class="strong" x="732" y="450" text-anchor="end">Output tokens</text>
+<text class="strong" x="842" y="450" text-anchor="end">Requests</text>
+<line class="grid" x1="24" y1="460" x2="854" y2="460"/><text x="24" y="479">oberon-control-flow</text>
+<g><title>oberon-control-flow, passed: shell-control 1/1; shell-files 1/1</title><rect x="194" y="460" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="479" text-anchor="end">1/1</text></g>
+<g><title>oberon-control-flow, cost: shell-control $0.1355; shell-files $0.1208</title><rect x="304" y="460" width="110" height="30" fill="transparent"/><rect class="good tint" x="308" y="463" width="102" height="24" rx="4"/><text class="strong" x="402" y="479" text-anchor="end">-11%</text></g>
+<g><title>oberon-control-flow, time: shell-control 499; shell-files 337</title><rect x="414" y="460" width="110" height="30" fill="transparent"/><rect class="good tint" x="418" y="463" width="102" height="24" rx="4"/><text class="strong" x="512" y="479" text-anchor="end">-32%</text></g>
+<g><title>oberon-control-flow, input tokens: shell-control 7022319; shell-files 4181565</title><rect x="524" y="460" width="110" height="30" fill="transparent"/><rect class="good tint" x="528" y="463" width="102" height="24" rx="4"/><text class="strong" x="622" y="479" text-anchor="end">-40%</text></g>
+<g><title>oberon-control-flow, output tokens: shell-control 59707; shell-files 63588</title><rect x="634" y="460" width="110" height="30" fill="transparent"/><rect class="bad tint" x="638" y="463" width="102" height="24" rx="4"/><text class="strong" x="732" y="479" text-anchor="end">+7%</text></g>
+<g><title>oberon-control-flow, requests: shell-control 90; shell-files 56</title><rect x="744" y="460" width="110" height="30" fill="transparent"/><rect class="good tint" x="748" y="463" width="102" height="24" rx="4"/><text class="strong" x="842" y="479" text-anchor="end">-38%</text></g>
+<line class="grid" x1="24" y1="490" x2="854" y2="490"/><text x="24" y="509">oberon-strings</text>
+<g><title>oberon-strings, passed: shell-control 1/1; shell-files 1/1</title><rect x="194" y="490" width="110" height="30" fill="transparent"/><text class="muted" x="292" y="509" text-anchor="end">1/1</text></g>
+<g><title>oberon-strings, cost: shell-control $0.3266; shell-files $0.2119</title><rect x="304" y="490" width="110" height="30" fill="transparent"/><rect class="good tint" x="308" y="493" width="102" height="24" rx="4"/><text class="strong" x="402" y="509" text-anchor="end">-35%</text></g>
+<g><title>oberon-strings, time: shell-control 756; shell-files 533</title><rect x="414" y="490" width="110" height="30" fill="transparent"/><rect class="good tint" x="418" y="493" width="102" height="24" rx="4"/><text class="strong" x="512" y="509" text-anchor="end">-29%</text></g>
+<g><title>oberon-strings, input tokens: shell-control 25788746; shell-files 11691076</title><rect x="524" y="490" width="110" height="30" fill="transparent"/><rect class="good tint" x="528" y="493" width="102" height="24" rx="4"/><text class="strong" x="622" y="509" text-anchor="end">-55%</text></g>
+<g><title>oberon-strings, output tokens: shell-control 103727; shell-files 84146</title><rect x="634" y="490" width="110" height="30" fill="transparent"/><rect class="good tint" x="638" y="493" width="102" height="24" rx="4"/><text class="strong" x="732" y="509" text-anchor="end">-19%</text></g>
+<g><title>oberon-strings, requests: shell-control 162; shell-files 89</title><rect x="744" y="490" width="110" height="30" fill="transparent"/><rect class="good tint" x="748" y="493" width="102" height="24" rx="4"/><text class="strong" x="842" y="509" text-anchor="end">-45%</text></g>
+</svg>

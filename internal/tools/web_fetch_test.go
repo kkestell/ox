@@ -63,7 +63,7 @@ func TestWebFetchPreservesTextAndDecodesHTMLCharset(t *testing.T) {
 	}
 }
 
-func TestWebFetchSavesLargePagesForReadFile(t *testing.T) {
+func TestWebFetchSavesLargePagesForShell(t *testing.T) {
 	for _, body := range []string{strings.Repeat("雪", outputLimit), strings.Repeat("paragraph\n", 900)} {
 		tools := toolbox(t)
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -85,8 +85,8 @@ func TestWebFetchSavesLargePagesForReadFile(t *testing.T) {
 			if err != nil || string(data) != strings.TrimSpace(body)+"\n" {
 				t.Fatalf("saved page: %d bytes, %v", len(data), err)
 			}
-			read := tools.call(ReadFile, object{"path": path, "limit": 1})
-			if read.Status != transcript.ToolCompleted || !strings.HasPrefix(read.Text, "1: ") {
+			read := tools.call(Shell, object{"command": "python3 -c 'from pathlib import Path; print(Path(\"" + path + "\").read_text()[:100])'"})
+			if read.Status != transcript.ToolCompleted || !strings.Contains(read.Text, string([]rune(strings.TrimSpace(body))[:10])) {
 				t.Fatalf("could not read saved page: %+v", read)
 			}
 		}
