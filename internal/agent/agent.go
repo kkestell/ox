@@ -15,7 +15,7 @@ import (
 
 	"ox/internal/catalog"
 	"ox/internal/mcpclient"
-	"ox/internal/openrouter"
+	"ox/internal/provider"
 	"ox/internal/settings"
 	"ox/internal/shellproc"
 	"ox/internal/store"
@@ -128,11 +128,12 @@ var ErrCancelled = errors.New("the prompt was cancelled")
 // does not accept images.
 var ErrImagesUnsupported = errors.New("the selected model does not accept images; choose a model that accepts images")
 
-// Agent runs turns against a session store and OpenRouter.
+// Agent runs turns against a session store and the model providers.
 type Agent struct {
-	Store      *store.Store
-	OpenRouter *openrouter.Client
-	Catalog    catalog.Catalog
+	Store *store.Store
+	// Providers holds a provider for each provider name in the catalog.
+	Providers map[string]provider.Provider
+	Catalog   catalog.Catalog
 	// Hooks run during every turn, in Ask and Auto mode alike, without
 	// approval: they come from the user's own global settings.
 	Hooks settings.Hooks
@@ -143,8 +144,8 @@ type Agent struct {
 }
 
 // New returns an agent with the standard retry delays.
-func New(s *store.Store, client *openrouter.Client, cat catalog.Catalog) *Agent {
-	return &Agent{Store: s, OpenRouter: client, Catalog: cat, RetryDelays: [2]time.Duration{2 * time.Second, 8 * time.Second}}
+func New(s *store.Store, providers map[string]provider.Provider, cat catalog.Catalog) *Agent {
+	return &Agent{Store: s, Providers: providers, Catalog: cat, RetryDelays: [2]time.Duration{2 * time.Second, 8 * time.Second}}
 }
 
 // Input is what starts a turn.
@@ -181,7 +182,7 @@ type Result struct {
 }
 
 // Tokens counts the tokens of model requests. Input includes Cached, and
-// Output includes Reasoning, as OpenRouter reports them.
+// Output includes Reasoning, as the providers report them.
 type Tokens struct {
 	Input, Cached, Output, Reasoning uint64
 }
@@ -197,13 +198,15 @@ func (t *Tokens) add(usage *transcript.Usage) {
 
 // Turn is one turn whose turn start is saved.
 type Turn struct {
-	agent   *Agent
-	client  Client
-	request openrouter.Request
-	summary store.Summary
-	toolbox *tools.Toolbox
-	info    *SessionInfo
-	tokens  Tokens
+	agent *Agent
+	// provider serves every model request of the turn.
+	provider provider.Provider
+	client   Client
+	request  provider.Request
+	summary  store.Summary
+	toolbox  *tools.Toolbox
+	info     *SessionInfo
+	tokens   Tokens
 }
 
 // ModelSelection returns the catalog model for a session's selections,
@@ -233,10 +236,12 @@ func (a *Agent) Start(ctx context.Context, in Input, client Client) (*Turn, erro
 	}
 	toolbox := &tools.Toolbox{Workspace: session.Summary.Workspace, Processes: in.Processes, MCP: in.MCP}
 	t := &Turn{
-		agent:  a,
-		client: client,
-		request: openrouter.Request{
+		agent:    a,
+		provider: a.Providers[model.Provider],
+		client:   client,
+		request: provider.Request{
 			Model: model, Effort: in.Effort, SystemPrompt: in.SystemPrompt, Tools: toolbox.Schemas(), Transcript: session.Transcript,
+			SessionID: in.SessionID,
 		},
 		summary: session.Summary,
 		toolbox: toolbox,
@@ -274,7 +279,7 @@ func (f *failure) Error() string { return f.reason + ": " + f.err.Error() }
 func (f *failure) Unwrap() error { return f.err }
 
 func modelFailure(err error) error {
-	if errors.Is(err, openrouter.ErrContextOverflow) {
+	if errors.Is(err, provider.ErrContextOverflow) {
 		err = errors.New("the session exceeds the model context limit; start a new session")
 	}
 	return &failure{"the model request failed", err}
@@ -337,11 +342,11 @@ func (t *Turn) loop(ctx context.Context) (Result, error) {
 			return Result{}, updateFailure(err)
 		}
 		switch completion.Stop {
-		case openrouter.StopFinished:
+		case provider.StopFinished:
 			return Result{Stop: EndTurn, Answer: completion.Message.Text}, nil
-		case openrouter.StopTokenLimit:
+		case provider.StopTokenLimit:
 			return Result{Stop: MaxTokens}, nil
-		case openrouter.StopRefused:
+		case provider.StopRefused:
 			return Result{Stop: Refusal}, nil
 		}
 	}
@@ -407,9 +412,9 @@ func (t *Turn) summarize(ctx context.Context) (*transcript.Compaction, error) {
 	}
 	var reason string
 	switch {
-	case completion.Stop == openrouter.StopTokenLimit:
+	case completion.Stop == provider.StopTokenLimit:
 		reason = "the summary reached the output token limit"
-	case completion.Stop == openrouter.StopRefused:
+	case completion.Stop == provider.StopRefused:
 		reason = "the model refused to write a summary"
 	case strings.TrimSpace(completion.Message.Text) == "":
 		reason = "the model returned an empty summary"
@@ -427,11 +432,11 @@ func (t *Turn) summarize(ctx context.Context) (*transcript.Compaction, error) {
 
 // requestWithRetries makes one model request, retrying a temporary failure.
 // Provisional output of a failed attempt stays on screen.
-func (t *Turn) requestWithRetries(ctx context.Context, request openrouter.Request, forward bool) (*openrouter.Completion, error) {
+func (t *Turn) requestWithRetries(ctx context.Context, request provider.Request, forward bool) (*provider.Completion, error) {
 	for attempt := 1; ; attempt++ {
 		completion, err := t.complete(ctx, request, forward)
 		var f *failure
-		if attempt == modelRequestAttempts || !errors.As(err, &f) || !openrouter.IsTemporary(f.err) {
+		if attempt == modelRequestAttempts || !errors.As(err, &f) || !provider.IsTemporary(f.err) {
 			return completion, err
 		}
 		select {
@@ -444,8 +449,8 @@ func (t *Turn) requestWithRetries(ctx context.Context, request openrouter.Reques
 
 // complete makes one model request, forwards provisional output when forward
 // is set, and returns the validated completion.
-func (t *Turn) complete(ctx context.Context, request openrouter.Request, forward bool) (*openrouter.Completion, error) {
-	stream, err := t.agent.OpenRouter.Stream(ctx, request)
+func (t *Turn) complete(ctx context.Context, request provider.Request, forward bool) (*provider.Completion, error) {
+	stream, err := t.provider.Stream(ctx, request)
 	if ctx.Err() != nil {
 		return nil, ErrCancelled
 	}

@@ -72,6 +72,11 @@ func Load(path string, cat catalog.Catalog) (Settings, error) {
 		return Settings{}, err
 	}
 	settings := Settings{Model: builtInModel, Effort: catalog.EffortDefault, Mode: transcript.ModeAsk}
+	// Without OpenRouter, whose models come first, the built-in model is
+	// missing; use the first model.
+	if len(cat) > 0 && cat[0].Provider != catalog.OpenRouter {
+		settings.Model = cat[0].QualifiedID()
+	}
 	if present {
 		if err := settings.apply(path, f); err != nil {
 			return Settings{}, err
@@ -83,7 +88,10 @@ func Load(path string, cat catalog.Catalog) (Settings, error) {
 	for _, id := range slices.Sorted(maps.Keys(f.models)) {
 		model := cat.Lookup(id)
 		if model == nil {
-			return Settings{}, invalid(path, "model %s in models is not in the OpenRouter model catalog", id)
+			return Settings{}, invalid(path, "model %s in models is not in the model catalog", id)
+		}
+		if model.Provider != catalog.OpenRouter {
+			return Settings{}, invalid(path, "model %s in models is not an OpenRouter model; only OpenRouter models accept providers", id)
 		}
 		providers := f.models[id].Providers
 		if len(providers) == 0 {

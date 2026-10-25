@@ -10,7 +10,17 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+
+	"ox/internal/acp"
+	"ox/internal/agent"
+	"ox/internal/catalog"
 	"ox/internal/mcptest"
+	fake "ox/internal/openroutertest"
+	"ox/internal/provider"
+	"ox/internal/server"
+	"ox/internal/settings"
+	"ox/internal/store"
+	"ox/internal/transcript"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -18,15 +28,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"ox/internal/acp"
-	"ox/internal/agent"
-	"ox/internal/catalog"
-	fake "ox/internal/openroutertest"
-	"ox/internal/server"
-	"ox/internal/settings"
-	"ox/internal/store"
-	"ox/internal/transcript"
 )
 
 type object = map[string]any
@@ -62,7 +63,7 @@ func connect(t *testing.T, replies ...fake.Reply) *client {
 func connectWithStore(t *testing.T, sessions *store.Store, replies ...fake.Reply) *client {
 	t.Helper()
 	openrouter := fake.Start(t, replies...)
-	a := &agent.Agent{Store: sessions, OpenRouter: openrouter.Client(), Catalog: fake.ParsedCatalog()}
+	a := &agent.Agent{Store: sessions, Providers: map[string]provider.Provider{catalog.OpenRouter: openrouter.Client()}, Catalog: fake.ParsedCatalog()}
 	home := t.TempDir()
 	skill := filepath.Join(home, ".config/ox/skills/tally")
 	os.MkdirAll(skill, 0o777)

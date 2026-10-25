@@ -312,17 +312,16 @@ func settingsSummary(options []protocol.SessionConfigOption) string {
 	return strings.Join(names, " • ")
 }
 
-// usageSummary is the status line's right side: the context used and the
-// session cost.
+// usageSummary is the status line's right side: the context used and, when
+// the session has one, its cost. A subscription session has none.
 func usageSummary(usage *protocol.SessionUsageUpdate) string {
-	percent, cost := 0.0, 0.0
-	if usage != nil {
-		if usage.Size != 0 {
-			percent = math.Round(float64(usage.Used) * 100 / float64(usage.Size))
-		}
-		if usage.Cost != nil {
-			cost = usage.Cost.Amount
-		}
+	percent := 0.0
+	if usage != nil && usage.Size != 0 {
+		percent = math.Round(float64(usage.Used) * 100 / float64(usage.Size))
 	}
-	return strconv.FormatFloat(percent, 'f', -1, 64) + "% • $" + strconv.FormatFloat(cost, 'f', 2, 64)
+	summary := strconv.FormatFloat(percent, 'f', -1, 64) + "%"
+	if usage != nil && usage.Cost != nil {
+		summary += " • $" + strconv.FormatFloat(usage.Cost.Amount, 'f', 2, 64)
+	}
+	return summary
 }

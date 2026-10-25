@@ -1,25 +1,14 @@
 package openrouter
 
 import (
-	"encoding/json"
-
 	"ox/internal/catalog"
+	"ox/internal/provider"
 	"ox/internal/transcript"
 )
 
-// Request is one model request: the model, effort, system prompt, tool
-// definitions, and the saved transcript, whose request entries are sent.
-type Request struct {
-	Model        *catalog.Model
-	Effort       catalog.Effort
-	SystemPrompt string
-	Tools        []json.RawMessage
-	Transcript   []transcript.Entry
-}
-
 // body is the chat-completions request body.
-func (r Request) body() map[string]any {
-	messages := append([]any{map[string]any{"role": "system", "content": r.SystemPrompt}}, chatMessages(r.Transcript)...)
+func body(r provider.Request) map[string]any {
+	messages := append([]any{map[string]any{"role": "system", "content": r.SystemPrompt}}, chatMessages(r.Transcript, r.Model.QualifiedID())...)
 	body := map[string]any{
 		"model":    r.Model.ID,
 		"messages": messages,
@@ -38,13 +27,17 @@ func (r Request) body() map[string]any {
 	return body
 }
 
-// chatMessages encodes the transcript's request entries as chat messages.
+// chatMessages encodes the transcript's request entries as chat messages for
+// model, the qualified ID of the requested model. Continuation metadata is
+// sent only for turns that used model, since another model cannot read it.
 // Visible reasoning is sent only when no continuation metadata carries it.
-func chatMessages(entries []transcript.Entry) []any {
+func chatMessages(entries []transcript.Entry, model string) []any {
 	var messages []any
+	var turnModel string
 	for _, entry := range transcript.RequestEntries(entries) {
 		switch entry := entry.(type) {
 		case *transcript.TurnStart:
+			turnModel = entry.Model
 			messages = append(messages, map[string]any{"role": "user", "content": userContent(entry.Input.ModelMessage())})
 		case *transcript.Compaction:
 			messages = append(messages, map[string]any{"role": "user", "content": userContent(entry.Message())})
@@ -65,7 +58,7 @@ func chatMessages(entries []transcript.Entry) []any {
 				}
 				assistant["tool_calls"] = calls
 			}
-			if len(message.ContinuationMetadata) > 0 {
+			if len(message.ContinuationMetadata) > 0 && turnModel == model {
 				assistant["reasoning_details"] = message.ContinuationMetadata
 			} else if message.Reasoning != "" {
 				assistant["reasoning"] = message.Reasoning

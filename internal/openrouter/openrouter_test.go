@@ -15,13 +15,14 @@ import (
 	"ox/internal/catalog"
 	"ox/internal/openrouter"
 	"ox/internal/openroutertest"
+	"ox/internal/provider"
 	"ox/internal/transcript"
 )
 
 type object = map[string]any
 
-func request(model *catalog.Model, effort catalog.Effort, entries ...transcript.Entry) openrouter.Request {
-	return openrouter.Request{Model: model, Effort: effort, SystemPrompt: "You are Ox.", Transcript: entries}
+func request(model *catalog.Model, effort catalog.Effort, entries ...transcript.Entry) provider.Request {
+	return provider.Request{Model: model, Effort: effort, SystemPrompt: "You are Ox.", Transcript: entries}
 }
 
 func userTurn(text string) *transcript.TurnStart {
@@ -35,14 +36,14 @@ func defaultModel() *catalog.Model {
 }
 
 // drain reads a stream to its completion.
-func drain(t *testing.T, server *openroutertest.Server) ([]openrouter.Item, error) {
+func drain(t *testing.T, server *openroutertest.Server) ([]provider.Item, error) {
 	t.Helper()
 	stream, err := server.Client().Stream(context.Background(), request(defaultModel(), catalog.EffortDefault, userTurn("hi")))
 	if err != nil {
 		return nil, err
 	}
 	defer stream.Close()
-	var items []openrouter.Item
+	var items []provider.Item
 	for {
 		item, err := stream.Next()
 		if err != nil {
@@ -55,7 +56,7 @@ func drain(t *testing.T, server *openroutertest.Server) ([]openrouter.Item, erro
 	}
 }
 
-func complete(t *testing.T, chunks ...map[string]any) (*openrouter.Completion, error) {
+func complete(t *testing.T, chunks ...map[string]any) (*provider.Completion, error) {
 	t.Helper()
 	items, err := drain(t, openroutertest.Start(t, openroutertest.Chunks(chunks...)))
 	if err != nil {
@@ -74,8 +75,8 @@ func TestCatalogKeepsRecentUsableModelsByNameWithKnownEfforts(t *testing.T) {
 	if !reflect.DeepEqual(ids, want) {
 		t.Fatalf("ids = %v", ids)
 	}
-	if models[0].InputPrice != 0.03 || models[0].OutputPrice != 0.6 {
-		t.Errorf("prices are USD per million tokens: %v %v", models[0].InputPrice, models[0].OutputPrice)
+	if *models[0].InputPrice != 0.03 || *models[0].OutputPrice != 0.6 {
+		t.Errorf("prices are USD per million tokens: %v %v", *models[0].InputPrice, *models[0].OutputPrice)
 	}
 	wantEfforts := []catalog.Effort{"default", "low", "medium", "high", "xhigh", "max"}
 	if !reflect.DeepEqual(models[1].Efforts, wantEfforts) || !models[1].AcceptsImages || models[0].AcceptsImages {
@@ -108,13 +109,15 @@ func TestCatalogKeepsRecentUsableModelsByNameWithKnownEfforts(t *testing.T) {
 }
 
 func TestRequestsGroupMessagesAndSendContinuationMetadata(t *testing.T) {
-	server := openroutertest.Start(t, openroutertest.Text("Both sunny."))
+	server := openroutertest.Start(t, openroutertest.Text("Both sunny."), openroutertest.Text("Both sunny."))
 	details := []json.RawMessage{json.RawMessage(`{"data":"opaque","format":"openai-responses-v1","id":"rs_1","index":0,"type":"reasoning.encrypted"}`)}
 	raw := ` { "command": "printf Chicago" } `
 	model := openroutertest.ParsedCatalog().Lookup("openrouter:z-ai/glm-5.3-flash")
 	model.Providers = []string{"deepseek", "deepinfra/turbo"}
+	start := userTurn("Weather in Chicago and Denver?")
+	start.Model = model.QualifiedID()
 	entries := []transcript.Entry{
-		userTurn("Weather in Chicago and Denver?"),
+		start,
 		&transcript.AssistantBatch{
 			Message: transcript.AssistantMessage{
 				Reasoning: "Need both cities.",
@@ -158,6 +161,18 @@ func TestRequestsGroupMessagesAndSendContinuationMetadata(t *testing.T) {
 	if !reflect.DeepEqual(messages, want) {
 		got, _ := json.MarshalIndent(messages, "", " ")
 		t.Errorf("messages = %s", got)
+	}
+
+	// Another model receives the visible reasoning instead of metadata it
+	// cannot read.
+	stream, err = server.Client().Stream(context.Background(), request(defaultModel(), catalog.EffortDefault, entries...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream.Close()
+	assistant := server.Bodies()[1]["messages"].([]any)[2].(object)
+	if _, found := assistant["reasoning_details"]; found || assistant["reasoning"] != "Need both cities." {
+		t.Errorf("other model's assistant message = %v", assistant)
 	}
 }
 
@@ -263,7 +278,7 @@ func TestStreamsAssembleTextReasoningAndFragmentedToolCalls(t *testing.T) {
 		},
 		Usage: &transcript.Usage{InputTokens: 12, CachedTokens: 8, OutputTokens: 34, ReasoningTokens: 20, Cost: &cost},
 	}
-	if completion.Stop != openrouter.StopToolCalls || !reflect.DeepEqual(completion.Message, want) {
+	if completion.Stop != provider.StopToolCalls || !reflect.DeepEqual(completion.Message, want) {
 		got, _ := json.MarshalIndent(completion.Message, "", " ")
 		t.Errorf("stop %v, message %s", completion.Stop, got)
 	}
@@ -333,12 +348,12 @@ func TestFinishReasonsAreClassifiedOrRejected(t *testing.T) {
 	for _, test := range []struct {
 		delta  object
 		reason string
-		stop   openrouter.Stop
+		stop   provider.Stop
 		ok     bool
 	}{
-		{object{"content": "Done."}, "stop", openrouter.StopFinished, true},
-		{object{"content": "Cut"}, "length", openrouter.StopTokenLimit, true},
-		{object{}, "content_filter", openrouter.StopRefused, true},
+		{object{"content": "Done."}, "stop", provider.StopFinished, true},
+		{object{"content": "Cut"}, "length", provider.StopTokenLimit, true},
+		{object{}, "content_filter", provider.StopRefused, true},
 		{object{}, "tool_calls", 0, false},
 		{call, "length", 0, false},
 		{object{}, "weird", 0, false},
@@ -372,17 +387,17 @@ func TestIncompleteOrMalformedStreamsAndFailedStatusesAreErrors(t *testing.T) {
 		t.Error("a malformed chunk was accepted")
 	}
 	_, err := drain(t, openroutertest.Start(t, openroutertest.Status(429, `{"error":"slow down"}`)))
-	if err == nil || !strings.Contains(err.Error(), "429") || !openrouter.IsTemporary(err) {
+	if err == nil || !strings.Contains(err.Error(), "429") || !provider.IsTemporary(err) {
 		t.Errorf("429: %v", err)
 	}
 	_, err = drain(t, openroutertest.Start(t, openroutertest.Status(401,
 		`{"error":{"message":"Provider returned error","code":401,"metadata":{"provider_name":"Meta"}}}`)))
-	if err == nil || openrouter.IsTemporary(err) ||
+	if err == nil || provider.IsTemporary(err) ||
 		!strings.HasPrefix(err.Error(), "Meta, the provider OpenRouter routed this request to, returned 401 Unauthorized") {
 		t.Errorf("401: %v", err)
 	}
 	_, err = drain(t, openroutertest.Start(t, openroutertest.Status(400, `{"error":{"message":"prompt tokens exceed the maximum context length"}}`)))
-	if !errors.Is(err, openrouter.ErrContextOverflow) {
+	if !errors.Is(err, provider.ErrContextOverflow) {
 		t.Errorf("overflow: %v", err)
 	}
 }
@@ -397,7 +412,7 @@ func TestAStreamWithoutDataStallsAsATemporaryFailure(t *testing.T) {
 	}
 	defer stream.Close()
 	_, err = stream.Next()
-	if err == nil || !openrouter.IsTemporary(err) || !strings.Contains(err.Error(), "no response data") {
+	if err == nil || !provider.IsTemporary(err) || !strings.Contains(err.Error(), "no response data") {
 		t.Errorf("stall: %v", err)
 	}
 }

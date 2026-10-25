@@ -17,6 +17,7 @@ import (
 	"ox/internal/agent"
 	"ox/internal/catalog"
 	"ox/internal/openroutertest"
+	"ox/internal/provider"
 	"ox/internal/server"
 	"ox/internal/settings"
 	"ox/internal/store"
@@ -32,7 +33,7 @@ func start(t *testing.T, replies ...openroutertest.Reply) (*Conn, *Session) {
 		t.Fatal(err)
 	}
 	openrouter := openroutertest.Start(t, replies...)
-	a := &agent.Agent{Store: sessions, OpenRouter: openrouter.Client(), Catalog: openroutertest.ParsedCatalog()}
+	a := &agent.Agent{Store: sessions, Providers: map[string]provider.Provider{catalog.OpenRouter: openrouter.Client()}, Catalog: openroutertest.ParsedCatalog()}
 	serverIn, clientOut := io.Pipe()
 	clientIn, serverOut := io.Pipe()
 	rpc := acp.NewConn(serverOut)

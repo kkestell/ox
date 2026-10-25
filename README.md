@@ -15,10 +15,12 @@ extract `ox` and `ox-server` into a directory on your `PATH`, such as
 tar -xzf ox-*.tar.gz -C ~/.local/bin
 ```
 
-Save your OpenRouter API key to the system keychain:
+Save your OpenRouter API key to the system keychain, sign in with your ChatGPT
+account to use OpenAI models on your Codex subscription, or both:
 
 ```sh
 ox auth login openrouter
+ox auth login openai
 ```
 
 Run the Ox TUI:
@@ -63,25 +65,34 @@ Put options before the prompt. Use `--` before a prompt beginning with `-`.
 
 Runs one noninteractive prompt and prints the final answer. `--dir` selects the
 workspace and defaults to the current directory. `--model` accepts a qualified
-model ID such as `openrouter:deepseek/deepseek-v4.1-flash` and overrides the
-configured model. `--effort` defaults to `default` and accepts `default`,
-`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; the selected
-model must support it. Headless runs use `auto` mode.
+model ID such as `openrouter:deepseek/deepseek-v4.1-flash` or
+`openai:gpt-5.6-luna` and overrides the configured model. `--effort` defaults to
+`default` and accepts `default`, `none`, `minimal`, `low`, `medium`, `high`,
+`xhigh`, or `max`; the selected model must support it. Headless runs use `auto`
+mode.
 
 ### `ox auth`
 
 ```text
 ox auth login openrouter
 ox auth logout openrouter
+ox auth login openai
+ox auth logout openai
 ```
 
 OpenRouter login verifies an API key and saves it in the system keyring; logout
 removes that key. Login reads the key from the terminal without echoing it, or
 as one line of standard input. `OPENROUTER_API_KEY`, when set, takes precedence
-over the saved key. Login leaves settings unchanged.
+over the saved key.
 
-When the server starts, it loads the OpenRouter model catalog, which requires an
-API key. Restart the server after a login, logout, or other credential change.
+OpenAI login opens the ChatGPT sign-in in your browser and prints its URL. After
+you approve it, Ox saves the sign-in in the system keyring and renews it as it
+expires; logout removes it. OpenAI models use your Codex subscription's usage
+limits and have no per-token cost.
+
+Login leaves settings unchanged. When the server starts, it loads the model
+catalog of each provider you are signed in to, OpenRouter's models first.
+Restart the server after a login, logout, or other credential change.
 
 ### `ox acp`
 
@@ -94,8 +105,8 @@ clients that append authentication commands to the configured server can use
 these aliases:
 
 ```text
-ox acp auth login openrouter
-ox acp auth logout openrouter
+ox acp auth login <provider>
+ox acp auth logout <provider>
 ```
 
 `ox run`, `ox acp`, and `ox auth` run the same commands of `ox-server`, which
@@ -125,9 +136,10 @@ each present workspace value replaces the global value. Both files are optional.
 }
 ```
 
-- `model` is a qualified model ID in the form
-  `openrouter:<openrouter-model-id>`. It defaults to
-  `openrouter:~deepseek/deepseek-flash-latest`.
+- `model` is a qualified model ID in the form `openrouter:<openrouter-model-id>`
+  or `openai:<openai-model-id>`. It defaults to
+  `openrouter:~deepseek/deepseek-flash-latest`, or to the first OpenAI model
+  when you are not signed in to OpenRouter.
 - `effort` is `default`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or
   `max`. It defaults to `default` and must be supported by the selected model.
 - `mode` is `ask` or `auto`. It defaults to `ask`; `ask` requests permission

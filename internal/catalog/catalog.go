@@ -1,5 +1,5 @@
-// Package catalog holds the OpenRouter models Ox can use, their qualified IDs,
-// and the effort levels a model accepts.
+// Package catalog holds the models Ox can use, their qualified IDs, and the
+// effort levels a model accepts.
 package catalog
 
 import (
@@ -7,26 +7,27 @@ import (
 	"strings"
 )
 
-// Provider is the provider prefix of every qualified model ID.
-const Provider = "openrouter"
+// The model providers, each the prefix of its models' qualified IDs.
+const (
+	OpenRouter = "openrouter"
+	OpenAI     = "openai"
+)
 
-// Qualify returns the qualified ID of an OpenRouter model ID.
-func Qualify(id string) string {
-	return Provider + ":" + id
-}
+// Providers lists every model provider.
+var Providers = []string{OpenRouter, OpenAI}
 
-// Split returns the OpenRouter model ID of a qualified ID, which has the form
-// `openrouter:<model-id>`.
-func Split(qualified string) (string, bool) {
+// Split returns the provider and model ID of a qualified ID, which has the
+// form `<provider>:<model-id>`. The model ID may itself contain colons.
+func Split(qualified string) (provider, id string, ok bool) {
 	provider, id, found := strings.Cut(qualified, ":")
-	if !found || provider != Provider || id == "" {
-		return "", false
+	if !found || !slices.Contains(Providers, provider) || id == "" {
+		return "", "", false
 	}
-	return id, true
+	return provider, id, true
 }
 
 // Effort is how much reasoning Ox asks a model to do. EffortDefault leaves the
-// choice to the model; every other level is the OpenRouter effort of the same
+// choice to the model; every other level is the provider's effort of the same
 // ID.
 type Effort string
 
@@ -64,14 +65,16 @@ func (e Effort) Name() string {
 	return strings.ToUpper(string(e[:1])) + string(e[1:])
 }
 
-// Model is one usable OpenRouter model.
+// Model is one usable model.
 type Model struct {
+	Provider     string
 	ID           string
 	Name         string
 	ContextLimit int
-	// InputPrice and OutputPrice are USD per million tokens.
-	InputPrice    float64
-	OutputPrice   float64
+	// InputPrice and OutputPrice are USD per million tokens, or nil when the
+	// provider does not charge per token.
+	InputPrice    *float64
+	OutputPrice   *float64
 	AcceptsImages bool
 	// Efforts is EffortDefault followed by the listed efforts, ascending.
 	Efforts []Effort
@@ -82,7 +85,7 @@ type Model struct {
 
 // QualifiedID returns the model's ID with its provider prefix.
 func (m *Model) QualifiedID() string {
-	return Qualify(m.ID)
+	return m.Provider + ":" + m.ID
 }
 
 // Supports reports whether the model accepts the effort level.
@@ -95,12 +98,12 @@ type Catalog []*Model
 
 // Lookup returns the model with the qualified ID, or nil.
 func (c Catalog) Lookup(qualified string) *Model {
-	id, ok := Split(qualified)
+	provider, id, ok := Split(qualified)
 	if !ok {
 		return nil
 	}
 	for _, model := range c {
-		if model.ID == id {
+		if model.Provider == provider && model.ID == id {
 			return model
 		}
 	}

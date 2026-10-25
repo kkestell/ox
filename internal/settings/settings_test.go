@@ -59,7 +59,7 @@ func TestGlobalSettingsDefaultValidateAndPinProviders(t *testing.T) {
 		{`{"model":"` + model + `","effort":"xhigh"}`, "effort xhigh is not supported"},
 		{`{"model":"` + model + `","effort":"loud"}`, "unknown effort loud"},
 		{`{"model":"` + model + `","mode":"loud"}`, "unknown mode loud"},
-		{`{"model":"` + model + `","models":{"openrouter:a/b":{"providers":["a"]}}}`, "model openrouter:a/b in models is not in the OpenRouter model catalog"},
+		{`{"model":"` + model + `","models":{"openrouter:a/b":{"providers":["a"]}}}`, "model openrouter:a/b in models is not in the model catalog"},
 		{`{"model":"` + model + `","models":{"` + pinned + `":{"providers":[]}}}`, "lists no providers"},
 	} {
 		write(t, path, test.text)
@@ -67,6 +67,21 @@ func TestGlobalSettingsDefaultValidateAndPinProviders(t *testing.T) {
 		if err == nil || !strings.HasPrefix(err.Error(), path+": ") || !strings.Contains(err.Error(), test.want) {
 			t.Errorf("%s: %v", test.text, err)
 		}
+	}
+}
+
+func TestWithoutOpenRouterTheFirstModelIsTheDefaultAndCannotPinProviders(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	cat := catalog.Catalog{
+		{Provider: catalog.OpenAI, ID: "gpt-a", Efforts: []catalog.Effort{catalog.EffortDefault}},
+		{Provider: catalog.OpenAI, ID: "gpt-b", Efforts: []catalog.Effort{catalog.EffortDefault}},
+	}
+	if loaded, err := settings.Load(path, cat); err != nil || loaded.Model != "openai:gpt-a" {
+		t.Errorf("loaded %+v, %v", loaded, err)
+	}
+	write(t, path, `{"models":{"openai:gpt-b":{"providers":["a"]}}}`)
+	if _, err := settings.Load(path, cat); err == nil || !strings.Contains(err.Error(), "openai:gpt-b in models is not an OpenRouter model") {
+		t.Errorf("pinned OpenAI model: %v", err)
 	}
 }
 

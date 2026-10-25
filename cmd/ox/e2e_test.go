@@ -126,7 +126,7 @@ func startTmux(t *testing.T, replies ...openroutertest.Reply) *tmux {
 	write(t, conf, "set -g focus-events on\nset -g extended-keys always\nset -g extended-keys-format csi-u\n")
 	t.Cleanup(func() { x.command("kill-server").Run() })
 	x.call("-f", conf, "new-session", "-d", "-s", "test", "-x", "80", "-y", "24", strings.Join(command, " "))
-	x.wait("0% • $0.00")
+	x.wait("0%")
 	return x
 }
 

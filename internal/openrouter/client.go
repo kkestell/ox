@@ -18,6 +18,7 @@ import (
 	"github.com/tmaxmax/go-sse"
 
 	"ox/internal/catalog"
+	"ox/internal/provider"
 )
 
 const defaultEndpoint = "https://openrouter.ai/api/v1"
@@ -27,22 +28,6 @@ const defaultEndpoint = "https://openrouter.ai/api/v1"
 // keep-alives, do not count, so a provider that holds the request open without
 // answering still stalls.
 const stallTimeout = 120 * time.Second
-
-// ErrContextOverflow means the provider rejected the input as too large for the
-// model context. Every later request in the session fails the same way.
-var ErrContextOverflow = errors.New("the model provider rejected the input as too large for the model context")
-
-// temporaryError is a request failure a later attempt may not repeat: a stall,
-// or an HTTP 429 or 5xx status.
-type temporaryError struct{ message string }
-
-func (e *temporaryError) Error() string { return e.message }
-
-// IsTemporary reports whether retrying the request may succeed.
-func IsTemporary(err error) bool {
-	var temporary *temporaryError
-	return errors.As(err, &temporary)
-}
 
 // Client holds OpenRouter credentials and a reusable connection pool.
 type Client struct {
@@ -115,13 +100,13 @@ func (c *Client) Verify(ctx context.Context) error {
 }
 
 // Stream starts one streamed completion. The caller closes the stream.
-func (c *Client) Stream(ctx context.Context, r Request) (*Stream, error) {
-	body, err := json.Marshal(r.body())
+func (c *Client) Stream(ctx context.Context, r provider.Request) (provider.Stream, error) {
+	body, err := json.Marshal(body(r))
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancelCause(ctx)
-	stalled := &temporaryError{fmt.Sprintf("OpenRouter sent no response data for %v", c.StallTimeout)}
+	stalled := &provider.TemporaryError{Message: fmt.Sprintf("OpenRouter sent no response data for %v", c.StallTimeout)}
 	timer := time.AfterFunc(c.StallTimeout, func() { cancel(stalled) })
 	stream := &Stream{cancel: cancel, timer: timer, stallTimeout: c.StallTimeout, ctx: ctx}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+"/chat/completions", bytes.NewReader(body))
@@ -154,7 +139,7 @@ func statusError(response *http.Response, detail string) error {
 	switch response.StatusCode {
 	case 400, 413, 422:
 		if explicitContextOverflow(detail) {
-			return ErrContextOverflow
+			return provider.ErrContextOverflow
 		}
 	}
 	detail = strings.TrimSpace(detail)
@@ -171,7 +156,7 @@ func statusError(response *http.Response, detail string) error {
 			parsed.Error.Metadata.ProviderName, response.Status, detail)
 	}
 	if response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500 {
-		return &temporaryError{message}
+		return &provider.TemporaryError{Message: message}
 	}
 	return errors.New(message)
 }

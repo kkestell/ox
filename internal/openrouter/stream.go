@@ -14,31 +14,9 @@ import (
 
 	"github.com/tmaxmax/go-sse"
 
+	"ox/internal/provider"
 	"ox/internal/transcript"
 )
-
-// Stop is why a completion ended.
-type Stop int
-
-const (
-	StopFinished Stop = iota
-	StopToolCalls
-	StopTokenLimit
-	StopRefused
-)
-
-// Completion is one validated assistant message and why it ended.
-type Completion struct {
-	Message transcript.AssistantMessage
-	Stop    Stop
-}
-
-// Item is one stream item: a text delta, a reasoning delta, or the completion.
-type Item struct {
-	Text       string
-	Reasoning  string
-	Completion *Completion
-}
 
 // Stream is one streamed response. Closing it stops reading and discards text
 // received before a complete message was validated.
@@ -52,7 +30,7 @@ type Stream struct {
 	stopEvents   func()
 	assembly     *assembly
 	finished     bool
-	items        []Item
+	items        []provider.Item
 	// usage arrives once, in the final chunk.
 	usage *transcript.Usage
 }
@@ -71,14 +49,14 @@ func (s *Stream) Close() {
 
 // Next returns the next delta or the one validated completion. A stream that
 // ends before its completion is an error.
-func (s *Stream) Next() (Item, error) {
+func (s *Stream) Next() (provider.Item, error) {
 	for len(s.items) == 0 {
 		more, err := s.readEvent()
 		if err != nil {
-			return Item{}, err
+			return provider.Item{}, err
 		}
 		if !more {
-			return Item{}, errors.New("OpenRouter stream ended before the response finished")
+			return provider.Item{}, errors.New("OpenRouter stream ended before the response finished")
 		}
 	}
 	if s.items[0].Completion != nil {
@@ -87,7 +65,7 @@ func (s *Stream) Next() (Item, error) {
 		for {
 			more, err := s.readEvent()
 			if err != nil {
-				return Item{}, err
+				return provider.Item{}, err
 			}
 			if !more {
 				break
@@ -197,11 +175,11 @@ func (s *Stream) event(data []byte) error {
 	delta := choice.Delta
 	if delta.Content != nil && *delta.Content != "" {
 		s.assembly.text += *delta.Content
-		s.items = append(s.items, Item{Text: *delta.Content})
+		s.items = append(s.items, provider.Item{Text: *delta.Content})
 	}
 	if delta.Reasoning != nil && *delta.Reasoning != "" {
 		s.assembly.reasoning += *delta.Reasoning
-		s.items = append(s.items, Item{Reasoning: *delta.Reasoning})
+		s.items = append(s.items, provider.Item{Reasoning: *delta.Reasoning})
 	}
 	for _, call := range delta.ToolCalls {
 		s.assembly.toolCall(call)
@@ -217,7 +195,7 @@ func (s *Stream) event(data []byte) error {
 		if err != nil {
 			return err
 		}
-		s.items = append(s.items, Item{Completion: completion})
+		s.items = append(s.items, provider.Item{Completion: completion})
 	}
 	return nil
 }
@@ -291,24 +269,24 @@ func sameOrAbsent(previous, incoming map[string]any, field string) bool {
 	return bytes.Equal(left, right)
 }
 
-func (a *assembly) finish(reason string) (*Completion, error) {
+func (a *assembly) finish(reason string) (*provider.Completion, error) {
 	var calls []transcript.ToolCall
 	for _, index := range slices.Sorted(maps.Keys(a.calls)) {
 		calls = append(calls, *a.calls[index])
 	}
 	hasCalls := len(calls) > 0
-	var stop Stop
+	var stop provider.Stop
 	switch {
 	case reason == "stop" && !hasCalls:
-		stop = StopFinished
+		stop = provider.StopFinished
 	case (reason == "stop" || reason == "tool_calls") && hasCalls:
-		stop = StopToolCalls
+		stop = provider.StopToolCalls
 	case reason == "tool_calls":
 		return nil, errors.New("finish reason tool_calls without any tool call")
 	case reason == "length" && !hasCalls:
-		stop = StopTokenLimit
+		stop = provider.StopTokenLimit
 	case reason == "content_filter" && !hasCalls:
-		stop = StopRefused
+		stop = provider.StopRefused
 	case reason == "length" || reason == "content_filter":
 		return nil, fmt.Errorf("finish reason %s with tool calls is not supported", reason)
 	case reason == "error":
@@ -327,5 +305,5 @@ func (a *assembly) finish(reason string) (*Completion, error) {
 	if err := message.Validate(); err != nil {
 		return nil, fmt.Errorf("incomplete tool call in model response: %w", err)
 	}
-	return &Completion{Message: message, Stop: stop}, nil
+	return &provider.Completion{Message: message, Stop: stop}, nil
 }

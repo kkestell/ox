@@ -176,7 +176,7 @@ func configOptions() []protocol.SessionConfigOption {
 	for _, model := range catalog {
 		modelChoices = append(modelChoices, protocol.SessionConfigSelectOption{
 			Value: protocol.SessionConfigValueId(model.QualifiedID()), Name: model.Name,
-			Meta: map[string]any{"contextLimit": model.ContextLimit, "inputPrice": model.InputPrice, "outputPrice": model.OutputPrice, "provider": "OpenRouter"},
+			Meta: map[string]any{"contextLimit": model.ContextLimit, "inputPrice": *model.InputPrice, "outputPrice": *model.OutputPrice, "provider": "OpenRouter"},
 		})
 	}
 	for _, effort := range catalog.Lookup(openroutertest.DefaultModel).Efforts {

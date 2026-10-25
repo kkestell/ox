@@ -25,7 +25,7 @@ const usage = `Usage:
   ox [--dir DIR] [--server SERVER]  Start the terminal client.
   ox run ...                        Run one prompt and print the final answer.
   ox acp ...                        Serve the Ox server over stdin and stdout.
-  ox auth ...                       Sign in to or out of OpenRouter.
+  ox auth ...                       Sign in to or out of OpenRouter or OpenAI.
   ox --version                      Print the version.`
 
 func main() {

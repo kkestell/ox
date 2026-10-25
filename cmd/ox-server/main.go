@@ -1,5 +1,5 @@
 // Command ox-server is the Ox server: an ACP agent over stdin and stdout, a
-// headless prompt runner, and OpenRouter sign-in.
+// headless prompt runner, and OpenRouter and OpenAI sign-in.
 package main
 
 import (
@@ -23,7 +23,9 @@ import (
 	"ox/internal/control"
 	"ox/internal/keyring"
 	"ox/internal/mcpclient"
+	"ox/internal/openai"
 	"ox/internal/openrouter"
+	"ox/internal/provider"
 	"ox/internal/server"
 	"ox/internal/settings"
 	"ox/internal/shellproc"
@@ -39,9 +41,11 @@ const usage = `Usage:
                                     Run one prompt and print the final answer.
   ox-server auth login openrouter   Verify an OpenRouter API key and save it.
   ox-server auth logout openrouter  Remove the saved OpenRouter API key.
+  ox-server auth login openai       Sign in with a ChatGPT account in the browser.
+  ox-server auth logout openai      Remove the saved OpenAI sign-in.
 
 ACP clients that append authentication commands can use
-"acp auth login openrouter" and "acp auth logout openrouter".`
+"acp auth login <provider>" and "acp auth logout <provider>".`
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -70,13 +74,17 @@ func run(args []string) error {
 		if len(args) != 3 || (args[1] != "login" && args[1] != "logout") {
 			return usageError("expected auth login or auth logout with a provider")
 		}
-		if args[2] != catalog.Provider {
-			return fmt.Errorf("%s is not a model provider; choose openrouter", args[2])
-		}
-		if args[1] == "login" {
+		switch {
+		case args[2] == catalog.OpenRouter && args[1] == "login":
 			return login()
+		case args[2] == catalog.OpenRouter:
+			return logout()
+		case args[2] == catalog.OpenAI && args[1] == "login":
+			return openAILogin()
+		case args[2] == catalog.OpenAI:
+			return openAILogout()
 		}
-		return logout()
+		return fmt.Errorf("%s is not a model provider; choose openrouter or openai", args[2])
 	case "run":
 		return runHeadless(args[1:])
 	}
@@ -87,35 +95,55 @@ func usageError(message string) error {
 	return fmt.Errorf("%s\n\n%s", message, usage)
 }
 
-// apiKey returns `OPENROUTER_API_KEY`, which takes precedence, or the saved
-// key.
-func apiKey() (string, error) {
-	if key := os.Getenv("OPENROUTER_API_KEY"); key != "" {
-		return key, nil
-	}
-	key, err := keyring.Get()
-	if err != nil {
-		return "", err
-	}
+// providers returns a provider for each one with credentials and their
+// combined catalog, OpenRouter's models first. `OPENROUTER_API_KEY` takes
+// precedence over the saved OpenRouter key. A keyring failure is an error only
+// when no provider has credentials, so that an environment key works without
+// a keyring.
+func providers(ctx context.Context) (map[string]provider.Provider, catalog.Catalog, error) {
+	providers := map[string]provider.Provider{}
+	key := os.Getenv("OPENROUTER_API_KEY")
+	var keyringErrors []error
 	if key == "" {
-		return "", errors.New("model provider authentication required; run `ox auth login openrouter`")
+		var err error
+		key, err = keyring.Get(keyring.OpenRouter)
+		keyringErrors = append(keyringErrors, err)
 	}
-	return key, nil
+	if key != "" {
+		providers[catalog.OpenRouter] = openrouter.New(key)
+	}
+	saved, err := openai.Saved()
+	keyringErrors = append(keyringErrors, err)
+	if saved {
+		providers[catalog.OpenAI] = openai.New()
+	}
+	if len(providers) == 0 {
+		if err := errors.Join(keyringErrors...); err != nil {
+			return nil, nil, err
+		}
+		return nil, nil, errors.New("model provider authentication required; run `ox auth login openrouter` or `ox auth login openai`")
+	}
+	var cat catalog.Catalog
+	for _, name := range catalog.Providers {
+		if p := providers[name]; p != nil {
+			models, err := p.FetchCatalog(ctx)
+			if err != nil {
+				return nil, nil, err
+			}
+			cat = append(cat, models...)
+		}
+	}
+	return providers, cat, nil
 }
 
 // startup authenticates, fetches the model catalog, and reads the global
 // settings, hooks included, against it.
 func startup(ctx context.Context) (*agent.Agent, settings.Settings, string, error) {
-	key, err := apiKey()
-	if err != nil {
-		return nil, settings.Settings{}, "", err
-	}
 	home, err := settings.Home()
 	if err != nil {
 		return nil, settings.Settings{}, "", err
 	}
-	client := openrouter.New(key)
-	cat, err := client.FetchCatalog(ctx)
+	clients, cat, err := providers(ctx)
 	if err != nil {
 		return nil, settings.Settings{}, "", err
 	}
@@ -135,7 +163,7 @@ func startup(ctx context.Context) (*agent.Agent, settings.Settings, string, erro
 	if err != nil {
 		return nil, settings.Settings{}, "", err
 	}
-	a := agent.New(sessions, client, cat)
+	a := agent.New(sessions, clients, cat)
 	a.Hooks = hooks
 	return a, defaults, home, nil
 }
@@ -314,7 +342,7 @@ func login() error {
 	if err := openrouter.New(key).Verify(context.Background()); err != nil {
 		return err
 	}
-	if err := keyring.Set(key); err != nil {
+	if err := keyring.Set(keyring.OpenRouter, key); err != nil {
 		return err
 	}
 	fmt.Println("OpenRouter API key saved.")
@@ -338,7 +366,7 @@ func readKey() (string, error) {
 }
 
 func logout() error {
-	removed, err := keyring.Delete()
+	removed, err := keyring.Delete(keyring.OpenRouter)
 	if err != nil {
 		return err
 	}
@@ -349,6 +377,29 @@ func logout() error {
 	}
 	if os.Getenv("OPENROUTER_API_KEY") != "" {
 		fmt.Fprintln(os.Stderr, "OPENROUTER_API_KEY is still set and will continue to be used.")
+	}
+	return nil
+}
+
+func openAILogin() error {
+	ctx, stop := signalContext()
+	defer stop()
+	if err := openai.Login(ctx, os.Stderr); err != nil {
+		return err
+	}
+	fmt.Println("OpenAI sign-in saved.")
+	return nil
+}
+
+func openAILogout() error {
+	removed, err := openai.Logout()
+	if err != nil {
+		return err
+	}
+	if removed {
+		fmt.Println("OpenAI sign-in removed.")
+	} else {
+		fmt.Println("No saved OpenAI sign-in.")
 	}
 	return nil
 }

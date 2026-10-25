@@ -108,15 +108,17 @@ func availableCommands(catalog []skills.Skill) protocol.SessionAvailableCommands
 	return update
 }
 
+// providerNames are the display names of the model providers.
+var providerNames = map[string]string{catalog.OpenRouter: "OpenRouter", catalog.OpenAI: "OpenAI"}
+
 func configOptions(cat catalog.Catalog, selected settings.Settings) []protocol.SessionConfigOption {
 	var models, efforts, modes []protocol.SessionConfigSelectOption
 	for _, model := range cat {
-		choice := protocol.SessionConfigSelectOption{Value: protocol.SessionConfigValueId(model.QualifiedID()), Name: model.Name, Meta: map[string]any{
-			"contextLimit": model.ContextLimit,
-			"inputPrice":   model.InputPrice,
-			"outputPrice":  model.OutputPrice,
-			"provider":     "OpenRouter",
-		}}
+		meta := map[string]any{"contextLimit": model.ContextLimit, "provider": providerNames[model.Provider]}
+		if model.InputPrice != nil && model.OutputPrice != nil {
+			meta["inputPrice"], meta["outputPrice"] = *model.InputPrice, *model.OutputPrice
+		}
+		choice := protocol.SessionConfigSelectOption{Value: protocol.SessionConfigValueId(model.QualifiedID()), Name: model.Name, Meta: meta}
 		if model.AcceptsImages {
 			choice.Description = protocol.Ptr("Accepts images")
 		}

@@ -15,8 +15,8 @@ import (
 	"ox/internal/catalog"
 	"ox/internal/mcpclient"
 	"ox/internal/mcptest"
-	"ox/internal/openrouter"
 	fake "ox/internal/openroutertest"
+	"ox/internal/provider"
 	"ox/internal/settings"
 	"ox/internal/shellproc"
 	"ox/internal/store"
@@ -102,7 +102,7 @@ func newFixture(t *testing.T, replies ...fake.Reply) *fixture {
 	}
 	processes := &shellproc.Processes{}
 	t.Cleanup(processes.Shutdown)
-	return &fixture{agent: &Agent{Store: s, OpenRouter: server.Client(), Catalog: fake.ParsedCatalog()},
+	return &fixture{agent: &Agent{Store: s, Providers: map[string]provider.Provider{catalog.OpenRouter: server.Client()}, Catalog: fake.ParsedCatalog()},
 		server: server, session: summary.ID, workspace: workspace, processes: processes}
 }
 
@@ -167,6 +167,42 @@ func TestAnAnswerIsSavedAndReported(t *testing.T) {
 	}
 }
 
+// answering is a provider that answers every request at once.
+type answering struct{ requests []provider.Request }
+
+func (a *answering) FetchCatalog(context.Context) (catalog.Catalog, error) { return nil, nil }
+
+func (a *answering) Stream(_ context.Context, r provider.Request) (provider.Stream, error) {
+	a.requests = append(a.requests, r)
+	return answered{}, nil
+}
+
+type answered struct{}
+
+func (answered) Next() (provider.Item, error) {
+	return provider.Item{Completion: &provider.Completion{Message: transcript.AssistantMessage{Text: "From OpenAI."}, Stop: provider.StopFinished}}, nil
+}
+
+func (answered) Close() {}
+
+func TestATurnUsesTheSelectedModelsProvider(t *testing.T) {
+	f := newFixture(t)
+	openAI := &answering{}
+	f.agent.Providers[catalog.OpenAI] = openAI
+	model := *f.agent.Catalog.Lookup(fake.DefaultModel)
+	model.Provider = catalog.OpenAI
+	f.agent.Catalog = append(f.agent.Catalog, &model)
+	in := f.input("Hi")
+	in.Model = model.QualifiedID()
+	result, err := f.run(t, context.Background(), in, &recorder{mode: transcript.ModeAsk})
+	if err != nil || result.Answer != "From OpenAI." {
+		t.Fatalf("result %+v, %v", result, err)
+	}
+	if len(openAI.requests) != 1 || openAI.requests[0].Model != &model || openAI.requests[0].SessionID != f.session || len(f.server.Bodies()) != 0 {
+		t.Errorf("OpenAI requests = %d, OpenRouter requests = %d", len(openAI.requests), len(f.server.Bodies()))
+	}
+}
+
 func TestCompactionDecisionUsesReportedInputTokens(t *testing.T) {
 	response := func(input uint64) *transcript.AssistantBatch {
 		return &transcript.AssistantBatch{Message: transcript.AssistantMessage{Usage: &transcript.Usage{InputTokens: input}}}
@@ -206,7 +242,7 @@ func TestCompactionDecisionUsesReportedInputTokens(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			turn := &Turn{request: openrouter.Request{Model: &catalog.Model{ContextLimit: test.limit}, Transcript: test.entries}}
+			turn := &Turn{request: provider.Request{Model: &catalog.Model{ContextLimit: test.limit}, Transcript: test.entries}}
 			if got := turn.needsCompaction(); got != test.want {
 				t.Fatalf("needsCompaction() = %v, want %v", got, test.want)
 			}

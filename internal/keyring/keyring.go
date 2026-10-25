@@ -1,4 +1,4 @@
-// Package keyring keeps the OpenRouter API key in the system keyring: the
+// Package keyring keeps Ox's provider credentials in the system keyring: the
 // macOS keychain through `security`, or the Secret Service through
 // `secret-tool` elsewhere.
 package keyring
@@ -12,16 +12,23 @@ import (
 	"strings"
 )
 
+const service = "ox"
+
+// The accounts Ox saves: the OpenRouter API key and the OpenAI sign-in.
 const (
-	service = "ox"
-	account = "OPENROUTER_API_KEY"
+	OpenRouter = "OPENROUTER_API_KEY"
+	OpenAI     = "OPENAI_AUTH"
 )
 
 // macOSNotFound is the exit status `security` returns for a missing item.
 const macOSNotFound = 44
 
-// Get returns the saved key, or "" when none is saved.
-func Get() (string, error) {
+// macOSMaxLine is the longest command line, newline included, that
+// `security -i` reads whole.
+const macOSMaxLine = 4096
+
+// Get returns the account's saved secret, or "" when none is saved.
+func Get(account string) (string, error) {
 	var cmd *exec.Cmd
 	if runtime.GOOS == "darwin" {
 		cmd = exec.Command("security", "find-generic-password", "-s", service, "-a", account, "-w")
@@ -38,18 +45,23 @@ func Get() (string, error) {
 	return strings.TrimRight(string(output), "\n"), nil
 }
 
-// Set saves the key, replacing any saved key.
-func Set(key string) error {
+// Set saves the account's secret, replacing any saved secret.
+func Set(account, secret string) error {
 	var cmd *exec.Cmd
 	if runtime.GOOS == "darwin" {
-		// `security -i` reads the command from stdin, which keeps the key
+		// `security -i` reads the command from stdin, which keeps the secret
 		// out of the process arguments.
-		quoted := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(key)
+		quoted := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(secret)
+		line := fmt.Sprintf("add-generic-password -U -s %s -a %s -w \"%s\"\n", service, account, quoted)
+		// `security -i` silently truncates a longer line.
+		if len(line) > macOSMaxLine {
+			return fmt.Errorf("could not access the system keyring: the %s secret is too long for the macOS keychain command", account)
+		}
 		cmd = exec.Command("security", "-i")
-		cmd.Stdin = strings.NewReader(fmt.Sprintf("add-generic-password -U -s %s -a %s -w \"%s\"\n", service, account, quoted))
+		cmd.Stdin = strings.NewReader(line)
 	} else {
-		cmd = exec.Command("secret-tool", "store", "--label=ox OpenRouter API key", "service", service, "account", account)
-		cmd.Stdin = strings.NewReader(key)
+		cmd = exec.Command("secret-tool", "store", "--label=ox "+account, "service", service, "account", account)
+		cmd.Stdin = strings.NewReader(secret)
 	}
 	if err := cmd.Run(); err != nil {
 		return failure(err)
@@ -57,10 +69,10 @@ func Set(key string) error {
 	return nil
 }
 
-// Delete removes the saved key and reports whether one was saved.
-func Delete() (bool, error) {
+// Delete removes the account's saved secret and reports whether one was saved.
+func Delete(account string) (bool, error) {
 	if runtime.GOOS != "darwin" {
-		saved, err := Get()
+		saved, err := Get(account)
 		if err != nil || saved == "" {
 			return false, err
 		}

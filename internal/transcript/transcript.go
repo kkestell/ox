@@ -100,7 +100,7 @@ func (c *Compaction) Message() UserMessage {
 // Validate rejects a turn start whose model, effort, or mode is not one Ox
 // knows.
 func (t *TurnStart) Validate() error {
-	if _, ok := catalog.Split(t.Model); !ok {
+	if _, _, ok := catalog.Split(t.Model); !ok {
 		return errors.New("turn start model is not a qualified model ID with a known provider")
 	}
 	if _, ok := catalog.ParseEffort(string(t.Effort)); !ok {

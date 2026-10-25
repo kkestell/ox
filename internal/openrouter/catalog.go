@@ -86,11 +86,12 @@ func ParseCatalog(text []byte, now int64) (catalog.Catalog, error) {
 			}
 		}
 		models = append(models, &catalog.Model{
+			Provider:      catalog.OpenRouter,
 			ID:            *listed.ID,
 			Name:          *listed.Name,
 			ContextLimit:  *listed.ContextLength,
-			InputPrice:    prompt * 1_000_000,
-			OutputPrice:   completion * 1_000_000,
+			InputPrice:    new(prompt * 1_000_000),
+			OutputPrice:   new(completion * 1_000_000),
 			AcceptsImages: slices.Contains(architecture.InputModalities, "image"),
 			Efforts:       efforts,
 		})

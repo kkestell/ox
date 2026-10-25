@@ -265,9 +265,9 @@ func TestTheStatusLineShowsSettingsOnTheLeftAndUsageOnTheRight(t *testing.T) {
 	equal(t, settingsSummary(options), "ask • deepseek • high")
 	equal(t, settingsSummary(options[:1]), "deepseek")
 	equal(t, settingsSummary(options[2:3]), "")
-	equal(t, usageSummary(nil), "0% • $0.00")
+	equal(t, usageSummary(nil), "0%")
 	equal(t, usageSummary(&protocol.SessionUsageUpdate{Used: 1200, Size: 8000, Cost: &protocol.Cost{Amount: 0.25, Currency: "USD"}}), "15% • $0.25")
-	equal(t, usageSummary(&protocol.SessionUsageUpdate{Used: 2, Size: 3}), "67% • $0.00")
+	equal(t, usageSummary(&protocol.SessionUsageUpdate{Used: 2, Size: 3}), "67%")
 	s := testScreen(&transcript{}, typed(""), time.Now())
 	s.settings, s.usage = "ask • deepseek • high", "15% • $0.25"
 	rows, cursor, _, buf := render(s, 40, 7)
