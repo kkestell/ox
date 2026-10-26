@@ -2,7 +2,8 @@
 // turn, saves the user message or skill invocation, makes model requests, runs
 // tools in call order and the hooks that follow them, saves each complete
 // assistant batch, compacts the session when its context fills, and returns the
-// answer when the turn finishes and its Stop hooks let it end.
+// answer when the turn finishes, its Stop hooks let it end, and its inbox is
+// empty.
 package agent
 
 import (
@@ -164,6 +165,9 @@ type Input struct {
 	// SessionStart runs the SessionStart hooks before the turn: set for the
 	// session's first turn in this process.
 	SessionStart bool
+	// Inbox takes waiting messages, already formatted for the model. A nil
+	// Inbox delivers nothing.
+	Inbox func() []string
 }
 
 // Stop is why a turn ended without an error.
@@ -209,6 +213,7 @@ type Turn struct {
 	summary  store.Summary
 	toolbox  *tools.Toolbox
 	info     *SessionInfo
+	inbox    func() []string
 	tokens   Tokens
 }
 
@@ -227,7 +232,7 @@ func ModelSelection(cat catalog.Catalog, model string, effort catalog.Effort) (*
 
 // Start reads the session, runs the hooks that precede the turn, and saves the
 // turn start with the selected model and effort, the client's current mode,
-// and the hooks' context before any model request. Nothing is saved when ctx
+// and added context before any model request. Nothing is saved when ctx
 // is already done; the turn then runs as cancelled.
 func (a *Agent) Start(ctx context.Context, in Input, client Client) (*Turn, error) {
 	session, err := a.Store.Read(in.SessionID)
@@ -249,6 +254,7 @@ func (a *Agent) Start(ctx context.Context, in Input, client Client) (*Turn, erro
 		},
 		summary: session.Summary,
 		toolbox: toolbox,
+		inbox:   in.Inbox,
 	}
 	if ctx.Err() != nil {
 		return t, nil
@@ -258,8 +264,9 @@ func (a *Agent) Start(ctx context.Context, in Input, client Client) (*Turn, erro
 		return nil, ErrImagesUnsupported
 	}
 	// The context is saved even if the turn is cancelled meanwhile, since a
-	// hook may hand over text only once.
+	// hook or inbox may hand over text only once.
 	added := t.promptHooks(ctx, in.SessionStart, len(session.Transcript), in.Input)
+	added = append(added, t.messages()...)
 	start := &transcript.TurnStart{Model: model.QualifiedID(), Effort: in.Effort, Mode: t.client.Mode(), Input: in.Input, Context: added}
 	updated, err := a.Store.AppendTurnStart(in.SessionID, start)
 	if err != nil {
@@ -347,11 +354,13 @@ func (t *Turn) loop(ctx context.Context) (Result, error) {
 		if err != nil {
 			return Result{}, err
 		}
-		var blocked []string
+		var added []string
 		if completion.Stop == provider.StopFinished {
-			blocked = t.stop(ctx, stopHookActive)
+			added = t.stop(ctx, stopHookActive)
+			stopHookActive = stopHookActive || len(added) > 0
+			added = append(added, t.messages()...)
 		}
-		if err := t.processBatch(ctx, completion.Message, blocked); err != nil {
+		if err := t.processBatch(ctx, completion.Message, added); err != nil {
 			return Result{}, err
 		}
 		used, cost, _ := transcript.UsageSummary(t.request.Transcript)
@@ -359,10 +368,7 @@ func (t *Turn) loop(ctx context.Context) (Result, error) {
 			return Result{}, updateFailure(err)
 		}
 		switch {
-		case completion.Stop == provider.StopFinished && len(blocked) > 0:
-			// The reasons follow the answer, and the model continues.
-			stopHookActive = true
-		case completion.Stop == provider.StopFinished:
+		case completion.Stop == provider.StopFinished && len(added) == 0:
 			return Result{Stop: EndTurn, Answer: completion.Message.Text}, nil
 		case completion.Stop == provider.StopTokenLimit:
 			return Result{Stop: MaxTokens}, nil
@@ -502,18 +508,25 @@ func (t *Turn) complete(ctx context.Context, request provider.Request, forward b
 	}
 }
 
+func (t *Turn) messages() []string {
+	if t.inbox == nil {
+		return nil
+	}
+	return t.inbox()
+}
+
 // processBatch announces, runs, and saves the tool calls of one validated
-// assistant message, followed by the reasons Stop hooks blocked the stop.
+// assistant message, followed by context added at stop.
 // Every exit gives each call a final outcome and attempts to save the batch,
 // so a stopped turn keeps the effects already observed.
-func (t *Turn) processBatch(ctx context.Context, message transcript.AssistantMessage, blocked []string) error {
+func (t *Turn) processBatch(ctx context.Context, message transcript.AssistantMessage, added []string) error {
 	batch := &transcript.AssistantBatch{Message: message}
 	if err := t.execute(ctx, batch); err != nil {
 		return t.completeInterrupted(batch, err)
 	}
-	if len(blocked) > 0 {
-		batch.Context = append(batch.Context, blocked...)
-		if err := t.client.Send(Context(transcript.ContextMessage(blocked))); err != nil {
+	if len(added) > 0 {
+		batch.Context = append(batch.Context, added...)
+		if err := t.client.Send(Context(transcript.ContextMessage(added))); err != nil {
 			return t.completeInterrupted(batch, updateFailure(err))
 		}
 	}
@@ -557,6 +570,7 @@ func (t *Turn) execute(ctx context.Context, batch *transcript.AssistantBatch) er
 		if err := t.client.Send(ToolFinished{call, outcome}); err != nil {
 			return updateFailure(err)
 		}
+		added = append(added, t.messages()...)
 		if len(added) > 0 {
 			batch.Context = append(batch.Context, added...)
 			if err := t.client.Send(Context(transcript.ContextMessage(added))); err != nil {
