@@ -85,6 +85,9 @@ func (t *team) CreateAgent(ctx context.Context, args tools.CreateAgentArgs) (str
 			return "", fmt.Errorf("unknown effort %s", args.Effort)
 		}
 		selected.Effort = effort
+	} else if model := s.catalog.Lookup(selected.Model); model != nil && !model.Supports(selected.Effort) {
+		// The orchestrator's effort may not exist on the worker's model.
+		selected.Effort = catalog.EffortDefault
 	}
 	model, err := agent.ModelSelection(s.catalog, selected.Model, selected.Effort)
 	if err != nil {
@@ -135,7 +138,7 @@ func (t *team) CreateAgent(ctx context.Context, args tools.CreateAgentArgs) (str
 		return "", err
 	}
 	s.change()
-	return fmt.Sprintf("Worker %s created.\nWorkspace: %s\nBranch: %s", args.Name, workspace, branch), nil
+	return fmt.Sprintf("Worker %s created.\nWorkspace: %s", args.Name, workspace) + branchLine(branch), nil
 }
 
 func workerWorkspace(home, parent string, args tools.CreateAgentArgs) (workspace, branch, root, dir string, err error) {
@@ -273,8 +276,8 @@ func (t *team) ListAgents(ctx context.Context) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		lines = append(lines, fmt.Sprintf("Name: %s\nModel: %s\nEffort: %s\nWorkspace: %s\nBranch: %s\nWorking: %t",
-			member.Name, selected.Model, selected.Effort, member.Workspace, member.Branch, s.ops.working(member.ID)))
+		lines = append(lines, fmt.Sprintf("Name: %s\nModel: %s\nEffort: %s\nWorkspace: %s%s\nWorking: %t",
+			member.Name, selected.Model, selected.Effort, member.Workspace, branchLine(member.Branch), s.ops.working(member.ID)))
 	}
 	return strings.Join(lines, "\n\n"), nil
 }
@@ -398,13 +401,20 @@ func (s *Server) workerPrompt(prompt string, member store.Member) (string, error
 	members = append([]store.Member{{Summary: parent.Summary, Name: "orchestrator"}}, members...)
 	var lines []string
 	for _, member := range members {
-		lines = append(lines, fmt.Sprintf("Name: %s\nWorkspace: %s\nBranch: %s", member.Name, member.Workspace, member.Branch))
+		lines = append(lines, fmt.Sprintf("Name: %s\nWorkspace: %s", member.Name, member.Workspace)+branchLine(member.Branch))
 	}
 	instructions := "Follow the orchestrator's instructions about branches and commits."
 	if member.Branch != "" {
 		instructions = "Commit your work on your branch. The orchestrator merges it from its checkout."
 	}
-	return prompt + fmt.Sprintf("\n\n# Team\n\nYou are worker %s.\nWorkspace: %s\nBranch: %s\n\n%s\nYour final answer is sent to the orchestrator when your turn ends.\nUse send_message to contact team members while you work. Workers cannot create workers.\n\nTeam:\n\n%s", member.Name, member.Workspace, member.Branch, instructions, strings.Join(lines, "\n\n")), nil
+	return prompt + fmt.Sprintf("\n\n# Team\n\nYou are worker %s.\nWorkspace: %s%s\n\n%s\nYour final answer is your report: it is sent to the orchestrator when your turn ends, so never send it with send_message. Use send_message only for questions or news the orchestrator or another member needs before you finish. Workers cannot create workers.\n\nTeam:\n\n%s", member.Name, member.Workspace, branchLine(member.Branch), instructions, strings.Join(lines, "\n\n")), nil
+}
+
+func branchLine(branch string) string {
+	if branch == "" {
+		return ""
+	}
+	return "\nBranch: " + branch
 }
 
 // wake acquires the same operation as an ACP prompt before touching worker

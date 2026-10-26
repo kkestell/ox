@@ -228,7 +228,11 @@ func ModelSelection(cat catalog.Catalog, model string, effort catalog.Effort) (*
 		return nil, fmt.Errorf("session model %s is not in the model catalog", model)
 	}
 	if !selected.Supports(effort) {
-		return nil, fmt.Errorf("session model %s does not accept effort %s", model, effort)
+		var accepted []string
+		for _, effort := range selected.Efforts {
+			accepted = append(accepted, string(effort))
+		}
+		return nil, fmt.Errorf("session model %s does not accept effort %s; it accepts %s", model, effort, strings.Join(accepted, ", "))
 	}
 	return selected, nil
 }

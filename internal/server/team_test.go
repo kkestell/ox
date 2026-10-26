@@ -285,7 +285,7 @@ func TestWorkerDirectoriesSelectionsAndIdleWait(t *testing.T) {
 		{tools.CreateAgentArgs{Name: "no-dir", Message: "Read."}, "dir is required outside a Git checkout"},
 		{tools.CreateAgentArgs{Name: "bad-model", Message: "Read.", Dir: ".", Model: "missing"}, "model missing is not in the model catalog"},
 		{tools.CreateAgentArgs{Name: "bad-effort", Message: "Read.", Dir: ".", Effort: "loud"}, "unknown effort loud"},
-		{tools.CreateAgentArgs{Name: "unsupported", Message: "Read.", Dir: ".", Model: "openrouter:acme/plain"}, "does not accept effort high"},
+		{tools.CreateAgentArgs{Name: "unsupported", Message: "Read.", Dir: ".", Model: "openrouter:acme/plain", Effort: "high"}, "does not accept effort high; it accepts default"},
 	} {
 		if _, err := tm.CreateAgent(ctx, test.args); err == nil || !strings.Contains(err.Error(), test.want) {
 			t.Errorf("creation %+v: %v, want %q", test.args, err, test.want)
@@ -299,8 +299,13 @@ func TestWorkerDirectoriesSelectionsAndIdleWait(t *testing.T) {
 	}
 	for i, dir := range []string{".", root, "~/"} {
 		name := []string{"relative", "absolute", "home"}[i]
-		if _, err := tm.CreateAgent(ctx, tools.CreateAgentArgs{Name: name, Message: "Read.", Dir: dir, Model: "openrouter:acme/plain", Effort: "default"}); err != nil {
+		// The orchestrator's effort, high, falls back to Plain's default.
+		created, err := tm.CreateAgent(ctx, tools.CreateAgentArgs{Name: name, Message: "Read.", Dir: dir, Model: "openrouter:acme/plain"})
+		if err != nil {
 			t.Fatal(err)
+		}
+		if strings.Contains(created, "Branch:") {
+			t.Errorf("a worker without a worktree was given a branch: %q", created)
 		}
 		teamWait(t, tm)
 		member, err := tm.member(name)

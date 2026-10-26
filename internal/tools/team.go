@@ -56,9 +56,9 @@ func (t *Toolbox) teamSchemas() []json.RawMessage {
 		teamSchema(CreateAgent, description, map[string]any{
 			"name":    map[string]any{"type": "string", "pattern": "^[a-z0-9-]+$", "description": "Unique worker name using lowercase letters, digits, and hyphens; not orchestrator."},
 			"message": stringProperty("Work for the worker to do."),
-			"model":   stringProperty("Model from the Ox catalog. Defaults to your model."),
-			"effort":  stringProperty("Reasoning effort. Defaults to your effort."),
-			"dir":     stringProperty("Existing directory instead of a worktree: absolute, ~/ relative to home, or relative to your workspace. Required outside a Git checkout."),
+			"model":   optionalString("Model from the Ox catalog. Omit to use your model."),
+			"effort":  optionalString("Reasoning effort the model accepts. Omit to use your effort, or the model's default when the model does not accept yours."),
+			"dir":     optionalString("Omit for a worker that changes files: Ox creates its Git worktree and branch ox/<name> from your HEAD. Set it only to run the worker in an existing directory instead, such as \".\" for a worker that only reads: absolute, ~/ relative to home, or relative to your workspace. Required outside a Git checkout."),
 		}, []string{"name", "message"}),
 		teamSchema(RemoveAgent, "Cancel a worker, remove its worktree and branch, and delete its session. Merge its branch from your checkout first. Git refuses removal of uncommitted changes or an unmerged branch. A worker using dir leaves that directory in place.", map[string]any{"name": stringProperty("Worker name to remove.")}, []string{"name"}),
 		teamSchema(Wait, "After giving out work, wait for messages or until no worker is working. Return waiting messages. If no messages and no working workers remain, return immediately. Cancellation stops waiting.", map[string]any{}, nil),
@@ -67,6 +67,12 @@ func (t *Toolbox) teamSchemas() []json.RawMessage {
 
 func stringProperty(description string) map[string]any {
 	return map[string]any{"type": "string", "description": description, "minLength": 1}
+}
+
+// optionalString accepts an empty string as omitted, since some models fill in
+// every property.
+func optionalString(description string) map[string]any {
+	return map[string]any{"type": "string", "description": description}
 }
 
 func teamSchema(name, description string, properties map[string]any, required []string) json.RawMessage {
