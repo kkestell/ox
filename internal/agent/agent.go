@@ -75,8 +75,8 @@ type ToolFinished struct {
 	Outcome transcript.ToolOutcome
 }
 
-// HookContext reports the text hooks added to the turn, as the model reads it.
-type HookContext string
+// Context reports text added to the turn, as the model reads it.
+type Context string
 
 // CompactionStarted reports that the session is being compacted. ID names the
 // compaction in its updates.
@@ -103,7 +103,7 @@ func (ReasoningDelta) event()     {}
 func (ToolPending) event()        {}
 func (ToolStarted) event()        {}
 func (ToolFinished) event()       {}
-func (HookContext) event()        {}
+func (Context) event()            {}
 func (CompactionStarted) event()  {}
 func (CompactionFinished) event() {}
 func (Usage) event()              {}
@@ -260,7 +260,7 @@ func (a *Agent) Start(ctx context.Context, in Input, client Client) (*Turn, erro
 	// The context is saved even if the turn is cancelled meanwhile, since a
 	// hook may hand over text only once.
 	added := t.promptHooks(ctx, in.SessionStart, len(session.Transcript), in.Input)
-	start := &transcript.TurnStart{Model: model.QualifiedID(), Effort: in.Effort, Mode: t.client.Mode(), Input: in.Input, HookContext: added}
+	start := &transcript.TurnStart{Model: model.QualifiedID(), Effort: in.Effort, Mode: t.client.Mode(), Input: in.Input, Context: added}
 	updated, err := a.Store.AppendTurnStart(in.SessionID, start)
 	if err != nil {
 		return nil, err
@@ -328,8 +328,8 @@ func (t *Turn) loop(ctx context.Context) (Result, error) {
 	if err := t.client.Send(*t.info); err != nil {
 		return Result{}, updateFailure(err)
 	}
-	if added := t.request.Transcript[len(t.request.Transcript)-1].(*transcript.TurnStart).HookContext; len(added) > 0 {
-		if err := t.client.Send(HookContext(transcript.HookMessage(added))); err != nil {
+	if added := t.request.Transcript[len(t.request.Transcript)-1].(*transcript.TurnStart).Context; len(added) > 0 {
+		if err := t.client.Send(Context(transcript.ContextMessage(added))); err != nil {
 			return Result{}, updateFailure(err)
 		}
 	}
@@ -512,8 +512,8 @@ func (t *Turn) processBatch(ctx context.Context, message transcript.AssistantMes
 		return t.completeInterrupted(batch, err)
 	}
 	if len(blocked) > 0 {
-		batch.HookContext = append(batch.HookContext, blocked...)
-		if err := t.client.Send(HookContext(transcript.HookMessage(blocked))); err != nil {
+		batch.Context = append(batch.Context, blocked...)
+		if err := t.client.Send(Context(transcript.ContextMessage(blocked))); err != nil {
 			return t.completeInterrupted(batch, updateFailure(err))
 		}
 	}
@@ -558,8 +558,8 @@ func (t *Turn) execute(ctx context.Context, batch *transcript.AssistantBatch) er
 			return updateFailure(err)
 		}
 		if len(added) > 0 {
-			batch.HookContext = append(batch.HookContext, added...)
-			if err := t.client.Send(HookContext(transcript.HookMessage(added))); err != nil {
+			batch.Context = append(batch.Context, added...)
+			if err := t.client.Send(Context(transcript.ContextMessage(added))); err != nil {
 				return updateFailure(err)
 			}
 		}

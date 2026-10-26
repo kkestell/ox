@@ -152,8 +152,8 @@ func TestRequestsSendTheTranscriptAsInputItems(t *testing.T) {
 				ToolCalls:            []transcript.ToolCall{{CallID: "call-1", Name: "shell", Arguments: `{"command":"ls"}`}},
 				ContinuationMetadata: []json.RawMessage{reasoning},
 			},
-			Outcomes:    []transcript.ToolOutcome{transcript.Completed("a.go")},
-			HookContext: []string{"Formatted."},
+			Outcomes: []transcript.ToolOutcome{transcript.Completed("a.go")},
+			Context:  []string{"Context added by the user's hooks:\n\nFormatted."},
 		},
 		&transcript.AssistantBatch{Message: transcript.AssistantMessage{Text: "Done."}},
 	}

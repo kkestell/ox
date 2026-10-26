@@ -68,8 +68,8 @@ func inputItems(entries []transcript.Entry, model string) []any {
 		case *transcript.TurnStart:
 			turnModel = entry.Model
 			items = append(items, userItem(entry.Input.ModelMessage()))
-			if len(entry.HookContext) > 0 {
-				items = append(items, userItem(transcript.TextMessage(transcript.HookMessage(entry.HookContext))))
+			if len(entry.Context) > 0 {
+				items = append(items, userItem(transcript.TextMessage(transcript.ContextMessage(entry.Context))))
 			}
 		case *transcript.Compaction:
 			items = append(items, userItem(entry.Message()))
@@ -92,8 +92,8 @@ func inputItems(entries []transcript.Entry, model string) []any {
 			for i, call := range message.ToolCalls {
 				items = append(items, map[string]any{"type": "function_call_output", "call_id": call.CallID, "output": entry.Outcomes[i].Text})
 			}
-			if len(entry.HookContext) > 0 {
-				items = append(items, userItem(transcript.TextMessage(transcript.HookMessage(entry.HookContext))))
+			if len(entry.Context) > 0 {
+				items = append(items, userItem(transcript.TextMessage(transcript.ContextMessage(entry.Context))))
 			}
 		}
 	}
