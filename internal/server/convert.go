@@ -205,7 +205,7 @@ func update(event agent.Event) any {
 		return chunk("agent_message_chunk", string(event))
 	case agent.ReasoningDelta:
 		return chunk("agent_thought_chunk", string(event))
-	case agent.HookContext:
+	case agent.Context:
 		return chunk("user_message_chunk", string(event))
 	case agent.ToolPending:
 		return toolCall(event.Call)
@@ -325,13 +325,13 @@ func replay(entries []transcript.Entry, send func(any) error) error {
 				update.Status, update.Content, update.RawOutput = status(outcome), outputContent(outcome), outcome.Text
 				updates = append(updates, update)
 			}
-			if len(entry.HookContext) > 0 {
-				updates = append(updates, chunk("user_message_chunk", transcript.HookMessage(entry.HookContext)))
+			if len(entry.Context) > 0 {
+				updates = append(updates, chunk("user_message_chunk", transcript.ContextMessage(entry.Context)))
 			}
 		}
 		// The context continues the user message, so it starts a new paragraph.
-		if start, ok := entry.(*transcript.TurnStart); ok && len(start.HookContext) > 0 {
-			updates = append(updates, chunk("user_message_chunk", "\n\n"+transcript.HookMessage(start.HookContext)))
+		if start, ok := entry.(*transcript.TurnStart); ok && len(start.Context) > 0 {
+			updates = append(updates, chunk("user_message_chunk", "\n\n"+transcript.ContextMessage(start.Context)))
 		}
 		for _, update := range updates {
 			if err := send(update); err != nil {

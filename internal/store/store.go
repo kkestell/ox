@@ -45,6 +45,23 @@ CREATE TABLE IF NOT EXISTS transcript_entries (
 
 CREATE INDEX IF NOT EXISTS transcript_entries_by_session
     ON transcript_entries (session_id, id);
+
+CREATE TABLE IF NOT EXISTS team_members (
+    session_id TEXT PRIMARY KEY REFERENCES sessions (id) ON DELETE CASCADE,
+    parent_id  TEXT NOT NULL REFERENCES sessions (id),
+    name       TEXT NOT NULL,
+    branch     TEXT NOT NULL,
+    UNIQUE (parent_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+    id        INTEGER PRIMARY KEY,
+    recipient TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+    sender    TEXT NOT NULL,
+    text      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS messages_by_recipient ON messages (recipient, id);
 `
 
 // ErrNotFound means the session does not exist.
@@ -66,6 +83,21 @@ type Summary struct {
 type Session struct {
 	Summary    Summary
 	Transcript []transcript.Entry
+}
+
+// Member is a worker session and its link to its orchestrator. Branch is
+// empty for a worker without a worktree.
+type Member struct {
+	Summary
+	Parent string
+	Name   string
+	Branch string
+}
+
+// Message is a saved message waiting for a session.
+type Message struct {
+	Sender string
+	Text   string
 }
 
 // Store is the session database.
@@ -135,6 +167,113 @@ func (s *Store) Create(workspace string) (Summary, error) {
 	return summary, err
 }
 
+// CreateWorker creates a worker session named name in workspace and links it
+// to parent. Branch is empty for a worker without a worktree. The worker's
+// title is its name.
+func (s *Store) CreateWorker(parent, name, workspace, branch string) (Summary, error) {
+	if name == "" {
+		return Summary{}, errors.New("worker name is empty")
+	}
+	if !filepath.IsAbs(workspace) {
+		return Summary{}, fmt.Errorf("%w: %s", ErrRelativeWorkspace, workspace)
+	}
+	summary := Summary{ID: newID(), Workspace: workspace, Title: name, UpdatedAt: now()}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Summary{}, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("INSERT INTO sessions (id, workspace_path, title, updated_at) VALUES (?, ?, ?, ?)",
+		summary.ID, summary.Workspace, summary.Title, summary.UpdatedAt); err != nil {
+		return Summary{}, err
+	}
+	if _, err := tx.Exec("INSERT INTO team_members (session_id, parent_id, name, branch) VALUES (?, ?, ?, ?)",
+		summary.ID, parent, name, branch); err != nil {
+		return Summary{}, err
+	}
+	return summary, tx.Commit()
+}
+
+// Members returns parent's workers ordered by name.
+func (s *Store) Members(parent string) ([]Member, error) {
+	rows, err := s.db.Query(`SELECT s.id, s.workspace_path, COALESCE(s.title, ''), s.updated_at, m.parent_id, m.name, m.branch
+		FROM team_members m JOIN sessions s ON s.id = m.session_id
+		WHERE m.parent_id = ? ORDER BY m.name`, parent)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var members []Member
+	for rows.Next() {
+		var member Member
+		if err := rows.Scan(&member.ID, &member.Workspace, &member.Title, &member.UpdatedAt, &member.Parent, &member.Name, &member.Branch); err != nil {
+			return nil, err
+		}
+		members = append(members, member)
+	}
+	return members, rows.Err()
+}
+
+// Member returns the worker with the given session ID, or ErrNotFound when no
+// worker has it.
+func (s *Store) Member(id string) (Member, error) {
+	var member Member
+	err := s.db.QueryRow(`SELECT s.id, s.workspace_path, COALESCE(s.title, ''), s.updated_at, m.parent_id, m.name, m.branch
+		FROM team_members m JOIN sessions s ON s.id = m.session_id
+		WHERE m.session_id = ?`, id).
+		Scan(&member.ID, &member.Workspace, &member.Title, &member.UpdatedAt, &member.Parent, &member.Name, &member.Branch)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Member{}, ErrNotFound
+	}
+	return member, err
+}
+
+// Send saves a message for recipient.
+func (s *Store) Send(recipient, sender, text string) error {
+	_, err := s.db.Exec("INSERT INTO messages (recipient, sender, text) VALUES (?, ?, ?)", recipient, sender, text)
+	return err
+}
+
+// Take returns recipient's messages in the order they were sent and deletes
+// them in the same transaction.
+func (s *Store) Take(recipient string) ([]Message, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.Query("SELECT sender, text FROM messages WHERE recipient = ? ORDER BY id", recipient)
+	if err != nil {
+		return nil, err
+	}
+	var messages []Message
+	for rows.Next() {
+		var message Message
+		if err := rows.Scan(&message.Sender, &message.Text); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		messages = append(messages, message)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec("DELETE FROM messages WHERE recipient = ?", recipient); err != nil {
+		return nil, err
+	}
+	return messages, tx.Commit()
+}
+
+// HasMessages reports whether recipient has messages waiting.
+func (s *Store) HasMessages(recipient string) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow("SELECT EXISTS (SELECT 1 FROM messages WHERE recipient = ?)", recipient).Scan(&exists)
+	return exists, err
+}
+
 // Read returns a session, or ErrNotFound. A malformed transcript is an error.
 func (s *Store) Read(id string) (*Session, error) {
 	tx, err := s.db.Begin()
@@ -157,10 +296,13 @@ func (s *Store) Read(id string) (*Session, error) {
 }
 
 // List returns the sessions in workspace, or every session when workspace is
-// empty, most recently active first. Ties are broken by ID.
+// empty, most recently active first. Ties are broken by ID. Workers are left
+// out, so the session picker shows only sessions the user started.
 func (s *Store) List(workspace string) ([]Summary, error) {
 	rows, err := s.db.Query(`SELECT id, workspace_path, COALESCE(title, ''), updated_at FROM sessions
-		WHERE ?1 = '' OR workspace_path = ?1 ORDER BY updated_at DESC, id ASC`, workspace)
+		WHERE (?1 = '' OR workspace_path = ?1)
+		AND id NOT IN (SELECT session_id FROM team_members)
+		ORDER BY updated_at DESC, id ASC`, workspace)
 	if err != nil {
 		return nil, err
 	}

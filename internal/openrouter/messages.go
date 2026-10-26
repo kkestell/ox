@@ -39,8 +39,8 @@ func chatMessages(entries []transcript.Entry, model string) []any {
 		case *transcript.TurnStart:
 			turnModel = entry.Model
 			messages = append(messages, map[string]any{"role": "user", "content": userContent(entry.Input.ModelMessage())})
-			if len(entry.HookContext) > 0 {
-				messages = append(messages, map[string]any{"role": "user", "content": transcript.HookMessage(entry.HookContext)})
+			if len(entry.Context) > 0 {
+				messages = append(messages, map[string]any{"role": "user", "content": transcript.ContextMessage(entry.Context)})
 			}
 		case *transcript.Compaction:
 			messages = append(messages, map[string]any{"role": "user", "content": userContent(entry.Message())})
@@ -74,8 +74,8 @@ func chatMessages(entries []transcript.Entry, model string) []any {
 					"content":      entry.Outcomes[i].Text,
 				})
 			}
-			if len(entry.HookContext) > 0 {
-				messages = append(messages, map[string]any{"role": "user", "content": transcript.HookMessage(entry.HookContext)})
+			if len(entry.Context) > 0 {
+				messages = append(messages, map[string]any{"role": "user", "content": transcript.ContextMessage(entry.Context)})
 			}
 		}
 	}

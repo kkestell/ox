@@ -90,7 +90,7 @@ func (t *Turn) promptHooks(ctx context.Context, first bool, transcriptLength int
 	for _, output := range t.runHooks(ctx, "UserPromptSubmit", t.agent.Hooks.UserPromptSubmit, prompt) {
 		context = appendText(context, output.HookSpecificOutput.AdditionalContext)
 	}
-	return context
+	return hookContext(context)
 }
 
 // postToolUse runs the PostToolUse hooks that match call, in order, and
@@ -113,7 +113,7 @@ func (t *Turn) postToolUse(ctx context.Context, call transcript.ToolCall, outcom
 	}) {
 		context = appendText(context, output.HookSpecificOutput.AdditionalContext)
 	}
-	return context
+	return hookContext(context)
 }
 
 // stop runs the Stop hooks and returns the reasons of those that block the
@@ -125,7 +125,17 @@ func (t *Turn) stop(ctx context.Context, active bool) []string {
 			reasons = appendText(reasons, output.Reason)
 		}
 	}
-	return reasons
+	return hookContext(reasons)
+}
+
+// hookContext labels hook output before it joins context from other sources.
+// Models read it as a user message because they distrust instructions in tool
+// output, and hooks come from the user's own configuration.
+func hookContext(texts []string) []string {
+	if len(texts) == 0 {
+		return nil
+	}
+	return []string{"Context added by the user's hooks:\n\n" + strings.Join(texts, "\n\n")}
 }
 
 func appendText(texts []string, text string) []string {
