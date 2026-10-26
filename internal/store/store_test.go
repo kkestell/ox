@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -284,5 +285,133 @@ func TestListOrdersByActivityFiltersByWorkspaceAndDeleteCascades(t *testing.T) {
 	s.db.QueryRow("SELECT count(*) FROM transcript_entries").Scan(&entries)
 	if _, err := s.Read(first); err != ErrNotFound || entries != 0 {
 		t.Errorf("after delete: %v, %d entries", err, entries)
+	}
+}
+
+func addWorker(t *testing.T, s *Store, parent, name, branch string) Summary {
+	t.Helper()
+	summary, err := s.CreateWorker(parent, name, workspace, branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return summary
+}
+
+func TestWorkersAreLinkedAndLeftOutOfList(t *testing.T) {
+	s := memory(t)
+	parent := create(t, s)
+	alice := addWorker(t, s, parent, "alice", "ox/alice")
+	if alice.Title != "alice" || alice.Workspace != workspace {
+		t.Errorf("worker summary = %+v", alice)
+	}
+	list, err := s.List("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].ID != parent {
+		t.Errorf("list = %+v, want only %s", list, parent)
+	}
+	members, err := s.Members(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Member{Summary: alice, Parent: parent, Name: "alice", Branch: "ox/alice"}
+	if !reflect.DeepEqual(members, []Member{want}) {
+		t.Errorf("members = %+v", members)
+	}
+	member, err := s.Member(alice.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(member, want) {
+		t.Errorf("member = %+v", member)
+	}
+	if _, err := s.Member(parent); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Member(parent) = %v, want ErrNotFound", err)
+	}
+}
+
+func TestDeletingAWorkerCascadesItsMembershipAndMessages(t *testing.T) {
+	s := memory(t)
+	parent := create(t, s)
+	alice := addWorker(t, s, parent, "alice", "ox/alice")
+	if err := s.Send(alice.ID, parent, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	var members, messages int
+	s.db.QueryRow("SELECT count(*) FROM team_members WHERE session_id = ?", alice.ID).Scan(&members)
+	s.db.QueryRow("SELECT count(*) FROM messages WHERE recipient = ?", alice.ID).Scan(&messages)
+	if members != 0 || messages != 0 {
+		t.Errorf("after delete: %d members, %d messages", members, messages)
+	}
+}
+
+func TestDeletingAnOrchestratorWithWorkersFails(t *testing.T) {
+	s := memory(t)
+	parent := create(t, s)
+	alice := addWorker(t, s, parent, "alice", "ox/alice")
+	if err := s.Delete(parent); err == nil {
+		t.Fatal("an orchestrator with a worker was deleted")
+	}
+	if _, err := s.Read(parent); err != nil {
+		t.Errorf("orchestrator after refused delete: %v", err)
+	}
+	if _, err := s.Read(alice.ID); err != nil {
+		t.Errorf("worker after refused delete: %v", err)
+	}
+}
+
+func TestTakeReturnsMessagesInOrderAndRemovesThem(t *testing.T) {
+	s := memory(t)
+	id := create(t, s)
+	if has, err := s.HasMessages(id); err != nil || has {
+		t.Fatalf("HasMessages = %t, %v before any send", has, err)
+	}
+	for _, message := range []Message{{Sender: "bob", Text: "first"}, {Sender: "alice", Text: "second"}, {Sender: "bob", Text: "third"}} {
+		if err := s.Send(id, message.Sender, message.Text); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if has, err := s.HasMessages(id); err != nil || !has {
+		t.Fatalf("HasMessages = %t, %v after sends", has, err)
+	}
+	taken, err := s.Take(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []Message{{Sender: "bob", Text: "first"}, {Sender: "alice", Text: "second"}, {Sender: "bob", Text: "third"}}; !reflect.DeepEqual(taken, want) {
+		t.Errorf("Take = %+v", taken)
+	}
+	if has, err := s.HasMessages(id); err != nil || has {
+		t.Errorf("HasMessages = %t, %v after Take", has, err)
+	}
+	if again, err := s.Take(id); err != nil || again != nil {
+		t.Errorf("second Take = %+v, %v", again, err)
+	}
+}
+
+func TestCreateWorkerRejectsBadInputWithoutLeavingASession(t *testing.T) {
+	s := memory(t)
+	parent := create(t, s)
+	if _, err := s.CreateWorker(parent, "", workspace, "ox/nobody"); err == nil {
+		t.Error("an empty worker name was accepted")
+	}
+	if _, err := s.CreateWorker(parent, "alice", "relative", "ox/alice"); err == nil {
+		t.Error("a relative workspace was accepted")
+	}
+	if _, err := s.CreateWorker("missing", "alice", workspace, "ox/alice"); err == nil {
+		t.Error("a worker was created for a missing parent")
+	}
+	addWorker(t, s, parent, "alice", "ox/alice")
+	if _, err := s.CreateWorker(parent, "alice", workspace, "ox/alice"); err == nil {
+		t.Error("a duplicate worker name was accepted")
+	}
+	var sessions int
+	s.db.QueryRow("SELECT count(*) FROM sessions").Scan(&sessions)
+	if sessions != 2 {
+		t.Errorf("%d sessions, want the parent and one worker", sessions)
 	}
 }
