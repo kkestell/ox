@@ -360,7 +360,7 @@ func itemLines(i *item, width int, showThinking bool, output toolOutput, now tim
 		}
 		return styled(dimStyle, "● "+placeholder(i.started, i.ended, now))
 	case responseItem:
-		return prefixed(markdown(i.text, lipgloss.NewStyle(), width-2), "● ", "  ")
+		return prefixed(markdown(i.text, lipgloss.NewStyle(), width-2), "← ", "  ")
 	case toolItem:
 		call := i.call
 		head, ok := shellLine(call, width)

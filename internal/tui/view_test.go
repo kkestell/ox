@@ -108,7 +108,7 @@ func TestTheFramePlacesTheTranscriptTheApprovalDialogAndTheComposer(t *testing.T
 		"  ● Find files matching *.rs",
 		"  ● Shell ls -la",
 		"",
-		"  ● Two tallies were counted in the workspace.",
+		"  ← Two tallies were counted in the workspace.",
 		"",
 		"",
 		"  Would you like to run the following command?",
