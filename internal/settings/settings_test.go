@@ -179,3 +179,23 @@ func TestSavingKeepsOtherFieldsAndPrefersTheWorkspaceFile(t *testing.T) {
 		t.Errorf("workspace = %s", data)
 	}
 }
+
+func TestWorkerModelsAreGlobalFreeText(t *testing.T) {
+	path := settings.GlobalPath(t.TempDir())
+	text := "Use Plain for small tasks.\nUse GLM for harder tasks."
+	fields, _ := json.Marshal(map[string]string{"model": model, "workerModels": text})
+	write(t, path, string(fields))
+	loaded, err := settings.Load(path, openroutertest.ParsedCatalog())
+	if err != nil || loaded.WorkerModels != text {
+		t.Fatalf("loaded = %+v, %v", loaded, err)
+	}
+	workspace := t.TempDir()
+	selected, err := loaded.ForWorkspace(workspace, openroutertest.ParsedCatalog())
+	if err != nil || selected.WorkerModels != text {
+		t.Fatalf("workspace = %+v, %v", selected, err)
+	}
+	write(t, filepath.Join(workspace, ".ox/settings.json"), `{"workerModels":"override"}`)
+	if _, err := loaded.ForWorkspace(workspace, openroutertest.ParsedCatalog()); err == nil || !strings.Contains(err.Error(), "workerModels can be set only in the global settings file") {
+		t.Fatalf("workspace accepted workerModels: %v", err)
+	}
+}

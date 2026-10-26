@@ -126,3 +126,11 @@ func (o *operations) shutdown() {
 	o.beginShutdown()
 	o.running.Wait()
 }
+
+// working reports whether a session has an acquired prompt.
+func (o *operations) working(id string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	op := o.active[id]
+	return op != nil && op.cancel != nil
+}

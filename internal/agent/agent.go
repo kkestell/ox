@@ -162,6 +162,7 @@ type Input struct {
 	// turn.
 	Processes *shellproc.Processes
 	MCP       *mcpclient.Catalog
+	Team      tools.Team
 	// SessionStart runs the SessionStart hooks before the turn: set for the
 	// session's first turn in this process.
 	SessionStart bool
@@ -243,7 +244,7 @@ func (a *Agent) Start(ctx context.Context, in Input, client Client) (*Turn, erro
 	if err != nil {
 		return nil, err
 	}
-	toolbox := &tools.Toolbox{Workspace: session.Summary.Workspace, Processes: in.Processes, MCP: in.MCP}
+	toolbox := &tools.Toolbox{Workspace: session.Summary.Workspace, Processes: in.Processes, MCP: in.MCP, Team: in.Team}
 	t := &Turn{
 		agent:    a,
 		provider: a.Providers[model.Provider],

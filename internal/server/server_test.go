@@ -25,6 +25,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -828,5 +829,139 @@ func TestPromptResponseReportsTheTurnsTokens(t *testing.T) {
 	want := object{"inputTokens": 40.0, "cachedReadTokens": 60.0, "outputTokens": 20.0, "thoughtTokens": 5.0, "totalTokens": 120.0}
 	if got := response.Result["usage"]; !reflect.DeepEqual(got, map[string]any(want)) {
 		t.Errorf("usage = %v", got)
+	}
+}
+
+func TestTeamsAskBeforeCreatingAndRunWorkersInAuto(t *testing.T) {
+	var mu sync.Mutex
+	counts := map[bool]int{}
+	dispatch := func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		messages := body["messages"].([]any)
+		worker := strings.Contains(messages[0].(map[string]any)["content"].(string), "You are worker reader")
+		mu.Lock()
+		counts[worker]++
+		count := counts[worker]
+		mu.Unlock()
+		if worker {
+			if count == 1 {
+				fake.Shell("printf auto > child")(w, r, body)
+			} else {
+				fake.Text("Worker done.")(w, r, body)
+			}
+		} else if count == 1 {
+			fake.Calls(fake.Call{ID: "wait", Name: "wait", Arguments: object{}})(w, r, body)
+		} else {
+			fake.Text("All done.")(w, r, body)
+		}
+	}
+	c := connect(t, fake.Calls(fake.Call{ID: "create", Name: "create_agent", Arguments: object{"name": "reader", "message": "Read.", "dir": "."}}), dispatch, dispatch, dispatch, dispatch)
+	id := c.newSession()
+	response, before := c.prompt(id, "Delegate.", "approve")
+	if response.Error != nil || response.Result["stopReason"] != "end_turn" {
+		t.Fatalf("prompt = %+v", response)
+	}
+	var permissions int
+	for _, message := range before {
+		if message.Method == acp.MethodRequestPermission {
+			permissions++
+			call := message.Params["toolCall"].(map[string]any)
+			if call["title"] != "Create agent reader" {
+				t.Errorf("permission = %v", call)
+			}
+		}
+	}
+	if permissions != 1 {
+		t.Fatalf("permissions = %d", permissions)
+	}
+	if data, err := os.ReadFile(filepath.Join(c.workspace, "child")); err != nil || string(data) != "auto" {
+		t.Fatalf("worker shell = %q, %v", data, err)
+	}
+	toolUpdates := updates(before, "tool_call_update")
+	encoded, _ := json.Marshal(toolUpdates)
+	if !strings.Contains(string(encoded), "Worker reader finished its turn:") || !strings.Contains(string(encoded), "Worker done.") {
+		t.Fatalf("wait result = %s", encoded)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if counts[true] != 2 || counts[false] != 2 {
+		t.Fatalf("model requests = %v", counts)
+	}
+}
+
+func TestLoadingWakesWorkersClosingLeavesThemRunningAndDeletionRefuses(t *testing.T) {
+	db, err := store.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	parent, err := db.Create(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err := db.CreateWorker(parent.ID, "reader", workspace, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.AppendTurnStart(worker.ID, &transcript.TurnStart{
+		Model: "openrouter:z-ai/glm-5.3-flash", Effort: catalog.EffortLow, Mode: transcript.ModeAuto,
+		Input: transcript.TurnInput{Message: new(transcript.TextMessage("Earlier work."))},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Send(worker.ID, "orchestrator", "Resume the work."); err != nil {
+		t.Fatal(err)
+	}
+	requested := make(chan map[string]any, 1)
+	gate := make(chan struct{})
+	c := connectWithStore(t, db, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		requested <- body
+		fake.Gated(gate, fake.Text("Resumed."))(w, r, body)
+	}, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		data, _ := json.Marshal(body["messages"])
+		if !strings.Contains(string(data), "Worker reader finished its turn:") || !strings.Contains(string(data), "Resumed.") {
+			t.Errorf("orchestrator did not receive report: %s", data)
+		}
+		fake.Text("Seen.")(w, r, body)
+	})
+	c.workspace = workspace
+	load := object{"sessionId": parent.ID, "cwd": workspace, "mcpServers": []any{}}
+	if response, _ := c.call(acp.MethodLoadSession, load); response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	select {
+	case body := <-requested:
+		if body["model"] != "z-ai/glm-5.3-flash" || body["reasoning"].(map[string]any)["effort"] != "low" {
+			t.Fatalf("restored model and effort = %v", body)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("load did not wake worker")
+	}
+	if response, _ := c.call(acp.MethodDeleteSession, object{"sessionId": parent.ID}); response.Error == nil || !strings.Contains(response.Error.Error(), "remove the session's workers") {
+		t.Fatalf("deletion with workers = %+v", response)
+	}
+	if response, _ := c.call(acp.MethodCloseSession, object{"sessionId": parent.ID}); response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	close(gate)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		has, err := db.HasMessages(parent.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if has {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("closed orchestrator did not receive worker report")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if response, _ := c.call(acp.MethodLoadSession, load); response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	if response, _ := c.prompt(parent.ID, "Continue."); response.Error != nil {
+		t.Fatal(response.Error)
 	}
 }

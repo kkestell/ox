@@ -43,7 +43,9 @@ type Server struct {
 	defaults settings.Settings
 	// active holds the sessions created or loaded by this process. Only an
 	// active session can be configured or prompted.
-	active map[string]*activeSession
+	active   map[string]*activeSession
+	changed  chan struct{}
+	removing map[string]bool
 }
 
 // activeSession is the process state of one session.
@@ -69,7 +71,7 @@ type activeSession struct {
 func New(conn *acp.Conn, a *agent.Agent, defaults settings.Settings, home string) *Server {
 	return &Server{
 		conn: conn, agent: a, catalog: a.Catalog, home: home, ops: newOperations(),
-		defaults: defaults, active: map[string]*activeSession{},
+		defaults: defaults, active: map[string]*activeSession{}, changed: make(chan struct{}), removing: map[string]bool{},
 	}
 }
 
@@ -256,7 +258,7 @@ func (s *Server) loadSession(r *acp.Request) *acp.Error {
 		return internal(err)
 	}
 	if start := transcript.LatestTurnStart(saved.Transcript); start != nil {
-		selections = settings.Settings{Model: start.Model, Effort: start.Effort, Mode: start.Mode}
+		selections.Model, selections.Effort, selections.Mode = start.Model, start.Effort, start.Mode
 	}
 	definitions, err := acpMCPServers(params.McpServers)
 	if err != nil {
@@ -280,6 +282,15 @@ func (s *Server) loadSession(r *acp.Request) *acp.Error {
 	session.selections = selections
 	s.active[id] = session
 	s.mu.Unlock()
+	members, err := s.agent.Store.Members(id)
+	if err != nil {
+		return internal(err)
+	}
+	for _, member := range members {
+		if err := s.wake(member.ID); err != nil {
+			return internal(err)
+		}
+	}
 	send := func(update any) error { return s.notify(id, update) }
 	if err := replay(saved.Transcript, send); err != nil {
 		return internal(err)
@@ -359,6 +370,15 @@ func (s *Server) deleteSession(r *acp.Request) *acp.Error {
 	}
 	go func() {
 		defer release()
+		members, err := s.agent.Store.Members(id)
+		if err != nil {
+			r.Fail(internal(err))
+			return
+		}
+		if len(members) > 0 {
+			r.Fail(acp.InvalidRequest("remove the session's workers before deleting it"))
+			return
+		}
 		if err := s.agent.Store.Delete(id); err != nil {
 			r.Fail(internal(err))
 			return
@@ -459,34 +479,11 @@ func (s *Server) prompt(r *acp.Request) *acp.Error {
 		release()
 		return inactive(id)
 	}
-	s.mu.Lock()
-	selections, started := session.selections, session.started
-	s.mu.Unlock()
 	client := &acpClient{server: s, sessionID: id, session: session}
 	s.prompts.Add(1)
 	go func() {
 		defer s.prompts.Done()
-		result, err := func() (agent.Result, error) {
-			catalog, err := session.mcp.Prepare(ctx)
-			if ctx.Err() != nil {
-				return agent.Result{Stop: agent.Cancelled}, nil
-			}
-			if err != nil {
-				return agent.Result{}, err
-			}
-			turn, err := s.agent.Start(ctx, agent.Input{
-				SessionID: id, Input: dispatch(message, session.skills), Model: selections.Model, Effort: selections.Effort,
-				SystemPrompt: session.systemPrompt, Processes: session.processes, MCP: catalog, SessionStart: !started,
-			}, client)
-			if err != nil {
-				return agent.Result{}, err
-			}
-			s.mu.Lock()
-			session.started = true
-			s.mu.Unlock()
-			client.workspace = turn.Workspace()
-			return turn.Run(ctx)
-		}()
+		result, err := s.runTurn(ctx, id, dispatch(message, session.skills), session, client)
 		// The client may send its next prompt as soon as it reads the response.
 		release()
 		if err != nil {
@@ -506,6 +503,47 @@ func (s *Server) prompt(r *acp.Request) *acp.Error {
 		})
 	}()
 	return nil
+}
+
+// runTurn is shared by ACP prompts and the server's worker turns. Its caller
+// holds the session's prompt operation until reporting the result.
+func (s *Server) runTurn(ctx context.Context, id string, input transcript.TurnInput, session *activeSession, client agent.Client) (agent.Result, error) {
+	s.mu.Lock()
+	selections, started := session.selections, session.started
+	s.mu.Unlock()
+	team, err := s.team(id, selections)
+	if err != nil {
+		return agent.Result{}, err
+	}
+	catalog, err := session.mcp.Prepare(ctx)
+	if ctx.Err() != nil {
+		return agent.Result{Stop: agent.Cancelled}, nil
+	}
+	if err != nil {
+		return agent.Result{}, err
+	}
+	var inboxErr error
+	turn, err := s.agent.Start(ctx, agent.Input{
+		SessionID: id, Input: input, Model: selections.Model, Effort: selections.Effort,
+		SystemPrompt: session.systemPrompt, Processes: session.processes, MCP: catalog,
+		Team: team, SessionStart: !started,
+		Inbox: func() []string {
+			messages, err := s.takeMessages(id)
+			inboxErr = errors.Join(inboxErr, err)
+			return messages
+		},
+	}, client)
+	if err != nil {
+		return agent.Result{}, errors.Join(err, inboxErr)
+	}
+	s.mu.Lock()
+	session.started = true
+	s.mu.Unlock()
+	if acp, ok := client.(*acpClient); ok {
+		acp.workspace = turn.Workspace()
+	}
+	result, err := turn.Run(ctx)
+	return result, errors.Join(err, inboxErr)
 }
 
 // Shutdown rejects new operations, cancels active prompts, waits for active

@@ -3,8 +3,8 @@
 // file `.ox/settings.json`, read when a session becomes active. MCP settings in
 // both files are read separately at session activation. Workspace keys
 // replace the same global keys. Neither file is required. Only the global file
-// can set `models`, the OpenRouter provider pins, and `hooks`, the commands Ox
-// runs during turns. The terminal client's fields, `servers` and `favorites`,
+// can set `workerModels`, the worker model guidance, `models`, the OpenRouter
+// provider pins, and `hooks`, the commands Ox runs during turns. The terminal client's fields, `servers` and `favorites`,
 // are read only from the global file. The launch settings in `OX_SETTINGS`
 // apply over both files and are never saved.
 package settings
@@ -36,12 +36,12 @@ const builtInModel = "openrouter:~deepseek/deepseek-flash-latest"
 // changing the user's files.
 const LaunchVariable = "OX_SETTINGS"
 
-// Settings are a model, effort level, and session mode: the defaults for new
-// sessions, or one session's selections.
+// Settings holds session selections and global worker model guidance.
 type Settings struct {
-	Model  string
-	Effort catalog.Effort
-	Mode   transcript.Mode
+	Model        string
+	Effort       catalog.Effort
+	Mode         transcript.Mode
+	WorkerModels string
 }
 
 // Home returns `$HOME`, which holds `~/.config/ox` and the user skills
@@ -61,12 +61,13 @@ func GlobalPath(home string) string {
 
 // file is the format of both settings files.
 type file struct {
-	provider bool
-	hooks    bool
-	model    *string
-	effort   *string
-	mode     *string
-	models   map[string]struct {
+	provider     bool
+	hooks        bool
+	model        *string
+	effort       *string
+	mode         *string
+	workerModels *string
+	models       map[string]struct {
 		Providers []string `json:"providers"`
 	}
 }
@@ -83,6 +84,9 @@ func Load(path string, cat catalog.Catalog) (Settings, error) {
 	// missing; use the first model.
 	if len(cat) > 0 && cat[0].Provider != catalog.OpenRouter {
 		settings.Model = cat[0].QualifiedID()
+	}
+	if f.workerModels != nil {
+		settings.WorkerModels = *f.workerModels
 	}
 	if present {
 		if err := settings.apply(path, f); err != nil {
@@ -121,6 +125,9 @@ func (s Settings) ForWorkspace(workspace string, cat catalog.Catalog) (Settings,
 		}
 		if !present {
 			continue
+		}
+		if f.workerModels != nil {
+			return Settings{}, invalid(path, "workerModels can be set only in the global settings file")
 		}
 		if f.models != nil {
 			return Settings{}, invalid(path, "models can be set only in the global settings file")
@@ -284,7 +291,7 @@ func read(path string) (file, error) {
 	var f file
 	_, f.provider = fields["provider"]
 	_, f.hooks = fields["hooks"]
-	for key, target := range map[string]any{"model": &f.model, "effort": &f.effort, "mode": &f.mode, "models": &f.models} {
+	for key, target := range map[string]any{"model": &f.model, "effort": &f.effort, "mode": &f.mode, "models": &f.models, "workerModels": &f.workerModels} {
 		if raw, ok := fields[key]; ok {
 			if err := json.Unmarshal(raw, target); err != nil {
 				return file{}, fmt.Errorf("%s: %s: %w", path, key, err)
