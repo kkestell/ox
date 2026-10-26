@@ -130,6 +130,9 @@ func (t *team) CreateAgent(ctx context.Context, args tools.CreateAgentArgs) (str
 		return "", errors.Join(err, s.agent.Store.Delete(summary.ID))
 	}
 	created = true
+	if err := s.sendTeam(t.parent); err != nil {
+		return "", err
+	}
 	if err := s.wake(summary.ID); err != nil {
 		return "", err
 	}
@@ -382,6 +385,9 @@ func (t *team) RemoveAgent(ctx context.Context, name string) (string, error) {
 	}
 	s.deactivate(member.ID)
 	removed = true
+	if err := s.sendTeam(t.parent); err != nil {
+		return "", err
+	}
 	return "Worker " + name + " removed.", nil
 }
 
@@ -462,7 +468,15 @@ func (s *Server) wake(id string) error {
 	started = true
 	go func() {
 		defer s.prompts.Done()
-		result, saved, err := s.runTurn(ctx, id, transcript.TurnInput{}, session, workerClient{})
+		client := &workerClient{server: s, id: id, parent: member.Parent}
+		result, saved, err := s.runTurn(ctx, id, transcript.TurnInput{}, session, client)
+		// An ACP client learns of a failed turn from the prompt's response; a
+		// worker's view learns of it here.
+		if err != nil {
+			if err := client.notify(turnError(err.Error())); err != nil {
+				fmt.Fprintln(os.Stderr, "showing worker turn error:", err)
+			}
+		}
 		s.mu.Lock()
 		if !s.removing[id] {
 			if err := s.agent.Store.Send(member.Parent, member.Name, workerReport(member.Name, result, err)); err != nil {
@@ -501,10 +515,30 @@ func workerReport(name string, result agent.Result, err error) string {
 	}
 }
 
-type workerClient struct{}
+// workerClient sends a worker's events as session updates while its
+// orchestrator is watched, and approves every tool call.
+type workerClient struct {
+	server      *Server
+	id, parent  string
+	toolCallIDs toolCallIDs
+}
 
-func (workerClient) Send(agent.Event) error { return nil }
-func (workerClient) Mode() transcript.Mode  { return transcript.ModeAuto }
-func (workerClient) Approve(context.Context, transcript.ToolCall, tools.Permission) (bool, error) {
+func (c *workerClient) Send(event agent.Event) error {
+	return c.notify(update(c.toolCallIDs.assign(event)))
+}
+
+// notify sends an update for the worker while its orchestrator is watched.
+func (c *workerClient) notify(update any) error {
+	s := c.server
+	s.watchMu.Lock()
+	defer s.watchMu.Unlock()
+	if !s.watched[c.parent] {
+		return nil
+	}
+	return s.notify(c.id, update)
+}
+
+func (*workerClient) Mode() transcript.Mode { return transcript.ModeAuto }
+func (*workerClient) Approve(context.Context, transcript.ToolCall, tools.Permission) (bool, error) {
 	return true, nil
 }

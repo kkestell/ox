@@ -196,6 +196,14 @@ func toolCall(call transcript.ToolCall) acp.ToolCall {
 // with no tool name.
 const compactionTitle = "Context compaction"
 
+// turnError shows a turn's error as a failed tool call.
+func turnError(text string) protocol.SessionUpdateToolCall {
+	return protocol.SessionUpdateToolCall{
+		SessionUpdate: "tool_call", ToolCallId: protocol.ToolCallId("turn-error-" + rand.Text()), Title: "Turn error", Status: "failed",
+		Content: []protocol.ToolCallContent{textContent(text)}, RawOutput: text,
+	}
+}
+
 // update converts a turn event to an ACP session update.
 func update(event agent.Event) any {
 	switch event := event.(type) {
@@ -302,10 +310,7 @@ func replay(entries []transcript.Entry, send func(any) error) error {
 				}
 			}
 		case transcript.TurnError:
-			updates = append(updates, protocol.SessionUpdateToolCall{
-				SessionUpdate: "tool_call", ToolCallId: protocol.ToolCallId("turn-error-" + rand.Text()), Title: "Turn error", Status: "failed",
-				Content: []protocol.ToolCallContent{textContent(string(entry))}, RawOutput: string(entry),
-			})
+			updates = append(updates, turnError(string(entry)))
 		case *transcript.Compaction:
 			updates = append(updates, protocol.SessionUpdateToolCall{
 				SessionUpdate: "tool_call", ToolCallId: protocol.ToolCallId("compaction-" + rand.Text()), Title: compactionTitle, Status: "completed",

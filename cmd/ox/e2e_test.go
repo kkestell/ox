@@ -302,6 +302,30 @@ func TestTerminalResumePickerShowsASavedSessionAndReplaysOnEnter(t *testing.T) {
 	x.wait("you said: after resume")
 }
 
+func TestTerminalShowsAWorkerBesideTheOrchestrator(t *testing.T) {
+	// The orchestrator and the worker request the replies after create_agent
+	// in either order, and the worker's report can continue the
+	// orchestrator's turn, so those replies are all the same.
+	x := startTmux(t,
+		openroutertest.Calls(openroutertest.Call{ID: "create", Name: "create_agent", Arguments: map[string]any{"name": "helper", "message": "Help.", "dir": "."}}),
+		openroutertest.Text("pane reply"),
+		openroutertest.Text("pane reply"),
+		openroutertest.Text("pane reply"),
+	)
+	x.prompt("delegate")
+	x.wait("› 1. Yes")
+	x.keys("Enter")
+	x.wait("━━ orchestrator ━")
+	x.wait("┳━ helper ━")
+	x.wait("Help.")
+	x.waitTitle("ox: ready")
+	screen := x.screen()
+	lines := strings.Split(screen, "\n")
+	if !strings.Contains(lines[len(lines)/2], "┃") || strings.Count(screen, "pane reply") < 2 {
+		t.Errorf("no split with both replies:\n%s", screen)
+	}
+}
+
 func TestTerminalKeysSendInterruptApproveScrollAndRestoreTheShell(t *testing.T) {
 	x := startTmux(t,
 		streamed("stream ", "arrives ", "in order\n"),

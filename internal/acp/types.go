@@ -15,6 +15,9 @@ const (
 	MethodCancel            = protocol.AgentMethodSessionCancel
 	MethodUpdate            = protocol.ClientMethodSessionUpdate
 	MethodRequestPermission = protocol.ClientMethodSessionRequestPermission
+	// MethodTeam is Ox's notification of an orchestrator's workers. ACP leaves
+	// method names starting with an underscore to extensions.
+	MethodTeam = "_ox/team"
 )
 
 // ProtocolVersion is the one ACP version Ox speaks.
@@ -39,4 +42,16 @@ type RequestPermissionRequest struct {
 type SessionNotification struct {
 	SessionID string `json:"sessionId"`
 	Update    any    `json:"update"`
+}
+
+// TeamNotification carries an orchestrator's whole team, so the client
+// replaces its list.
+type TeamNotification struct {
+	SessionID string       `json:"sessionId"`
+	Members   []TeamMember `json:"members"`
+}
+
+type TeamMember struct {
+	SessionID string `json:"sessionId"`
+	Name      string `json:"name"`
 }

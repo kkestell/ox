@@ -46,6 +46,14 @@ type Server struct {
 	active   map[string]*activeSession
 	changed  chan struct{}
 	removing map[string]bool
+
+	// watchMu guards watched and is held while sending a worker's update or a
+	// team notification, so a running worker's updates never arrive before
+	// its replay.
+	watchMu sync.Mutex
+	// watched holds the orchestrators open on this connection. Their
+	// workers' updates and team notifications go to the client.
+	watched map[string]bool
 }
 
 // activeSession is the process state of one session.
@@ -72,6 +80,7 @@ func New(conn *acp.Conn, a *agent.Agent, defaults settings.Settings, home string
 	return &Server{
 		conn: conn, agent: a, catalog: a.Catalog, home: home, ops: newOperations(),
 		defaults: defaults, active: map[string]*activeSession{}, changed: make(chan struct{}), removing: map[string]bool{},
+		watched: map[string]bool{},
 	}
 }
 
@@ -227,6 +236,9 @@ func (s *Server) newSession(r *acp.Request) *acp.Error {
 	s.mu.Lock()
 	s.active[summary.ID] = session
 	s.mu.Unlock()
+	if err := s.watch(summary.ID); err != nil {
+		return internal(err)
+	}
 	r.Respond(protocol.NewSessionResponse{SessionId: protocol.SessionId(summary.ID), ConfigOptions: configOptions(s.catalog, selections)})
 	s.notify(summary.ID, availableCommands(session.skills))
 	return nil
@@ -282,6 +294,18 @@ func (s *Server) loadSession(r *acp.Request) *acp.Error {
 	session.selections = selections
 	s.active[id] = session
 	s.mu.Unlock()
+	send := func(update any) error { return s.notify(id, update) }
+	if err := replay(saved.Transcript, send); err != nil {
+		return internal(err)
+	}
+	if used, cost, ok := transcript.UsageSummary(saved.Transcript); ok {
+		send(usageUpdate(used, model.ContextLimit, cost))
+	}
+	// Waking after the watch keeps a woken worker's new turn out of the
+	// replay, so the client sees it once.
+	if err := s.watch(id); err != nil {
+		return internal(err)
+	}
 	members, err := s.agent.Store.Members(id)
 	if err != nil {
 		return internal(err)
@@ -290,13 +314,6 @@ func (s *Server) loadSession(r *acp.Request) *acp.Error {
 		if err := s.wake(member.ID); err != nil {
 			fmt.Fprintln(os.Stderr, "waking worker:", err)
 		}
-	}
-	send := func(update any) error { return s.notify(id, update) }
-	if err := replay(saved.Transcript, send); err != nil {
-		return internal(err)
-	}
-	if used, cost, ok := transcript.UsageSummary(saved.Transcript); ok {
-		send(usageUpdate(used, model.ContextLimit, cost))
 	}
 	r.Respond(protocol.LoadSessionResponse{ConfigOptions: configOptions(s.catalog, selections)})
 	s.notify(id, availableCommands(session.skills))
@@ -349,6 +366,7 @@ func (s *Server) closeSession(r *acp.Request) *acp.Error {
 		}
 		session.processes.Shutdown()
 		session.mcp.Close()
+		s.unwatch(id)
 		s.deactivate(id)
 		r.Respond(struct{}{})
 	}()
@@ -387,10 +405,67 @@ func (s *Server) deleteSession(r *acp.Request) *acp.Error {
 			session.processes.Shutdown()
 			session.mcp.Close()
 		}
+		s.unwatch(id)
 		s.deactivate(id)
 		r.Respond(struct{}{})
 	}()
 	return nil
+}
+
+// watch marks the orchestrator watched after sending its team and replaying
+// each worker's saved transcript. Updates a running worker sent before the
+// watch reach the client ahead of the team, which drops them.
+func (s *Server) watch(id string) error {
+	s.watchMu.Lock()
+	defer s.watchMu.Unlock()
+	members, err := s.agent.Store.Members(id)
+	if err != nil {
+		return err
+	}
+	if len(members) > 0 {
+		if err := s.notifyTeam(id, members); err != nil {
+			return err
+		}
+		for _, member := range members {
+			saved, err := s.agent.Store.Read(member.ID)
+			if err != nil {
+				return err
+			}
+			if err := replay(saved.Transcript, func(update any) error { return s.notify(member.ID, update) }); err != nil {
+				return err
+			}
+		}
+	}
+	s.watched[id] = true
+	return nil
+}
+
+func (s *Server) unwatch(id string) {
+	s.watchMu.Lock()
+	delete(s.watched, id)
+	s.watchMu.Unlock()
+}
+
+// sendTeam sends the parent's team when the parent is watched.
+func (s *Server) sendTeam(parent string) error {
+	s.watchMu.Lock()
+	defer s.watchMu.Unlock()
+	if !s.watched[parent] {
+		return nil
+	}
+	members, err := s.agent.Store.Members(parent)
+	if err != nil {
+		return err
+	}
+	return s.notifyTeam(parent, members)
+}
+
+func (s *Server) notifyTeam(parent string, members []store.Member) error {
+	team := acp.TeamNotification{SessionID: parent, Members: []acp.TeamMember{}}
+	for _, member := range members {
+		team.Members = append(team.Members, acp.TeamMember{SessionID: member.ID, Name: member.Name})
+	}
+	return s.conn.Notify(acp.MethodTeam, team)
 }
 
 func (s *Server) deactivate(id string) {
@@ -582,33 +657,42 @@ type acpClient struct {
 	sessionID string
 	// session stays active while its prompt runs, since close and delete
 	// wait for the prompt.
-	session   *activeSession
-	workspace string
-	// Providers can reuse call IDs in later batches. ACP IDs identify each
-	// invocation throughout its updates and permission request.
-	toolCallIDs map[string]string
+	session     *activeSession
+	workspace   string
+	toolCallIDs toolCallIDs
+}
+
+// toolCallIDs maps provider call IDs to ACP IDs. Providers can reuse call IDs
+// in later batches. ACP IDs identify each invocation throughout its updates
+// and permission request.
+type toolCallIDs map[string]string
+
+// assign gives a pending call a new ACP ID and replaces a started or finished
+// call's provider ID with its ACP ID.
+func (ids *toolCallIDs) assign(event agent.Event) agent.Event {
+	switch e := event.(type) {
+	case agent.ToolPending:
+		if *ids == nil {
+			*ids = make(toolCallIDs)
+		}
+		id := "tool-" + rand.Text()
+		(*ids)[e.Call.CallID] = id
+		e.Call.CallID = id
+		return e
+	case agent.ToolStarted:
+		e.Call.CallID = (*ids)[e.Call.CallID]
+		return e
+	case agent.ToolFinished:
+		id := (*ids)[e.Call.CallID]
+		delete(*ids, e.Call.CallID)
+		e.Call.CallID = id
+		return e
+	}
+	return event
 }
 
 func (c *acpClient) Send(event agent.Event) error {
-	switch e := event.(type) {
-	case agent.ToolPending:
-		if c.toolCallIDs == nil {
-			c.toolCallIDs = make(map[string]string)
-		}
-		id := "tool-" + rand.Text()
-		c.toolCallIDs[e.Call.CallID] = id
-		e.Call.CallID = id
-		event = e
-	case agent.ToolStarted:
-		e.Call.CallID = c.toolCallIDs[e.Call.CallID]
-		event = e
-	case agent.ToolFinished:
-		id := c.toolCallIDs[e.Call.CallID]
-		delete(c.toolCallIDs, e.Call.CallID)
-		e.Call.CallID = id
-		event = e
-	}
-	return c.server.notify(c.sessionID, update(event))
+	return c.server.notify(c.sessionID, update(c.toolCallIDs.assign(event)))
 }
 
 func (c *acpClient) Mode() transcript.Mode {

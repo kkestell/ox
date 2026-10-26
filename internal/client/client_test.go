@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -499,5 +500,14 @@ func TestResumeReplaysBeforeTheQueuedPrompt(t *testing.T) {
 			}
 			return
 		}
+	}
+}
+
+func TestTeamNotificationsArriveAsTeamEvents(t *testing.T) {
+	c := &Conn{ready: make(chan struct{}, 1)}
+	c.HandleNotification(acp.MethodTeam, json.RawMessage(`{"sessionId":"lead","members":[{"sessionId":"w1","name":"docs"}]}`))
+	want := Team{SessionID: "lead", Members: []acp.TeamMember{{SessionID: "w1", Name: "docs"}}}
+	if got := c.Next(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("event = %#v", got)
 	}
 }

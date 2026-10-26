@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/colorprofile"
 	protocol "github.com/coder/acp-go-sdk"
 
+	"ox/internal/acp"
 	"ox/internal/client"
 	"ox/internal/settings"
 )
@@ -39,6 +40,7 @@ type model struct {
 	// again, so events arrive one at a time and in order.
 	listen           tea.Cmd
 	view             transcript
+	workers          []worker
 	input            textarea.Model
 	approvalSelected int
 	approvalScroll   int
@@ -70,6 +72,13 @@ type model struct {
 	configRequests int
 	// err ends the program when it is set.
 	err error
+}
+
+// worker is one of the open session's workers, shown beside it.
+type worker struct {
+	id   protocol.SessionId
+	name string
+	view transcript
 }
 
 // result applies a session request's response.
@@ -181,6 +190,12 @@ func (m *model) event(event client.Event, now time.Time) tea.Cmd {
 		if m.session.Accepts(event.SessionID) {
 			m.session.Update(event.Update)
 			m.view.update(event.Update, event.Name, now)
+		} else if w := m.worker(event.SessionID); w != nil {
+			w.view.update(event.Update, event.Name, now)
+		}
+	case client.Team:
+		if m.session.Accepts(event.SessionID) {
+			m.setTeam(event.Members)
 		}
 	case client.Diagnostic:
 		m.view.notice(string(event), dim, now)
@@ -217,6 +232,29 @@ func (m *model) event(event client.Event, now time.Time) tea.Cmd {
 		m.fail(errors.New("server closed the ACP connection"))
 	}
 	return nil
+}
+
+func (m *model) worker(id protocol.SessionId) *worker {
+	for i := range m.workers {
+		if m.workers[i].id == id {
+			return &m.workers[i]
+		}
+	}
+	return nil
+}
+
+// setTeam replaces the workers with members, in their order, keeping the
+// transcript of each worker that stays.
+func (m *model) setTeam(members []acp.TeamMember) {
+	workers := make([]worker, 0, len(members))
+	for _, member := range members {
+		w := worker{id: protocol.SessionId(member.SessionID), name: member.Name}
+		if old := m.worker(w.id); old != nil {
+			w.view = old.view
+		}
+		workers = append(workers, w)
+	}
+	m.workers = workers
 }
 
 // commands returns the slash command names the composer completes: the
@@ -471,6 +509,7 @@ func (m *model) newSession() tea.Cmd {
 		return result(func(m *model) tea.Cmd {
 			closed(m)
 			m.view = transcript{}
+			m.workers = nil
 			if err != nil {
 				m.notice("New session failed: "+err.Error(), red)
 			} else {
@@ -618,6 +657,7 @@ func (m *model) choose() tea.Cmd {
 		return result(func(m *model) tea.Cmd {
 			closed(m)
 			m.view = transcript{}
+			m.workers = nil
 			if err != nil {
 				p.err = "Load failed: " + err.Error()
 				return m.opened()
@@ -668,7 +708,7 @@ func (m *model) View() tea.View {
 
 func (m *model) screen(now time.Time) screen {
 	return screen{
-		view: &m.view, input: &m.input, commands: m.commands(), approval: m.session.Permission,
+		view: &m.view, workers: m.workers, input: &m.input, commands: m.commands(), approval: m.session.Permission,
 		approvalSelected: m.approvalSelected, approvalScroll: m.approvalScroll, picker: m.picker,
 		settings: settingsSummary(m.session.ConfigOptions), usage: usageSummary(m.session.Usage),
 		showThinking: m.showThinking, toolOutput: m.toolOutput, now: now,

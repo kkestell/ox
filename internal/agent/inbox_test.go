@@ -178,3 +178,30 @@ func TestInboxUserMessageIsSavedWhenCancellationFollowsTakingIt(t *testing.T) {
 		t.Fatalf("saved inbox input = %+v", saved)
 	}
 }
+
+func TestInboxUserMessageIsSentAsTheTurnStarts(t *testing.T) {
+	f := newFixture(t, fake.Text("Done."))
+	in := f.input("")
+	in.Input = transcript.TurnInput{}
+	// The first take is the user message; the second is context.
+	takes := [][]string{{"Message from orchestrator:\nStart."}, {"Message from docs:\nLater."}}
+	in.Inbox = func() []string {
+		if len(takes) == 0 {
+			return nil
+		}
+		waiting := takes[0]
+		takes = takes[1:]
+		return waiting
+	}
+	client := &recorder{mode: transcript.ModeAuto}
+	if _, err := f.run(t, context.Background(), in, client); err != nil {
+		t.Fatal(err)
+	}
+	want := "Message from orchestrator:\nStart.\n\nMessage from docs:\nLater."
+	if len(client.events) < 2 {
+		t.Fatalf("events = %v", client.events)
+	}
+	if sent, ok := client.events[1].(Context); !ok || string(sent) != want {
+		t.Errorf("the client was sent %v after the session info", client.events[1])
+	}
+}

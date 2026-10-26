@@ -48,6 +48,12 @@ type Finished struct {
 	Err       error
 }
 
+// Team is an orchestrator's whole team, in the order to show it.
+type Team struct {
+	SessionID protocol.SessionId
+	Members   []acp.TeamMember
+}
+
 // Diagnostic is one line the server wrote to standard error.
 type Diagnostic string
 
@@ -61,6 +67,7 @@ type QueuedPrompt string
 func (Update) event()       {}
 func (*Permission) event()  {}
 func (Finished) event()     {}
+func (Team) event()         {}
 func (Diagnostic) event()   {}
 func (Closed) event()       {}
 func (QueuedPrompt) event() {}
@@ -262,8 +269,16 @@ func (c *Conn) HandleRequest(r *acp.Request) {
 	})
 }
 
-// HandleNotification queues session updates and ignores the rest.
+// HandleNotification queues session updates and team notifications and
+// ignores the rest.
 func (c *Conn) HandleNotification(method string, params json.RawMessage) {
+	if method == acp.MethodTeam {
+		var team acp.TeamNotification
+		if json.Unmarshal(params, &team) == nil {
+			c.push(Team{SessionID: protocol.SessionId(team.SessionID), Members: team.Members})
+		}
+		return
+	}
 	var notification struct {
 		SessionID protocol.SessionId `json:"sessionId"`
 		Update    json.RawMessage    `json:"update"`

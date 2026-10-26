@@ -32,6 +32,7 @@ type layout struct {
 // screen is everything a frame shows.
 type screen struct {
 	view             *transcript
+	workers          []worker
 	input            *textarea.Model
 	commands         []string
 	approval         *client.Permission
@@ -96,19 +97,42 @@ func cursorIn(area image.Rectangle, x, y int) image.Point {
 // draw draws the screen and returns the cursor position and the layout.
 func draw(buf uv.ScreenBuffer, s screen) (image.Point, layout) {
 	area := buf.Bounds()
-	height := area.Dy()
-	rowWidth := inset(area, marginX, marginY).Dx()
 	// A picker fills the screen, hiding the approval dialog and the composer,
 	// and the cursor sits in its search input.
 	if s.picker != nil {
 		padded := inset(area, pickerPaddingX, pickerPaddingY)
-		rows := pickerRows(height)
+		rows := pickerRows(area.Dy())
 		for y, row := range pickerLines(s.picker, padded.Dx(), rows) {
 			put(buf, padded, y, row)
 		}
 		fill(buf, area, background)
 		return cursorIn(padded, width(s.picker.query), 0), layout{height: rows}
 	}
+	if len(s.workers) == 0 {
+		return drawSession(buf, area, s)
+	}
+	divider := area.Min.X + area.Dx()/2
+	top := image.Rect(area.Min.X, area.Min.Y, divider, area.Min.Y+1)
+	put(buf, top, 0, label("━", "orchestrator", top.Dx()))
+	fill(buf, top, background)
+	cursor, l := drawSession(buf, image.Rect(area.Min.X, area.Min.Y+1, divider, area.Max.Y), s)
+	drawWorkers(buf, image.Rect(divider, area.Min.Y, area.Max.X, area.Max.Y), s)
+	return cursor, l
+}
+
+// label returns a label line columns wide: corner, then the name within a
+// horizontal line.
+func label(corner, name string, columns int) string {
+	name = control.Escape(name)
+	rule := strings.Repeat("━", max(columns-width(name)-4, 0))
+	return fg(faint).Render(corner+"━ ") + fg(gray).Render(name) + fg(faint).Render(" "+rule)
+}
+
+// drawSession draws the open session's transcript, approval dialog, and
+// composer in area and returns the cursor position and the layout.
+func drawSession(buf uv.ScreenBuffer, area image.Rectangle, s screen) (image.Point, layout) {
+	height := area.Dy()
+	rowWidth := inset(area, marginX, marginY).Dx()
 	s.input.SetWidth(rowWidth)
 	var dialogLines []string
 	if s.approval != nil {
@@ -184,6 +208,35 @@ func draw(buf uv.ScreenBuffer, s screen) (image.Point, layout) {
 	fill(buf, dialogArea, approval)
 	fill(buf, composerArea, composer)
 	return cursorIn(inner, cursor.X, cursor.Y), l
+}
+
+// drawWorkers stacks the workers' panes in area, each under a label line,
+// with the divider in area's first column. A pane shows the end of its
+// worker's transcript.
+func drawWorkers(buf uv.ScreenBuffer, area image.Rectangle, s screen) {
+	height := area.Dy()
+	for i := range s.workers {
+		w := &s.workers[i]
+		top, bottom := i*height/len(s.workers), (i+1)*height/len(s.workers)
+		if top == bottom {
+			continue
+		}
+		// The first label line meets the orchestrator's.
+		corner := "┣"
+		if i == 0 {
+			corner = "┳"
+		}
+		put(buf, area, top, label(corner, w.name, area.Dx()))
+		for y := top + 1; y < bottom; y++ {
+			put(buf, area, y, fg(faint).Render("┃"))
+		}
+		pane := inset(image.Rect(area.Min.X+1, area.Min.Y+top+1, area.Max.X, area.Min.Y+bottom), marginX, marginY)
+		_, rows := w.view.visibleRows(pane.Dx(), s.showThinking, s.toolOutput, s.now, pane.Dy())
+		for y, row := range rows {
+			put(buf, pane, y, row)
+		}
+	}
+	fill(buf, area, background)
 }
 
 func pickerLines(p *picker, rowWidth, rows int) []string {

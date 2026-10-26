@@ -217,7 +217,10 @@ type Turn struct {
 	toolbox  *tools.Toolbox
 	info     *SessionInfo
 	inbox    func() []string
-	tokens   Tokens
+	// inboxInput is set when the user message came from the inbox. No client
+	// sent it, so the turn shows it.
+	inboxInput bool
+	tokens     Tokens
 }
 
 // ModelSelection returns the catalog model for a session's selections,
@@ -275,6 +278,7 @@ func (a *Agent) Start(ctx context.Context, in Input, client Client) (*Turn, erro
 	// hook or inbox may hand over text only once.
 	if in.Input.Message == nil && in.Input.Skill == nil {
 		in.Input.Message = new(transcript.TextMessage(strings.Join(t.messages(), "\n\n")))
+		t.inboxInput = true
 	}
 	added := t.promptHooks(ctx, in.SessionStart, len(session.Transcript), in.Input)
 	added = append(added, t.messages()...)
@@ -349,8 +353,17 @@ func (t *Turn) loop(ctx context.Context) (Result, error) {
 	if err := t.client.Send(*t.info); err != nil {
 		return Result{}, updateFailure(err)
 	}
-	if added := t.request.Transcript[len(t.request.Transcript)-1].(*transcript.TurnStart).Context; len(added) > 0 {
-		if err := t.client.Send(Context(transcript.ContextMessage(added))); err != nil {
+	// Replay shows the same text: the input, then the context.
+	start := t.request.Transcript[len(t.request.Transcript)-1].(*transcript.TurnStart)
+	var shown []string
+	if t.inboxInput {
+		shown = append(shown, start.Input.Message.Text())
+	}
+	if len(start.Context) > 0 {
+		shown = append(shown, transcript.ContextMessage(start.Context))
+	}
+	if len(shown) > 0 {
+		if err := t.client.Send(Context(strings.Join(shown, "\n\n"))); err != nil {
 			return Result{}, updateFailure(err)
 		}
 	}

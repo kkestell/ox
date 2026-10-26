@@ -119,8 +119,8 @@ supports `-V` or `--version`.
 In an ACP session, ask Ox to divide independent work among workers. The session
 you talk to is the orchestrator: it can create workers, send messages, list the
 team, wait for reports, and remove workers. Workers run in Auto mode; Ask mode
-requests permission before creating one. Workers have no terminal view. Teams
-are unavailable in `ox run`.
+requests permission before creating one. The terminal client shows each worker's
+transcript beside the orchestrator's. Teams are unavailable in `ox run`.
 
 By default, each worker gets a Git worktree at `.ox/worktrees/<name>` and a
 branch named `ox/<name>` from the orchestrator's `HEAD`. Merge that branch from

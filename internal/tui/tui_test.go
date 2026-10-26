@@ -698,3 +698,58 @@ func TestApprovalKeysMoveTheSelectionAndEnterAnswersOnlyWithAnEmptyInput(t *test
 	equal(t, text, "you said: hi")
 	equal(t, ok, true)
 }
+
+// team sends the open session's team and delivers it to the model.
+func (d *driver) team(names ...string) {
+	d.t.Helper()
+	var members []acp.TeamMember
+	for _, name := range names {
+		members = append(members, acp.TeamMember{SessionID: "worker-" + name, Name: name})
+	}
+	d.agent.conn.Notify(acp.MethodTeam, acp.TeamNotification{SessionID: string(d.session.ID), Members: members})
+	d.send(d.conn.Next())
+}
+
+// workerUpdate sends a message to the session id and delivers it to the model.
+func (d *driver) workerUpdate(id protocol.SessionId, text string) {
+	d.t.Helper()
+	d.agent.send(id, protocol.UpdateAgentMessageText(text))
+	d.send(d.conn.Next())
+}
+
+func (d *driver) workerNames() []string {
+	var names []string
+	for _, w := range d.workers {
+		names = append(names, w.name)
+	}
+	return names
+}
+
+func TestTeamEventsReplaceTheWorkersAndKeepTheTranscriptsOfThoseThatStay(t *testing.T) {
+	d := newDriver(t)
+	d.team("a", "b")
+	equal(t, d.workerNames(), []string{"a", "b"})
+	d.workerUpdate("worker-a", "from a")
+	d.workerUpdate("worker-b", "from b")
+	d.workerUpdate("worker-c", "from c")
+	equal(t, d.workers[0].view.items[0].text, "from a")
+	equal(t, len(d.workers[0].view.items), 1)
+	equal(t, d.workers[1].view.items[0].text, "from b")
+	equal(t, len(d.workers[1].view.items), 1)
+	equal(t, len(d.view.items), 0)
+	d.team("b", "c")
+	equal(t, d.workerNames(), []string{"b", "c"})
+	equal(t, d.workers[0].view.items[0].text, "from b")
+	equal(t, len(d.workers[1].view.items), 0)
+}
+
+func TestOpeningASessionClearsTheWorkers(t *testing.T) {
+	d := newDriver(t)
+	d.team("a")
+	d.command("/new")
+	equal(t, len(d.workers), 0)
+	d.team("a")
+	d.command("/resume")
+	d.press(tea.KeyEnter)
+	equal(t, len(d.workers), 0)
+}

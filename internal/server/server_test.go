@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"io"
 	"net/http"
@@ -888,6 +889,125 @@ func TestTeamsAskBeforeCreatingAndRunWorkersInAuto(t *testing.T) {
 	}
 }
 
+// teamNames returns the member names of each team notification.
+func teamNames(messages []message) [][]string {
+	var teams [][]string
+	for _, m := range messages {
+		if m.Method == acp.MethodTeam {
+			names := []string{}
+			for _, member := range m.Params["members"].([]any) {
+				names = append(names, member.(map[string]any)["name"].(string))
+			}
+			teams = append(teams, names)
+		}
+	}
+	return teams
+}
+
+// sessionUpdates returns the updates for the session.
+func sessionUpdates(messages []message, id string) []object {
+	var found []object
+	for _, m := range messages {
+		if m.Method == acp.MethodUpdate && m.Params["sessionId"] == id {
+			found = append(found, m.Params["update"].(map[string]any))
+		}
+	}
+	return found
+}
+
+func TestTheClientSeesTheTeamBeforeWorkerUpdatesAndAfterRemoval(t *testing.T) {
+	var mu sync.Mutex
+	orchestratorRequests := 0
+	dispatch := func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		messages := body["messages"].([]any)
+		if strings.Contains(messages[0].(map[string]any)["content"].(string), "You are worker reader") {
+			fake.Text("Worker done.")(w, r, body)
+			return
+		}
+		mu.Lock()
+		orchestratorRequests++
+		count := orchestratorRequests
+		mu.Unlock()
+		switch count {
+		case 1:
+			fake.Calls(fake.Call{ID: "wait", Name: "wait", Arguments: object{}})(w, r, body)
+		case 2:
+			fake.Calls(fake.Call{ID: "remove", Name: "remove_agent", Arguments: object{"name": "reader"}})(w, r, body)
+		default:
+			fake.Text("All done.")(w, r, body)
+		}
+	}
+	c := connect(t, fake.Calls(fake.Call{ID: "create", Name: "create_agent", Arguments: object{"name": "reader", "message": "Read.", "dir": "."}}), dispatch, dispatch, dispatch, dispatch)
+	id := c.newSession()
+	response, before := c.prompt(id, "Delegate.", "approve")
+	if response.Error != nil || response.Result["stopReason"] != "end_turn" {
+		t.Fatalf("prompt = %+v", response)
+	}
+	if got := teamNames(before); !reflect.DeepEqual(got, [][]string{{"reader"}, {}}) {
+		t.Fatalf("teams = %v", got)
+	}
+	var workerID string
+	firstTeam, firstWorkerUpdate := -1, -1
+	for i, m := range before {
+		if m.Method == acp.MethodTeam && firstTeam < 0 {
+			firstTeam = i
+			workerID = m.Params["members"].([]any)[0].(map[string]any)["sessionId"].(string)
+		}
+		if m.Method == acp.MethodUpdate && workerID != "" && m.Params["sessionId"] == workerID && firstWorkerUpdate < 0 {
+			firstWorkerUpdate = i
+		}
+	}
+	if firstTeam < 0 || firstWorkerUpdate < firstTeam {
+		t.Fatalf("team at %d, first worker update at %d", firstTeam, firstWorkerUpdate)
+	}
+	encoded, _ := json.Marshal(sessionUpdates(before, workerID))
+	if !strings.Contains(string(encoded), "Read.") || !strings.Contains(string(encoded), "Worker done.") {
+		t.Fatalf("worker updates = %s", encoded)
+	}
+}
+
+func TestAFailedWorkerTurnShowsItsError(t *testing.T) {
+	var mu sync.Mutex
+	orchestratorRequests := 0
+	dispatch := func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		messages := body["messages"].([]any)
+		if strings.Contains(messages[0].(map[string]any)["content"].(string), "You are worker reader") {
+			fake.Status(400, `{"error":{"message":"worker request refused"}}`)(w, r, body)
+			return
+		}
+		mu.Lock()
+		orchestratorRequests++
+		count := orchestratorRequests
+		mu.Unlock()
+		if count == 1 {
+			fake.Calls(fake.Call{ID: "wait", Name: "wait", Arguments: object{}})(w, r, body)
+		} else {
+			fake.Text("All done.")(w, r, body)
+		}
+	}
+	c := connect(t, fake.Calls(fake.Call{ID: "create", Name: "create_agent", Arguments: object{"name": "reader", "message": "Read.", "dir": "."}}), dispatch, dispatch, dispatch)
+	response, before := c.prompt(c.newSession(), "Delegate.", "approve")
+	if response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	var workerID string
+	for _, m := range before {
+		if m.Method == acp.MethodTeam {
+			workerID = m.Params["members"].([]any)[0].(map[string]any)["sessionId"].(string)
+			break
+		}
+	}
+	var failed []object
+	for _, update := range sessionUpdates(before, workerID) {
+		if update["title"] == "Turn error" && update["status"] == "failed" {
+			failed = append(failed, update)
+		}
+	}
+	if len(failed) != 1 || !strings.Contains(fmt.Sprint(failed[0]["rawOutput"]), "worker request refused") {
+		t.Fatalf("worker turn errors = %v", failed)
+	}
+}
+
 func TestLoadingWakesWorkersClosingLeavesThemRunningAndDeletionRefuses(t *testing.T) {
 	db, err := store.OpenMemory()
 	if err != nil {
@@ -926,8 +1046,20 @@ func TestLoadingWakesWorkersClosingLeavesThemRunningAndDeletionRefuses(t *testin
 	})
 	c.workspace = workspace
 	load := object{"sessionId": parent.ID, "cwd": workspace, "mcpServers": []any{}}
-	if response, _ := c.call(acp.MethodLoadSession, load); response.Error != nil {
+	response, before := c.call(acp.MethodLoadSession, load)
+	if response.Error != nil {
 		t.Fatal(response.Error)
+	}
+	if got := teamNames(before); !reflect.DeepEqual(got, [][]string{{"reader"}}) {
+		t.Fatalf("teams on load = %v", got)
+	}
+	// The woken worker's new turn may start streaming before the response.
+	replayed := sessionUpdates(before, worker.ID)
+	if len(replayed) == 0 || replayed[0]["sessionUpdate"] != "user_message_chunk" || !strings.Contains(fmt.Sprint(replayed[0]["content"]), "Earlier work.") {
+		t.Fatalf("worker replay = %v", replayed)
+	}
+	if encoded, _ := json.Marshal(replayed); strings.Count(string(encoded), "Resume the work.") > 1 {
+		t.Fatalf("the new message showed twice: %s", encoded)
 	}
 	select {
 	case body := <-requested:
@@ -957,6 +1089,16 @@ func TestLoadingWakesWorkersClosingLeavesThemRunningAndDeletionRefuses(t *testin
 			t.Fatal("closed orchestrator did not receive worker report")
 		}
 		time.Sleep(time.Millisecond)
+	}
+	for drained := false; !drained; {
+		select {
+		case m := <-c.out:
+			if m.Params["sessionId"] == worker.ID || m.Method == acp.MethodTeam {
+				t.Fatalf("closed orchestrator received %+v", m)
+			}
+		default:
+			drained = true
+		}
 	}
 	if response, _ := c.call(acp.MethodLoadSession, load); response.Error != nil {
 		t.Fatal(response.Error)

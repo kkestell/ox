@@ -377,3 +377,42 @@ func TestAPickerDrawsTheSelectedRowInWhiteAndTheOthersInGray(t *testing.T) {
 		equal(t, buf.CellAt(point.X, point.Y).Style.Bg, background)
 	}
 }
+
+func TestWorkersStackBesideTheSessionUnderTheirLabels(t *testing.T) {
+	now := time.Now()
+	view := &transcript{}
+	view.update(message("orchestrating").update, "", now)
+	workers := []worker{{id: "a", name: "a"}, {id: "b", name: "b"}}
+	for i, w := range workers {
+		for _, text := range []string{"early", "middle", "late"} {
+			workers[i].view.notice(w.name+" "+text, textColor, now)
+		}
+	}
+	s := testScreen(view, typed("hi"), now)
+	s.workers = workers
+	rows, cursor, l, buf := render(s, 40, 14)
+	equal(t, rows, []string{
+		"━━ orchestrator ━━━━┳━ a ━━━━━━━━━━━━━━━",
+		"                    ┃",
+		"  ← orchestrating   ┃",
+		"                    ┃  a middle",
+		"                    ┃",
+		"                    ┃  a late",
+		"                    ┃",
+		"                    ┣━ b ━━━━━━━━━━━━━━━",
+		"                    ┃",
+		"                    ┃",
+		"  ❯ hi              ┃  b middle",
+		"                    ┃",
+		"        0% • $0.00  ┃  b late",
+		"                    ┃",
+	})
+	equal(t, cursor, image.Pt(6, 10))
+	equal(t, l.height, 6)
+	equal(t, colors(buf, 0, 0), [2]color.Color{faint, background})
+	equal(t, colors(buf, 3, 0), [2]color.Color{gray, background})
+	equal(t, colors(buf, 20, 3), [2]color.Color{faint, background})
+	equal(t, colors(buf, 23, 0), [2]color.Color{gray, background})
+	equal(t, colors(buf, 30, 7), [2]color.Color{faint, background})
+	equal(t, colors(buf, 30, 10), [2]color.Color{textColor, background})
+}
