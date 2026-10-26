@@ -1,0 +1,557 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent teams</title>
+
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11/styles/github.min.css" media="(prefers-color-scheme: light)" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11/styles/github-dark.min.css" media="(prefers-color-scheme: dark)" />
+    <script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11/highlight.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+
+    <style type="text/tailwindcss">
+      body { @apply bg-white text-zinc-800 antialiased dark:bg-zinc-950 dark:text-zinc-200; }
+      h1 { @apply text-3xl font-semibold tracking-tight text-zinc-950 dark:text-white; }
+      h2 { @apply mt-14 mb-4 text-xl font-semibold text-zinc-950 dark:text-white; }
+      h3 { @apply mt-8 mb-3 font-semibold text-zinc-950 dark:text-white; }
+      p, ul, ol { @apply my-4 leading-7; }
+      ul { @apply list-disc pl-6; }
+      ol { @apply list-decimal pl-6; }
+      a { @apply text-blue-600 underline underline-offset-2 dark:text-blue-400; }
+      :not(pre) > code { @apply rounded bg-zinc-100 px-1.5 py-0.5 text-[0.9em] dark:bg-zinc-800; }
+      pre:not(.mermaid) { @apply my-4 overflow-x-auto rounded-lg border border-zinc-200 text-sm dark:border-zinc-800; }
+      pre code.hljs { padding: 1rem; line-height: 1.5rem; }
+      pre.mermaid { @apply my-8 flex justify-center bg-transparent; }
+      figure { @apply my-8; }
+      figcaption { @apply mt-2 text-center text-sm text-zinc-500; }
+      .file { @apply mt-6 -mb-2 font-mono text-xs text-zinc-500; }
+      table { @apply my-6 w-full border-collapse text-sm; }
+      th, td { @apply border border-zinc-200 px-3 py-2 text-left align-top dark:border-zinc-800; }
+      th { @apply bg-zinc-50 font-semibold dark:bg-zinc-900; }
+    </style>
+  </head>
+
+  <body>
+    <main class="mx-auto max-w-3xl px-6 py-16">
+      <header>
+        <p class="text-sm text-zinc-500">ox · agents/plans/2026-10-26-001-agent-teams.md, first stage</p>
+        <h1>Agent teams</h1>
+        <p class="text-lg text-zinc-600 dark:text-zinc-400">
+          An Ox session can now create other Ox sessions, give them work, and exchange messages with them while they run. The
+          server runs those sessions itself, each in its own Git worktree or in a named directory, and on any model in the Ox
+          catalog.
+        </p>
+      </header>
+
+      <h2>Orchestrators and workers</h2>
+
+      <p>
+        The session the user talks to is the <em>orchestrator</em>. The sessions it creates are its <em>workers</em>. A worker is
+        an ordinary saved session. Its workspace is its worktree or directory, and a new table in the database links it to its
+        orchestrator. Any session that was not created as a worker is an orchestrator.
+      </p>
+
+      <p>
+        Team tools are added to every session the ACP server runs. <code>ox run</code> does not get them, because it ends when its
+        one prompt ends, which would stop every worker. The tools available depend on the role:
+      </p>
+
+      <table>
+        <thead>
+          <tr><th>Tool</th><th>Orchestrator</th><th>Worker</th><th>What it does</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>create_agent</code></td><td>yes</td><td>no</td><td>Creates a worker, saves its first message, and starts its turn.</td></tr>
+          <tr><td><code>send_message</code></td><td>yes</td><td>yes</td><td>Saves a message for a worker or for <code>orchestrator</code>, and starts a turn on an idle worker.</td></tr>
+          <tr><td><code>list_agents</code></td><td>yes</td><td>yes</td><td>Lists each member's name, model, effort, workspace, branch, and whether it is working.</td></tr>
+          <tr><td><code>remove_agent</code></td><td>yes</td><td>no</td><td>Cancels the worker, removes its worktree and branch, and deletes its session.</td></tr>
+          <tr><td><code>wait</code></td><td>yes</td><td>no</td><td>Blocks until a message arrives or no worker is working, then returns the waiting messages.</td></tr>
+        </tbody>
+      </table>
+
+      <p>
+        Workers run without a view in the terminal client. The plan's section "Next: watching workers" describes a second stage
+        that adds one.
+      </p>
+
+      <h2>The parts involved</h2>
+
+      <p>
+        The change touches five areas. The <code>internal/tools</code> package declares a <code>Team</code> interface and the tool
+        schemas. The <code>internal/server</code> package implements that interface and runs worker turns. The
+        <code>internal/agent</code> package reads a session's waiting messages during a turn. The <code>internal/store</code>
+        package saves team members and messages. A new <code>internal/worktree</code> package creates and removes worker
+        worktrees.
+      </p>
+
+      <figure>
+        <pre class="mermaid">
+flowchart LR
+  client["ACP client"] -->|prompt| orch["Orchestrator session"]
+  orch -->|team tools| server["Server (internal/server/team.go)"]
+  server -->|runTurn| w1["Worker session"]
+  server -->|runTurn| w2["Worker session"]
+  w1 -->|send_message| server
+  w2 -->|send_message| server
+  server --> store[("team_members, messages")]
+  server --> git["Git worktrees"]
+        </pre>
+        <figcaption>The orchestrator's turns start from ACP prompts. Worker turns start from the server.</figcaption>
+      </figure>
+
+      <p>
+        The <code>Team</code> interface keeps the tools package independent of the server, in the same way the MCP catalog joins
+        the tool set from outside the package. When <code>Toolbox.Team</code> is nil, the team tools are absent.
+      </p>
+
+      <p class="file">internal/tools/team.go</p>
+      <pre><code class="language-go">type Team interface {
+	IsWorker() bool
+	WorkerModels() string
+	CreateAgent(context.Context, CreateAgentArgs) (string, error)
+	SendMessage(ctx context.Context, to, text string) (string, error)
+	ListAgents(context.Context) (string, error)
+	RemoveAgent(ctx context.Context, name string) (string, error)
+	Wait(context.Context) (string, error)
+}</code></pre>
+
+      <h2>Storage</h2>
+
+      <p>
+        Two tables are added. The existing <code>sessions</code> table does not change. <code>team_members</code> marks a session
+        as a worker and records its orchestrator, its name, and its branch. <code>messages</code> holds messages that have not yet
+        been delivered.
+      </p>
+
+      <p class="file">internal/store/store.go</p>
+      <pre data-mark="3"><code class="language-sql">CREATE TABLE IF NOT EXISTS team_members (
+    session_id TEXT PRIMARY KEY REFERENCES sessions (id) ON DELETE CASCADE,
+    parent_id  TEXT NOT NULL REFERENCES sessions (id),
+    name       TEXT NOT NULL,
+    branch     TEXT NOT NULL,
+    UNIQUE (parent_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+    id        INTEGER PRIMARY KEY,
+    recipient TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+    sender    TEXT NOT NULL,
+    text      TEXT NOT NULL
+);</code></pre>
+
+      <p>
+        <code>parent_id</code> has no cascade, so the database refuses to delete an orchestrator that still has workers. Deleting a
+        worker session removes its <code>team_members</code> row and its messages. <code>branch</code> is empty for a worker that
+        uses a directory instead of a worktree.
+      </p>
+
+      <p>
+        <code>Store.List</code> now leaves out workers, so the session picker shows only sessions the user started. A worker's
+        title is its name.
+      </p>
+
+      <p>
+        Messages are saved rather than kept in memory, so a report that arrives while the orchestrator is idle survives a restart.
+        <code>Store.Take</code> reads a recipient's messages and deletes them in one transaction.
+      </p>
+
+      <h2>Delivering messages during a turn</h2>
+
+      <h3>Before: hook context</h3>
+
+      <p>
+        Before this change, hooks could add text to a turn in three places: at turn start, after each tool call, and at stop. The
+        text was saved in a <code>HookContext</code> field on <code>TurnStart</code> and <code>AssistantBatch</code>, and sent to the
+        model as a user message. <code>transcript.HookMessage</code> joined the items and added the label "Context added by the
+        user's hooks:" in front of them.
+      </p>
+
+      <h3>After: context from several sources</h3>
+
+      <p>
+        Messages use the same three places and the same transcript fields, so saving, provider requests, replay, and display need
+        no new paths. The fields are renamed from <code>HookContext</code> to <code>Context</code>, and the
+        <code>agent.HookContext</code> event to <code>agent.Context</code>. Since an item can now come from a hook or from a
+        message, each item names its own source. The hook label moves to where hook output is collected, and
+        <code>transcript.ContextMessage</code> only joins the items.
+      </p>
+
+                <p class="file">internal/transcript/transcript.go, before</p>
+          <pre data-mark="2"><code class="language-go">func HookMessage(context []string) string {
+	return "Context added by the user's hooks:\n\n" + strings.Join(context, "\n\n")
+}</code></pre>
+          <p class="file">internal/transcript/transcript.go, after</p>
+          <pre data-mark="2"><code class="language-go">func ContextMessage(context []string) string {
+	return strings.Join(context, "\n\n")
+}</code></pre>
+
+      <p class="file">internal/agent/hooks.go, after</p>
+      <pre data-mark="5-6"><code class="language-go">func hookContext(texts []string) []string {
+	if len(texts) == 0 {
+		return nil
+	}
+	return []string{"Context added by the user's hooks:\n\n" +
+		strings.Join(texts, "\n\n")}
+}</code></pre>
+
+      <h3>The inbox</h3>
+
+      <p>
+        <code>agent.Input</code> gets an <code>Inbox</code> field of type <code>func() []string</code>. It takes the session's
+        waiting messages, each already formatted as the model reads it:
+      </p>
+
+      <pre><code class="language-text">Message from &lt;name&gt;:
+&lt;text&gt;</code></pre>
+
+      <p>The turn calls the inbox at each place hooks add context:</p>
+
+      <table>
+        <thead>
+          <tr><th>Place</th><th>Saved in</th><th>Effect</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Turn start, after the prompt hooks</td><td><code>TurnStart.Context</code></td><td>The messages follow the user's input.</td></tr>
+          <tr><td>After each tool call, after the PostToolUse hooks</td><td><code>AssistantBatch.Context</code></td><td>The messages follow the tool results.</td></tr>
+          <tr><td>When the model finishes, after the Stop hooks</td><td><code>AssistantBatch.Context</code></td><td>The turn continues, as it does when a Stop hook blocks.</td></tr>
+        </tbody>
+      </table>
+
+      <p>
+        The stop case changes the most. Before, only Stop hook reasons could continue a turn. Now any added context continues it,
+        and the turn ends only when the Stop hooks allow it and the inbox is empty. <code>stopHookActive</code> still tracks only
+        the hooks, since it is passed to the Stop hooks themselves.
+      </p>
+
+                <p class="file">internal/agent/agent.go, before</p>
+          <pre data-mark="3,9-11"><code class="language-go">var blocked []string
+if completion.Stop == provider.StopFinished {
+	blocked = t.stop(ctx, stopHookActive)
+}
+if err := t.processBatch(ctx, completion.Message, blocked); err != nil {
+	return Result{}, err
+}
+switch {
+case completion.Stop == provider.StopFinished &amp;&amp; len(blocked) &gt; 0:
+	// The reasons follow the answer, and the model continues.
+	stopHookActive = true
+case completion.Stop == provider.StopFinished:
+	return Result{Stop: EndTurn, Answer: completion.Message.Text}, nil</code></pre>
+          <p class="file">internal/agent/agent.go, after</p>
+          <pre data-mark="4-5,11"><code class="language-go">var added []string
+if completion.Stop == provider.StopFinished {
+	added = t.stop(ctx, stopHookActive)
+	stopHookActive = stopHookActive || len(added) &gt; 0
+	added = append(added, t.messages()...)
+}
+if err := t.processBatch(ctx, completion.Message, added); err != nil {
+	return Result{}, err
+}
+switch {
+case completion.Stop == provider.StopFinished &amp;&amp; len(added) == 0:
+	return Result{Stop: EndTurn, Answer: completion.Message.Text}, nil</code></pre>
+
+      <p>
+        A nil <code>Inbox</code> delivers nothing. <code>ox run</code> sets no inbox and no team, so its turns behave as before.
+      </p>
+
+      <h2>Running a turn from the server</h2>
+
+      <h3>Before: only ACP prompts started turns</h3>
+
+      <p>
+        Before this change, the ACP <code>prompt</code> handler started a goroutine that prepared the MCP catalog, called
+        <code>agent.Start</code>, and ran the turn. That code lived inline in the handler, and no other path started a turn.
+      </p>
+
+      <h3>After: one turn function for both callers</h3>
+
+      <p>
+        The goroutine body moves into <code>Server.runTurn</code>. ACP prompts and worker turns both call it with a session, an
+        input, and an <code>agent.Client</code>. It builds the session's <code>Team</code> and its <code>Inbox</code>, which reads
+        from the store.
+      </p>
+
+      <p class="file">internal/server/server.go</p>
+      <pre data-mark="6-10"><code class="language-go">turn, err := s.agent.Start(ctx, agent.Input{
+	SessionID: id, Input: input,
+	Model: selections.Model, Effort: selections.Effort,
+	SystemPrompt: session.systemPrompt,
+	Processes: session.processes, MCP: catalog,
+	Team: team, SessionStart: !started,
+	Inbox: func() []string {
+		messages, err := s.takeMessages(id)
+		inboxErr = errors.Join(inboxErr, err)
+		return messages
+	},
+}, client)</code></pre>
+
+      <p>
+        Callers of <code>runTurn</code> hold the session's prompt operation from <code>operations</code>, which allows one
+        operation per session at a time. A worker therefore runs at most one turn at a time, and the operation also tells
+        <code>list_agents</code> and <code>wait</code> whether a worker is working.
+      </p>
+
+      <h3>Starting a worker turn</h3>
+
+      <p>
+        <code>Server.wake(id)</code> starts a turn for an idle worker that has waiting messages. It tries to acquire the prompt
+        operation. If the worker is busy, the attempt fails and <code>wake</code> returns without doing anything; the running turn
+        reads the new messages through its inbox. If the worker is idle, <code>wake</code> takes the messages and uses them as the
+        turn's input, so they are saved as the turn's user message.
+      </p>
+
+      <p>
+        A worker turn uses <code>workerClient</code>, which discards events and approves every tool call, so a worker always runs
+        in Auto mode. When the turn ends, the goroutine saves a report for the orchestrator, releases the operation, and calls
+        <code>wake</code> again. The second call starts a new turn if a message arrived after the turn's last inbox call but before
+        the turn ended.
+      </p>
+
+      <p class="file">internal/server/team.go</p>
+      <pre data-mark="3-6,8-13,15,17"><code class="language-go">go func() {
+	defer s.prompts.Done()
+	result, err := s.runTurn(ctx, id,
+		transcript.TurnInput{Message: new(transcript.TextMessage(
+			strings.Join(messages, "\n\n")))},
+		session, workerClient{})
+	s.mu.Lock()
+	if !s.removing[id] {
+		if err := s.agent.Store.Send(member.Parent, member.Name,
+			workerReport(member.Name, result, err)); err != nil {
+			fmt.Fprintln(os.Stderr, "saving worker report:", err)
+		}
+	}
+	s.mu.Unlock()
+	release()
+	s.change()
+	if err := s.wake(id); err != nil {
+		fmt.Fprintln(os.Stderr, "waking worker:", err)
+	}
+}()</code></pre>
+
+      <p>The report depends on how the turn ended:</p>
+
+      <ul>
+        <li>Finished: "Worker &lt;name&gt; finished its turn:" followed by the final answer.</li>
+        <li>Cancelled, stopped at the output limit, or refused: one line saying so.</li>
+        <li>Failed: "Worker &lt;name&gt; failed:" followed by the error.</li>
+      </ul>
+
+      <p>A turn cancelled by <code>remove_agent</code> sends no report. The <code>removing</code> map records those workers.</p>
+
+      <h3>Where a message goes</h3>
+
+      <p>A saved message reaches its recipient by one of these paths:</p>
+
+      <figure>
+        <pre class="mermaid">
+flowchart LR
+  saved["Message saved"] --> who{"Recipient"}
+  who -->|"idle worker"| wake["wake starts a turn<br/>with the messages as input"]
+  who -->|"busy worker"| inbox["Inbox call in the<br/>running turn"]
+  who -->|orchestrator| orch{"Orchestrator state"}
+  orch -->|"in a turn"| inbox
+  orch -->|"in wait"| wait["wait returns<br/>the messages"]
+  orch -->|idle| next["Delivered at the start<br/>of the next user prompt"]
+        </pre>
+      </figure>
+
+      <h2>The orchestrator waits</h2>
+
+      <p>
+        The server never starts a turn on the orchestrator. ACP has no turn that the agent starts, and the client would receive
+        updates with no prompt running. The orchestrator calls <code>wait</code> after giving out work instead.
+      </p>
+
+      <p>
+        To wake waiting calls, the server keeps a channel in <code>Server.changed</code>. <code>Server.change</code> closes it and
+        replaces it with a new one whenever a message is sent or a worker turn ends. Closing a channel releases every goroutine
+        blocked on it.
+      </p>
+
+      <p class="file">internal/server/team.go</p>
+      <pre><code class="language-go">func (s *Server) change() {
+	s.mu.Lock()
+	close(s.changed)
+	s.changed = make(chan struct{})
+	s.mu.Unlock()
+}</code></pre>
+
+      <p>
+        <code>Team.Wait</code> loops. It reads the current channel, takes the orchestrator's messages, and returns them if there are
+        any. If there are none and no worker is working, it returns "No messages and no workers are working." Otherwise it blocks
+        until the channel closes or the prompt is cancelled, then repeats. It reads the channel before taking messages, so a report
+        saved between those two steps closes a channel that <code>wait</code> already holds.
+      </p>
+
+      <h2>A full exchange</h2>
+
+      <figure>
+        <pre class="mermaid">
+sequenceDiagram
+  participant O as Orchestrator turn
+  participant S as Server
+  participant W as Worker turn
+  O->>S: create_agent(name, message)
+  S->>S: add worktree, CreateWorker, Send(message)
+  S->>W: wake: take messages, start turn
+  O->>S: wait
+  W->>S: send_message(orchestrator, progress)
+  S-->>O: wait returns the progress message
+  O->>S: wait
+  W-->>S: turn ends
+  S->>S: Send(report), change, wake
+  S-->>O: wait returns the report
+  O->>O: merge ox/name in its checkout
+  O->>S: remove_agent(name)
+        </pre>
+      </figure>
+
+      <h2>Creating a worker</h2>
+
+      <p>
+        <code>create_agent</code> takes <code>name</code>, <code>message</code>, and optional <code>model</code>,
+        <code>effort</code>, and <code>dir</code>. The name uses lowercase letters, digits, and hyphens, is unique in the team, and
+        is not <code>orchestrator</code>. Model and effort default to the orchestrator's and are checked with
+        <code>agent.ModelSelection</code>.
+      </p>
+
+      <p>
+        The worker's system prompt is the normal one followed by a "Team" section. That section gives the worker's name,
+        workspace, branch, and the team at creation. It also states that the worker commits on its branch and the orchestrator
+        merges it, or, without a worktree, that the worker follows the orchestrator's instructions about branches and commits. It
+        states that the worker's final answer is sent to the orchestrator when its turn ends.
+      </p>
+
+      <p>
+        In Ask mode, <code>create_agent</code> needs permission, because the worker runs commands without asking. The permission
+        request shows the name, model, effort, directory, the orchestrator's workspace, and the message. The other team tools need
+        no permission.
+      </p>
+
+      <p>
+        The optional global setting <code>workerModels</code> is free text that describes which models workers should use and when.
+        It is appended to the <code>create_agent</code> description as written. A workspace settings file that sets it is
+        rejected.
+      </p>
+
+      <h2>Worktrees</h2>
+
+      <p>
+        Without <code>dir</code>, the worker gets a Git worktree. The <code>internal/worktree</code> package is ported from
+        Hypercube's <code>workspace.go</code> and keeps only finding the checkout root, adding and removing a worktree, and the
+        removal check.
+      </p>
+
+      <ul>
+        <li>The branch is <code>ox/&lt;name&gt;</code>, created from the orchestrator's <code>HEAD</code>.</li>
+        <li>
+          The worktree is at <code>&lt;checkout&gt;/.ox/worktrees/&lt;name&gt;</code>. <code>/.ox/worktrees/</code> is added to the
+          checkout's <code>.git/info/exclude</code>.
+        </li>
+        <li>
+          When the orchestrator's workspace is a subdirectory of the checkout, the worker's workspace is the same subdirectory of
+          its worktree.
+        </li>
+      </ul>
+
+      <p>
+        With <code>dir</code>, the worker uses an existing directory: an absolute path, a path starting with <code>~/</code>, or a
+        path relative to the orchestrator's workspace. <code>.</code> is the orchestrator's own workspace. No branch is created, and
+        removal leaves the directory in place. Outside a Git checkout, <code>dir</code> is required.
+      </p>
+
+      <p>
+        <code>remove_agent</code> cancels the worker's turn and waits for it to end. It then checks the worktree: removal fails if
+        the branch is not merged into the orchestrator's <code>HEAD</code> or the worktree has uncommitted changes or untracked
+        files, and the tool returns that reason to the model. If the check passes, it removes the worktree and branch, stops the
+        worker's background processes and MCP servers, and deletes the worker's session and messages. If Git refuses, the worker
+        stays, now idle.
+      </p>
+
+      <p class="file">internal/worktree/worktree.go</p>
+      <pre data-mark="2-3,6"><code class="language-go">func Removable(root, dir, branch string) error {
+	if _, err := git(root, "merge-base", "--is-ancestor",
+		branch, "HEAD"); err != nil {
+		return fmt.Errorf("branch %s is not merged into HEAD", branch)
+	}
+	dirty, err := Dirty(dir)
+	if err != nil {
+		return err
+	}
+	if dirty {
+		return fmt.Errorf("worktree %s has uncommitted changes", dir)
+	}
+	return nil
+}</code></pre>
+
+      <h2>Session lifecycle</h2>
+
+      <table>
+        <thead>
+          <tr><th>Event</th><th>Effect on the team</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>The orchestrator's session is closed</td><td>Workers keep running. Their reports are saved for the orchestrator.</td></tr>
+          <tr><td>The orchestrator's session is deleted</td><td>The request fails with "remove the session's workers before deleting it" while it has workers.</td></tr>
+          <tr><td>The server shuts down</td><td>Worker turns are cancelled with every other prompt. Their cancellation reports are saved.</td></tr>
+          <tr><td>The orchestrator's session is loaded</td><td>The server calls <code>wake</code> for each worker, which starts a turn for any worker with waiting messages.</td></tr>
+        </tbody>
+      </table>
+
+      <p>
+        A worker becomes active the first time it is woken and stays active until it is removed or the server shuts down. When the
+        server activates a worker again after a restart, its model and effort come from its latest saved turn start.
+      </p>
+    </main>
+
+    <script>
+      const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+
+      // highlight.js ships no HCL grammar, so register one for Terraform and Terragrunt.
+      hljs.registerLanguage("hcl", (hljs) => {
+        const interpolation = { className: "subst", begin: /\$\{|%\{/, end: /\}/, keywords: { keyword: "for in if else endfor endif", literal: "true false null" } };
+        const string = { className: "string", begin: /"/, end: /"/, contains: [hljs.BACKSLASH_ESCAPE, interpolation] };
+        const heredoc = { className: "string", begin: /<<-?\s*[A-Za-z_]\w*\s*$/, end: /^\s*[A-Za-z_]\w*\s*$/, contains: [interpolation] };
+        const call = { className: "built_in", begin: /\b[A-Za-z_][\w-]*(?=\()/ };
+        interpolation.contains = [string, call, hljs.NUMBER_MODE];
+        return {
+          name: "HCL",
+          aliases: ["terraform", "tf", "terragrunt"],
+          keywords: { keyword: "for in if", literal: "true false null" },
+          contains: [
+            hljs.HASH_COMMENT_MODE,
+            hljs.C_LINE_COMMENT_MODE,
+            hljs.C_BLOCK_COMMENT_MODE,
+            heredoc,
+            string,
+            { className: "keyword", begin: /^\s*[A-Za-z_][\w-]*(?=(\s+("[^"]*"|[A-Za-z_][\w-]*))*\s*\{)/ },
+            { className: "attr", begin: /\b[A-Za-z_][\w-]*(?=\s*=(?!=))/ },
+            call,
+            hljs.NUMBER_MODE,
+          ],
+        };
+      });
+
+      hljs.highlightAll();
+
+      // Band each marked line, assuming the 1rem padding and 1.5rem line height above.
+      const markColor = dark ? "rgb(251 191 36 / 0.15)" : "rgb(253 230 138 / 0.6)";
+      for (const pre of document.querySelectorAll("pre[data-mark]")) {
+        const bands = pre.dataset.mark.split(",").map((range) => {
+          const [first, last = first] = range.split("-").map(Number);
+          return `linear-gradient(transparent calc(1rem + ${first - 1} * 1.5rem), ${markColor} 0 calc(1rem + ${last} * 1.5rem), transparent 0)`;
+        });
+        pre.querySelector("code").style.backgroundImage = bands.join(", ");
+      }
+    </script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      // deterministicIds: without it, diagrams rendered in the same millisecond share an id and one renders blank.
+      mermaid.initialize({ startOnLoad: true, deterministicIds: true, theme: dark ? "dark" : "neutral", fontFamily: getComputedStyle(document.body).fontFamily });
+    </script>
+  </body>
+</html>
