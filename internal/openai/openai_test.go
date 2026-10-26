@@ -175,7 +175,7 @@ func TestRequestsSendTheTranscriptAsInputItems(t *testing.T) {
 			t.Errorf("%s = %v", key, body[key])
 		}
 	}
-	hook := "Context added by the user's PostToolUse hook:\n\nFormatted."
+	hook := "Context added by the user's hooks:\n\nFormatted."
 	want := []any{
 		object{"type": "message", "role": "user", "content": []any{
 			object{"type": "input_text", "text": "Look"},

@@ -23,7 +23,7 @@ func command(workspace string, server settings.MCPServer) *exec.Cmd {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
-		if key == "OPENROUTER_API_KEY" {
+		if key == "OPENROUTER_API_KEY" || key == "OX_SETTINGS" {
 			continue
 		}
 		if _, overridden := server.Env[key]; !overridden {

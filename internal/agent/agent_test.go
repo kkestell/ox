@@ -292,7 +292,7 @@ func TestCompactionDecisionUsesSavedToolResponse(t *testing.T) {
 		ToolCalls: []transcript.ToolCall{{CallID: "shell-0", Name: tools.Shell, Arguments: `{"command":"printf ready"}`}},
 		Usage:     &transcript.Usage{InputTokens: 800},
 	}
-	if err := turn.processBatch(context.Background(), message); err != nil {
+	if err := turn.processBatch(context.Background(), message, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !turn.needsCompaction() {

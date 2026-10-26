@@ -46,7 +46,7 @@ func start(t *testing.T, replies ...openroutertest.Reply) (*Conn, *Session) {
 		sessions.Close()
 		close(done)
 	}()
-	conn, created, err := Connect(clientIn, clientOut, t.TempDir(), "test")
+	conn, created, err := Connect(clientIn, clientOut, t.TempDir(), "test", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +267,7 @@ func connectFake(agent fakeAgent) (*Conn, protocol.NewSessionResponse, error) {
 	clientIn, agentOut := io.Pipe()
 	agentIn, clientOut := io.Pipe()
 	go acp.NewConn(agentOut).Serve(agentIn, agent)
-	return Connect(clientIn, clientOut, "/", "test")
+	return Connect(clientIn, clientOut, "/", "test", "")
 }
 
 func TestResumeRequiresAdvertisedListLoadAndCloseCapabilities(t *testing.T) {
@@ -399,7 +399,7 @@ func startProcess(t *testing.T) (*Conn, *Session) {
 	executable, err := os.Executable()
 	must(t, err)
 	t.Setenv("OX_TEST_AGENT", "1")
-	conn, created, err := Start(settings.Server{Command: executable, Args: []string{"-test.run=^TestAgentProcess$"}}, t.TempDir(), "test")
+	conn, created, err := Start(settings.Server{Command: executable, Args: []string{"-test.run=^TestAgentProcess$"}}, t.TempDir(), "test", "")
 	must(t, err)
 	t.Cleanup(conn.Close)
 	return conn, NewSession(conn, created)
@@ -461,5 +461,43 @@ func TestClosingDoesNotWaitForADescendantToCloseStandardError(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("closing waited for the server's descendant")
+	}
+}
+
+func TestResumeReplaysBeforeTheQueuedPrompt(t *testing.T) {
+	sessions, err := store.OpenMemory()
+	must(t, err)
+	t.Cleanup(func() { sessions.Close() })
+	workspace := t.TempDir()
+	summary, err := sessions.Create(workspace)
+	must(t, err)
+	message := transcript.TextMessage("Hello")
+	_, err = sessions.AppendTurnStart(summary.ID, &transcript.TurnStart{
+		Model: openroutertest.DefaultModel, Effort: catalog.EffortDefault, Mode: transcript.ModeAsk, Input: transcript.TurnInput{Message: &message},
+	})
+	must(t, err)
+	a := &agent.Agent{Store: sessions, Catalog: openroutertest.ParsedCatalog()}
+	serverIn, clientOut := io.Pipe()
+	clientIn, serverOut := io.Pipe()
+	rpc := acp.NewConn(serverOut)
+	go rpc.Serve(serverIn, server.New(rpc, a, settings.Settings{Model: openroutertest.DefaultModel, Effort: catalog.EffortDefault, Mode: transcript.ModeAsk}, t.TempDir()))
+	conn, loaded, err := Connect(clientIn, clientOut, workspace, "test", protocol.SessionId(summary.ID))
+	must(t, err)
+	t.Cleanup(conn.Close)
+	if loaded.SessionId != protocol.SessionId(summary.ID) || len(loaded.ConfigOptions) == 0 {
+		t.Fatalf("loaded %+v", loaded)
+	}
+	conn.QueuePrompt("Next")
+	replayed := false
+	for {
+		switch event := next(t, conn).(type) {
+		case Update:
+			replayed = replayed || event.Update.UserMessageChunk != nil
+		case QueuedPrompt:
+			if !replayed || event != "Next" {
+				t.Fatalf("queued prompt %q arrived before the replay", event)
+			}
+			return
+		}
 	}
 }

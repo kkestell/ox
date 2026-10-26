@@ -5,7 +5,8 @@
 // replace the same global keys. Neither file is required. Only the global file
 // can set `models`, the OpenRouter provider pins, and `hooks`, the commands Ox
 // runs during turns. The terminal client's fields, `servers` and `favorites`,
-// are read only from the global file.
+// are read only from the global file. The launch settings in `OX_SETTINGS`
+// apply over both files and are never saved.
 package settings
 
 import (
@@ -28,6 +29,12 @@ import (
 // for the latest DeepSeek Flash model, so the catalog's release-date filter
 // does not drop it as a fixed model ID eventually would.
 const builtInModel = "openrouter:~deepseek/deepseek-flash-latest"
+
+// LaunchVariable names the environment variable that holds the launch
+// settings: a JSON object in the settings file format, read where the files
+// are read. It lets a program that launches Ox configure one launch without
+// changing the user's files.
+const LaunchVariable = "OX_SETTINGS"
 
 // Settings are a model, effort level, and session mode: the defaults for new
 // sessions, or one session's selections.
@@ -103,26 +110,33 @@ func Load(path string, cat catalog.Catalog) (Settings, error) {
 }
 
 // ForWorkspace returns s with each key set in the workspace settings file of
-// workspace replaced. A missing file changes nothing.
+// workspace, then in the launch settings, replaced. A missing file or unset
+// variable changes nothing.
 func (s Settings) ForWorkspace(workspace string, cat catalog.Catalog) (Settings, error) {
-	path := filepath.Join(workspace, ".ox/settings.json")
-	f, present, err := readSettings(path)
-	if err != nil {
-		return Settings{}, err
+	source := ""
+	for _, path := range []string{filepath.Join(workspace, ".ox/settings.json"), LaunchVariable} {
+		f, present, err := readSettings(path)
+		if err != nil {
+			return Settings{}, err
+		}
+		if !present {
+			continue
+		}
+		if f.models != nil {
+			return Settings{}, invalid(path, "models can be set only in the global settings file")
+		}
+		if f.hooks && path != LaunchVariable {
+			return Settings{}, invalid(path, "hooks can be set only in the global settings file")
+		}
+		if err := s.apply(path, f); err != nil {
+			return Settings{}, err
+		}
+		source = path
 	}
-	if !present {
+	if source == "" {
 		return s, nil
 	}
-	if f.models != nil {
-		return Settings{}, invalid(path, "models can be set only in the global settings file")
-	}
-	if f.hooks {
-		return Settings{}, invalid(path, "hooks can be set only in the global settings file")
-	}
-	if err := s.apply(path, f); err != nil {
-		return Settings{}, err
-	}
-	return s, s.validate(path, cat)
+	return s, s.validate(source, cat)
 }
 
 // readSettings reads one settings file and rejects the obsolete provider key.
@@ -238,9 +252,22 @@ func update(path string, set func(fields map[string]any)) error {
 	return os.Rename(temporary, path)
 }
 
+// readSource reads the settings file at path, or the launch settings when path
+// is LaunchVariable. A missing file or unset variable is fs.ErrNotExist.
+func readSource(path string) (string, error) {
+	if path != LaunchVariable {
+		return textfile.Read(path)
+	}
+	text, ok := os.LookupEnv(LaunchVariable)
+	if !ok {
+		return "", fs.ErrNotExist
+	}
+	return text, nil
+}
+
 // read reads one settings file. Every error except a missing file names it.
 func read(path string) (file, error) {
-	text, err := textfile.Read(path)
+	text, err := readSource(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return file{}, err
 	}

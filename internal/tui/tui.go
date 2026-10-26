@@ -211,6 +211,8 @@ func (m *model) event(event client.Event, now time.Time) tea.Cmd {
 			m.view.notice("Turn error: "+event.Err.Error(), red, now)
 		}
 		return m.bell()
+	case client.QueuedPrompt:
+		m.prompt(string(event), now)
 	case client.Closed:
 		m.fail(errors.New("server closed the ACP connection"))
 	}
@@ -332,6 +334,10 @@ func (m *model) enter(now time.Time) tea.Cmd {
 func (m *model) submit(now time.Time) {
 	text := m.input.Value()
 	m.input.Reset()
+	m.prompt(text, now)
+}
+
+func (m *model) prompt(text string, now time.Time) {
 	m.session.Prompt(text)
 	m.view.user(text, now)
 }

@@ -212,7 +212,7 @@ func newDriverWithAgent(t *testing.T, a *agent) *driver {
 		a.conn.Serve(agentIn, a)
 		agentOut.Close()
 	}()
-	conn, created, err := client.Connect(clientIn, clientOut, t.TempDir(), "test")
+	conn, created, err := client.Connect(clientIn, clientOut, t.TempDir(), "test", "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -68,6 +68,9 @@ func inputItems(entries []transcript.Entry, model string) []any {
 		case *transcript.TurnStart:
 			turnModel = entry.Model
 			items = append(items, userItem(entry.Input.ModelMessage()))
+			if len(entry.HookContext) > 0 {
+				items = append(items, userItem(transcript.TextMessage(transcript.HookMessage(entry.HookContext))))
+			}
 		case *transcript.Compaction:
 			items = append(items, userItem(entry.Message()))
 		case *transcript.AssistantBatch:

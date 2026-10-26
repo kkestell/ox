@@ -66,12 +66,13 @@ var shellProcessSchema = compact(`{
 }`)
 
 // ShellCommand returns a command that runs text with ShellProgram in
-// workspace, with Ox's environment except `OPENROUTER_API_KEY`.
+// workspace, with Ox's environment except `OPENROUTER_API_KEY` and the launch
+// settings, which would otherwise configure an Ox the command starts.
 func ShellCommand(workspace, text string) *exec.Cmd {
 	cmd := exec.Command(ShellProgram, "-c", text)
 	cmd.Dir = workspace
 	for _, variable := range os.Environ() {
-		if !strings.HasPrefix(variable, "OPENROUTER_API_KEY=") {
+		if !strings.HasPrefix(variable, "OPENROUTER_API_KEY=") && !strings.HasPrefix(variable, "OX_SETTINGS=") {
 			cmd.Env = append(cmd.Env, variable)
 		}
 	}

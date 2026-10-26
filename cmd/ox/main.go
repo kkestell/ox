@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 
+	protocol "github.com/coder/acp-go-sdk"
+
 	"ox/internal/client"
 	"ox/internal/control"
 	"ox/internal/settings"
@@ -22,7 +24,8 @@ import (
 const version = "0.1.0"
 
 const usage = `Usage:
-  ox [--dir DIR] [--server SERVER]  Start the terminal client.
+  ox [--dir DIR] [--server SERVER] [--resume SESSION] [PROMPT]
+                                    Start the terminal client.
   ox run ...                        Run one prompt and print the final answer.
   ox acp ...                        Serve the Ox server over stdin and stdout.
   ox auth ...                       Sign in to or out of OpenRouter or OpenAI.
@@ -80,17 +83,20 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	conn, created, err := client.Start(server, directory, version)
+	conn, created, err := client.Start(server, directory, version, protocol.SessionId(options.resume))
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
+	if options.prompt != "" {
+		conn.QueuePrompt(options.prompt)
+	}
 	return tui.Run(conn, client.NewSession(conn, created), config.Favorites, path)
 }
 
 type options struct {
-	dir, server string
-	version     bool
+	dir, server, resume, prompt string
+	version                     bool
 }
 
 func parseOptions(args []string) (options, error) {
@@ -99,13 +105,18 @@ func parseOptions(args []string) (options, error) {
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&o.dir, "dir", ".", "workspace directory")
 	flags.StringVar(&o.server, "server", "", "server name")
+	flags.StringVar(&o.resume, "resume", "", "session ID")
 	flags.BoolVar(&o.version, "version", false, "print the version")
 	flags.BoolVar(&o.version, "V", false, "print the version")
 	if err := flags.Parse(args); err != nil {
 		return o, err
 	}
-	if flags.NArg() > 0 {
-		return o, fmt.Errorf("unexpected argument %s", flags.Arg(0))
+	if flags.NArg() > 1 {
+		return o, fmt.Errorf("unexpected argument %s", flags.Arg(1))
+	}
+	o.prompt = flags.Arg(0)
+	if flags.NArg() == 1 && strings.TrimSpace(o.prompt) == "" {
+		return o, errors.New("the prompt is blank")
 	}
 	return o, nil
 }

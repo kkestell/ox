@@ -304,7 +304,7 @@ func runHeadless(args []string) error {
 	}
 	turn, err := a.Start(ctx, agent.Input{
 		SessionID: session.ID, Input: transcript.TurnInput{Message: new(transcript.TextMessage(prompt))},
-		Model: model, Effort: effort, SystemPrompt: systemPrompt, Processes: processes, MCP: mcpCatalog,
+		Model: model, Effort: effort, SystemPrompt: systemPrompt, Processes: processes, MCP: mcpCatalog, SessionStart: true,
 	}, headless{})
 	if err != nil {
 		return err

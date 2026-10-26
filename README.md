@@ -48,12 +48,13 @@ Configure Zed to use Ox as an external agent. Add the following to
 ### `ox`
 
 ```text
-ox [--dir <DIR>] [--server <SERVER>]
+ox [--dir <DIR>] [--server <SERVER>] [--resume <SESSION>] [<PROMPT>]
 ```
 
 Starts the TUI. `--dir` selects the workspace and defaults to the current
 directory. `--server` selects a server by its configured name; it is required
-when more than one server is configured.
+when more than one server is configured. `--resume` opens the saved session with
+that ID instead of a new session. A prompt is sent as the first message.
 
 ### `ox run`
 
@@ -118,6 +119,13 @@ supports `-V` or `--version`.
 Global settings live in `~/.config/ox/settings.json`. A workspace can override
 `model`, `effort`, `mode`, and `mcpServers` in `<workspace>/.ox/settings.json`;
 each present workspace value replaces the global value. Both files are optional.
+
+`OX_SETTINGS`, when set, holds launch settings: a JSON object in the same format
+that can set `model`, `effort`, `mode`, `mcpServers`, and `hooks`. Its values
+replace the workspace and global values, its MCP servers are added to theirs,
+and its hooks run after the global hooks. It is never saved, and Ox removes it
+from the environment of the commands, hooks, and MCP servers it runs. It lets a
+program that launches Ox configure that launch without changing your files.
 
 ```json
 {
@@ -217,8 +225,9 @@ resources, prompts, sampling, and elicitation are not supported.
 ### Hooks
 
 `hooks` configures commands that `ox-server` runs during turns. It follows
-Claude Code's hook schema and can be set only in the global file. The only event
-is `PostToolUse`, and the only hook type is `command`:
+Claude Code's hook schema and can be set only in the global file and the launch
+settings. The events are `SessionStart`, `UserPromptSubmit`, `PostToolUse`, and
+`Stop`, and the only hook type is `command`:
 
 ```json
 {
@@ -235,16 +244,29 @@ is `PostToolUse`, and the only hook type is `command`:
 
 `matcher` is a regular expression matched against the whole tool name, such as
 `shell|shell_process`; an absent or empty matcher, or `*`, matches every tool.
-`timeout` is in seconds and defaults to 60. Settings are read when the server
-starts.
+Only `PostToolUse` accepts a matcher. `timeout` is in seconds and defaults to
+60. Settings are read when the server starts.
 
-After each tool call that runs, Ox runs every matching hook in order, in Ask and
-Auto mode alike and without approval. Each command runs with `bash -c` in the
-session's workspace, with Ox's environment except `OPENROUTER_API_KEY`. Stdin is
-a JSON object with `session_id`, `cwd`, `hook_event_name` (`PostToolUse`),
-`tool_name`, `tool_input` (the call's arguments), `tool_use_id`, and
-`tool_response`, an object with the outcome's `status` (`completed`, `failed`,
-or `cancelled`) and `text`.
+Ox runs each event's hooks in order, in Ask and Auto mode alike and without
+approval:
+
+- `SessionStart` before the first turn of a session since the server started.
+- `UserPromptSubmit` before each turn.
+- `PostToolUse` after each tool call that runs, if the matcher matches.
+- `Stop` when the model finishes its answer.
+
+Each command runs with `bash -c` in the session's workspace, with Ox's
+environment except `OPENROUTER_API_KEY` and `OX_SETTINGS`. Stdin is a JSON
+object with `session_id`, `cwd`, and `hook_event_name`, and for each event:
+
+- `SessionStart`: `source`, `startup` for a session without turns, otherwise
+  `resume`.
+- `UserPromptSubmit`: `prompt`, the text of the message.
+- `PostToolUse`: `tool_name`, `tool_input` (the call's arguments),
+  `tool_use_id`, and `tool_response`, an object with the outcome's `status`
+  (`completed`, `failed`, or `cancelled`) and `text`.
+- `Stop`: `stop_hook_active`, true when a `Stop` hook already continued the
+  turn.
 
 A hook adds context to the turn by printing a JSON object:
 
@@ -257,10 +279,20 @@ A hook adds context to the turn by printing a JSON object:
 }
 ```
 
-Ox adds the text to the turn as a user message after the tool results, which the
-model reads in its next request, the client is sent as a user message, and the
-session saves. Empty output adds nothing. A hook that exits nonzero, prints
-anything other than such an object, or exceeds its timeout is reported on Ox's
-stderr and otherwise ignored; Ox kills a hook's process group when it times out
-or the turn is cancelled. Anything a hook writes to stderr is also reported on
-Ox's stderr.
+Ox adds the text to the turn as a user message after the prompt, for
+`SessionStart` and `UserPromptSubmit`, or after the tool results, for
+`PostToolUse`. The model reads it in its next request, the client is sent it as
+a user message, and the session saves it. Empty output adds nothing.
+
+A `Stop` hook continues the turn by printing a JSON object:
+
+```json
+{ "decision": "block", "reason": "Text for the model." }
+```
+
+Ox adds the reason as a user message after the answer, and the model continues.
+
+A hook that exits nonzero, prints anything other than such an object, or exceeds
+its timeout is reported on Ox's stderr and otherwise ignored; Ox kills a hook's
+process group when it times out or the turn is cancelled. Anything a hook writes
+to stderr is also reported on Ox's stderr.

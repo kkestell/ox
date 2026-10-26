@@ -54,11 +54,16 @@ type Diagnostic string
 // Closed reports that the server closed the connection.
 type Closed struct{}
 
-func (Update) event()      {}
-func (*Permission) event() {}
-func (Finished) event()    {}
-func (Diagnostic) event()  {}
-func (Closed) event()      {}
+// QueuedPrompt is a prompt to send once the events received before it are
+// handled, such as the replay of a resumed session.
+type QueuedPrompt string
+
+func (Update) event()       {}
+func (*Permission) event()  {}
+func (Finished) event()     {}
+func (Diagnostic) event()   {}
+func (Closed) event()       {}
+func (QueuedPrompt) event() {}
 
 func (p *Permission) respond(outcome protocol.RequestPermissionOutcome) error {
 	return p.request.Respond(protocol.RequestPermissionResponse{Outcome: outcome})
@@ -90,8 +95,8 @@ type Conn struct {
 const startupTimeout = 30 * time.Second
 
 // Start runs the server's command, initializes the connection, and creates a
-// session in directory.
-func Start(server settings.Server, directory, version string) (*Conn, protocol.NewSessionResponse, error) {
+// session in directory, or loads the session resume when it is set.
+func Start(server settings.Server, directory, version string, resume protocol.SessionId) (*Conn, protocol.NewSessionResponse, error) {
 	cmd := exec.Command(server.Command, server.Args...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -136,7 +141,7 @@ func Start(server settings.Server, directory, version string) (*Conn, protocol.N
 			<-exited
 		}
 	}
-	session, err := c.initialize(version)
+	session, err := c.initialize(version, resume)
 	if err != nil {
 		c.Close()
 		return nil, protocol.NewSessionResponse{}, err
@@ -145,10 +150,11 @@ func Start(server settings.Server, directory, version string) (*Conn, protocol.N
 }
 
 // Connect initializes a connection to a server that reads out and writes in,
-// and creates a session in directory. Closing the connection closes out.
-func Connect(in io.Reader, out io.WriteCloser, directory, version string) (*Conn, protocol.NewSessionResponse, error) {
+// and creates a session in directory, or loads the session resume when it is
+// set. Closing the connection closes out.
+func Connect(in io.Reader, out io.WriteCloser, directory, version string, resume protocol.SessionId) (*Conn, protocol.NewSessionResponse, error) {
 	c := newConn(in, out, directory)
-	session, err := c.initialize(version)
+	session, err := c.initialize(version, resume)
 	if err != nil {
 		c.Close()
 		return nil, protocol.NewSessionResponse{}, err
@@ -162,7 +168,9 @@ func newConn(in io.Reader, out io.WriteCloser, directory string) *Conn {
 	return c
 }
 
-func (c *Conn) initialize(version string) (protocol.NewSessionResponse, error) {
+// initialize returns the created session, or the loaded session resume when it
+// is set. The server replays a loaded session as updates before it responds.
+func (c *Conn) initialize(version string, resume protocol.SessionId) (protocol.NewSessionResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), startupTimeout)
 	defer cancel()
 	var initialized protocol.InitializeResponse
@@ -176,12 +184,24 @@ func (c *Conn) initialize(version string) (protocol.NewSessionResponse, error) {
 		capabilities := initialized.AgentCapabilities
 		c.CanClose = capabilities.SessionCapabilities.Close != nil
 		c.CanResume = capabilities.LoadSession && capabilities.SessionCapabilities.List != nil && c.CanClose
-		err = c.call(ctx, acp.MethodNewSession, protocol.NewSessionRequest{Cwd: c.directory, McpServers: []protocol.McpServer{}}, &session)
+		if resume == "" {
+			err = c.call(ctx, acp.MethodNewSession, protocol.NewSessionRequest{Cwd: c.directory, McpServers: []protocol.McpServer{}}, &session)
+		} else {
+			var loaded protocol.LoadSessionResponse
+			request := protocol.LoadSessionRequest{SessionId: resume, Cwd: c.directory, McpServers: []protocol.McpServer{}}
+			err = c.call(ctx, acp.MethodLoadSession, request, &loaded)
+			session = protocol.NewSessionResponse{SessionId: resume, ConfigOptions: loaded.ConfigOptions}
+		}
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return session, errors.New("server startup timed out")
 	}
 	return session, err
+}
+
+// QueuePrompt queues a QueuedPrompt after the events received so far.
+func (c *Conn) QueuePrompt(text string) {
+	c.push(QueuedPrompt(text))
 }
 
 // Close stops the server.

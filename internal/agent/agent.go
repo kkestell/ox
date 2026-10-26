@@ -1,7 +1,8 @@
-// Package agent runs one turn of a session: it saves the user message or skill
-// invocation, makes model requests, runs tools in call order and the hooks
-// that follow them, saves each complete assistant batch, compacts the session
-// when its context fills, and returns the answer when the turn finishes.
+// Package agent runs one turn of a session: it runs the hooks that precede the
+// turn, saves the user message or skill invocation, makes model requests, runs
+// tools in call order and the hooks that follow them, saves each complete
+// assistant batch, compacts the session when its context fills, and returns the
+// answer when the turn finishes and its Stop hooks let it end.
 package agent
 
 import (
@@ -74,8 +75,7 @@ type ToolFinished struct {
 	Outcome transcript.ToolOutcome
 }
 
-// HookContext reports the text PostToolUse hooks added after a call, as the
-// model reads it.
+// HookContext reports the text hooks added to the turn, as the model reads it.
 type HookContext string
 
 // CompactionStarted reports that the session is being compacted. ID names the
@@ -161,6 +161,9 @@ type Input struct {
 	// turn.
 	Processes *shellproc.Processes
 	MCP       *mcpclient.Catalog
+	// SessionStart runs the SessionStart hooks before the turn: set for the
+	// session's first turn in this process.
+	SessionStart bool
 }
 
 // Stop is why a turn ended without an error.
@@ -222,9 +225,10 @@ func ModelSelection(cat catalog.Catalog, model string, effort catalog.Effort) (*
 	return selected, nil
 }
 
-// Start reads the session and saves the turn start with the selected model and
-// effort and the client's current mode before any model request. Nothing is saved when ctx is
-// already done; the turn then runs as cancelled.
+// Start reads the session, runs the hooks that precede the turn, and saves the
+// turn start with the selected model and effort, the client's current mode,
+// and the hooks' context before any model request. Nothing is saved when ctx
+// is already done; the turn then runs as cancelled.
 func (a *Agent) Start(ctx context.Context, in Input, client Client) (*Turn, error) {
 	session, err := a.Store.Read(in.SessionID)
 	if err != nil {
@@ -249,11 +253,14 @@ func (a *Agent) Start(ctx context.Context, in Input, client Client) (*Turn, erro
 	if ctx.Err() != nil {
 		return t, nil
 	}
-	start := &transcript.TurnStart{Model: model.QualifiedID(), Effort: in.Effort, Mode: t.client.Mode(), Input: in.Input}
 	// An earlier image fails every request to a model without image input.
-	if !model.AcceptsImages && (start.Input.HasImages() || hasImages(transcript.RequestEntries(session.Transcript))) {
+	if !model.AcceptsImages && (in.Input.HasImages() || hasImages(transcript.RequestEntries(session.Transcript))) {
 		return nil, ErrImagesUnsupported
 	}
+	// The context is saved even if the turn is cancelled meanwhile, since a
+	// hook may hand over text only once.
+	added := t.promptHooks(ctx, in.SessionStart, len(session.Transcript), in.Input)
+	start := &transcript.TurnStart{Model: model.QualifiedID(), Effort: in.Effort, Mode: t.client.Mode(), Input: in.Input, HookContext: added}
 	updated, err := a.Store.AppendTurnStart(in.SessionID, start)
 	if err != nil {
 		return nil, err
@@ -321,6 +328,12 @@ func (t *Turn) loop(ctx context.Context) (Result, error) {
 	if err := t.client.Send(*t.info); err != nil {
 		return Result{}, updateFailure(err)
 	}
+	if added := t.request.Transcript[len(t.request.Transcript)-1].(*transcript.TurnStart).HookContext; len(added) > 0 {
+		if err := t.client.Send(HookContext(transcript.HookMessage(added))); err != nil {
+			return Result{}, updateFailure(err)
+		}
+	}
+	stopHookActive := false
 	for {
 		if ctx.Err() != nil {
 			return Result{}, ErrCancelled
@@ -334,19 +347,26 @@ func (t *Turn) loop(ctx context.Context) (Result, error) {
 		if err != nil {
 			return Result{}, err
 		}
-		if err := t.processBatch(ctx, completion.Message); err != nil {
+		var blocked []string
+		if completion.Stop == provider.StopFinished {
+			blocked = t.stop(ctx, stopHookActive)
+		}
+		if err := t.processBatch(ctx, completion.Message, blocked); err != nil {
 			return Result{}, err
 		}
 		used, cost, _ := transcript.UsageSummary(t.request.Transcript)
 		if err := t.client.Send(Usage{Used: used, Size: t.request.Model.ContextLimit, Cost: cost}); err != nil {
 			return Result{}, updateFailure(err)
 		}
-		switch completion.Stop {
-		case provider.StopFinished:
+		switch {
+		case completion.Stop == provider.StopFinished && len(blocked) > 0:
+			// The reasons follow the answer, and the model continues.
+			stopHookActive = true
+		case completion.Stop == provider.StopFinished:
 			return Result{Stop: EndTurn, Answer: completion.Message.Text}, nil
-		case provider.StopTokenLimit:
+		case completion.Stop == provider.StopTokenLimit:
 			return Result{Stop: MaxTokens}, nil
-		case provider.StopRefused:
+		case completion.Stop == provider.StopRefused:
 			return Result{Stop: Refusal}, nil
 		}
 	}
@@ -483,12 +503,19 @@ func (t *Turn) complete(ctx context.Context, request provider.Request, forward b
 }
 
 // processBatch announces, runs, and saves the tool calls of one validated
-// assistant message. Every exit gives each call a final outcome and attempts
-// to save the batch, so a stopped turn keeps the effects already observed.
-func (t *Turn) processBatch(ctx context.Context, message transcript.AssistantMessage) error {
+// assistant message, followed by the reasons Stop hooks blocked the stop.
+// Every exit gives each call a final outcome and attempts to save the batch,
+// so a stopped turn keeps the effects already observed.
+func (t *Turn) processBatch(ctx context.Context, message transcript.AssistantMessage, blocked []string) error {
 	batch := &transcript.AssistantBatch{Message: message}
 	if err := t.execute(ctx, batch); err != nil {
 		return t.completeInterrupted(batch, err)
+	}
+	if len(blocked) > 0 {
+		batch.HookContext = append(batch.HookContext, blocked...)
+		if err := t.client.Send(HookContext(transcript.HookMessage(blocked))); err != nil {
+			return t.completeInterrupted(batch, updateFailure(err))
+		}
 	}
 	if err := t.commit(batch); err != nil {
 		return storageFailure(err)

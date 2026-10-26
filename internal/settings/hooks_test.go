@@ -6,8 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"ox/internal/catalog"
 	"ox/internal/openroutertest"
 	"ox/internal/settings"
+	"ox/internal/transcript"
 )
 
 func TestHookSettings(t *testing.T) {
@@ -68,6 +70,7 @@ func TestInvalidHookSettings(t *testing.T) {
 		{`{"PostToolUse":[{"hooks":[{"type":"command","command":"x","timeout":0}]}]}`, "timeout must be"},
 		{`{"PostToolUse":[{"hooks":[{"type":"command","command":"x","timeout":"10"}]}]}`, "cannot unmarshal"},
 		{`{"PostToolUse":[{"hooks":[{"type":"command","command":"x","async":true}]}]}`, "unknown field"},
+		{`{"Stop":[{"matcher":"shell","hooks":[{"type":"command","command":"x"}]}]}`, "only PostToolUse accepts a matcher"},
 	} {
 		path := filepath.Join(t.TempDir(), "settings.json")
 		write(t, path, `{"hooks":`+test.hooks+`}`)
@@ -85,6 +88,32 @@ func TestHooksCanBeSetOnlyInTheGlobalFile(t *testing.T) {
 	global := settings.Settings{Model: model}
 	_, err := global.ForWorkspace(workspace, openroutertest.ParsedCatalog())
 	if err == nil || err.Error() != path+": hooks can be set only in the global settings file" {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestLaunchSettings(t *testing.T) {
+	home, workspace := t.TempDir(), t.TempDir()
+	global := settings.GlobalPath(home)
+	write(t, global, `{"mcpServers":{"one":{"command":"a"},"two":{"command":"b"}},"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"first"}]}]}}`)
+	write(t, filepath.Join(workspace, ".ox/settings.json"), `{"effort":"high","mode":"ask"}`)
+	t.Setenv(settings.LaunchVariable, `{"mode":"auto","mcpServers":{"two":{"command":"c"}},
+		"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"second"}]}],"Stop":[{"hooks":[{"type":"command","command":"stop"}]}]}}`)
+	cat := openroutertest.ParsedCatalog()
+	got, err := settings.Settings{Model: model, Effort: catalog.EffortDefault, Mode: transcript.ModeAsk}.ForWorkspace(workspace, cat)
+	if want := (settings.Settings{Model: model, Effort: catalog.EffortHigh, Mode: transcript.ModeAuto}); err != nil || got != want {
+		t.Errorf("settings = %+v, %v", got, err)
+	}
+	servers, err := settings.LoadMCPServers(home, workspace)
+	if err != nil || len(servers) != 2 || servers["one"].Command != "a" || servers["two"].Command != "c" {
+		t.Errorf("MCP servers = %v, %v", servers, err)
+	}
+	hooks, err := settings.LoadHooks(global)
+	if err != nil || len(hooks.PostToolUse) != 2 || hooks.PostToolUse[1].Command != "second" || len(hooks.Stop) != 1 {
+		t.Errorf("hooks = %+v, %v", hooks, err)
+	}
+	t.Setenv(settings.LaunchVariable, `{"models":{}}`)
+	if _, err := got.ForWorkspace(workspace, cat); err == nil || err.Error() != "OX_SETTINGS: models can be set only in the global settings file" {
 		t.Errorf("error = %v", err)
 	}
 }

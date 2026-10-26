@@ -39,6 +39,9 @@ func chatMessages(entries []transcript.Entry, model string) []any {
 		case *transcript.TurnStart:
 			turnModel = entry.Model
 			messages = append(messages, map[string]any{"role": "user", "content": userContent(entry.Input.ModelMessage())})
+			if len(entry.HookContext) > 0 {
+				messages = append(messages, map[string]any{"role": "user", "content": transcript.HookMessage(entry.HookContext)})
+			}
 		case *transcript.Compaction:
 			messages = append(messages, map[string]any{"role": "user", "content": userContent(entry.Message())})
 		case *transcript.AssistantBatch:

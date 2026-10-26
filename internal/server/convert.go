@@ -329,6 +329,10 @@ func replay(entries []transcript.Entry, send func(any) error) error {
 				updates = append(updates, chunk("user_message_chunk", transcript.HookMessage(entry.HookContext)))
 			}
 		}
+		// The context continues the user message, so it starts a new paragraph.
+		if start, ok := entry.(*transcript.TurnStart); ok && len(start.HookContext) > 0 {
+			updates = append(updates, chunk("user_message_chunk", "\n\n"+transcript.HookMessage(start.HookContext)))
+		}
 		for _, update := range updates {
 			if err := send(update); err != nil {
 				return err

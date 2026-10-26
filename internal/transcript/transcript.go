@@ -58,12 +58,14 @@ func (m Mode) Description() string {
 type Entry interface{ entry() }
 
 // TurnStart is the input that starts a turn, saved with the model and effort
-// level captured for that turn and the session mode when the turn started.
+// level captured for that turn, the session mode when the turn started, and
+// the text the hooks that precede the turn added.
 type TurnStart struct {
-	Model  string         `json:"model"`
-	Effort catalog.Effort `json:"effort"`
-	Mode   Mode           `json:"mode"`
-	Input  TurnInput      `json:"input"`
+	Model       string         `json:"model"`
+	Effort      catalog.Effort `json:"effort"`
+	Mode        Mode           `json:"mode"`
+	Input       TurnInput      `json:"input"`
+	HookContext []string       `json:"hookContext,omitempty"`
 }
 
 // TurnError is why a turn ended with an error. It ends the turn's entries.
@@ -380,15 +382,15 @@ type AssistantBatch struct {
 	Message  AssistantMessage `json:"message"`
 	Outcomes []ToolOutcome    `json:"outcomes"`
 	// HookContext is the text PostToolUse hooks added after the batch's tool
-	// calls, in order.
+	// calls, then the reasons Stop hooks blocked the stop, in order.
 	HookContext []string `json:"hookContext,omitempty"`
 }
 
 // HookMessage is how hook context reads to the model: a user message after
-// the tool results. Models distrust instructions inside tool output, and this
-// comes from the user's own configuration.
+// the turn's input or the tool results. Models distrust instructions inside
+// tool output, and this comes from the user's own configuration.
 func HookMessage(context []string) string {
-	return "Context added by the user's PostToolUse hook:\n\n" + strings.Join(context, "\n\n")
+	return "Context added by the user's hooks:\n\n" + strings.Join(context, "\n\n")
 }
 
 // Validate checks the message and requires one outcome per call.

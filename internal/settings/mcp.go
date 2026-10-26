@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-
-	"ox/internal/textfile"
 )
 
 // MCPServer describes one local stdio server. It is never saved in a session.
@@ -47,11 +45,12 @@ func ValidateMCPServer(source, name string, server MCPServer) error {
 }
 
 // LoadMCPServers reads configuration when a session becomes active. A present
-// workspace map replaces the global map, including when it is empty.
+// workspace map replaces the global map, including when it is empty. The
+// launch settings' servers are added, replacing any with the same name.
 func LoadMCPServers(home, workspace string) (map[string]MCPServer, error) {
 	servers := map[string]MCPServer{}
-	for _, path := range []string{GlobalPath(home), filepath.Join(workspace, ".ox/settings.json")} {
-		text, err := textfile.Read(path)
+	for _, path := range []string{GlobalPath(home), filepath.Join(workspace, ".ox/settings.json"), LaunchVariable} {
+		text, err := readSource(path)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
@@ -70,7 +69,9 @@ func LoadMCPServers(home, workspace string) (map[string]MCPServer, error) {
 		if err := json.Unmarshal(raw, &definitions); err != nil || definitions == nil {
 			return nil, invalid(path, "mcpServers must be an object")
 		}
-		servers = map[string]MCPServer{}
+		if path != LaunchVariable {
+			servers = map[string]MCPServer{}
+		}
 		for _, name := range slices.Sorted(maps.Keys(definitions)) {
 			raw := definitions[name]
 			var fields map[string]json.RawMessage

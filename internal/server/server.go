@@ -60,6 +60,9 @@ type activeSession struct {
 	processes *shellproc.Processes
 	mcp       *mcpclient.Clients
 	acpMCP    map[string]settings.MCPServer
+	// started is set once a turn of the session has started in this process,
+	// so later turns skip the SessionStart hooks.
+	started bool
 }
 
 // New returns a server that writes to conn.
@@ -457,7 +460,7 @@ func (s *Server) prompt(r *acp.Request) *acp.Error {
 		return inactive(id)
 	}
 	s.mu.Lock()
-	selections := session.selections
+	selections, started := session.selections, session.started
 	s.mu.Unlock()
 	client := &acpClient{server: s, sessionID: id, session: session}
 	s.prompts.Add(1)
@@ -473,11 +476,14 @@ func (s *Server) prompt(r *acp.Request) *acp.Error {
 			}
 			turn, err := s.agent.Start(ctx, agent.Input{
 				SessionID: id, Input: dispatch(message, session.skills), Model: selections.Model, Effort: selections.Effort,
-				SystemPrompt: session.systemPrompt, Processes: session.processes, MCP: catalog,
+				SystemPrompt: session.systemPrompt, Processes: session.processes, MCP: catalog, SessionStart: !started,
 			}, client)
 			if err != nil {
 				return agent.Result{}, err
 			}
+			s.mu.Lock()
+			session.started = true
+			s.mu.Unlock()
 			client.workspace = turn.Workspace()
 			return turn.Run(ctx)
 		}()

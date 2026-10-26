@@ -11,8 +11,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-
-	"ox/internal/textfile"
 )
 
 // defaultHookTimeout matches Claude Code's, so one hook configuration behaves
@@ -22,8 +20,15 @@ const defaultHookTimeout = 60 * time.Second
 // Hooks are the commands Ox runs at points in a turn. They follow Claude
 // Code's hook schema, so one configuration works for both.
 type Hooks struct {
+	// SessionStart runs before the first turn of a session in each server
+	// process.
+	SessionStart []Hook
+	// UserPromptSubmit runs before each turn.
+	UserPromptSubmit []Hook
 	// PostToolUse runs after each tool call, whatever its outcome.
 	PostToolUse []Hook
+	// Stop runs when the model finishes a turn.
+	Stop []Hook
 }
 
 // Hook is one command hook and the tool names it applies to.
@@ -39,45 +44,67 @@ func (h Hook) Matches(tool string) bool {
 	return h.Matcher == nil || h.Matcher.MatchString(tool)
 }
 
-// LoadHooks reads `hooks` from the global settings file at path. A missing
-// file or key configures no hooks.
+// LoadHooks reads `hooks` from the global settings file at path, then from
+// the launch settings, whose hooks run after the file's. A missing file, unset
+// variable, or absent key configures no hooks.
 func LoadHooks(path string) (Hooks, error) {
-	text, err := textfile.Read(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return Hooks{}, nil
-	}
-	if err != nil {
-		return Hooks{}, fmt.Errorf("%s: %w", path, err)
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(text), &fields); err != nil || fields == nil {
-		return Hooks{}, invalid(path, "settings must be a JSON object")
-	}
-	raw, present := fields["hooks"]
-	if !present {
-		return Hooks{}, nil
-	}
-	var events map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &events); err != nil || events == nil {
-		return Hooks{}, invalid(path, "hooks must be an object")
-	}
 	var hooks Hooks
-	for _, event := range slices.Sorted(maps.Keys(events)) {
-		if event != "PostToolUse" {
-			return Hooks{}, invalid(path, "hook event %s is not supported; the only supported event is PostToolUse", event)
+	for _, path := range []string{path, LaunchVariable} {
+		text, err := readSource(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
 		}
-		parsed, err := parseHookGroups(events[event])
 		if err != nil {
-			return Hooks{}, invalid(path, "hooks: %s: %v", event, err)
+			return Hooks{}, fmt.Errorf("%s: %w", path, err)
 		}
-		hooks.PostToolUse = parsed
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(text), &fields); err != nil || fields == nil {
+			return Hooks{}, invalid(path, "settings must be a JSON object")
+		}
+		raw, present := fields["hooks"]
+		if !present {
+			continue
+		}
+		var events map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &events); err != nil || events == nil {
+			return Hooks{}, invalid(path, "hooks must be an object")
+		}
+		for _, event := range slices.Sorted(maps.Keys(events)) {
+			target := hooks.event(event)
+			if target == nil {
+				return Hooks{}, invalid(path, "hook event %s is not supported; the supported events are %s", event, strings.Join(hookEvents, ", "))
+			}
+			parsed, err := parseHookGroups(events[event], event == "PostToolUse")
+			if err != nil {
+				return Hooks{}, invalid(path, "hooks: %s: %v", event, err)
+			}
+			*target = append(*target, parsed...)
+		}
 	}
 	return hooks, nil
 }
 
+// hookEvents are the events Ox runs hooks for.
+var hookEvents = []string{"PostToolUse", "SessionStart", "Stop", "UserPromptSubmit"}
+
+// event returns the hooks of the named event, or nil for an unsupported one.
+func (h *Hooks) event(name string) *[]Hook {
+	switch name {
+	case "SessionStart":
+		return &h.SessionStart
+	case "UserPromptSubmit":
+		return &h.UserPromptSubmit
+	case "PostToolUse":
+		return &h.PostToolUse
+	case "Stop":
+		return &h.Stop
+	}
+	return nil
+}
+
 // parseHookGroups parses one event's list of matcher groups into hooks, in
-// order.
-func parseHookGroups(raw json.RawMessage) ([]Hook, error) {
+// order. Only tool events accept a matcher that selects tools.
+func parseHookGroups(raw json.RawMessage, tools bool) ([]Hook, error) {
 	var groups []json.RawMessage
 	if err := json.Unmarshal(raw, &groups); err != nil || groups == nil {
 		return nil, errors.New("must be a list of matcher groups")
@@ -96,6 +123,9 @@ func parseHookGroups(raw json.RawMessage) ([]Hook, error) {
 		}
 		var matcher *regexp.Regexp
 		if group.Matcher != nil && *group.Matcher != "" && *group.Matcher != "*" {
+			if !tools {
+				return nil, errors.New("matcher group: only PostToolUse accepts a matcher")
+			}
 			var err error
 			matcher, err = regexp.Compile("^(?:" + *group.Matcher + ")$")
 			if err != nil {

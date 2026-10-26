@@ -19,13 +19,14 @@ func TestParseOptions(t *testing.T) {
 		{[]string{"--dir", "d"}, options{dir: "d"}},
 		{[]string{"--server", "X"}, options{dir: ".", server: "X"}},
 		{[]string{"-V"}, options{dir: ".", version: true}},
+		{[]string{"--resume", "s1", "Check messages."}, options{dir: ".", resume: "s1", prompt: "Check messages."}},
 	} {
 		got, err := parseOptions(test.args)
 		if err != nil || got != test.want {
 			t.Errorf("%q: %+v, %v", test.args, got, err)
 		}
 	}
-	for _, args := range [][]string{{"login"}, {"--dir"}, {"--dir", "d", "run"}, {"--unknown"}} {
+	for _, args := range [][]string{{"one", "two"}, {" "}, {"--dir"}, {"--unknown"}} {
 		if _, err := parseOptions(args); err == nil {
 			t.Errorf("accepted %q", args)
 		}
