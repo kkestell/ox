@@ -67,9 +67,7 @@ func TestShellArgumentsAreValidatedBeforeAnythingRuns(t *testing.T) {
 		`{"command":"touch wrong","timeout_seconds":1.5}`,
 		`{"command":"touch wrong","timeout_seconds":"1"}`,
 		`{"command":"touch wrong","timeout_seconds":null}`,
-		`{"command":"touch wrong","background":true,"timeout_seconds":null}`,
 		`{"command":"touch wrong","background":"yes"}`,
-		`{"command":"touch wrong","background":true,"timeout_seconds":120}`,
 	} {
 		if outcome := tools.call(Shell, arguments); outcome.Status != transcript.ToolFailed {
 			t.Errorf("%s: %+v", arguments, outcome)
@@ -163,6 +161,18 @@ func start(t *testing.T, tools *Toolbox, command string) string {
 		t.Fatalf("start: %+v", outcome)
 	}
 	return match[1]
+}
+
+func TestBackgroundIgnoresTimeout(t *testing.T) {
+	tools := toolbox(t)
+	for _, arguments := range []string{
+		`{"command":"true","background":true,"timeout_seconds":120}`,
+		`{"command":"true","background":true,"timeout_seconds":null}`,
+	} {
+		if outcome := tools.call(Shell, arguments); outcome.Status != transcript.ToolCompleted || !processID.MatchString(outcome.Text) {
+			t.Errorf("%s: %+v", arguments, outcome)
+		}
+	}
 }
 
 func TestBackgroundProcessesKeepRunningAndAcceptInput(t *testing.T) {

@@ -36,7 +36,7 @@ var shellSchema = compact(`{
       "type": "object",
       "properties": {
         "command": {"type": "string", "description": "Shell command or multiline script. Use shell syntax for directory changes, environment overrides, pipelines, and redirection."},
-        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 600, "default": 120, "description": "Maximum execution time in seconds of an ordinary call. Defaults to 120. Not allowed with background."},
+        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 600, "default": 120, "description": "Maximum execution time in seconds of an ordinary call. Defaults to 120. Ignored with background."},
         "background": {"type": "boolean", "default": false, "description": "Start the command with piped stdin and return its process ID without waiting for it. Background commands have no timeout; use shell_process to read their output, write to their stdin, or stop them. Keep the main process in the foreground of this shell, as in ` + "`npm run dev` rather than `npm run dev &`" + `."}
       },
       "required": ["command"],
@@ -92,10 +92,9 @@ func (t *Toolbox) shell(ctx context.Context, arguments string) transcript.ToolOu
 		return shellFailure("arguments: missing field `command`")
 	}
 	seconds := uint64(defaultTimeoutSeconds)
-	if args.TimeoutSeconds != nil {
-		if args.Background {
-			return shellFailure("arguments: timeout_seconds is not allowed with background; background commands have no timeout")
-		}
+	// Models fill in every property, so a background call often carries the
+	// default timeout; rejecting it leaves them unable to start one.
+	if args.TimeoutSeconds != nil && !args.Background {
 		if string(args.TimeoutSeconds) == "null" || json.Unmarshal(args.TimeoutSeconds, &seconds) != nil {
 			return shellFailure("arguments: timeout_seconds must be an integer")
 		}
