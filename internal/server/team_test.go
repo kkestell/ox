@@ -38,7 +38,7 @@ func teamServer(t *testing.T, workspace string, replies ...fake.Reply) (*Server,
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, acpErr := s.newActiveSession(workspace, nil)
+	session, acpErr := s.newActiveSession(workspace, nil, true)
 	if acpErr != nil {
 		t.Fatal(acpErr)
 	}

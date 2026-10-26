@@ -48,13 +48,15 @@ Configure Zed to use Ox as an external agent. Add the following to
 ### `ox`
 
 ```text
-ox [--dir <DIR>] [--server <SERVER>] [--resume <SESSION>] [<PROMPT>]
+ox [--dir <DIR>] [--server <SERVER>] [--resume <SESSION>] [--swarm] [<PROMPT>]
 ```
 
 Starts the TUI. `--dir` selects the workspace and defaults to the current
 directory. `--server` selects a server by its configured name; it is required
 when more than one server is configured. `--resume` opens the saved session with
-that ID instead of a new session. A prompt is sent as the first message.
+that ID instead of a new session. `--swarm` lets the agent create workers and
+tells it to delegate substantial work to them; see [Teams](#teams). A prompt is
+sent as the first message.
 
 ### `ox run`
 
@@ -116,11 +118,13 @@ supports `-V` or `--version`.
 
 ## Teams
 
-In an ACP session, ask Ox to divide independent work among workers. The session
-you talk to is the orchestrator: it can create workers, send messages, list the
-team, wait for reports, and remove workers. Workers run in Auto mode; Ask mode
-requests permission before creating one. The terminal client shows each worker's
-transcript beside the orchestrator's. Teams are unavailable in `ox run`.
+With `ox --swarm`, Ox delegates substantial work to workers. The session you
+talk to is the orchestrator: it can create workers, send messages, list the
+team, wait for reports, and remove workers. Other ACP clients enable this by
+sending `"_meta": {"swarm": true}` with `session/new` and `session/load`.
+Workers run in Auto mode; Ask mode requests permission before creating one. The
+terminal client shows each worker's transcript beside the orchestrator's. Teams
+are unavailable in `ox run`.
 
 By default, each worker gets a Git worktree at `.ox/worktrees/<name>` and a
 branch named `ox/<name>` from the orchestrator's `HEAD`. Merge that branch from

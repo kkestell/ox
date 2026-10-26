@@ -93,6 +93,12 @@ func write(t *testing.T, path, text string) {
 // ox restored the terminal and how it exited, then stays usable.
 func startTmux(t *testing.T, replies ...openroutertest.Reply) *tmux {
 	t.Helper()
+	return startTmuxWith(t, nil, replies...)
+}
+
+// startTmuxWith is startTmux with extra ox arguments.
+func startTmuxWith(t *testing.T, args []string, replies ...openroutertest.Reply) *tmux {
+	t.Helper()
 	if os.Getenv("OX_E2E") == "" {
 		t.Skip("set OX_E2E to run the tmux tests; run make e2e")
 	}
@@ -113,7 +119,7 @@ func startTmux(t *testing.T, replies ...openroutertest.Reply) *tmux {
 	// which the kernel sets when canonical input returns and clears at the
 	// next read.
 	script := filepath.Join(root, "shell.sh")
-	write(t, script, fmt.Sprintf("settings() { stty -a | sed -e 1d -e 's/-*pendin//'; }\nbefore=$(settings)\n%s --dir %s\nresult=$?\n"+
+	write(t, script, fmt.Sprintf("settings() { stty -a | sed -e 1d -e 's/-*pendin//'; }\nbefore=$(settings)\n%s --dir %s \"$@\"\nresult=$?\n"+
 		"[ \"$(settings)\" = \"$before\" ] && echo TERMINAL_RESTORED\necho EXIT_$result\nexec /bin/sh\n",
 		quote(binary("ox")), quote(x.workspace)))
 	command := []string{"env", "XDG_STATE_HOME=" + quote(filepath.Join(root, "state"))}
@@ -122,6 +128,9 @@ func startTmux(t *testing.T, replies ...openroutertest.Reply) *tmux {
 		command = append(command, name+"="+quote(value))
 	}
 	command = append(command, "/bin/sh", quote(script))
+	for _, arg := range args {
+		command = append(command, quote(arg))
+	}
 	conf := filepath.Join(root, "tmux.conf")
 	write(t, conf, "set -g focus-events on\nset -g extended-keys always\nset -g extended-keys-format csi-u\n")
 	t.Cleanup(func() { x.command("kill-server").Run() })
@@ -306,7 +315,7 @@ func TestTerminalShowsAWorkerBesideTheOrchestrator(t *testing.T) {
 	// The orchestrator and the worker request the replies after create_agent
 	// in either order, and the worker's report can continue the
 	// orchestrator's turn, so those replies are all the same.
-	x := startTmux(t,
+	x := startTmuxWith(t, []string{"--swarm"},
 		openroutertest.Calls(openroutertest.Call{ID: "create", Name: "create_agent", Arguments: map[string]any{"name": "helper", "message": "Help.", "dir": "."}}),
 		openroutertest.Text("pane reply"),
 		openroutertest.Text("pane reply"),

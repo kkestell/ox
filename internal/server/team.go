@@ -26,13 +26,17 @@ type team struct {
 
 var _ tools.Team = (*team)(nil)
 
-func (s *Server) team(id string, selections settings.Settings) (*team, error) {
+// team returns the session's team, or nil for an orchestrator without swarm.
+func (s *Server) team(id string, selections settings.Settings, swarm bool) (tools.Team, error) {
 	t := &team{server: s, id: id, parent: id, name: "orchestrator", selections: selections}
 	member, err := s.agent.Store.Member(id)
-	if err == nil {
+	switch {
+	case err == nil:
 		t.parent, t.name = member.Parent, member.Name
-	} else if !errors.Is(err, store.ErrNotFound) {
+	case !errors.Is(err, store.ErrNotFound):
 		return nil, err
+	case !swarm:
+		return nil, nil
 	}
 	return t, nil
 }
@@ -106,7 +110,7 @@ func (t *team) CreateAgent(ctx context.Context, args tools.CreateAgentArgs) (str
 			}
 		}
 	}()
-	session, acpErr := s.newActiveSession(workspace, nil)
+	session, acpErr := s.newActiveSession(workspace, nil, false)
 	if acpErr != nil {
 		return "", acpErr
 	}
@@ -450,7 +454,7 @@ func (s *Server) wake(id string) error {
 		if _, err := agent.ModelSelection(s.catalog, selected.Model, selected.Effort); err != nil {
 			return err
 		}
-		loaded, sessionErr := s.newActiveSession(member.Workspace, nil)
+		loaded, sessionErr := s.newActiveSession(member.Workspace, nil, false)
 		if sessionErr != nil {
 			return sessionErr
 		}

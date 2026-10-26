@@ -19,6 +19,7 @@ func TestParseOptions(t *testing.T) {
 		{[]string{"--dir", "d"}, options{dir: "d"}},
 		{[]string{"--server", "X"}, options{dir: ".", server: "X"}},
 		{[]string{"-V"}, options{dir: ".", version: true}},
+		{[]string{"--swarm"}, options{dir: ".", swarm: true}},
 		{[]string{"--resume", "s1", "Check messages."}, options{dir: ".", resume: "s1", prompt: "Check messages."}},
 	} {
 		got, err := parseOptions(test.args)

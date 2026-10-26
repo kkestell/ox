@@ -26,9 +26,9 @@ const (
 )
 
 // ForWorkspace builds the system prompt for a workspace, with the user
-// instructions in home. The caller captures it once when a session becomes
-// active.
-func ForWorkspace(home, workspace, shell string) (string, error) {
+// instructions in home. With swarm, the prompt tells the agent to delegate to
+// workers. The caller captures it once when a session becomes active.
+func ForWorkspace(home, workspace, shell string, swarm bool) (string, error) {
 	userInstructions, err := readInstructions(filepath.Join(home, userInstructionsFile), "~/"+userInstructionsFile)
 	if err != nil {
 		return "", err
@@ -40,12 +40,14 @@ func ForWorkspace(home, workspace, shell string) (string, error) {
 	var prompt strings.Builder
 	err = promptTemplate.Execute(&prompt, struct {
 		Workspace, Platform, Shell, UserInstructions, Instructions string
+		Swarm                                                      bool
 	}{
 		Workspace:        workspace,
 		Platform:         runtime.GOOS + " (" + runtime.GOARCH + ")",
 		Shell:            shell,
 		UserInstructions: userInstructions,
 		Instructions:     instructions,
+		Swarm:            swarm,
 	})
 	if err != nil {
 		return "", err

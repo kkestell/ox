@@ -85,6 +85,8 @@ func (p *Permission) Cancel() error {
 type Conn struct {
 	rpc       *acp.Conn
 	directory string
+	// swarm asks the server to let each session create workers.
+	swarm bool
 	// CanResume reports whether the server lists, loads, and closes sessions.
 	CanResume bool
 	// CanClose reports whether the server closes sessions.
@@ -102,8 +104,9 @@ type Conn struct {
 const startupTimeout = 30 * time.Second
 
 // Start runs the server's command, initializes the connection, and creates a
-// session in directory, or loads the session resume when it is set.
-func Start(server settings.Server, directory, version string, resume protocol.SessionId) (*Conn, protocol.NewSessionResponse, error) {
+// session in directory, or loads the session resume when it is set. With swarm,
+// every session the connection creates or loads can create workers.
+func Start(server settings.Server, directory, version string, resume protocol.SessionId, swarm bool) (*Conn, protocol.NewSessionResponse, error) {
 	cmd := exec.Command(server.Command, server.Args...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -120,7 +123,7 @@ func Start(server settings.Server, directory, version string, resume protocol.Se
 	if err := cmd.Start(); err != nil {
 		return nil, protocol.NewSessionResponse{}, fmt.Errorf("starting %s: %w", server.Command, err)
 	}
-	c := newConn(stdout, stdin, directory)
+	c := newConn(stdout, stdin, directory, swarm)
 	exited := make(chan struct{})
 	go func() {
 		lines := bufio.NewReader(stderr)
@@ -159,8 +162,8 @@ func Start(server settings.Server, directory, version string, resume protocol.Se
 // Connect initializes a connection to a server that reads out and writes in,
 // and creates a session in directory, or loads the session resume when it is
 // set. Closing the connection closes out.
-func Connect(in io.Reader, out io.WriteCloser, directory, version string, resume protocol.SessionId) (*Conn, protocol.NewSessionResponse, error) {
-	c := newConn(in, out, directory)
+func Connect(in io.Reader, out io.WriteCloser, directory, version string, resume protocol.SessionId, swarm bool) (*Conn, protocol.NewSessionResponse, error) {
+	c := newConn(in, out, directory, swarm)
 	session, err := c.initialize(version, resume)
 	if err != nil {
 		c.Close()
@@ -169,8 +172,8 @@ func Connect(in io.Reader, out io.WriteCloser, directory, version string, resume
 	return c, session, nil
 }
 
-func newConn(in io.Reader, out io.WriteCloser, directory string) *Conn {
-	c := &Conn{rpc: acp.NewConn(out), directory: directory, stop: func() { out.Close() }, ready: make(chan struct{}, 1)}
+func newConn(in io.Reader, out io.WriteCloser, directory string, swarm bool) *Conn {
+	c := &Conn{rpc: acp.NewConn(out), directory: directory, swarm: swarm, stop: func() { out.Close() }, ready: make(chan struct{}, 1)}
 	go c.rpc.Serve(in, c)
 	return c
 }
@@ -192,10 +195,10 @@ func (c *Conn) initialize(version string, resume protocol.SessionId) (protocol.N
 		c.CanClose = capabilities.SessionCapabilities.Close != nil
 		c.CanResume = capabilities.LoadSession && capabilities.SessionCapabilities.List != nil && c.CanClose
 		if resume == "" {
-			err = c.call(ctx, acp.MethodNewSession, protocol.NewSessionRequest{Cwd: c.directory, McpServers: []protocol.McpServer{}}, &session)
+			err = c.call(ctx, acp.MethodNewSession, protocol.NewSessionRequest{Cwd: c.directory, McpServers: []protocol.McpServer{}, Meta: c.sessionMeta()}, &session)
 		} else {
 			var loaded protocol.LoadSessionResponse
-			request := protocol.LoadSessionRequest{SessionId: resume, Cwd: c.directory, McpServers: []protocol.McpServer{}}
+			request := protocol.LoadSessionRequest{SessionId: resume, Cwd: c.directory, McpServers: []protocol.McpServer{}, Meta: c.sessionMeta()}
 			err = c.call(ctx, acp.MethodLoadSession, request, &loaded)
 			session = protocol.NewSessionResponse{SessionId: resume, ConfigOptions: loaded.ConfigOptions}
 		}
@@ -305,10 +308,18 @@ func (c *Conn) Shutdown() {
 	c.signal()
 }
 
+// sessionMeta is the _meta of session requests. The swarm key is Ox's.
+func (c *Conn) sessionMeta() map[string]any {
+	if !c.swarm {
+		return nil
+	}
+	return map[string]any{"swarm": true}
+}
+
 // NewSession creates a session in the connection's directory.
 func (c *Conn) NewSession() (protocol.NewSessionResponse, error) {
 	var response protocol.NewSessionResponse
-	err := c.call(context.Background(), acp.MethodNewSession, protocol.NewSessionRequest{Cwd: c.directory, McpServers: []protocol.McpServer{}}, &response)
+	err := c.call(context.Background(), acp.MethodNewSession, protocol.NewSessionRequest{Cwd: c.directory, McpServers: []protocol.McpServer{}, Meta: c.sessionMeta()}, &response)
 	return response, err
 }
 
@@ -316,7 +327,7 @@ func (c *Conn) NewSession() (protocol.NewSessionResponse, error) {
 // it responds.
 func (c *Conn) LoadSession(id protocol.SessionId) (protocol.LoadSessionResponse, error) {
 	var response protocol.LoadSessionResponse
-	request := protocol.LoadSessionRequest{SessionId: id, Cwd: c.directory, McpServers: []protocol.McpServer{}}
+	request := protocol.LoadSessionRequest{SessionId: id, Cwd: c.directory, McpServers: []protocol.McpServer{}, Meta: c.sessionMeta()}
 	err := c.call(context.Background(), acp.MethodLoadSession, request, &response)
 	return response, err
 }

@@ -162,7 +162,18 @@ func (c *client) await(id json.RawMessage, answer ...string) (message, []message
 
 func (c *client) newSession() string {
 	c.t.Helper()
-	response, _ := c.call(acp.MethodNewSession, object{"cwd": c.workspace, "mcpServers": []any{}})
+	return c.newSessionWith(object{"cwd": c.workspace, "mcpServers": []any{}})
+}
+
+// swarmSession creates a session whose orchestrator can create workers.
+func (c *client) swarmSession() string {
+	c.t.Helper()
+	return c.newSessionWith(object{"cwd": c.workspace, "mcpServers": []any{}, "_meta": object{"swarm": true}})
+}
+
+func (c *client) newSessionWith(params object) string {
+	c.t.Helper()
+	response, _ := c.call(acp.MethodNewSession, params)
 	if response.Error != nil {
 		c.t.Fatal(response.Error)
 	}
@@ -833,6 +844,28 @@ func TestPromptResponseReportsTheTurnsTokens(t *testing.T) {
 	}
 }
 
+func TestOnlySwarmSessionsCanCreateWorkers(t *testing.T) {
+	requests := make(chan map[string]any, 2)
+	record := func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		requests <- body
+		fake.Text("Done.")(w, r, body)
+	}
+	c := connect(t, record, record)
+	for i, create := range []func() string{c.newSession, c.swarmSession} {
+		swarm := i == 1
+		if response, _ := c.prompt(create(), "Hi"); response.Error != nil {
+			t.Fatal(response.Error)
+		}
+		body := <-requests
+		tools, _ := json.Marshal(body["tools"])
+		prompt := body["messages"].([]any)[0].(map[string]any)["content"].(string)
+		if strings.Contains(string(tools), "create_agent") != swarm || strings.Contains(string(tools), "list_agents") != swarm ||
+			strings.Contains(prompt, "Delegate all substantial work to workers") != swarm {
+			t.Errorf("swarm %v: tools = %s\nprompt = %s", swarm, tools, prompt)
+		}
+	}
+}
+
 func TestTeamsAskBeforeCreatingAndRunWorkersInAuto(t *testing.T) {
 	var mu sync.Mutex
 	counts := map[bool]int{}
@@ -856,7 +889,7 @@ func TestTeamsAskBeforeCreatingAndRunWorkersInAuto(t *testing.T) {
 		}
 	}
 	c := connect(t, fake.Calls(fake.Call{ID: "create", Name: "create_agent", Arguments: object{"name": "reader", "message": "Read.", "dir": "."}}), dispatch, dispatch, dispatch, dispatch)
-	id := c.newSession()
+	id := c.swarmSession()
 	response, before := c.prompt(id, "Delegate.", "approve")
 	if response.Error != nil || response.Result["stopReason"] != "end_turn" {
 		t.Fatalf("prompt = %+v", response)
@@ -938,7 +971,7 @@ func TestTheClientSeesTheTeamBeforeWorkerUpdatesAndAfterRemoval(t *testing.T) {
 		}
 	}
 	c := connect(t, fake.Calls(fake.Call{ID: "create", Name: "create_agent", Arguments: object{"name": "reader", "message": "Read.", "dir": "."}}), dispatch, dispatch, dispatch, dispatch)
-	id := c.newSession()
+	id := c.swarmSession()
 	response, before := c.prompt(id, "Delegate.", "approve")
 	if response.Error != nil || response.Result["stopReason"] != "end_turn" {
 		t.Fatalf("prompt = %+v", response)
@@ -986,7 +1019,7 @@ func TestAFailedWorkerTurnShowsItsError(t *testing.T) {
 		}
 	}
 	c := connect(t, fake.Calls(fake.Call{ID: "create", Name: "create_agent", Arguments: object{"name": "reader", "message": "Read.", "dir": "."}}), dispatch, dispatch, dispatch)
-	response, before := c.prompt(c.newSession(), "Delegate.", "approve")
+	response, before := c.prompt(c.swarmSession(), "Delegate.", "approve")
 	if response.Error != nil {
 		t.Fatal(response.Error)
 	}

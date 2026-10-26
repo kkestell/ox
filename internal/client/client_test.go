@@ -47,7 +47,7 @@ func start(t *testing.T, replies ...openroutertest.Reply) (*Conn, *Session) {
 		sessions.Close()
 		close(done)
 	}()
-	conn, created, err := Connect(clientIn, clientOut, t.TempDir(), "test", "")
+	conn, created, err := Connect(clientIn, clientOut, t.TempDir(), "test", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +268,7 @@ func connectFake(agent fakeAgent) (*Conn, protocol.NewSessionResponse, error) {
 	clientIn, agentOut := io.Pipe()
 	agentIn, clientOut := io.Pipe()
 	go acp.NewConn(agentOut).Serve(agentIn, agent)
-	return Connect(clientIn, clientOut, "/", "test", "")
+	return Connect(clientIn, clientOut, "/", "test", "", false)
 }
 
 func TestResumeRequiresAdvertisedListLoadAndCloseCapabilities(t *testing.T) {
@@ -400,7 +400,7 @@ func startProcess(t *testing.T) (*Conn, *Session) {
 	executable, err := os.Executable()
 	must(t, err)
 	t.Setenv("OX_TEST_AGENT", "1")
-	conn, created, err := Start(settings.Server{Command: executable, Args: []string{"-test.run=^TestAgentProcess$"}}, t.TempDir(), "test", "")
+	conn, created, err := Start(settings.Server{Command: executable, Args: []string{"-test.run=^TestAgentProcess$"}}, t.TempDir(), "test", "", false)
 	must(t, err)
 	t.Cleanup(conn.Close)
 	return conn, NewSession(conn, created)
@@ -482,7 +482,7 @@ func TestResumeReplaysBeforeTheQueuedPrompt(t *testing.T) {
 	clientIn, serverOut := io.Pipe()
 	rpc := acp.NewConn(serverOut)
 	go rpc.Serve(serverIn, server.New(rpc, a, settings.Settings{Model: openroutertest.DefaultModel, Effort: catalog.EffortDefault, Mode: transcript.ModeAsk}, t.TempDir()))
-	conn, loaded, err := Connect(clientIn, clientOut, workspace, "test", protocol.SessionId(summary.ID))
+	conn, loaded, err := Connect(clientIn, clientOut, workspace, "test", protocol.SessionId(summary.ID), false)
 	must(t, err)
 	t.Cleanup(conn.Close)
 	if loaded.SessionId != protocol.SessionId(summary.ID) || len(loaded.ConfigOptions) == 0 {

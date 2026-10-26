@@ -73,6 +73,9 @@ type activeSession struct {
 	// started is set once a turn of the session has started in this process,
 	// so later turns skip the SessionStart hooks.
 	started bool
+	// swarm lets an orchestrator create workers. The client requests it with
+	// the swarm key of the new or load request's _meta.
+	swarm bool
 }
 
 // New returns a server that writes to conn.
@@ -161,8 +164,8 @@ func (s *Server) storedSession(id string) (*store.Session, *acp.Error) {
 
 // newActiveSession builds the process state a session gets when it becomes
 // active. Its selections are set by the caller.
-func (s *Server) newActiveSession(workspace string, definitions map[string]settings.MCPServer) (*activeSession, *acp.Error) {
-	systemPrompt, err := sysprompt.ForWorkspace(s.home, workspace, tools.ShellProgram)
+func (s *Server) newActiveSession(workspace string, definitions map[string]settings.MCPServer, swarm bool) (*activeSession, *acp.Error) {
+	systemPrompt, err := sysprompt.ForWorkspace(s.home, workspace, tools.ShellProgram, swarm)
 	if err != nil {
 		return nil, internal(err)
 	}
@@ -170,7 +173,7 @@ func (s *Server) newActiveSession(workspace string, definitions map[string]setti
 	if err != nil {
 		return nil, internal(err)
 	}
-	return &activeSession{systemPrompt: systemPrompt, skills: s.loadSkills(workspace), processes: &shellproc.Processes{}, mcp: mcpclient.New(workspace, configured), acpMCP: definitions}, nil
+	return &activeSession{systemPrompt: systemPrompt, skills: s.loadSkills(workspace), processes: &shellproc.Processes{}, mcp: mcpclient.New(workspace, configured), acpMCP: definitions, swarm: swarm}, nil
 }
 
 // unavailable says why a session operation could not start.
@@ -218,7 +221,7 @@ func (s *Server) newSession(r *acp.Request) *acp.Error {
 	if err != nil {
 		return acp.InvalidParams(err.Error())
 	}
-	session, acpErr := s.newActiveSession(params.Cwd, definitions)
+	session, acpErr := s.newActiveSession(params.Cwd, definitions, params.Meta["swarm"] == true)
 	if acpErr != nil {
 		return acpErr
 	}
@@ -281,7 +284,7 @@ func (s *Server) loadSession(r *acp.Request) *acp.Error {
 		return acp.InvalidParams("MCP definitions changed; close and reload the session")
 	}
 	if session == nil {
-		session, acpErr = s.newActiveSession(saved.Summary.Workspace, definitions)
+		session, acpErr = s.newActiveSession(saved.Summary.Workspace, definitions, params.Meta["swarm"] == true)
 		if acpErr != nil {
 			return acpErr
 		}
@@ -587,7 +590,7 @@ func (s *Server) runTurn(ctx context.Context, id string, input transcript.TurnIn
 	s.mu.Lock()
 	selections, started := session.selections, session.started
 	s.mu.Unlock()
-	team, err := s.team(id, selections)
+	team, err := s.team(id, selections, session.swarm)
 	if err != nil {
 		return agent.Result{}, false, err
 	}
