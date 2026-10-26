@@ -898,7 +898,7 @@ func TestLoadingWakesWorkersClosingLeavesThemRunningAndDeletionRefuses(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	worker, err := db.CreateWorker(parent.ID, "reader", workspace, "")
+	worker, err := db.CreateWorker(parent.ID, "reader", workspace, "", fake.DefaultModel, catalog.EffortDefault)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -963,5 +963,35 @@ func TestLoadingWakesWorkersClosingLeavesThemRunningAndDeletionRefuses(t *testin
 	}
 	if response, _ := c.prompt(parent.ID, "Continue."); response.Error != nil {
 		t.Fatal(response.Error)
+	}
+}
+
+func TestLoadingOrchestratorContinuesWhenWorkerModelIsUnavailable(t *testing.T) {
+	db, err := store.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	parent, err := db.Create(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err := db.CreateWorker(parent.ID, "reader", workspace, "", "openrouter:gone", catalog.EffortDefault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Send(worker.ID, "orchestrator", "Pending task."); err != nil {
+		t.Fatal(err)
+	}
+	c := connectWithStore(t, db, fake.Text("Still available."))
+	response, _ := c.call(acp.MethodLoadSession, object{"sessionId": parent.ID, "cwd": workspace, "mcpServers": []any{}})
+	if response.Error != nil {
+		t.Fatalf("worker blocked orchestrator load: %v", response.Error)
+	}
+	if response, _ := c.prompt(parent.ID, "Continue."); response.Error != nil {
+		t.Fatalf("orchestrator prompt = %v", response.Error)
+	}
+	if has, err := db.HasMessages(worker.ID); err != nil || !has {
+		t.Fatalf("worker task was lost: %t, %v", has, err)
 	}
 }

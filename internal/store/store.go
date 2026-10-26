@@ -20,6 +20,7 @@ import (
 
 	_ "github.com/ncruces/go-sqlite3/driver"
 
+	"ox/internal/catalog"
 	"ox/internal/transcript"
 )
 
@@ -51,6 +52,8 @@ CREATE TABLE IF NOT EXISTS team_members (
     parent_id  TEXT NOT NULL REFERENCES sessions (id),
     name       TEXT NOT NULL,
     branch     TEXT NOT NULL,
+    model      TEXT NOT NULL,
+    effort     TEXT NOT NULL,
     UNIQUE (parent_id, name)
 );
 
@@ -86,12 +89,15 @@ type Session struct {
 }
 
 // Member is a worker session and its link to its orchestrator. Branch is
-// empty for a worker without a worktree.
+// empty for a worker without a worktree. Model and Effort are its initial
+// selections, used until its first turn start is saved.
 type Member struct {
 	Summary
 	Parent string
 	Name   string
 	Branch string
+	Model  string
+	Effort catalog.Effort
 }
 
 // Message is a saved message waiting for a session.
@@ -170,7 +176,7 @@ func (s *Store) Create(workspace string) (Summary, error) {
 // CreateWorker creates a worker session named name in workspace and links it
 // to parent. Branch is empty for a worker without a worktree. The worker's
 // title is its name.
-func (s *Store) CreateWorker(parent, name, workspace, branch string) (Summary, error) {
+func (s *Store) CreateWorker(parent, name, workspace, branch, model string, effort catalog.Effort) (Summary, error) {
 	if name == "" {
 		return Summary{}, errors.New("worker name is empty")
 	}
@@ -187,8 +193,8 @@ func (s *Store) CreateWorker(parent, name, workspace, branch string) (Summary, e
 		summary.ID, summary.Workspace, summary.Title, summary.UpdatedAt); err != nil {
 		return Summary{}, err
 	}
-	if _, err := tx.Exec("INSERT INTO team_members (session_id, parent_id, name, branch) VALUES (?, ?, ?, ?)",
-		summary.ID, parent, name, branch); err != nil {
+	if _, err := tx.Exec("INSERT INTO team_members (session_id, parent_id, name, branch, model, effort) VALUES (?, ?, ?, ?, ?, ?)",
+		summary.ID, parent, name, branch, model, effort); err != nil {
 		return Summary{}, err
 	}
 	return summary, tx.Commit()
@@ -196,7 +202,7 @@ func (s *Store) CreateWorker(parent, name, workspace, branch string) (Summary, e
 
 // Members returns parent's workers ordered by name.
 func (s *Store) Members(parent string) ([]Member, error) {
-	rows, err := s.db.Query(`SELECT s.id, s.workspace_path, COALESCE(s.title, ''), s.updated_at, m.parent_id, m.name, m.branch
+	rows, err := s.db.Query(`SELECT s.id, s.workspace_path, COALESCE(s.title, ''), s.updated_at, m.parent_id, m.name, m.branch, m.model, m.effort
 		FROM team_members m JOIN sessions s ON s.id = m.session_id
 		WHERE m.parent_id = ? ORDER BY m.name`, parent)
 	if err != nil {
@@ -206,7 +212,7 @@ func (s *Store) Members(parent string) ([]Member, error) {
 	var members []Member
 	for rows.Next() {
 		var member Member
-		if err := rows.Scan(&member.ID, &member.Workspace, &member.Title, &member.UpdatedAt, &member.Parent, &member.Name, &member.Branch); err != nil {
+		if err := rows.Scan(&member.ID, &member.Workspace, &member.Title, &member.UpdatedAt, &member.Parent, &member.Name, &member.Branch, &member.Model, &member.Effort); err != nil {
 			return nil, err
 		}
 		members = append(members, member)
@@ -218,10 +224,10 @@ func (s *Store) Members(parent string) ([]Member, error) {
 // worker has it.
 func (s *Store) Member(id string) (Member, error) {
 	var member Member
-	err := s.db.QueryRow(`SELECT s.id, s.workspace_path, COALESCE(s.title, ''), s.updated_at, m.parent_id, m.name, m.branch
+	err := s.db.QueryRow(`SELECT s.id, s.workspace_path, COALESCE(s.title, ''), s.updated_at, m.parent_id, m.name, m.branch, m.model, m.effort
 		FROM team_members m JOIN sessions s ON s.id = m.session_id
 		WHERE m.session_id = ?`, id).
-		Scan(&member.ID, &member.Workspace, &member.Title, &member.UpdatedAt, &member.Parent, &member.Name, &member.Branch)
+		Scan(&member.ID, &member.Workspace, &member.Title, &member.UpdatedAt, &member.Parent, &member.Name, &member.Branch, &member.Model, &member.Effort)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Member{}, ErrNotFound
 	}

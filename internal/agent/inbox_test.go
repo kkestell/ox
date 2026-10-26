@@ -155,3 +155,26 @@ func TestCancelledTurnLeavesInboxUntouched(t *testing.T) {
 		t.Errorf("saved entries = %v", got)
 	}
 }
+
+func TestInboxUserMessageIsSavedWhenCancellationFollowsTakingIt(t *testing.T) {
+	f := newFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	in := f.input("")
+	in.Input = transcript.TurnInput{}
+	messages := []string{"Message from orchestrator:\nKeep this task."}
+	in.Inbox = func() []string {
+		waiting := messages
+		messages = nil
+		cancel()
+		return waiting
+	}
+	result, err := f.run(t, ctx, in, &recorder{mode: transcript.ModeAuto})
+	if err != nil || result.Stop != Cancelled {
+		t.Fatalf("result = %+v, %v", result, err)
+	}
+	saved := f.saved(t)
+	if len(saved) != 1 || saved[0].(*transcript.TurnStart).Input.Message.Text() != "Message from orchestrator:\nKeep this task." {
+		t.Fatalf("saved inbox input = %+v", saved)
+	}
+}

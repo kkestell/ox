@@ -288,7 +288,7 @@ func (s *Server) loadSession(r *acp.Request) *acp.Error {
 	}
 	for _, member := range members {
 		if err := s.wake(member.ID); err != nil {
-			return internal(err)
+			fmt.Fprintln(os.Stderr, "waking worker:", err)
 		}
 	}
 	send := func(update any) error { return s.notify(id, update) }
@@ -483,7 +483,7 @@ func (s *Server) prompt(r *acp.Request) *acp.Error {
 	s.prompts.Add(1)
 	go func() {
 		defer s.prompts.Done()
-		result, err := s.runTurn(ctx, id, dispatch(message, session.skills), session, client)
+		result, _, err := s.runTurn(ctx, id, dispatch(message, session.skills), session, client)
 		// The client may send its next prompt as soon as it reads the response.
 		release()
 		if err != nil {
@@ -506,21 +506,22 @@ func (s *Server) prompt(r *acp.Request) *acp.Error {
 }
 
 // runTurn is shared by ACP prompts and the server's worker turns. Its caller
-// holds the session's prompt operation until reporting the result.
-func (s *Server) runTurn(ctx context.Context, id string, input transcript.TurnInput, session *activeSession, client agent.Client) (agent.Result, error) {
+// holds the session's prompt operation until reporting the result. The bool
+// reports whether the turn start was saved.
+func (s *Server) runTurn(ctx context.Context, id string, input transcript.TurnInput, session *activeSession, client agent.Client) (agent.Result, bool, error) {
 	s.mu.Lock()
 	selections, started := session.selections, session.started
 	s.mu.Unlock()
 	team, err := s.team(id, selections)
 	if err != nil {
-		return agent.Result{}, err
+		return agent.Result{}, false, err
 	}
 	catalog, err := session.mcp.Prepare(ctx)
 	if ctx.Err() != nil {
-		return agent.Result{Stop: agent.Cancelled}, nil
+		return agent.Result{Stop: agent.Cancelled}, false, nil
 	}
 	if err != nil {
-		return agent.Result{}, err
+		return agent.Result{}, false, err
 	}
 	var inboxErr error
 	turn, err := s.agent.Start(ctx, agent.Input{
@@ -534,16 +535,18 @@ func (s *Server) runTurn(ctx context.Context, id string, input transcript.TurnIn
 		},
 	}, client)
 	if err != nil {
-		return agent.Result{}, errors.Join(err, inboxErr)
+		return agent.Result{}, false, errors.Join(err, inboxErr)
 	}
-	s.mu.Lock()
-	session.started = true
-	s.mu.Unlock()
+	if turn.Started() {
+		s.mu.Lock()
+		session.started = true
+		s.mu.Unlock()
+	}
 	if acp, ok := client.(*acpClient); ok {
 		acp.workspace = turn.Workspace()
 	}
 	result, err := turn.Run(ctx)
-	return result, errors.Join(err, inboxErr)
+	return result, turn.Started(), errors.Join(err, inboxErr)
 }
 
 // Shutdown rejects new operations, cancels active prompts, waits for active

@@ -152,7 +152,9 @@ func New(s *store.Store, providers map[string]provider.Provider, cat catalog.Cat
 // Input is what starts a turn.
 type Input struct {
 	SessionID string
-	Input     transcript.TurnInput
+	// An empty Input takes its user message from Inbox after cancellation
+	// and model validation, so an unstarted worker leaves its messages saved.
+	Input transcript.TurnInput
 	// Model and Effort are the session's selections, used for every model
 	// request in the turn.
 	Model        string
@@ -261,11 +263,15 @@ func (a *Agent) Start(ctx context.Context, in Input, client Client) (*Turn, erro
 		return t, nil
 	}
 	// An earlier image fails every request to a model without image input.
-	if !model.AcceptsImages && (in.Input.HasImages() || hasImages(transcript.RequestEntries(session.Transcript))) {
+	inputImages := (in.Input.Message != nil || in.Input.Skill != nil) && in.Input.HasImages()
+	if !model.AcceptsImages && (inputImages || hasImages(transcript.RequestEntries(session.Transcript))) {
 		return nil, ErrImagesUnsupported
 	}
 	// The context is saved even if the turn is cancelled meanwhile, since a
 	// hook or inbox may hand over text only once.
+	if in.Input.Message == nil && in.Input.Skill == nil {
+		in.Input.Message = new(transcript.TextMessage(strings.Join(t.messages(), "\n\n")))
+	}
 	added := t.promptHooks(ctx, in.SessionStart, len(session.Transcript), in.Input)
 	added = append(added, t.messages()...)
 	start := &transcript.TurnStart{Model: model.QualifiedID(), Effort: in.Effort, Mode: t.client.Mode(), Input: in.Input, Context: added}
@@ -280,6 +286,9 @@ func (a *Agent) Start(ctx context.Context, in Input, client Client) (*Turn, erro
 	}
 	return t, nil
 }
+
+// Started reports whether the turn start was saved.
+func (t *Turn) Started() bool { return t.info != nil }
 
 // Workspace returns the session's workspace.
 func (t *Turn) Workspace() string { return t.summary.Workspace }

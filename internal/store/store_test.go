@@ -290,7 +290,7 @@ func TestListOrdersByActivityFiltersByWorkspaceAndDeleteCascades(t *testing.T) {
 
 func addWorker(t *testing.T, s *Store, parent, name, branch string) Summary {
 	t.Helper()
-	summary, err := s.CreateWorker(parent, name, workspace, branch)
+	summary, err := s.CreateWorker(parent, name, workspace, branch, "openrouter:model", catalog.EffortDefault)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +315,7 @@ func TestWorkersAreLinkedAndLeftOutOfList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Member{Summary: alice, Parent: parent, Name: "alice", Branch: "ox/alice"}
+	want := Member{Summary: alice, Parent: parent, Name: "alice", Branch: "ox/alice", Model: "openrouter:model", Effort: catalog.EffortDefault}
 	if !reflect.DeepEqual(members, []Member{want}) {
 		t.Errorf("members = %+v", members)
 	}
@@ -396,17 +396,17 @@ func TestTakeReturnsMessagesInOrderAndRemovesThem(t *testing.T) {
 func TestCreateWorkerRejectsBadInputWithoutLeavingASession(t *testing.T) {
 	s := memory(t)
 	parent := create(t, s)
-	if _, err := s.CreateWorker(parent, "", workspace, "ox/nobody"); err == nil {
+	if _, err := s.CreateWorker(parent, "", workspace, "ox/nobody", "openrouter:model", catalog.EffortDefault); err == nil {
 		t.Error("an empty worker name was accepted")
 	}
-	if _, err := s.CreateWorker(parent, "alice", "relative", "ox/alice"); err == nil {
+	if _, err := s.CreateWorker(parent, "alice", "relative", "ox/alice", "openrouter:model", catalog.EffortDefault); err == nil {
 		t.Error("a relative workspace was accepted")
 	}
-	if _, err := s.CreateWorker("missing", "alice", workspace, "ox/alice"); err == nil {
+	if _, err := s.CreateWorker("missing", "alice", workspace, "ox/alice", "openrouter:model", catalog.EffortDefault); err == nil {
 		t.Error("a worker was created for a missing parent")
 	}
 	addWorker(t, s, parent, "alice", "ox/alice")
-	if _, err := s.CreateWorker(parent, "alice", workspace, "ox/alice"); err == nil {
+	if _, err := s.CreateWorker(parent, "alice", workspace, "ox/alice", "openrouter:model", catalog.EffortDefault); err == nil {
 		t.Error("a duplicate worker name was accepted")
 	}
 	var sessions int

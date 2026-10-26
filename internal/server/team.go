@@ -112,7 +112,7 @@ func (t *team) CreateAgent(ctx context.Context, args tools.CreateAgentArgs) (str
 		return "", acpErr
 	}
 	session.selections = selected
-	summary, err := s.agent.Store.CreateWorker(t.parent, args.Name, workspace, branch)
+	summary, err := s.agent.Store.CreateWorker(t.parent, args.Name, workspace, branch, selected.Model, selected.Effort)
 	if err != nil {
 		return "", err
 	}
@@ -240,14 +240,17 @@ func (s *Server) selectionsFor(id string) (settings.Settings, error) {
 	if err != nil {
 		return settings.Settings{}, err
 	}
-	selected, err := s.defaultsFor(saved.Summary.Workspace)
-	if err != nil {
+	if start := transcript.LatestTurnStart(saved.Transcript); start != nil {
+		return settings.Settings{Model: start.Model, Effort: start.Effort, Mode: start.Mode}, nil
+	}
+	member, err := s.agent.Store.Member(id)
+	if err == nil {
+		return settings.Settings{Model: member.Model, Effort: member.Effort, Mode: transcript.ModeAuto}, nil
+	}
+	if !errors.Is(err, store.ErrNotFound) {
 		return settings.Settings{}, err
 	}
-	if start := transcript.LatestTurnStart(saved.Transcript); start != nil {
-		selected.Model, selected.Effort, selected.Mode = start.Model, start.Effort, start.Mode
-	}
-	return selected, nil
+	return s.defaultsFor(saved.Summary.Workspace)
 }
 
 func (t *team) ListAgents(ctx context.Context) (string, error) {
@@ -344,11 +347,17 @@ func (t *team) RemoveAgent(ctx context.Context, name string) (string, error) {
 	if !ok {
 		return "", s.unavailable()
 	}
+	removed := false
 	defer func() {
 		s.mu.Lock()
 		delete(s.removing, member.ID)
 		s.mu.Unlock()
 		release()
+		if !removed {
+			if err := s.wake(member.ID); err != nil {
+				fmt.Fprintln(os.Stderr, "waking worker:", err)
+			}
+		}
 		s.change()
 	}()
 	wait()
@@ -373,20 +382,29 @@ func (t *team) RemoveAgent(ctx context.Context, name string) (string, error) {
 		return "", err
 	}
 	s.deactivate(member.ID)
+	removed = true
 	return "Worker " + name + " removed.", nil
 }
 
 func (s *Server) workerPrompt(prompt string, member store.Member) (string, error) {
-	t := &team{server: s, id: member.ID, parent: member.Parent, name: member.Name}
-	members, err := t.ListAgents(context.Background())
+	parent, err := s.agent.Store.Read(member.Parent)
 	if err != nil {
 		return "", err
+	}
+	members, err := s.agent.Store.Members(member.Parent)
+	if err != nil {
+		return "", err
+	}
+	members = append([]store.Member{{Summary: parent.Summary, Name: "orchestrator"}}, members...)
+	var lines []string
+	for _, member := range members {
+		lines = append(lines, fmt.Sprintf("Name: %s\nWorkspace: %s\nBranch: %s", member.Name, member.Workspace, member.Branch))
 	}
 	instructions := "Follow the orchestrator's instructions about branches and commits."
 	if member.Branch != "" {
 		instructions = "Commit your work on your branch. The orchestrator merges it from its checkout."
 	}
-	return prompt + fmt.Sprintf("\n\n# Team\n\nYou are worker %s.\nWorkspace: %s\nBranch: %s\n\n%s\nYour final answer is sent to the orchestrator when your turn ends.\nUse send_message to contact team members while you work. Workers cannot create workers.\n\nTeam when you joined:\n\n%s", member.Name, member.Workspace, member.Branch, instructions, members), nil
+	return prompt + fmt.Sprintf("\n\n# Team\n\nYou are worker %s.\nWorkspace: %s\nBranch: %s\n\n%s\nYour final answer is sent to the orchestrator when your turn ends.\nUse send_message to contact team members while you work. Workers cannot create workers.\n\nTeam:\n\n%s", member.Name, member.Workspace, member.Branch, instructions, strings.Join(lines, "\n\n")), nil
 }
 
 // wake acquires the same operation as an ACP prompt before touching worker
@@ -434,15 +452,11 @@ func (s *Server) wake(id string) error {
 		s.active[id] = session
 		s.mu.Unlock()
 	}
-	messages, err := s.takeMessages(id)
-	if err != nil {
-		return err
-	}
 	s.prompts.Add(1)
 	started = true
 	go func() {
 		defer s.prompts.Done()
-		result, err := s.runTurn(ctx, id, transcript.TurnInput{Message: new(transcript.TextMessage(strings.Join(messages, "\n\n")))}, session, workerClient{})
+		result, saved, err := s.runTurn(ctx, id, transcript.TurnInput{}, session, workerClient{})
 		s.mu.Lock()
 		if !s.removing[id] {
 			if err := s.agent.Store.Send(member.Parent, member.Name, workerReport(member.Name, result, err)); err != nil {
@@ -452,8 +466,12 @@ func (s *Server) wake(id string) error {
 		s.mu.Unlock()
 		release()
 		s.change()
-		if err := s.wake(id); err != nil {
-			fmt.Fprintln(os.Stderr, "waking worker:", err)
+		// A failed preparation leaves the same messages queued. Retry only
+		// after a turn saved its input, or a new message or load wakes it.
+		if saved || err == nil {
+			if err := s.wake(id); err != nil {
+				fmt.Fprintln(os.Stderr, "waking worker:", err)
+			}
 		}
 	}()
 	return nil

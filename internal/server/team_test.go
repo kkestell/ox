@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -266,17 +267,28 @@ func TestMessageAtWorkerTurnEndStartsAnotherTurn(t *testing.T) {
 }
 
 func TestWorkerDirectoriesSelectionsAndIdleWait(t *testing.T) {
-	root := t.TempDir()
+	ceiling, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CEILING_DIRECTORIES", ceiling)
+	root := filepath.Join(ceiling, "workspace")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	s, tm := teamServer(t, root, fake.Text("Done."), fake.Text("Done."), fake.Text("Done."))
 	ctx := context.Background()
-	for _, args := range []tools.CreateAgentArgs{
-		{Name: "no-dir", Message: "Read."},
-		{Name: "bad-model", Message: "Read.", Dir: ".", Model: "missing"},
-		{Name: "bad-effort", Message: "Read.", Dir: ".", Effort: "loud"},
-		{Name: "unsupported", Message: "Read.", Dir: ".", Model: "openrouter:acme/plain"},
+	for _, test := range []struct {
+		args tools.CreateAgentArgs
+		want string
+	}{
+		{tools.CreateAgentArgs{Name: "no-dir", Message: "Read."}, "dir is required outside a Git checkout"},
+		{tools.CreateAgentArgs{Name: "bad-model", Message: "Read.", Dir: ".", Model: "missing"}, "model missing is not in the model catalog"},
+		{tools.CreateAgentArgs{Name: "bad-effort", Message: "Read.", Dir: ".", Effort: "loud"}, "unknown effort loud"},
+		{tools.CreateAgentArgs{Name: "unsupported", Message: "Read.", Dir: ".", Model: "openrouter:acme/plain"}, "does not accept effort high"},
 	} {
-		if _, err := tm.CreateAgent(ctx, args); err == nil {
-			t.Errorf("accepted %+v", args)
+		if _, err := tm.CreateAgent(ctx, test.args); err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Errorf("creation %+v: %v, want %q", test.args, err, test.want)
 		}
 	}
 	if tm.WorkerModels() != "Use Plain for small tasks." {
@@ -365,5 +377,127 @@ func TestWorkerReportsLimitsRefusalsAndFailures(t *testing.T) {
 				t.Fatalf("report = %q", got)
 			}
 		})
+	}
+}
+
+func TestWorkerCancelledDuringPreparationKeepsMessageAndSelectionAcrossRestart(t *testing.T) {
+	workspace := t.TempDir()
+	config, err := json.Marshal(map[string]any{"mcpServers": map[string]settings.MCPServer{
+		"slow": {Command: "sh", Args: []string{"-c", "touch preparing; cat >/dev/null"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(workspace, ".ox"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(workspace, ".ox", "settings.json")
+	if err := os.WriteFile(settingsPath, config, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, tm := teamServer(t, workspace, fake.Text("Resumed."))
+	if _, err := tm.CreateAgent(context.Background(), tools.CreateAgentArgs{
+		Name: "reader", Message: "Keep this task.", Dir: ".", Model: "openrouter:acme/plain", Effort: "default",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	member, err := tm.member("reader")
+	if err != nil {
+		t.Fatal(err)
+	}
+	teamEventually(t, func() bool {
+		_, err := os.Stat(filepath.Join(workspace, "preparing"))
+		return err == nil
+	})
+	s.Shutdown()
+	saved, err := s.agent.Store.Read(member.ID)
+	if err != nil || len(saved.Transcript) != 0 {
+		t.Fatalf("unstarted worker transcript = %+v, %v", saved, err)
+	}
+	if has, err := s.agent.Store.HasMessages(member.ID); err != nil || !has {
+		t.Fatalf("cancelled preparation lost the task: %t, %v", has, err)
+	}
+	if err := os.Remove(settingsPath); err != nil {
+		t.Fatal(err)
+	}
+	restarted := New(nil, s.agent, s.defaults, s.home)
+	t.Cleanup(restarted.Shutdown)
+	before, err := restarted.workerPrompt("Base", member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.wake(member.ID); err != nil {
+		t.Fatal(err)
+	}
+	teamEventually(t, func() bool {
+		saved, err := s.agent.Store.Read(member.ID)
+		return err == nil && len(saved.Transcript) == 2
+	})
+	saved, err = s.agent.Store.Read(member.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := saved.Transcript[0].(*transcript.TurnStart)
+	if start.Model != "openrouter:acme/plain" || start.Effort != catalog.EffortDefault || start.Mode != transcript.ModeAuto || start.Input.Message.Text() != "Message from orchestrator:\nKeep this task." {
+		t.Fatalf("restored worker turn = %+v", start)
+	}
+	teamEventually(t, func() bool { return !restarted.ops.working(member.ID) })
+	_, release, ok := restarted.ops.tryPrompt(member.ID)
+	if !ok {
+		t.Fatal("could not reserve worker turn")
+	}
+	after, err := restarted.workerPrompt("Base", member)
+	release()
+	if err != nil || after != before || strings.Contains(after, "Working:") || strings.Contains(after, "Team when you joined") || !strings.Contains(after, "\nTeam:\n") {
+		t.Fatalf("worker prompt changed with activity: %q, %v", after, err)
+	}
+}
+
+func TestFailedRemovalWakesMessagesSentWhileClosing(t *testing.T) {
+	root := teamRepo(t)
+	s, tm := teamServer(t, root, fake.Text("First."), fake.Text("Followed up."))
+	if _, err := tm.CreateAgent(context.Background(), tools.CreateAgentArgs{Name: "builder", Message: "Build."}); err != nil {
+		t.Fatal(err)
+	}
+	teamWait(t, tm)
+	member, err := tm.member("builder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	teamEventually(t, func() bool { return !s.ops.working(member.ID) })
+	if err := os.WriteFile(filepath.Join(member.Workspace, "change"), []byte("change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	teamGit(t, member.Workspace, "add", "change")
+	teamGit(t, member.Workspace, "commit", "-m", "Unmerged change")
+	// Keep the cancelled operation alive long enough to send work while removal waits.
+	ctx, release, ok := s.ops.tryPrompt(member.ID)
+	if !ok {
+		t.Fatal("could not reserve worker turn")
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := tm.RemoveAgent(context.Background(), "builder")
+		done <- err
+	}()
+	<-ctx.Done()
+	if _, err := tm.SendMessage(context.Background(), "builder", "Continue after removal fails."); err != nil {
+		release()
+		t.Fatal(err)
+	}
+	release()
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "not merged") {
+		t.Fatalf("removal = %v", err)
+	}
+	if report := teamWait(t, tm); !strings.Contains(report, "Followed up.") {
+		t.Fatalf("pending message was stranded: %q", report)
+	}
+	saved, err := s.agent.Store.Read(member.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := saved.Transcript[2].(*transcript.TurnStart)
+	if start.Input.Message.Text() != "Message from orchestrator:\nContinue after removal fails." {
+		t.Fatalf("follow-up input = %+v", start)
 	}
 }
