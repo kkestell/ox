@@ -74,6 +74,9 @@ func TestTeamSchemasAndDispatchMatchRole(t *testing.T) {
 							AdditionalProperties bool     `json:"additionalProperties"`
 							Required             []string `json:"required"`
 							Properties           struct {
+								Dir struct {
+									Type []string `json:"type"`
+								} `json:"dir"`
 								Profile *struct {
 									Enum        []string `json:"enum"`
 									Description string   `json:"description"`
@@ -95,7 +98,7 @@ func TestTeamSchemasAndDispatchMatchRole(t *testing.T) {
 							t.Errorf("create_agent description missing %q", instruction)
 						}
 					}
-					required, profile := []string{"name", "message"}, fn.Parameters.Properties.Profile
+					required, profile := []string{"name", "message", "dir"}, fn.Parameters.Properties.Profile
 					if test.team.Profiles() == nil {
 						if profile != nil || !strings.Contains(fn.Description, "Workers use your model and effort.") {
 							t.Errorf("create_agent without profiles: %s", raw)
@@ -107,6 +110,9 @@ func TestTeamSchemasAndDispatchMatchRole(t *testing.T) {
 							!strings.Contains(profile.Description, "- deep (model-b, effort default): Hard tasks.") {
 							t.Errorf("profile property: %s", raw)
 						}
+					}
+					if !reflect.DeepEqual(fn.Parameters.Properties.Dir.Type, []string{"string", "null"}) {
+						t.Errorf("dir is not nullable: %s", raw)
 					}
 					if !reflect.DeepEqual(fn.Parameters.Required, required) {
 						t.Errorf("required = %v", fn.Parameters.Required)
@@ -210,6 +216,10 @@ func TestTeamDispatchPermissionsAndTitles(t *testing.T) {
 	}
 	if team.text != "Report" || team.to != "worker-1" || !reflect.DeepEqual(team.calls, []string{CreateAgent, SendMessage, ListAgents, RemoveAgent, Wait}) {
 		t.Fatalf("dispatched team calls: %+v", team)
+	}
+	nullDir := object{"name": "worker-2", "message": "Do the work", "dir": nil, "profile": "fast"}
+	if got := box.call(CreateAgent, nullDir); got.Status != transcript.ToolCompleted || team.args != (CreateAgentArgs{Name: "worker-2", Message: "Do the work", Profile: "fast"}) {
+		t.Errorf("null dir: %+v, dispatched %+v", got, team.args)
 	}
 	team.err = errors.New("cannot remove unmerged branch")
 	if got := box.call(RemoveAgent, object{"name": "worker-1"}); !reflect.DeepEqual(got, transcript.Failed(team.err.Error())) {

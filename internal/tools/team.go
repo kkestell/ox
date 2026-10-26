@@ -50,13 +50,16 @@ func (t *Toolbox) teamSchemas() []json.RawMessage {
 	if t.Team.IsWorker() {
 		return schemas
 	}
-	description := "Create a worker and give it work. Run only independent work in parallel. Give a worker a worktree when it will change files: omit dir to create a worktree and branch from your HEAD. Merge its branch from your checkout, then remove the worker. Use dir \".\" for a worker that only reads. Call wait after giving out work. Workers run commands without asking for permission and cannot create workers."
+	description := "Create a worker and give it work. Run only independent work in parallel. Give a worker a worktree when it will change files: pass dir null to create a worktree and branch from your HEAD. Merge its branch from your checkout, then remove the worker. Use dir \".\" for a worker that only reads. Call wait after giving out work. Workers run commands without asking for permission and cannot create workers."
 	properties := map[string]any{
 		"name":    map[string]any{"type": "string", "pattern": "^[a-z0-9-]+$", "description": "Unique worker name using lowercase letters, digits, and hyphens; not orchestrator."},
 		"message": stringProperty("Work for the worker to do."),
-		"dir":     optionalString("Omit for a worker that changes files: Ox creates its Git worktree and branch ox/<name> from your HEAD. Set it only to run the worker in an existing directory instead, such as \".\" for a worker that only reads: absolute, ~/ relative to home, or relative to your workspace. Required outside a Git checkout."),
+		// Every property is required and dir is nullable, the form of OpenAI's
+		// strict function calling, because GPT models fill in every property
+		// and otherwise invent a directory.
+		"dir": map[string]any{"type": []string{"string", "null"}, "description": "null for a worker that changes files: Ox creates its Git worktree and branch ox/<name> from your HEAD. A path only to run the worker in an existing directory instead, such as \".\" for a worker that only reads: absolute, ~/ relative to home, or relative to your workspace. A path is required outside a Git checkout."},
 	}
-	required := []string{"name", "message"}
+	required := []string{"name", "message", "dir"}
 	if profiles := t.Team.Profiles(); len(profiles) > 0 {
 		var ids, lines []string
 		for _, profile := range profiles {
@@ -77,12 +80,6 @@ func (t *Toolbox) teamSchemas() []json.RawMessage {
 
 func stringProperty(description string) map[string]any {
 	return map[string]any{"type": "string", "description": description, "minLength": 1}
-}
-
-// optionalString accepts an empty string as omitted, since some models fill in
-// every property.
-func optionalString(description string) map[string]any {
-	return map[string]any{"type": "string", "description": description}
 }
 
 func teamSchema(name, description string, properties map[string]any, required []string) json.RawMessage {
