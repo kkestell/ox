@@ -352,6 +352,19 @@ func permissionRequest(sessionID, workspace string, call transcript.ToolCall, pe
 	input := rawInput(call)
 	var content string
 	switch permission.Kind {
+	case tools.PermissionAgent:
+		agent := permission.Agent
+		model, effort, dir := agent.Model, agent.Effort, agent.Dir
+		if model == "" {
+			model = "(same as orchestrator)"
+		}
+		if effort == "" {
+			effort = "(same as orchestrator)"
+		}
+		if dir == "" {
+			dir = "(new Git worktree)"
+		}
+		content = fmt.Sprintf("Name: %s\n\nModel: %s\n\nEffort: %s\n\nDirectory: %s\n\nOrchestrator workspace: %s\n\nMessage:\n\n%s", agent.Name, model, effort, dir, workspace, indented(agent.Message))
 	case tools.PermissionMCP:
 		content = fmt.Sprintf("MCP server: %s\n\nTool: %s\n\nArguments:\n\n%s", permission.Server, permission.Tool, indented(call.Arguments))
 	case tools.PermissionCommand:

@@ -37,6 +37,7 @@ const maxTitleChars = 80
 type Toolbox struct {
 	Workspace string
 	MCP       *mcpclient.Catalog
+	Team      Team
 	// Processes are the session's background processes, which outlive calls.
 	Processes *shellproc.Processes
 }
@@ -48,7 +49,7 @@ func Schemas() []json.RawMessage {
 
 // Schemas combines built-ins with the immutable catalog for this turn.
 func (t *Toolbox) Schemas() []json.RawMessage {
-	schemas := Schemas()
+	schemas := append(Schemas(), t.teamSchemas()...)
 	names := map[string]bool{}
 	for _, raw := range schemas {
 		var definition struct {
@@ -79,6 +80,9 @@ func (t *Toolbox) Schemas() []json.RawMessage {
 // Shell tools handle cancellation themselves, so they can report a partial
 // write or finish a stop's cleanup.
 func (t *Toolbox) Execute(ctx context.Context, call transcript.ToolCall) transcript.ToolOutcome {
+	if t.hasTeamTool(call.Name) {
+		return t.team(ctx, call)
+	}
 	switch call.Name {
 	case Shell:
 		return t.shell(ctx, call.Arguments)
@@ -154,6 +158,7 @@ type Permission struct {
 	Command    string
 	Text       string
 	CloseStdin bool
+	Agent      CreateAgentArgs
 }
 
 type PermissionKind int
@@ -165,11 +170,18 @@ const (
 	// PermissionInput is sending text to a background process's stdin.
 	PermissionInput
 	PermissionMCP
+	PermissionAgent
 )
 
 // Permission classifies a call by the same argument validation its execution
 // uses.
 func (t *Toolbox) Permission(call transcript.ToolCall) Permission {
+	if call.Name == CreateAgent && t.hasTeamTool(call.Name) {
+		if args, err := parseCreateAgent(call.Arguments); err == nil {
+			return Permission{Kind: PermissionAgent, Agent: args}
+		}
+		return Permission{}
+	}
 	if tool, ok := t.MCP.Lookup(call.Name); ok {
 		if tool.ReadOnly {
 			return Permission{}
@@ -207,6 +219,16 @@ func Title(call transcript.ToolCall) string {
 		return "Run shell command"
 	case ShellProcess:
 		return "Use shell process"
+	case CreateAgent:
+		return "Create agent"
+	case SendMessage:
+		return "Send message"
+	case ListAgents:
+		return "List agents"
+	case RemoveAgent:
+		return "Remove agent"
+	case Wait:
+		return "Wait for agents"
 	case WebFetch:
 		return "Fetch web page"
 	}
@@ -246,6 +268,18 @@ func describe(call transcript.ToolCall) string {
 			return "Write to shell process " + process
 		case "stop":
 			return "Stop shell process " + process
+		}
+	case CreateAgent:
+		if name := argument("name"); name != "" {
+			return "Create agent " + name
+		}
+	case SendMessage:
+		if to := argument("to"); to != "" {
+			return "Message " + to
+		}
+	case RemoveAgent:
+		if name := argument("name"); name != "" {
+			return "Remove agent " + name
 		}
 	case WebFetch:
 		if url := argument("url"); url != "" {
