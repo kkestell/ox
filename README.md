@@ -114,6 +114,25 @@ ox acp auth logout <provider>
 can also be invoked directly. Every command supports `-h` or `--help`. `ox` also
 supports `-V` or `--version`.
 
+## Teams
+
+In an ACP session, ask Ox to divide independent work among workers. The session
+you talk to is the orchestrator: it can create workers on any catalog model,
+send messages, list the team, wait for reports, and remove workers. Workers run
+in Auto mode; Ask mode requests permission before creating one. Workers have no
+terminal view. Teams are unavailable in `ox run`.
+
+By default, each worker gets a Git worktree at `.ox/worktrees/<name>` and a
+branch named `ox/<name>` from the orchestrator's `HEAD`. Merge that branch from
+the orchestrator's checkout before removing the worker. Removal refuses
+uncommitted changes and unmerged branches. A worker can instead use an existing
+directory, which removal leaves in place; outside Git, a directory is required.
+
+Set `workerModels` in `~/.config/ox/settings.json` to free text describing which
+models workers should use and when. Ox includes it in the orchestrator's
+`create_agent` tool description. Model and effort default to the orchestrator's
+selections.
+
 ## Configuration
 
 Global settings live in `~/.config/ox/settings.json`. A workspace can override
