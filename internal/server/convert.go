@@ -353,13 +353,10 @@ func permissionRequest(sessionID, workspace string, call transcript.ToolCall, pe
 	var content string
 	switch permission.Kind {
 	case tools.PermissionAgent:
-		agent := permission.Agent
-		model, effort, dir := agent.Model, agent.Effort, agent.Dir
-		if model == "" {
-			model = "(same as orchestrator)"
-		}
-		if effort == "" {
-			effort = "(same as orchestrator)"
+		agent, profile := permission.Agent, permission.Profile
+		model, effort, dir := profile.Model, string(profile.Effort), agent.Dir
+		if profile.ID == "" {
+			model, effort = "(same as orchestrator)", "(same as orchestrator)"
 		}
 		if dir == "" {
 			dir = "(new Git worktree)"

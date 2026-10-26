@@ -5,22 +5,26 @@ import (
 	"strings"
 	"testing"
 
+	"ox/internal/catalog"
+	"ox/internal/settings"
 	"ox/internal/tools"
 	"ox/internal/transcript"
 )
 
 func TestAgentPermissionShowsAllCreationDetails(t *testing.T) {
-	for _, args := range []tools.CreateAgentArgs{
-		{Name: "worker", Message: "Implement the change", Model: "model-a", Effort: "high", Dir: "../other"},
-		{Name: "worker", Message: "Implement the change"},
+	profile := settings.AgentProfile{ID: "fast", Description: "Small tasks.", Model: "model-a", Effort: catalog.EffortHigh}
+	for _, permission := range []tools.Permission{
+		{Kind: tools.PermissionAgent, Agent: tools.CreateAgentArgs{Name: "worker", Message: "Implement the change", Profile: "fast", Dir: "../other"}, Profile: profile},
+		{Kind: tools.PermissionAgent, Agent: tools.CreateAgentArgs{Name: "worker", Message: "Implement the change"}},
 	} {
+		args := permission.Agent
 		arguments, err := json.Marshal(args)
 		if err != nil {
 			t.Fatal(err)
 		}
 		request := permissionRequest("session", "/workspace", transcript.ToolCall{
 			CallID: "create", Name: tools.CreateAgent, Arguments: string(arguments),
-		}, tools.Permission{Kind: tools.PermissionAgent, Agent: args})
+		}, permission)
 		data, err := json.Marshal(request)
 		if err != nil {
 			t.Fatal(err)
@@ -40,7 +44,7 @@ func TestAgentPermissionShowsAllCreationDetails(t *testing.T) {
 		}
 		text := decoded.ToolCall.Content[0].Content.Text
 		want := []string{"Name: worker", "Message:\n\n    Implement the change", "Orchestrator workspace: /workspace"}
-		if args.Model == "" {
+		if args.Profile == "" {
 			want = append(want, "Model: (same as orchestrator)", "Effort: (same as orchestrator)", "Directory: (new Git worktree)")
 		} else {
 			want = append(want, "Model: model-a", "Effort: high", "Directory: ../other")

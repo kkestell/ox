@@ -2,6 +2,7 @@ package settings_test
 
 import (
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -101,7 +102,7 @@ func TestLaunchSettings(t *testing.T) {
 		"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"second"}]}],"Stop":[{"hooks":[{"type":"command","command":"stop"}]}]}}`)
 	cat := openroutertest.ParsedCatalog()
 	got, err := settings.Settings{Model: model, Effort: catalog.EffortDefault, Mode: transcript.ModeAsk}.ForWorkspace(workspace, cat)
-	if want := (settings.Settings{Model: model, Effort: catalog.EffortHigh, Mode: transcript.ModeAuto}); err != nil || got != want {
+	if want := (settings.Settings{Model: model, Effort: catalog.EffortHigh, Mode: transcript.ModeAuto}); err != nil || !reflect.DeepEqual(got, want) {
 		t.Errorf("settings = %+v, %v", got, err)
 	}
 	servers, err := settings.LoadMCPServers(home, workspace)

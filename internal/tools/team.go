@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
+	"ox/internal/settings"
 	"ox/internal/transcript"
 )
 
@@ -17,11 +19,12 @@ const (
 	Wait        = "wait"
 )
 
-// Team is the session's access to its team. The server owns worker lifecycles
-// and validates model selections against the session's catalog.
+// Team is the session's access to its team. The server owns worker lifecycles.
 type Team interface {
 	IsWorker() bool
-	WorkerModels() string
+	// Profiles are the models and efforts workers may use. Without profiles,
+	// workers use the orchestrator's.
+	Profiles() []settings.AgentProfile
 	CreateAgent(context.Context, CreateAgentArgs) (string, error)
 	SendMessage(ctx context.Context, to, text string) (string, error)
 	ListAgents(context.Context) (string, error)
@@ -32,8 +35,7 @@ type Team interface {
 type CreateAgentArgs struct {
 	Name    string `json:"name"`
 	Message string `json:"message"`
-	Model   string `json:"model,omitempty"`
-	Effort  string `json:"effort,omitempty"`
+	Profile string `json:"profile,omitempty"`
 	Dir     string `json:"dir,omitempty"`
 }
 
@@ -48,18 +50,26 @@ func (t *Toolbox) teamSchemas() []json.RawMessage {
 	if t.Team.IsWorker() {
 		return schemas
 	}
-	description := "Create a worker and give it work. Run only independent work in parallel. Give a worker a worktree when it will change files: omit dir to create a worktree and branch from your HEAD. Merge its branch from your checkout, then remove the worker. Use dir \".\" for a worker that only reads. Call wait after giving out work. Model and effort default to yours. Workers run commands without asking for permission and cannot create workers."
-	if models := t.Team.WorkerModels(); models != "" {
-		description += "\n\n" + models
+	description := "Create a worker and give it work. Run only independent work in parallel. Give a worker a worktree when it will change files: omit dir to create a worktree and branch from your HEAD. Merge its branch from your checkout, then remove the worker. Use dir \".\" for a worker that only reads. Call wait after giving out work. Workers run commands without asking for permission and cannot create workers."
+	properties := map[string]any{
+		"name":    map[string]any{"type": "string", "pattern": "^[a-z0-9-]+$", "description": "Unique worker name using lowercase letters, digits, and hyphens; not orchestrator."},
+		"message": stringProperty("Work for the worker to do."),
+		"dir":     optionalString("Omit for a worker that changes files: Ox creates its Git worktree and branch ox/<name> from your HEAD. Set it only to run the worker in an existing directory instead, such as \".\" for a worker that only reads: absolute, ~/ relative to home, or relative to your workspace. Required outside a Git checkout."),
+	}
+	required := []string{"name", "message"}
+	if profiles := t.Team.Profiles(); len(profiles) > 0 {
+		var ids, lines []string
+		for _, profile := range profiles {
+			ids = append(ids, profile.ID)
+			lines = append(lines, fmt.Sprintf("- %s (%s, effort %s): %s", profile.ID, profile.Model, profile.Effort, profile.Description))
+		}
+		properties["profile"] = map[string]any{"type": "string", "enum": ids, "description": "The worker's agent profile, which sets its model and effort:\n" + strings.Join(lines, "\n")}
+		required = append(required, "profile")
+	} else {
+		description += " Workers use your model and effort."
 	}
 	return append(schemas,
-		teamSchema(CreateAgent, description, map[string]any{
-			"name":    map[string]any{"type": "string", "pattern": "^[a-z0-9-]+$", "description": "Unique worker name using lowercase letters, digits, and hyphens; not orchestrator."},
-			"message": stringProperty("Work for the worker to do."),
-			"model":   optionalString("Model from the Ox catalog. Omit to use your model."),
-			"effort":  optionalString("Reasoning effort the model accepts. Omit to use your effort, or the model's default when the model does not accept yours."),
-			"dir":     optionalString("Omit for a worker that changes files: Ox creates its Git worktree and branch ox/<name> from your HEAD. Set it only to run the worker in an existing directory instead, such as \".\" for a worker that only reads: absolute, ~/ relative to home, or relative to your workspace. Required outside a Git checkout."),
-		}, []string{"name", "message"}),
+		teamSchema(CreateAgent, description, properties, required),
 		teamSchema(RemoveAgent, "Cancel a worker, remove its worktree and branch, and delete its session. Merge its branch from your checkout first. Git refuses removal of uncommitted changes or an unmerged branch. A worker using dir leaves that directory in place.", map[string]any{"name": stringProperty("Worker name to remove.")}, []string{"name"}),
 		teamSchema(Wait, "After giving out work, wait for messages or until no worker is working. Return waiting messages. If no messages and no working workers remain, return immediately. Cancellation stops waiting.", map[string]any{}, nil),
 	)
@@ -121,18 +131,41 @@ func validAgentName(name string) bool {
 	return true
 }
 
-func parseCreateAgent(arguments string) (CreateAgentArgs, error) {
+// parseCreateAgent decodes and checks create_agent's arguments and returns the
+// selected profile, which is zero without profiles.
+func (t *Toolbox) parseCreateAgent(arguments string) (CreateAgentArgs, settings.AgentProfile, error) {
 	var args CreateAgentArgs
 	if err := decodeTeamArguments(arguments, &args); err != nil {
-		return args, err
+		return args, settings.AgentProfile{}, err
+	}
+	profile, err := selectProfile(t.Team.Profiles(), args.Profile)
+	if err != nil {
+		return args, profile, err
 	}
 	if !validAgentName(args.Name) {
-		return args, errors.New("name must contain only lowercase letters, digits, and hyphens, and must not be orchestrator")
+		return args, profile, errors.New("name must contain only lowercase letters, digits, and hyphens, and must not be orchestrator")
 	}
 	if strings.TrimSpace(args.Message) == "" {
-		return args, errors.New("message is required")
+		return args, profile, errors.New("message is required")
 	}
-	return args, nil
+	return args, profile, nil
+}
+
+func selectProfile(profiles []settings.AgentProfile, id string) (settings.AgentProfile, error) {
+	if len(profiles) == 0 {
+		if id != "" {
+			return settings.AgentProfile{}, errors.New("no agent profiles are configured; omit profile")
+		}
+		return settings.AgentProfile{}, nil
+	}
+	var ids []string
+	for _, profile := range profiles {
+		if profile.ID == id {
+			return profile, nil
+		}
+		ids = append(ids, profile.ID)
+	}
+	return settings.AgentProfile{}, fmt.Errorf("profile must be one of %s", strings.Join(ids, ", "))
 }
 
 func (t *Toolbox) team(ctx context.Context, call transcript.ToolCall) transcript.ToolOutcome {
@@ -144,7 +177,7 @@ func (t *Toolbox) team(ctx context.Context, call transcript.ToolCall) transcript
 	switch call.Name {
 	case CreateAgent:
 		var args CreateAgentArgs
-		args, err = parseCreateAgent(call.Arguments)
+		args, _, err = t.parseCreateAgent(call.Arguments)
 		if err == nil {
 			text, err = t.Team.CreateAgent(ctx, args)
 		}

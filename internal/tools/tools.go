@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"ox/internal/mcpclient"
+	"ox/internal/settings"
 	"ox/internal/shellproc"
 	"ox/internal/transcript"
 )
@@ -159,6 +160,7 @@ type Permission struct {
 	Text       string
 	CloseStdin bool
 	Agent      CreateAgentArgs
+	Profile    settings.AgentProfile
 }
 
 type PermissionKind int
@@ -177,8 +179,8 @@ const (
 // uses.
 func (t *Toolbox) Permission(call transcript.ToolCall) Permission {
 	if call.Name == CreateAgent && t.hasTeamTool(call.Name) {
-		if args, err := parseCreateAgent(call.Arguments); err == nil {
-			return Permission{Kind: PermissionAgent, Agent: args}
+		if args, profile, err := t.parseCreateAgent(call.Arguments); err == nil {
+			return Permission{Kind: PermissionAgent, Agent: args, Profile: profile}
 		}
 		return Permission{}
 	}

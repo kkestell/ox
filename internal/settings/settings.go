@@ -3,7 +3,7 @@
 // file `.ox/settings.json`, read when a session becomes active. MCP settings in
 // both files are read separately at session activation. Workspace keys
 // replace the same global keys. Neither file is required. Only the global file
-// can set `workerModels`, the worker model guidance, `models`, the OpenRouter
+// can set `agentProfiles`, the models and efforts workers may use, `models`, the OpenRouter
 // provider pins, and `hooks`, the commands Ox runs during turns. The terminal client's fields, `servers` and `favorites`,
 // are read only from the global file. The launch settings in `OX_SETTINGS`
 // apply over both files and are never saved.
@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"ox/internal/catalog"
 	"ox/internal/textfile"
@@ -36,12 +37,21 @@ const builtInModel = "openrouter:~deepseek/deepseek-flash-latest"
 // changing the user's files.
 const LaunchVariable = "OX_SETTINGS"
 
-// Settings holds session selections and global worker model guidance.
+// Settings holds session selections and the global agent profiles.
 type Settings struct {
-	Model        string
-	Effort       catalog.Effort
-	Mode         transcript.Mode
-	WorkerModels string
+	Model         string
+	Effort        catalog.Effort
+	Mode          transcript.Mode
+	AgentProfiles []AgentProfile
+}
+
+// AgentProfile is a model and effort the orchestrator can give a worker.
+// Description tells the orchestrator when to use it.
+type AgentProfile struct {
+	ID          string         `json:"id"`
+	Description string         `json:"description"`
+	Model       string         `json:"model"`
+	Effort      catalog.Effort `json:"effort"`
 }
 
 // Home returns `$HOME`, which holds `~/.config/ox` and the user skills
@@ -61,13 +71,13 @@ func GlobalPath(home string) string {
 
 // file is the format of both settings files.
 type file struct {
-	provider     bool
-	hooks        bool
-	model        *string
-	effort       *string
-	mode         *string
-	workerModels *string
-	models       map[string]struct {
+	provider      bool
+	hooks         bool
+	model         *string
+	effort        *string
+	mode          *string
+	agentProfiles *[]AgentProfile
+	models        map[string]struct {
 		Providers []string `json:"providers"`
 	}
 }
@@ -85,9 +95,6 @@ func Load(path string, cat catalog.Catalog) (Settings, error) {
 	if len(cat) > 0 && cat[0].Provider != catalog.OpenRouter {
 		settings.Model = cat[0].QualifiedID()
 	}
-	if f.workerModels != nil {
-		settings.WorkerModels = *f.workerModels
-	}
 	if present {
 		if err := settings.apply(path, f); err != nil {
 			return Settings{}, err
@@ -95,6 +102,11 @@ func Load(path string, cat catalog.Catalog) (Settings, error) {
 	}
 	if err := settings.validate(path, cat); err != nil {
 		return Settings{}, err
+	}
+	if f.agentProfiles != nil {
+		if settings.AgentProfiles, err = validProfiles(path, *f.agentProfiles, cat); err != nil {
+			return Settings{}, err
+		}
 	}
 	for _, id := range slices.Sorted(maps.Keys(f.models)) {
 		model := cat.Lookup(id)
@@ -126,8 +138,8 @@ func (s Settings) ForWorkspace(workspace string, cat catalog.Catalog) (Settings,
 		if !present {
 			continue
 		}
-		if f.workerModels != nil {
-			return Settings{}, invalid(path, "workerModels can be set only in the global settings file")
+		if f.agentProfiles != nil {
+			return Settings{}, invalid(path, "agentProfiles can be set only in the global settings file")
 		}
 		if f.models != nil {
 			return Settings{}, invalid(path, "models can be set only in the global settings file")
@@ -192,6 +204,36 @@ func (s Settings) validate(path string, cat catalog.Catalog) error {
 		return invalid(path, "effort %s is not supported by model %s", s.Effort, s.Model)
 	}
 	return nil
+}
+
+// validProfiles checks each profile and gives one without an effort the
+// model's default.
+func validProfiles(path string, profiles []AgentProfile, cat catalog.Catalog) ([]AgentProfile, error) {
+	seen := map[string]bool{}
+	for i := range profiles {
+		profile := &profiles[i]
+		if profile.ID == "" {
+			return nil, invalid(path, "agentProfiles: a profile has no id")
+		}
+		if seen[profile.ID] {
+			return nil, invalid(path, "agentProfiles: id %s appears more than once", profile.ID)
+		}
+		seen[profile.ID] = true
+		if strings.TrimSpace(profile.Description) == "" {
+			return nil, invalid(path, "agentProfiles: profile %s has no description", profile.ID)
+		}
+		if profile.Effort == "" {
+			profile.Effort = catalog.EffortDefault
+		}
+		model := cat.Lookup(profile.Model)
+		if model == nil {
+			return nil, invalid(path, "agentProfiles: profile %s: model %s is not in the model catalog", profile.ID, profile.Model)
+		}
+		if !model.Supports(profile.Effort) {
+			return nil, invalid(path, "agentProfiles: profile %s: effort %s is not supported by model %s", profile.ID, profile.Effort, profile.Model)
+		}
+	}
+	return profiles, nil
 }
 
 // Save writes the selections to the workspace settings file when it exists,
@@ -291,7 +333,7 @@ func read(path string) (file, error) {
 	var f file
 	_, f.provider = fields["provider"]
 	_, f.hooks = fields["hooks"]
-	for key, target := range map[string]any{"model": &f.model, "effort": &f.effort, "mode": &f.mode, "models": &f.models, "workerModels": &f.workerModels} {
+	for key, target := range map[string]any{"model": &f.model, "effort": &f.effort, "mode": &f.mode, "models": &f.models, "agentProfiles": &f.agentProfiles} {
 		if raw, ok := fields[key]; ok {
 			if err := json.Unmarshal(raw, target); err != nil {
 				return file{}, fmt.Errorf("%s: %s: %w", path, key, err)

@@ -29,7 +29,9 @@ func teamServer(t *testing.T, workspace string, replies ...fake.Reply) (*Server,
 		t.Fatal(err)
 	}
 	remote := fake.Start(t, replies...)
-	defaults := settings.Settings{Model: fake.DefaultModel, Effort: catalog.EffortHigh, Mode: transcript.ModeAsk, WorkerModels: "Use Plain for small tasks."}
+	defaults := settings.Settings{Model: fake.DefaultModel, Effort: catalog.EffortHigh, Mode: transcript.ModeAsk, AgentProfiles: []settings.AgentProfile{
+		{ID: "plain", Description: "Small tasks.", Model: "openrouter:acme/plain", Effort: catalog.EffortDefault},
+	}}
 	a := &agent.Agent{Store: db, Catalog: fake.ParsedCatalog(), Providers: map[string]provider.Provider{catalog.OpenRouter: remote.Client()}}
 	s := New(nil, a, defaults, t.TempDir())
 	parent, err := db.Create(workspace)
@@ -283,24 +285,18 @@ func TestWorkerDirectoriesSelectionsAndIdleWait(t *testing.T) {
 		want string
 	}{
 		{tools.CreateAgentArgs{Name: "no-dir", Message: "Read."}, "dir is required outside a Git checkout"},
-		{tools.CreateAgentArgs{Name: "bad-model", Message: "Read.", Dir: ".", Model: "missing"}, "model missing is not in the model catalog"},
-		{tools.CreateAgentArgs{Name: "bad-effort", Message: "Read.", Dir: ".", Effort: "loud"}, "unknown effort loud"},
-		{tools.CreateAgentArgs{Name: "unsupported", Message: "Read.", Dir: ".", Model: "openrouter:acme/plain", Effort: "high"}, "does not accept effort high; it accepts default"},
+		{tools.CreateAgentArgs{Name: "bad-profile", Message: "Read.", Dir: ".", Profile: "slow"}, "profile slow does not exist"},
 	} {
 		if _, err := tm.CreateAgent(ctx, test.args); err == nil || !strings.Contains(err.Error(), test.want) {
 			t.Errorf("creation %+v: %v, want %q", test.args, err, test.want)
 		}
-	}
-	if tm.WorkerModels() != "Use Plain for small tasks." {
-		t.Fatalf("workerModels = %q", tm.WorkerModels())
 	}
 	if report := teamWait(t, tm); report != "No messages and no workers are working." {
 		t.Fatalf("idle wait = %q", report)
 	}
 	for i, dir := range []string{".", root, "~/"} {
 		name := []string{"relative", "absolute", "home"}[i]
-		// The orchestrator's effort, high, falls back to Plain's default.
-		created, err := tm.CreateAgent(ctx, tools.CreateAgentArgs{Name: name, Message: "Read.", Dir: dir, Model: "openrouter:acme/plain"})
+		created, err := tm.CreateAgent(ctx, tools.CreateAgentArgs{Name: name, Message: "Read.", Dir: dir, Profile: "plain"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -402,7 +398,7 @@ func TestWorkerCancelledDuringPreparationKeepsMessageAndSelectionAcrossRestart(t
 	}
 	s, tm := teamServer(t, workspace, fake.Text("Resumed."))
 	if _, err := tm.CreateAgent(context.Background(), tools.CreateAgentArgs{
-		Name: "reader", Message: "Keep this task.", Dir: ".", Model: "openrouter:acme/plain", Effort: "default",
+		Name: "reader", Message: "Keep this task.", Dir: ".", Profile: "plain",
 	}); err != nil {
 		t.Fatal(err)
 	}

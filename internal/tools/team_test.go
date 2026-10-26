@@ -8,20 +8,23 @@ import (
 	"strings"
 	"testing"
 
+	"ox/internal/catalog"
+	"ox/internal/settings"
 	"ox/internal/transcript"
 )
 
 type fakeTeam struct {
-	worker bool
-	calls  []string
-	args   CreateAgentArgs
-	to     string
-	text   string
-	err    error
+	worker   bool
+	profiles []settings.AgentProfile
+	calls    []string
+	args     CreateAgentArgs
+	to       string
+	text     string
+	err      error
 }
 
-func (f *fakeTeam) IsWorker() bool       { return f.worker }
-func (f *fakeTeam) WorkerModels() string { return "Use model-a for small tasks." }
+func (f *fakeTeam) IsWorker() bool                    { return f.worker }
+func (f *fakeTeam) Profiles() []settings.AgentProfile { return f.profiles }
 func (f *fakeTeam) result(name string) (string, error) {
 	f.calls = append(f.calls, name)
 	return "result of " + name, f.err
@@ -41,6 +44,11 @@ func (f *fakeTeam) RemoveAgent(_ context.Context, name string) (string, error) {
 }
 func (f *fakeTeam) Wait(context.Context) (string, error) { return f.result(Wait) }
 
+var profiles = []settings.AgentProfile{
+	{ID: "fast", Description: "Small tasks.", Model: "model-a", Effort: catalog.EffortHigh},
+	{ID: "deep", Description: "Hard tasks.", Model: "model-b", Effort: catalog.EffortDefault},
+}
+
 func TestTeamSchemasAndDispatchMatchRole(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -50,6 +58,7 @@ func TestTeamSchemasAndDispatchMatchRole(t *testing.T) {
 		{"no team", nil, nil},
 		{"worker", &fakeTeam{worker: true}, []string{SendMessage, ListAgents}},
 		{"orchestrator", &fakeTeam{}, []string{SendMessage, ListAgents, CreateAgent, RemoveAgent, Wait}},
+		{"orchestrator with profiles", &fakeTeam{profiles: profiles}, []string{SendMessage, ListAgents, CreateAgent, RemoveAgent, Wait}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			box := toolbox(t)
@@ -64,6 +73,12 @@ func TestTeamSchemasAndDispatchMatchRole(t *testing.T) {
 							Type                 string   `json:"type"`
 							AdditionalProperties bool     `json:"additionalProperties"`
 							Required             []string `json:"required"`
+							Properties           struct {
+								Profile *struct {
+									Enum        []string `json:"enum"`
+									Description string   `json:"description"`
+								} `json:"profile"`
+							} `json:"properties"`
 						} `json:"parameters"`
 					} `json:"function"`
 				}
@@ -75,12 +90,25 @@ func TestTeamSchemasAndDispatchMatchRole(t *testing.T) {
 					t.Errorf("invalid parameters: %s", raw)
 				}
 				if fn.Name == CreateAgent {
-					for _, instruction := range []string{"independent", "worktree", "Merge", "remove", "dir \".\"", "wait", test.team.WorkerModels()} {
+					for _, instruction := range []string{"independent", "worktree", "Merge", "remove", "dir \".\"", "wait"} {
 						if !strings.Contains(fn.Description, instruction) {
 							t.Errorf("create_agent description missing %q", instruction)
 						}
 					}
-					if !reflect.DeepEqual(fn.Parameters.Required, []string{"name", "message"}) {
+					required, profile := []string{"name", "message"}, fn.Parameters.Properties.Profile
+					if test.team.Profiles() == nil {
+						if profile != nil || !strings.Contains(fn.Description, "Workers use your model and effort.") {
+							t.Errorf("create_agent without profiles: %s", raw)
+						}
+					} else {
+						required = append(required, "profile")
+						if profile == nil || !reflect.DeepEqual(profile.Enum, []string{"fast", "deep"}) ||
+							!strings.Contains(profile.Description, "- fast (model-a, effort high): Small tasks.") ||
+							!strings.Contains(profile.Description, "- deep (model-b, effort default): Hard tasks.") {
+							t.Errorf("profile property: %s", raw)
+						}
+					}
+					if !reflect.DeepEqual(fn.Parameters.Required, required) {
 						t.Errorf("required = %v", fn.Parameters.Required)
 					}
 				}
@@ -121,7 +149,8 @@ func TestTeamBadArgumentsDoNotDispatchOrAsk(t *testing.T) {
 		{CreateAgent, object{"name": "Upper", "message": "work"}},
 		{CreateAgent, object{"name": "../escape", "message": "work"}},
 		{CreateAgent, object{"name": "worker", "message": " \n "}},
-		{CreateAgent, object{"name": "worker", "message": "work", "model": 1}},
+		{CreateAgent, object{"name": "worker", "message": "work", "model": "model-a"}},
+		{CreateAgent, object{"name": "worker", "message": "work", "profile": "fast"}},
 		{SendMessage, object{"to": "worker"}},
 		{SendMessage, object{"text": "hello"}},
 		{SendMessage, object{"to": "bad/name", "text": "hello"}},
@@ -135,6 +164,12 @@ func TestTeamBadArgumentsDoNotDispatchOrAsk(t *testing.T) {
 			t.Errorf("invalid call asks for permission: %+v", got)
 		}
 	}
+	team.profiles = profiles
+	for _, args := range []object{{"name": "worker", "message": "work"}, {"name": "worker", "message": "work", "profile": "slow"}} {
+		if got := box.call(CreateAgent, args); got.Status != transcript.ToolFailed || !strings.Contains(got.Text, "profile must be one of fast, deep") {
+			t.Errorf("%v: %+v", args, got)
+		}
+	}
 	if len(team.calls) != 0 {
 		t.Fatalf("bad arguments reached team: %v", team.calls)
 	}
@@ -144,7 +179,8 @@ func TestTeamDispatchPermissionsAndTitles(t *testing.T) {
 	team := &fakeTeam{}
 	box := toolbox(t)
 	box.Team = team
-	args := CreateAgentArgs{Name: "worker-1", Message: "Do the work", Model: "model-a", Effort: "high", Dir: "."}
+	team.profiles = profiles
+	args := CreateAgentArgs{Name: "worker-1", Message: "Do the work", Profile: "deep", Dir: "."}
 	for _, test := range []struct {
 		name  string
 		args  any
@@ -162,7 +198,7 @@ func TestTeamDispatchPermissionsAndTitles(t *testing.T) {
 		}
 		permission := box.Permission(call)
 		if test.name == CreateAgent {
-			if permission.Kind != PermissionAgent || permission.Agent != args || team.args != args {
+			if permission.Kind != PermissionAgent || permission.Agent != args || permission.Profile != profiles[1] || team.args != args {
 				t.Errorf("create args: permission %+v, dispatched %+v", permission, team.args)
 			}
 		} else if permission.Kind != PermissionNone {

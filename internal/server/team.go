@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"ox/internal/agent"
-	"ox/internal/catalog"
 	"ox/internal/settings"
 	"ox/internal/store"
 	"ox/internal/tools"
@@ -39,10 +39,10 @@ func (s *Server) team(id string, selections settings.Settings) (*team, error) {
 
 func (t *team) IsWorker() bool { return t.id != t.parent }
 
-func (t *team) WorkerModels() string {
+func (t *team) Profiles() []settings.AgentProfile {
 	t.server.mu.Lock()
 	defer t.server.mu.Unlock()
-	return t.server.defaults.WorkerModels
+	return t.server.defaults.AgentProfiles
 }
 
 func (t *team) member(name string) (store.Member, error) {
@@ -76,18 +76,14 @@ func (t *team) CreateAgent(ctx context.Context, args tools.CreateAgentArgs) (str
 		}
 	}
 	selected := t.selections
-	if args.Model != "" {
-		selected.Model = args.Model
-	}
-	if args.Effort != "" {
-		effort, ok := catalog.ParseEffort(args.Effort)
-		if !ok {
-			return "", fmt.Errorf("unknown effort %s", args.Effort)
+	if args.Profile != "" {
+		profiles := t.Profiles()
+		i := slices.IndexFunc(profiles, func(profile settings.AgentProfile) bool { return profile.ID == args.Profile })
+		if i < 0 {
+			return "", fmt.Errorf("profile %s does not exist", args.Profile)
 		}
-		selected.Effort = effort
-	} else if model := s.catalog.Lookup(selected.Model); model != nil && !model.Supports(selected.Effort) {
-		// The orchestrator's effort may not exist on the worker's model.
-		selected.Effort = catalog.EffortDefault
+		profile := profiles[i]
+		selected.Model, selected.Effort = profile.Model, profile.Effort
 	}
 	model, err := agent.ModelSelection(s.catalog, selected.Model, selected.Effort)
 	if err != nil {

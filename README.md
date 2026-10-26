@@ -117,10 +117,10 @@ supports `-V` or `--version`.
 ## Teams
 
 In an ACP session, ask Ox to divide independent work among workers. The session
-you talk to is the orchestrator: it can create workers on any catalog model,
-send messages, list the team, wait for reports, and remove workers. Workers run
-in Auto mode; Ask mode requests permission before creating one. Workers have no
-terminal view. Teams are unavailable in `ox run`.
+you talk to is the orchestrator: it can create workers, send messages, list the
+team, wait for reports, and remove workers. Workers run in Auto mode; Ask mode
+requests permission before creating one. Workers have no terminal view. Teams
+are unavailable in `ox run`.
 
 By default, each worker gets a Git worktree at `.ox/worktrees/<name>` and a
 branch named `ox/<name>` from the orchestrator's `HEAD`. Merge that branch from
@@ -128,10 +128,9 @@ the orchestrator's checkout before removing the worker. Removal refuses
 uncommitted changes and unmerged branches. A worker can instead use an existing
 directory, which removal leaves in place; outside Git, a directory is required.
 
-Set `workerModels` in `~/.config/ox/settings.json` to free text describing which
-models workers should use and when. Ox includes it in the orchestrator's
-`create_agent` tool description. Model and effort default to the orchestrator's
-selections.
+The orchestrator picks each worker's model and effort from the `agentProfiles`
+in your global settings file. Without profiles, workers use the orchestrator's
+model and effort.
 
 ## Configuration
 
@@ -157,6 +156,14 @@ program that launches Ox configure that launch without changing your files.
       "providers": ["deepseek"]
     }
   },
+  "agentProfiles": [
+    {
+      "id": "fast",
+      "description": "Small, well-specified changes.",
+      "model": "openrouter:deepseek/deepseek-v4.1-flash",
+      "effort": "high"
+    }
+  ],
   "servers": [
     { "name": "Other", "command": "other-acp-server", "args": [] }
   ]
@@ -178,6 +185,12 @@ program that launches Ox configure that launch without changing your files.
 - `models` maps qualified OpenRouter model IDs to a `providers` list of
   OpenRouter provider slugs. Requests for that model go only to those providers,
   tried in order. It can be set only in the global file.
+- `agentProfiles` lists the models and efforts the orchestrator can give
+  workers. Each profile requires a unique `id`, a `description` that tells the
+  orchestrator when to use it, and a qualified `model`; `effort` defaults to
+  `default` and must be supported by the model. When profiles are set, the
+  orchestrator must pick one for each worker. It can be set only in the global
+  file.
 - `servers` configures ACP servers for the terminal client and can be set only
   in the global file. Each server requires a unique, nonempty `name` and a
   `command`; `args` is an optional list of arguments that defaults to empty. If

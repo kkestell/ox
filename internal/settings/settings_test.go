@@ -34,7 +34,7 @@ func TestGlobalSettingsDefaultValidateAndPinProviders(t *testing.T) {
 	}
 	write(t, path, `{"model":"`+model+`","effort":"high","mode":"auto","servers":[],"favorites":[]}`)
 	loaded, err := settings.Load(path, cat)
-	if err != nil || loaded != (settings.Settings{Model: model, Effort: catalog.EffortHigh, Mode: transcript.ModeAuto}) {
+	if err != nil || !reflect.DeepEqual(loaded, settings.Settings{Model: model, Effort: catalog.EffortHigh, Mode: transcript.ModeAuto}) {
 		t.Errorf("loaded %+v, %v", loaded, err)
 	}
 	pinned := "openrouter:z-ai/glm-5.3-flash"
@@ -89,12 +89,12 @@ func TestWorkspaceSettingsReplaceGlobalKeys(t *testing.T) {
 	cat := openroutertest.ParsedCatalog()
 	global := settings.Settings{Model: model, Effort: catalog.EffortHigh, Mode: transcript.ModeAuto}
 	workspace := t.TempDir()
-	if unchanged, err := global.ForWorkspace(workspace, cat); err != nil || unchanged != global {
+	if unchanged, err := global.ForWorkspace(workspace, cat); err != nil || !reflect.DeepEqual(unchanged, global) {
 		t.Errorf("without a file: %+v, %v", unchanged, err)
 	}
 	path := filepath.Join(workspace, ".ox/settings.json")
 	write(t, path, `{"mode":"ask"}`)
-	if got, _ := global.ForWorkspace(workspace, cat); got != (settings.Settings{Model: model, Effort: catalog.EffortHigh, Mode: transcript.ModeAsk}) {
+	if got, _ := global.ForWorkspace(workspace, cat); !reflect.DeepEqual(got, settings.Settings{Model: model, Effort: catalog.EffortHigh, Mode: transcript.ModeAsk}) {
 		t.Errorf("mode only: %+v", got)
 	}
 	for _, test := range []struct{ text, want string }{
@@ -180,22 +180,39 @@ func TestSavingKeepsOtherFieldsAndPrefersTheWorkspaceFile(t *testing.T) {
 	}
 }
 
-func TestWorkerModelsAreGlobalFreeText(t *testing.T) {
+func TestAgentProfilesAreGlobalAndValidated(t *testing.T) {
 	path := settings.GlobalPath(t.TempDir())
-	text := "Use Plain for small tasks.\nUse GLM for harder tasks."
-	fields, _ := json.Marshal(map[string]string{"model": model, "workerModels": text})
-	write(t, path, string(fields))
-	loaded, err := settings.Load(path, openroutertest.ParsedCatalog())
-	if err != nil || loaded.WorkerModels != text {
+	cat := openroutertest.ParsedCatalog()
+	write(t, path, `{"model":"`+model+`","agentProfiles":[
+		{"id":"fast","description":"Small tasks.","model":"`+model+`","effort":"high"},
+		{"id":"plain","description":"Reading.","model":"openrouter:acme/plain"}]}`)
+	loaded, err := settings.Load(path, cat)
+	want := []settings.AgentProfile{
+		{ID: "fast", Description: "Small tasks.", Model: model, Effort: catalog.EffortHigh},
+		{ID: "plain", Description: "Reading.", Model: "openrouter:acme/plain", Effort: catalog.EffortDefault},
+	}
+	if err != nil || !reflect.DeepEqual(loaded.AgentProfiles, want) {
 		t.Fatalf("loaded = %+v, %v", loaded, err)
 	}
 	workspace := t.TempDir()
-	selected, err := loaded.ForWorkspace(workspace, openroutertest.ParsedCatalog())
-	if err != nil || selected.WorkerModels != text {
+	selected, err := loaded.ForWorkspace(workspace, cat)
+	if err != nil || !reflect.DeepEqual(selected.AgentProfiles, want) {
 		t.Fatalf("workspace = %+v, %v", selected, err)
 	}
-	write(t, filepath.Join(workspace, ".ox/settings.json"), `{"workerModels":"override"}`)
-	if _, err := loaded.ForWorkspace(workspace, openroutertest.ParsedCatalog()); err == nil || !strings.Contains(err.Error(), "workerModels can be set only in the global settings file") {
-		t.Fatalf("workspace accepted workerModels: %v", err)
+	write(t, filepath.Join(workspace, ".ox/settings.json"), `{"agentProfiles":[]}`)
+	if _, err := loaded.ForWorkspace(workspace, cat); err == nil || !strings.Contains(err.Error(), "agentProfiles can be set only in the global settings file") {
+		t.Fatalf("workspace accepted agentProfiles: %v", err)
+	}
+	for profiles, want := range map[string]string{
+		`[{"description":"x","model":"` + model + `"}]`:                                                               "a profile has no id",
+		`[{"id":"a","description":"x","model":"` + model + `"},{"id":"a","description":"y","model":"` + model + `"}]`: "id a appears more than once",
+		`[{"id":"a","model":"` + model + `"}]`:                                                                        "profile a has no description",
+		`[{"id":"a","description":"x","model":"openrouter:missing"}]`:                                                 "model openrouter:missing is not in the model catalog",
+		`[{"id":"a","description":"x","model":"openrouter:acme/plain","effort":"high"}]`:                              "effort high is not supported by model openrouter:acme/plain",
+	} {
+		write(t, path, `{"model":"`+model+`","agentProfiles":`+profiles+`}`)
+		if _, err := settings.Load(path, cat); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("profiles %s: %v, want %q", profiles, err, want)
+		}
 	}
 }
