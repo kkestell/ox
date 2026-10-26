@@ -58,7 +58,7 @@ func toolMessage(t *testing.T, body map[string]any) (result string, next map[str
 	return "", nil
 }
 
-func TestHookContextReachesTheNextModelRequest(t *testing.T) {
+func TestContextReachesTheNextModelRequest(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "secret")
 	t.Setenv("OX_HOOK_TEST", "inherited")
 	f := newFixture(t, fake.Shell("printf one"), fake.Text("Done."))
@@ -81,12 +81,12 @@ func TestHookContextReachesTheNextModelRequest(t *testing.T) {
 		t.Errorf("the message after the tool result is %v, want the context as a user message", next)
 	}
 	saved := f.saved(t)[1].(*transcript.AssistantBatch)
-	if saved.Outcomes[0].Text != read || len(saved.HookContext) != 1 || saved.HookContext[0] != "Message from the operator" {
+	if saved.Outcomes[0].Text != read || len(saved.Context) != 1 || saved.Context[0] != want {
 		t.Errorf("saved %+v", saved)
 	}
-	var sent []HookContext
+	var sent []Context
 	for _, event := range client.events {
-		if context, ok := event.(HookContext); ok {
+		if context, ok := event.(Context); ok {
 			sent = append(sent, context)
 		}
 	}
@@ -214,7 +214,7 @@ func TestPromptHooksAddContextToTheTurn(t *testing.T) {
 	if next := messageAfter(t, f.server.Bodies()[0], "Hello"); next["role"] != "user" || next["content"] != want {
 		t.Errorf("the message after the prompt is %v", next)
 	}
-	if sent, ok := client.events[1].(HookContext); !ok || string(sent) != want {
+	if sent, ok := client.events[1].(Context); !ok || string(sent) != want {
 		t.Errorf("the client was sent %v after the session info", client.events[1])
 	}
 	for file, want := range map[string]string{"start.json": `"source":"startup"`, "prompt.json": `"prompt":"Hello"`} {
@@ -228,10 +228,10 @@ func TestPromptHooksAddContextToTheTurn(t *testing.T) {
 		t.Fatalf("result %+v, %v", result, err)
 	}
 	saved := f.saved(t)
-	if got := saved[0].(*transcript.TurnStart).HookContext; strings.Join(got, "|") != "Facts|Messages" {
+	if got := saved[0].(*transcript.TurnStart).Context; len(got) != 1 || got[0] != want {
 		t.Errorf("first turn saved context %q", got)
 	}
-	if got := saved[2].(*transcript.TurnStart).HookContext; strings.Join(got, "|") != "Messages" {
+	if got := saved[2].(*transcript.TurnStart).Context; len(got) != 1 || got[0] != "Context added by the user's hooks:\n\nMessages" {
 		t.Errorf("a later turn ran SessionStart hooks: %q", got)
 	}
 }
@@ -255,7 +255,7 @@ func TestStopHookContinuesTheTurn(t *testing.T) {
 		t.Errorf("the second request ends with %v", last)
 	}
 	saved := f.saved(t)
-	if got := saved[1].(*transcript.AssistantBatch).HookContext; strings.Join(got, "|") != "New message" {
+	if got := saved[1].(*transcript.AssistantBatch).Context; len(got) != 1 || got[0] != "Context added by the user's hooks:\n\nNew message" {
 		t.Errorf("the first answer saved context %q", got)
 	}
 	data, _ := os.ReadFile(filepath.Join(f.workspace, "stop.json"))
