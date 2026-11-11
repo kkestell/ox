@@ -1,23 +1,30 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use ox_protocol::{ErrorBody, Method, SessionInfo, code};
 use serde_json::Value;
-use tokio::time::Instant;
+use tokio::sync::watch;
 
 use crate::session::Session;
 
-const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+#[derive(Default)]
+struct Registry {
+    sessions: HashMap<String, Arc<Session>>,
+    clients: usize,
+}
 
 pub struct Daemon {
-    sessions: Mutex<HashMap<String, Arc<Session>>>,
-    clients: AtomicUsize,
+    registry: Mutex<Registry>,
+    /// Whether the daemon has no sessions and no clients. Updated under the
+    /// registry lock.
+    idle: watch::Sender<bool>,
+    /// Sent when a session is added or removed, or a session's `SessionInfo`
+    /// changes.
+    sessions_changed: watch::Sender<()>,
     next_session: AtomicU64,
-    /// How long an agent has to answer `initialize` and `session/new`.
-    startup_timeout: Duration,
 }
 
 /// Counts one connected client for as long as it lives.
@@ -25,81 +32,94 @@ pub struct ClientGuard(Arc<Daemon>);
 
 impl Drop for ClientGuard {
     fn drop(&mut self) {
-        self.0.clients.fetch_sub(1, Ordering::SeqCst);
+        self.0.update(|registry| registry.clients -= 1);
     }
 }
 
 impl Daemon {
-    pub fn new(startup_timeout: Duration) -> Self {
+    pub fn new() -> Self {
         Self {
-            sessions: Mutex::default(),
-            clients: AtomicUsize::new(0),
+            registry: Mutex::default(),
+            idle: watch::Sender::new(true),
+            sessions_changed: watch::Sender::new(()),
             next_session: AtomicU64::new(0),
-            startup_timeout,
         }
     }
 
     pub fn client(self: &Arc<Self>) -> ClientGuard {
-        self.clients.fetch_add(1, Ordering::SeqCst);
+        self.update(|registry| registry.clients += 1);
         ClientGuard(self.clone())
     }
 
     /// Resolves once the daemon has had no sessions and no clients for
     /// `idle_exit`.
     pub async fn idle(&self, idle_exit: Duration) {
-        let mut idle_since = None;
+        let mut idle = self.idle.subscribe();
         loop {
-            let idle = self.clients.load(Ordering::SeqCst) == 0
-                && self.sessions.lock().unwrap().is_empty();
-            if idle {
-                let since = *idle_since.get_or_insert_with(Instant::now);
-                if since.elapsed() >= idle_exit {
-                    return;
+            if *idle.borrow_and_update() {
+                tokio::select! {
+                    () = tokio::time::sleep(idle_exit) => return,
+                    _ = idle.changed() => {}
                 }
             } else {
-                idle_since = None;
+                let _ = idle.changed().await;
             }
-            tokio::time::sleep(IDLE_POLL_INTERVAL).await;
         }
     }
 
     /// Closes every session, killing the agents.
     pub fn close_all(&self) {
-        let sessions: Vec<Arc<Session>> = self
-            .sessions
-            .lock()
-            .unwrap()
-            .drain()
-            .map(|(_, s)| s)
-            .collect();
+        let mut sessions = Vec::new();
+        self.update(|registry| sessions.extend(registry.sessions.drain().map(|(_, s)| s)));
         for session in sessions {
             session.close();
         }
     }
 
-    pub fn session(&self, id: &str) -> Result<Arc<Session>, ErrorBody> {
-        self.sessions
-            .lock()
-            .unwrap()
-            .get(id)
-            .cloned()
-            .ok_or_else(|| ErrorBody {
-                code: code::NOT_FOUND,
-                message: format!("no session {id}"),
-            })
+    /// A receiver that sees a change each time the sessions list may have
+    /// changed.
+    pub fn sessions_changed(&self) -> watch::Receiver<()> {
+        self.sessions_changed.subscribe()
     }
 
-    /// Handles every method except `hello` and `session.subscribe`, which
-    /// belong to the connection.
+    pub fn session(&self, id: &str) -> Result<Arc<Session>, ErrorBody> {
+        self.lock()
+            .sessions
+            .get(id)
+            .cloned()
+            .ok_or_else(|| not_found(id))
+    }
+
+    /// Handles every method except `hello`, `session.subscribe`,
+    /// `sessions.watch`, and `unsubscribe`, which belong to the connection.
     pub async fn handle(&self, method: Method) -> Result<Value, ErrorBody> {
         match method {
             Method::SessionList => Ok(to_value(self.list())),
             Method::SessionNew { command, cwd, env } => {
-                Ok(to_value(self.new_session(command, cwd, env).await?))
+                Ok(to_value(self.new_session(command, cwd, env, None)?))
             }
-            Method::SessionPrompt { session_id, text } => {
-                self.session(&session_id)?.prompt(text)?;
+            Method::SessionLoad {
+                command,
+                cwd,
+                env,
+                agent_session_id,
+            } => Ok(to_value(self.new_session(
+                command,
+                cwd,
+                env,
+                Some(agent_session_id),
+            )?)),
+            Method::SessionPrompt { session_id, prompt } => {
+                self.session(&session_id)?.prompt(prompt)?;
                 Ok(Value::Null)
+            }
+            Method::SessionSetConfigOption {
+                session_id,
+                config_id,
+                value,
+            } => {
+                let session = self.session(&session_id)?;
+                Ok(to_value(session.set_config_option(config_id, value).await?))
             }
             Method::SessionCancel { session_id } => {
                 self.session(&session_id)?.cancel();
@@ -114,37 +134,55 @@ impl Daemon {
                 Ok(Value::Null)
             }
             Method::SessionClose { session_id } => {
-                let session = self.sessions.lock().unwrap().remove(&session_id);
-                match session {
-                    Some(session) => {
-                        session.close();
-                        Ok(Value::Null)
-                    }
-                    None => Err(ErrorBody {
-                        code: code::NOT_FOUND,
-                        message: format!("no session {session_id}"),
-                    }),
-                }
+                let mut session = None;
+                self.update(|registry| session = registry.sessions.remove(&session_id));
+                session.ok_or_else(|| not_found(&session_id))?.close();
+                Ok(Value::Null)
             }
-            Method::Hello { .. } | Method::SessionSubscribe { .. } => Err(ErrorBody {
+            Method::Hello { .. }
+            | Method::SessionSubscribe { .. }
+            | Method::SessionsWatch
+            | Method::Unsubscribe { .. } => Err(ErrorBody {
                 code: code::INVALID_REQUEST,
                 message: "unexpected method".into(),
             }),
         }
     }
 
-    fn list(&self) -> Vec<SessionInfo> {
-        let mut sessions: Vec<Arc<Session>> =
-            self.sessions.lock().unwrap().values().cloned().collect();
+    fn lock(&self) -> MutexGuard<'_, Registry> {
+        self.registry.lock().unwrap()
+    }
+
+    /// Changes the registry, publishes whether the daemon is idle, and
+    /// signals the sessions list if a session was added or removed.
+    fn update(&self, change: impl FnOnce(&mut Registry)) {
+        let mut registry = self.lock();
+        let sessions = registry.sessions.len();
+        change(&mut registry);
+        if registry.sessions.len() != sessions {
+            self.sessions_changed.send_replace(());
+        }
+        let idle = registry.clients == 0 && registry.sessions.is_empty();
+        self.idle.send_if_modified(|current| {
+            let modified = *current != idle;
+            *current = idle;
+            modified
+        });
+    }
+
+    /// Every session, in the order they were created.
+    pub fn list(&self) -> Vec<SessionInfo> {
+        let mut sessions: Vec<Arc<Session>> = self.lock().sessions.values().cloned().collect();
         sessions.sort_by_key(|session| session.number);
         sessions.iter().map(|session| session.info()).collect()
     }
 
-    async fn new_session(
+    fn new_session(
         &self,
         command: Vec<String>,
         cwd: PathBuf,
         env: BTreeMap<String, String>,
+        load: Option<String>,
     ) -> Result<SessionInfo, ErrorBody> {
         if command.is_empty() {
             return Err(ErrorBody {
@@ -159,28 +197,26 @@ impl Daemon {
             });
         }
         let number = self.next_session.fetch_add(1, Ordering::Relaxed);
-        let (session, ready) = Session::spawn(number, command, cwd, env);
-        self.sessions
-            .lock()
-            .unwrap()
-            .insert(session.id.clone(), session.clone());
-        let result = match tokio::time::timeout(self.startup_timeout, ready).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err("session task ended".into()),
-            Err(_) => Err(format!(
-                "agent did not start within {} ms",
-                self.startup_timeout.as_millis()
-            )),
-        };
-        if let Err(message) = result {
-            self.sessions.lock().unwrap().remove(&session.id);
-            session.close();
-            return Err(ErrorBody {
-                code: code::AGENT,
-                message,
-            });
-        }
-        Ok(session.info())
+        let session = Session::spawn(
+            number,
+            command,
+            cwd,
+            env,
+            load,
+            self.sessions_changed.clone(),
+        );
+        let info = session.info();
+        self.update(|registry| {
+            registry.sessions.insert(session.id.clone(), session);
+        });
+        Ok(info)
+    }
+}
+
+fn not_found(id: &str) -> ErrorBody {
+    ErrorBody {
+        code: code::NOT_FOUND,
+        message: format!("no session {id}"),
     }
 }
 

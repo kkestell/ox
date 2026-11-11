@@ -14,15 +14,22 @@ Code ACP bridge.
 
 ## Development
 
-Run the app from `ui/`:
+Run the app from the repository root:
 
 ```sh
-cd ui
-npm install
-npm run tauri dev
+(cd ui && npm install)
+make dev
 ```
 
-Build a release bundle:
+`make dev` builds `oxd` and the Claude bridge and runs the app against its own
+`oxd` on `target/dev/oxd.sock`, which it stops before building and after the
+app exits. `oxctl` reaches that daemon with `OX_SOCKET` set to the same path:
+
+```sh
+OX_SOCKET="$PWD/target/dev/oxd.sock" cargo run -p oxctl -- ls
+```
+
+Build a release bundle from `ui/`:
 
 ```sh
 npm run tauri build

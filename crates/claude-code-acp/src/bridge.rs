@@ -11,11 +11,13 @@ use agent_client_protocol::v1::schema::{
 };
 use agent_client_protocol::{Client, Error};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use serde_json::Value;
 use tokio::sync::watch;
 use uuid::Uuid;
 
 use crate::{
     config::Config,
+    content,
     history::{History, HistoryEntry},
     runner::{self, Finish, McpServer, RunError, RunRequest},
     store::{Session, Store},
@@ -27,7 +29,10 @@ use crate::{
 struct Turn {
     running: Running,
     session: Session,
-    prompt: String,
+    /// The prompt as Claude message content.
+    content: Vec<Value>,
+    /// The prompt's text, which titles an untitled session.
+    text: String,
     cancelled: watch::Receiver<bool>,
 }
 
@@ -69,6 +74,11 @@ impl Bridge {
             .agent_capabilities(
                 acp::AgentCapabilities::new()
                     .load_session(true)
+                    .prompt_capabilities(
+                        acp::PromptCapabilities::new()
+                            .image(true)
+                            .embedded_context(true),
+                    )
                     .session_capabilities(
                         acp::SessionCapabilities::new()
                             .list(acp::SessionListCapabilities::new())
@@ -89,22 +99,19 @@ impl Bridge {
         Ok(acp::NewSessionResponse::new(id).config_options(self.options(&session)))
     }
 
+    /// Opens a session and replays its conversation from Claude's
+    /// transcript before answering, as `session/load` requires.
     pub fn load_session(
         &self,
         request: acp::LoadSessionRequest,
+        connection: &ConnectionTo<Client>,
     ) -> std::result::Result<acp::LoadSessionResponse, Error> {
         let id = request.session_id.to_string();
-        let cwd = validation::cwd(&request.cwd).map_err(invalid)?;
-        let servers = parse_mcp(request.mcp_servers)?;
-        let session = self.require(&id)?;
-        if session.cwd != cwd {
-            return Err(invalid("Session cwd does not match"));
+        let session = self.open(&id, &request.cwd, request.mcp_servers)?;
+        if let Some(claude_id) = &session.claude_session_id {
+            Updates::new(connection, &id, &session.cwd)
+                .replay(self.history.messages(claude_id, &session.cwd));
         }
-        if !servers.is_empty() {
-            self.store
-                .update(&id, |session| session.mcp_servers = servers);
-        }
-        let session = self.require(&id)?;
         Ok(acp::LoadSessionResponse::new().config_options(self.options(&session)))
     }
 
@@ -180,29 +187,40 @@ impl Bridge {
         request: acp::ResumeSessionRequest,
     ) -> std::result::Result<acp::ResumeSessionResponse, Error> {
         let id = request.session_id.to_string();
-        let cwd = validation::cwd(&request.cwd).map_err(invalid)?;
-        let servers = parse_mcp(request.mcp_servers)?;
-        if let Some(session) = self.store.get(&id) {
+        let session = self.open(&id, &request.cwd, request.mcp_servers)?;
+        Ok(acp::ResumeSessionResponse::new().config_options(self.options(&session)))
+    }
+
+    /// Finds a bridge session, or a Claude session from its transcripts,
+    /// which becomes a bridge session under the same ID. The request's MCP
+    /// servers replace the session's.
+    fn open(
+        &self,
+        id: &str,
+        cwd: &std::path::Path,
+        servers: Vec<acp::McpServer>,
+    ) -> std::result::Result<Session, Error> {
+        let cwd = validation::cwd(cwd).map_err(invalid)?;
+        let servers = parse_mcp(servers)?;
+        if let Some(session) = self.store.get(id) {
             if session.cwd != cwd {
                 return Err(invalid("Session cwd does not match"));
             }
-            self.store.update(&id, |session| {
-                if !servers.is_empty() {
-                    session.mcp_servers = servers;
-                }
-            });
-        } else if self.history.find(&id, &cwd) {
+            if !servers.is_empty() {
+                self.store
+                    .update(id, |session| session.mcp_servers = servers);
+            }
+        } else if self.history.find(id, &cwd) {
             let mut session = Session::new(cwd, servers);
-            session.claude_session_id = Some(id.clone());
-            self.store.create(id.clone(), session);
+            session.claude_session_id = Some(id.to_owned());
+            self.store.create(id.to_owned(), session);
         } else {
             return Err(Error::new(
                 -32002,
                 format!("Claude Code session {id} not found"),
             ));
         }
-        let session = self.require(&id)?;
-        Ok(acp::ResumeSessionResponse::new().config_options(self.options(&session)))
+        self.require(id)
     }
 
     pub fn set_config(
@@ -272,18 +290,8 @@ impl Bridge {
     ) -> std::result::Result<Turn, Error> {
         let id = request.session_id.to_string();
         let session = self.require(&id)?;
-        let prompt = request
-            .prompt
-            .iter()
-            .filter_map(|block| match block {
-                ContentBlock::Text(text) => Some(text.text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        if prompt.trim().is_empty() {
-            return Err(invalid("Empty prompt text"));
-        }
+        let content = content::claude_content(&request.prompt).map_err(invalid)?;
+        let text = content::prompt_text(&request.prompt);
         let (cancel_tx, cancelled) = watch::channel(false);
         {
             let mut running = self.running.lock().unwrap();
@@ -298,7 +306,8 @@ impl Bridge {
                 id,
             },
             session,
-            prompt,
+            content,
+            text,
             cancelled,
         })
     }
@@ -311,12 +320,13 @@ impl Bridge {
         let Turn {
             running,
             session,
-            prompt,
+            content,
+            text,
             cancelled,
         } = turn;
         let id = running.id.as_str();
-        if session.title.is_none() {
-            let title: String = prompt
+        if session.title.is_none() && !text.trim().is_empty() {
+            let title: String = text
                 .split_whitespace()
                 .collect::<Vec<_>>()
                 .join(" ")
@@ -338,7 +348,7 @@ impl Bridge {
             &self.config,
             RunRequest {
                 cwd: &session.cwd,
-                prompt: &prompt,
+                content: &content,
                 resume: session.claude_session_id.as_deref(),
                 model,
                 mode: session_mode(&session),

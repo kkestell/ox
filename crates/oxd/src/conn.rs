@@ -2,42 +2,51 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use ox_protocol::{
-    ErrorBody, Event, HelloResult, Method, PROTOCOL_VERSION, Request, ServerMessage, code,
+    ErrorBody, EventKind, HelloResult, Method, PROTOCOL_VERSION, Request, ServerMessage, code,
 };
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::net::unix::OwnedWriteHalf;
-use tokio::sync::broadcast::error::RecvError;
-use tokio::sync::{Notify, broadcast, mpsc};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, timeout};
 
 use crate::daemon::{ClientGuard, Daemon};
+use crate::session::Session;
 
-/// Messages queued for a client before its subscriptions stop forwarding
-/// and start to lag.
+/// Messages queued for a client before its subscriptions wait for it to
+/// read.
 const OUTGOING_CAPACITY: usize = 256;
 
 /// How long one write to a client may block before the client is
 /// disconnected.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Serves one client until it disconnects, stops reading, or lags a
-/// subscription.
+/// A task that stops when its handle is dropped.
+struct Task(JoinHandle<()>);
+
+impl Drop for Task {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Serves one client until it disconnects or stops reading.
 pub async fn serve(daemon: Arc<Daemon>, stream: UnixStream, _client: ClientGuard) {
     let (read, write) = stream.into_split();
     let (outgoing, outgoing_rx) = mpsc::channel(OUTGOING_CAPACITY);
-    let closing = Arc::new(Notify::new());
-    let writer = tokio::spawn(write_loop(write, outgoing_rx, closing.clone()));
-    let mut subscriptions: HashMap<String, JoinHandle<()>> = HashMap::new();
+    let mut writer = Task(tokio::spawn(write_loop(write, outgoing_rx)));
+    // Event subscriptions and sessions watches, by the id of the request
+    // that started each.
+    let mut subscriptions: HashMap<u64, Task> = HashMap::new();
     let mut lines = BufReader::new(read).lines();
     let mut greeted = false;
 
     loop {
         let line = tokio::select! {
             line = lines.next_line() => line,
-            () = closing.notified() => break,
+            _ = &mut writer.0 => break,
         };
         let Ok(Some(line)) = line else { break };
         let request: Request = match serde_json::from_str(&line) {
@@ -86,15 +95,11 @@ pub async fn serve(daemon: Arc<Daemon>, stream: UnixStream, _client: ClientGuard
             Method::SessionSubscribe {
                 session_id,
                 after_seq,
-            } => match daemon.session(&session_id) {
+            } => match daemon
+                .session(&session_id)
+                .and_then(|session| session.subscribe(after_seq).map(|()| session))
+            {
                 Ok(session) => {
-                    // The previous subscription must stop sending before the
-                    // ack: the client drops events that precede it.
-                    if let Some(previous) = subscriptions.remove(&session_id) {
-                        previous.abort();
-                        let _ = previous.await;
-                    }
-                    let (backlog, receiver) = session.subscribe(after_seq);
                     let ack = ServerMessage::Result {
                         id,
                         result: Value::Null,
@@ -102,21 +107,31 @@ pub async fn serve(daemon: Arc<Daemon>, stream: UnixStream, _client: ClientGuard
                     if outgoing.send(ack).await.is_err() {
                         break;
                     }
-                    let task = tokio::spawn(forward(
-                        backlog,
-                        receiver,
-                        after_seq,
-                        outgoing.clone(),
-                        closing.clone(),
-                    ));
-                    subscriptions.insert(session_id, task);
+                    let task = tokio::spawn(forward(session, id, after_seq, outgoing.clone()));
+                    subscriptions.insert(id, Task(task));
                     continue;
                 }
                 Err(error) => Err(error),
             },
-            // Agent startup can take a while; the connection keeps serving
-            // other requests meanwhile.
-            method @ Method::SessionNew { .. } => {
+            Method::SessionsWatch => {
+                let ack = ServerMessage::Result {
+                    id,
+                    result: Value::Null,
+                };
+                if outgoing.send(ack).await.is_err() {
+                    break;
+                }
+                let task = tokio::spawn(watch_sessions(daemon.clone(), id, outgoing.clone()));
+                subscriptions.insert(id, Task(task));
+                continue;
+            }
+            Method::Unsubscribe { subscription } => {
+                subscriptions.remove(&subscription);
+                Ok(Value::Null)
+            }
+            // Setting a config option waits on the agent, so it runs in its
+            // own task and the connection keeps serving other requests.
+            method @ Method::SessionSetConfigOption { .. } => {
                 let daemon = daemon.clone();
                 let outgoing = outgoing.clone();
                 tokio::spawn(async move {
@@ -138,59 +153,63 @@ pub async fn serve(daemon: Arc<Daemon>, stream: UnixStream, _client: ClientGuard
             break;
         }
     }
-
-    for task in subscriptions.values() {
-        task.abort();
-    }
-    writer.abort();
 }
 
+/// Sends subscription `subscription` the session's events after `seq` as
+/// they are recorded, at the pace the client reads them, until the session
+/// closes.
 async fn forward(
-    backlog: Vec<Event>,
-    mut receiver: broadcast::Receiver<Event>,
-    after_seq: u64,
+    session: Arc<Session>,
+    subscription: u64,
+    mut seq: u64,
     outgoing: mpsc::Sender<ServerMessage>,
-    closing: Arc<Notify>,
 ) {
-    for event in backlog {
-        if outgoing
-            .send(ServerMessage::Event {
+    loop {
+        for event in session.events_after(seq).await {
+            seq = event.seq;
+            let closed = matches!(event.kind, EventKind::SessionClosed);
+            let message = ServerMessage::Event {
+                subscription,
                 event: Box::new(event),
-            })
-            .await
-            .is_err()
-        {
+            };
+            if outgoing.send(message).await.is_err() || closed {
+                return;
+            }
+        }
+    }
+}
+
+/// Sends sessions watch `subscription` the sessions list, then the list
+/// each time it differs from the last one sent.
+async fn watch_sessions(
+    daemon: Arc<Daemon>,
+    subscription: u64,
+    outgoing: mpsc::Sender<ServerMessage>,
+) {
+    let mut changed = daemon.sessions_changed();
+    let mut sent = None;
+    loop {
+        // Marking the change seen before reading the list means a change
+        // made while the list is built wakes the watch again.
+        changed.borrow_and_update();
+        let sessions = daemon.list();
+        if sent.as_ref() != Some(&sessions) {
+            let message = ServerMessage::Sessions {
+                subscription,
+                sessions: sessions.clone(),
+            };
+            if outgoing.send(message).await.is_err() {
+                return;
+            }
+            sent = Some(sessions);
+        }
+        if changed.changed().await.is_err() {
             return;
         }
     }
-    loop {
-        match receiver.recv().await {
-            Ok(event) if event.seq <= after_seq => {}
-            Ok(event) => {
-                if outgoing
-                    .send(ServerMessage::Event {
-                        event: Box::new(event),
-                    })
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-            }
-            Err(RecvError::Lagged(_)) => {
-                closing.notify_one();
-                return;
-            }
-            Err(RecvError::Closed) => return,
-        }
-    }
 }
 
-async fn write_loop(
-    mut write: OwnedWriteHalf,
-    mut outgoing: mpsc::Receiver<ServerMessage>,
-    closing: Arc<Notify>,
-) {
+async fn write_loop(mut write: OwnedWriteHalf, mut outgoing: mpsc::Receiver<ServerMessage>) {
     while let Some(message) = outgoing.recv().await {
         let mut line = serde_json::to_string(&message).expect("protocol types serialize");
         line.push('\n');
@@ -199,5 +218,4 @@ async fn write_loop(
             _ => break,
         }
     }
-    closing.notify_one();
 }

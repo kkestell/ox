@@ -36,12 +36,44 @@ def stop(process):
     process.wait(timeout=10)
 
 
-def alive(pid):
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
+def running_after(pids, timeout):
+    """Waits up to `timeout` seconds for each process to exit and returns the
+    ones still running. Exits arrive as kqueue events on macOS and as readable
+    pidfds on Linux."""
+    deadline = time.monotonic() + timeout
+    if hasattr(select, "kqueue"):
+        queue = select.kqueue()
+        running = set()
+        for pid in pids:
+            event = select.kevent(pid, select.KQ_FILTER_PROC,
+                                  select.KQ_EV_ADD | select.KQ_EV_ONESHOT, select.KQ_NOTE_EXIT)
+            try:
+                queue.control([event], 0)
+                running.add(pid)
+            except ProcessLookupError:
+                pass
+        while running and (remaining := deadline - time.monotonic()) > 0:
+            for event in queue.control(None, len(running), remaining):
+                running.discard(event.ident)
+        queue.close()
+        return running
+    descriptors = {}
+    for pid in pids:
+        try:
+            descriptors[os.pidfd_open(pid)] = pid
+        except ProcessLookupError:
+            pass
+    poll = select.poll()
+    for descriptor in descriptors:
+        poll.register(descriptor, select.POLLIN)
+    while descriptors and (remaining := deadline - time.monotonic()) > 0:
+        for descriptor, _ in poll.poll(remaining * 1000):
+            poll.unregister(descriptor)
+            os.close(descriptor)
+            del descriptors[descriptor]
+    for descriptor in descriptors:
+        os.close(descriptor)
+    return set(descriptors.values())
 
 
 def kind(event):
@@ -57,6 +89,13 @@ def message(event):
 
 def text(events):
     return "".join(e["kind"]["data"]["content"]["text"] for e in events if message(e))
+
+
+def user_text(events):
+    return "".join(
+        e["kind"]["data"]["content"].get("text", "") for e in events
+        if kind(e) == "update" and e["kind"]["data"]["sessionUpdate"] == "user_message_chunk"
+    )
 
 
 class Attachment:
@@ -180,16 +219,21 @@ class SmokeRun:
             if int(parent) == self.daemon.pid
         )
 
-    def run(self, daemon_log):
+    def start_daemon(self):
         self.daemon = subprocess.Popen(
             [str(self.binaries / "oxd"), "--socket", str(self.socket)],
-            stdout=daemon_log, stderr=daemon_log,
+            stdout=subprocess.PIPE, stderr=self.daemon_log,
         )
-        deadline = time.monotonic() + self.args.timeout
-        while not self.socket.exists():
-            check(self.daemon.poll() is None, "Daemon exited; see oxd.log")
-            check(time.monotonic() < deadline, "Daemon did not create its socket")
-            time.sleep(0.05)
+        # oxd prints `ready` once it is listening and nothing else on stdout.
+        with self.daemon.stdout:
+            ready, _, _ = select.select([self.daemon.stdout], [], [], self.args.timeout)
+            check(ready, "Daemon did not become ready")
+            check(self.daemon.stdout.readline() == b"ready\n",
+                  "Daemon exited during startup; see oxd.log")
+
+    def run(self, daemon_log):
+        self.daemon_log = daemon_log
+        self.start_daemon()
         self.session = self.ctl("new", "--cwd", str(self.project), "--", *self.agent)
         self.remember_agents()
         check(self.agent_pids, "Could not find the daemon's ACP agent process")
@@ -201,6 +245,7 @@ class SmokeRun:
         self.check_permission()
         self.check_cancellation()
         self.verify_model()
+        self.check_load_after_restart()
         self.report("all_event_sequences_contiguous", event_count=self.seq)
 
         self.disconnect()
@@ -209,7 +254,7 @@ class SmokeRun:
         check(self.ctl("ls") == "", "Closed session is still listed")
         check(self.daemon.wait(timeout=15) == 0, "Daemon did not exit successfully")
         check(not self.socket.exists(), "Daemon left its socket behind")
-        check(not any(alive(pid) for pid in self.agent_pids), "ACP agent did not exit")
+        check(not running_after(self.agent_pids, 10), "ACP agent did not exit")
         self.report("close_and_idle_exit", agent_exited=True, socket_removed=True)
 
     def check_reconnect(self):
@@ -235,6 +280,35 @@ class SmokeRun:
         response = text(self.finish()).strip()
         check(token in response, f"Conversation token was not retained: {response}")
         self.report("followup_retains_conversation", response=response)
+
+    def check_load_after_restart(self):
+        token = self.directory.name
+        row = next(r for r in self.ctl("ls").splitlines() if r.startswith(self.session))
+        agent_session = row.split("\t")[-1]
+        self.disconnect()
+        self.remember_agents()
+        self.daemon.send_signal(signal.SIGTERM)
+        check(self.daemon.wait(timeout=15) == 0, "Daemon did not stop on SIGTERM")
+        check(not running_after(self.agent_pids, 10), "ACP agent outlived the daemon")
+
+        self.start_daemon()
+        self.session = self.ctl("load", agent_session, "--cwd", str(self.project),
+                                "--", *self.agent)
+        self.remember_agents()
+        self.seq = 0
+        self.attach(0)
+        replay = self.until(lambda e: kind(e) == "agent_started")
+        check(f"Remember this token for my next message: {token}" in user_text(replay),
+              f"Replay lacks the first prompt: {user_text(replay)[:300]}")
+        check(token in text(replay), f"Replay lacks the agent's answer: {text(replay)[:300]}")
+        self.report("load_replays_after_daemon_restart", agent_session_id=agent_session,
+                    replay_events=len(replay))
+        self.ctl("prompt", self.session,
+                 "What exact token did I ask you to remember at the start of this "
+                 "conversation? Reply with only that token. Do not use tools.")
+        response = text(self.finish()).strip()
+        check(token in response, f"Loaded session lost the conversation: {response}")
+        self.report("loaded_session_retains_conversation", response=response)
 
     def check_permission(self):
         self.ctl("prompt", self.session,

@@ -1,11 +1,199 @@
 :root {
-  font-family: system-ui, sans-serif;
   color-scheme: light dark;
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --border: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --sidebar: oklch(0.985 0 0);
+  --text: oklch(0.371 0 0);
+  --hover: var(--accent);
+  --surface: color-mix(in oklab, var(--background), var(--card));
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: oklch(0.145 0 0);
+    --foreground: oklch(0.985 0 0);
+    --card: oklch(0.205 0 0);
+    --muted-foreground: oklch(0.708 0 0);
+    --accent: oklch(0.269 0 0);
+    --border: oklch(1 0 0 / 10%);
+    --ring: oklch(0.556 0 0);
+    --sidebar: oklch(0.205 0 0);
+    --text: oklch(0.87 0 0);
+    --hover: color-mix(in oklab, var(--accent) 50%, transparent);
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
 }
 
 body {
-  margin: 0;
-  min-height: 100vh;
-  display: grid;
-  place-items: center;
+  font: 14px/1.5 system-ui, sans-serif;
+  background: var(--background);
+  color: var(--text);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.workbench {
+  display: flex;
+  height: 100%;
+}
+
+.center {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface);
+}
+
+.content-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: flex-end;
+  height: 28px;
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.content-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.session-list {
+  height: 100%;
+  overflow: auto;
+}
+
+.conversation {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.conversation .text {
+  white-space: pre-wrap;
+}
+
+.panel {
+  flex: none;
+  overflow: hidden;
+}
+
+.panel.left {
+  width: var(--left-size);
+  background: var(--sidebar);
+}
+
+.panel.right {
+  width: var(--right-size);
+  background: var(--sidebar);
+}
+
+.panel.bottom {
+  height: var(--bottom-size);
+  background: var(--surface);
+}
+
+.toggles {
+  display: flex;
+  align-items: center;
+}
+
+.toggles button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: calc(var(--radius) - 2px);
+  background: transparent;
+  color: var(--muted-foreground);
+  outline: none;
+}
+
+.toggles button[aria-pressed="true"] {
+  color: var(--foreground);
+}
+
+.toggles button:hover {
+  background: var(--hover);
+}
+
+.toggles button:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent);
+}
+
+.toggles svg {
+  width: 16px;
+  height: 16px;
+}
+
+.sash {
+  position: relative;
+  flex: none;
+  background: var(--border);
+  touch-action: none;
+}
+
+.sash::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+}
+
+.sash.vertical {
+  width: 1px;
+  cursor: col-resize;
+}
+
+.sash.vertical::after {
+  inset: 0 -2px;
+}
+
+.sash.horizontal {
+  height: 1px;
+  cursor: row-resize;
+}
+
+.sash.horizontal::after {
+  inset: -2px 0;
+}
+
+body.resizing {
+  user-select: none;
+}
+
+body.resizing.vertical {
+  cursor: col-resize;
+}
+
+body.resizing.horizontal {
+  cursor: row-resize;
 }

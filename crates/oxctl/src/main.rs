@@ -1,13 +1,20 @@
 //! oxctl: a command-line client for oxd.
 
 use std::collections::BTreeMap;
+use std::error::Error;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use clap::{Parser, Subcommand};
-use ox_protocol::schema::{ContentBlock, RequestPermissionOutcome, SessionUpdate};
-use ox_protocol::{Client, Error, Event, EventKind};
+use ox_protocol::schema::{
+    ContentBlock, EmbeddedResourceResource, ImageContent, RequestPermissionOutcome,
+    SessionConfigKind, SessionConfigOption, SessionConfigSelectOptions, SessionUpdate, StopReason,
+    TextContent, ToolCallStatus,
+};
+use ox_protocol::{Client, ConfigValue, End, Event, EventKind, content};
 
 #[derive(Parser)]
 #[command(name = "oxctl", about = "Control oxd sessions")]
@@ -32,8 +39,39 @@ enum Command {
         #[arg(last = true)]
         command: Vec<String>,
     },
+    /// Start an agent on a session it saved, replaying its conversation, and
+    /// print the new session's id
+    Load {
+        /// The agent's session id, as `ls` shows it
+        agent_session: String,
+        /// Working directory the session was started in [default: current
+        /// directory]
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// Agent command [default: claude-code-acp]
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
     /// Send a prompt
-    Prompt { session: String, text: String },
+    Prompt {
+        session: String,
+        text: String,
+        /// Attach an image (PNG, JPEG, GIF or WebP)
+        #[arg(long)]
+        image: Vec<PathBuf>,
+        /// Reference a file the agent can read
+        #[arg(long)]
+        file: Vec<PathBuf>,
+    },
+    /// Print a session's config options, or set one
+    Config {
+        session: String,
+        /// Option to set
+        #[arg(requires = "value")]
+        option: Option<String>,
+        /// New value: a value id, or true or false
+        value: Option<String>,
+    },
     /// Print a session's events, then follow live events
     Attach {
         session: String,
@@ -68,38 +106,87 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn run(cli: Cli) -> Result<(), Error> {
+async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
     let socket = cli.socket.unwrap_or_else(ox_protocol::default_socket_path);
     let client = Client::connect_or_start(&socket).await?;
     match cli.command {
         Command::Ls => {
             for session in client.list().await? {
-                let state = serde_json::to_value(session.state)?;
                 println!(
-                    "{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}",
                     session.id,
-                    state.as_str().unwrap_or_default(),
-                    session.last_seq,
+                    session.state.as_str(),
                     session.cwd.display(),
                     session.command.join(" "),
+                    session.title.as_deref().unwrap_or("-"),
+                    session.agent_session_id.as_deref().unwrap_or("-"),
                 );
             }
         }
         Command::New { cwd, command } => {
-            let cwd = match cwd {
-                Some(cwd) => cwd,
-                None => std::env::current_dir()?,
-            }
-            .canonicalize()?;
-            let command = if command.is_empty() {
-                vec!["claude-code-acp".to_owned()]
-            } else {
-                command
-            };
+            let (cwd, command) = agent(cwd, command)?;
             let session = client.new_session(command, cwd, utf8_env()).await?;
-            println!("{}", session.id);
+            println!("{}", started(&client, &session.id).await?);
         }
-        Command::Prompt { session, text } => client.prompt(&session, &text).await?,
+        Command::Load {
+            agent_session,
+            cwd,
+            command,
+        } => {
+            let (cwd, command) = agent(cwd, command)?;
+            let session = client
+                .load_session(command, cwd, utf8_env(), &agent_session)
+                .await?;
+            println!("{}", started(&client, &session.id).await?);
+        }
+        Command::Prompt {
+            session,
+            text,
+            image,
+            file,
+        } => {
+            let mut prompt = vec![ContentBlock::Text(TextContent::new(text))];
+            for path in image {
+                prompt.push(image_block(&path)?);
+            }
+            for path in file {
+                prompt.push(content::file_link(&path)?);
+            }
+            client.prompt(&session, prompt).await?;
+        }
+        Command::Config {
+            session,
+            option,
+            value,
+        } => {
+            let info = client
+                .list()
+                .await?
+                .into_iter()
+                .find(|info| info.id == session)
+                .ok_or_else(|| format!("no session {session}"))?;
+            let options = match (option, value) {
+                (Some(option), Some(value)) => {
+                    let boolean = info.config_options.iter().any(|candidate| {
+                        *candidate.id.0 == *option
+                            && matches!(candidate.kind, SessionConfigKind::Boolean(_))
+                    });
+                    let value =
+                        if boolean {
+                            ConfigValue::Boolean(value.parse().map_err(|_| {
+                                format!("{option} takes true or false, not {value}")
+                            })?)
+                        } else {
+                            ConfigValue::Id(value)
+                        };
+                    client.set_config_option(&session, &option, value).await?
+                }
+                _ => info.config_options,
+            };
+            for option in &options {
+                println!("{}", describe_option(option));
+            }
+        }
         Command::Attach {
             session,
             after,
@@ -107,11 +194,12 @@ async fn run(cli: Cli) -> Result<(), Error> {
         } => {
             let mut events = client.subscribe(&session, after).await?;
             let mut printer = Printer::default();
-            while let Some(event) = events.next().await {
-                if json {
-                    println!("{}", serde_json::to_string(&event)?);
-                } else {
-                    printer.print(&event);
+            loop {
+                match events.next().await {
+                    Ok(event) if json => println!("{}", serde_json::to_string(&event)?),
+                    Ok(event) => printer.print(&event),
+                    Err(End::SessionClosed) => break,
+                    Err(End::Disconnected) => return Err(ox_protocol::Error::Closed.into()),
                 }
             }
         }
@@ -124,6 +212,97 @@ async fn run(cli: Cli) -> Result<(), Error> {
         Command::Close { session } => client.close(&session).await?,
     }
     Ok(())
+}
+
+fn image_block(path: &Path) -> Result<ContentBlock, Box<dyn Error>> {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase);
+    let mime_type = match extension.as_deref() {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        _ => {
+            return Err(format!("{} is not a PNG, JPEG, GIF or WebP image", path.display()).into());
+        }
+    };
+    let data = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    Ok(ContentBlock::Image(ImageContent::new(
+        STANDARD.encode(data),
+        mime_type,
+    )))
+}
+
+/// One line per option: id, current value, and the values it takes.
+fn describe_option(option: &SessionConfigOption) -> String {
+    match &option.kind {
+        SessionConfigKind::Select(select) => {
+            let values: Vec<String> = match &select.options {
+                SessionConfigSelectOptions::Ungrouped(options) => {
+                    options.iter().map(|o| o.value.to_string()).collect()
+                }
+                SessionConfigSelectOptions::Grouped(groups) => groups
+                    .iter()
+                    .flat_map(|group| &group.options)
+                    .map(|o| o.value.to_string())
+                    .collect(),
+                _ => Vec::new(),
+            };
+            format!(
+                "{}\t{}\t{}",
+                option.id.0,
+                select.current_value,
+                values.join(", ")
+            )
+        }
+        SessionConfigKind::Boolean(boolean) => {
+            format!("{}\t{}\ttrue, false", option.id.0, boolean.current_value)
+        }
+        _ => format!("{}\t?", option.id.0),
+    }
+}
+
+/// The working directory and agent command, with their defaults.
+fn agent(
+    cwd: Option<PathBuf>,
+    command: Vec<String>,
+) -> Result<(PathBuf, Vec<String>), Box<dyn Error>> {
+    let cwd = match cwd {
+        Some(cwd) => cwd,
+        None => std::env::current_dir()?,
+    }
+    .canonicalize()?;
+    let command = if command.is_empty() {
+        vec!["claude-code-acp".to_owned()]
+    } else {
+        command
+    };
+    Ok((cwd, command))
+}
+
+/// Waits for a session's agent to start and returns the session's id. A
+/// session whose agent fails to start is closed.
+async fn started(client: &Client, session_id: &str) -> Result<String, Box<dyn Error>> {
+    let mut events = client.subscribe(session_id, 0).await?;
+    loop {
+        match events.next().await {
+            Ok(event) => match event.kind {
+                EventKind::AgentStarted { .. } => return Ok(session_id.to_owned()),
+                EventKind::AgentExited { error } => {
+                    client.close(session_id).await?;
+                    let error = error.unwrap_or_else(|| "it exited".into());
+                    return Err(format!("the agent did not start: {error}").into());
+                }
+                _ => {}
+            },
+            Err(End::SessionClosed) => {
+                return Err("the session closed while its agent was starting".into());
+            }
+            Err(End::Disconnected) => return Err(ox_protocol::Error::Closed.into()),
+        }
+    }
 }
 
 /// The environment variables whose names and values are UTF-8.
@@ -161,7 +340,11 @@ impl Printer {
 
 fn describe(kind: &EventKind) -> String {
     match kind {
-        EventKind::PromptStarted { text } => format!("prompt: {text}"),
+        EventKind::AgentStarted { .. } => "agent started".into(),
+        EventKind::PromptStarted { prompt } => {
+            let parts: Vec<String> = prompt.iter().map(describe_block).collect();
+            format!("prompt: {}", parts.join(" "))
+        }
         EventKind::Update(update) => describe_update(update),
         EventKind::PermissionRequested {
             request_id,
@@ -189,12 +372,27 @@ fn describe(kind: &EventKind) -> String {
         },
         EventKind::TurnEnded { stop_reason, error } => match (stop_reason, error) {
             (_, Some(error)) => format!("turn ended: {error}"),
-            (Some(reason), None) => format!("turn ended: {}", tag(reason)),
+            (Some(reason), None) => format!("turn ended: {}", stop_reason_name(reason)),
             (None, None) => "turn ended".into(),
         },
         EventKind::AgentExited { error: Some(error) } => format!("agent exited: {error}"),
         EventKind::AgentExited { error: None } => "agent exited".into(),
         EventKind::SessionClosed => "session closed".into(),
+    }
+}
+
+fn describe_block(block: &ContentBlock) -> String {
+    match block {
+        ContentBlock::Text(text) => text.text.clone(),
+        ContentBlock::Image(image) => format!("[image {}]", image.mime_type),
+        ContentBlock::Audio(audio) => format!("[audio {}]", audio.mime_type),
+        ContentBlock::ResourceLink(link) => format!("[{}]", link.uri),
+        ContentBlock::Resource(resource) => match &resource.resource {
+            EmbeddedResourceResource::TextResourceContents(text) => format!("[{}]", text.uri),
+            EmbeddedResourceResource::BlobResourceContents(blob) => format!("[{}]", blob.uri),
+            _ => "[resource]".into(),
+        },
+        _ => "[content]".into(),
     }
 }
 
@@ -205,31 +403,70 @@ fn describe_update(update: &SessionUpdate) -> String {
                 ContentBlock::Text(text) => text.text.as_str(),
                 _ => "",
             };
-            format!("{}: {text}", update_tag(update))
+            format!("{}: {text}", update_name(update))
         }
         SessionUpdate::ToolCall(call) => {
             format!("tool call {}: {}", call.tool_call_id.0, call.title)
         }
+        SessionUpdate::ConfigOptionUpdate(update) => {
+            let options: Vec<String> = update
+                .config_options
+                .iter()
+                .map(|option| match &option.kind {
+                    SessionConfigKind::Select(select) => {
+                        format!("{}={}", option.id.0, select.current_value)
+                    }
+                    SessionConfigKind::Boolean(boolean) => {
+                        format!("{}={}", option.id.0, boolean.current_value)
+                    }
+                    _ => option.id.0.to_string(),
+                })
+                .collect();
+            format!("config: {}", options.join(", "))
+        }
         SessionUpdate::ToolCallUpdate(call) => {
-            let status = call.fields.status.as_ref().map(tag).unwrap_or_default();
+            let status = call.fields.status.map(status_name).unwrap_or_default();
             format!("tool call {}: {status}", call.tool_call_id.0)
         }
-        _ => update_tag(update),
+        _ => update_name(update).into(),
     }
 }
 
-/// The `sessionUpdate` discriminator of an update.
-fn update_tag(update: &SessionUpdate) -> String {
-    serde_json::to_value(update)
-        .ok()
-        .and_then(|value| value.get("sessionUpdate")?.as_str().map(str::to_owned))
-        .unwrap_or_default()
+/// The `sessionUpdate` name of an update.
+fn update_name(update: &SessionUpdate) -> &'static str {
+    match update {
+        SessionUpdate::UserMessageChunk(_) => "user_message_chunk",
+        SessionUpdate::AgentMessageChunk(_) => "agent_message_chunk",
+        SessionUpdate::AgentThoughtChunk(_) => "agent_thought_chunk",
+        SessionUpdate::ToolCall(_) => "tool_call",
+        SessionUpdate::ToolCallUpdate(_) => "tool_call_update",
+        SessionUpdate::Plan(_) => "plan",
+        SessionUpdate::AvailableCommandsUpdate(_) => "available_commands_update",
+        SessionUpdate::CurrentModeUpdate(_) => "current_mode_update",
+        SessionUpdate::ConfigOptionUpdate(_) => "config_option_update",
+        SessionUpdate::SessionInfoUpdate(_) => "session_info_update",
+        SessionUpdate::UsageUpdate(_) => "usage_update",
+        _ => "update",
+    }
 }
 
-/// The serialized name of a unit enum value.
-fn tag(value: &impl serde::Serialize) -> String {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .unwrap_or_default()
+fn stop_reason_name(reason: &StopReason) -> &'static str {
+    match reason {
+        StopReason::EndTurn => "end_turn",
+        StopReason::MaxTokens => "max_tokens",
+        StopReason::MaxTurnRequests => "max_turn_requests",
+        StopReason::Refusal => "refusal",
+        StopReason::Cancelled => "cancelled",
+        _ => "other",
+    }
+}
+
+fn status_name(status: ToolCallStatus) -> &'static str {
+    match status {
+        ToolCallStatus::Pending => "pending",
+        ToolCallStatus::InProgress => "in_progress",
+        ToolCallStatus::Completed => "completed",
+        ToolCallStatus::Failed => "failed",
+        _ => "other",
+    }
 }

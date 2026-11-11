@@ -1,0 +1,56 @@
+import { Channel, invoke } from "@tauri-apps/api/core";
+import { useEffect, useReducer, useState } from "react";
+import type { Item, ViewMessage } from "./protocol";
+
+interface State {
+  keys: string[];
+  items: Record<string, Item>;
+}
+
+const empty: State = { keys: [], items: {} };
+
+type Action = { type: "clear" } | { type: "item"; item: Item };
+
+// An item creates the entry for its key or replaces it; text and thought
+// items append their text to it.
+function reduce(state: State, action: Action): State {
+  if (action.type === "clear") return empty;
+  const { item } = action;
+  const existing = state.items[item.key];
+  if (existing === undefined) {
+    return { keys: [...state.keys, item.key], items: { ...state.items, [item.key]: item } };
+  }
+  const next =
+    (item.type === "text" || item.type === "thought") && existing.type === item.type
+      ? { ...item, text: existing.text + item.text }
+      : item;
+  return { keys: state.keys, items: { ...state.items, [item.key]: next } };
+}
+
+/**
+ * The items of a session's conversation, replayed from its first event and
+ * followed live. A dropped connection views the session again.
+ */
+export function useConversation(sessionId: string | null): Item[] {
+  const [state, dispatch] = useReducer(reduce, empty);
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    dispatch({ type: "clear" });
+    // Only the latest view's channel is read. Viewing no session ends the
+    // previous view, such as one left by a webview reload.
+    let current = true;
+    const channel = new Channel<ViewMessage>();
+    channel.onmessage = (message) => {
+      if (!current) return;
+      if (message.type === "item") dispatch({ type: "item", item: message.item });
+      else setAttempt((attempt) => attempt + 1);
+    };
+    invoke("view_session", { sessionId, channel });
+    return () => {
+      current = false;
+    };
+  }, [sessionId, attempt]);
+
+  return state.keys.map((key) => state.items[key]);
+}

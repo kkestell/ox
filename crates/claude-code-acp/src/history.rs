@@ -58,7 +58,34 @@ impl History {
     }
 
     pub fn find(&self, id: &str, cwd: &Path) -> bool {
-        Uuid::parse_str(id).is_ok() && self.list(Some(cwd)).iter().any(|entry| entry.id == id)
+        self.transcript(id, cwd).is_some()
+    }
+
+    /// The `user` and `assistant` entries of a session's transcript, in
+    /// order. The transcript's other entries are Claude's bookkeeping.
+    pub fn messages(&self, id: &str, cwd: &Path) -> Vec<Value> {
+        let Some(file) = self
+            .transcript(id, cwd)
+            .and_then(|path| File::open(path).ok())
+        else {
+            return Vec::new();
+        };
+        BufReader::new(file)
+            .lines()
+            .map_while(Result::ok)
+            .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+            .filter(|entry| matches!(entry["type"].as_str(), Some("user" | "assistant")))
+            .collect()
+    }
+
+    /// The transcript of session `id` started in `cwd`.
+    fn transcript(&self, id: &str, cwd: &Path) -> Option<PathBuf> {
+        Uuid::parse_str(id).ok()?;
+        let projects = fs::read_dir(&self.root).ok()?;
+        projects
+            .flatten()
+            .map(|project| project.path().join(format!("{id}.jsonl")))
+            .find(|path| read_entry(path, id).is_some_and(|entry| entry.cwd == cwd))
     }
 }
 

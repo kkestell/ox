@@ -84,10 +84,29 @@ servers. New sessions start fresh; continuing a conversation requires loading or
 resuming its session ID. A failed resumed prompt reports the error without
 retrying in a fresh conversation.
 
+`session/load` replays the conversation before it answers. The bridge reads the
+`user` and `assistant` entries of the session's Claude transcript and converts
+them with the same code that converts a live prompt's output, so a replayed
+turn produces the same message, thought, and tool call updates, plus user
+message chunks for the prompts. Prompt resource links and embedded text replay
+as the text Claude received, and an embedded PDF as a `document` resource.
+Tool calls without a result end as failed. `session/resume` opens a session
+without replaying it.
+
 ### Prompts and streaming
 
-`session/prompt` accepts text content blocks and streams message, thought, and
-tool call updates. Image and audio prompts are not supported.
+`session/prompt` streams message, thought, and tool call updates. Prompts can
+contain these content blocks, which reach Claude in order:
+
+| Block                     | Sent to Claude as                                      |
+| ------------------------- | ------------------------------------------------------ |
+| Text                      | Text                                                   |
+| Image                     | An image (PNG, JPEG, GIF or WebP)                      |
+| Resource link             | A Markdown link, `[@name](uri)`, Claude can open       |
+| Embedded text resource    | Text in a `<context ref="uri">` block                  |
+| Embedded image or PDF     | An image or a document                                 |
+
+The bridge advertises the `image` and `embeddedContext` prompt capabilities.
 
 Each prompt runs `claude` in its own process group. Clients can stop a prompt
 with `session/cancel`, including immediately after sending it or while a tool

@@ -1,5 +1,6 @@
 mod bridge;
 mod config;
+mod content;
 mod history;
 mod runner;
 mod store;
@@ -43,8 +44,8 @@ async fn main() -> Result<()> {
                 let bridge = bridge.clone();
                 async move |request: acp::LoadSessionRequest,
                             responder: Responder<acp::LoadSessionResponse>,
-                            _connection: ConnectionTo<Client>| {
-                    respond(responder, bridge.load_session(request))
+                            connection: ConnectionTo<Client>| {
+                    respond(responder, bridge.load_session(request, &connection))
                 }
             },
             agent_client_protocol::on_receive_request!(),

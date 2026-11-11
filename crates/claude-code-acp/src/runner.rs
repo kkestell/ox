@@ -1,18 +1,15 @@
 use std::{
-    collections::BTreeMap,
-    future::Future,
-    path::PathBuf,
-    process::Stdio,
-    sync::{Arc, Mutex},
-    time::Duration,
+    collections::BTreeMap, future::Future, os::fd::AsRawFd, path::PathBuf, process::Stdio,
+    sync::Mutex, time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    process::{Child, Command},
-    sync::watch,
+    process::{Child, ChildStderr, Command},
+    sync::{oneshot, watch},
+    task::JoinHandle,
     time::{Instant, sleep_until, timeout},
 };
 
@@ -28,6 +25,17 @@ pub struct McpServer {
 
 #[derive(Clone, Debug)]
 pub enum Event {
+    /// Text from the user. Live turns carry the prompt in the request; a
+    /// transcript carries it as a message.
+    UserText(String),
+    UserImage {
+        data: String,
+        mime_type: String,
+    },
+    UserDocument {
+        data: String,
+        mime_type: String,
+    },
     Text(String),
     Thought(String),
     Tool {
@@ -59,7 +67,8 @@ pub enum RunError {
 
 pub struct RunRequest<'a> {
     pub cwd: &'a PathBuf,
-    pub prompt: &'a str,
+    /// The content of the user message.
+    pub content: &'a [Value],
     pub resume: Option<&'a str>,
     pub model: &'a str,
     pub mode: &'a str,
@@ -71,8 +80,6 @@ const EXIT_GRACE: Duration = Duration::from_secs(5);
 /// How long claude gets to exit after `SIGTERM` before its process group is
 /// killed.
 const TERMINATE_GRACE: Duration = Duration::from_secs(2);
-/// How long stderr gets to drain after claude exits with an error.
-const STDERR_GRACE: Duration = Duration::from_millis(200);
 
 #[derive(Debug)]
 pub enum Finish {
@@ -197,16 +204,12 @@ async fn run_claude<F: Future<Output = Value>>(
         .spawn()
         .map_err(|e| RunError::Failed(format!("failed to start claude: {e}")))?;
     let group = ProcessGroup(child.id());
-    let stderr = Arc::new(Mutex::new(Vec::new()));
-    let mut stderr_task = tokio::spawn(collect(
-        child.stderr.take().expect("piped stderr"),
-        stderr.clone(),
-    ));
+    let mut stderr = Stderr::collect(child.stderr.take().expect("piped stderr"));
     let budget = Budget::new(config.timeout);
     let exchange = async {
         let reported = read_output(
             &mut child,
-            request.prompt,
+            request.content,
             &budget,
             session_id,
             on_event,
@@ -224,11 +227,10 @@ async fn run_claude<F: Future<Output = Value>>(
         if status.success() {
             return Ok(Finish::EndTurn);
         }
-        let _ = timeout(STDERR_GRACE, &mut stderr_task).await;
-        let stderr = String::from_utf8_lossy(&stderr.lock().unwrap()).into_owned();
+        let stderr = stderr.finish().await;
         Err(RunError::Failed(format!(
             "claude exited with {status}: {}",
-            stderr.trim()
+            String::from_utf8_lossy(&stderr).trim()
         )))
     };
     let result = tokio::select! {
@@ -240,7 +242,6 @@ async fn run_claude<F: Future<Output = Value>>(
         group.signal(libc::SIGTERM);
         let _ = timeout(TERMINATE_GRACE, child.wait()).await;
     }
-    stderr_task.abort();
     drop(mcp_file);
     result
 }
@@ -267,12 +268,67 @@ impl Drop for ProcessGroup {
     }
 }
 
-async fn collect(mut stderr: tokio::process::ChildStderr, buffer: Arc<Mutex<Vec<u8>>>) {
+/// Reads claude's stderr while claude runs, so a full pipe never blocks it.
+struct Stderr {
+    finish: Option<oneshot::Sender<()>>,
+    task: JoinHandle<Vec<u8>>,
+}
+
+impl Stderr {
+    fn collect(stderr: ChildStderr) -> Self {
+        let (finish, finished) = oneshot::channel();
+        Self {
+            finish: Some(finish),
+            task: tokio::spawn(read_stderr(stderr, finished)),
+        }
+    }
+
+    /// Everything claude wrote to stderr. Call it once claude has exited:
+    /// what it wrote is then in the pipe, and a process it started that still
+    /// holds the pipe open does not delay the result.
+    async fn finish(&mut self) -> Vec<u8> {
+        if let Some(finish) = self.finish.take() {
+            let _ = finish.send(());
+        }
+        (&mut self.task).await.unwrap_or_default()
+    }
+}
+
+impl Drop for Stderr {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn read_stderr(mut stderr: ChildStderr, mut finished: oneshot::Receiver<()>) -> Vec<u8> {
+    let mut buffer = Vec::new();
     let mut chunk = [0; 8192];
-    while let Ok(n) = stderr.read(&mut chunk).await
-        && n > 0
-    {
-        buffer.lock().unwrap().extend_from_slice(&chunk[..n]);
+    loop {
+        tokio::select! {
+            read = stderr.read(&mut chunk) => match read {
+                Ok(n) if n > 0 => buffer.extend_from_slice(&chunk[..n]),
+                _ => return buffer,
+            },
+            _ = &mut finished => {
+                read_buffered(&stderr, &mut buffer);
+                return buffer;
+            }
+        }
+    }
+}
+
+/// Reads what the pipe holds now. Tokio opens child pipes non-blocking, so
+/// `read` fails with `EAGAIN` instead of waiting once the pipe is empty.
+fn read_buffered(stderr: &ChildStderr, buffer: &mut Vec<u8>) {
+    let mut chunk = [0u8; 8192];
+    loop {
+        // SAFETY: reads at most `chunk.len()` bytes into `chunk` from a
+        // descriptor `stderr` owns and keeps open for the call.
+        let n = unsafe { libc::read(stderr.as_raw_fd(), chunk.as_mut_ptr().cast(), chunk.len()) };
+        if n <= 0 {
+            return;
+        }
+        buffer.extend_from_slice(&chunk[..n as usize]);
     }
 }
 
@@ -322,7 +378,7 @@ impl Budget {
 
 async fn read_output<F: Future<Output = Value>>(
     child: &mut Child,
-    prompt: &str,
+    content: &[Value],
     budget: &Budget,
     session_id: &Mutex<Option<String>>,
     mut on_event: impl FnMut(Event),
@@ -332,7 +388,7 @@ async fn read_output<F: Future<Output = Value>>(
     let user = json!({
         "type": "user",
         "session_id": "",
-        "message": {"role": "user", "content": [{"type": "text", "text": prompt}]},
+        "message": {"role": "user", "content": content},
         "parent_tool_use_id": null
     });
     write_message(&mut stdin, &user).await?;
@@ -436,49 +492,17 @@ async fn read_output<F: Future<Output = Value>>(
                 }
                 _ => {}
             },
-            Some("assistant") => {
-                if let Some(blocks) = value["message"]["content"].as_array() {
-                    for block in blocks {
-                        match block["type"].as_str() {
-                            Some("text") if !saw_text_delta => {
-                                if let Some(text) = block["text"].as_str() {
-                                    on_event(Event::Text(text.into()));
-                                }
-                            }
-                            Some("thinking") if !saw_thought_delta => {
-                                if let Some(text) = block["thinking"].as_str() {
-                                    on_event(Event::Thought(text.into()));
-                                }
-                            }
-                            Some("tool_use") => {
-                                if let Some(name) = block["name"].as_str() {
-                                    on_event(Event::Tool {
-                                        id: block["id"].as_str().map(str::to_owned),
-                                        name: name.into(),
-                                        input: block["input"].clone(),
-                                    });
-                                }
-                            }
-                            _ => {}
-                        }
+            Some("assistant" | "user") => {
+                for event in message_events(&value) {
+                    match event {
+                        // Deltas already streamed this text.
+                        Event::Text(_) if saw_text_delta => {}
+                        Event::Thought(_) if saw_thought_delta => {}
+                        event => on_event(event),
                     }
                 }
                 saw_text_delta = false;
                 saw_thought_delta = false;
-            }
-            Some("user") => {
-                if let Some(blocks) = value["message"]["content"].as_array() {
-                    for block in blocks {
-                        if block["type"] == "tool_result"
-                            && let Some(id) = block["tool_use_id"].as_str()
-                        {
-                            on_event(Event::ToolResult {
-                                id: id.into(),
-                                is_error: block["is_error"].as_bool().unwrap_or(false),
-                            });
-                        }
-                    }
-                }
             }
             Some("result") => {
                 reported = Some(result_outcome(&value));
@@ -515,4 +539,61 @@ fn result_outcome(result: &Value) -> Result<Finish, RunError> {
         .or(errors)
         .unwrap_or_else(|| "claude reported an error".into());
     Err(RunError::Failed(message))
+}
+
+/// The events of one Claude message: an `assistant` or `user` line of
+/// claude's stream-json output, or the same entry in its transcript. Meta
+/// messages, which Claude adds for the model, and sidechain messages, which
+/// belong to subagents, have none, and neither do empty text and thinking
+/// blocks, which Claude records when it does not display thinking.
+pub fn message_events(entry: &Value) -> Vec<Event> {
+    if entry["isMeta"] == true || entry["isSidechain"] == true {
+        return Vec::new();
+    }
+    let user = entry["type"] == "user";
+    let content = &entry["message"]["content"];
+    if let Some(text) = content.as_str() {
+        return if user {
+            vec![Event::UserText(text.to_owned())]
+        } else {
+            vec![Event::Text(text.to_owned())]
+        };
+    }
+    let Some(blocks) = content.as_array() else {
+        return Vec::new();
+    };
+    blocks
+        .iter()
+        .filter_map(|block| {
+            let text = |key: &str| {
+                block[key]
+                    .as_str()
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_owned)
+            };
+            match (user, block["type"].as_str()?) {
+                (true, "text") => text("text").map(Event::UserText),
+                (true, "image") => Some(Event::UserImage {
+                    data: block["source"]["data"].as_str()?.to_owned(),
+                    mime_type: block["source"]["media_type"].as_str()?.to_owned(),
+                }),
+                (true, "document") => Some(Event::UserDocument {
+                    data: block["source"]["data"].as_str()?.to_owned(),
+                    mime_type: block["source"]["media_type"].as_str()?.to_owned(),
+                }),
+                (true, "tool_result") => Some(Event::ToolResult {
+                    id: text("tool_use_id")?,
+                    is_error: block["is_error"].as_bool().unwrap_or(false),
+                }),
+                (false, "text") => text("text").map(Event::Text),
+                (false, "thinking") => text("thinking").map(Event::Thought),
+                (false, "tool_use") => Some(Event::Tool {
+                    id: text("id"),
+                    name: text("name")?,
+                    input: block["input"].clone(),
+                }),
+                _ => None,
+            }
+        })
+        .collect()
 }

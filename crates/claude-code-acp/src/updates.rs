@@ -10,7 +10,7 @@ use agent_client_protocol::v1::schema::{
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::runner::{Event, PermissionRequest};
+use crate::runner::{Event, PermissionRequest, message_events};
 
 #[derive(Default)]
 struct Tools {
@@ -44,6 +44,20 @@ impl<'a> Updates<'a> {
 
     pub fn event(&self, event: Event) {
         let update = match event {
+            Event::UserText(text) => SessionUpdate::UserMessageChunk(ContentChunk::new(
+                ContentBlock::Text(TextContent::new(text)),
+            )),
+            Event::UserImage { data, mime_type } => SessionUpdate::UserMessageChunk(
+                ContentChunk::new(ContentBlock::Image(acp::ImageContent::new(data, mime_type))),
+            ),
+            // Claude keeps a document's contents, not where it came from.
+            Event::UserDocument { data, mime_type } => SessionUpdate::UserMessageChunk(
+                ContentChunk::new(ContentBlock::Resource(acp::EmbeddedResource::new(
+                    acp::EmbeddedResourceResource::BlobResourceContents(
+                        acp::BlobResourceContents::new(data, "document").mime_type(mime_type),
+                    ),
+                ))),
+            ),
             Event::Text(text) => SessionUpdate::AgentMessageChunk(ContentChunk::new(
                 ContentBlock::Text(TextContent::new(text)),
             )),
@@ -80,6 +94,18 @@ impl<'a> Updates<'a> {
             }
         };
         self.send(update);
+    }
+
+    /// Sends a conversation from Claude's transcript as the updates its turns
+    /// produced. Tool calls left without a result belong to interrupted
+    /// turns and end as failed.
+    pub fn replay(&self, entries: impl IntoIterator<Item = Value>) {
+        for entry in entries {
+            for event in message_events(&entry) {
+                self.event(event);
+            }
+        }
+        self.fail_open_tools();
     }
 
     /// Marks every tool call that started without reporting a result as failed.

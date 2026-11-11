@@ -6,8 +6,8 @@ license = "MIT"
 description = "Command-line client for oxd"
 
 [dependencies]
+base64 = "0.23"
 clap = { version = "4", features = ["derive"] }
 ox-protocol = { path = "../ox-protocol" }
-serde = "1"
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

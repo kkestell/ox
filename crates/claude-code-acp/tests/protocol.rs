@@ -859,37 +859,72 @@ fn error_text(updates: &[Value]) -> Option<String> {
     })
 }
 
-/// Waits until the process recorded in `pid_file` no longer exists.
-async fn assert_exits(pid_file: &Path) {
-    let pid = fs::read_to_string(pid_file).unwrap().trim().to_owned();
-    for _ in 0..100 {
-        let alive = std::process::Command::new("kill")
-            .args(["-0", &pid])
-            .stderr(Stdio::null())
+/// A FIFO a fake claude opens with `exec 3>'<path>'` before starting other
+/// processes, which inherit it. Reading it to its end waits for claude and
+/// all of them to exit.
+struct ExitWatch {
+    path: std::path::PathBuf,
+    done: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl ExitWatch {
+    fn new(dir: &Path) -> Self {
+        let path = dir.join("hold");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&path)
             .status()
-            .unwrap()
-            .success();
-        if !alive {
-            return;
+            .unwrap();
+        assert!(status.success());
+        let reader = path.clone();
+        // Opening blocks until a process opens the FIFO for writing; reading
+        // ends once every process holding it has exited.
+        let done = tokio::task::spawn_blocking(move || {
+            let mut fifo = fs::File::open(reader).unwrap();
+            let mut rest = Vec::new();
+            std::io::Read::read_to_end(&mut fifo, &mut rest).unwrap();
+        });
+        Self {
+            path,
+            done: Some(done),
         }
-        tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    panic!("process {pid} is still running");
+
+    async fn exited(mut self) {
+        let done = self.done.take().unwrap();
+        timeout(Duration::from_secs(5), done)
+            .await
+            .expect("a process started by claude is still running")
+            .unwrap();
+    }
+}
+
+impl Drop for ExitWatch {
+    /// Ends the blocking reader if nothing ever opened the FIFO, so a failing
+    /// test does not hang.
+    fn drop(&mut self) {
+        use std::os::unix::fs::OpenOptionsExt;
+        let _ = fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&self.path);
+    }
 }
 
 #[tokio::test]
 async fn a_process_holding_stderr_does_not_delay_the_turn() {
     let temp = tempfile::tempdir().unwrap();
     let (bin, project) = dirs(temp.path());
+    let background = ExitWatch::new(temp.path());
     fake_claude(
         &bin,
         &format!(
             r#"
+exec 3>'{}'
 IFS= read -r initial
 sleep 30 >/dev/null &
-echo $! > background.pid
 printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
-"#
+"#,
+            background.path.display()
         ),
     );
     let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
@@ -898,33 +933,35 @@ printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
     let (result, updates) = prompt(&mut child, &mut reader, 3, &session).await;
     assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
     assert_eq!(error_text(&updates), None);
-    assert_exits(&project.join("background.pid")).await;
+    background.exited().await;
     child.kill().await.unwrap();
 }
 
 #[tokio::test]
-async fn a_lingering_process_does_not_turn_success_into_a_timeout() {
+async fn a_lingering_process_does_not_hold_the_turn_open() {
     let temp = tempfile::tempdir().unwrap();
     let (bin, project) = dirs(temp.path());
+    let background = ExitWatch::new(temp.path());
     fake_claude(
         &bin,
         &format!(
             r#"
+exec 3>'{}'
 IFS= read -r initial
 sleep 30 >/dev/null &
-echo $! > background.pid
 printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
 exit 3
-"#
+"#,
+            background.path.display()
         ),
     );
-    let (mut child, mut reader) = start_with_timeout(&bin, &temp.path().join("store"), Some(1000));
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
     initialize(&mut child, &mut reader).await;
     let session = new_session(&mut child, &mut reader, 2, &project).await;
     let (result, updates) = prompt(&mut child, &mut reader, 3, &session).await;
     assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
     assert_eq!(error_text(&updates), None);
-    assert_exits(&project.join("background.pid")).await;
+    background.exited().await;
     child.kill().await.unwrap();
 }
 
@@ -932,15 +969,19 @@ exit 3
 async fn cancel_stops_processes_started_by_claude() {
     let temp = tempfile::tempdir().unwrap();
     let (bin, project) = dirs(temp.path());
+    let background = ExitWatch::new(temp.path());
     fake_claude(
         &bin,
-        r#"
+        &format!(
+            r#"
+exec 3>'{}'
 IFS= read -r initial
 sleep 30 >/dev/null 2>&1 &
-echo $! > background.pid
-printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"started"}]}}'
+printf '%s\n' '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"started"}}]}}}}'
 sleep 30
 "#,
+            background.path.display()
+        ),
     );
     let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
     initialize(&mut child, &mut reader).await;
@@ -954,7 +995,7 @@ sleep 30
     .await;
     let (result, _) = response(&mut reader, 3).await;
     assert_eq!(result["result"]["stopReason"], "cancelled", "{result}");
-    assert_exits(&project.join("background.pid")).await;
+    background.exited().await;
     child.kill().await.unwrap();
 }
 
@@ -1256,5 +1297,252 @@ exec sleep 30
         }),
         "{updates:?}"
     );
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn prompt_content_reaches_claude() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    let captured = temp.path().join("message.json");
+    fake_claude(
+        &bin,
+        &format!(
+            r#"
+IFS= read -r initial || exit 10
+printf '%s\n' "$initial" > '{}'
+printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}","result":"done"}}'
+"#,
+            captured.display()
+        ),
+    );
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    send(
+        &mut child,
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}}),
+    )
+    .await;
+    let (init, _) = response(&mut reader, 1).await;
+    let capabilities = &init["result"]["agentCapabilities"]["promptCapabilities"];
+    assert_eq!(capabilities["image"], true);
+    assert_eq!(capabilities["embeddedContext"], true);
+    assert_ne!(capabilities["audio"], true);
+
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    let prompt = json!([
+        {"type": "text", "text": "Look at these"},
+        {"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgo="},
+        {"type": "resource_link", "name": "main.rs", "uri": "file:///p/src/main.rs"},
+        {"type": "resource", "resource": {"uri": "file:///p/notes.md", "text": "Notes body", "mimeType": "text/markdown"}},
+        {"type": "resource", "resource": {"uri": "file:///p/spec.pdf", "blob": "JVBERi0=", "mimeType": "application/pdf"}},
+        {"type": "resource", "resource": {"uri": "file:///p/shot.jpg", "blob": "/9j/4A==", "mimeType": "image/jpeg"}}
+    ]);
+    send(&mut child, json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session,"prompt":prompt}})).await;
+    let (result, _) = response(&mut reader, 3).await;
+    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+
+    let message: Value = serde_json::from_str(&fs::read_to_string(&captured).unwrap()).unwrap();
+    assert_eq!(
+        message["message"]["content"],
+        json!([
+            {"type": "text", "text": "Look at these"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}},
+            {"type": "text", "text": "[@main.rs](file:///p/src/main.rs)"},
+            {"type": "text", "text": "<context ref=\"file:///p/notes.md\">\nNotes body\n</context>"},
+            {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0="}},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "/9j/4A=="}}
+        ])
+    );
+    let _ = child.kill().await;
+}
+
+#[tokio::test]
+async fn unsupported_prompt_content_is_rejected() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    let ran = temp.path().join("ran");
+    fake_claude(&bin, &format!("touch '{}'", ran.display()));
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    let prompts = [
+        json!([{"type": "text", "text": "listen"}, {"type": "audio", "mimeType": "audio/wav", "data": "UklGRg=="}]),
+        json!([{"type": "image", "mimeType": "image/bmp", "data": "Qk0="}]),
+        json!([{"type": "resource", "resource": {"uri": "file:///p/a.zip", "blob": "UEs=", "mimeType": "application/zip"}}]),
+        json!([{"type": "text", "text": "  "}]),
+        json!([]),
+    ];
+    for (index, prompt) in prompts.into_iter().enumerate() {
+        let id = 10 + index as i64;
+        send(&mut child, json!({"jsonrpc":"2.0","id":id,"method":"session/prompt","params":{"sessionId":session,"prompt":prompt}})).await;
+        let (result, _) = response(&mut reader, id).await;
+        assert_eq!(result["error"]["code"], -32602, "{result}");
+    }
+    assert!(!ran.exists(), "claude ran for a rejected prompt");
+    let _ = child.kill().await;
+}
+
+#[tokio::test]
+async fn failed_exit_reports_claude_stderr() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    let background = ExitWatch::new(temp.path());
+    // The background process keeps stderr open after claude exits.
+    fake_claude(
+        &bin,
+        &format!(
+            r#"
+exec 3>'{}'
+IFS= read -r initial
+echo "unknown option --bogus" >&2
+sleep 30 >/dev/null &
+exit 1
+"#,
+            background.path.display()
+        ),
+    );
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    let (result, updates) = prompt(&mut child, &mut reader, 3, &session).await;
+    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+    let error = error_text(&updates).unwrap();
+    assert!(error.ends_with(": unknown option --bogus"), "{error}");
+    background.exited().await;
+    child.kill().await.unwrap();
+}
+
+/// Writes a transcript that mixes conversation entries with entries the
+/// replay skips: Claude's bookkeeping, a meta message and a sidechain.
+fn write_conversation(temp: &Path, project: &Path, id: &str) {
+    let transcripts = temp.join("empty-claude/projects/sample");
+    fs::create_dir_all(&transcripts).unwrap();
+    let entries = [
+        json!({"type": "queue-operation", "operation": "enqueue"}),
+        json!({"cwd": project, "type": "user", "message": {"role": "user", "content": "Fix the build"}}),
+        json!({"type": "user", "isMeta": true, "message": {"role": "user", "content": "<system-reminder>"}}),
+        json!({"type": "assistant", "message": {"content": [{"type": "thinking", "thinking": "", "signature": "x"}]}}),
+        json!({"type": "assistant", "message": {"content": [{"type": "thinking", "thinking": "Checking"}]}}),
+        json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "Running it"}]}}),
+        json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "cargo build"}}]}}),
+        json!({"type": "assistant", "isSidechain": true, "message": {"content": [{"type": "text", "text": "subagent"}]}}),
+        json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}]}}),
+        json!({"type": "attachment", "attachment": {}}),
+        json!({"type": "user", "message": {"role": "user", "content": [
+            {"type": "text", "text": "Look"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
+        ]}}),
+        json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_2", "name": "Read", "input": {"file_path": "/x"}}]}}),
+    ];
+    let lines: Vec<String> = entries.iter().map(Value::to_string).collect();
+    fs::write(
+        transcripts.join(format!("{id}.jsonl")),
+        lines.join("\n") + "\n",
+    )
+    .unwrap();
+}
+
+/// One line per replayed update: its kind and what it shows.
+fn describe_updates(notifications: &[Value]) -> Vec<String> {
+    notifications
+        .iter()
+        .filter(|n| n["method"] == "session/update")
+        .map(|n| {
+            let update = &n["params"]["update"];
+            let kind = update["sessionUpdate"].as_str().unwrap();
+            let detail = match kind {
+                "tool_call" => format!(
+                    "{} {} {}",
+                    update["toolCallId"],
+                    update["title"],
+                    // ACP omits the default status, `pending`.
+                    update["status"].as_str().unwrap_or("pending")
+                ),
+                "tool_call_update" => format!("{} {}", update["toolCallId"], update["status"]),
+                _ => match update["content"]["type"].as_str() {
+                    Some("text") => update["content"]["text"].to_string(),
+                    Some(other) => other.to_owned(),
+                    None => String::new(),
+                },
+            };
+            format!("{kind}: {}", detail.replace('"', ""))
+        })
+        .collect()
+}
+
+const REPLAY: [&str; 9] = [
+    "user_message_chunk: Fix the build",
+    "agent_thought_chunk: Checking",
+    "agent_message_chunk: Running it",
+    "tool_call: toolu_1 cargo build pending",
+    "tool_call_update: toolu_1 completed",
+    "user_message_chunk: Look",
+    "user_message_chunk: image",
+    "tool_call: toolu_2 Read /x pending",
+    "tool_call_update: toolu_2 failed",
+];
+
+#[tokio::test]
+async fn load_replays_a_claude_session_from_its_transcript() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    write_conversation(temp.path(), &project, HISTORY_ID);
+    fake_claude(
+        &bin,
+        &format!(
+            r#"
+printf '%s\n' "$*" > args
+IFS= read -r initial
+printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
+"#
+        ),
+    );
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    send(&mut child, json!({"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":HISTORY_ID,"cwd":project,"mcpServers":[]}})).await;
+    let (loaded, notifications) = response(&mut reader, 2).await;
+    assert!(loaded["result"].is_object(), "{loaded}");
+    assert_eq!(describe_updates(&notifications), REPLAY);
+
+    let (result, _) = prompt(&mut child, &mut reader, 3, &json!(HISTORY_ID)).await;
+    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+    let args = fs::read_to_string(project.join("args")).unwrap();
+    assert!(args.contains(&format!("--resume {HISTORY_ID}")), "{args}");
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn load_replays_a_bridge_session_from_its_claude_transcript() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    write_conversation(temp.path(), &project, HISTORY_ID);
+    fake_claude(
+        &bin,
+        &format!(
+            r#"
+IFS= read -r initial
+printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
+"#
+        ),
+    );
+    let store = temp.path().join("store");
+    let (mut child, mut reader) = start(&bin, &store);
+    initialize(&mut child, &mut reader).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    prompt(&mut child, &mut reader, 3, &session).await;
+    child.kill().await.unwrap();
+
+    let (mut child, mut reader) = start(&bin, &store);
+    initialize(&mut child, &mut reader).await;
+    send(&mut child, json!({"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":session,"cwd":project,"mcpServers":[]}})).await;
+    let (loaded, notifications) = response(&mut reader, 2).await;
+    assert!(loaded["result"].is_object(), "{loaded}");
+    assert!(
+        notifications
+            .iter()
+            .all(|n| n["params"]["sessionId"] == session),
+        "{notifications:?}"
+    );
+    assert_eq!(describe_updates(&notifications), REPLAY);
     child.kill().await.unwrap();
 }

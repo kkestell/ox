@@ -1,57 +1,32 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::schema::{
-    CancelNotification, ContentBlock, InitializeRequest, NewSessionRequest, PermissionOption,
-    PromptRequest, PromptResponse, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome, SessionNotification, TextContent,
+    CancelNotification, ContentBlock, InitializeRequest, LoadSessionRequest, NewSessionRequest,
+    PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SessionConfigOption, SessionConfigOptionValue, SessionId, SessionNotification,
+    SetSessionConfigOptionRequest,
 };
 use agent_client_protocol::v1::{ConnectionTo, Responder};
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, Client};
-use ox_protocol::{ErrorBody, Event, EventKind, SessionInfo, SessionState, code};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use ox_protocol::{ConfigValue, ErrorBody, Event, SessionInfo, SessionState, code};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
-/// Live events buffered per subscriber before it counts as lagging.
-const BROADCAST_CAPACITY: usize = 1024;
+use crate::state::{self, Change, Request, State, invalid_state};
+
+type ConfigReply = oneshot::Sender<Result<Vec<SessionConfigOption>, String>>;
 
 enum Command {
-    Prompt(String),
+    Prompt(Vec<ContentBlock>),
     Cancel,
-}
-
-struct Pending {
-    options: Vec<PermissionOption>,
-    sender: oneshot::Sender<RequestPermissionOutcome>,
-}
-
-struct Inner {
-    state: SessionState,
-    events: Vec<Event>,
-    sender: broadcast::Sender<Event>,
-    pending: HashMap<String, Pending>,
-    next_request: u64,
-    turn_active: bool,
-    ready: Option<oneshot::Sender<Result<(), String>>>,
-}
-
-impl Inner {
-    /// Derives the state of a live session from its turn and pending
-    /// permission requests.
-    fn settle(&mut self) {
-        if matches!(self.state, SessionState::Starting | SessionState::Exited) {
-            return;
-        }
-        self.state = if !self.pending.is_empty() {
-            SessionState::AwaitingPermission
-        } else if self.turn_active {
-            SessionState::Running
-        } else {
-            SessionState::Idle
-        };
-    }
+    SetConfigOption {
+        config_id: String,
+        value: SessionConfigOptionValue,
+        reply: ConfigReply,
+    },
 }
 
 /// One ACP agent process and its event history.
@@ -60,76 +35,120 @@ pub struct Session {
     pub number: u64,
     command: Vec<String>,
     cwd: PathBuf,
-    inner: Mutex<Inner>,
+    state: Mutex<State>,
+    /// The seq of the session's last event. Updated under the state lock.
+    last_seq: watch::Sender<u64>,
+    /// The daemon's signal that the sessions list changed, sent when this
+    /// session's `SessionInfo` changes.
+    sessions_changed: watch::Sender<()>,
     commands: mpsc::UnboundedSender<Command>,
     task: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Session {
-    /// Spawns the agent. The receiver resolves once the ACP session exists,
-    /// or with the reason it could not be created.
+    /// Spawns the agent on a new ACP session, or on the saved session `load`.
+    /// The session records `AgentStarted` once the ACP session is open, or
+    /// `AgentExited` if it cannot be opened.
     pub fn spawn(
         number: u64,
         command: Vec<String>,
         cwd: PathBuf,
         env: BTreeMap<String, String>,
-    ) -> (Arc<Self>, oneshot::Receiver<Result<(), String>>) {
+        load: Option<String>,
+        sessions_changed: watch::Sender<()>,
+    ) -> Arc<Self> {
         let (commands, commands_rx) = mpsc::unbounded_channel();
-        let (ready, ready_rx) = oneshot::channel();
+        let id = uuid::Uuid::new_v4().to_string();
         let session = Arc::new(Self {
-            id: uuid::Uuid::new_v4().to_string(),
+            state: Mutex::new(State::new(id.clone())),
+            id,
             number,
             command,
             cwd,
-            inner: Mutex::new(Inner {
-                state: SessionState::Starting,
-                events: Vec::new(),
-                sender: broadcast::channel(BROADCAST_CAPACITY).0,
-                pending: HashMap::new(),
-                next_request: 1,
-                turn_active: false,
-                ready: Some(ready),
-            }),
+            last_seq: watch::Sender::new(0),
+            sessions_changed,
             commands,
             task: Mutex::new(None),
         });
-        let task = tokio::spawn(session.clone().run(commands_rx, env));
+        let task = tokio::spawn(session.clone().run(commands_rx, env, load));
         *session.task.lock().unwrap() = Some(task);
-        (session, ready_rx)
+        session
     }
 
     pub fn info(&self) -> SessionInfo {
-        let inner = self.lock();
+        self.info_of(&self.lock())
+    }
+
+    fn info_of(&self, state: &State) -> SessionInfo {
+        let agent = state.agent();
         SessionInfo {
             id: self.id.clone(),
             command: self.command.clone(),
             cwd: self.cwd.clone(),
-            state: inner.state,
-            last_seq: inner.events.len() as u64,
+            state: state.state(),
+            title: state.title().map(String::from),
+            agent_session_id: agent.map(|agent| agent.session_id.clone()),
+            prompt_capabilities: agent
+                .map(|agent| agent.prompt_capabilities.clone())
+                .unwrap_or_default(),
+            config_options: agent
+                .map(|agent| agent.config_options.clone())
+                .unwrap_or_default(),
         }
     }
 
-    /// Events with `seq > after_seq`, and a receiver for every later event.
-    pub fn subscribe(&self, after_seq: u64) -> (Vec<Event>, broadcast::Receiver<Event>) {
-        let inner = self.lock();
-        let start = (after_seq as usize).min(inner.events.len());
-        (inner.events[start..].to_vec(), inner.sender.subscribe())
+    /// Checks that events follow `after_seq`, now or later.
+    pub fn subscribe(&self, after_seq: u64) -> Result<(), ErrorBody> {
+        self.lock().subscribe(after_seq)
     }
 
-    pub fn prompt(&self, text: String) -> Result<(), ErrorBody> {
-        let mut inner = self.lock();
-        if inner.state != SessionState::Idle {
-            return Err(invalid_state(inner.state));
+    /// Waits for events with `seq > after_seq` and returns the first of
+    /// them, in order.
+    pub async fn events_after(&self, after_seq: u64) -> Vec<Event> {
+        self.last_seq
+            .subscribe()
+            .wait_for(|last_seq| *last_seq > after_seq)
+            .await
+            .expect("the session holds the sender");
+        self.lock().events_after(after_seq)
+    }
+
+    pub fn prompt(&self, prompt: Vec<ContentBlock>) -> Result<(), ErrorBody> {
+        self.update(|state| {
+            state.request(Request::Prompt(prompt.clone()))?;
+            let _ = self.commands.send(Command::Prompt(prompt));
+            Ok(())
+        })
+    }
+
+    /// Asks the agent to change a config option and returns its resulting
+    /// options.
+    pub async fn set_config_option(
+        &self,
+        config_id: String,
+        value: ConfigValue,
+    ) -> Result<Vec<SessionConfigOption>, ErrorBody> {
+        let state = self.lock().state();
+        if matches!(state, SessionState::Starting | SessionState::Exited) {
+            return Err(invalid_state(state));
         }
-        inner.turn_active = true;
-        inner.settle();
-        append(
-            &self.id,
-            &mut inner,
-            EventKind::PromptStarted { text: text.clone() },
-        );
-        let _ = self.commands.send(Command::Prompt(text));
-        Ok(())
+        let value = match value {
+            ConfigValue::Boolean(value) => SessionConfigOptionValue::boolean(value),
+            ConfigValue::Id(id) => SessionConfigOptionValue::value_id(id),
+        };
+        let (reply, result) = oneshot::channel();
+        let _ = self.commands.send(Command::SetConfigOption {
+            config_id,
+            value,
+            reply,
+        });
+        result
+            .await
+            .unwrap_or_else(|_| Err("the session ended".into()))
+            .map_err(|message| ErrorBody {
+                code: code::AGENT,
+                message,
+            })
     }
 
     /// Cancels the running turn and every pending permission request.
@@ -138,150 +157,49 @@ impl Session {
     }
 
     pub fn permit(&self, request_id: &str, option_id: &str) -> Result<(), ErrorBody> {
-        let mut inner = self.lock();
-        let Some(pending) = inner.pending.get(request_id) else {
-            return Err(ErrorBody {
-                code: code::INVALID_STATE,
-                message: format!("permission request {request_id} is not pending"),
-            });
-        };
-        if !pending
-            .options
-            .iter()
-            .any(|option| &*option.option_id.0 == option_id)
-        {
-            return Err(ErrorBody {
-                code: code::INVALID_REQUEST,
-                message: format!("{option_id} is not an option of request {request_id}"),
-            });
-        }
-        let pending = inner.pending.remove(request_id).unwrap();
-        let _ = pending.sender.send(RequestPermissionOutcome::Selected(
-            SelectedPermissionOutcome::new(option_id.to_owned()),
-        ));
-        Ok(())
+        self.update(|state| {
+            state.request(Request::Permit {
+                request_id: request_id.into(),
+                option_id: option_id.into(),
+            })
+        })
     }
 
     /// Stops the agent, killing its process group, and ends every
     /// subscription with `SessionClosed`.
     pub fn close(&self) {
-        {
-            let mut inner = self.lock();
-            inner.state = SessionState::Exited;
-            inner.pending.clear();
-            if let Some(ready) = inner.ready.take() {
-                let _ = ready.send(Err("session closed".into()));
-            }
-            append(&self.id, &mut inner, EventKind::SessionClosed);
-        }
+        self.record(Change::Closed);
         if let Some(task) = self.task.lock().unwrap().take() {
             task.abort();
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, Inner> {
-        self.inner.lock().unwrap()
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap()
     }
 
-    fn append(&self, kind: EventKind) {
-        append(&self.id, &mut self.lock(), kind);
-    }
-
-    fn started(&self) {
-        let mut inner = self.lock();
-        inner.state = SessionState::Idle;
-        if let Some(ready) = inner.ready.take() {
-            let _ = ready.send(Ok(()));
+    /// Changes the state, publishes the seq of its last event, and signals
+    /// the sessions list if the session's `SessionInfo` changed.
+    fn update<R>(&self, change: impl FnOnce(&mut State) -> R) -> R {
+        let mut state = self.lock();
+        let before = self.info_of(&state);
+        let result = change(&mut state);
+        self.last_seq.send_replace(state.last_seq());
+        if self.info_of(&state) != before {
+            self.sessions_changed.send_replace(());
         }
+        result
     }
 
-    fn request_permission(
-        &self,
-        request: RequestPermissionRequest,
-    ) -> (String, oneshot::Receiver<RequestPermissionOutcome>) {
-        let mut inner = self.lock();
-        let request_id = inner.next_request.to_string();
-        inner.next_request += 1;
-        let (sender, receiver) = oneshot::channel();
-        inner.pending.insert(
-            request_id.clone(),
-            Pending {
-                options: request.options.clone(),
-                sender,
-            },
-        );
-        inner.settle();
-        append(
-            &self.id,
-            &mut inner,
-            EventKind::PermissionRequested {
-                request_id: request_id.clone(),
-                tool_call: request.tool_call,
-                options: request.options,
-            },
-        );
-        (request_id, receiver)
-    }
-
-    fn permission_resolved(&self, request_id: String, outcome: RequestPermissionOutcome) {
-        let mut inner = self.lock();
-        inner.pending.remove(&request_id);
-        inner.settle();
-        append(
-            &self.id,
-            &mut inner,
-            EventKind::PermissionResolved {
-                request_id,
-                outcome,
-            },
-        );
-    }
-
-    fn turn_ended(&self, result: Result<PromptResponse, agent_client_protocol::Error>) {
-        let mut inner = self.lock();
-        inner.turn_active = false;
-        inner.settle();
-        let kind = match result {
-            Ok(response) => EventKind::TurnEnded {
-                stop_reason: Some(response.stop_reason),
-                error: None,
-            },
-            Err(error) => EventKind::TurnEnded {
-                stop_reason: None,
-                error: Some(error.to_string()),
-            },
-        };
-        append(&self.id, &mut inner, kind);
-    }
-
-    /// Answers every pending permission request with `Cancelled`.
-    fn cancel_pending(&self) {
-        let pending: Vec<Pending> = self.lock().pending.drain().map(|(_, p)| p).collect();
-        for pending in pending {
-            let _ = pending.sender.send(RequestPermissionOutcome::Cancelled);
-        }
-    }
-
-    fn exited(&self, error: Option<String>) {
-        let mut inner = self.lock();
-        if inner.state == SessionState::Exited {
-            return;
-        }
-        inner.state = SessionState::Exited;
-        inner.pending.clear();
-        if let Some(ready) = inner.ready.take() {
-            let reason = error
-                .clone()
-                .unwrap_or_else(|| "agent exited during startup".into());
-            let _ = ready.send(Err(reason));
-        }
-        append(&self.id, &mut inner, EventKind::AgentExited { error });
+    fn record(&self, change: Change) {
+        self.update(|state| state.record(change));
     }
 
     async fn run(
         self: Arc<Self>,
         mut commands: mpsc::UnboundedReceiver<Command>,
         env: BTreeMap<String, String>,
+        load: Option<String>,
     ) {
         let config = AcpAgentConfig::new(&self.command[0])
             .args(self.command[1..].iter().cloned())
@@ -295,7 +213,7 @@ impl Session {
                     let session = self.clone();
                     async move |notification: SessionNotification,
                                 _connection: ConnectionTo<Agent>| {
-                        session.append(EventKind::Update(notification.update));
+                        session.record(Change::Update(notification.update));
                         Ok(())
                     }
                 },
@@ -307,12 +225,11 @@ impl Session {
                     async move |request: RequestPermissionRequest,
                                 responder: Responder<RequestPermissionResponse>,
                                 connection: ConnectionTo<Agent>| {
-                        let (request_id, outcome) = session.request_permission(request);
-                        let session = session.clone();
+                        let (answer, outcome) = oneshot::channel();
+                        session.record(Change::PermissionRequested { request, answer });
                         connection.spawn(async move {
                             let outcome =
                                 outcome.await.unwrap_or(RequestPermissionOutcome::Cancelled);
-                            session.permission_resolved(request_id, outcome.clone());
                             responder.respond(RequestPermissionResponse::new(outcome))
                         })
                     }
@@ -322,16 +239,40 @@ impl Session {
             .connect_with(
                 AcpAgent::new(config),
                 async move |connection: ConnectionTo<Agent>| {
-                    connection
+                    let initialized = connection
                         .send_request(InitializeRequest::new(ProtocolVersion::V1))
                         .block_task()
                         .await?;
-                    let acp_session = connection
-                        .send_request(NewSessionRequest::new(session.cwd.clone()))
-                        .block_task()
-                        .await?
-                        .session_id;
-                    session.started();
+                    // A loading agent replays the conversation as
+                    // notifications before it answers.
+                    let (acp_session, config_options) = match load {
+                        Some(id) => {
+                            if !initialized.agent_capabilities.load_session {
+                                return Err(agent_client_protocol::Error::invalid_request()
+                                    .data("the agent cannot load sessions"));
+                            }
+                            let loaded = connection
+                                .send_request(LoadSessionRequest::new(
+                                    id.clone(),
+                                    session.cwd.clone(),
+                                ))
+                                .block_task()
+                                .await?;
+                            (SessionId::new(id), loaded.config_options)
+                        }
+                        None => {
+                            let created = connection
+                                .send_request(NewSessionRequest::new(session.cwd.clone()))
+                                .block_task()
+                                .await?;
+                            (created.session_id, created.config_options)
+                        }
+                    };
+                    session.record(Change::Started(state::Agent {
+                        session_id: acp_session.to_string(),
+                        prompt_capabilities: initialized.agent_capabilities.prompt_capabilities,
+                        config_options: config_options.unwrap_or_default(),
+                    }));
                     loop {
                         let command = tokio::select! {
                             () = connection.incoming_closed() => break,
@@ -339,15 +280,16 @@ impl Session {
                         };
                         match command {
                             None => break,
-                            Some(Command::Prompt(text)) => {
+                            Some(Command::Prompt(prompt)) => {
                                 let session = session.clone();
                                 connection
-                                    .send_request(PromptRequest::new(
-                                        acp_session.clone(),
-                                        vec![ContentBlock::Text(TextContent::new(text))],
-                                    ))
+                                    .send_request(PromptRequest::new(acp_session.clone(), prompt))
                                     .on_receiving_result(async move |result| {
-                                        session.turn_ended(result);
+                                        session.record(Change::TurnEnded(
+                                            result
+                                                .map(|response| response.stop_reason)
+                                                .map_err(|error| error.to_string()),
+                                        ));
                                         Ok(())
                                     })?;
                             }
@@ -355,7 +297,31 @@ impl Session {
                                 connection.send_notification(CancelNotification::new(
                                     acp_session.clone(),
                                 ))?;
-                                session.cancel_pending();
+                                session.record(Change::Cancelled);
+                            }
+                            Some(Command::SetConfigOption {
+                                config_id,
+                                value,
+                                reply,
+                            }) => {
+                                let session = session.clone();
+                                connection
+                                    .send_request(SetSessionConfigOptionRequest::new(
+                                        acp_session.clone(),
+                                        config_id,
+                                        value,
+                                    ))
+                                    .on_receiving_result(async move |result| {
+                                        let result = result
+                                            .map(|response| response.config_options)
+                                            .map_err(|error| error.to_string());
+                                        if let Ok(options) = &result {
+                                            session
+                                                .record(Change::ConfigOptionsSet(options.clone()));
+                                        }
+                                        let _ = reply.send(result);
+                                        Ok(())
+                                    })?;
                             }
                         }
                     }
@@ -363,33 +329,6 @@ impl Session {
                 },
             )
             .await;
-        self.exited(result.err().map(|error| error.to_string()));
-    }
-}
-
-fn append(session_id: &str, inner: &mut Inner, kind: EventKind) {
-    let event = Event {
-        session_id: session_id.to_owned(),
-        seq: inner.events.len() as u64 + 1,
-        kind,
-    };
-    inner.events.push(event.clone());
-    let _ = inner.sender.send(event);
-}
-
-fn invalid_state(state: SessionState) -> ErrorBody {
-    ErrorBody {
-        code: code::INVALID_STATE,
-        message: format!("session is {}", state_name(state)),
-    }
-}
-
-fn state_name(state: SessionState) -> &'static str {
-    match state {
-        SessionState::Starting => "starting",
-        SessionState::Idle => "idle",
-        SessionState::Running => "running",
-        SessionState::AwaitingPermission => "awaiting permission",
-        SessionState::Exited => "exited",
+        self.record(Change::Exited(result.err().map(|error| error.to_string())));
     }
 }
