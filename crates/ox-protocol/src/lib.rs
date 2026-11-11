@@ -8,12 +8,7 @@
 //! (`session.subscribe`) delivers one session's [`Event`]s, and a watch
 //! (`watch`) delivers the workspaces and sessions lists whenever either
 //! changes. `unsubscribe` ends either kind.
-//!
-//! [`AgentStateNotification`] is the one message here that travels between
-//! an agent and the daemon: an ACP extension for agents that start turns by
-//! themselves.
 
-mod agent;
 #[cfg(unix)]
 mod client;
 mod messages;
@@ -22,7 +17,7 @@ mod messages;
 pub use client::{Client, End, Error, Subscription, Watch, daemon_binary, default_socket_path};
 #[cfg(unix)]
 pub mod content;
-pub use agent::{AgentState, AgentStateNotification};
 pub use messages::*;
 
-pub use agent_client_protocol::v1::schema;
+pub use agent_client_protocol::schema::MaybeUndefined;
+pub use agent_client_protocol::v2::schema;

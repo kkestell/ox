@@ -4,10 +4,7 @@ import { FolderPlus, Plus, X } from "lucide-react";
 import { useState } from "react";
 import type { SessionInfo, SessionState, WorkspaceInfo } from "./protocol";
 
-const agents = [
-  { id: "claude", name: "Claude" },
-  { id: "opencode", name: "OpenCode" },
-];
+const agents = [{ id: "claude", name: "Claude" }];
 
 const stateLabels: Record<SessionState, string> = {
   starting: "Starting",

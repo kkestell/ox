@@ -12,13 +12,11 @@ flowchart TB
     oxctl["oxctl"]
     oxd["oxd"]
     bridge["claude-code-acp<br/>(one per session)"]
-    opencode["opencode acp<br/>(one per session)"]
     claude["claude<br/>(one per session)"]
 
     ox -.-> oxd
     oxctl -.-> oxd
     oxd --> bridge
-    oxd --> opencode
     bridge --> claude
 ```
 
@@ -33,9 +31,9 @@ in the Rust core, which forwards them to `oxd` through one
 open session's conversation back over Tauri channels. The sidebar groups
 sessions under their workspaces; a workspace is added by choosing a directory,
 and a session starts in a workspace without asking for one. Selecting a saved
-session whose agent is not running loads it. A new Claude session runs
-`claude-code-acp` from beside the app's executable; a new OpenCode session
-runs `opencode acp`. The app passes its environment to the session.
+session whose agent is not running loads it. A new session runs
+`claude-code-acp` from beside the app's executable. The app passes its
+environment to the session.
 
 **oxctl.** A command-line client of `oxd` that speaks the same protocol as
 the app.
@@ -49,12 +47,21 @@ socket. `oxd` accepts connections only from its own user, and exits after an
 idle period with no clients and no running agents; a session whose agent has
 exited is saved and does not keep `oxd` alive. Each session runs its agent
 command in its own process group and speaks ACP to it over stdio; closing the
-session kills that group. A session is running from a prompt until the agent
-answers it. An agent that also starts turns by itself reports when it starts
-and stops working with the `_ox/agent_state` ACP extension notification, and
-the session is running during those turns too: `oxd` records `turn_started`
-and `turn_ended` around them, with the stop reason the agent reports when it
-goes idle, and takes no prompt until they end.
+session kills that group.
+
+`oxd` speaks draft ACP protocol v2 to its agents; [`acp-v2.md`](acp-v2.md)
+charts its support. A turn starts and ends on the agent's `state_update`
+session updates, whether a prompt or the agent started it. A prompt makes the
+session running at once and records `prompt_started`; `running`,
+`requires_action`, and a state `oxd` does not know start a turn the agent
+began by itself, recorded as `turn_started`. The agent's `idle` ends the
+turn, recorded as `turn_ended` with the stop reason it reports, and `oxd`
+takes no prompt until then. After a prompt, only an `idle` that follows the
+agent reporting work ends the turn, since the agent may repeat an idle
+snapshot first. The agent answers `session/prompt` when it inserts the
+prompt; an error answer means it did not, and ends the turn with that error
+unless the agent already reported work for the prompt. `oxd` opens a session
+only with an agent that advertises `sessionCapabilities`.
 
 **Workspaces and saved sessions.** A workspace is a directory the user
 added. A session belongs to a workspace by ID and runs in the workspace's
@@ -76,27 +83,34 @@ those that never started, which have no agent session ID to load.
 session ID, from the session's stored command and directory, on the same
 session: the session ID, subscriptions, and sidebar selection stay the same,
 and the session goes through `starting` to `idle` as a new one does. The agent
-replays the conversation before it answers `session/load`. A session whose
+replays the conversation, then reports its state, before it answers
+`session/resume` with `replayFrom: start`. An agent that reports it is working
+leaves the session `running` until its `idle`, with no `turn_started` or
+`turn_ended` for work the history did not see start. A session whose
 agent has not started yet records the replay as its history once the agent
 starts, so a load that fails partway records none of it; one whose agent
 has started, such as one that crashed, keeps its history and drops the
 replay, and its history shows a second `agent_started` after the
 `agent_exited`.
 
-**claude-code-acp.** An ACP agent that bridges to the Claude Code CLI. A
-session's first prompt starts one `claude -p`, in the bridge's process group,
-and the session keeps it: the bridge holds its stdin open, writes each prompt
-to it as a stream-json message, reads streamed output and permission requests
-from its stdout, and answers permission requests with the client's decision.
-A subagent's tool calls show as lines of the content of the tool call that
-started it, and a tool call's result as its content. `session/cancel`
-interrupts the running turn, and a model or mode change goes
+**claude-code-acp.** An ACP agent, speaking draft protocol v2, that bridges to
+the Claude Code CLI. [`acp-v2.md`](acp-v2.md) charts its support of the
+protocol. A session's first prompt starts one `claude -p`, in the bridge's
+process group, and the session keeps it: the bridge holds its stdin open,
+writes each prompt to it as a stream-json message, reads streamed output and
+permission requests from its stdout, and answers permission requests with the
+client's decision. A prompt is answered when Claude takes it into a turn: the
+bridge sends it as a user message and answers with that message's ID. The
+turn's output, and its end as a `state_update` of `idle` with a stop reason,
+arrive as updates. A subagent's tool calls show as lines of the content of
+the tool call that started it, and a tool call's result as its content.
+`session/cancel` interrupts the running turn, and a model or mode change goes
 to the running process as a control request. Claude keeps running between
 prompts, and the turns it starts by itself, when a background task reports
-back, stream to the client as a prompt's turn does. The bridge tells `oxd`
-when Claude starts and stops working with the `_ox/agent_state` notification. When `claude` has exited,
-the next prompt starts another with `--resume` and the Claude session ID. The
-bridge records its sessions in `acp-sessions.json` and replays Claude's
-transcripts on `session/load`.
+back, stream to the client as a prompt's turn does. When `claude` has exited,
+the next prompt starts another with `--resume` and the Claude session ID.
+`session/close` stops `claude`. The bridge records its sessions in
+`acp-sessions.json` and replays Claude's transcripts on `session/resume` with
+`replayFrom: start`.
 
 **claude.** The Claude Code CLI, authenticated with the user's subscription.

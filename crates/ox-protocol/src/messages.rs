@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use agent_client_protocol::v1::schema::{
+use agent_client_protocol::v2::schema::{
     ContentBlock, PermissionOption, PromptCapabilities, RequestPermissionOutcome,
-    SessionConfigOption, SessionUpdate, StopReason, ToolCallUpdate,
+    RequestPermissionSubject, SessionConfigOption, SessionUpdate, StopReason,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -186,6 +186,10 @@ pub struct Event {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "most events are updates, so boxing them adds an allocation to nearly every event"
+)]
 pub enum EventKind {
     /// The agent answered `initialize` and `session/new`. It is the first
     /// event of a session that starts.
@@ -197,27 +201,30 @@ pub enum EventKind {
     PromptStarted {
         prompt: Vec<ContentBlock>,
     },
-    /// The agent started a turn no prompt asked for, as Claude does when a
+    /// The agent reported work no prompt asked for, as Claude does when a
     /// background task it started reports back.
     TurnStarted,
     /// An ACP `session/update` notification, unchanged. When an agent answers
     /// `session.set_config_option` with options it has not reported in a
     /// notification, the daemon adds a `config_option_update` with them.
     Update(SessionUpdate),
+    /// A `session/request_permission` request, unchanged. A tool call
+    /// subject carries the tool call's details, which a client applies as it
+    /// does a `tool_call_update`.
     PermissionRequested {
         request_id: String,
-        tool_call: ToolCallUpdate,
+        title: String,
+        description: Option<String>,
+        subject: Option<RequestPermissionSubject>,
         options: Vec<PermissionOption>,
     },
     PermissionResolved {
         request_id: String,
         outcome: RequestPermissionOutcome,
     },
-    /// A turn finished. For a prompt's turn, `stop_reason` is set when the
-    /// agent answered the prompt and `error` when it answered with an error.
-    /// A turn the agent started has the `stop_reason` the agent reported
-    /// with its `Idle` state, if any, and `error` if the agent exited or the
-    /// session was closed during it.
+    /// A turn finished. `stop_reason` is the one the agent reported with its
+    /// `idle` state, if any. `error` is set when the agent rejected the
+    /// prompt, exited, or the session was closed during the turn.
     TurnEnded {
         stop_reason: Option<StopReason>,
         error: Option<String>,

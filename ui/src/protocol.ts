@@ -13,7 +13,7 @@ export interface SelectGroup {
   options: SelectOption[];
 }
 
-export type ConfigOption = { id: string; name: string } & (
+export type ConfigOption = { configId: string; name: string } & (
   | { type: "select"; currentValue: string; options: SelectOption[] | SelectGroup[] }
   | { type: "boolean"; currentValue: boolean }
 );
@@ -45,8 +45,8 @@ export type ToolContent =
 
 export type Item =
   | { type: "prompt"; key: string; text: string; attachments: string[] }
-  | { type: "text"; key: string; text: string }
-  | { type: "thought"; key: string; text: string }
+  | { type: "text"; key: string; text: string; replace: boolean }
+  | { type: "thought"; key: string; text: string; replace: boolean }
   | {
       type: "tool_call";
       key: string;

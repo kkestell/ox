@@ -3,17 +3,15 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use agent_client_protocol::schema::ProtocolVersion;
-use agent_client_protocol::v1::schema::{
-    CancelNotification, ContentBlock, InitializeRequest, LoadSessionRequest, NewSessionRequest,
-    PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SessionConfigOption, SessionConfigOptionValue, SessionId, SessionNotification,
-    SetSessionConfigOptionRequest,
+use agent_client_protocol::v2::schema::{
+    CancelSessionNotification, CancelledPermissionOutcome, ContentBlock, Implementation,
+    InitializeRequest, NewSessionRequest, PromptRequest, ReplayFrom, ReplayFromStart,
+    RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest, SessionConfigOption,
+    SessionConfigOptionValue, SessionId, SetSessionConfigOptionRequest, UpdateSessionNotification,
 };
-use agent_client_protocol::v1::{ConnectionTo, Responder};
+use agent_client_protocol::v2::{ConnectionTo, InitializeOutcome, Responder};
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, Client};
-use ox_protocol::{
-    AgentStateNotification, ConfigValue, ErrorBody, Event, SessionInfo, SessionState, code,
-};
+use ox_protocol::{ConfigValue, ErrorBody, Event, SessionInfo, SessionState, code};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
@@ -23,7 +21,11 @@ use crate::store::{SavedSession, Store};
 type ConfigReply = oneshot::Sender<Result<Vec<SessionConfigOption>, String>>;
 
 enum Command {
-    Prompt(Vec<ContentBlock>),
+    /// A prompt, with the seq of the `PromptStarted` event that records it.
+    Prompt {
+        prompt: Vec<ContentBlock>,
+        seq: u64,
+    },
     Cancel,
     SetConfigOption {
         config_id: String,
@@ -102,7 +104,7 @@ impl Session {
     }
 
     /// Starts the agent task in `task`, which opens a new ACP session or
-    /// loads the agent session `load`.
+    /// resumes the agent session `load`.
     fn launch(
         self: &Arc<Self>,
         task: &mut Option<JoinHandle<()>>,
@@ -115,8 +117,8 @@ impl Session {
     }
 
     /// Starts a new agent on an exited session that has an agent session ID,
-    /// which loads the session and replays its conversation. The session
-    /// records `AgentStarted` once the agent has loaded it, or `AgentExited`
+    /// which resumes the session and replays its conversation. The session
+    /// records `AgentStarted` once the agent has resumed it, or `AgentExited`
     /// if it cannot.
     pub fn load(self: &Arc<Self>, env: BTreeMap<String, String>) -> Result<(), ErrorBody> {
         // Holding the task slot keeps a concurrent `close` from missing the
@@ -177,7 +179,10 @@ impl Session {
     pub fn prompt(&self, prompt: Vec<ContentBlock>) -> Result<(), ErrorBody> {
         self.update(|state| {
             state.request(Request::Prompt(prompt.clone()))?;
-            self.send(Command::Prompt(prompt));
+            self.send(Command::Prompt {
+                prompt,
+                seq: state.last_seq(),
+            });
             Ok(())
         })
     }
@@ -195,7 +200,7 @@ impl Session {
         }
         let value = match value {
             ConfigValue::Boolean(value) => SessionConfigOptionValue::boolean(value),
-            ConfigValue::Id(id) => SessionConfigOptionValue::value_id(id),
+            ConfigValue::Id(id) => SessionConfigOptionValue::id(id),
         };
         let (reply, result) = oneshot::channel();
         self.send(Command::SetConfigOption {
@@ -295,141 +300,169 @@ impl Session {
             .args(self.command[1..].iter().cloned())
             .envs(env);
         let session = self.clone();
-        let result = Client
-            .v1()
-            .name("oxd")
-            .on_receive_notification(
-                {
-                    let session = self.clone();
-                    async move |notification: SessionNotification,
-                                _connection: ConnectionTo<Agent>| {
-                        session.record(Change::Update(notification.update));
-                        Ok(())
-                    }
-                },
-                agent_client_protocol::on_receive_notification!(),
-            )
-            .on_receive_notification(
-                {
-                    let session = self.clone();
-                    async move |notification: AgentStateNotification,
-                                _connection: ConnectionTo<Agent>| {
-                        session.record(Change::AgentState(notification.state));
-                        Ok(())
-                    }
-                },
-                agent_client_protocol::on_receive_notification!(),
-            )
-            .on_receive_request(
-                {
-                    let session = self.clone();
-                    async move |request: RequestPermissionRequest,
-                                responder: Responder<RequestPermissionResponse>,
-                                connection: ConnectionTo<Agent>| {
-                        let (answer, outcome) = oneshot::channel();
-                        session.record(Change::PermissionRequested { request, answer });
-                        connection.spawn(async move {
-                            let outcome =
-                                outcome.await.unwrap_or(RequestPermissionOutcome::Cancelled);
-                            responder.respond(RequestPermissionResponse::new(outcome))
-                        })
-                    }
-                },
-                agent_client_protocol::on_receive_request!(),
-            )
-            .connect_with(
-                AcpAgent::new(config),
-                async move |connection: ConnectionTo<Agent>| {
-                    let initialized = connection
-                        .send_request(InitializeRequest::new(ProtocolVersion::V1))
-                        .block_task()
-                        .await?;
-                    // A loading agent replays the conversation as
-                    // notifications before it answers.
-                    let (acp_session, config_options) = match load {
-                        Some(id) => {
-                            if !initialized.agent_capabilities.load_session {
-                                return Err(agent_client_protocol::Error::invalid_request()
-                                    .data("the agent cannot load sessions"));
-                            }
-                            let loaded = connection
-                                .send_request(LoadSessionRequest::new(
-                                    id.clone(),
-                                    session.cwd.clone(),
-                                ))
-                                .block_task()
-                                .await?;
-                            (SessionId::new(id), loaded.config_options)
+        let result =
+            Client
+                .v2()
+                .name("oxd")
+                .on_receive_notification(
+                    {
+                        let session = self.clone();
+                        async move |notification: UpdateSessionNotification,
+                                    _connection: ConnectionTo<Agent>| {
+                            session.record(Change::Update(notification.update));
+                            Ok(())
                         }
-                        None => {
-                            let created = connection
-                                .send_request(NewSessionRequest::new(session.cwd.clone()))
-                                .block_task()
-                                .await?;
-                            (created.session_id, created.config_options)
+                    },
+                    agent_client_protocol::on_receive_notification!(),
+                )
+                .on_receive_request(
+                    {
+                        let session = self.clone();
+                        async move |request: RequestPermissionRequest,
+                                    responder: Responder<RequestPermissionResponse>,
+                                    connection: ConnectionTo<Agent>| {
+                            let (answer, outcome) = oneshot::channel();
+                            session.record(Change::PermissionRequested { request, answer });
+                            connection.spawn(async move {
+                                let outcome = outcome
+                                    .await
+                                    .unwrap_or_else(|_| CancelledPermissionOutcome::new().into());
+                                responder.respond(RequestPermissionResponse::new(outcome))
+                            })
                         }
-                    };
-                    session.record(Change::Started(state::Agent {
-                        session_id: acp_session.to_string(),
-                        prompt_capabilities: initialized.agent_capabilities.prompt_capabilities,
-                        config_options: config_options.unwrap_or_default(),
-                    }));
-                    loop {
-                        let command = tokio::select! {
-                            () = connection.incoming_closed() => break,
-                            command = commands.recv() => command,
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .connect_with(
+                    AcpAgent::new(config),
+                    async move |connection: ConnectionTo<Agent>| {
+                        let InitializeOutcome::Initialized(initialized) = connection
+                            .send_initialize(InitializeRequest::new(
+                                ProtocolVersion::V2,
+                                Implementation::new("oxd", env!("CARGO_PKG_VERSION")),
+                            ))
+                            .block_task()
+                            .await?
+                        else {
+                            return Err(agent_client_protocol::Error::invalid_request()
+                                .data("the agent does not speak ACP v2"));
                         };
-                        match command {
-                            None => break,
-                            Some(Command::Prompt(prompt)) => {
-                                let session = session.clone();
-                                connection
-                                    .send_request(PromptRequest::new(acp_session.clone(), prompt))
-                                    .on_receiving_result(async move |result| {
-                                        session.record(Change::TurnEnded(
-                                            result
-                                                .map(|response| response.stop_reason)
-                                                .map_err(|error| error.to_string()),
-                                        ));
-                                        Ok(())
-                                    })?;
+                        let Some(capabilities) = initialized.capabilities.session else {
+                            return Err(agent_client_protocol::Error::invalid_request()
+                                .data("the agent does not support sessions"));
+                        };
+                        // A resuming agent replays the conversation and reports
+                        // its state as notifications before it answers. The
+                        // session starts in an ordered callback on the answer,
+                        // which the dispatch loop finishes before it reads what
+                        // the agent sends next (the SDK's `concepts::ordering`
+                        // chapter), so every later update finds it live.
+                        let prompt_capabilities = capabilities.prompt.unwrap_or_default();
+                        let (opened, open) = oneshot::channel();
+                        let start = {
+                            let session = session.clone();
+                            move |result: Result<(SessionId, Vec<SessionConfigOption>), _>| {
+                                let result = result.map(|(acp_session, config_options)| {
+                                    session.record(Change::Started(state::Agent {
+                                        session_id: acp_session.to_string(),
+                                        prompt_capabilities,
+                                        config_options,
+                                    }));
+                                    acp_session
+                                });
+                                let _ = opened.send(result);
                             }
-                            Some(Command::Cancel) => {
-                                connection.send_notification(CancelNotification::new(
-                                    acp_session.clone(),
-                                ))?;
-                                session.record(Change::Cancelled);
-                            }
-                            Some(Command::SetConfigOption {
-                                config_id,
-                                value,
-                                reply,
-                            }) => {
-                                let session = session.clone();
-                                connection
-                                    .send_request(SetSessionConfigOptionRequest::new(
-                                        acp_session.clone(),
-                                        config_id,
-                                        value,
-                                    ))
-                                    .on_receiving_result(async move |result| {
-                                        let result = result
-                                            .map(|response| response.config_options)
-                                            .map_err(|error| error.to_string());
-                                        if let Ok(options) = &result {
-                                            session
-                                                .record(Change::ConfigOptionsSet(options.clone()));
-                                        }
-                                        let _ = reply.send(result);
-                                        Ok(())
-                                    })?;
+                        };
+                        match load {
+                            Some(id) => connection
+                                .prepare_request(
+                                    ResumeSessionRequest::new(id.clone(), session.cwd.clone())
+                                        .replay_from(ReplayFrom::Start(ReplayFromStart::new())),
+                                )
+                                .on_receiving_result(async move |result| {
+                                    start(result.map(|resumed| {
+                                        (SessionId::new(id), resumed.config_options)
+                                    }));
+                                    Ok(())
+                                })?,
+                            None => connection
+                                .prepare_request(NewSessionRequest::new(session.cwd.clone()))
+                                .on_receiving_result(async move |result| {
+                                    start(result.map(|created| {
+                                        (created.session_id, created.config_options)
+                                    }));
+                                    Ok(())
+                                })?,
+                        }
+                        let acp_session = open.await.map_err(|_| {
+                            agent_client_protocol::Error::internal_error()
+                                .data("the agent closed the connection before the session opened")
+                        })??;
+                        loop {
+                            let command = tokio::select! {
+                                () = connection.incoming_closed() => break,
+                                command = commands.recv() => command,
+                            };
+                            match command {
+                                None => break,
+                                Some(Command::Prompt { prompt, seq }) => {
+                                    let session = session.clone();
+                                    connection
+                                        .prepare_request(PromptRequest::new(
+                                            acp_session.clone(),
+                                            prompt,
+                                        ))
+                                        .on_receiving_result(async move |result| {
+                                            // The turn runs and ends on the
+                                            // agent's `state_update`s. An error
+                                            // answer means the prompt was not
+                                            // inserted.
+                                            if let Err(error) = result {
+                                                session.record(Change::PromptRejected {
+                                                    prompt: seq,
+                                                    error: error.to_string(),
+                                                });
+                                            }
+                                            Ok(())
+                                        })?;
+                                }
+                                Some(Command::Cancel) => {
+                                    connection.send_notification(
+                                        CancelSessionNotification::new(acp_session.clone()),
+                                    )?;
+                                    session.record(Change::Cancelled);
+                                }
+                                Some(Command::SetConfigOption {
+                                    config_id,
+                                    value,
+                                    reply,
+                                }) => {
+                                    let session = session.clone();
+                                    connection
+                                        .send_request(SetSessionConfigOptionRequest::new(
+                                            acp_session.clone(),
+                                            config_id,
+                                            value,
+                                        ))
+                                        .on_receiving_result(async move |result| {
+                                            let result = result
+                                                .map(|response| response.config_options)
+                                                .map_err(|error| error.to_string());
+                                            if let Ok(options) = &result {
+                                                session.record(Change::ConfigOptionsSet(
+                                                    options.clone(),
+                                                ));
+                                            }
+                                            let _ = reply.send(result);
+                                            Ok(())
+                                        })?;
+                                }
                             }
                         }
-                    }
-                    Ok(())
-                },
-            )
-            .await;
+                        Ok(())
+                    },
+                )
+                .await;
         self.record(Change::Exited(result.err().map(|error| error.to_string())));
     }
 }

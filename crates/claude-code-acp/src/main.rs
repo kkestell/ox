@@ -7,15 +7,15 @@ mod store;
 mod updates;
 mod validation;
 
-use agent_client_protocol::v1::schema as acp;
-use agent_client_protocol::v1::{ConnectionTo, Responder};
+use agent_client_protocol::v2::schema as acp;
+use agent_client_protocol::v2::{ConnectionTo, Responder};
 use agent_client_protocol::{Agent, Client, Result, Stdio};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let bridge = bridge::Bridge::new(config::Config::from_env());
     Agent
-        .v1()
+        .v2()
         .name("claude-code-acp")
         .on_receive_request(
             async move |request: acp::InitializeRequest,
@@ -39,17 +39,6 @@ async fn main() -> Result<()> {
         .on_receive_request(
             {
                 let bridge = bridge.clone();
-                async move |request: acp::LoadSessionRequest,
-                            responder: Responder<acp::LoadSessionResponse>,
-                            connection: ConnectionTo<Client>| {
-                    respond(responder, bridge.load_session(request, &connection))
-                }
-            },
-            agent_client_protocol::on_receive_request!(),
-        )
-        .on_receive_request(
-            {
-                let bridge = bridge.clone();
                 async move |request: acp::ListSessionsRequest,
                             responder: Responder<acp::ListSessionsResponse>,
                             _connection: ConnectionTo<Client>| {
@@ -63,8 +52,23 @@ async fn main() -> Result<()> {
                 let bridge = bridge.clone();
                 async move |request: acp::ResumeSessionRequest,
                             responder: Responder<acp::ResumeSessionResponse>,
-                            _connection: ConnectionTo<Client>| {
-                    respond(responder, bridge.resume_session(request))
+                            connection: ConnectionTo<Client>| {
+                    respond(responder, bridge.resume_session(request, &connection))
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let bridge = bridge.clone();
+                async move |request: acp::CloseSessionRequest,
+                            responder: Responder<acp::CloseSessionResponse>,
+                            connection: ConnectionTo<Client>| {
+                    let closed = bridge.close_session(&request.session_id.to_string());
+                    connection.spawn(async move {
+                        closed.await;
+                        responder.respond(acp::CloseSessionResponse::new())
+                    })
                 }
             },
             agent_client_protocol::on_receive_request!(),
@@ -82,30 +86,18 @@ async fn main() -> Result<()> {
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
-            async move |_request: acp::AuthenticateRequest,
-                        responder: Responder<acp::AuthenticateResponse>,
-                        _connection: ConnectionTo<Client>| {
-                responder.respond(acp::AuthenticateResponse::new())
-            },
-            agent_client_protocol::on_receive_request!(),
-        )
-        .on_receive_request(
             {
                 let bridge = bridge.clone();
                 async move |request: acp::PromptRequest,
                             responder: Responder<acp::PromptResponse>,
                             connection: ConnectionTo<Client>| {
-                    let turn = bridge.prompt(&request, connection.clone());
-                    connection.spawn(async move {
-                        let (response, _responding) = turn.await;
-                        respond(responder, response)
-                    })
+                    bridge.prompt(&request, responder, &connection)
                 }
             },
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_notification(
-            async move |notification: acp::CancelNotification,
+            async move |notification: acp::CancelSessionNotification,
                         _connection: ConnectionTo<Client>| {
                 bridge.cancel(&notification.session_id.to_string());
                 Ok(())

@@ -32,7 +32,9 @@ export function Composer({ session }: { session: SessionInfo }) {
   const stop = () => run(() => invoke("cancel", { sessionId: session.id }));
 
   const setOption = (option: ConfigOption, value: string | boolean) =>
-    run(() => invoke("set_config_option", { sessionId: session.id, configId: option.id, value }));
+    run(() =>
+      invoke("set_config_option", { sessionId: session.id, configId: option.configId, value }),
+    );
 
   const attach = async () => {
     const paths = await open({ multiple: true, title: "Attach Files" });
@@ -102,7 +104,7 @@ export function Composer({ session }: { session: SessionInfo }) {
         <div className="settings">
           {session.config_options.map((option) => (
             <ConfigPicker
-              key={option.id}
+              key={option.configId}
               option={option}
               onChange={(value) => setOption(option, value)}
             />

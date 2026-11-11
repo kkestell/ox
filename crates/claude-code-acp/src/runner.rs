@@ -9,8 +9,11 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use agent_client_protocol::v1::schema::StopReason;
-use ox_protocol::AgentState;
+use crate::updates::Updates;
+use agent_client_protocol::v2::Responder;
+use agent_client_protocol::v2::schema::{
+    ContentBlock, ErrorStopReason, PromptResponse, StateUpdate, StopReason,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{
@@ -19,9 +22,6 @@ use tokio::{
     sync::{mpsc, oneshot},
     task::{AbortHandle, JoinHandle},
 };
-use uuid::Uuid;
-
-use crate::updates::Updates;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct McpServer {
@@ -95,44 +95,38 @@ pub enum Finish {
     MaxTurns,
 }
 
-/// How a prompt's turn ended.
-pub struct RunOutcome {
+/// How a turn ended, as far as the session's record of it goes.
+pub struct TurnEnd {
     /// The Claude session id claude reported, whatever the outcome.
     pub session_id: Option<String>,
-    pub result: Result<Finish, RunError>,
-    /// Dropped once the prompt's response is sent. What claude wrote after
-    /// the turn waits for that, so the client reads the response first.
-    pub responding: Option<oneshot::Sender<()>>,
+    /// The turn finished, rather than being cancelled or failing.
+    pub finished: bool,
 }
 
-/// Why claude did not take a prompt.
-pub enum Refused {
-    /// An earlier prompt is waiting for its result.
-    Busy,
-    /// Claude has exited, for this reason.
-    Exited(String),
-}
+/// Told when a turn ends, before the client learns claude is idle.
+pub type OnTurnEnd = Arc<dyn Fn(TurnEnd) + Send + Sync>;
 
-impl std::fmt::Display for Refused {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Busy => f.write_str("A prompt is already running for this session"),
-            Self::Exited(error) => f.write_str(error),
-        }
-    }
-}
-
-/// A prompt waiting for its turn's result.
+/// A prompt waiting for claude to take it into a turn, which inserts it into
+/// the conversation.
 struct Prompt {
-    uuid: String,
-    /// Claude has taken the prompt into a turn, so the next result is its.
-    started: bool,
-    done: oneshot::Sender<RunOutcome>,
+    content: Vec<ContentBlock>,
+    responder: Responder<PromptResponse>,
+}
+
+impl Prompt {
+    /// Answers the prompt with the error that kept claude from taking it.
+    fn fail(self, error: RunError) {
+        let _ = self.responder.respond_with_error(match error {
+            RunError::Cancelled => agent_client_protocol::Error::request_cancelled(),
+            RunError::Failed(error) => agent_client_protocol::Error::new(-32603, error),
+        });
+    }
 }
 
 #[derive(Default)]
 struct State {
-    prompt: Option<Prompt>,
+    /// Prompts claude has not taken yet, by the `uuid` claude knows them by.
+    prompts: HashMap<String, Prompt>,
     /// Control requests waiting for claude's response, by request ID.
     controls: HashMap<String, oneshot::Sender<Result<(), String>>>,
     /// The tasks asking the client about claude's permission requests, by
@@ -142,6 +136,11 @@ struct State {
     session_id: Option<String>,
     /// Why claude exited, once it has.
     exited: Option<String>,
+    /// The session is closing, so claude's exit is a cancellation.
+    closing: bool,
+    /// The client cancelled the running turn, so the turn ends as cancelled
+    /// however claude stops it.
+    cancelling: bool,
 }
 
 /// A `claude -p` process that reads stream-json messages from stdin for as
@@ -153,10 +152,17 @@ struct State {
 pub struct Claude {
     input: mpsc::UnboundedSender<Value>,
     state: Arc<Mutex<State>>,
+    updates: Arc<Updates>,
+    /// Closes once claude has exited.
+    exited: oneshot::Receiver<()>,
 }
 
 impl Claude {
-    pub fn start(request: &StartRequest<'_>, updates: Updates) -> Result<Self, String> {
+    pub fn start(
+        request: &StartRequest<'_>,
+        updates: Updates,
+        on_turn_end: OnTurnEnd,
+    ) -> Result<Self, String> {
         let mut command = Command::new("claude");
         command
             .arg("-p")
@@ -212,50 +218,82 @@ impl Claude {
             child.stdin.take().expect("piped stdin"),
             messages,
         ));
+        let updates = Arc::new(updates);
+        let (exit, exited) = oneshot::channel();
         let output = Output {
-            updates: Arc::new(updates),
+            updates: updates.clone(),
             state: state.clone(),
             input: input.downgrade(),
-            saw_text_delta: false,
-            saw_thought_delta: false,
+            on_turn_end,
+            text_id: None,
+            thought_id: None,
             unclaimed_error: None,
-            running: false,
-            ended: None,
+            _exit: exit,
         };
         tokio::spawn(output.read(child));
-        Ok(Self { input, state })
+        Ok(Self {
+            input,
+            state,
+            updates,
+            exited,
+        })
     }
 
-    /// Sends a prompt and returns the receiver of its turn's outcome.
-    /// Messages reach claude in the order they are sent, so an interrupt
-    /// sent after this call stops this prompt's turn.
-    pub fn prompt(&self, content: &[Value]) -> Result<oneshot::Receiver<RunOutcome>, Refused> {
+    /// What claude is doing now, for a client that resumes the session.
+    pub fn state(&self) -> StateUpdate {
+        self.updates.state()
+    }
+
+    /// Stops claude and returns once it has exited. Its turn is cancelled,
+    /// and so are the prompts it has not taken.
+    pub async fn stop(self) {
+        self.state.lock().unwrap().closing = true;
+        self.interrupt();
+        let Self { input, exited, .. } = self;
+        // Claude exits when its stdin closes.
+        drop(input);
+        let _ = exited.await;
+    }
+
+    /// Sends a prompt. Once claude takes it into a turn, which inserts it
+    /// into the conversation, the session gets it as the user message
+    /// `message_id` and `responder` answers with that ID. Messages reach
+    /// claude in the order they are sent, so an interrupt sent after this
+    /// call stops this prompt's turn or drops the prompt. If claude has
+    /// exited, the responder comes back.
+    pub fn prompt(
+        &self,
+        message_id: &str,
+        blocks: Vec<ContentBlock>,
+        content: &[Value],
+        responder: Responder<PromptResponse>,
+    ) -> Result<(), Box<Responder<PromptResponse>>> {
         let mut state = self.state.lock().unwrap();
-        if let Some(error) = &state.exited {
-            return Err(Refused::Exited(error.clone()));
+        if state.exited.is_some() {
+            return Err(Box::new(responder));
         }
-        if state.prompt.is_some() {
-            return Err(Refused::Busy);
-        }
-        let uuid = Uuid::new_v4().to_string();
-        let (done, outcome) = oneshot::channel();
-        state.prompt = Some(Prompt {
-            uuid: uuid.clone(),
-            started: false,
-            done,
-        });
+        state.prompts.insert(
+            message_id.to_owned(),
+            Prompt {
+                content: blocks,
+                responder,
+            },
+        );
         let _ = self.input.send(json!({
             "type": "user",
-            "uuid": uuid,
+            "uuid": message_id,
             "session_id": "",
             "message": {"role": "user", "content": content},
             "parent_tool_use_id": null
         }));
-        Ok(outcome)
+        Ok(())
     }
 
-    /// Stops the running turn and drops a prompt claude has not started.
+    /// Stops the running turn and drops the prompts claude has not taken.
     pub fn interrupt(&self) {
+        if self.updates.is_working() {
+            self.state.lock().unwrap().cancelling = true;
+        }
         drop(self.control(&json!({"subtype": "interrupt", "cancel_queued": true})));
     }
 
@@ -317,18 +355,16 @@ struct Output {
     /// Claude's stdin, for answers to its requests. It is weak so that the
     /// session's `Claude` alone keeps stdin open.
     input: mpsc::WeakUnboundedSender<Value>,
-    /// The message being streamed has sent text, or thought, as deltas.
-    saw_text_delta: bool,
-    saw_thought_delta: bool,
-    /// The error of a turn that ended while a prompt waited to start. It is
-    /// why the prompt fails if claude exits, as when claude cannot resume
-    /// the conversation, and otherwise the error of a turn claude started.
+    on_turn_end: OnTurnEnd,
+    /// The message and thought being streamed, once they have sent a delta.
+    text_id: Option<String>,
+    thought_id: Option<String>,
+    /// The error of a turn that ended while a prompt waited to be taken. It
+    /// is why the prompt fails if claude exits, as when claude cannot resume
+    /// the conversation.
     unclaimed_error: Option<String>,
-    /// Claude last said it was working.
-    running: bool,
-    /// How the last turn no prompt claimed ended, for the client to learn
-    /// when claude next says it is idle.
-    ended: Option<StopReason>,
+    /// Dropped once claude has exited.
+    _exit: oneshot::Sender<()>,
 }
 
 impl Output {
@@ -341,14 +377,14 @@ impl Output {
             tokio::select! {
                 biased;
                 line = lines.next_line() => match line {
-                    Ok(Some(line)) => self.line(&line).await,
+                    Ok(Some(line)) => self.translate(&line),
                     _ => break child.wait().await,
                 },
                 status = child.wait() => {
                     // Everything claude wrote is in the pipe; a process it
                     // started may hold the pipe open.
                     while let Some(Ok(Some(line))) = ready(lines.next_line()) {
-                        self.line(&line).await;
+                        self.translate(&line);
                     }
                     break status;
                 }
@@ -361,48 +397,46 @@ impl Output {
             ),
             Err(error) => format!("claude process failed: {error}"),
         };
-        let (prompt, session_id) = {
+        let (prompts, session_id, closing, cancelling) = {
             let mut state = self.state.lock().unwrap();
             state.exited = Some(error.clone());
             state.controls.clear();
             for (_, permission) in state.permissions.drain() {
                 permission.abort();
             }
-            (state.prompt.take(), state.session_id.clone())
+            (
+                std::mem::take(&mut state.prompts),
+                state.session_id.clone(),
+                state.closing,
+                state.cancelling,
+            )
         };
         self.updates.fail_open_tools();
-        self.state(false);
-        if let Some(prompt) = prompt {
-            let _ = prompt.done.send(RunOutcome {
-                session_id,
-                result: Err(RunError::Failed(
-                    self.unclaimed_error.take().unwrap_or(error),
-                )),
-                responding: None,
-            });
+        let result = if closing || cancelling {
+            Err(RunError::Cancelled)
+        } else {
+            Err(RunError::Failed(error.clone()))
+        };
+        if self.updates.is_working() {
+            self.end_turn(session_id, &result);
         }
-    }
-
-    /// Tells the client when claude starts or stops working.
-    fn state(&mut self, running: bool) {
-        if running != self.running {
-            self.running = running;
-            self.updates.state(if running {
-                AgentState::Running
+        let failure = self.unclaimed_error.take().unwrap_or(error);
+        for (_, prompt) in prompts {
+            prompt.fail(if closing {
+                RunError::Cancelled
             } else {
-                AgentState::Idle {
-                    stop_reason: self.ended.take(),
-                }
+                RunError::Failed(failure.clone())
             });
         }
     }
 
-    /// Translates a line of claude's output. After the result of a prompt's
-    /// turn, it waits until the prompt's response is sent.
-    async fn line(&mut self, line: &str) {
-        if let Some(responded) = self.translate(line) {
-            let _ = responded.await;
-        }
+    /// Records how a turn ended, then tells the client claude is idle.
+    fn end_turn(&self, session_id: Option<String>, result: &Result<Finish, RunError>) {
+        (self.on_turn_end)(TurnEnd {
+            session_id,
+            finished: result.is_ok(),
+        });
+        self.updates.idle(stop_reason(result));
     }
 
     fn send(&self, message: Value) {
@@ -411,11 +445,11 @@ impl Output {
         }
     }
 
-    /// Translates a line of claude's output and returns, for the result of
-    /// a prompt's turn, the receiver that closes once the prompt's response
-    /// is sent.
-    fn translate(&mut self, line: &str) -> Option<oneshot::Receiver<()>> {
-        let value = serde_json::from_str::<Value>(line).ok()?;
+    /// Translates a line of claude's output.
+    fn translate(&mut self, line: &str) {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            return;
+        };
         if let Some(id) = value
             .get("session_id")
             .and_then(Value::as_str)
@@ -431,14 +465,14 @@ impl Output {
                     self.updates.subagent_event(parent, event);
                 }
             }
-            return None;
+            return;
         }
         // Claude echoes a prompt once its turn has taken it.
         if value["isReplay"] == true {
             if let Some(uuid) = value["uuid"].as_str() {
                 self.started(uuid);
             }
-            return None;
+            return;
         }
         let event = if value["type"] == "stream_event" {
             &value["event"]
@@ -479,14 +513,14 @@ impl Output {
             Some("content_block_delta") => match event["delta"]["type"].as_str() {
                 Some("text_delta") => {
                     if let Some(text) = event["delta"]["text"].as_str() {
-                        self.saw_text_delta = true;
-                        self.updates.event(Event::Text(text.into()));
+                        let id = self.text_id.get_or_insert_with(new_id);
+                        self.updates.text_chunk(id, text.into());
                     }
                 }
                 Some("thinking_delta") => {
                     if let Some(text) = event["delta"]["thinking"].as_str() {
-                        self.saw_thought_delta = true;
-                        self.updates.event(Event::Thought(text.into()));
+                        let id = self.thought_id.get_or_insert_with(new_id);
+                        self.updates.thought_chunk(id, text.into());
                     }
                 }
                 _ => {}
@@ -495,8 +529,8 @@ impl Output {
                 for event in message_events(&value) {
                     match event {
                         // Deltas already streamed this text.
-                        Event::Text(_) if self.saw_text_delta => {}
-                        Event::Thought(_) if self.saw_thought_delta => {}
+                        Event::Text(_) if self.text_id.is_some() => {}
+                        Event::Thought(_) if self.thought_id.is_some() => {}
                         // The client has the prompts it sent; the rest of
                         // what claude reports as the user is its own notes.
                         Event::UserText(_)
@@ -505,38 +539,33 @@ impl Output {
                         event => self.updates.event(event),
                     }
                 }
-                self.saw_text_delta = false;
-                self.saw_thought_delta = false;
+                self.text_id = None;
+                self.thought_id = None;
             }
             Some("system") if event["subtype"] == "session_state_changed" => {
                 // Claude's third state, waiting for a permission, is part of
                 // working; the client has the request itself.
                 match event["state"].as_str() {
-                    Some("running") => self.state(true),
-                    Some("idle") => self.state(false),
+                    Some("running") => self.updates.working(),
+                    Some("idle") => self.updates.idle_without_reason(),
                     _ => {}
                 }
             }
-            Some("result") => return self.result(&value),
+            Some("result") => self.result(&value),
             _ => {}
         }
-        None
     }
 
-    /// Notes that claude took the prompt sent as `uuid` into a turn, so the
-    /// turn's result is the prompt's. Claude says so with a `started`
+    /// Notes that claude took the prompt sent as `uuid` into a turn, which
+    /// inserts it into the conversation. Claude says so with a `started`
     /// lifecycle line and again by echoing the prompt; the first one counts.
     fn started(&mut self, uuid: &str) {
-        let mut state = self.state.lock().unwrap();
-        if let Some(prompt) = &mut state.prompt
-            && prompt.uuid == uuid
-            && !prompt.started
-        {
-            prompt.started = true;
-            drop(state);
-            if let Some(error) = self.unclaimed_error.take() {
-                self.updates.error(&error);
-            }
+        let prompt = self.state.lock().unwrap().prompts.remove(uuid);
+        if let Some(prompt) = prompt {
+            self.unclaimed_error = None;
+            self.updates.user_message(uuid, prompt.content);
+            let _ = prompt.responder.respond(PromptResponse::new(uuid));
+            self.updates.working();
         }
     }
 
@@ -590,53 +619,53 @@ impl Output {
             .insert(request_id.to_owned(), task.abort_handle());
     }
 
-    /// Ends a turn. The result belongs to the waiting prompt once claude has
-    /// started it; an interrupt also drops a prompt claude had not started.
-    /// Returns the receiver that closes once that prompt's response is sent.
-    fn result(&mut self, result: &Value) -> Option<oneshot::Receiver<()>> {
+    /// Ends a turn. An interrupt also drops the prompts claude had not taken.
+    fn result(&mut self, result: &Value) {
         let aborted = result["terminal_reason"]
             .as_str()
             .is_some_and(|reason| reason.starts_with("aborted"));
-        let outcome = if aborted {
-            Err(RunError::Cancelled)
-        } else {
-            result_outcome(result)
-        };
-        let (prompt, waiting, session_id) = {
+        let (dropped, waiting, session_id, cancelling) = {
             let mut state = self.state.lock().unwrap();
             for (_, permission) in state.permissions.drain() {
                 permission.abort();
             }
-            let prompt = if aborted || state.prompt.as_ref().is_some_and(|p| p.started) {
-                state.prompt.take()
+            let dropped = if aborted {
+                std::mem::take(&mut state.prompts)
             } else {
-                None
+                HashMap::new()
             };
-            (prompt, state.prompt.is_some(), state.session_id.clone())
+            (
+                dropped,
+                !state.prompts.is_empty(),
+                state.session_id.clone(),
+                std::mem::take(&mut state.cancelling),
+            )
+        };
+        let outcome = match result_outcome(result) {
+            _ if aborted => Err(RunError::Cancelled),
+            Err(_) if cancelling => Err(RunError::Cancelled),
+            outcome => outcome,
         };
         self.updates.fail_open_tools();
-        self.saw_text_delta = false;
-        self.saw_thought_delta = false;
-        match (prompt, outcome) {
-            (Some(prompt), result) => {
-                let (responding, responded) = oneshot::channel();
-                let _ = prompt.done.send(RunOutcome {
-                    session_id,
-                    result,
-                    responding: Some(responding),
-                });
-                return Some(responded);
-            }
-            (None, Err(RunError::Failed(error))) if waiting => self.unclaimed_error = Some(error),
-            (None, result) => {
-                if let Err(RunError::Failed(error)) = &result {
-                    self.updates.error(error);
-                }
-                self.ended = Some(stop_reason(&result));
-            }
+        self.text_id = None;
+        self.thought_id = None;
+        for (_, prompt) in dropped {
+            prompt.fail(RunError::Cancelled);
         }
-        None
+        // A failure while a prompt waits and no turn runs is not a turn's:
+        // the error is why the prompt fails if claude exits.
+        if let (Err(RunError::Failed(error)), true, false) =
+            (&outcome, waiting, self.updates.is_working())
+        {
+            self.unclaimed_error = Some(error.clone());
+            return;
+        }
+        self.end_turn(session_id, &outcome);
     }
+}
+
+fn new_id() -> String {
+    uuid::Uuid::new_v4().to_string()
 }
 
 /// Reads claude's stderr while claude runs, so a full pipe never blocks it.
@@ -703,13 +732,16 @@ fn read_buffered(stderr: &ChildStderr, buffer: &mut Vec<u8>) {
     }
 }
 
-/// The ACP stop reason of a turn's outcome. A failed turn reports its error
-/// as a message and ends as a turn does.
+/// The ACP stop reason of a turn's outcome. A failed turn ends with the
+/// error as its details.
 pub fn stop_reason(result: &Result<Finish, RunError>) -> StopReason {
     match result {
-        Ok(Finish::EndTurn) | Err(RunError::Failed(_)) => StopReason::EndTurn,
+        Ok(Finish::EndTurn) => StopReason::EndTurn,
         Ok(Finish::MaxTurns) => StopReason::MaxTurnRequests,
         Err(RunError::Cancelled) => StopReason::Cancelled,
+        Err(RunError::Failed(error)) => StopReason::Error(ErrorStopReason::new().error(
+            agent_client_protocol::v2::schema::Error::new(-32603, error.clone()),
+        )),
     }
 }
 

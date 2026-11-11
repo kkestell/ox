@@ -23,10 +23,16 @@ pub fn cwd(path: &Path) -> Result<PathBuf, String> {
     Ok(resolved)
 }
 
+/// An MCP server command is an absolute path, as ACP v2 types it, to an
+/// executable whose name is allowed.
 pub fn mcp_command(command: &Path) -> Result<(), String> {
-    let name = command.to_string_lossy();
-    if name.is_empty() || name.contains(['/', '\\']) || has_metacharacters(&name) {
-        return Err(format!("invalid MCP server command: {name}"));
+    let path = command.to_string_lossy();
+    let name = command
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if !command.is_absolute() || name.is_empty() || has_metacharacters(&path) {
+        return Err(format!("invalid MCP server command: {path}"));
     }
     let allowed = env::var("CLAUDE_ACP_MCP_ALLOWED_COMMANDS")
         .unwrap_or_else(|_| "node,npx,python3,python,deno,bun".into());
@@ -35,7 +41,7 @@ pub fn mcp_command(command: &Path) -> Result<(), String> {
         .map(str::trim)
         .any(|candidate| candidate == name)
     {
-        return Err(format!("MCP server command not allowed: {name}"));
+        return Err(format!("MCP server command not allowed: {path}"));
     }
     Ok(())
 }

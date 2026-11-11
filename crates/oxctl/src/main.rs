@@ -11,8 +11,8 @@ use base64::engine::general_purpose::STANDARD;
 use clap::{Parser, Subcommand};
 use ox_protocol::schema::{
     ContentBlock, EmbeddedResourceResource, ImageContent, RequestPermissionOutcome,
-    SessionConfigKind, SessionConfigOption, SessionConfigSelectOptions, SessionUpdate, StopReason,
-    TextContent, ToolCallStatus,
+    SessionConfigKind, SessionConfigOption, SessionConfigSelectOptions, SessionUpdate, StateUpdate,
+    StopReason, TextContent, ToolCallStatus,
 };
 use ox_protocol::{Client, ConfigValue, End, Event, EventKind, SessionState, content};
 
@@ -186,7 +186,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             let options = match (option, value) {
                 (Some(option), Some(value)) => {
                     let boolean = info.config_options.iter().any(|candidate| {
-                        *candidate.id.0 == *option
+                        *candidate.config_id.0 == *option
                             && matches!(candidate.kind, SessionConfigKind::Boolean(_))
                     });
                     let value =
@@ -270,15 +270,18 @@ fn describe_option(option: &SessionConfigOption) -> String {
             };
             format!(
                 "{}\t{}\t{}",
-                option.id.0,
+                option.config_id.0,
                 select.current_value,
                 values.join(", ")
             )
         }
         SessionConfigKind::Boolean(boolean) => {
-            format!("{}\t{}\ttrue, false", option.id.0, boolean.current_value)
+            format!(
+                "{}\t{}\ttrue, false",
+                option.config_id.0, boolean.current_value
+            )
         }
-        _ => format!("{}\t?", option.id.0),
+        _ => format!("{}\t?", option.config_id.0),
     }
 }
 
@@ -375,10 +378,10 @@ fn describe(kind: &EventKind) -> String {
         EventKind::Update(update) => describe_update(update),
         EventKind::PermissionRequested {
             request_id,
-            tool_call,
+            title,
             options,
+            ..
         } => {
-            let title = tool_call.fields.title.as_deref().unwrap_or("tool call");
             let options: Vec<String> = options
                 .iter()
                 .map(|option| format!("{} ({})", option.option_id.0, option.name))
@@ -399,7 +402,7 @@ fn describe(kind: &EventKind) -> String {
         },
         EventKind::TurnEnded { stop_reason, error } => match (stop_reason, error) {
             (_, Some(error)) => format!("turn ended: {error}"),
-            (Some(reason), None) => format!("turn ended: {}", stop_reason_name(*reason)),
+            (Some(reason), None) => format!("turn ended: {}", stop_reason_name(reason)),
             (None, None) => "turn ended".into(),
         },
         EventKind::AgentExited { error: Some(error) } => format!("agent exited: {error}"),
@@ -425,70 +428,127 @@ fn describe_block(block: &ContentBlock) -> String {
 
 fn describe_update(update: &SessionUpdate) -> String {
     match update {
-        SessionUpdate::AgentThoughtChunk(chunk) | SessionUpdate::UserMessageChunk(chunk) => {
-            let text = match &chunk.content {
-                ContentBlock::Text(text) => text.text.as_str(),
-                _ => "",
-            };
-            format!("{}: {text}", update_name(update))
+        SessionUpdate::AgentThoughtChunk(chunk)
+        | SessionUpdate::UserMessageChunk(chunk)
+        | SessionUpdate::AgentMessageChunk(chunk) => {
+            format!("{}: {}", update_name(update), block_text(&chunk.content))
         }
-        SessionUpdate::ToolCall(call) => {
-            format!("tool call {}: {}", call.tool_call_id.0, call.title)
+        SessionUpdate::UserMessage(message) => {
+            format!(
+                "{}: {}",
+                update_name(update),
+                blocks_text(message.content.clone().take().as_deref())
+            )
         }
+        SessionUpdate::AgentMessage(message) => {
+            format!(
+                "{}: {}",
+                update_name(update),
+                blocks_text(message.content.clone().take().as_deref())
+            )
+        }
+        SessionUpdate::AgentThought(thought) => {
+            format!(
+                "{}: {}",
+                update_name(update),
+                blocks_text(thought.content.clone().take().as_deref())
+            )
+        }
+        SessionUpdate::StateUpdate(state) => match state {
+            StateUpdate::Idle(idle) => match &idle.stop_reason {
+                Some(reason) => format!("state: idle ({})", stop_reason_name(reason)),
+                None => "state: idle".into(),
+            },
+            StateUpdate::Running(_) => "state: running".into(),
+            StateUpdate::RequiresAction(_) => "state: requires_action".into(),
+            _ => "state: other".into(),
+        },
         SessionUpdate::ConfigOptionUpdate(update) => {
             let options: Vec<String> = update
                 .config_options
                 .iter()
                 .map(|option| match &option.kind {
                     SessionConfigKind::Select(select) => {
-                        format!("{}={}", option.id.0, select.current_value)
+                        format!("{}={}", option.config_id.0, select.current_value)
                     }
                     SessionConfigKind::Boolean(boolean) => {
-                        format!("{}={}", option.id.0, boolean.current_value)
+                        format!("{}={}", option.config_id.0, boolean.current_value)
                     }
-                    _ => option.id.0.to_string(),
+                    _ => option.config_id.0.to_string(),
                 })
                 .collect();
             format!("config: {}", options.join(", "))
         }
         SessionUpdate::ToolCallUpdate(call) => {
-            let status = call.fields.status.map(status_name).unwrap_or_default();
-            format!("tool call {}: {status}", call.tool_call_id.0)
+            let detail = match (call.title.clone().take(), call.status.clone().take()) {
+                (Some(title), _) => title,
+                (None, Some(status)) => status_name(&status).into(),
+                (None, None) => "updated".into(),
+            };
+            format!("tool call {}: {detail}", call.tool_call_id.0)
         }
         _ => update_name(update).into(),
     }
+}
+
+/// The text of a content block, empty for a block that is not text.
+fn block_text(block: &ContentBlock) -> &str {
+    match block {
+        ContentBlock::Text(text) => text.text.as_str(),
+        _ => "",
+    }
+}
+
+/// The text of a message's content, which a snapshot may leave unchanged or
+/// clear.
+fn blocks_text(content: Option<&[ContentBlock]>) -> String {
+    content.unwrap_or_default().iter().map(block_text).collect()
 }
 
 /// The `sessionUpdate` name of an update.
 fn update_name(update: &SessionUpdate) -> &'static str {
     match update {
         SessionUpdate::UserMessageChunk(_) => "user_message_chunk",
+        SessionUpdate::UserMessage(_) => "user_message",
         SessionUpdate::AgentMessageChunk(_) => "agent_message_chunk",
+        SessionUpdate::AgentMessage(_) => "agent_message",
         SessionUpdate::AgentThoughtChunk(_) => "agent_thought_chunk",
-        SessionUpdate::ToolCall(_) => "tool_call",
+        SessionUpdate::AgentThought(_) => "agent_thought",
+        SessionUpdate::StateUpdate(_) => "state_update",
+        SessionUpdate::ToolCallContentChunk(_) => "tool_call_content_chunk",
         SessionUpdate::ToolCallUpdate(_) => "tool_call_update",
-        SessionUpdate::Plan(_) => "plan",
+        SessionUpdate::TerminalUpdate(_) => "terminal_update",
+        SessionUpdate::TerminalOutputChunk(_) => "terminal_output_chunk",
+        SessionUpdate::PlanUpdate(_) => "plan_update",
         SessionUpdate::AvailableCommandsUpdate(_) => "available_commands_update",
-        SessionUpdate::CurrentModeUpdate(_) => "current_mode_update",
         SessionUpdate::ConfigOptionUpdate(_) => "config_option_update",
         SessionUpdate::SessionInfoUpdate(_) => "session_info_update",
         SessionUpdate::UsageUpdate(_) => "usage_update",
+        SessionUpdate::Notice(_) => "notice",
+        SessionUpdate::CompactionUpdate(_) => "compaction_update",
+        SessionUpdate::CompactionSummaryChunk(_) => "compaction_summary_chunk",
         _ => "update",
     }
 }
 
-fn stop_reason_name(reason: StopReason) -> &'static str {
+/// The name of a stop reason, with the failure's message for `error`.
+fn stop_reason_name(reason: &StopReason) -> String {
     match reason {
-        StopReason::EndTurn => "end_turn",
-        StopReason::MaxTokens => "max_tokens",
-        StopReason::MaxTurnRequests => "max_turn_requests",
-        StopReason::Refusal => "refusal",
-        StopReason::Cancelled => "cancelled",
-        _ => "other",
+        StopReason::EndTurn => "end_turn".into(),
+        StopReason::MaxTokens => "max_tokens".into(),
+        StopReason::MaxTurnRequests => "max_turn_requests".into(),
+        StopReason::Refusal => "refusal".into(),
+        StopReason::Cancelled => "cancelled".into(),
+        StopReason::Error(details) => match &details.error {
+            Some(error) => format!("error: {}", error.message),
+            None => "error".into(),
+        },
+        StopReason::Other(other) => other.stop_reason.clone(),
+        _ => "other".into(),
     }
 }
 
-fn status_name(status: ToolCallStatus) -> &'static str {
+fn status_name(status: &ToolCallStatus) -> &'static str {
     match status {
         ToolCallStatus::Pending => "pending",
         ToolCallStatus::InProgress => "in_progress",

@@ -43,8 +43,8 @@
   - The plan said `connect_or_start` "retries until it accepts"; the goal is
     connecting to a running daemon, which the `ready` line provides.
 - A capability the code advertises is implemented in full.
-  - An agent that advertises `loadSession` replays the conversation on
-    `session/load`.
+  - An agent that advertises the baseline session methods replays the
+    conversation on `session/resume` with `replayFrom: {"type": "start"}`.
   - The bridge advertises the `image` prompt capability and sends images to
     Claude.
 - The UI is idiomatic React (`ui/src/*.tsx`) with icons from `lucide-react`.
@@ -72,7 +72,8 @@
 
 - Name every shortcut, workaround, and unimplemented part in the report, in
   plain terms.
-  - "`session/load` returns no history although the bridge advertises it."
+  - "`session/resume` ignores `replayFrom` although the bridge advertises the
+    session methods."
   - "`prompt_text` exists only so tests can send one string."
 
 ## Verifying changes
@@ -99,11 +100,10 @@ of `oxd-fake-agent` that the tests start with `oxctl`. A change to
 `ui/src/styles.css` alone takes `make check-ui`.
 
 After changing `oxd`, `ox-protocol`, `oxctl`, `claude-code-acp`, or
-`scripts/smoke-acp.py`, also run these and report their results:
+`scripts/smoke-acp.py`, also run this and report its result:
 
 ```sh
 make smoke-claude     # Haiku
-make smoke-opencode   # openai/gpt-6-luna
 ```
 
 The smoke checks run real models through `oxd` and `oxctl` and are part of

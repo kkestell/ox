@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use ox_protocol::schema::{
     AudioContent, ContentBlock, EmbeddedResource, EmbeddedResourceResource, ImageContent,
     PromptCapabilities, RequestPermissionOutcome, ResourceLink, SessionConfigKind,
-    SessionConfigOption, SessionUpdate, StopReason, TextContent, TextResourceContents,
+    SessionConfigOption, SessionUpdate, StateUpdate, StopReason, TextContent, TextResourceContents,
 };
 use ox_protocol::{
     Client, ConfigValue, End, Error, Event, EventKind, Listing, PROTOCOL_VERSION, SessionInfo,
@@ -413,6 +413,26 @@ fn chunks(events: &[Event]) -> Vec<&str> {
     events.iter().filter_map(chunk).collect()
 }
 
+/// The name of each event: the `state_update` states and `user_message`
+/// updates by their own names, other updates as `update`.
+fn update_names(events: &[Event]) -> Vec<&'static str> {
+    events
+        .iter()
+        .map(|event| match &event.kind {
+            EventKind::PromptStarted { .. } => "prompt_started",
+            EventKind::TurnStarted => "turn_started",
+            EventKind::TurnEnded { .. } => "turn_ended",
+            EventKind::Update(SessionUpdate::UserMessage(_)) => "user_message",
+            EventKind::Update(SessionUpdate::AgentMessageChunk(_)) => "agent_message_chunk",
+            EventKind::Update(SessionUpdate::StateUpdate(StateUpdate::Running(_))) => "running",
+            EventKind::Update(SessionUpdate::StateUpdate(StateUpdate::Idle(_))) => "idle",
+            EventKind::Update(SessionUpdate::StateUpdate(_)) => "state",
+            EventKind::Update(_) => "update",
+            _ => "other",
+        })
+        .collect()
+}
+
 /// Asserts that the events' seqs increase by one from `first`.
 fn assert_contiguous(events: &[Event], first: u64) {
     let seqs: Vec<u64> = events.iter().map(|event| event.seq).collect();
@@ -424,7 +444,7 @@ fn assert_contiguous(events: &[Event], first: u64) {
 fn current(options: &[SessionConfigOption], id: &str) -> String {
     let option = options
         .iter()
-        .find(|option| &*option.id.0 == id)
+        .find(|option| &*option.config_id.0 == id)
         .unwrap_or_else(|| panic!("no config option {id}"));
     match &option.kind {
         SessionConfigKind::Select(select) => select.current_value.to_string(),
@@ -463,10 +483,11 @@ async fn reattach_mid_turn() {
         .unwrap();
     seen.extend(until(&mut events, turn_ended).await);
     assert_contiguous(&seen, started + 1);
-    assert_eq!(seen.len(), 23);
-    let pid = chunk(&seen[1]).unwrap().to_owned();
+    // The prompt, its echo, `running`, the chunks, `idle`, and the turn's end.
+    assert_eq!(seen.len(), 26);
+    let pid = chunk(&seen[3]).unwrap().to_owned();
     assert_eq!(
-        chunks(&seen[2..]),
+        chunks(&seen[4..]),
         (1..=20).map(|i| format!("chunk-{i}")).collect::<Vec<_>>()
     );
 
@@ -572,7 +593,7 @@ async fn cancel_with_pending_permission() {
     assert!(matches!(
         rest[0].kind,
         EventKind::PermissionResolved {
-            outcome: RequestPermissionOutcome::Cancelled,
+            outcome: RequestPermissionOutcome::Cancelled(_),
             ..
         }
     ));
@@ -773,7 +794,8 @@ async fn unsubscribe_ends_a_subscription() {
         .await;
     client.prompt(&session.id, text("say 3 0")).await.unwrap();
     let turn = raw.events_until(raw_turn_ended).await;
-    assert_eq!(turn.len(), 5);
+    // The prompt, its echo, `running`, three chunks, `idle`, and the turn's end.
+    assert_eq!(turn.len(), 8);
     for message in turn {
         assert_eq!(message["subscription"], second);
     }
@@ -873,7 +895,7 @@ async fn close_ends_the_turn_and_its_permission_request() {
     assert!(matches!(
         rest[0].kind,
         EventKind::PermissionResolved {
-            outcome: RequestPermissionOutcome::Cancelled,
+            outcome: RequestPermissionOutcome::Cancelled(_),
             ..
         }
     ));
@@ -928,25 +950,24 @@ async fn a_turn_the_agent_starts_runs_until_the_agent_is_idle() {
     let (session, started) = daemon.new_session(&client).await;
     let mut events = client.subscribe(&session.id, started).await.unwrap();
     client.prompt(&session.id, text("own-turn")).await.unwrap();
-    let history = until(&mut events, |kind| matches!(kind, EventKind::Update(_))).await;
+    let history = until(&mut events, |kind| {
+        matches!(kind, EventKind::Update(SessionUpdate::AgentMessageChunk(_)))
+    })
+    .await;
     assert_eq!(chunks(&history), ["own-turn"]);
-    assert!(matches!(
-        history[..3],
+    assert_eq!(
+        update_names(&history),
         [
-            Event {
-                kind: EventKind::PromptStarted { .. },
-                ..
-            },
-            Event {
-                kind: EventKind::TurnEnded { .. },
-                ..
-            },
-            Event {
-                kind: EventKind::TurnStarted,
-                ..
-            },
+            "prompt_started",
+            "user_message",
+            "running",
+            "idle",
+            "turn_ended",
+            "running",
+            "turn_started",
+            "agent_message_chunk",
         ]
-    ));
+    );
     assert_eq!(
         info(&client, &session.id).await.state,
         SessionState::Running
@@ -956,13 +977,59 @@ async fn a_turn_the_agent_starts_runs_until_the_agent_is_idle() {
 
     client.cancel(&session.id).await.unwrap();
     let rest = until(&mut events, turn_ended).await;
-    assert_eq!(rest.len(), 1, "{rest:?}");
+    assert_eq!(update_names(&rest), ["idle", "turn_ended"], "{rest:?}");
     assert_eq!(
-        rest[0].kind,
+        rest[1].kind,
         EventKind::TurnEnded {
             stop_reason: Some(StopReason::Cancelled),
             error: None
         }
+    );
+    assert_eq!(info(&client, &session.id).await.state, SessionState::Idle);
+    client.prompt(&session.id, text("pid")).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_ends_with_the_stop_reason_the_agent_reports() {
+    let daemon = Daemon::start(1000).await;
+    let client = daemon.client().await;
+    let (session, started) = daemon.new_session(&client).await;
+    let mut events = client.subscribe(&session.id, started).await.unwrap();
+    client
+        .prompt(&session.id, text("say 1 0\nfail the model failed"))
+        .await
+        .unwrap();
+    let turn = until(&mut events, turn_ended).await;
+    let EventKind::TurnEnded { stop_reason, error } = &turn.last().unwrap().kind else {
+        unreachable!()
+    };
+    assert_eq!(*error, None);
+    let Some(StopReason::Error(details)) = stop_reason else {
+        panic!("expected the stop reason error, got {stop_reason:?}");
+    };
+    assert_eq!(
+        details.error.as_ref().map(|error| error.message.as_str()),
+        Some("the model failed"),
+        "{details:?}"
+    );
+    assert_eq!(info(&client, &session.id).await.state, SessionState::Idle);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_prompt_the_agent_rejects_ends_its_turn_with_the_error() {
+    let daemon = Daemon::start(1000).await;
+    let client = daemon.client().await;
+    let (session, started) = daemon.new_session(&client).await;
+    let mut events = client.subscribe(&session.id, started).await.unwrap();
+    client
+        .prompt(&session.id, text("reject not today"))
+        .await
+        .unwrap();
+    let turn = until(&mut events, turn_ended).await;
+    assert_eq!(update_names(&turn), ["prompt_started", "turn_ended"]);
+    assert!(
+        matches!(&turn[1].kind, EventKind::TurnEnded { stop_reason: None, error: Some(error) } if error.contains("Invalid params")),
+        "{turn:?}"
     );
     assert_eq!(info(&client, &session.id).await.state, SessionState::Idle);
     client.prompt(&session.id, text("pid")).await.unwrap();
@@ -983,6 +1050,78 @@ async fn exhausted_descriptors_do_not_stop_the_daemon() {
     let (session, _) = daemon.new_session(&client).await;
     client.close(&session.id).await.unwrap();
     assert!(daemon.child.try_wait().unwrap().is_none(), "oxd exited");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_late_rejection_does_not_end_the_next_prompt() {
+    let daemon = Daemon::start(1000).await;
+    let client = daemon.client().await;
+    let (session, started) = daemon.new_session(&client).await;
+    let mut events = client.subscribe(&session.id, started).await.unwrap();
+    client
+        .prompt(&session.id, text("deferred-reject"))
+        .await
+        .unwrap();
+    until(&mut events, turn_ended).await;
+    assert_eq!(info(&client, &session.id).await.state, SessionState::Idle);
+    client.prompt(&session.id, text("pid\nwait")).await.unwrap();
+    // The fake agent answers the first prompt with an error only after the
+    // second arrives, then starts the second prompt and reports its PID.
+    let second = until(&mut events, |kind| {
+        matches!(kind, EventKind::Update(SessionUpdate::AgentMessageChunk(_)))
+    })
+    .await;
+    assert!(
+        !second.iter().any(|event| turn_ended(&event.kind)),
+        "the second prompt ended before cancellation: {:?}",
+        update_names(&second)
+    );
+    assert_eq!(
+        info(&client, &session.id).await.state,
+        SessionState::Running
+    );
+    client.cancel(&session.id).await.unwrap();
+    until(&mut events, turn_ended).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_after_the_resume_answer_is_live() {
+    let daemon = Daemon::start(1000).await;
+    let client = daemon.client().await;
+    let (session, started) = daemon
+        .new_session_with(&client, &["--turn-after-resume"])
+        .await;
+    let mut events = client.subscribe(&session.id, started).await.unwrap();
+    client.prompt(&session.id, text("exit 0")).await.unwrap();
+    until(&mut events, agent_exited).await;
+    client
+        .load_session(&session.id, BTreeMap::new())
+        .await
+        .unwrap();
+    let mut resumed = until(&mut events, agent_started).await;
+    // A config update is a round-trip barrier after the resume handler has
+    // sent all three live updates. No absence is checked before that barrier.
+    client
+        .set_config_option(&session.id, "mode", ConfigValue::Id("code".into()))
+        .await
+        .unwrap();
+    resumed.extend(
+        until(&mut events, |kind| {
+            matches!(
+                kind,
+                EventKind::Update(SessionUpdate::ConfigOptionUpdate(_))
+            )
+        })
+        .await,
+    );
+    assert!(
+        resumed
+            .iter()
+            .any(|event| event.kind == EventKind::TurnStarted),
+        "the live turn after the response was lost as replay: {:?}",
+        update_names(&resumed)
+    );
+    assert!(resumed.iter().any(|event| turn_ended(&event.kind)));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1078,8 +1217,8 @@ async fn prompt_content_reaches_the_agent() {
     let daemon = Daemon::start(1000).await;
     let client = daemon.client().await;
     let (session, started) = daemon.new_session(&client).await;
-    assert!(session.prompt_capabilities.image);
-    assert!(session.prompt_capabilities.embedded_context);
+    assert!(session.prompt_capabilities.image.is_some());
+    assert!(session.prompt_capabilities.embedded_context.is_some());
     let mut events = client.subscribe(&session.id, started).await.unwrap();
     let prompt = vec![
         ContentBlock::Text(TextContent::new("describe")),
@@ -1146,10 +1285,12 @@ fn replayed(events: &[Event]) -> Vec<String> {
     events
         .iter()
         .filter_map(|event| match &event.kind {
-            EventKind::Update(SessionUpdate::UserMessageChunk(chunk)) => match &chunk.content {
-                ContentBlock::Text(text) => Some(format!("user: {}", text.text)),
-                _ => None,
-            },
+            EventKind::Update(SessionUpdate::UserMessage(message)) => {
+                match message.content.clone().take().as_deref() {
+                    Some([ContentBlock::Text(text)]) => Some(format!("user: {}", text.text)),
+                    _ => None,
+                }
+            }
             _ => chunk(event).map(|text| format!("agent: {text}")),
         })
         .collect()
@@ -1380,7 +1521,8 @@ async fn loading_a_session_whose_agent_exited_keeps_its_history() {
     while history.len() < usize::try_from(restarted.seq).unwrap() {
         history.push(next(&mut all).await);
     }
-    assert_eq!(replayed(&history), ["agent: chunk-1"]);
+    // The history holds the echo of the prompt and its reply once.
+    assert_eq!(replayed(&history), ["user: say 1 0", "agent: chunk-1"]);
     assert_eq!(info(&client, &session.id).await.state, SessionState::Idle);
 
     client.prompt(&session.id, text("say 1 0")).await.unwrap();
@@ -1472,31 +1614,86 @@ async fn only_an_exited_session_that_started_can_be_loaded() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn loading_needs_an_agent_that_loads_sessions() {
+async fn an_agent_without_session_capabilities_cannot_run_sessions() {
     let daemon = Daemon::start(1000).await;
     let client = daemon.client().await;
-    let (session, started) = daemon.new_session_with(&client, &["--no-load"]).await;
-    let mut events = client.subscribe(&session.id, started).await.unwrap();
-    client.prompt(&session.id, text("exit 1")).await.unwrap();
-    until(&mut events, agent_exited).await;
-
-    client
-        .load_session(&session.id, BTreeMap::new())
+    let workspace = daemon.workspace(&client).await;
+    let session = client
+        .new_session(
+            &workspace.id,
+            fake_agent(&["--no-sessions"]),
+            BTreeMap::new(),
+        )
         .await
         .unwrap();
-    let failed = until(&mut events, agent_exited).await.pop().unwrap();
+    let mut events = client.subscribe(&session.id, 0).await.unwrap();
+    let exited = next(&mut events).await;
     assert!(
-        matches!(&failed.kind, EventKind::AgentExited { error: Some(error) } if error.contains("cannot load")),
-        "{failed:?}"
+        matches!(&exited.kind, EventKind::AgentExited { error: Some(error) } if error.contains("does not support sessions")),
+        "{exited:?}"
     );
-    // The session is still exited and can be loaded again.
-    let after = info(&client, &session.id).await;
-    assert_eq!(after.state, SessionState::Exited);
-    assert_eq!(after.agent_session_id, session.agent_session_id);
+    assert_eq!(info(&client, &session.id).await.state, SessionState::Exited);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_resumed_while_its_agent_is_working_runs_until_the_agent_is_idle() {
+    let mut first = Daemon::start(1000).await;
+    let client = first.client().await;
+    let workspace = first.workspace(&client).await;
+    let session = client
+        .new_session(
+            &workspace.id,
+            fake_agent(&["--busy-on-resume"]),
+            BTreeMap::new(),
+        )
+        .await
+        .unwrap();
+    let mut events = client.subscribe(&session.id, 0).await.unwrap();
+    until(&mut events, agent_started).await;
+    client.prompt(&session.id, text("pid")).await.unwrap();
+    until(&mut events, turn_ended).await;
+    drop(events);
+    drop(client);
+    first.stop().await;
+
+    let second = first.again(1000).await;
+    let client = second.client().await;
     client
         .load_session(&session.id, BTreeMap::new())
         .await
         .unwrap();
+    let mut events = client.subscribe(&session.id, 0).await.unwrap();
+    let started_seq = until(&mut events, agent_started).await.last().unwrap().seq;
+    // The agent reported `running` on resume: the session is running, and no
+    // turn began that the history saw.
+    assert_eq!(
+        info(&client, &session.id).await.state,
+        SessionState::Running
+    );
+    let refused = client.prompt(&session.id, text("pid")).await.unwrap_err();
+    assert_eq!(remote_code(refused), code::INVALID_STATE);
+
+    client.cancel(&session.id).await.unwrap();
+    let rest = until(&mut events, |kind| {
+        matches!(
+            kind,
+            EventKind::Update(SessionUpdate::StateUpdate(StateUpdate::Idle(_)))
+        )
+    })
+    .await;
+    assert_eq!(update_names(&rest), ["idle"]);
+    assert_eq!(info(&client, &session.id).await.state, SessionState::Idle);
+    let mut all = client.subscribe(&session.id, 0).await.unwrap();
+    let mut history = Vec::new();
+    while history.len() < usize::try_from(started_seq).unwrap() + 1 {
+        history.push(next(&mut all).await);
+    }
+    assert!(
+        !history
+            .iter()
+            .any(|event| event.kind == EventKind::TurnStarted)
+    );
+    client.prompt(&session.id, text("pid")).await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]

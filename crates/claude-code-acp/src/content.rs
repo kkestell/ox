@@ -1,4 +1,4 @@
-use agent_client_protocol::v1::schema::{ContentBlock, EmbeddedResourceResource};
+use agent_client_protocol::v2::schema::{ContentBlock, EmbeddedResourceResource};
 use serde_json::{Value, json};
 
 /// Image types Claude accepts.
@@ -22,7 +22,7 @@ pub fn claude_content(prompt: &[ContentBlock]) -> Result<Vec<Value>, String> {
         .iter()
         .map(|block| match block {
             ContentBlock::Text(text) => Ok(text_block(&text.text)),
-            ContentBlock::Image(image) => image_block(&image.mime_type, &image.data),
+            ContentBlock::Image(image) => image_block(image.mime_type.as_ref(), &image.data),
             ContentBlock::Audio(_) => Err("Audio prompts are not supported".to_owned()),
             ContentBlock::ResourceLink(link) => {
                 Ok(text_block(&format!("[@{}]({})", link.name, link.uri)))
@@ -33,7 +33,7 @@ pub fn claude_content(prompt: &[ContentBlock]) -> Result<Vec<Value>, String> {
                     text.uri, text.text
                 ))),
                 EmbeddedResourceResource::BlobResourceContents(blob) => {
-                    match blob.mime_type.as_deref() {
+                    match blob.mime_type.as_ref().map(AsRef::<str>::as_ref) {
                         Some("application/pdf") => Ok(json!({
                             "type": "document",
                             "source": {

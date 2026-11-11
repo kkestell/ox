@@ -77,7 +77,6 @@ enum ViewMessage {
 #[serde(rename_all = "snake_case")]
 enum Agent {
     Claude,
-    Opencode,
 }
 
 // `watch` and `view_session` are synchronous, so they run on the
@@ -149,10 +148,10 @@ fn view_session(
             loop {
                 match events.next().await {
                     Ok(event) => {
-                        if let Some(item) = conversation.apply(&event)
-                            && channel.send(ViewMessage::Item { item }).is_err()
-                        {
-                            return;
+                        for item in conversation.apply(&event) {
+                            if channel.send(ViewMessage::Item { item }).is_err() {
+                                return;
+                            }
                         }
                     }
                     Err(End::SessionClosed) => return,
@@ -198,7 +197,6 @@ async fn new_session(
                 .with_file_name("claude-code-acp");
             vec![bridge.to_string_lossy().into_owned()]
         }
-        Agent::Opencode => vec!["opencode".into(), "acp".into()],
     };
     app.client()
         .await?

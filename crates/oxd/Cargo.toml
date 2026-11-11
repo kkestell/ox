@@ -14,7 +14,7 @@ name = "oxd-fake-agent"
 path = "src/bin/oxd-fake-agent.rs"
 
 [dependencies]
-agent-client-protocol = { version = "=5.2.0", features = ["process", "stdio"] }
+agent-client-protocol = { version = "=5.2.0", features = ["process", "stdio", "unstable_protocol_v2"] }
 libc = "0.2"
 ox-protocol = { path = "../ox-protocol" }
 rusqlite = { version = "0.42.0", features = ["bundled"] }

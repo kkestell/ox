@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run opt-in smoke checks against a real ACP agent through oxd and oxctl."""
+"""Run opt-in smoke checks against Claude Code through oxd and oxctl."""
 
 import argparse
 import json
@@ -89,24 +89,44 @@ def kind(event):
     return event["kind"]["type"]
 
 
+def update(event):
+    return event["kind"]["data"] if kind(event) == "update" else {}
+
+
 def message(event):
-    return (
-        kind(event) == "update"
-        and event["kind"]["data"]["sessionUpdate"] == "agent_message_chunk"
+    return update(event).get("sessionUpdate") in (
+        "agent_message_chunk",
+        "agent_message",
     )
 
 
+def blocks_text(blocks):
+    return "".join(b.get("text", "") for b in blocks or [])
+
+
+def message_text(data):
+    """The text of a message update: a chunk's one block, or a whole
+    message's list of blocks."""
+    if "content" in data and isinstance(data["content"], dict):
+        return data["content"].get("text", "")
+    return blocks_text(data.get("content"))
+
+
 def text(events):
-    return "".join(e["kind"]["data"]["content"]["text"] for e in events if message(e))
+    return "".join(message_text(update(e)) for e in events if message(e))
 
 
 def user_text(events):
     return "".join(
-        e["kind"]["data"]["content"].get("text", "")
+        message_text(update(e))
         for e in events
-        if kind(e) == "update"
-        and e["kind"]["data"]["sessionUpdate"] == "user_message_chunk"
+        if update(e).get("sessionUpdate") in ("user_message", "user_message_chunk")
     )
+
+
+def turn_result(stop_reason):
+    """The data of a `turn_ended` event whose turn ended with `stop_reason`."""
+    return {"stop_reason": {"stopReason": stop_reason}, "error": None}
 
 
 class Attachment:
@@ -138,7 +158,7 @@ class Attachment:
 
 
 class SmokeRun:
-    def __init__(self, args, directory, binaries, executable, events, stderr):
+    def __init__(self, args, directory, binaries, events, stderr):
         self.args = args
         self.directory = directory
         self.project = directory / "project"
@@ -149,26 +169,10 @@ class SmokeRun:
         self.events = events
         self.stderr = stderr
         self.env = os.environ.copy()
-        self.agent = [executable, "acp"]
-        if args.agent == "claude":
-            self.agent = [str(binaries / "claude-code-acp")]
-            self.env.update(
-                CLAUDE_ACP_STORE_DIR=str(directory / "bridge-store"),
-            )
-        else:
-            (self.project / "opencode.json").write_text(
-                json.dumps(
-                    {
-                        "$schema": "https://opencode.ai/config.json",
-                        "model": args.model,
-                        "permissions": [
-                            {"action": "edit", "resource": "*", "effect": "ask"}
-                        ],
-                    },
-                    indent=2,
-                )
-                + "\n"
-            )
+        self.agent = [str(binaries / "claude-code-acp")]
+        self.env.update(
+            CLAUDE_ACP_STORE_DIR=str(directory / "bridge-store"),
+        )
         self.daemon = None
         self.workspace = None
         self.session = None
@@ -223,7 +227,7 @@ class SmokeRun:
     def finish(self, stop_reason="end_turn"):
         events = self.until(lambda e: kind(e) == "turn_ended")
         check(
-            events[-1]["kind"]["data"] == {"stop_reason": stop_reason, "error": None},
+            events[-1]["kind"]["data"] == turn_result(stop_reason),
             f"Unexpected turn result: {events[-1]}",
         )
         check("Error:" not in text(events), f"Agent reported an error: {text(events)}")
@@ -263,22 +267,19 @@ class SmokeRun:
         self.start_daemon()
         self.workspace = self.ctl("workspace", "add", str(self.project))
         self.session = self.ctl("new", "--workspace", self.workspace, "--", *self.agent)
-        if self.args.agent == "claude":
-            self.ctl("config", self.session, "model", self.args.model)
+        self.ctl("config", self.session, "model", self.args.model)
         self.remember_agents()
         check(self.agent_pids, "Could not find the daemon's ACP agent process")
         check("\tidle\t" in self.ctl("ls"), "New session is not idle")
         self.report(
             "real_session_created",
             session_id=self.session,
-            agent=self.args.agent,
             requested_model=self.args.model,
         )
 
         self.check_reconnect()
         self.check_permission()
-        if self.args.agent == "claude":
-            self.check_background_wake()
+        self.check_background_wake()
         self.check_cancellation()
         self.verify_model()
         self.check_load_after_restart()
@@ -450,7 +451,7 @@ class SmokeRun:
             )
             self.ctl("permit", self.session, permission["request_id"], option)
         check(
-            events[-1]["kind"]["data"] == {"stop_reason": "end_turn", "error": None},
+            events[-1]["kind"]["data"] == turn_result("end_turn"),
             f"Unexpected turn result: {events[-1]}",
         )
         output = [
@@ -465,11 +466,11 @@ class SmokeRun:
         check(output, "The Bash tool call reported no output")
         woke = self.until(lambda e: kind(e) == "turn_ended")
         check(
-            kind(woke[0]) == "turn_started",
-            f"Claude's own turn did not start with turn_started: {woke[0]}",
+            any(kind(e) == "turn_started" for e in woke),
+            f"Claude's own turn did not start with turn_started: {woke}",
         )
         check(
-            woke[-1]["kind"]["data"] == {"stop_reason": "end_turn", "error": None},
+            woke[-1]["kind"]["data"] == turn_result("end_turn"),
             f"Unexpected end of Claude's own turn: {woke[-1]}",
         )
         check(token in text(woke), f"Claude did not answer: {text(woke)}")
@@ -515,47 +516,25 @@ class SmokeRun:
         self.report("cancel_running_generation", stop_reason="cancelled")
 
     def verify_model(self):
-        if self.args.agent == "claude":
-            store = json.loads(
-                (self.directory / "bridge-store/acp-sessions.json").read_text()
-            )
-            session = next(iter(store.values()))
-            claude_dir = Path(
-                self.env.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))
-            )
-            transcript = next(
-                (claude_dir / "projects").glob(f"*/{session['claudeSessionId']}.jsonl")
-            )
-            models = set()
-            for line in transcript.read_text().splitlines():
-                model = json.loads(line).get("message", {}).get("model")
-                if model and model != "<synthetic>":
-                    models.add(model)
-            check(
-                models == {self.args.model},
-                f"Unexpected transcript models: {sorted(models)}",
-            )
-        else:
-            sessions = json.loads(
-                command(
-                    [self.agent[0], "session", "list", "--format", "json"],
-                    cwd=self.project,
-                )
-            )
-            session = next(s for s in sessions if s["directory"] == str(self.project))
-            exported = command(
-                [self.agent[0], "session", "export", session["id"]], cwd=self.project
-            )
-            (self.directory / "native-session.json").write_text(exported + "\n")
-            models = {
-                f"{m['model']['providerID']}/{m['model']['id']}"
-                for m in json.loads(exported)["messages"]
-                if m["type"] == "assistant"
-            }
-            check(
-                models == {self.args.model},
-                f"Unexpected transcript models: {sorted(models)}",
-            )
+        store = json.loads(
+            (self.directory / "bridge-store/acp-sessions.json").read_text()
+        )
+        session = next(iter(store.values()))
+        claude_dir = Path(
+            self.env.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))
+        )
+        transcript = next(
+            (claude_dir / "projects").glob(f"*/{session['claudeSessionId']}.jsonl")
+        )
+        models = set()
+        for line in transcript.read_text().splitlines():
+            model = json.loads(line).get("message", {}).get("model")
+            if model and model != "<synthetic>":
+                models.add(model)
+        check(
+            models == {self.args.model},
+            f"Unexpected transcript models: {sorted(models)}",
+        )
         self.report("model_verified", models=sorted(models))
 
     def cleanup(self):
@@ -591,7 +570,6 @@ def positive_seconds(value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("agent", choices=("claude", "opencode"))
     parser.add_argument("--model", required=True, help="Model ID; no fallback")
     parser.add_argument(
         "--timeout",
@@ -600,11 +578,8 @@ def main():
         help="Seconds per command or event phase (default: 120)",
     )
     args = parser.parse_args()
-    executable = shutil.which(args.agent)
-    check(executable, f"{args.agent} is not installed or is not on PATH")
-    packages = ["oxd", "oxctl"] + (
-        ["claude-code-acp"] if args.agent == "claude" else []
-    )
+    check(shutil.which("claude"), "claude is not installed or is not on PATH")
+    packages = ["oxd", "oxctl", "claude-code-acp"]
     subprocess.run(
         ["cargo", "build", *[flag for p in packages for flag in ("-p", p)]],
         cwd=REPO,
@@ -621,7 +596,7 @@ def main():
         (directory / "attach.stderr.log").open("w") as stderr,
         (directory / "oxd.log").open("w") as daemon_log,
     ):
-        run = SmokeRun(args, directory, binaries, executable, events, stderr)
+        run = SmokeRun(args, directory, binaries, events, stderr)
         try:
             try:
                 run.run(daemon_log)

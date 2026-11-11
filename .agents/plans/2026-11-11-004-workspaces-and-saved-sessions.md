@@ -192,9 +192,3 @@ Each item fails without the change it covers.
 
 `make check`, `make e2e`, and `make smoke-claude`, each reported with its
 result.
-
-## Unverified
-
-- Whether `opencode acp` advertises `loadSession`. If it does not,
-  `session.load` on a saved OpenCode session fails with "the agent cannot
-  load sessions" and the session stays `exited`.

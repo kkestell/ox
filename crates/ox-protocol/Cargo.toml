@@ -6,7 +6,7 @@ license = "MIT"
 description = "Wire types and client for the oxd session daemon"
 
 [dependencies]
-agent-client-protocol = "=5.2.0"
+agent-client-protocol = { version = "=5.2.0", features = ["unstable_protocol_v2"] }
 dirs = "7"
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }

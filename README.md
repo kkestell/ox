@@ -56,12 +56,10 @@ WebDriver server, and runs the WebdriverIO specs in `ui/e2e` against it. The
 specs start sessions of `oxd-fake-agent`, a scripted ACP agent, with `oxctl`
 and drive them through the app's UI.
 
-Run live ACP smoke checks with an installed, authenticated Claude Code or
-OpenCode CLI:
+Run live ACP smoke checks with an installed, authenticated Claude Code CLI:
 
 ```sh
 make smoke-claude     # claude-haiku-5-5
-make smoke-opencode   # openai/gpt-6-luna
 ```
 
 These opt-in checks build the required Rust binaries and exercise streaming,
@@ -73,8 +71,7 @@ directory containing its results, events, logs, and test project.
 To select a model explicitly or change the default 120-second timeout per phase:
 
 ```sh
-python3 scripts/smoke-acp.py claude --model claude-haiku-5-5 --timeout 180
-python3 scripts/smoke-acp.py opencode --model openai/gpt-6-luna
+python3 scripts/smoke-acp.py --model claude-haiku-5-5 --timeout 180
 ```
 
-The Make shortcuts also accept `CLAUDE_MODEL` or `OPENCODE_MODEL` overrides.
+`make smoke-claude` also accepts a `CLAUDE_MODEL` override.

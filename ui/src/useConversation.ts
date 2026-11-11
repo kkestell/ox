@@ -10,7 +10,7 @@ const empty: State = new Map();
 type Action = { type: "clear" } | { type: "item"; item: Item };
 
 // An item creates the entry for its key or replaces it; text and thought
-// items append their text to it.
+// items append their text to it unless they replace it.
 function reduce(state: State, action: Action): State {
   if (action.type === "clear") return empty;
   const { item } = action;
@@ -18,6 +18,7 @@ function reduce(state: State, action: Action): State {
   const next =
     existing !== undefined &&
     (item.type === "text" || item.type === "thought") &&
+    !item.replace &&
     existing.type === item.type
       ? { ...item, text: existing.text + item.text }
       : item;

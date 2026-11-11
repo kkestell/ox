@@ -1,14 +1,14 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     future::Future,
     sync::{Arc, Mutex},
 };
 
-use agent_client_protocol::v1::ConnectionTo;
-use agent_client_protocol::v1::schema::{
+use agent_client_protocol::v2::schema::{
     self as acp, SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption,
     SessionUpdate,
 };
+use agent_client_protocol::v2::{ConnectionTo, Responder};
 use agent_client_protocol::{Client, Error};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use tokio::sync::oneshot;
@@ -18,23 +18,11 @@ use crate::{
     config::Config,
     content,
     history::{History, HistoryEntry},
-    runner::{Claude, McpServer, Refused, RunError, RunOutcome, StartRequest, stop_reason},
+    runner::{Claude, McpServer, StartRequest, TurnEnd},
     store::{Session, Store},
-    updates::{Updates, error_message, notify},
+    updates::{Updates, notify},
     validation,
 };
-
-/// A prompt sent to its session's claude.
-struct Turn {
-    id: String,
-    session: Session,
-    /// The receiver of the turn's outcome, or why claude could not start.
-    outcome: Result<oneshot::Receiver<RunOutcome>, String>,
-}
-
-/// Held until a prompt's response is sent; claude's output after the turn
-/// waits for it to drop.
-pub type Responding = Option<oneshot::Sender<()>>;
 
 /// A config option to change.
 enum Setting {
@@ -53,6 +41,9 @@ struct ConfigChange {
 pub struct Bridge {
     store: Store,
     history: History,
+    /// The sessions opened with `session/new` or `session/resume` and not
+    /// closed.
+    active: Mutex<HashSet<String>>,
     /// The claude of each session that has taken a prompt.
     claudes: Mutex<HashMap<String, Claude>>,
 }
@@ -62,60 +53,70 @@ impl Bridge {
         Arc::new(Self {
             history: History::new(&config.claude_dir),
             store: Store::new(config.store_dir),
+            active: Mutex::new(HashSet::new()),
             claudes: Mutex::new(HashMap::new()),
         })
     }
 
     pub fn initialize(request: &acp::InitializeRequest) -> acp::InitializeResponse {
-        acp::InitializeResponse::new(request.protocol_version)
-            .agent_info(
-                acp::Implementation::new("claude-code-acp", env!("CARGO_PKG_VERSION"))
-                    .title("Claude Code ACP Bridge"),
-            )
-            .agent_capabilities(
-                acp::AgentCapabilities::new()
-                    .load_session(true)
-                    .prompt_capabilities(
+        acp::InitializeResponse::new(
+            request.protocol_version,
+            acp::Implementation::new("claude-code-acp", env!("CARGO_PKG_VERSION"))
+                .title("Claude Code ACP Bridge"),
+        )
+        .capabilities(
+            acp::AgentCapabilities::new().session(
+                acp::SessionCapabilities::new()
+                    .prompt(
                         acp::PromptCapabilities::new()
-                            .image(true)
-                            .embedded_context(true),
+                            .image(acp::PromptImageCapabilities::new())
+                            .embedded_context(acp::PromptEmbeddedContextCapabilities::new()),
                     )
-                    .session_capabilities(
-                        acp::SessionCapabilities::new()
-                            .list(acp::SessionListCapabilities::new())
-                            .resume(acp::SessionResumeCapabilities::new()),
-                    ),
-            )
+                    .mcp(acp::McpCapabilities::new().stdio(acp::McpStdioCapabilities::new())),
+            ),
+        )
     }
 
     pub fn new_session(
         &self,
         request: acp::NewSessionRequest,
     ) -> std::result::Result<acp::NewSessionResponse, Error> {
-        let cwd = validation::cwd(&request.cwd).map_err(invalid)?;
+        let cwd = validation::cwd(&request.cwd.0).map_err(invalid)?;
         let servers = parse_mcp(request.mcp_servers)?;
         let id = Uuid::new_v4().simple().to_string();
         let session = Session::new(cwd, servers);
         self.store.create(id.clone(), &session);
+        self.active.lock().unwrap().insert(id.clone());
         Ok(acp::NewSessionResponse::new(id).config_options(Self::options(&session)))
     }
 
-    /// Opens a session and replays its conversation from Claude's
-    /// transcript before answering, as `session/load` requires.
-    pub fn load_session(
+    /// Opens a session. `replayFrom: start` replays its conversation from
+    /// Claude's transcript first. The session's current state follows, and
+    /// then the response.
+    pub fn resume_session(
         &self,
-        request: acp::LoadSessionRequest,
+        request: acp::ResumeSessionRequest,
         connection: &ConnectionTo<Client>,
-    ) -> std::result::Result<acp::LoadSessionResponse, Error> {
+    ) -> std::result::Result<acp::ResumeSessionResponse, Error> {
+        let replay = match request.replay_from {
+            None => false,
+            Some(acp::ReplayFrom::Start(_)) => true,
+            Some(_) => return Err(invalid("Unsupported replay cursor")),
+        };
         let id = request.session_id.to_string();
-        let session = self.open(&id, &request.cwd, request.mcp_servers)?;
-        if let Some(claude_id) = &session.claude_session_id {
+        let session = self.open(&id, &request.cwd.0, request.mcp_servers)?;
+        if replay && let Some(claude_id) = &session.claude_session_id {
             Updates::new(connection.clone(), &id, &session.cwd).replay(
                 self.history.messages(claude_id, &session.cwd),
                 self.history.subagents(claude_id, &session.cwd),
             );
         }
-        Ok(acp::LoadSessionResponse::new().config_options(Self::options(&session)))
+        let state = match self.claudes.lock().unwrap().get(&id) {
+            Some(claude) => claude.state(),
+            None => acp::StateUpdate::Idle(acp::IdleStateUpdate::new()),
+        };
+        notify(connection, &id, SessionUpdate::StateUpdate(state));
+        Ok(acp::ResumeSessionResponse::new().config_options(Self::options(&session)))
     }
 
     pub fn list_sessions(
@@ -124,12 +125,15 @@ impl Bridge {
     ) -> std::result::Result<acp::ListSessionsResponse, Error> {
         let mut history: HashMap<String, HistoryEntry> = self
             .history
-            .list(request.cwd.as_deref())
+            .list(request.cwd.as_ref().map(|cwd| cwd.0.as_path()))
             .into_iter()
             .map(|entry| (entry.id.clone(), entry))
             .collect();
         let mut entries = Vec::new();
-        for (id, session) in self.store.list(request.cwd.as_deref()) {
+        for (id, session) in self
+            .store
+            .list(request.cwd.as_ref().map(|cwd| cwd.0.as_path()))
+        {
             let transcript = session
                 .claude_session_id
                 .as_ref()
@@ -160,7 +164,7 @@ impl Bridge {
         });
         let offset = if let Some(cursor) = request.cursor {
             let id = URL_SAFE_NO_PAD
-                .decode(cursor)
+                .decode(cursor.as_ref() as &str)
                 .ok()
                 .and_then(|s| String::from_utf8(s).ok())
                 .ok_or_else(|| invalid("Invalid session list cursor"))?;
@@ -181,17 +185,8 @@ impl Bridge {
         };
         Ok(
             acp::ListSessionsResponse::new(entries.into_iter().skip(offset).take(50).collect())
-                .next_cursor(next),
+                .next_cursor(next.map(acp::SessionListCursor::new)),
         )
-    }
-
-    pub fn resume_session(
-        &self,
-        request: acp::ResumeSessionRequest,
-    ) -> std::result::Result<acp::ResumeSessionResponse, Error> {
-        let id = request.session_id.to_string();
-        let session = self.open(&id, &request.cwd, request.mcp_servers)?;
-        Ok(acp::ResumeSessionResponse::new().config_options(Self::options(&session)))
     }
 
     /// Finds a bridge session, or a Claude session from its transcripts,
@@ -225,7 +220,21 @@ impl Bridge {
                 format!("Claude Code session {id} not found"),
             ));
         }
+        self.active.lock().unwrap().insert(id.to_owned());
         self.require(id)
+    }
+
+    /// Closes a session: its claude stops and the session must be resumed
+    /// to take another prompt. The returned future finishes once claude has
+    /// exited. A session that is not open closes without effect.
+    pub fn close_session(&self, id: &str) -> impl Future<Output = ()> + Send + 'static {
+        self.active.lock().unwrap().remove(id);
+        let claude = self.claudes.lock().unwrap().remove(id);
+        async move {
+            if let Some(claude) = claude {
+                claude.stop().await;
+            }
+        }
     }
 
     /// Sends a config change to its session's claude and returns the future
@@ -250,11 +259,10 @@ impl Bridge {
     ) -> std::result::Result<ConfigChange, Error> {
         let id = request.session_id.to_string();
         self.require(&id)?;
-        let value = request
-            .value
-            .as_value_id()
-            .ok_or_else(|| invalid("Expected a select value"))?
-            .to_string();
+        let acp::SessionConfigOptionValue::Id { value } = &request.value else {
+            return Err(invalid("Expected a select value"));
+        };
+        let value = value.to_string();
         let claudes = self.claudes.lock().unwrap();
         let claude = claudes.get(&id);
         let (setting, accepted) = match request.config_id.to_string().as_str() {
@@ -313,47 +321,39 @@ impl Bridge {
         }
     }
 
-    /// Sends a prompt to its session's claude and returns the future that
-    /// waits for its turn. The prompt is sent before the future is first
-    /// polled, so a cancel that arrives right after the prompt stops this
-    /// turn. The future also returns what to drop once the response is sent.
+    /// Sends a prompt to its session's claude, which answers `responder`
+    /// once it takes the prompt into a turn. The prompt is sent before this
+    /// returns, so a cancel that arrives right after the prompt drops it.
     pub fn prompt(
         self: &Arc<Self>,
         request: &acp::PromptRequest,
-        connection: ConnectionTo<Client>,
-    ) -> impl Future<Output = (std::result::Result<acp::PromptResponse, Error>, Responding)>
-    + Send
-    + 'static {
-        let turn = self.start_turn(request, &connection);
-        let bridge = self.clone();
-        async move {
-            match turn {
-                Ok(turn) => {
-                    let (response, responding) = bridge.finish_turn(turn, &connection).await;
-                    (Ok(response), responding)
-                }
-                Err(error) => (Err(error), None),
-            }
-        }
-    }
-
-    fn start_turn(
-        &self,
-        request: &acp::PromptRequest,
+        responder: Responder<acp::PromptResponse>,
         connection: &ConnectionTo<Client>,
-    ) -> std::result::Result<Turn, Error> {
+    ) -> agent_client_protocol::Result<()> {
         let id = request.session_id.to_string();
-        let session = self.require(&id)?;
-        let content = content::claude_content(&request.prompt).map_err(invalid)?;
+        let session = match self.require(&id) {
+            Ok(session) => session,
+            Err(error) => return responder.respond_with_error(error),
+        };
+        let content = match content::claude_content(&request.prompt) {
+            Ok(content) => content,
+            Err(error) => return responder.respond_with_error(invalid(error)),
+        };
         let text = content::prompt_text(&request.prompt);
+        let message_id = Uuid::new_v4().to_string();
 
         let mut claudes = self.claudes.lock().unwrap();
-        let outcome = match claudes.get(&id).map(|claude| claude.prompt(&content)) {
-            Some(Ok(outcome)) => Ok(outcome),
-            Some(Err(Refused::Busy)) => return Err(invalid(Refused::Busy.to_string())),
-            // The session's claude has exited or it has none yet, so the
-            // prompt goes to a new one, which continues the conversation.
-            Some(Err(Refused::Exited(_))) | None => Claude::start(
+        // A session whose claude has exited or that has none yet starts a
+        // new one, which continues the conversation.
+        let responder = match claudes.get(&id) {
+            Some(claude) => claude
+                .prompt(&message_id, request.prompt.clone(), &content, responder)
+                .err()
+                .map(|responder| *responder),
+            None => Some(responder),
+        };
+        if let Some(responder) = responder {
+            let claude = Claude::start(
                 &StartRequest {
                     cwd: &session.cwd,
                     resume: session.claude_session_id.as_deref(),
@@ -362,13 +362,20 @@ impl Bridge {
                     mcp_servers: &session.mcp_servers,
                 },
                 Updates::new(connection.clone(), &id, &session.cwd),
-            )
-            .and_then(|claude| {
-                let outcome = claude.prompt(&content);
-                claudes.insert(id.clone(), claude);
-                outcome.map_err(|refused| refused.to_string())
-            }),
-        };
+                self.turn_recorder(&id, &session.cwd, connection),
+            );
+            match claude {
+                Ok(claude) => {
+                    if let Err(responder) =
+                        claude.prompt(&message_id, request.prompt.clone(), &content, responder)
+                    {
+                        return responder.respond_with_error(Error::new(-32603, "claude exited"));
+                    }
+                    claudes.insert(id.clone(), claude);
+                }
+                Err(error) => return responder.respond_with_error(Error::new(-32603, error)),
+            }
+        }
         drop(claudes);
 
         if session.title.is_none() && !text.trim().is_empty() {
@@ -387,68 +394,52 @@ impl Bridge {
                 SessionUpdate::SessionInfoUpdate(acp::SessionInfoUpdate::new().title(title)),
             );
         }
-        Ok(Turn {
-            id,
-            session,
-            outcome,
+        Ok(())
+    }
+
+    /// What a session's claude calls when a turn ends: it saves the Claude
+    /// session ID and tells the client the session was updated.
+    fn turn_recorder(
+        self: &Arc<Self>,
+        id: &str,
+        cwd: &std::path::Path,
+        connection: &ConnectionTo<Client>,
+    ) -> Arc<dyn Fn(TurnEnd) + Send + Sync> {
+        let bridge = self.clone();
+        let id = id.to_owned();
+        let cwd = cwd.to_owned();
+        let connection = connection.clone();
+        Arc::new(move |end| {
+            // A turn that did not finish only keeps its Claude session when
+            // Claude saved a transcript that `--resume` can continue.
+            let claude_id = end
+                .session_id
+                .filter(|claude_id| end.finished || bridge.history.find(claude_id, &cwd));
+            if let Some(claude_id) = claude_id {
+                bridge.store.update(&id, |session| {
+                    session.claude_session_id = Some(claude_id);
+                });
+            }
+            if end.finished
+                && let Some(session) = bridge.store.get(&id)
+            {
+                notify(
+                    &connection,
+                    &id,
+                    SessionUpdate::SessionInfoUpdate(
+                        acp::SessionInfoUpdate::new().updated_at(session.updated_at),
+                    ),
+                );
+            }
         })
     }
 
-    async fn finish_turn(
-        &self,
-        turn: Turn,
-        connection: &ConnectionTo<Client>,
-    ) -> (acp::PromptResponse, Responding) {
-        let Turn {
-            id,
-            session,
-            outcome,
-        } = turn;
-        let id = id.as_str();
-        let failed = |error: String| RunOutcome {
-            session_id: None,
-            result: Err(RunError::Failed(error)),
-            responding: None,
-        };
-        let outcome = match outcome {
-            Ok(outcome) => outcome
-                .await
-                .unwrap_or_else(|_| failed("claude stopped".into())),
-            Err(error) => failed(error),
-        };
-        // A turn that did not finish only keeps its Claude session when Claude
-        // saved a transcript that `--resume` can continue.
-        let claude_id = outcome.session_id.filter(|claude_id| {
-            outcome.result.is_ok() || self.history.find(claude_id, &session.cwd)
-        });
-        if let Some(claude_id) = claude_id {
-            self.store.update(id, |session| {
-                session.claude_session_id = Some(claude_id);
-            });
-        }
-        match &outcome.result {
-            Ok(_) => {
-                if let Some(session) = self.store.get(id) {
-                    notify(
-                        connection,
-                        id,
-                        SessionUpdate::SessionInfoUpdate(
-                            acp::SessionInfoUpdate::new().updated_at(session.updated_at),
-                        ),
-                    );
-                }
-            }
-            Err(RunError::Cancelled) => {}
-            Err(RunError::Failed(error)) => notify(connection, id, error_message(error)),
-        }
-        let stop_reason = stop_reason(&outcome.result);
-        (acp::PromptResponse::new(stop_reason), outcome.responding)
-    }
-
+    /// A session opened on this connection.
     fn require(&self, id: &str) -> std::result::Result<Session, Error> {
         self.store
             .get(id)
-            .ok_or_else(|| Error::new(-32002, format!("Session {id} not found")))
+            .filter(|_| self.active.lock().unwrap().contains(id))
+            .ok_or_else(|| acp::Error::session_not_found(id.to_owned()).into())
     }
 
     fn options(session: &Session) -> Vec<SessionConfigOption> {
@@ -523,18 +514,17 @@ fn mode_options() -> Vec<SessionConfigSelectOption> {
 fn parse_mcp(servers: Vec<acp::McpServer>) -> std::result::Result<Vec<McpServer>, Error> {
     servers
         .into_iter()
-        .filter_map(|server| match server {
-            acp::McpServer::Stdio(server) => Some(server),
-            _ => None,
-        })
         .map(|server| {
-            validation::mcp_command(&server.command).map_err(invalid)?;
+            let acp::McpServer::Stdio(server) = server else {
+                return Err(invalid("only stdio MCP servers are supported"));
+            };
+            validation::mcp_command(&server.command.0).map_err(invalid)?;
             for arg in &server.args {
                 validation::mcp_arg(arg).map_err(invalid)?;
             }
             Ok(McpServer {
                 name: server.name,
-                command: server.command.to_string_lossy().into_owned(),
+                command: server.command.0.to_string_lossy().into_owned(),
                 args: server.args,
                 env: server
                     .env

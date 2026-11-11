@@ -108,17 +108,90 @@ async fn response(reader: &mut BufReader<ChildStdout>, id: i64) -> (Value, Vec<V
     }
 }
 
+/// The `session/update` update of a notification.
+fn update(notification: &Value) -> &Value {
+    &notification["params"]["update"]
+}
+
+/// The text an update shows: a chunk's, or the first block of a whole
+/// message.
+fn shown_text(notification: &Value) -> Option<&str> {
+    let content = &update(notification)["content"];
+    content["text"]
+        .as_str()
+        .or_else(|| content[0]["text"].as_str())
+}
+
+fn is_state(notification: &Value, state: &str) -> bool {
+    notification["method"] == "session/update"
+        && update(notification)["sessionUpdate"] == "state_update"
+        && update(notification)["state"] == state
+}
+
+/// Reads until the prompt `id` is answered and its turn goes idle, with
+/// what was `seen` already, and checks that the response names the user
+/// message the bridge echoed. Returns the idle update, and the
+/// notifications from `seen` and after.
+async fn finish(
+    reader: &mut BufReader<ChildStdout>,
+    id: i64,
+    mut seen: Vec<Value>,
+) -> (Value, Vec<Value>) {
+    let idle = loop {
+        let answered = seen.iter().position(|value| value["id"] == id);
+        if let Some(answered) = answered
+            && let Some(idle) = seen[answered..].iter().find(|v| is_state(v, "idle"))
+        {
+            break update(idle).clone();
+        }
+        seen.push(receive(reader).await);
+    };
+    let response = seen.iter().find(|value| value["id"] == id).unwrap();
+    let message_id = &response["result"]["messageId"];
+    assert!(message_id.is_string(), "{response}");
+    assert!(
+        seen.iter().any(|value| {
+            update(value)["sessionUpdate"] == "user_message"
+                && update(value)["messageId"] == *message_id
+        }),
+        "no user message {message_id} in {seen:?}"
+    );
+    seen.retain(|value| value["method"] == "session/update");
+    (idle, seen)
+}
+
+/// Reads until the prompt `id` is answered and its turn goes idle.
+async fn finished(reader: &mut BufReader<ChildStdout>, id: i64) -> (Value, Vec<Value>) {
+    finish(reader, id, Vec::new()).await
+}
+
+/// Reads until the client gets a permission request. Returns it and what
+/// was read before it.
+async fn until_permission(reader: &mut BufReader<ChildStdout>) -> (Value, Vec<Value>) {
+    let mut seen = Vec::new();
+    loop {
+        let value = receive(reader).await;
+        if value["method"] == "session/request_permission" {
+            return (value, seen);
+        }
+        seen.push(value);
+    }
+}
+
 async fn initialize(child: &mut Child, reader: &mut BufReader<ChildStdout>) {
     send(
         child,
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
-            "protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"test","version":"1"}
+            "protocolVersion":2,"capabilities":{},"info":{"name":"test","version":"1"}
         }}),
     )
     .await;
     let (value, _) = response(reader, 1).await;
-    assert_eq!(value["result"]["protocolVersion"], 1);
-    assert_eq!(value["result"]["agentCapabilities"]["loadSession"], true);
+    assert_eq!(value["result"]["protocolVersion"], 2);
+    let session = &value["result"]["capabilities"]["session"];
+    assert!(session["prompt"]["image"].is_object(), "{value}");
+    assert!(session["prompt"]["embeddedContext"].is_object(), "{value}");
+    assert!(session["mcp"]["stdio"].is_object(), "{value}");
 }
 
 #[tokio::test]
@@ -163,7 +236,7 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
         .iter()
         .find(|option| option["category"] == "mode")
         .expect("mode config option");
-    assert_eq!(mode["id"], "mode");
+    assert_eq!(mode["configId"], "mode");
     assert_eq!(mode["currentValue"], "manual");
     assert_eq!(mode["options"].as_array().unwrap().len(), 4);
     assert_eq!(
@@ -174,7 +247,7 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
     send(
         &mut child,
         json!({"jsonrpc":"2.0","id":7,"method":"session/set_config_option","params":{
-            "sessionId":id,"configId":"mode","value":"plan"
+            "sessionId":id,"configId":"mode","type":"id","value":"plan"
         }}),
     )
     .await;
@@ -183,7 +256,7 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
         .as_array()
         .unwrap()
         .iter()
-        .find(|option| option["id"] == "mode")
+        .find(|option| option["configId"] == "mode")
         .unwrap();
     assert_eq!(mode["currentValue"], "plan");
     assert!(
@@ -195,7 +268,7 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
     send(
         &mut child,
         json!({"jsonrpc":"2.0","id":3,"method":"session/set_config_option","params":{
-            "sessionId":id,"configId":"model","value":"claude-opus-5-5"
+            "sessionId":id,"configId":"model","type":"id","value":"claude-opus-5-5"
         }}),
     )
     .await;
@@ -212,8 +285,8 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
         }}),
     )
     .await;
-    let (prompt, updates) = response(&mut reader, 4).await;
-    assert_eq!(prompt["result"]["stopReason"], "end_turn");
+    let (idle, updates) = finished(&mut reader, 4).await;
+    assert_eq!(idle["stopReason"], "end_turn");
     let texts: Vec<_> = updates
         .iter()
         .filter(|v| v["params"]["update"]["sessionUpdate"] == "agent_message_chunk")
@@ -223,7 +296,7 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
     assert!(
         updates
             .iter()
-            .any(|v| v["params"]["update"]["sessionUpdate"] == "tool_call")
+            .any(|v| v["params"]["update"]["sessionUpdate"] == "tool_call_update")
     );
     assert!(store.join("acp-sessions.json").exists());
     child.kill().await.unwrap();
@@ -255,7 +328,7 @@ async fn set_config(
     config: &str,
     value: &str,
 ) -> Value {
-    send(child, json!({"jsonrpc":"2.0","id":request_id,"method":"session/set_config_option","params":{"sessionId":session,"configId":config,"value":value}})).await;
+    send(child, json!({"jsonrpc":"2.0","id":request_id,"method":"session/set_config_option","params":{"sessionId":session,"configId":config,"type":"id","value":value}})).await;
     response(reader, request_id).await.0
 }
 
@@ -303,7 +376,7 @@ done
     assert!(
         updates
             .iter()
-            .any(|v| v["params"]["update"]["content"]["text"] == "manual claude-opus-5-5"),
+            .any(|v| shown_text(v) == Some("manual claude-opus-5-5")),
         "{updates:?}"
     );
 
@@ -320,7 +393,7 @@ done
     assert!(
         updates
             .iter()
-            .any(|v| v["params"]["update"]["content"]["text"] == "plan claude-haiku-5-5"),
+            .any(|v| shown_text(v) == Some("plan claude-haiku-5-5")),
         "{updates:?}"
     );
     send(&mut child, json!({"jsonrpc":"2.0","id":8,"method":"session/resume","params":{"sessionId":session,"cwd":project,"mcpServers":[]}})).await;
@@ -351,28 +424,26 @@ next_message
     initialize(&mut child, &mut reader).await;
     let session = new_session(&mut child, &mut reader, 2, &project).await;
     send(&mut child, json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session,"prompt":[{"type":"text","text":"wait"}]}})).await;
-    until_text(&mut reader, "started").await;
+    let seen = until_text(&mut reader, "started").await;
     send(
         &mut child,
         json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session}}),
     )
     .await;
-    let (result, updates) = response(&mut reader, 3).await;
-    assert_eq!(result["result"]["stopReason"], "cancelled", "{result}");
-    // Claude's note that it was interrupted is not something the user said.
-    assert!(
-        !updates
-            .iter()
-            .any(|v| v["params"]["update"]["sessionUpdate"] == "user_message_chunk"),
-        "{updates:?}"
-    );
+    let (result, updates) = finish(&mut reader, 3, seen).await;
+    assert_eq!(result["stopReason"], "cancelled", "{result}");
+    // Claude's note that it was interrupted is not something the user said:
+    // the prompt is the only user message.
+    let user_messages = updates
+        .iter()
+        .filter(|v| update(v)["sessionUpdate"] == "user_message")
+        .count();
+    assert_eq!(user_messages, 1, "{updates:?}");
 
     let (result, updates) = prompt(&mut child, &mut reader, 4, &session).await;
-    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+    assert_eq!(result["stopReason"], "end_turn", "{result}");
     assert!(
-        updates
-            .iter()
-            .any(|v| v["params"]["update"]["content"]["text"] == "again"),
+        updates.iter().any(|v| shown_text(v) == Some("again")),
         "{updates:?}"
     );
     assert_eq!(calls(&project).len(), 1);
@@ -414,33 +485,25 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
         }}),
     )
     .await;
-    let mut before = Vec::new();
-    let permission = loop {
-        let value = receive(&mut reader).await;
-        if value["method"] == "session/request_permission" {
-            break value;
-        }
-        before.push(value);
-    };
+    let (permission, before) = until_permission(&mut reader).await;
+    // The turn requires action while the request is open.
+    let states: Vec<&str> = before
+        .iter()
+        .filter(|v| update(v)["sessionUpdate"] == "state_update")
+        .map(|v| update(v)["state"].as_str().unwrap())
+        .collect();
+    assert_eq!(states, ["running", "requires_action"], "{before:?}");
+    let tool_call = &permission["params"]["subject"]["toolCall"];
+    assert_eq!(tool_call["toolCallId"], "tool-1", "{permission}");
     assert_eq!(
-        before
-            .iter()
-            .filter(|value| value["params"]["update"]["sessionUpdate"] == "tool_call")
-            .count(),
-        1
-    );
-    assert_eq!(permission["params"]["toolCall"]["toolCallId"], "tool-1");
-    assert_eq!(
-        permission["params"]["toolCall"]["title"],
+        permission["params"]["title"],
         "touch /tmp/claude-approval-test"
     );
     assert_eq!(
-        permission["params"]["toolCall"]["rawInput"]["command"],
+        tool_call["rawInput"]["command"],
         "touch /tmp/claude-approval-test"
     );
-    let content = permission["params"]["toolCall"]["content"][0]["content"]["text"]
-        .as_str()
-        .unwrap();
+    let content = tool_call["content"][0]["content"]["text"].as_str().unwrap();
     assert!(content.contains("touch /tmp/claude-approval-test"));
     assert!(content.contains(project.to_str().unwrap()));
     send(
@@ -450,21 +513,23 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
         }}),
     )
     .await;
-    let (prompt, updates) = response(&mut reader, 3).await;
-    assert_eq!(prompt["result"]["stopReason"], "end_turn");
-    assert!(
-        updates
-            .iter()
-            .any(|v| v["params"]["update"]["content"]["text"] == "approved")
-    );
-    let statuses: Vec<&Value> = before
+    let (idle, updates) = finish(&mut reader, 3, before).await;
+    assert_eq!(idle["stopReason"], "end_turn");
+    assert!(updates.iter().any(|v| shown_text(v) == Some("approved")));
+    let statuses: Vec<&Value> = updates
         .iter()
-        .chain(&updates)
-        .filter(|v| v["params"]["update"]["toolCallId"] == "tool-1")
-        .map(|v| &v["params"]["update"]["status"])
+        .filter(|v| update(v)["toolCallId"] == "tool-1")
+        .map(|v| &update(v)["status"])
         .filter(|status| !status.is_null())
         .collect();
-    assert_eq!(statuses, ["pending", "in_progress", "completed"]);
+    assert_eq!(statuses, ["pending", "pending", "in_progress", "completed"]);
+    // The turn runs again once the request is answered.
+    let states: Vec<&str> = updates
+        .iter()
+        .filter(|v| update(v)["sessionUpdate"] == "state_update")
+        .map(|v| update(v)["state"].as_str().unwrap())
+        .collect();
+    assert_eq!(states, ["running", "requires_action", "running", "idle"]);
     child.kill().await.unwrap();
 }
 
@@ -495,12 +560,7 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
     let (new, _) = response(&mut reader, 2).await;
     let id = new["result"]["sessionId"].as_str().unwrap().to_owned();
     send(&mut child, json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":id,"prompt":[{"type":"text","text":"test permissions"}]}})).await;
-    let first = loop {
-        let value = receive(&mut reader).await;
-        if value["method"] == "session/request_permission" {
-            break value;
-        }
-    };
+    let (first, mut seen) = until_permission(&mut reader).await;
     assert!(
         first["params"]["options"]
             .as_array()
@@ -509,12 +569,8 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
             .any(|option| option["optionId"] == "allow_always")
     );
     send(&mut child, json!({"jsonrpc":"2.0","id":first["id"],"result":{"outcome":{"outcome":"selected","optionId":"allow_always"}}})).await;
-    let second = loop {
-        let value = receive(&mut reader).await;
-        if value["method"] == "session/request_permission" {
-            break value;
-        }
-    };
+    let (second, more) = until_permission(&mut reader).await;
+    seen.extend(more);
     assert!(
         !second["params"]["options"]
             .as_array()
@@ -523,8 +579,8 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
             .any(|option| option["optionId"] == "allow_always")
     );
     send(&mut child, json!({"jsonrpc":"2.0","id":second["id"],"result":{"outcome":{"outcome":"selected","optionId":"reject_once"}}})).await;
-    let (prompt, _) = response(&mut reader, 3).await;
-    assert_eq!(prompt["result"]["stopReason"], "end_turn", "{prompt}");
+    let (idle, _) = finish(&mut reader, 3, seen).await;
+    assert_eq!(idle["stopReason"], "end_turn", "{idle}");
     child.kill().await.unwrap();
 }
 
@@ -553,19 +609,28 @@ next_message
     initialize(&mut child, &mut reader).await;
     let session = new_session(&mut child, &mut reader, 2, &project).await;
     send(&mut child, json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session,"prompt":[{"type":"text","text":"run pwd"}]}})).await;
-    let permission = loop {
-        let value = receive(&mut reader).await;
-        if value["method"] == "session/request_permission" {
-            break value;
-        }
-    };
+    let (permission, seen) = until_permission(&mut reader).await;
     send(
         &mut child,
         json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session}}),
     )
     .await;
-    let (result, updates) = response(&mut reader, 3).await;
-    assert_eq!(result["result"]["stopReason"], "cancelled", "{result}");
+    let (result, updates) = finish(&mut reader, 3, seen).await;
+    assert_eq!(result["stopReason"], "cancelled", "{result}");
+    // The withdrawn request no longer requires action: the turn runs until
+    // it ends, whether or not the client sees that in between.
+    let states: Vec<&str> = updates
+        .iter()
+        .filter(|v| update(v)["sessionUpdate"] == "state_update")
+        .map(|v| update(v)["state"].as_str().unwrap())
+        .collect();
+    let (last, rest) = states.split_last().unwrap();
+    assert_eq!(*last, "idle", "{updates:?}");
+    assert_eq!(rest[..2], ["running", "requires_action"], "{updates:?}");
+    assert!(
+        rest[2..].iter().all(|state| *state == "running"),
+        "{states:?}"
+    );
     // An answer to the withdrawn request does not reach claude.
     send(
         &mut child,
@@ -581,11 +646,9 @@ next_message
     );
 
     let (result, updates) = prompt(&mut child, &mut reader, 4, &session).await;
-    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+    assert_eq!(result["stopReason"], "end_turn", "{result}");
     assert!(
-        updates
-            .iter()
-            .any(|v| v["params"]["update"]["content"]["text"] == "after"),
+        updates.iter().any(|v| shown_text(v) == Some("after")),
         "{updates:?}"
     );
     child.kill().await.unwrap();
@@ -605,7 +668,7 @@ found=0
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "--mcp-config" ]; then
     case "$2" in *'"filesystem":{'*) found=1;; *) exit 12;; esac
-    for part in '"command":"node"' '"args":["server.js"]' '"env":{"TOKEN":"test"}'; do
+    for part in '"command":"/usr/bin/node"' '"args":["server.js"]' '"env":{"TOKEN":"test"}'; do
       case "$2" in *"$part"*) ;; *) exit 12;; esac
     done
     break
@@ -623,7 +686,7 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
     send(
         &mut child,
         json!({"jsonrpc":"2.0","id":2,"method":"session/new","params":{
-            "cwd":project,"mcpServers":[{"name":"filesystem","command":"node","args":["server.js"],
+            "cwd":project,"mcpServers":[{"type":"stdio","name":"filesystem","command":"/usr/bin/node","args":["server.js"],
                 "env":[{"name":"TOKEN","value":"test"}]}]
         }}),
     )
@@ -637,13 +700,9 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
         }}),
     )
     .await;
-    let (prompt, updates) = response(&mut reader, 3).await;
-    assert_eq!(prompt["result"]["stopReason"], "end_turn");
-    assert!(
-        updates
-            .iter()
-            .any(|v| v["params"]["update"]["content"]["text"] == "mcp ok")
-    );
+    let (idle, updates) = finished(&mut reader, 3).await;
+    assert_eq!(idle["stopReason"], "end_turn");
+    assert!(updates.iter().any(|v| shown_text(v) == Some("mcp ok")));
     child.kill().await.unwrap();
 }
 
@@ -703,13 +762,9 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
         }}),
     )
     .await;
-    let (prompt, updates) = response(&mut reader, 4).await;
-    assert_eq!(prompt["result"]["stopReason"], "end_turn");
-    assert!(
-        updates
-            .iter()
-            .any(|v| v["params"]["update"]["content"]["text"] == "resumed")
-    );
+    let (idle, updates) = finished(&mut reader, 4).await;
+    assert_eq!(idle["stopReason"], "end_turn");
+    assert!(updates.iter().any(|v| shown_text(v) == Some("resumed")));
     child.kill().await.unwrap();
 }
 
@@ -744,12 +799,8 @@ next_message
             assert_ne!(id, first_id);
         }
         send(&mut child, json!({"jsonrpc":"2.0","id":new_id+1,"method":"session/prompt","params":{"sessionId":id,"prompt":[{"type":"text","text":"hello"}]}})).await;
-        let (_, updates) = response(&mut reader, new_id + 1).await;
-        assert!(!updates.iter().any(|v| {
-            v["params"]["update"]["content"]["text"]
-                .as_str()
-                .is_some_and(|s| s.starts_with("Error:"))
-        }));
+        let (idle, _) = finished(&mut reader, new_id + 1).await;
+        assert_eq!(idle["stopReason"], "end_turn", "{idle}");
     }
     child.kill().await.unwrap();
 
@@ -759,7 +810,7 @@ next_message
     let (resumed, _) = response(&mut reader, 2).await;
     assert!(resumed.get("result").is_some(), "{resumed}");
     send(&mut child, json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":first_id,"prompt":[{"type":"text","text":"continue"}]}})).await;
-    response(&mut reader, 3).await;
+    finished(&mut reader, 3).await;
     let calls = calls(&project);
     assert_eq!(calls.len(), 3);
     assert!(!calls[0].contains("--resume"));
@@ -807,22 +858,25 @@ next_message
     let (mut child, mut reader) = start(&bin, &store);
     initialize(&mut child, &mut reader).await;
     let session = new_session(&mut child, &mut reader, 2, &project).await;
-    let (_, updates) = prompt(&mut child, &mut reader, 3, &session).await;
-    assert_eq!(error_text(&updates), None);
+    let (idle, _) = prompt(&mut child, &mut reader, 3, &session).await;
+    assert_eq!(idle["stopReason"], "end_turn", "{idle}");
     child.kill().await.unwrap();
 
     let (mut child, mut reader) = start(&bin, &store);
     initialize(&mut child, &mut reader).await;
     send(&mut child, json!({"jsonrpc":"2.0","id":2,"method":"session/resume","params":{"sessionId":session,"cwd":project,"mcpServers":[]}})).await;
     response(&mut reader, 2).await;
-    let (result, updates) = prompt(&mut child, &mut reader, 3, &session).await;
-    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
-    let errors: Vec<&Value> = updates
-        .iter()
-        .map(|v| &v["params"]["update"]["content"]["text"])
-        .filter(|text| text.as_str().is_some_and(|s| s.starts_with("Error:")))
-        .collect();
-    assert_eq!(errors, ["Error: resume failed"]);
+    send(&mut child, json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session,"prompt":[{"type":"text","text":"hello"}]}})).await;
+    let (failed, updates) = response(&mut reader, 3).await;
+    assert_eq!(failed["error"]["message"], "resume failed", "{failed}");
+    // The prompt never entered the conversation, so the turn it would have
+    // started is not reported.
+    assert!(
+        !updates
+            .iter()
+            .any(|v| update(v)["sessionUpdate"] == "state_update"),
+        "{updates:?}"
+    );
     assert_eq!(calls(&project).len(), 2);
     child.kill().await.unwrap();
 }
@@ -878,7 +932,7 @@ async fn prompt(
     session: &Value,
 ) -> (Value, Vec<Value>) {
     send(child, json!({"jsonrpc":"2.0","id":request_id,"method":"session/prompt","params":{"sessionId":session,"prompt":[{"type":"text","text":"hello"}]}})).await;
-    response(reader, request_id).await
+    finished(reader, request_id).await
 }
 
 /// Reads messages until one has `text` as its update content.
@@ -886,7 +940,7 @@ async fn until_text(reader: &mut BufReader<ChildStdout>, text: &str) -> Vec<Valu
     let mut seen = Vec::new();
     loop {
         let value = receive(reader).await;
-        let done = value["params"]["update"]["content"]["text"] == text;
+        let done = shown_text(&value) == Some(text);
         seen.push(value);
         if done {
             return seen;
@@ -901,22 +955,15 @@ async fn and_until_text(
     reader: &mut BufReader<ChildStdout>,
     text: &str,
 ) -> Vec<Value> {
-    if !seen
-        .iter()
-        .any(|value| value["params"]["update"]["content"]["text"] == text)
-    {
+    if !seen.iter().any(|value| shown_text(value) == Some(text)) {
         seen.extend(until_text(reader, text).await);
     }
     seen
 }
 
-fn error_text(updates: &[Value]) -> Option<String> {
-    updates.iter().find_map(|v| {
-        v["params"]["update"]["content"]["text"]
-            .as_str()
-            .filter(|s| s.starts_with("Error:"))
-            .map(str::to_owned)
-    })
+/// The message of the error an idle update ends its turn with.
+fn error_message(idle: &Value) -> Option<&str> {
+    (idle["stopReason"] == "error").then(|| idle["error"]["message"].as_str().unwrap())
 }
 
 #[tokio::test]
@@ -941,8 +988,43 @@ next_message
         .write_all(format!("{prompt}\n{cancel}\n").as_bytes())
         .await
         .unwrap();
-    let (result, _) = response(&mut reader, 3).await;
-    assert_eq!(result["result"]["stopReason"], "cancelled", "{result}");
+    let (result, _) = finished(&mut reader, 3).await;
+    assert_eq!(result["stopReason"], "cancelled", "{result}");
+    child.kill().await.unwrap();
+}
+
+/// A prompt claude drops when it is interrupted, before it takes the prompt
+/// into a turn, is answered as cancelled.
+#[tokio::test]
+async fn cancel_drops_a_prompt_claude_has_not_taken() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    fake_claude(
+        &bin,
+        r"
+next_message
+interrupted
+next_message
+",
+    );
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    let prompt = json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session,"prompt":[{"type":"text","text":"hello"}]}});
+    let cancel = json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session}});
+    let stdin = child.stdin.as_mut().unwrap();
+    stdin
+        .write_all(format!("{prompt}\n{cancel}\n").as_bytes())
+        .await
+        .unwrap();
+    let (result, updates) = response(&mut reader, 3).await;
+    assert_eq!(result["error"]["code"], -32800, "{result}");
+    assert!(
+        !updates
+            .iter()
+            .any(|v| update(v)["sessionUpdate"] == "user_message"),
+        "{updates:?}"
+    );
     child.kill().await.unwrap();
 }
 
@@ -970,12 +1052,10 @@ async fn fail_then_prompt_again(temp: &Path, bin: &Path, project: &Path) -> Vec<
     let (mut child, mut reader) = start(bin, &temp.join("store"));
     initialize(&mut child, &mut reader).await;
     let session = new_session(&mut child, &mut reader, 2, project).await;
-    let (result, updates) = prompt(&mut child, &mut reader, 3, &session).await;
-    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
-    assert!(error_text(&updates).is_some(), "{updates:?}");
-    let (result, updates) = prompt(&mut child, &mut reader, 4, &session).await;
-    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
-    assert_eq!(error_text(&updates), None);
+    let (idle, _) = prompt(&mut child, &mut reader, 3, &session).await;
+    assert!(error_message(&idle).is_some(), "{idle}");
+    let (idle, _) = prompt(&mut child, &mut reader, 4, &session).await;
+    assert_eq!(idle["stopReason"], "end_turn", "{idle}");
     child.kill().await.unwrap();
     calls(project)
 }
@@ -1021,12 +1101,9 @@ exit 1
     let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
     initialize(&mut child, &mut reader).await;
     let session = new_session(&mut child, &mut reader, 2, &project).await;
-    let (result, updates) = prompt(&mut child, &mut reader, 3, &session).await;
-    assert_eq!(
-        result["result"]["stopReason"], "max_turn_requests",
-        "{result}"
-    );
-    assert_eq!(error_text(&updates), None);
+    let (idle, _) = prompt(&mut child, &mut reader, 3, &session).await;
+    assert_eq!(idle["stopReason"], "max_turn_requests", "{idle}");
+    assert_eq!(error_message(&idle), None);
     child.kill().await.unwrap();
 }
 
@@ -1045,11 +1122,8 @@ exit 1
     let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
     initialize(&mut child, &mut reader).await;
     let session = new_session(&mut child, &mut reader, 2, &project).await;
-    let (_, updates) = prompt(&mut child, &mut reader, 3, &session).await;
-    assert_eq!(
-        error_text(&updates).as_deref(),
-        Some("Error: first; second")
-    );
+    let (idle, _) = prompt(&mut child, &mut reader, 3, &session).await;
+    assert_eq!(error_message(&idle), Some("first; second"), "{idle}");
     child.kill().await.unwrap();
 }
 
@@ -1086,10 +1160,10 @@ printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
     assert_eq!(ids, [&session], "{list}");
     assert_eq!(list["result"]["sessions"][0]["title"], "hello");
 
-    send(&mut child, json!({"jsonrpc":"2.0","id":5,"method":"session/load","params":{"sessionId":session,"cwd":project,"mcpServers":[]}})).await;
+    send(&mut child, json!({"jsonrpc":"2.0","id":5,"method":"session/resume","params":{"sessionId":session,"cwd":project,"mcpServers":[]}})).await;
     let (load, _) = response(&mut reader, 5).await;
     assert!(load.get("result").is_some(), "{load}");
-    send(&mut child, json!({"jsonrpc":"2.0","id":6,"method":"session/load","params":{"sessionId":session,"cwd":temp.path(),"mcpServers":[]}})).await;
+    send(&mut child, json!({"jsonrpc":"2.0","id":6,"method":"session/resume","params":{"sessionId":session,"cwd":temp.path(),"mcpServers":[]}})).await;
     let (load, _) = response(&mut reader, 6).await;
     assert!(load.get("error").is_some(), "{load}");
     child.kill().await.unwrap();
@@ -1109,7 +1183,7 @@ async fn bridges_sharing_a_store_keep_each_others_sessions() {
     let s2 = new_session(&mut b, &mut b_reader, 2, &project).await;
     let s3 = new_session(&mut a, &mut a_reader, 3, &project).await;
 
-    send(&mut b, json!({"jsonrpc":"2.0","id":3,"method":"session/load","params":{"sessionId":s1,"cwd":project,"mcpServers":[]}})).await;
+    send(&mut b, json!({"jsonrpc":"2.0","id":3,"method":"session/resume","params":{"sessionId":s1,"cwd":project,"mcpServers":[]}})).await;
     let (load, _) = response(&mut b_reader, 3).await;
     assert!(load.get("result").is_some(), "{load}");
 
@@ -1192,19 +1266,19 @@ next_message
     initialize(&mut child, &mut reader).await;
     let session = new_session(&mut child, &mut reader, 2, &project).await;
     send(&mut child, json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session,"prompt":[{"type":"text","text":"hello"}]}})).await;
-    until_text(&mut reader, "working").await;
+    let seen = until_text(&mut reader, "working").await;
     send(
         &mut child,
         json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session}}),
     )
     .await;
-    let (result, updates) = response(&mut reader, 3).await;
-    assert_eq!(result["result"]["stopReason"], "cancelled", "{result}");
+    let (result, updates) = finish(&mut reader, 3, seen).await;
+    assert_eq!(result["stopReason"], "cancelled", "{result}");
     assert!(
         updates.iter().any(|v| {
-            v["params"]["update"]["sessionUpdate"] == "tool_call_update"
-                && v["params"]["update"]["toolCallId"] == "tool-1"
-                && v["params"]["update"]["status"] == "failed"
+            update(v)["sessionUpdate"] == "tool_call_update"
+                && update(v)["toolCallId"] == "tool-1"
+                && update(v)["status"] == "failed"
         }),
         "{updates:?}"
     );
@@ -1230,14 +1304,14 @@ printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}","result":"done"}}'
     let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
     send(
         &mut child,
-        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}}),
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":2,"capabilities":{},"info":{"name":"test","version":"1"}}}),
     )
     .await;
     let (init, _) = response(&mut reader, 1).await;
-    let capabilities = &init["result"]["agentCapabilities"]["promptCapabilities"];
-    assert_eq!(capabilities["image"], true);
-    assert_eq!(capabilities["embeddedContext"], true);
-    assert_ne!(capabilities["audio"], true);
+    let capabilities = &init["result"]["capabilities"]["session"]["prompt"];
+    assert!(capabilities["image"].is_object(), "{init}");
+    assert!(capabilities["embeddedContext"].is_object(), "{init}");
+    assert!(capabilities["audio"].is_null(), "{init}");
 
     let session = new_session(&mut child, &mut reader, 2, &project).await;
     let prompt = json!([
@@ -1249,8 +1323,8 @@ printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}","result":"done"}}'
         {"type": "resource", "resource": {"uri": "file:///p/shot.jpg", "blob": "/9j/4A==", "mimeType": "image/jpeg"}}
     ]);
     send(&mut child, json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session,"prompt":prompt}})).await;
-    let (result, _) = response(&mut reader, 3).await;
-    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+    let (result, _) = finished(&mut reader, 3).await;
+    assert_eq!(result["stopReason"], "end_turn", "{result}");
 
     let message: Value = serde_json::from_str(&fs::read_to_string(&captured).unwrap()).unwrap();
     assert_eq!(
@@ -1310,16 +1384,21 @@ exit 1
     let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
     initialize(&mut child, &mut reader).await;
     let session = new_session(&mut child, &mut reader, 2, &project).await;
-    let (result, updates) = prompt(&mut child, &mut reader, 3, &session).await;
-    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
-    let error = error_text(&updates).unwrap();
+    let (idle, updates) = prompt(&mut child, &mut reader, 3, &session).await;
+    let error = error_message(&idle).unwrap();
     assert!(error.ends_with(": unknown option --bogus"), "{error}");
     // A claude that exits while working is no longer working.
     let states: Vec<String> = describe_updates(&updates)
         .into_iter()
-        .filter(|update| update.starts_with("agent_state"))
+        .filter(|update| update.starts_with("state_update"))
         .collect();
-    assert_eq!(states, ["agent_state: running", "agent_state: idle"]);
+    assert_eq!(
+        states,
+        [
+            "state_update: running".to_owned(),
+            format!("state_update: idle error {error}")
+        ]
+    );
     child.kill().await.unwrap();
 }
 
@@ -1377,33 +1456,42 @@ fn write_lines(path: &Path, entries: &[Value]) {
     fs::write(path, lines.join("\n") + "\n").unwrap();
 }
 
-/// One line per update, its kind and what it shows, and one per notice of
-/// the agent's state.
+/// One line per update: its kind and what it shows.
 fn describe_updates(notifications: &[Value]) -> Vec<String> {
     notifications
         .iter()
-        .filter(|n| n["method"] == "session/update" || n["method"] == "_ox/agent_state")
+        .filter(|n| n["method"] == "session/update")
         .map(|n| {
-            if n["method"] == "_ox/agent_state" {
-                let params = &n["params"];
-                return match params["stopReason"].as_str() {
-                    Some(reason) => format!("agent_state: {} {reason}", params["state"]),
-                    None => format!("agent_state: {}", params["state"]),
-                }
-                .replace('"', "");
-            }
-            let update = &n["params"]["update"];
+            let update = update(n);
             let kind = update["sessionUpdate"].as_str().unwrap();
+            let blocks = |content: &Value| -> String {
+                content
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|c| match c["text"].as_str() {
+                        Some(text) => text.to_owned(),
+                        None => c["type"].as_str().unwrap().to_owned(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            };
             let detail = match kind {
-                "tool_call" => format!(
-                    "{} {} {}",
-                    update["toolCallId"],
-                    update["title"],
-                    // ACP omits the default status, `pending`.
-                    update["status"].as_str().unwrap_or("pending")
-                ),
+                "state_update" => {
+                    let mut detail = update["state"].as_str().unwrap().to_owned();
+                    if let Some(reason) = update["stopReason"].as_str() {
+                        detail = format!("{detail} {reason}");
+                    }
+                    if let Some(error) = update["error"]["message"].as_str() {
+                        detail = format!("{detail} {error}");
+                    }
+                    detail
+                }
                 "tool_call_update" => {
                     let mut detail = update["toolCallId"].to_string();
+                    if let Some(title) = update["title"].as_str() {
+                        detail = format!("{detail} {title}");
+                    }
                     if let Some(status) = update["status"].as_str() {
                         detail = format!("{detail} {status}");
                     }
@@ -1421,6 +1509,8 @@ fn describe_updates(notifications: &[Value]) -> Vec<String> {
                     }
                     detail
                 }
+                // Whole messages carry their blocks, and chunks one block.
+                "user_message" | "agent_message" | "agent_thought" => blocks(&update["content"]),
                 _ => match update["content"]["type"].as_str() {
                     Some("text") => update["content"]["text"].to_string(),
                     Some(other) => other.to_owned(),
@@ -1432,23 +1522,32 @@ fn describe_updates(notifications: &[Value]) -> Vec<String> {
         .collect()
 }
 
-const REPLAY: [&str; 12] = [
-    "user_message_chunk: Fix the build",
-    "agent_thought_chunk: Checking",
-    "agent_message_chunk: Running it",
-    "tool_call: toolu_1 cargo build pending",
+const REPLAY: [&str; 11] = [
+    "user_message: Fix the build",
+    "agent_thought: Checking",
+    "agent_message: Running it",
+    "tool_call_update: toolu_1 cargo build pending",
     "tool_call_update: toolu_1 completed [ok]",
-    "user_message_chunk: Look",
-    "user_message_chunk: image",
-    "tool_call: toolu_3 Agent pending",
+    "user_message: Look | image",
+    "tool_call_update: toolu_3 Agent pending",
     "tool_call_update: toolu_3 [Read /a]",
     "tool_call_update: toolu_3 completed [Read /a | a says hi | image]",
-    "tool_call: toolu_2 Read /x pending",
+    "tool_call_update: toolu_2 Read /x pending",
     "tool_call_update: toolu_2 failed",
 ];
 
+/// The replay of `write_conversation`, then the idle state a resume sends.
+fn replay_and_state() -> Vec<String> {
+    REPLAY
+        .iter()
+        .copied()
+        .chain(["state_update: idle"])
+        .map(str::to_owned)
+        .collect()
+}
+
 #[tokio::test]
-async fn load_replays_a_claude_session_from_its_transcript() {
+async fn resume_replays_a_claude_session_from_its_transcript() {
     let temp = tempfile::tempdir().unwrap();
     let (bin, project) = dirs(temp.path());
     write_conversation(temp.path(), &project, HISTORY_ID);
@@ -1464,20 +1563,33 @@ printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
     );
     let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
     initialize(&mut child, &mut reader).await;
-    send(&mut child, json!({"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":HISTORY_ID,"cwd":project,"mcpServers":[]}})).await;
+    send(&mut child, json!({"jsonrpc":"2.0","id":2,"method":"session/resume","params":{"sessionId":HISTORY_ID,"cwd":project,"mcpServers":[],"replayFrom":{"type":"start"}}})).await;
     let (loaded, notifications) = response(&mut reader, 2).await;
     assert!(loaded["result"].is_object(), "{loaded}");
-    assert_eq!(describe_updates(&notifications), REPLAY);
+    // The replay comes first, then the session's state, then the response.
+    assert_eq!(describe_updates(&notifications), replay_and_state());
+
+    // Without `replayFrom`, nothing replays.
+    send(&mut child, json!({"jsonrpc":"2.0","id":4,"method":"session/resume","params":{"sessionId":HISTORY_ID,"cwd":project,"mcpServers":[]}})).await;
+    let (resumed, notifications) = response(&mut reader, 4).await;
+    assert!(resumed["result"].is_object(), "{resumed}");
+    assert_eq!(describe_updates(&notifications), ["state_update: idle"]);
+
+    // A cursor other than the start is not supported.
+    send(&mut child, json!({"jsonrpc":"2.0","id":5,"method":"session/resume","params":{"sessionId":HISTORY_ID,"cwd":project,"mcpServers":[],"replayFrom":{"type":"cursor","cursor":"x"}}})).await;
+    let (refused, notifications) = response(&mut reader, 5).await;
+    assert_eq!(refused["error"]["code"], -32602, "{refused}");
+    assert!(notifications.is_empty(), "{notifications:?}");
 
     let (result, _) = prompt(&mut child, &mut reader, 3, &json!(HISTORY_ID)).await;
-    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+    assert_eq!(result["stopReason"], "end_turn", "{result}");
     let args = fs::read_to_string(project.join("args")).unwrap();
     assert!(args.contains(&format!("--resume {HISTORY_ID}")), "{args}");
     child.kill().await.unwrap();
 }
 
 #[tokio::test]
-async fn load_replays_a_bridge_session_from_its_claude_transcript() {
+async fn resume_replays_a_bridge_session_from_its_claude_transcript() {
     let temp = tempfile::tempdir().unwrap();
     let (bin, project) = dirs(temp.path());
     write_conversation(temp.path(), &project, HISTORY_ID);
@@ -1499,7 +1611,7 @@ printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
 
     let (mut child, mut reader) = start(&bin, &store);
     initialize(&mut child, &mut reader).await;
-    send(&mut child, json!({"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":session,"cwd":project,"mcpServers":[]}})).await;
+    send(&mut child, json!({"jsonrpc":"2.0","id":2,"method":"session/resume","params":{"sessionId":session,"cwd":project,"mcpServers":[],"replayFrom":{"type":"start"}}})).await;
     let (loaded, notifications) = response(&mut reader, 2).await;
     assert!(loaded["result"].is_object(), "{loaded}");
     assert!(
@@ -1508,7 +1620,7 @@ printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
             .all(|n| n["params"]["sessionId"] == session),
         "{notifications:?}"
     );
-    assert_eq!(describe_updates(&notifications), REPLAY);
+    assert_eq!(describe_updates(&notifications), replay_and_state());
     child.kill().await.unwrap();
 }
 
@@ -1536,11 +1648,9 @@ done
     let session = new_session(&mut child, &mut reader, 2, &project).await;
     for (request_id, text) in [(3, "turn 1"), (4, "turn 2"), (5, "turn 3")] {
         let (result, updates) = prompt(&mut child, &mut reader, request_id, &session).await;
-        assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+        assert_eq!(result["stopReason"], "end_turn", "{result}");
         assert!(
-            updates
-                .iter()
-                .any(|v| v["params"]["update"]["content"]["text"] == text),
+            updates.iter().any(|v| shown_text(v) == Some(text)),
             "missing {text} in {updates:?}"
         );
     }
@@ -1586,7 +1696,7 @@ next_message
     initialize(&mut child, &mut reader).await;
     let session = new_session(&mut child, &mut reader, 2, &project).await;
     let (result, before) = prompt(&mut child, &mut reader, 3, &session).await;
-    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+    assert_eq!(result["stopReason"], "end_turn", "{result}");
     let after = until_text(&mut reader, "end").await;
     let describe = |messages: &[Value]| -> Vec<String> {
         describe_updates(messages)
@@ -1595,22 +1705,27 @@ next_message
             .collect()
     };
     // The client has the prompt's response before what claude does next.
-    assert_eq!(describe(&before), ["agent_state: running"]);
+    assert_eq!(
+        describe(&before),
+        [
+            "user_message: hello",
+            "state_update: running",
+            "state_update: idle end_turn"
+        ]
+    );
     assert_eq!(
         describe(&after),
         [
-            "agent_state: idle",
-            "agent_state: running",
-            "tool_call: tool-1 pwd pending",
+            "state_update: running",
+            "tool_call_update: tool-1 pwd pending",
             "tool_call_update: tool-1 completed",
-            "agent_message_chunk: woke",
-            "agent_state: idle end_turn",
-            "agent_state: running",
-            "agent_message_chunk: Error: wake failed",
-            "agent_state: idle end_turn",
-            "agent_state: running",
-            "agent_state: idle max_turn_requests",
-            "agent_message_chunk: end",
+            "agent_message: woke",
+            "state_update: idle end_turn",
+            "state_update: running",
+            "state_update: idle error wake failed",
+            "state_update: running",
+            "state_update: idle max_turn_requests",
+            "agent_message: end",
         ]
     );
     child.kill().await.unwrap();
@@ -1644,11 +1759,9 @@ next_message
     let (_, seen) = prompt(&mut child, &mut reader, 3, &session).await;
     and_until_text(seen, &mut reader, "waking").await;
     let (result, updates) = prompt(&mut child, &mut reader, 4, &session).await;
-    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+    assert_eq!(result["stopReason"], "end_turn", "{result}");
     assert!(
-        updates
-            .iter()
-            .any(|v| v["params"]["update"]["content"]["text"] == "answer"),
+        updates.iter().any(|v| shown_text(v) == Some("answer")),
         "{updates:?}"
     );
     child.kill().await.unwrap();
@@ -1684,7 +1797,8 @@ next_message
     let (_, updates) = prompt(&mut child, &mut reader, 3, &session).await;
     let claude = updates
         .iter()
-        .find_map(|v| v["params"]["update"]["content"]["text"].as_str())
+        .filter(|v| update(v)["sessionUpdate"] == "agent_message")
+        .find_map(shown_text)
         .unwrap();
     let bridge = child.id().unwrap().to_string();
     assert_eq!(process_group(claude), process_group(&bridge));
@@ -1715,13 +1829,13 @@ done
         &mut child,
         json!({"jsonrpc":"2.0","id":4,"method":"session/resume","params":{
             "sessionId":session,"cwd":project,
-            "mcpServers":[{"name":"filesystem","command":"node","args":["server.js"],"env":[]}]
+            "mcpServers":[{"type":"stdio","name":"filesystem","command":"/usr/bin/node","args":["server.js"],"env":[]}]
         }}),
     )
     .await;
     response(&mut reader, 4).await;
     let (result, _) = prompt(&mut child, &mut reader, 5, &session).await;
-    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+    assert_eq!(result["stopReason"], "end_turn", "{result}");
     let calls = calls(&project);
     assert_eq!(calls.len(), 2, "{calls:?}");
     assert!(!calls[0].contains("--mcp-config"), "{calls:?}");
@@ -1751,12 +1865,12 @@ next_message
     initialize(&mut child, &mut reader).await;
     let session = new_session(&mut child, &mut reader, 2, &project).await;
     let (result, updates) = prompt(&mut child, &mut reader, 3, &session).await;
-    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+    assert_eq!(result["stopReason"], "end_turn", "{result}");
     assert_eq!(
-        describe_updates(&updates)[1..5],
+        describe_updates(&updates)[3..7],
         [
-            "tool_call: tool-1 ls pending",
-            "tool_call: tool-2 Read /a.png pending",
+            "tool_call_update: tool-1 ls pending",
+            "tool_call_update: tool-2 Read /a.png pending",
             "tool_call_update: tool-1 failed [a.png\nb.rs]",
             "tool_call_update: tool-2 completed [Read an image | image | [tool_reference]]",
         ]
@@ -1802,32 +1916,32 @@ next_message
     initialize(&mut child, &mut reader).await;
     let session = new_session(&mut child, &mut reader, 2, &project).await;
     send(&mut child, json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session,"prompt":[{"type":"text","text":"hello"}]}})).await;
-    let mut updates = Vec::new();
-    let permission = loop {
-        let value = receive(&mut reader).await;
-        if value["method"] == "session/request_permission" {
-            break value;
-        }
-        updates.push(value);
-    };
+    let (permission, seen) = until_permission(&mut reader).await;
     send(&mut child, json!({"jsonrpc":"2.0","id":permission["id"],"result":{"outcome":{"outcome":"selected","optionId":"allow_once"}}})).await;
-    let (result, rest) = response(&mut reader, 3).await;
-    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
-    updates.extend(rest);
+    let (result, updates) = finish(&mut reader, 3, seen).await;
+    assert_eq!(result["stopReason"], "end_turn", "{result}");
     assert_eq!(
         describe_updates(&updates)
             .into_iter()
             .filter(|update| !update.starts_with("session_info_update"))
             .collect::<Vec<_>>(),
         [
-            "tool_call: agent-1 Agent pending",
+            "user_message: hello",
+            "state_update: running",
+            "tool_call_update: agent-1 Agent pending",
             "tool_call_update: agent-1 [Read /a]",
             "tool_call_update: agent-1 [Read /a | pwd]",
-            "tool_call: sub-2 pwd pending",
+            &format!(
+                "tool_call_update: sub-2 pwd pending [Working directory: {}\n\nCommand:\n\npwd]",
+                project.display()
+            ),
+            "state_update: requires_action",
             "tool_call_update: sub-2 in_progress",
+            "state_update: running",
             "tool_call_update: sub-2 completed [/]",
             "tool_call_update: agent-1 completed [Read /a | pwd | a says hi]",
-            "agent_message_chunk: done",
+            "agent_message: done",
+            "state_update: idle end_turn",
         ]
     );
     child.kill().await.unwrap();
@@ -1854,13 +1968,308 @@ next_message
     initialize(&mut child, &mut reader).await;
     let session = new_session(&mut child, &mut reader, 2, &project).await;
     let (result, updates) = prompt(&mut child, &mut reader, 3, &session).await;
-    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+    assert_eq!(result["stopReason"], "end_turn", "{result}");
     assert_eq!(
         describe_updates(&updates)
             .into_iter()
             .filter(|update| !update.starts_with("session_info_update"))
             .collect::<Vec<_>>(),
-        ["agent_message_chunk: hello "]
+        [
+            "agent_message_chunk: hello ",
+            "user_message: hello",
+            "state_update: running",
+            "state_update: idle end_turn"
+        ]
     );
     child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_prompt_is_answered_when_it_enters_the_conversation() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    fake_claude(
+        &bin,
+        r#"
+next_prompt
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'
+interrupted
+next_message
+"#,
+    );
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    send(&mut child, json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session,"prompt":[{"type":"text","text":"hello"}]}})).await;
+    // Only the prompt's own message comes before its response; the turn's
+    // state and output follow it.
+    let (answer, before) = response(&mut reader, 3).await;
+    let kinds: Vec<&str> = before
+        .iter()
+        .map(|v| update(v)["sessionUpdate"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["session_info_update", "user_message"], "{before:?}");
+    assert_eq!(
+        update(&before[1])["messageId"],
+        answer["result"]["messageId"]
+    );
+    assert_eq!(update(&before[1])["content"][0]["text"], "hello");
+    let after = until_text(&mut reader, "working").await;
+    assert_eq!(describe_updates(&after[..1]), ["state_update: running"]);
+
+    // A client that resumes the session while it works is told so before
+    // the response.
+    send(&mut child, json!({"jsonrpc":"2.0","id":4,"method":"session/resume","params":{"sessionId":session,"cwd":project,"mcpServers":[]}})).await;
+    let (resumed, notifications) = response(&mut reader, 4).await;
+    assert!(resumed["result"].is_object(), "{resumed}");
+    assert_eq!(describe_updates(&notifications), ["state_update: running"]);
+
+    send(
+        &mut child,
+        json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session}}),
+    )
+    .await;
+    let (idle, _) = finish(&mut reader, 3, [before, vec![answer], after].concat()).await;
+    assert_eq!(idle["stopReason"], "cancelled", "{idle}");
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn close_stops_claude_and_the_session() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    // Claude ends when its stdin closes, after reading the interrupt.
+    fake_claude(
+        &bin,
+        r#"
+echo "$$" > pid
+next_prompt
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'
+next_message
+next_message
+"#,
+    );
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    send(&mut child, json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session,"prompt":[{"type":"text","text":"hello"}]}})).await;
+    let seen = until_text(&mut reader, "working").await;
+    let pid = fs::read_to_string(project.join("pid")).unwrap();
+    let running = |pid: &str| {
+        std::process::Command::new("kill")
+            .args(["-0", pid.trim()])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
+    assert!(running(&pid));
+
+    send(
+        &mut child,
+        json!({"jsonrpc":"2.0","id":4,"method":"session/close","params":{"sessionId":session}}),
+    )
+    .await;
+    let (closed, notifications) = response(&mut reader, 4).await;
+    assert!(closed["result"].is_object(), "{closed}");
+    // Claude has exited, so its turn ended as cancelled before the response.
+    assert!(
+        notifications.iter().any(|v| is_state(v, "idle")),
+        "{notifications:?}"
+    );
+    let (idle, _) = finish(&mut reader, 3, [seen, notifications].concat()).await;
+    assert_eq!(idle["stopReason"], "cancelled", "{idle}");
+    assert!(!running(&pid), "claude {pid} still runs");
+
+    // A closed session takes no prompt until it is resumed, and closing it
+    // again, or one that never existed, succeeds.
+    send(&mut child, json!({"jsonrpc":"2.0","id":5,"method":"session/prompt","params":{"sessionId":session,"prompt":[{"type":"text","text":"hello"}]}})).await;
+    let (refused, _) = response(&mut reader, 5).await;
+    assert_eq!(refused["error"]["code"], -32002, "{refused}");
+    for (id, session) in [(6, json!(session)), (7, json!("nonexistent"))] {
+        send(
+            &mut child,
+            json!({"jsonrpc":"2.0","id":id,"method":"session/close","params":{"sessionId":session}}),
+        )
+        .await;
+        let (closed, _) = response(&mut reader, id).await;
+        assert!(closed["result"].is_object(), "{closed}");
+    }
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn mcp_commands_are_allowed_absolute_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    fake_claude(&bin, "exit 0");
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    for (id, command) in [(2, "node"), (3, "/usr/bin/curl"), (4, "/usr/bin/node;rm")] {
+        send(&mut child, json!({"jsonrpc":"2.0","id":id,"method":"session/new","params":{
+            "cwd":project,"mcpServers":[{"type":"stdio","name":"x","command":command,"args":[],"env":[]}]
+        }})).await;
+        let (refused, _) = response(&mut reader, id).await;
+        assert_eq!(refused["error"]["code"], -32602, "{command}: {refused}");
+    }
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn replay_keeps_the_inserted_user_message_id() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    fake_claude(
+        &bin,
+        &format!(
+            r#"
+next_prompt
+printf '%s\n' "$message" > captured.json
+printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
+next_message
+"#
+        ),
+    );
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    let (_, live) = prompt(&mut child, &mut reader, 3, &session).await;
+    let original = live
+        .iter()
+        .find(|n| update(n)["sessionUpdate"] == "user_message")
+        .unwrap();
+    let original_id = update(original)["messageId"].clone();
+    let mut retained: Value =
+        serde_json::from_slice(&fs::read(project.join("captured.json")).unwrap()).unwrap();
+    assert_eq!(retained["uuid"], original_id);
+    retained["cwd"] = json!(project);
+    let transcripts = temp.path().join("empty-claude/projects/sample");
+    fs::create_dir_all(&transcripts).unwrap();
+    write_lines(
+        &transcripts.join(format!("{HISTORY_ID}.jsonl")),
+        &[retained],
+    );
+    send(
+        &mut child,
+        json!({"jsonrpc":"2.0","id":4,"method":"session/resume","params":{
+            "sessionId":session,"cwd":project,"mcpServers":[],"replayFrom":{"type":"start"}
+        }}),
+    )
+    .await;
+    let (resumed, replay) = response(&mut reader, 4).await;
+    child.kill().await.unwrap();
+    assert!(resumed["result"].is_object(), "{resumed}");
+    let replayed = replay
+        .iter()
+        .find(|n| update(n)["sessionUpdate"] == "user_message")
+        .unwrap();
+    assert_eq!(
+        update(replayed)["messageId"],
+        original_id,
+        "the replayed prompt keeps its message ID"
+    );
+}
+
+#[tokio::test]
+async fn unsupported_mcp_transport_is_rejected() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    fake_claude(&bin, "exit 0");
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    send(&mut child, json!({"jsonrpc":"2.0","id":2,"method":"session/new","params":{
+        "cwd":project,"mcpServers":[{"type":"http","name":"context","url":"https://example.com/mcp","headers":[]}]
+    }})).await;
+    let (answer, _) = response(&mut reader, 2).await;
+    child.kill().await.unwrap();
+    assert_eq!(
+        answer["error"]["code"], -32602,
+        "unsupported MCP server silently accepted: {answer}"
+    );
+}
+
+#[tokio::test]
+async fn a_queued_prompt_does_not_hide_a_running_turns_error() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    fake_claude(
+        &bin,
+        r#"
+next_prompt
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"first turn running"}]}}'
+next_message
+printf '%s\n' '{"type":"result","is_error":true,"result":"first turn failed"}'
+state idle
+started
+printf '%s\n' '{"type":"result"}'
+next_message
+"#,
+    );
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    send(
+        &mut child,
+        json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{
+            "sessionId":session,"prompt":[{"type":"text","text":"first"}]
+        }}),
+    )
+    .await;
+    let before = until_text(&mut reader, "first turn running").await;
+    assert!(before.iter().any(|v| is_state(v, "running")), "{before:?}");
+    send(
+        &mut child,
+        json!({"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{
+            "sessionId":session,"prompt":[{"type":"text","text":"second"}]
+        }}),
+    )
+    .await;
+    let (_, after) = finished(&mut reader, 4).await;
+    child.kill().await.unwrap();
+    assert!(
+        after
+            .iter()
+            .any(|v| is_state(v, "idle") && error_message(update(v)) == Some("first turn failed")),
+        "running turn's error disappeared: {:?}",
+        describe_updates(&after)
+    );
+}
+
+#[tokio::test]
+async fn cancelled_work_that_exits_reports_cancelled() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    fake_claude(
+        &bin,
+        r#"
+next_prompt
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'
+next_message
+case "$message" in *'"subtype":"interrupt"'*) ;; *) exit 21;; esac
+echo 'aborting the turn failed' >&2
+exit 1
+"#,
+    );
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    send(
+        &mut child,
+        json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{
+            "sessionId":session,"prompt":[{"type":"text","text":"hello"}]
+        }}),
+    )
+    .await;
+    let before = until_text(&mut reader, "working").await;
+    send(
+        &mut child,
+        json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session}}),
+    )
+    .await;
+    let (idle, _) = finish(&mut reader, 3, before).await;
+    child.kill().await.unwrap();
+    assert_eq!(
+        idle["stopReason"], "cancelled",
+        "cancellation was classified as a failure: {idle}"
+    );
 }

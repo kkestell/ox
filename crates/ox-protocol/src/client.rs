@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use agent_client_protocol::v1::schema::{ContentBlock, SessionConfigOption};
+use agent_client_protocol::v2::schema::{ContentBlock, SessionConfigOption};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};

@@ -5,7 +5,7 @@ use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-use agent_client_protocol::v1::schema::{ContentBlock, ResourceLink};
+use agent_client_protocol::v2::schema::{ContentBlock, ResourceLink};
 
 /// A resource link to a file, named by its file name. Every agent accepts
 /// resource links.

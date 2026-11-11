@@ -1,12 +1,12 @@
 //! A session's state machine and the event history it writes.
 
 use agent_client_protocol::schema::MaybeUndefined;
-use agent_client_protocol::v1::schema::{
-    ConfigOptionUpdate, ContentBlock, EmbeddedResourceResource, PermissionOption,
-    PromptCapabilities, RequestPermissionOutcome, RequestPermissionRequest,
-    SelectedPermissionOutcome, SessionConfigOption, SessionUpdate, StopReason,
+use agent_client_protocol::v2::schema::{
+    CancelledPermissionOutcome, ConfigOptionUpdate, ContentBlock, EmbeddedResourceResource,
+    PermissionOption, PromptCapabilities, RequestPermissionOutcome, RequestPermissionRequest,
+    SelectedPermissionOutcome, SessionConfigOption, SessionUpdate, StateUpdate,
 };
-use ox_protocol::{AgentState, ErrorBody, Event, EventKind, SessionState, code};
+use ox_protocol::{ErrorBody, Event, EventKind, SessionState, code};
 use tokio::sync::oneshot;
 
 /// Events a subscriber is handed at a time.
@@ -44,12 +44,19 @@ pub enum Request {
 /// Something that happened to a session. A change that does not fit the
 /// session's state, such as an agent's answer that arrives after the session
 /// closed, is ignored.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "a change is built and consumed at once, never stored"
+)]
 pub enum Change {
     Started(Agent),
     Update(SessionUpdate),
     /// The options an agent answered `session/set_config_option` with. The
-    /// ACP library handles a notification sent before the response first, so
-    /// options that differ from the session's have not been reported.
+    /// connection's dispatch loop waits for each handler to finish before it
+    /// reads the next message (the SDK's `concepts::ordering` chapter), so a
+    /// `config_option_update` the agent sent before its response is already
+    /// recorded, and options that differ from the session's have not been
+    /// reported.
     ConfigOptionsSet(Vec<SessionConfigOption>),
     PermissionRequested {
         request: RequestPermissionRequest,
@@ -57,12 +64,14 @@ pub enum Change {
     },
     /// The agent was told to cancel the turn.
     Cancelled,
-    /// The agent answered the prompt.
-    TurnEnded(Result<StopReason, String>),
-    /// The agent said it started or stopped working. Outside a prompt's turn
-    /// that starts and ends a turn of the agent's own; within one it says
-    /// what the turn already does.
-    AgentState(AgentState),
+    /// The agent answered `session/prompt` with an error: it did not insert
+    /// the prompt, which is the one its `PromptStarted` event at seq `prompt`
+    /// records. A successful answer changes nothing, since the turn runs and
+    /// ends on the agent's `state_update`s.
+    PromptRejected {
+        prompt: u64,
+        error: String,
+    },
     Exited(Option<String>),
     Closed,
 }
@@ -85,11 +94,17 @@ impl Pending {
     }
 }
 
-/// What started the running turn.
+/// The running turn. A turn starts when a prompt is sent or when the agent
+/// reports work, and ends when the agent reports `idle` after reporting work.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Turn {
-    Prompt,
-    Agent,
+    /// The prompt whose `PromptStarted` event has this seq was sent, and
+    /// the agent has not reported work for it. An `idle` here repeats a
+    /// snapshot from before the prompt.
+    Prompted(u64),
+    /// The agent reported work. `recorded` is false for work a resumed agent
+    /// was already doing, whose start the session's history does not have.
+    Working { recorded: bool },
 }
 
 /// An agent with an open ACP session.
@@ -110,10 +125,38 @@ impl Live {
         }
     }
 
+    /// Applies a `state_update` and returns the events of the turn it starts
+    /// or ends. Any state but `idle`, including one this daemon does not
+    /// know, is work in progress.
+    fn follow(&mut self, state: &StateUpdate) -> Vec<EventKind> {
+        match (state, self.turn) {
+            (StateUpdate::Idle(idle), Some(Turn::Working { recorded })) => {
+                self.turn = None;
+                if recorded {
+                    vec![EventKind::TurnEnded {
+                        stop_reason: idle.stop_reason.clone(),
+                        error: None,
+                    }]
+                } else {
+                    Vec::new()
+                }
+            }
+            (StateUpdate::Idle(_), _) | (_, Some(Turn::Working { .. })) => Vec::new(),
+            (_, None) => {
+                self.turn = Some(Turn::Working { recorded: true });
+                vec![EventKind::TurnStarted]
+            }
+            (_, Some(Turn::Prompted(_))) => {
+                self.turn = Some(Turn::Working { recorded: true });
+                Vec::new()
+            }
+        }
+    }
+
     fn cancel_pending(&mut self) -> Vec<EventKind> {
         self.pending
             .drain(..)
-            .map(|pending| pending.resolve(RequestPermissionOutcome::Cancelled))
+            .map(|pending| pending.resolve(CancelledPermissionOutcome::new().into()))
             .collect()
     }
 
@@ -121,7 +164,7 @@ impl Live {
     /// cancelled, and a running turn ends with `error`.
     fn end(mut self, error: &str) -> (Agent, Vec<EventKind>) {
         let mut events = self.cancel_pending();
-        if self.turn.is_some() {
+        if let Some(Turn::Prompted(_) | Turn::Working { recorded: true }) = self.turn {
             events.push(EventKind::TurnEnded {
                 stop_reason: None,
                 error: Some(error.into()),
@@ -132,13 +175,15 @@ impl Live {
 }
 
 enum Phase {
-    /// The agent is starting. A loading agent replays the conversation as
-    /// updates before it starts. `replay` holds them until the agent
-    /// starts, when they are recorded, or is `None` when the session keeps
-    /// its history and drops the replay. `previous` is the agent the session
-    /// had before it loaded.
+    /// The agent is starting. A resuming agent replays the conversation as
+    /// updates, then reports its state, before it starts. `replay` holds
+    /// them until the agent starts, when they are recorded, or is `None`
+    /// when the session keeps its history and drops the replay. `busy` is
+    /// whether the last state reported was not `idle`. `previous` is the
+    /// agent the session had before it resumed.
     Starting {
         replay: Option<Vec<SessionUpdate>>,
+        busy: bool,
         previous: Option<Agent>,
     },
     Live(Live),
@@ -163,7 +208,7 @@ impl Phase {
     /// session keeps across agents.
     fn after(self, change: Change, next_request: &mut u64) -> (Self, Vec<EventKind>) {
         match (self, change) {
-            (Self::Starting { replay, .. }, Change::Started(agent)) => {
+            (Self::Starting { replay, busy, .. }, Change::Started(agent)) => {
                 let mut events: Vec<_> = replay
                     .into_iter()
                     .flatten()
@@ -174,26 +219,40 @@ impl Phase {
                     prompt_capabilities: agent.prompt_capabilities.clone(),
                     config_options: agent.config_options.clone(),
                 });
+                // A resumed agent that is working has a turn the session did
+                // not see start.
                 let live = Live {
                     agent,
-                    turn: None,
+                    turn: busy.then_some(Turn::Working { recorded: false }),
                     pending: Vec::new(),
                 };
                 (Self::Live(live), events)
             }
-            // A loading agent replays its conversation before it starts. A
-            // session that has a history keeps it and drops the replay.
+            // A resuming agent replays its conversation and reports its state
+            // before it starts. A session that has a history keeps it and
+            // drops the replay.
             (
                 Self::Starting {
                     mut replay,
+                    mut busy,
                     previous,
                 },
                 Change::Update(update),
             ) => {
+                if let SessionUpdate::StateUpdate(state) = &update {
+                    busy = !matches!(state, StateUpdate::Idle(_));
+                }
                 if let Some(replay) = &mut replay {
                     replay.push(update);
                 }
-                (Self::Starting { replay, previous }, Vec::new())
+                (
+                    Self::Starting {
+                        replay,
+                        busy,
+                        previous,
+                    },
+                    Vec::new(),
+                )
             }
             (Self::Starting { previous, .. }, Change::Exited(error)) => (
                 Self::Exited(previous),
@@ -204,12 +263,19 @@ impl Phase {
             }
 
             (Self::Live(mut live), Change::Update(update)) => {
-                if let SessionUpdate::ConfigOptionUpdate(options) = &update {
-                    live.agent
-                        .config_options
-                        .clone_from(&options.config_options);
+                let mut turn = Vec::new();
+                match &update {
+                    SessionUpdate::ConfigOptionUpdate(options) => {
+                        live.agent
+                            .config_options
+                            .clone_from(&options.config_options);
+                    }
+                    SessionUpdate::StateUpdate(state) => turn = live.follow(state),
+                    _ => {}
                 }
-                (Self::Live(live), vec![EventKind::Update(update)])
+                let mut events = vec![EventKind::Update(update)];
+                events.extend(turn);
+                (Self::Live(live), events)
             }
             (Self::Live(mut live), Change::ConfigOptionsSet(options)) => {
                 let mut events = Vec::new();
@@ -230,7 +296,9 @@ impl Phase {
                 });
                 let requested = EventKind::PermissionRequested {
                     request_id,
-                    tool_call: request.tool_call,
+                    title: request.title,
+                    description: request.description,
+                    subject: request.subject,
                     options: request.options,
                 };
                 (Self::Live(live), vec![requested])
@@ -239,32 +307,15 @@ impl Phase {
                 let events = live.cancel_pending();
                 (Self::Live(live), events)
             }
-            (Self::Live(mut live), Change::TurnEnded(result))
-                if live.turn == Some(Turn::Prompt) =>
-            {
-                live.turn = None;
-                let (stop_reason, error) = match result {
-                    Ok(stop_reason) => (Some(stop_reason), None),
-                    Err(error) => (None, Some(error)),
-                };
-                (
-                    Self::Live(live),
-                    vec![EventKind::TurnEnded { stop_reason, error }],
-                )
-            }
-            (Self::Live(mut live), Change::AgentState(AgentState::Running))
-                if live.turn.is_none() =>
-            {
-                live.turn = Some(Turn::Agent);
-                (Self::Live(live), vec![EventKind::TurnStarted])
-            }
-            (Self::Live(mut live), Change::AgentState(AgentState::Idle { stop_reason }))
-                if live.turn == Some(Turn::Agent) =>
+            // The agent rejected the prompt, so no turn began. After the
+            // agent reported work for it, the turn ends at the agent's `idle`.
+            (Self::Live(mut live), Change::PromptRejected { prompt, error })
+                if live.turn == Some(Turn::Prompted(prompt)) =>
             {
                 live.turn = None;
                 let ended = EventKind::TurnEnded {
-                    stop_reason,
-                    error: None,
+                    stop_reason: None,
+                    error: Some(error),
                 };
                 (Self::Live(live), vec![ended])
             }
@@ -284,13 +335,9 @@ impl Phase {
                 Change::ConfigOptionsSet(_)
                 | Change::PermissionRequested { .. }
                 | Change::Cancelled
-                | Change::TurnEnded(_)
-                | Change::AgentState(_),
+                | Change::PromptRejected { .. },
             )
-            | (
-                phase @ Self::Live(_),
-                Change::Started(_) | Change::TurnEnded(_) | Change::AgentState(_),
-            )
+            | (phase @ Self::Live(_), Change::Started(_) | Change::PromptRejected { .. })
             | (
                 phase @ Self::Exited(_),
                 Change::Started(_)
@@ -298,8 +345,7 @@ impl Phase {
                 | Change::ConfigOptionsSet(_)
                 | Change::PermissionRequested { .. }
                 | Change::Cancelled
-                | Change::TurnEnded(_)
-                | Change::AgentState(_)
+                | Change::PromptRejected { .. }
                 | Change::Exited(_),
             )
             | (phase @ Self::Closed, _) => (phase, Vec::new()),
@@ -329,6 +375,7 @@ impl State {
             session_id,
             phase: Phase::Starting {
                 replay: Some(Vec::new()),
+                busy: false,
                 previous: None,
             },
             title: None,
@@ -364,6 +411,7 @@ impl State {
             phase => return Err(invalid_state(phase.state())),
         };
         self.phase = Phase::Starting {
+            busy: false,
             replay: (!self
                 .events
                 .iter()
@@ -425,6 +473,7 @@ impl State {
     }
 
     pub fn request(&mut self, request: Request) -> Result<(), ErrorBody> {
+        let seq = self.last_seq() + 1;
         let event = match (&mut self.phase, request) {
             (Phase::Live(live), Request::Prompt(prompt)) => {
                 let state = live.state();
@@ -432,7 +481,7 @@ impl State {
                     return Err(invalid_state(state));
                 }
                 check_prompt(&prompt, &live.agent.prompt_capabilities)?;
-                live.turn = Some(Turn::Prompt);
+                live.turn = Some(Turn::Prompted(seq));
                 EventKind::PromptStarted { prompt }
             }
             (
@@ -513,12 +562,12 @@ fn check_prompt(prompt: &[ContentBlock], accepts: &PromptCapabilities) -> Result
     for block in prompt {
         let (kind, accepted) = match block {
             ContentBlock::Text(_) | ContentBlock::ResourceLink(_) => continue,
-            ContentBlock::Image(_) => ("image", accepts.image),
-            ContentBlock::Audio(_) => ("audio", accepts.audio),
+            ContentBlock::Image(_) => ("image", accepts.image.is_some()),
+            ContentBlock::Audio(_) => ("audio", accepts.audio.is_some()),
             ContentBlock::Resource(resource) => match resource.resource {
                 EmbeddedResourceResource::TextResourceContents(_)
                 | EmbeddedResourceResource::BlobResourceContents(_) => {
-                    ("embedded resource", accepts.embedded_context)
+                    ("embedded resource", accepts.embedded_context.is_some())
                 }
                 _ => ("unknown resource", false),
             },
@@ -556,9 +605,11 @@ fn not_pending(request_id: &str) -> ErrorBody {
 
 #[cfg(test)]
 mod tests {
-    use agent_client_protocol::v1::schema::{
-        ContentChunk, PermissionOptionKind, SessionInfoUpdate, TextContent, ToolCallUpdate,
-        ToolCallUpdateFields,
+    use std::collections::BTreeMap;
+
+    use agent_client_protocol::v2::schema::{
+        ContentChunk, IdleStateUpdate, OtherStateUpdate, PermissionOptionKind,
+        RequiresActionStateUpdate, RunningStateUpdate, SessionInfoUpdate, StopReason, TextContent,
     };
 
     use super::*;
@@ -586,7 +637,7 @@ mod tests {
         state.record(Change::PermissionRequested {
             request: RequestPermissionRequest::new(
                 "agent",
-                ToolCallUpdate::new("tool", ToolCallUpdateFields::new()),
+                "Tool",
                 vec![PermissionOption::new(
                     "allow",
                     "Allow",
@@ -598,9 +649,24 @@ mod tests {
         outcome
     }
 
+    fn state_change(state: StateUpdate) -> Change {
+        Change::Update(SessionUpdate::StateUpdate(state))
+    }
+
+    fn running() -> Change {
+        state_change(StateUpdate::Running(RunningStateUpdate::new()))
+    }
+
+    fn idle(stop_reason: Option<StopReason>) -> Change {
+        state_change(StateUpdate::Idle(
+            IdleStateUpdate::new().stop_reason(stop_reason),
+        ))
+    }
+
     fn chunk() -> Change {
         Change::Update(SessionUpdate::AgentMessageChunk(ContentChunk::new(
             ContentBlock::Text(TextContent::new("late")),
+            "message",
         )))
     }
 
@@ -634,6 +700,7 @@ mod tests {
         prompt(&mut state).unwrap();
         assert_eq!(state.state(), SessionState::Running);
         assert_eq!(prompt(&mut state).unwrap_err().code, code::INVALID_STATE);
+        state.record(running());
 
         let mut outcome = request_permission(&mut state);
         assert_eq!(state.state(), SessionState::AwaitingPermission);
@@ -652,16 +719,25 @@ mod tests {
         let error = state.request(permit("allow")).unwrap_err();
         assert_eq!(error.code, code::INVALID_STATE);
 
-        state.record(Change::TurnEnded(Ok(StopReason::EndTurn)));
+        state.record(idle(Some(StopReason::EndTurn)));
         assert_eq!(state.state(), SessionState::Idle);
         assert_eq!(
             kinds(&state, 1),
             [
                 "prompt_started",
+                "update",
                 "permission_requested",
                 "permission_resolved",
+                "update",
                 "turn_ended"
             ]
+        );
+        assert_eq!(
+            state.events_after(6)[0].kind,
+            EventKind::TurnEnded {
+                stop_reason: Some(StopReason::EndTurn),
+                error: None
+            }
         );
     }
 
@@ -682,7 +758,7 @@ mod tests {
             );
             assert_eq!(
                 outcome.try_recv(),
-                Ok(RequestPermissionOutcome::Cancelled),
+                Ok(CancelledPermissionOutcome::new().into()),
                 "{last}"
             );
         }
@@ -691,38 +767,43 @@ mod tests {
     #[test]
     fn the_agent_starts_and_ends_turns_of_its_own() {
         let mut state = started();
-        state.record(Change::AgentState(AgentState::Idle { stop_reason: None }));
-        assert_eq!(kinds(&state, 1), [] as [&str; 0]);
+        state.record(idle(None));
+        assert_eq!(kinds(&state, 1), ["update"]);
+        assert_eq!(state.state(), SessionState::Idle);
 
-        state.record(Change::AgentState(AgentState::Running));
+        state.record(running());
         assert_eq!(state.state(), SessionState::Running);
         assert_eq!(prompt(&mut state).unwrap_err().code, code::INVALID_STATE);
-        state.record(Change::AgentState(AgentState::Running));
-        state.record(Change::TurnEnded(Ok(StopReason::EndTurn)));
-        assert_eq!(state.state(), SessionState::Running);
+        state.record(running());
 
         let mut outcome = request_permission(&mut state);
         assert_eq!(state.state(), SessionState::AwaitingPermission);
         state.record(Change::Cancelled);
-        assert_eq!(outcome.try_recv(), Ok(RequestPermissionOutcome::Cancelled));
+        assert_eq!(
+            outcome.try_recv(),
+            Ok(CancelledPermissionOutcome::new().into())
+        );
         assert_eq!(state.state(), SessionState::Running);
 
-        state.record(Change::AgentState(AgentState::Idle {
-            stop_reason: Some(StopReason::Cancelled),
-        }));
+        state.record(idle(Some(StopReason::Cancelled)));
         assert_eq!(state.state(), SessionState::Idle);
-        state.record(Change::AgentState(AgentState::Idle { stop_reason: None }));
+        state.record(idle(None));
         assert_eq!(
             kinds(&state, 1),
             [
+                "update",
+                "update",
                 "turn_started",
+                "update",
                 "permission_requested",
                 "permission_resolved",
-                "turn_ended"
+                "update",
+                "turn_ended",
+                "update"
             ]
         );
         assert_eq!(
-            state.events_after(4)[0].kind,
+            state.events_after(8)[0].kind,
             EventKind::TurnEnded {
                 stop_reason: Some(StopReason::Cancelled),
                 error: None
@@ -732,29 +813,149 @@ mod tests {
     }
 
     #[test]
-    fn a_prompts_turn_is_the_only_turn_while_it_runs() {
+    fn a_repeated_idle_snapshot_after_a_prompt_leaves_the_turn_running() {
         let mut state = started();
         prompt(&mut state).unwrap();
-        // The agent reports the work the prompt asked for, then stops.
-        state.record(Change::AgentState(AgentState::Running));
-        state.record(Change::AgentState(AgentState::Idle { stop_reason: None }));
+        // The agent repeats the snapshot it sent before the prompt, then
+        // reports the work the prompt asked for, then stops.
+        state.record(idle(None));
         assert_eq!(state.state(), SessionState::Running);
-        state.record(Change::TurnEnded(Ok(StopReason::EndTurn)));
+        state.record(running());
+        state.record(idle(Some(StopReason::EndTurn)));
+        assert_eq!(state.state(), SessionState::Idle);
+        assert_eq!(
+            kinds(&state, 1),
+            ["prompt_started", "update", "update", "update", "turn_ended"]
+        );
+    }
+
+    /// The agent's rejection of the last prompt sent.
+    fn rejected(state: &State, error: &str) -> Change {
+        let prompt = state
+            .events_after(0)
+            .iter()
+            .rev()
+            .find(|event| matches!(event.kind, EventKind::PromptStarted { .. }))
+            .map_or(0, |event| event.seq);
+        Change::PromptRejected {
+            prompt,
+            error: error.into(),
+        }
+    }
+
+    #[test]
+    fn a_rejected_prompt_ends_the_turn_with_its_error() {
+        let mut state = started();
+        prompt(&mut state).unwrap();
+        state.record(rejected(&state, "not inserted"));
         assert_eq!(state.state(), SessionState::Idle);
         assert_eq!(kinds(&state, 1), ["prompt_started", "turn_ended"]);
+        assert_eq!(
+            state.events_after(2)[0].kind,
+            EventKind::TurnEnded {
+                stop_reason: None,
+                error: Some("not inserted".into())
+            }
+        );
+        // The agent may report the state it was already in.
+        state.record(idle(None));
+        assert_eq!(kinds(&state, 3), ["update"]);
+        prompt(&mut state).unwrap();
+    }
+
+    #[test]
+    fn a_rejected_prompt_after_the_agent_reported_work_waits_for_idle() {
+        let mut state = started();
+        prompt(&mut state).unwrap();
+        state.record(running());
+        state.record(rejected(&state, "late"));
+        assert_eq!(state.state(), SessionState::Running);
+        state.record(idle(Some(StopReason::Cancelled)));
+        assert_eq!(state.state(), SessionState::Idle);
+        assert_eq!(
+            kinds(&state, 1),
+            ["prompt_started", "update", "update", "turn_ended"]
+        );
+        assert_eq!(
+            state.events_after(4)[0].kind,
+            EventKind::TurnEnded {
+                stop_reason: Some(StopReason::Cancelled),
+                error: None
+            }
+        );
+    }
+
+    #[test]
+    fn an_answered_prompt_that_was_rejected_after_its_turn_ended_changes_nothing() {
+        let mut state = started();
+        prompt(&mut state).unwrap();
+        state.record(running());
+        state.record(idle(Some(StopReason::EndTurn)));
+        state.record(rejected(&state, "late"));
+        assert_eq!(
+            kinds(&state, 1),
+            ["prompt_started", "update", "update", "turn_ended"]
+        );
+    }
+
+    #[test]
+    fn a_late_rejection_leaves_the_next_prompt_running() {
+        let mut state = started();
+        prompt(&mut state).unwrap();
+        let first = rejected(&state, "late");
+        state.record(running());
+        state.record(idle(Some(StopReason::EndTurn)));
+        prompt(&mut state).unwrap();
+        state.record(first);
+        assert_eq!(state.state(), SessionState::Running);
+        state.record(running());
+        assert_eq!(
+            kinds(&state, 1),
+            [
+                "prompt_started",
+                "update",
+                "update",
+                "turn_ended",
+                "prompt_started",
+                "update"
+            ]
+        );
+    }
+
+    #[test]
+    fn states_other_than_idle_are_work() {
+        let unknown = || {
+            state_change(StateUpdate::Other(OtherStateUpdate::new(
+                "_waiting",
+                BTreeMap::new(),
+            )))
+        };
+        let requires_action =
+            || state_change(StateUpdate::RequiresAction(RequiresActionStateUpdate::new()));
+        for change in [unknown(), requires_action()] {
+            let mut state = started();
+            state.record(change);
+            assert_eq!(state.state(), SessionState::Running);
+            assert_eq!(kinds(&state, 1), ["update", "turn_started"]);
+            assert_eq!(prompt(&mut state).unwrap_err().code, code::INVALID_STATE);
+            // An unknown state is never taken for idle.
+            state.record(running());
+            state.record(idle(None));
+            assert_eq!(state.state(), SessionState::Idle);
+        }
     }
 
     #[test]
     fn exit_ends_a_turn_the_agent_started() {
         let mut state = started();
-        state.record(Change::AgentState(AgentState::Running));
+        state.record(running());
         state.record(Change::Exited(None));
         assert_eq!(
             kinds(&state, 1),
-            ["turn_started", "turn_ended", "agent_exited"]
+            ["update", "turn_started", "turn_ended", "agent_exited"]
         );
         assert!(matches!(
-            state.events_after(2)[0].kind,
+            state.events_after(3)[0].kind,
             EventKind::TurnEnded {
                 stop_reason: None,
                 error: Some(_)
@@ -766,9 +967,14 @@ mod tests {
     fn a_turn_ends_once() {
         let mut state = started();
         prompt(&mut state).unwrap();
-        state.record(Change::TurnEnded(Ok(StopReason::EndTurn)));
-        state.record(Change::TurnEnded(Err("late".into())));
-        assert_eq!(kinds(&state, 1), ["prompt_started", "turn_ended"]);
+        state.record(running());
+        state.record(idle(Some(StopReason::EndTurn)));
+        state.record(idle(Some(StopReason::EndTurn)));
+        state.record(rejected(&state, "late"));
+        assert_eq!(
+            kinds(&state, 1),
+            ["prompt_started", "update", "update", "turn_ended", "update"]
+        );
     }
 
     #[test]
@@ -782,16 +988,12 @@ mod tests {
             chunk(),
             Change::ConfigOptionsSet(Vec::new()),
             Change::PermissionRequested {
-                request: RequestPermissionRequest::new(
-                    "agent",
-                    ToolCallUpdate::new("tool", ToolCallUpdateFields::new()),
-                    Vec::new(),
-                ),
+                request: RequestPermissionRequest::new("agent", "Tool", Vec::new()),
                 answer,
             },
             Change::Cancelled,
-            Change::TurnEnded(Ok(StopReason::EndTurn)),
-            Change::AgentState(AgentState::Running),
+            rejected(&state, "late"),
+            running(),
             Change::Exited(None),
             Change::Closed,
         ] {
@@ -807,6 +1009,7 @@ mod tests {
     fn replayed(text: &str) -> Change {
         Change::Update(SessionUpdate::UserMessageChunk(ContentChunk::new(
             ContentBlock::Text(TextContent::new(text)),
+            "message",
         )))
     }
 
@@ -834,6 +1037,55 @@ mod tests {
         assert_eq!(state.state(), SessionState::Idle);
         assert_eq!(kinds(&state, 0), ["update", "agent_started"]);
         assert_eq!(state.title(), Some("Fix the build"));
+    }
+
+    #[test]
+    fn the_resume_snapshot_sets_the_state_without_recording_a_turn() {
+        let resumed = |state: &mut State, snapshot: Change| {
+            assert_eq!(state.load().unwrap(), "agent");
+            state.record(replayed("hello"));
+            state.record(snapshot);
+            state.record(Change::Started(Agent {
+                session_id: "agent".into(),
+                prompt_capabilities: PromptCapabilities::default(),
+                config_options: Vec::new(),
+            }));
+        };
+
+        let mut state = restored();
+        resumed(&mut state, idle(None));
+        assert_eq!(state.state(), SessionState::Idle);
+        assert_eq!(kinds(&state, 0), ["update", "update", "agent_started"]);
+
+        let mut state = restored();
+        resumed(&mut state, running());
+        assert_eq!(state.state(), SessionState::Running);
+        assert_eq!(kinds(&state, 0), ["update", "update", "agent_started"]);
+        assert_eq!(prompt(&mut state).unwrap_err().code, code::INVALID_STATE);
+        state.record(idle(Some(StopReason::Cancelled)));
+        assert_eq!(state.state(), SessionState::Idle);
+        assert_eq!(
+            kinds(&state, 0),
+            ["update", "update", "agent_started", "update"]
+        );
+        prompt(&mut state).unwrap();
+
+        // The snapshot counts when the session keeps its history and drops
+        // the replay, and a turn it reports ends silently if the agent exits.
+        let mut state = started();
+        state.record(Change::Exited(None));
+        resumed(&mut state, running());
+        assert_eq!(state.state(), SessionState::Running);
+        state.record(Change::Exited(None));
+        assert_eq!(
+            kinds(&state, 0),
+            [
+                "agent_started",
+                "agent_exited",
+                "agent_started",
+                "agent_exited"
+            ]
+        );
     }
 
     #[test]

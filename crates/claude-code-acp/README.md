@@ -2,7 +2,9 @@
 
 A Rust [Agent Client Protocol (ACP)](https://agentclientprotocol.com/) bridge
 for the Claude Code CLI. It lets ACP clients use an installed, authenticated
-`claude` command through their existing Claude Code subscription.
+`claude` command through their existing Claude Code subscription. It speaks
+the draft ACP protocol v2, which [`docs/acp-v2.md`](../../docs/acp-v2.md)
+charts.
 
 Based on the original
 [claude-code-acp](https://github.com/harukitosa/claude-code-acp) by Haruki Tosa.
@@ -60,40 +62,57 @@ intended subscription authentication path.
 
 ## ACP support
 
-The bridge supports `initialize` and `authenticate`, along with the session
-methods described below.
+The bridge advertises the baseline v2 session methods, `session/new`,
+`session/list`, `session/resume`, `session/close`, `session/prompt`,
+`session/cancel`, and `session/update`, with `session/set_config_option`, the
+`image` and `embeddedContext` prompt capabilities, and stdio MCP servers.
+[`docs/acp-v2.md`](../../docs/acp-v2.md) charts every ACP v2 feature and the
+bridge's support of it.
 
 ### Sessions
 
-Clients can create, load, list, and resume sessions with `session/new`,
-`session/load`, `session/list`, and `session/resume`. Bridge session metadata is
-stored in `~/.local/share/claude-code-acp/acp-sessions.json`, which several
-bridge processes can share; each change is written under a lock file beside it.
-A registry file that cannot be parsed is moved aside to
+Clients create, list, resume, and close sessions with `session/new`,
+`session/list`, `session/resume`, and `session/close`. A session takes
+prompts once it is new or resumed, until it is closed. Bridge session
+metadata is stored in `~/.local/share/claude-code-acp/acp-sessions.json`,
+which several bridge processes can share; each change is written under a lock
+file beside it. A registry file that cannot be parsed is moved aside to
 `acp-sessions.json.corrupt-<time>` and a new one is started. Native Claude
 sessions are discovered from local project transcripts. `session/list` returns
 up to 50 sessions per page and lists a bridge session under its own ID in place
-of the Claude transcript it continues, so every listed ID can be loaded. Loading
-or resuming a session requires its original `cwd` and applies the request's MCP
-servers. New sessions start fresh; continuing a conversation requires loading or
-resuming its session ID. A failed resumed prompt reports the error without
-retrying in a fresh conversation.
+of the Claude transcript it continues, so every listed ID can be resumed.
+Resuming a session requires its original `cwd` and applies the request's MCP
+servers. New sessions start fresh; continuing a conversation requires resuming
+its session ID. A failed resumed prompt reports the error without retrying in
+a fresh conversation.
 
-`session/load` replays the conversation before it answers. The bridge reads the
-`user` and `assistant` entries of the session's Claude transcript and converts
-them with the same code that converts a live prompt's output, so a replayed
-turn produces the same message, thought, and tool call updates, plus user
-message chunks for the prompts. Prompt resource links and embedded text replay
-as the text Claude received, and an embedded PDF as a `document` resource.
-Claude keeps each subagent's transcript in the session's `subagents`
-directory, beside a `.meta.json` naming the tool call that started it, and
-the bridge replays it under that tool call as a live subagent shows. Tool
-calls without a result end as failed. `session/resume` opens a session
-without replaying it.
+`session/resume` with `replayFrom: {"type": "start"}` replays the conversation
+before it answers. The bridge reads the `user` and `assistant` entries of the
+session's Claude transcript and converts them with the same code that converts
+a live prompt's output, so a replayed turn produces the same message, thought,
+and tool call updates, with a `user_message` for each prompt. Prompt resource
+links and embedded text replay as the text Claude received, and an embedded
+PDF as a `document` resource. Claude keeps each subagent's transcript in the
+session's `subagents` directory, beside a `.meta.json` naming the tool call
+that started it, and the bridge replays it under that tool call as a live
+subagent shows. Tool calls without a result end as failed. After the replay,
+or at once when the request has no `replayFrom`, the bridge sends the
+session's current `state_update`, and then answers. Any other `replayFrom`
+cursor is rejected with `-32602`.
+
+`session/close` interrupts the session's `claude`, closes its stdin, and
+answers once `claude` has exited. The session stays in the registry, so
+`session/resume` opens it again. Closing a session that is not open succeeds.
 
 ### Prompts and streaming
 
-`session/prompt` streams message, thought, and tool call updates. A tool call's
+`session/prompt` answers once the prompt enters the conversation: the bridge
+sends the prompt as a `user_message` with a new `messageId` and answers with
+that ID. The turn's output follows as `session/update` notifications:
+`agent_message_chunk` and `agent_thought_chunk` while `claude` streams, and
+`agent_message` and `agent_thought` for text it did not stream. Every tool
+call reports through `tool_call_update`. The first update for a tool call ID
+carries its name, title, kind, status `pending`, and input. A tool call's
 result sets its `content`: the result's text and images, with any other block
 Claude returns shown as its type in brackets, such as `[tool_reference]`.
 
@@ -113,44 +132,44 @@ Prompts can contain these content blocks, which reach Claude in order:
 | Embedded text resource    | Text in a `<context ref="uri">` block                  |
 | Embedded image or PDF     | An image or a document                                 |
 
-The bridge advertises the `image` and `embeddedContext` prompt capabilities.
-
 A session's first prompt starts `claude`, and the session keeps that process:
 the bridge holds its stdin open and sends each later prompt to it as a
-message with a `uuid`. The bridge takes the next turn's result as the prompt's
-once Claude says it started the prompt, with a `command_lifecycle` line in
-state `started` or, under `--replay-user-messages`, by echoing the prompt with
-`isReplay`. Claude stays running between prompts, so background tasks it started
-keep running. When one reports back, Claude starts a turn by itself, and the
-bridge sends that turn's updates and permission requests to the client as it
-does a prompt's. `session/cancel` stops such a turn too.
+message with a `uuid`, the prompt's `messageId`. A prompt sent while a turn
+runs waits for Claude to take it. The bridge takes the prompt as inserted once
+Claude says it started the prompt, with a `command_lifecycle` line in state
+`started` or, under `--replay-user-messages`, by echoing the prompt with
+`isReplay`. Claude stays running between prompts, so background tasks it
+started keep running. When one reports back, Claude starts a turn by itself,
+and the bridge sends that turn's updates and permission requests to the client
+as it does a prompt's. `session/cancel` stops such a turn too.
 
-ACP reports a turn only as the answer to a prompt, so the bridge also sends
-the extension notification `_ox/agent_state`, with the `sessionId` and a
-`state` of `running` or `idle`, each time Claude starts or stops working.
-After a turn Claude started, `idle` carries the turn's `stopReason`:
-`end_turn`, `max_turn_requests`, or `cancelled`. A
-prompt's response reaches the client before anything Claude does after that
-prompt's turn.
+The bridge reports what Claude is doing with `state_update`. A session is idle
+until Claude takes a prompt or starts a turn, which makes it `running`. A
+permission request that blocks the turn makes it `requires_action`, and it is
+`running` again once the request is answered. When a turn ends the state is
+`idle`, with the turn's `stopReason`: `end_turn`, `max_turn_requests` for a
+Claude result of `error_max_turns`, `cancelled`, or `error` for any other
+Claude error, with the error's message as its details. A `claude` that exits
+during a turn ends it with `error`, carrying `claude`'s stderr, or with
+`cancelled` when the session is closing.
 
-Clients can stop a prompt with `session/cancel`, including immediately after
-sending it or while a tool permission request is open. The bridge interrupts
-Claude, which stops the turn and the tools it is running, withdraws an open
-permission request, and waits for the next prompt. Tool calls that started
+Clients can stop a turn with `session/cancel`, including immediately after
+sending a prompt or while a tool permission request is open. The bridge
+interrupts Claude, which stops the turn and the tools it is running, withdraws
+an open permission request, drops the prompts it has not taken, which are
+answered with `-32800`, and waits for the next prompt. Tool calls that started
 without a result are reported as failed when a turn ends.
 
 Claude runs in the bridge's process group, so a client that stops the bridge
 by killing its process group also stops Claude and the processes Claude
 started. Claude also exits when the bridge does, because its stdin closes.
 When `claude` exits while the bridge runs, the next prompt starts another
-that resumes the conversation, if Claude saved a transcript for it, and a
-prompt that was waiting reports the exit as its error.
+that resumes the conversation, if Claude saved a transcript for it. A prompt
+that was waiting for Claude to take it reports the exit as its error.
 
-A prompt whose result Claude reports as `error_max_turns` ends with the
-`max_turn_requests` stop reason. Other Claude errors are reported as an `Error:` message and the
-prompt ends with `end_turn`.
-
-The bridge forwards stdio MCP server definitions to Claude.
+The bridge forwards stdio MCP server definitions to Claude. An MCP server's
+`command` is an absolute path to an executable whose name is in
+`CLAUDE_ACP_MCP_ALLOWED_COMMANDS`.
 
 ### Models and modes
 
