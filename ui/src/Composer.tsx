@@ -48,60 +48,67 @@ export function Composer({ session }: { session: SessionInfo }) {
         else if (canSend) send();
       }}
     >
-      {attachments.length > 0 && (
-        <ul className="attachments">
-          {attachments.map((path) => (
-            <li key={path} title={path}>
-              {path.split("/").pop()}
-              <button
-                type="button"
-                aria-label="Remove"
-                onClick={() => setAttachments((current) => current.filter((p) => p !== path))}
-              >
-                <X />
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      <textarea
-        value={text}
-        disabled={disabled}
-        placeholder="Ask the agent"
-        onChange={(event) => setText(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-            event.preventDefault();
-            if (canSend) send();
-          }
-        }}
-      />
-      <div className="toolbar">
-        <button
-          type="button"
-          title="Attach Files"
-          aria-label="Attach Files"
-          disabled={disabled}
-          onClick={attach}
-        >
-          <Paperclip />
-        </button>
-        {session.config_options.map((option) => (
-          <ConfigPicker
-            key={option.id}
-            option={option}
-            onChange={(value) => setOption(option, value)}
+      <div className="box">
+        {attachments.length > 0 && (
+          <ul className="attachments">
+            {attachments.map((path) => (
+              <li key={path} title={path}>
+                {path.split("/").pop()}
+                <button
+                  type="button"
+                  aria-label="Remove"
+                  onClick={() => setAttachments((current) => current.filter((p) => p !== path))}
+                >
+                  <X />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="input">
+          <button
+            type="button"
+            title="Attach Files"
+            aria-label="Attach Files"
+            disabled={disabled}
+            onClick={attach}
+          >
+            <Paperclip />
+          </button>
+          <textarea
+            rows={1}
+            aria-label="Message"
+            value={text}
+            disabled={disabled}
+            onChange={(event) => setText(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                if (canSend) send();
+              }
+            }}
           />
-        ))}
-        <button
-          type="submit"
-          title={running ? "Stop" : "Send"}
-          aria-label={running ? "Stop" : "Send"}
-          disabled={!running && !canSend}
-        >
-          {running ? <Square /> : <ArrowUp />}
-        </button>
+          <button
+            type="submit"
+            title={running ? "Stop" : "Send"}
+            aria-label={running ? "Stop" : "Send"}
+            disabled={!running && !canSend}
+          >
+            {running ? <Square /> : <ArrowUp />}
+          </button>
+        </div>
       </div>
+      {session.config_options.length > 0 && (
+        <div className="settings">
+          {session.config_options.map((option) => (
+            <ConfigPicker
+              key={option.id}
+              option={option}
+              onChange={(value) => setOption(option, value)}
+            />
+          ))}
+        </div>
+      )}
       {error && <p className="error">{error}</p>}
     </form>
   );

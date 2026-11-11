@@ -1,17 +1,61 @@
 :root {
   color-scheme: light dark;
-  --radius: 0.625rem;
+
+  /* Colour */
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
+  --muted: oklch(0.97 0 0);
   --muted-foreground: oklch(0.556 0 0);
   --accent: oklch(0.97 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
   --border: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
   --sidebar: oklch(0.985 0 0);
   --text: oklch(0.371 0 0);
+  --shadow-color: oklch(0 0 0 / 10%);
   --hover: var(--accent);
   --surface: color-mix(in oklab, var(--background), var(--card));
+  --focus-ring: color-mix(in oklab, var(--ring) 50%, transparent);
+  --disabled-opacity: 0.5;
+
+  /* Spacing: every padding, margin, gap, and size is a multiple of this. */
+  --spacing: 0.25rem;
+
+  /* Type */
+  --font-sans: system-ui, sans-serif;
+  --font-mono: ui-monospace, monospace;
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --leading: 1.5;
+
+  /* Shape */
+  --border-width: 1px;
+  --ring-width: 3px;
+  --radius: 0.625rem;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 6px);
+  --shadow-sm:
+    0 var(--border-width) calc(var(--border-width) * 3) 0 var(--shadow-color),
+    0 var(--border-width) calc(var(--border-width) * 2) calc(var(--border-width) * -1)
+    var(--shadow-color);
+
+  /* Components */
+  --icon-size: calc(var(--spacing) * 4);
+  --icon-button-size: calc(var(--spacing) * 6);
+  --composer-margin: calc(var(--spacing) * 4);
+  --composer-padding: calc(var(--spacing) * 3);
+  --composer-max-lines: 8;
+  --prompt-max-width: 75%;
+  /* The transcript's text lines up with the composer's text. */
+  --conversation-inset: calc(
+    var(--composer-margin) +
+    var(--border-width) +
+    var(--composer-padding)
+  );
 }
 
 @media (prefers-color-scheme: dark) {
@@ -19,8 +63,10 @@
     --background: oklch(0.145 0 0);
     --foreground: oklch(0.985 0 0);
     --card: oklch(0.205 0 0);
+    --muted: oklch(0.269 0 0);
     --muted-foreground: oklch(0.708 0 0);
     --accent: oklch(0.269 0 0);
+    --destructive: oklch(0.704 0.191 22.216);
     --border: oklch(1 0 0 / 10%);
     --ring: oklch(0.556 0 0);
     --sidebar: oklch(0.205 0 0);
@@ -38,9 +84,9 @@ body,
 }
 
 body {
-  font:
-    14px / 1.5 system-ui,
-    sans-serif;
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: var(--leading);
   background: var(--background);
   color: var(--text);
 }
@@ -75,9 +121,9 @@ body {
   flex: none;
   align-items: center;
   justify-content: flex-end;
-  height: 28px;
-  padding: 0.5rem;
-  border-bottom: 1px solid var(--border);
+  height: calc(var(--spacing) * 7);
+  padding: calc(var(--spacing) * 2);
+  border-bottom: var(--border-width) solid var(--border);
 }
 
 .content-body {
@@ -92,15 +138,265 @@ body {
   overflow: auto;
 }
 
+/* Icon buttons: the header's toggles and the composer's buttons. */
+.toggles button,
+.composer .input button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: var(--icon-button-size);
+  height: var(--icon-button-size);
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--muted-foreground);
+  outline: none;
+}
+
+.toggles button:hover,
+.composer .input button:hover:enabled {
+  background: var(--hover);
+}
+
+.toggles button:focus-visible,
+.composer .input button:focus-visible {
+  box-shadow: 0 0 0 var(--ring-width) var(--focus-ring);
+}
+
+.toggles svg,
+.composer svg {
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
+.toggles {
+  display: flex;
+  align-items: center;
+}
+
+.toggles button[aria-pressed="true"] {
+  color: var(--foreground);
+}
+
+/* Conversation */
+
 .conversation {
+  display: flex;
   flex: 1;
+  flex-direction: column;
+  gap: calc(var(--spacing) * 3);
   min-height: 0;
   overflow: auto;
+  padding: calc(var(--spacing) * 4) var(--conversation-inset);
+  color: var(--foreground);
+}
+
+.conversation p {
+  margin: 0;
 }
 
 .conversation .text {
   white-space: pre-wrap;
+  overflow-wrap: break-word;
 }
+
+.prompt {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--spacing) * 2);
+  align-self: flex-end;
+  max-width: var(--prompt-max-width);
+  padding: calc(var(--spacing) * 3) calc(var(--spacing) * 4);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+}
+
+.prompt .attachment,
+.tool-call .status,
+.session-closed {
+  font-size: var(--text-xs);
+  color: var(--muted-foreground);
+}
+
+.thought {
+  color: var(--muted-foreground);
+}
+
+.thought summary {
+  cursor: default;
+}
+
+.thought .text {
+  margin-top: calc(var(--spacing) * 2);
+}
+
+.tool-call {
+  display: flex;
+  align-items: baseline;
+  gap: calc(var(--spacing) * 2);
+}
+
+.permission {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--spacing) * 3);
+  padding: calc(var(--spacing) * 4);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-2xl);
+  background: var(--card);
+}
+
+.permission .options {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: calc(var(--spacing) * 2);
+}
+
+.permission .options button {
+  height: calc(var(--spacing) * 8);
+  padding: 0 calc(var(--spacing) * 3);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+  outline: none;
+  box-shadow: var(--shadow-sm);
+}
+
+.permission .options button:hover:enabled {
+  background: var(--accent);
+}
+
+.permission .options button:focus-visible {
+  box-shadow: 0 0 0 var(--ring-width) var(--focus-ring);
+}
+
+.permission .outcome {
+  color: var(--muted-foreground);
+}
+
+.turn-error,
+.agent-exited,
+.permission .error,
+.composer .error {
+  color: var(--destructive);
+}
+
+/* Composer */
+
+.composer {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: calc(var(--spacing) * 2);
+  margin: var(--composer-margin);
+}
+
+.composer .box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing);
+  padding: calc(var(--spacing) * 2) var(--composer-padding);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-2xl);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+}
+
+.composer .input {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--spacing);
+}
+
+.composer .input button {
+  margin-bottom: var(--spacing);
+}
+
+.composer .input button:disabled {
+  opacity: var(--disabled-opacity);
+}
+
+.composer button[type="submit"] {
+  color: var(--foreground);
+}
+
+.composer textarea {
+  flex: 1;
+  field-sizing: content;
+  min-height: 0;
+  max-height: calc(var(--composer-max-lines) * 1lh + var(--spacing) * 2);
+  padding: var(--spacing);
+  border: none;
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  line-height: calc(var(--spacing) * 6);
+  resize: none;
+  outline: none;
+}
+
+.composer .attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(var(--spacing) * 2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.composer .attachments li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing);
+  padding-left: calc(var(--spacing) * 2);
+  border-radius: var(--radius-md);
+  background: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.composer .attachments button {
+  display: inline-flex;
+  padding: var(--spacing);
+  border: none;
+  background: transparent;
+  color: var(--muted-foreground);
+}
+
+.composer .attachments svg {
+  width: calc(var(--spacing) * 3);
+  height: calc(var(--spacing) * 3);
+}
+
+.composer .settings {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: calc(var(--spacing) * 3);
+  padding-left: var(--spacing);
+  font-size: var(--text-xs);
+  color: var(--muted-foreground);
+}
+
+.composer .settings select,
+.composer .settings label {
+  font: inherit;
+  color: inherit;
+}
+
+.composer .error {
+  margin: 0;
+  padding-left: var(--spacing);
+  font-size: var(--text-xs);
+}
+
+/* Workbench panels */
 
 .panel {
   flex: none;
@@ -122,42 +418,6 @@ body {
   background: var(--surface);
 }
 
-.toggles {
-  display: flex;
-  align-items: center;
-}
-
-.toggles button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: none;
-  border-radius: calc(var(--radius) - 2px);
-  background: transparent;
-  color: var(--muted-foreground);
-  outline: none;
-}
-
-.toggles button[aria-pressed="true"] {
-  color: var(--foreground);
-}
-
-.toggles button:hover {
-  background: var(--hover);
-}
-
-.toggles button:focus-visible {
-  box-shadow: 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent);
-}
-
-.toggles svg {
-  width: 16px;
-  height: 16px;
-}
-
 .sash {
   position: relative;
   flex: none;
@@ -172,21 +432,21 @@ body {
 }
 
 .sash.vertical {
-  width: 1px;
+  width: var(--border-width);
   cursor: col-resize;
 }
 
 .sash.vertical::after {
-  inset: 0 -2px;
+  inset: 0 calc(var(--spacing) * -0.5);
 }
 
 .sash.horizontal {
-  height: 1px;
+  height: var(--border-width);
   cursor: row-resize;
 }
 
 .sash.horizontal::after {
-  inset: -2px 0;
+  inset: calc(var(--spacing) * -0.5) 0;
 }
 
 body.resizing {
