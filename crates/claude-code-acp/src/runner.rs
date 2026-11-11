@@ -1,17 +1,26 @@
 use std::{
-    collections::BTreeMap, future::Future, os::fd::AsRawFd, path::PathBuf, process::Stdio,
-    sync::Mutex, time::Duration,
+    collections::{BTreeMap, HashMap},
+    future::Future,
+    os::fd::AsRawFd,
+    path::Path,
+    pin::pin,
+    process::Stdio,
+    sync::{Arc, Mutex},
+    task::{Context, Poll, Waker},
 };
 
+use ox_protocol::AgentState;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    process::{Child, ChildStderr, Command},
-    sync::{oneshot, watch},
-    task::JoinHandle,
-    time::timeout,
+    process::{Child, ChildStderr, ChildStdin, Command},
+    sync::{mpsc, oneshot},
+    task::{AbortHandle, JoinHandle},
 };
+use uuid::Uuid;
+
+use crate::updates::Updates;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct McpServer {
@@ -23,8 +32,8 @@ pub struct McpServer {
 
 #[derive(Clone, Debug)]
 pub enum Event {
-    /// Text from the user. Live turns carry the prompt in the request; a
-    /// transcript carries it as a message.
+    /// Text from the user, which a transcript carries as a message. The
+    /// client already has the prompts of live turns.
     UserText(String),
     UserImage {
         data: String,
@@ -63,21 +72,13 @@ pub enum RunError {
     Failed(String),
 }
 
-pub struct RunRequest<'a> {
-    pub cwd: &'a PathBuf,
-    /// The content of the user message.
-    pub content: &'a [Value],
+pub struct StartRequest<'a> {
+    pub cwd: &'a Path,
     pub resume: Option<&'a str>,
     pub model: &'a str,
     pub mode: &'a str,
     pub mcp_servers: &'a [McpServer],
 }
-
-/// How long claude gets to exit after reporting its result.
-const EXIT_GRACE: Duration = Duration::from_secs(5);
-/// How long claude gets to exit after `SIGTERM` before its process group is
-/// killed.
-const TERMINATE_GRACE: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
 pub enum Finish {
@@ -85,161 +86,509 @@ pub enum Finish {
     MaxTurns,
 }
 
+/// How a prompt's turn ended.
 pub struct RunOutcome {
     /// The Claude session id claude reported, whatever the outcome.
     pub session_id: Option<String>,
     pub result: Result<Finish, RunError>,
+    /// Dropped once the prompt's response is sent. What claude wrote after
+    /// the turn waits for that, so the client reads the response first.
+    pub responding: Option<oneshot::Sender<()>>,
 }
 
-async fn write_message(
-    stdin: &mut tokio::process::ChildStdin,
-    value: &Value,
-) -> Result<(), RunError> {
-    let mut bytes = serde_json::to_vec(value).map_err(|e| RunError::Failed(e.to_string()))?;
-    bytes.push(b'\n');
-    stdin
-        .write_all(&bytes)
-        .await
-        .map_err(|e| RunError::Failed(format!("failed writing to claude: {e}")))
+/// Why claude did not take a prompt.
+pub enum Refused {
+    /// An earlier prompt is waiting for its result.
+    Busy,
+    /// Claude has exited, for this reason.
+    Exited(String),
 }
 
-pub async fn run<F: Future<Output = Value>>(
-    request: RunRequest<'_>,
-    cancelled: watch::Receiver<bool>,
-    on_event: impl FnMut(Event),
-    on_permission: impl FnMut(PermissionRequest) -> F,
-) -> RunOutcome {
-    let session_id = Mutex::new(None);
-    let result = run_claude(request, cancelled, &session_id, on_event, on_permission).await;
-    RunOutcome {
-        session_id: session_id.into_inner().unwrap(),
-        result,
-    }
-}
-
-async fn run_claude<F: Future<Output = Value>>(
-    request: RunRequest<'_>,
-    mut cancelled: watch::Receiver<bool>,
-    session_id: &Mutex<Option<String>>,
-    on_event: impl FnMut(Event),
-    on_permission: impl FnMut(PermissionRequest) -> F,
-) -> Result<Finish, RunError> {
-    if *cancelled.borrow() {
-        return Err(RunError::Cancelled);
-    }
-    let mut command = Command::new("claude");
-    command
-        .arg("-p")
-        .args([
-            "--output-format",
-            "stream-json",
-            "--input-format",
-            "stream-json",
-            "--verbose",
-            "--include-partial-messages",
-        ])
-        .args(["--model", request.model])
-        .args([
-            "--permission-mode",
-            request.mode,
-            "--permission-prompt-tool",
-            "stdio",
-        ]);
-    if let Some(id) = request.resume {
-        command.arg("--resume").arg(id);
-    }
-
-    let mut mcp_file = None;
-    if !request.mcp_servers.is_empty() {
-        let mut file =
-            tempfile::NamedTempFile::new().map_err(|e| RunError::Failed(e.to_string()))?;
-        let servers: BTreeMap<_, _> = request
-            .mcp_servers
-            .iter()
-            .map(|s| {
-                (
-                    s.name.clone(),
-                    json!({"command": s.command, "args": s.args, "env": s.env}),
-                )
-            })
-            .collect();
-        serde_json::to_writer(&mut file, &json!({"mcpServers": servers}))
-            .map_err(|e| RunError::Failed(e.to_string()))?;
-        command.arg("--mcp-config").arg(file.path());
-        mcp_file = Some(file);
-    }
-
-    command
-        .current_dir(request.cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .env_remove("ANTHROPIC_API_KEY")
-        .env_remove("ANTHROPIC_AUTH_TOKEN")
-        .kill_on_drop(true)
-        .process_group(0);
-    let mut child = command
-        .spawn()
-        .map_err(|e| RunError::Failed(format!("failed to start claude: {e}")))?;
-    let group = ProcessGroup(child.id());
-    let mut stderr = Stderr::collect(child.stderr.take().expect("piped stderr"));
-    let exchange = async {
-        let reported = read_output(
-            &mut child,
-            request.content,
-            session_id,
-            on_event,
-            on_permission,
-        )
-        .await?;
-        if let Some(outcome) = reported {
-            let _ = timeout(EXIT_GRACE, child.wait()).await;
-            return outcome;
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Busy => f.write_str("A prompt is already running for this session"),
+            Self::Exited(error) => f.write_str(error),
         }
-        let status = timeout(EXIT_GRACE, child.wait())
-            .await
-            .map_err(|_| RunError::Failed("claude closed its output without exiting".into()))?
-            .map_err(|e| RunError::Failed(format!("claude process failed: {e}")))?;
-        if status.success() {
-            return Ok(Finish::EndTurn);
-        }
-        let stderr = stderr.finish().await;
-        Err(RunError::Failed(format!(
-            "claude exited with {status}: {}",
-            String::from_utf8_lossy(&stderr).trim()
-        )))
-    };
-    let result = tokio::select! {
-        result = exchange => result,
-        _ = cancelled.wait_for(|cancelled| *cancelled) => Err(RunError::Cancelled),
-    };
-    if result.is_err() {
-        group.signal(libc::SIGTERM);
-        let _ = timeout(TERMINATE_GRACE, child.wait()).await;
     }
-    drop(mcp_file);
-    result
 }
 
-/// Claude's process group, which also holds the processes claude starts.
-/// Dropping it kills every process left in the group.
-struct ProcessGroup(Option<u32>);
+/// A prompt waiting for its turn's result.
+struct Prompt {
+    uuid: String,
+    /// Claude has taken the prompt into a turn, so the next result is its.
+    started: bool,
+    done: oneshot::Sender<RunOutcome>,
+}
 
-impl ProcessGroup {
-    fn signal(&self, signal: libc::c_int) {
-        if let Some(pid) = self.0 {
-            // SAFETY: killpg only sends a signal; the group id is claude's pid,
-            // which leads its own group because of `process_group(0)`.
-            unsafe {
-                libc::killpg(pid.cast_signed(), signal);
+#[derive(Default)]
+struct State {
+    prompt: Option<Prompt>,
+    /// Control requests waiting for claude's response, by request ID.
+    controls: HashMap<String, oneshot::Sender<Result<(), String>>>,
+    /// The tasks asking the client about claude's permission requests, by
+    /// request ID.
+    permissions: HashMap<String, AbortHandle>,
+    control_counter: u64,
+    session_id: Option<String>,
+    /// Why claude exited, once it has.
+    exited: Option<String>,
+}
+
+/// A `claude -p` process that reads stream-json messages from stdin for as
+/// long as the session lives. It takes each prompt as a turn of one
+/// conversation, and starts turns of its own when a background task it
+/// started reports back. Everything it writes becomes session updates,
+/// whether or not a prompt is waiting. Dropping it closes claude's stdin,
+/// which ends claude.
+pub struct Claude {
+    input: mpsc::UnboundedSender<Value>,
+    state: Arc<Mutex<State>>,
+}
+
+impl Claude {
+    pub fn start(request: &StartRequest<'_>, updates: Updates) -> Result<Self, String> {
+        let mut command = Command::new("claude");
+        command
+            .arg("-p")
+            .args([
+                "--output-format",
+                "stream-json",
+                "--input-format",
+                "stream-json",
+                "--verbose",
+                "--include-partial-messages",
+            ])
+            .args(["--model", request.model])
+            .args([
+                "--permission-mode",
+                request.mode,
+                "--permission-prompt-tool",
+                "stdio",
+            ]);
+        if let Some(id) = request.resume {
+            command.arg("--resume").arg(id);
+        }
+        if !request.mcp_servers.is_empty() {
+            let servers: BTreeMap<_, _> = request
+                .mcp_servers
+                .iter()
+                .map(|s| {
+                    (
+                        s.name.clone(),
+                        json!({"command": s.command, "args": s.args, "env": s.env}),
+                    )
+                })
+                .collect();
+            command
+                .arg("--mcp-config")
+                .arg(json!({"mcpServers": servers}).to_string());
+        }
+        let mut child = command
+            .current_dir(request.cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env_remove("ANTHROPIC_API_KEY")
+            .env_remove("ANTHROPIC_AUTH_TOKEN")
+            // Claude reports when it starts and stops working only if asked.
+            .env("CLAUDE_CODE_SDK_READS_SESSION_STATE", "1")
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| format!("failed to start claude: {e}"))?;
+        let (input, messages) = mpsc::unbounded_channel();
+        let state = Arc::new(Mutex::new(State::default()));
+        tokio::spawn(write_input(
+            child.stdin.take().expect("piped stdin"),
+            messages,
+        ));
+        let output = Output {
+            updates: Arc::new(updates),
+            state: state.clone(),
+            input: input.downgrade(),
+            saw_text_delta: false,
+            saw_thought_delta: false,
+            unclaimed_error: None,
+            running: false,
+        };
+        tokio::spawn(output.read(child));
+        Ok(Self { input, state })
+    }
+
+    /// Sends a prompt and returns the receiver of its turn's outcome.
+    /// Messages reach claude in the order they are sent, so an interrupt
+    /// sent after this call stops this prompt's turn.
+    pub fn prompt(&self, content: &[Value]) -> Result<oneshot::Receiver<RunOutcome>, Refused> {
+        let mut state = self.state.lock().unwrap();
+        if let Some(error) = &state.exited {
+            return Err(Refused::Exited(error.clone()));
+        }
+        if state.prompt.is_some() {
+            return Err(Refused::Busy);
+        }
+        let uuid = Uuid::new_v4().to_string();
+        let (done, outcome) = oneshot::channel();
+        state.prompt = Some(Prompt {
+            uuid: uuid.clone(),
+            started: false,
+            done,
+        });
+        let _ = self.input.send(json!({
+            "type": "user",
+            "uuid": uuid,
+            "session_id": "",
+            "message": {"role": "user", "content": content},
+            "parent_tool_use_id": null
+        }));
+        Ok(outcome)
+    }
+
+    /// Stops the running turn and drops a prompt claude has not started.
+    pub fn interrupt(&self) {
+        drop(self.control(&json!({"subtype": "interrupt", "cancel_queued": true})));
+    }
+
+    /// Asks claude to change its permission mode and returns the receiver
+    /// of its answer.
+    pub fn set_permission_mode(&self, mode: &str) -> oneshot::Receiver<Result<(), String>> {
+        self.control(&json!({"subtype": "set_permission_mode", "mode": mode}))
+    }
+
+    /// Asks claude to change its model and returns the receiver of its
+    /// answer.
+    pub fn set_model(&self, model: &str) -> oneshot::Receiver<Result<(), String>> {
+        self.control(&json!({"subtype": "set_model", "model": model}))
+    }
+
+    /// Sends a control request and returns the receiver of claude's answer,
+    /// which closes if claude exits first.
+    fn control(&self, request: &Value) -> oneshot::Receiver<Result<(), String>> {
+        let (reply, answer) = oneshot::channel();
+        let mut state = self.state.lock().unwrap();
+        if state.exited.is_none() {
+            state.control_counter += 1;
+            let id = format!("control-{}", state.control_counter);
+            state.controls.insert(id.clone(), reply);
+            let _ = self.input.send(json!({
+                "type": "control_request",
+                "request_id": id,
+                "request": request
+            }));
+        }
+        answer
+    }
+}
+
+/// Writes each message to claude's stdin as a line, until the session drops
+/// its `Claude` or claude closes its stdin.
+async fn write_input(mut stdin: ChildStdin, mut messages: mpsc::UnboundedReceiver<Value>) {
+    while let Some(message) = messages.recv().await {
+        let mut line = message.to_string().into_bytes();
+        line.push(b'\n');
+        if stdin.write_all(&line).await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Polls `future` once, for a result that needs no waiting.
+fn ready<T>(future: impl Future<Output = T>) -> Option<T> {
+    match pin!(future).poll(&mut Context::from_waker(Waker::noop())) {
+        Poll::Ready(value) => Some(value),
+        Poll::Pending => None,
+    }
+}
+
+/// Claude's output, translated as it arrives.
+struct Output {
+    updates: Arc<Updates>,
+    state: Arc<Mutex<State>>,
+    /// Claude's stdin, for answers to its requests. It is weak so that the
+    /// session's `Claude` alone keeps stdin open.
+    input: mpsc::WeakUnboundedSender<Value>,
+    /// The message being streamed has sent text, or thought, as deltas.
+    saw_text_delta: bool,
+    saw_thought_delta: bool,
+    /// The error of a turn that ended while a prompt waited to start. It is
+    /// why the prompt fails if claude exits, as when claude cannot resume
+    /// the conversation, and otherwise the error of a turn claude started.
+    unclaimed_error: Option<String>,
+    /// Claude last said it was working.
+    running: bool,
+}
+
+impl Output {
+    /// Translates claude's output until claude exits, then ends what it left
+    /// open.
+    async fn read(mut self, mut child: Child) {
+        let mut stderr = Stderr::collect(child.stderr.take().expect("piped stderr"));
+        let mut lines = BufReader::new(child.stdout.take().expect("piped stdout")).lines();
+        let status = loop {
+            tokio::select! {
+                biased;
+                line = lines.next_line() => match line {
+                    Ok(Some(line)) => self.line(&line).await,
+                    _ => break child.wait().await,
+                },
+                status = child.wait() => {
+                    // Everything claude wrote is in the pipe; a process it
+                    // started may hold the pipe open.
+                    while let Some(Ok(Some(line))) = ready(lines.next_line()) {
+                        self.line(&line).await;
+                    }
+                    break status;
+                }
             }
+        };
+        let error = match status {
+            Ok(status) => format!(
+                "claude exited with {status}: {}",
+                String::from_utf8_lossy(&stderr.finish().await).trim()
+            ),
+            Err(error) => format!("claude process failed: {error}"),
+        };
+        let (prompt, session_id) = {
+            let mut state = self.state.lock().unwrap();
+            state.exited = Some(error.clone());
+            state.controls.clear();
+            for (_, permission) in state.permissions.drain() {
+                permission.abort();
+            }
+            (state.prompt.take(), state.session_id.clone())
+        };
+        self.updates.fail_open_tools();
+        self.state(false);
+        if let Some(prompt) = prompt {
+            let _ = prompt.done.send(RunOutcome {
+                session_id,
+                result: Err(RunError::Failed(
+                    self.unclaimed_error.take().unwrap_or(error),
+                )),
+                responding: None,
+            });
         }
     }
-}
 
-impl Drop for ProcessGroup {
-    fn drop(&mut self) {
-        self.signal(libc::SIGKILL);
+    /// Tells the client when claude starts or stops working.
+    fn state(&mut self, running: bool) {
+        if running != self.running {
+            self.running = running;
+            self.updates.state(if running {
+                AgentState::Running
+            } else {
+                AgentState::Idle
+            });
+        }
+    }
+
+    /// Translates a line of claude's output. After the result of a prompt's
+    /// turn, it waits until the prompt's response is sent.
+    async fn line(&mut self, line: &str) {
+        if let Some(responded) = self.translate(line) {
+            let _ = responded.await;
+        }
+    }
+
+    fn send(&self, message: Value) {
+        if let Some(input) = self.input.upgrade() {
+            let _ = input.send(message);
+        }
+    }
+
+    /// Translates a line of claude's output and returns, for the result of
+    /// a prompt's turn, the receiver that closes once the prompt's response
+    /// is sent.
+    fn translate(&mut self, line: &str) -> Option<oneshot::Receiver<()>> {
+        let value = serde_json::from_str::<Value>(line).ok()?;
+        if let Some(id) = value
+            .get("session_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        {
+            self.state.lock().unwrap().session_id = Some(id.to_owned());
+        }
+        let event = if value["type"] == "stream_event" {
+            &value["event"]
+        } else {
+            &value
+        };
+        match event.get("type").and_then(Value::as_str) {
+            Some("control_request") => self.control_request(event),
+            Some("control_cancel_request") => {
+                let permission = event["request_id"]
+                    .as_str()
+                    .and_then(|id| self.state.lock().unwrap().permissions.remove(id));
+                if let Some(permission) = permission {
+                    permission.abort();
+                }
+            }
+            Some("control_response") => {
+                let response = &event["response"];
+                let reply = response["request_id"]
+                    .as_str()
+                    .and_then(|id| self.state.lock().unwrap().controls.remove(id));
+                if let Some(reply) = reply {
+                    let _ = reply.send(if response["subtype"] == "error" {
+                        Err(response["error"]
+                            .as_str()
+                            .unwrap_or("claude refused the request")
+                            .to_owned())
+                    } else {
+                        Ok(())
+                    });
+                }
+            }
+            Some("command_lifecycle") if event["state"] == "started" => {
+                let mut state = self.state.lock().unwrap();
+                if let Some(prompt) = &mut state.prompt
+                    && event["command_uuid"] == prompt.uuid.as_str()
+                {
+                    prompt.started = true;
+                    drop(state);
+                    if let Some(error) = self.unclaimed_error.take() {
+                        self.updates.error(&error);
+                    }
+                }
+            }
+            Some("content_block_delta") => match event["delta"]["type"].as_str() {
+                Some("text_delta") => {
+                    if let Some(text) = event["delta"]["text"].as_str() {
+                        self.saw_text_delta = true;
+                        self.updates.event(Event::Text(text.into()));
+                    }
+                }
+                Some("thinking_delta") => {
+                    if let Some(text) = event["delta"]["thinking"].as_str() {
+                        self.saw_thought_delta = true;
+                        self.updates.event(Event::Thought(text.into()));
+                    }
+                }
+                _ => {}
+            },
+            Some("assistant" | "user") => {
+                for event in message_events(&value) {
+                    match event {
+                        // Deltas already streamed this text.
+                        Event::Text(_) if self.saw_text_delta => {}
+                        Event::Thought(_) if self.saw_thought_delta => {}
+                        // The client has the prompts it sent; the rest of
+                        // what claude reports as the user is its own notes.
+                        Event::UserText(_)
+                        | Event::UserImage { .. }
+                        | Event::UserDocument { .. } => {}
+                        event => self.updates.event(event),
+                    }
+                }
+                self.saw_text_delta = false;
+                self.saw_thought_delta = false;
+            }
+            Some("system") if event["subtype"] == "session_state_changed" => {
+                // Claude's third state, waiting for a permission, is part of
+                // working; the client has the request itself.
+                match event["state"].as_str() {
+                    Some("running") => self.state(true),
+                    Some("idle") => self.state(false),
+                    _ => {}
+                }
+            }
+            Some("result") => return self.result(&value),
+            _ => {}
+        }
+        None
+    }
+
+    /// Asks the client about a tool permission while output keeps flowing,
+    /// and refuses any other request.
+    fn control_request(&self, event: &Value) {
+        let Some(request_id) = event["request_id"].as_str() else {
+            return;
+        };
+        let request = &event["request"];
+        if request["subtype"] != "can_use_tool" {
+            self.send(json!({
+                "type": "control_response",
+                "response": {
+                    "subtype": "error",
+                    "request_id": request_id,
+                    "error": "Unsupported control request"
+                }
+            }));
+            return;
+        }
+        let permission = PermissionRequest {
+            name: request["tool_name"].as_str().unwrap_or("Tool").to_owned(),
+            input: request["input"].clone(),
+            tool_use_id: request["tool_use_id"].as_str().unwrap_or("").to_owned(),
+            title: request["title"].as_str().map(str::to_owned),
+            suggestions: request["permission_suggestions"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default(),
+            suppress_always_allow_rule: request["suppress_always_allow_rule"]
+                .as_bool()
+                .unwrap_or(false),
+        };
+        let updates = self.updates.clone();
+        let input = self.input.clone();
+        let id = request_id.to_owned();
+        let task = tokio::spawn(async move {
+            let answer = updates.permission(permission).await;
+            if let Some(input) = input.upgrade() {
+                let _ = input.send(json!({
+                    "type": "control_response",
+                    "response": {"subtype": "success", "request_id": id, "response": answer}
+                }));
+            }
+        });
+        self.state
+            .lock()
+            .unwrap()
+            .permissions
+            .insert(request_id.to_owned(), task.abort_handle());
+    }
+
+    /// Ends a turn. The result belongs to the waiting prompt once claude has
+    /// started it; an interrupt also drops a prompt claude had not started.
+    /// Returns the receiver that closes once that prompt's response is sent.
+    fn result(&mut self, result: &Value) -> Option<oneshot::Receiver<()>> {
+        let aborted = result["terminal_reason"]
+            .as_str()
+            .is_some_and(|reason| reason.starts_with("aborted"));
+        let outcome = if aborted {
+            Err(RunError::Cancelled)
+        } else {
+            result_outcome(result)
+        };
+        let (prompt, waiting, session_id) = {
+            let mut state = self.state.lock().unwrap();
+            for (_, permission) in state.permissions.drain() {
+                permission.abort();
+            }
+            let prompt = if aborted || state.prompt.as_ref().is_some_and(|p| p.started) {
+                state.prompt.take()
+            } else {
+                None
+            };
+            (prompt, state.prompt.is_some(), state.session_id.clone())
+        };
+        self.updates.fail_open_tools();
+        self.saw_text_delta = false;
+        self.saw_thought_delta = false;
+        match (prompt, outcome) {
+            (Some(prompt), result) => {
+                let (responding, responded) = oneshot::channel();
+                let _ = prompt.done.send(RunOutcome {
+                    session_id,
+                    result,
+                    responding: Some(responding),
+                });
+                return Some(responded);
+            }
+            (None, Err(RunError::Failed(error))) if waiting => self.unclaimed_error = Some(error),
+            (None, Err(RunError::Failed(error))) => self.updates.error(&error),
+            (None, _) => {}
+        }
+        None
     }
 }
 
@@ -305,142 +654,6 @@ fn read_buffered(stderr: &ChildStderr, buffer: &mut Vec<u8>) {
         }
         buffer.extend_from_slice(&chunk[..n.cast_unsigned()]);
     }
-}
-
-async fn read_output<F: Future<Output = Value>>(
-    child: &mut Child,
-    content: &[Value],
-    session_id: &Mutex<Option<String>>,
-    mut on_event: impl FnMut(Event),
-    mut on_permission: impl FnMut(PermissionRequest) -> F,
-) -> Result<Option<Result<Finish, RunError>>, RunError> {
-    let mut stdin = child.stdin.take().expect("piped stdin");
-    let user = json!({
-        "type": "user",
-        "session_id": "",
-        "message": {"role": "user", "content": content},
-        "parent_tool_use_id": null
-    });
-    write_message(&mut stdin, &user).await?;
-    let stdout = child.stdout.take().expect("piped stdout");
-    let mut lines = BufReader::new(stdout).lines();
-    let mut reported = None;
-    let mut saw_text_delta = false;
-    let mut saw_thought_delta = false;
-
-    loop {
-        let line = lines
-            .next_line()
-            .await
-            .map_err(|e| RunError::Failed(format!("failed reading claude output: {e}")))?;
-        let Some(line) = line else {
-            break;
-        };
-        let Ok(value) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
-        if let Some(id) = value
-            .get("session_id")
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
-        {
-            *session_id.lock().unwrap() = Some(id.to_owned());
-        }
-        let event = if value["type"] == "stream_event" {
-            &value["event"]
-        } else {
-            &value
-        };
-        match event.get("type").and_then(Value::as_str) {
-            Some("control_request") if event["request"]["subtype"] == "can_use_tool" => {
-                let Some(request_id) = event["request_id"].as_str() else {
-                    continue;
-                };
-                let permission = PermissionRequest {
-                    name: event["request"]["tool_name"]
-                        .as_str()
-                        .unwrap_or("Tool")
-                        .to_owned(),
-                    input: event["request"]["input"].clone(),
-                    tool_use_id: event["request"]["tool_use_id"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_owned(),
-                    title: event["request"]["title"].as_str().map(str::to_owned),
-                    suggestions: event["request"]["permission_suggestions"]
-                        .as_array()
-                        .cloned()
-                        .unwrap_or_default(),
-                    suppress_always_allow_rule: event["request"]["suppress_always_allow_rule"]
-                        .as_bool()
-                        .unwrap_or(false),
-                };
-                let answer = on_permission(permission).await;
-                write_message(
-                    &mut stdin,
-                    &json!({
-                        "type": "control_response",
-                        "response": {
-                            "subtype": "success",
-                            "request_id": request_id,
-                            "response": answer
-                        }
-                    }),
-                )
-                .await?;
-            }
-            Some("control_request") => {
-                if let Some(request_id) = event["request_id"].as_str() {
-                    write_message(
-                        &mut stdin,
-                        &json!({
-                            "type": "control_response",
-                            "response": {
-                                "subtype": "error",
-                                "request_id": request_id,
-                                "error": "Unsupported control request"
-                            }
-                        }),
-                    )
-                    .await?;
-                }
-            }
-            Some("content_block_delta") => match event["delta"]["type"].as_str() {
-                Some("text_delta") => {
-                    if let Some(text) = event["delta"]["text"].as_str() {
-                        saw_text_delta = true;
-                        on_event(Event::Text(text.into()));
-                    }
-                }
-                Some("thinking_delta") => {
-                    if let Some(text) = event["delta"]["thinking"].as_str() {
-                        saw_thought_delta = true;
-                        on_event(Event::Thought(text.into()));
-                    }
-                }
-                _ => {}
-            },
-            Some("assistant" | "user") => {
-                for event in message_events(&value) {
-                    match event {
-                        // Deltas already streamed this text.
-                        Event::Text(_) if saw_text_delta => {}
-                        Event::Thought(_) if saw_thought_delta => {}
-                        event => on_event(event),
-                    }
-                }
-                saw_text_delta = false;
-                saw_thought_delta = false;
-            }
-            Some("result") => {
-                reported = Some(result_outcome(&value));
-                break;
-            }
-            _ => {}
-        }
-    }
-    drop(stdin);
-    Ok(reported)
 }
 
 fn result_outcome(result: &Value) -> Result<Finish, RunError> {

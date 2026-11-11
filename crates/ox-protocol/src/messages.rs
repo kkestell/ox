@@ -170,6 +170,9 @@ pub enum EventKind {
     PromptStarted {
         prompt: Vec<ContentBlock>,
     },
+    /// The agent started a turn no prompt asked for, as Claude does when a
+    /// background task it started reports back.
+    TurnStarted,
     /// An ACP `session/update` notification, unchanged. When an agent answers
     /// `session.set_config_option` with options it has not reported in a
     /// notification, the daemon adds a `config_option_update` with them.
@@ -183,8 +186,10 @@ pub enum EventKind {
         request_id: String,
         outcome: RequestPermissionOutcome,
     },
-    /// The prompt turn finished. `stop_reason` is set when the agent answered
-    /// the prompt and `error` when it answered with an error.
+    /// A turn finished. For a prompt's turn, `stop_reason` is set when the
+    /// agent answered the prompt and `error` when it answered with an error.
+    /// A turn the agent started has neither, unless the agent exited or the
+    /// session was closed during it, which sets `error`.
     TurnEnded {
         stop_reason: Option<StopReason>,
         error: Option<String>,

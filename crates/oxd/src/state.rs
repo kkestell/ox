@@ -6,7 +6,7 @@ use agent_client_protocol::v1::schema::{
     PromptCapabilities, RequestPermissionOutcome, RequestPermissionRequest,
     SelectedPermissionOutcome, SessionConfigOption, SessionUpdate, StopReason,
 };
-use ox_protocol::{ErrorBody, Event, EventKind, SessionState, code};
+use ox_protocol::{AgentState, ErrorBody, Event, EventKind, SessionState, code};
 use tokio::sync::oneshot;
 
 /// Events a subscriber is handed at a time.
@@ -45,7 +45,12 @@ pub enum Change {
     },
     /// The agent was told to cancel the turn.
     Cancelled,
+    /// The agent answered the prompt.
     TurnEnded(Result<StopReason, String>),
+    /// The agent said it started or stopped working. Outside a prompt's turn
+    /// that starts and ends a turn of the agent's own; within one it says
+    /// what the turn already does.
+    AgentState(AgentState),
     Exited(Option<String>),
     Closed,
 }
@@ -68,10 +73,17 @@ impl Pending {
     }
 }
 
+/// What started the running turn.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Turn {
+    Prompt,
+    Agent,
+}
+
 /// An agent with an open ACP session.
 struct Live {
     agent: Agent,
-    in_turn: bool,
+    turn: Option<Turn>,
     pending: Vec<Pending>,
     next_request: u64,
 }
@@ -80,7 +92,7 @@ impl Live {
     fn state(&self) -> SessionState {
         if !self.pending.is_empty() {
             SessionState::AwaitingPermission
-        } else if self.in_turn {
+        } else if self.turn.is_some() {
             SessionState::Running
         } else {
             SessionState::Idle
@@ -98,7 +110,7 @@ impl Live {
     /// cancelled, and a running turn ends with `error`.
     fn end(mut self, error: &str) -> (Agent, Vec<EventKind>) {
         let mut events = self.cancel_pending();
-        if self.in_turn {
+        if self.turn.is_some() {
             events.push(EventKind::TurnEnded {
                 stop_reason: None,
                 error: Some(error.into()),
@@ -136,7 +148,7 @@ impl Phase {
                 };
                 let live = Live {
                     agent,
-                    in_turn: false,
+                    turn: None,
                     pending: Vec::new(),
                     next_request: 1,
                 };
@@ -189,8 +201,10 @@ impl Phase {
                 let events = live.cancel_pending();
                 (Self::Live(live), events)
             }
-            (Self::Live(mut live), Change::TurnEnded(result)) if live.in_turn => {
-                live.in_turn = false;
+            (Self::Live(mut live), Change::TurnEnded(result))
+                if live.turn == Some(Turn::Prompt) =>
+            {
+                live.turn = None;
                 let (stop_reason, error) = match result {
                     Ok(stop_reason) => (Some(stop_reason), None),
                     Err(error) => (None, Some(error)),
@@ -199,6 +213,22 @@ impl Phase {
                     Self::Live(live),
                     vec![EventKind::TurnEnded { stop_reason, error }],
                 )
+            }
+            (Self::Live(mut live), Change::AgentState(AgentState::Running))
+                if live.turn.is_none() =>
+            {
+                live.turn = Some(Turn::Agent);
+                (Self::Live(live), vec![EventKind::TurnStarted])
+            }
+            (Self::Live(mut live), Change::AgentState(AgentState::Idle))
+                if live.turn == Some(Turn::Agent) =>
+            {
+                live.turn = None;
+                let ended = EventKind::TurnEnded {
+                    stop_reason: None,
+                    error: None,
+                };
+                (Self::Live(live), vec![ended])
             }
             (Self::Live(live), Change::Exited(error)) => {
                 let (agent, mut events) = live.end("the agent exited");
@@ -216,9 +246,13 @@ impl Phase {
                 Change::ConfigOptionsSet(_)
                 | Change::PermissionRequested { .. }
                 | Change::Cancelled
-                | Change::TurnEnded(_),
+                | Change::TurnEnded(_)
+                | Change::AgentState(_),
             )
-            | (phase @ Self::Live(_), Change::Started(_) | Change::TurnEnded(_))
+            | (
+                phase @ Self::Live(_),
+                Change::Started(_) | Change::TurnEnded(_) | Change::AgentState(_),
+            )
             | (
                 phase @ Self::Exited(_),
                 Change::Started(_)
@@ -227,6 +261,7 @@ impl Phase {
                 | Change::PermissionRequested { .. }
                 | Change::Cancelled
                 | Change::TurnEnded(_)
+                | Change::AgentState(_)
                 | Change::Exited(_),
             )
             | (phase @ Self::Closed, _) => (phase, Vec::new()),
@@ -235,8 +270,9 @@ impl Phase {
 }
 
 /// A session's phase and every event it has recorded. `SessionClosed` is the
-/// last event of a session, each `PromptStarted` is followed by one
-/// `TurnEnded`, and each `PermissionRequested` by one `PermissionResolved`.
+/// last event of a session, each `PromptStarted` and `TurnStarted` is
+/// followed by one `TurnEnded`, and each `PermissionRequested` by one
+/// `PermissionResolved`.
 pub struct State {
     session_id: String,
     phase: Phase,
@@ -311,7 +347,7 @@ impl State {
                     return Err(invalid_state(state));
                 }
                 check_prompt(&prompt, &live.agent.prompt_capabilities)?;
-                live.in_turn = true;
+                live.turn = Some(Turn::Prompt);
                 EventKind::PromptStarted { prompt }
             }
             (
@@ -488,6 +524,7 @@ mod tests {
             .map(|event| match event.kind {
                 EventKind::AgentStarted { .. } => "agent_started",
                 EventKind::PromptStarted { .. } => "prompt_started",
+                EventKind::TurnStarted => "turn_started",
                 EventKind::Update(_) => "update",
                 EventKind::PermissionRequested { .. } => "permission_requested",
                 EventKind::PermissionResolved { .. } => "permission_resolved",
@@ -564,6 +601,78 @@ mod tests {
     }
 
     #[test]
+    fn the_agent_starts_and_ends_turns_of_its_own() {
+        let mut state = started();
+        state.record(Change::AgentState(AgentState::Idle));
+        assert_eq!(kinds(&state, 1), [] as [&str; 0]);
+
+        state.record(Change::AgentState(AgentState::Running));
+        assert_eq!(state.state(), SessionState::Running);
+        assert_eq!(prompt(&mut state).unwrap_err().code, code::INVALID_STATE);
+        state.record(Change::AgentState(AgentState::Running));
+        state.record(Change::TurnEnded(Ok(StopReason::EndTurn)));
+        assert_eq!(state.state(), SessionState::Running);
+
+        let mut outcome = request_permission(&mut state);
+        assert_eq!(state.state(), SessionState::AwaitingPermission);
+        state.record(Change::Cancelled);
+        assert_eq!(outcome.try_recv(), Ok(RequestPermissionOutcome::Cancelled));
+        assert_eq!(state.state(), SessionState::Running);
+
+        state.record(Change::AgentState(AgentState::Idle));
+        assert_eq!(state.state(), SessionState::Idle);
+        state.record(Change::AgentState(AgentState::Idle));
+        assert_eq!(
+            kinds(&state, 1),
+            [
+                "turn_started",
+                "permission_requested",
+                "permission_resolved",
+                "turn_ended"
+            ]
+        );
+        assert_eq!(
+            state.events_after(4)[0].kind,
+            EventKind::TurnEnded {
+                stop_reason: None,
+                error: None
+            }
+        );
+        prompt(&mut state).unwrap();
+    }
+
+    #[test]
+    fn a_prompts_turn_is_the_only_turn_while_it_runs() {
+        let mut state = started();
+        prompt(&mut state).unwrap();
+        // The agent reports the work the prompt asked for, then stops.
+        state.record(Change::AgentState(AgentState::Running));
+        state.record(Change::AgentState(AgentState::Idle));
+        assert_eq!(state.state(), SessionState::Running);
+        state.record(Change::TurnEnded(Ok(StopReason::EndTurn)));
+        assert_eq!(state.state(), SessionState::Idle);
+        assert_eq!(kinds(&state, 1), ["prompt_started", "turn_ended"]);
+    }
+
+    #[test]
+    fn exit_ends_a_turn_the_agent_started() {
+        let mut state = started();
+        state.record(Change::AgentState(AgentState::Running));
+        state.record(Change::Exited(None));
+        assert_eq!(
+            kinds(&state, 1),
+            ["turn_started", "turn_ended", "agent_exited"]
+        );
+        assert!(matches!(
+            state.events_after(2)[0].kind,
+            EventKind::TurnEnded {
+                stop_reason: None,
+                error: Some(_)
+            }
+        ));
+    }
+
+    #[test]
     fn a_turn_ends_once() {
         let mut state = started();
         prompt(&mut state).unwrap();
@@ -592,6 +701,7 @@ mod tests {
             },
             Change::Cancelled,
             Change::TurnEnded(Ok(StopReason::EndTurn)),
+            Change::AgentState(AgentState::Running),
             Change::Exited(None),
             Change::Closed,
         ] {

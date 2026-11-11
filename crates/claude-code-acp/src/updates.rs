@@ -1,4 +1,8 @@
-use std::{collections::HashSet, path::Path, sync::Mutex};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 
 use agent_client_protocol::Client;
 use agent_client_protocol::v1::ConnectionTo;
@@ -7,6 +11,7 @@ use agent_client_protocol::v1::schema::{
     RequestPermissionOutcome, RequestPermissionRequest, SessionNotification, SessionUpdate,
     TextContent, ToolCall, ToolCallContent, ToolCallStatus, ToolKind,
 };
+use ox_protocol::{AgentState, AgentStateNotification};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -20,26 +25,42 @@ struct Tools {
     open: HashSet<String>,
 }
 
-/// Translates one prompt's Claude events and permission requests into ACP updates.
-pub struct Updates<'a> {
-    connection: &'a ConnectionTo<Client>,
-    session_id: &'a str,
-    cwd: &'a Path,
+/// Translates a session's Claude events and permission requests into ACP updates.
+pub struct Updates {
+    connection: ConnectionTo<Client>,
+    session_id: String,
+    cwd: PathBuf,
     tools: Mutex<Tools>,
 }
 
-impl<'a> Updates<'a> {
-    pub fn new(connection: &'a ConnectionTo<Client>, session_id: &'a str, cwd: &'a Path) -> Self {
+impl Updates {
+    pub fn new(connection: ConnectionTo<Client>, session_id: &str, cwd: &Path) -> Self {
         Self {
             connection,
-            session_id,
-            cwd,
+            session_id: session_id.to_owned(),
+            cwd: cwd.to_owned(),
             tools: Mutex::new(Tools::default()),
         }
     }
 
     fn send(&self, update: SessionUpdate) {
-        notify(self.connection, self.session_id, update);
+        notify(&self.connection, &self.session_id, update);
+    }
+
+    /// Tells the client that Claude started or stopped working.
+    pub fn state(&self, state: AgentState) {
+        let notification = AgentStateNotification {
+            session_id: acp::SessionId::new(self.session_id.clone()),
+            state,
+        };
+        if let Err(error) = self.connection.send_notification(notification) {
+            eprintln!("failed to send the agent's state: {error}");
+        }
+    }
+
+    /// Reports an error of a turn no prompt is waiting on.
+    pub fn error(&self, error: &str) {
+        self.send(error_message(error));
     }
 
     pub fn event(&self, event: Event) {
@@ -129,7 +150,7 @@ impl<'a> Updates<'a> {
             title
         };
         let content = vec![ToolCallContent::from(ContentBlock::Text(TextContent::new(
-            permission_content(&permission, self.cwd),
+            permission_content(&permission, &self.cwd),
         )))];
         let fields = acp::ToolCallUpdateFields::new()
             .title(title.clone())
@@ -179,7 +200,7 @@ impl<'a> Updates<'a> {
         let response = self
             .connection
             .send_request(RequestPermissionRequest::new(
-                self.session_id.to_owned(),
+                self.session_id.clone(),
                 update,
                 options,
             ))
@@ -271,6 +292,13 @@ fn permission_content(permission: &PermissionRequest, cwd: &Path) -> String {
         ),
     };
     format!("Working directory: {}\n\n{detail}", cwd.display())
+}
+
+/// The message that shows a turn's error.
+pub fn error_message(error: &str) -> SessionUpdate {
+    SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(TextContent::new(
+        format!("Error: {error}"),
+    ))))
 }
 
 pub fn notify(connection: &ConnectionTo<Client>, id: &str, update: SessionUpdate) {

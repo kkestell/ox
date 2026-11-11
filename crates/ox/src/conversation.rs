@@ -94,7 +94,7 @@ impl Conversation {
     pub fn apply(&mut self, event: &Event) -> Option<Item> {
         let key = event.seq.to_string();
         match &event.kind {
-            EventKind::AgentStarted { .. } => None,
+            EventKind::AgentStarted { .. } | EventKind::TurnStarted => None,
             EventKind::PromptStarted { prompt } => {
                 self.in_turn = true;
                 let mut text = Vec::new();

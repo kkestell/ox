@@ -661,6 +661,7 @@ dependencies = [
  "chrono",
  "dirs",
  "libc",
+ "ox-protocol",
  "serde",
  "serde_json",
  "tempfile",

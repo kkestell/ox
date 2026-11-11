@@ -64,8 +64,9 @@
   the state it sets.
   - `close_while_starting` waits for the agent to open its FIFO before
     closing the session, then waits for the FIFO to reach end of file.
-  - The fake `claude` opens the FIFO with `exec 3>` before starting
-    background processes, so they hold it from the moment they exist.
+  - `cancellation_stops_a_pending_permission` waits for the prompt's
+    `cancelled` response, which follows Claude withdrawing the request,
+    before it answers the withdrawn request.
 
 ## Reporting
 

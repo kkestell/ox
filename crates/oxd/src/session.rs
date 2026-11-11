@@ -11,7 +11,9 @@ use agent_client_protocol::v1::schema::{
 };
 use agent_client_protocol::v1::{ConnectionTo, Responder};
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, Client};
-use ox_protocol::{ConfigValue, ErrorBody, Event, SessionInfo, SessionState, code};
+use ox_protocol::{
+    AgentStateNotification, ConfigValue, ErrorBody, Event, SessionInfo, SessionState, code,
+};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
@@ -215,6 +217,17 @@ impl Session {
                     async move |notification: SessionNotification,
                                 _connection: ConnectionTo<Agent>| {
                         session.record(Change::Update(notification.update));
+                        Ok(())
+                    }
+                },
+                agent_client_protocol::on_receive_notification!(),
+            )
+            .on_receive_notification(
+                {
+                    let session = self.clone();
+                    async move |notification: AgentStateNotification,
+                                _connection: ConnectionTo<Agent>| {
+                        session.record(Change::AgentState(notification.state));
                         Ok(())
                     }
                 },

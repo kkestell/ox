@@ -9,9 +9,45 @@ use tokio::{
     time::{Duration, timeout},
 };
 
+/// What every fake claude does with its stdin, which stays open across
+/// turns as the real one's does.
+const FAKE_CLAUDE: &str = r#"
+# Reads the next message into $message. Claude ends when its stdin closes.
+next_message() {
+  IFS= read -r message || exit 0
+}
+# Reports the turn of the prompt in $message as started.
+started() {
+  uuid=$(printf '%s\n' "$message" | sed 's/.*"uuid":"\([^"]*\)".*/\1/')
+  printf '{"type":"command_lifecycle","command_uuid":"%s","state":"started"}\n' "$uuid"
+}
+# Reads a prompt and starts its turn.
+next_prompt() {
+  next_message
+  case "$message" in *'"type":"user"'*) ;; *) exit 20;; esac
+  started
+}
+# Waits for an interrupt and ends the turn it stops.
+interrupted() {
+  next_message
+  case "$message" in *'"subtype":"interrupt"'*) ;; *) exit 21;; esac
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}'
+  printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_tools"}'
+}
+# Says claude is running or idle.
+state() {
+  printf '{"type":"system","subtype":"session_state_changed","state":"%s"}\n' "$1"
+}
+# Accepts the control request in $message.
+accept() {
+  request=$(printf '%s\n' "$message" | sed 's/.*"request_id":"\([^"]*\)".*/\1/')
+  printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s"}}\n' "$request"
+}
+"#;
+
 fn fake_claude(dir: &Path, script: &str) {
     let path = dir.join("claude");
-    fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+    fs::write(&path, format!("#!/bin/sh\n{FAKE_CLAUDE}\n{script}\n")).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
@@ -97,6 +133,7 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 if [ "$mode" != 'plan' ]; then exit 12; fi
+next_prompt
 printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hello "}}}'
 printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"hello world"},{"type":"tool_use","name":"Read","input":{"file_path":"x"}}]}}'
 printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43a2","result":"hello world"}'
@@ -203,91 +240,136 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
     child.kill().await.unwrap();
 }
 
+/// Sets a config option and returns the response.
+async fn set_config(
+    child: &mut Child,
+    reader: &mut BufReader<ChildStdout>,
+    request_id: i64,
+    session: &Value,
+    config: &str,
+    value: &str,
+) -> Value {
+    send(child, json!({"jsonrpc":"2.0","id":request_id,"method":"session/set_config_option","params":{"sessionId":session,"configId":config,"value":value}})).await;
+    response(reader, request_id).await.0
+}
+
 #[tokio::test]
-async fn selected_mode_reaches_claude() {
+async fn config_changes_reach_the_running_claude() {
     let temp = tempfile::tempdir().unwrap();
-    let bin = temp.path().join("bin");
-    let project = temp.path().join("project");
-    fs::create_dir_all(&bin).unwrap();
-    fs::create_dir_all(&project).unwrap();
+    let (bin, project) = dirs(temp.path());
+    // Each turn says the mode and model claude has: those it started with,
+    // then those it was asked to change to. It refuses Sonnet.
     fake_claude(
         &bin,
         r#"
-mode='missing'
+printf '%s\n' "$*" >> calls
 while [ "$#" -gt 0 ]; do
-  if [ "$1" = '--permission-mode' ]; then mode="$2"; break; fi
+  case "$1" in
+    --permission-mode) mode="$2";;
+    --model) model="$2";;
+  esac
   shift
 done
-printf '{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]}}\n' "$mode"
-printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43a2","result":"done"}'
+while :; do
+  next_message
+  case "$message" in
+    *'"subtype":"set_model"'*'sonnet'*)
+      request=$(printf '%s\n' "$message" | sed 's/.*"request_id":"\([^"]*\)".*/\1/')
+      printf '{"type":"control_response","response":{"subtype":"error","request_id":"%s","error":"no such model"}}\n' "$request";;
+    *'"subtype":"set_permission_mode"'*)
+      mode=$(printf '%s\n' "$message" | sed 's/.*"mode":"\([^"]*\)".*/\1/')
+      accept;;
+    *'"subtype":"set_model"'*)
+      model=$(printf '%s\n' "$message" | sed 's/.*"model":"\([^"]*\)".*/\1/')
+      accept;;
+    *)
+      started
+      printf '{"type":"assistant","message":{"content":[{"type":"text","text":"%s %s"}]}}\n' "$mode" "$model"
+      printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43a2"}';;
+  esac
+done
 "#,
     );
     let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
     initialize(&mut child, &mut reader).await;
-    send(&mut child, json!({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":project,"mcpServers":[]}})).await;
-    let (new, _) = response(&mut reader, 2).await;
-    let id = new["result"]["sessionId"].as_str().unwrap().to_owned();
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    let (_, updates) = prompt(&mut child, &mut reader, 3, &session).await;
+    assert!(
+        updates
+            .iter()
+            .any(|v| v["params"]["update"]["content"]["text"] == "manual claude-opus-5-5"),
+        "{updates:?}"
+    );
 
-    for (index, mode) in (0_i64..).zip(["manual", "auto", "acceptEdits", "plan"]) {
-        let request_id = 3 + index * 2;
-        if index > 0 {
-            send(&mut child, json!({"jsonrpc":"2.0","id":request_id,"method":"session/set_config_option","params":{"sessionId":id,"configId":"mode","value":mode}})).await;
-            let (set, _) = response(&mut reader, request_id).await;
-            assert_eq!(set["result"]["configOptions"][1]["currentValue"], *mode);
-        }
-        let prompt_id = request_id + 1;
-        send(&mut child, json!({"jsonrpc":"2.0","id":prompt_id,"method":"session/prompt","params":{"sessionId":id,"prompt":[{"type":"text","text":"say mode"}]}})).await;
-        let (prompt, updates) = response(&mut reader, prompt_id).await;
-        assert_eq!(prompt["result"]["stopReason"], "end_turn", "{prompt}");
-        assert!(
-            updates
-                .iter()
-                .any(|update| update["params"]["update"]["content"]["text"] == *mode),
-            "missing {mode} in {updates:?}"
-        );
-    }
+    let set = set_config(&mut child, &mut reader, 4, &session, "mode", "plan").await;
+    assert_eq!(set["result"]["configOptions"][1]["currentValue"], "plan");
+    let model = "claude-haiku-5-5";
+    let set = set_config(&mut child, &mut reader, 5, &session, "model", model).await;
+    assert_eq!(set["result"]["configOptions"][0]["currentValue"], model);
+    let refused = "claude-sonnet-5-5";
+    let set = set_config(&mut child, &mut reader, 6, &session, "model", refused).await;
+    assert_eq!(set["error"]["message"], "no such model", "{set}");
+
+    let (_, updates) = prompt(&mut child, &mut reader, 7, &session).await;
+    assert!(
+        updates
+            .iter()
+            .any(|v| v["params"]["update"]["content"]["text"] == "plan claude-haiku-5-5"),
+        "{updates:?}"
+    );
+    send(&mut child, json!({"jsonrpc":"2.0","id":8,"method":"session/resume","params":{"sessionId":session,"cwd":project,"mcpServers":[]}})).await;
+    let (resumed, _) = response(&mut reader, 8).await;
+    assert_eq!(resumed["result"]["configOptions"][0]["currentValue"], model);
+    assert_eq!(calls(&project).len(), 1);
     child.kill().await.unwrap();
 }
 
 #[tokio::test]
-async fn cancellation_stops_an_active_prompt() {
+async fn cancellation_interrupts_the_turn_and_keeps_claude() {
     let temp = tempfile::tempdir().unwrap();
-    let bin = temp.path().join("bin");
-    let project = temp.path().join("project");
-    fs::create_dir_all(&bin).unwrap();
-    fs::create_dir_all(&project).unwrap();
+    let (bin, project) = dirs(temp.path());
     fake_claude(
         &bin,
         r#"
+printf '%s\n' "$*" >> calls
+next_prompt
 printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"started"}]}}'
-sleep 20
+interrupted
+next_prompt
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"again"}]}}'
+printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43a2"}'
+next_message
 "#,
     );
     let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
     initialize(&mut child, &mut reader).await;
-    send(&mut child, json!({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":project,"mcpServers":[]}})).await;
-    let (new, _) = response(&mut reader, 2).await;
-    let id = new["result"]["sessionId"].as_str().unwrap().to_owned();
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    send(&mut child, json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session,"prompt":[{"type":"text","text":"wait"}]}})).await;
+    until_text(&mut reader, "started").await;
     send(
         &mut child,
-        json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{
-            "sessionId":id,"prompt":[{"type":"text","text":"wait"}]
-        }}),
+        json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session}}),
     )
     .await;
-    loop {
-        let value = receive(&mut reader).await;
-        if value["params"]["update"]["content"]["text"] == "started" {
-            break;
-        }
-    }
-    send(
-        &mut child,
-        json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":id}}),
-    )
-    .await;
-    let (prompt, _) = response(&mut reader, 3).await;
-    assert_eq!(prompt["result"]["stopReason"], "cancelled");
+    let (result, updates) = response(&mut reader, 3).await;
+    assert_eq!(result["result"]["stopReason"], "cancelled", "{result}");
+    // Claude's note that it was interrupted is not something the user said.
+    assert!(
+        !updates
+            .iter()
+            .any(|v| v["params"]["update"]["sessionUpdate"] == "user_message_chunk"),
+        "{updates:?}"
+    );
+
+    let (result, updates) = prompt(&mut child, &mut reader, 4, &session).await;
+    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+    assert!(
+        updates
+            .iter()
+            .any(|v| v["params"]["update"]["content"]["text"] == "again"),
+        "{updates:?}"
+    );
+    assert_eq!(calls(&project).len(), 1);
     child.kill().await.unwrap();
 }
 
@@ -301,9 +383,8 @@ async fn permission_request_round_trips_through_client() {
     fake_claude(
         &bin,
         r#"
-IFS= read -r initial || exit 10
-case "$initial" in *'"type":"user"'*) ;; *) exit 11;; esac
-case "$initial" in *'"run touch"'*) ;; *) exit 11;; esac
+next_prompt
+case "$message" in *'"run touch"'*) ;; *) exit 11;; esac
 printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"touch /tmp/claude-approval-test"}}]}}'
 printf '%s\n' '{"type":"control_request","request_id":"permission-1","request":{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"tool-1","input":{"command":"touch /tmp/claude-approval-test"}}}'
 IFS= read -r answer || exit 12
@@ -391,7 +472,7 @@ async fn persistent_approval_and_denial_reach_claude() {
     fake_claude(
         &bin,
         r#"
-IFS= read -r initial || exit 10
+next_prompt
 printf '%s\n' '{"type":"control_request","request_id":"permission-1","request":{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"tool-1","input":{"command":"pwd"},"permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"pwd"}],"behavior":"allow","destination":"session"}]}}'
 IFS= read -r answer || exit 11
 case "$answer" in *'"behavior":"allow"'*) ;; *) exit 12;; esac
@@ -444,36 +525,63 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
 #[tokio::test]
 async fn cancellation_stops_a_pending_permission() {
     let temp = tempfile::tempdir().unwrap();
-    let bin = temp.path().join("bin");
-    let project = temp.path().join("project");
-    fs::create_dir_all(&bin).unwrap();
-    fs::create_dir_all(&project).unwrap();
+    let (bin, project) = dirs(temp.path());
+    // Claude withdraws a permission request when it is interrupted, and the
+    // next message it reads is the next prompt, not an answer.
     fake_claude(
         &bin,
         r#"
-IFS= read -r initial || exit 10
+next_prompt
 printf '%s\n' '{"type":"control_request","request_id":"permission-1","request":{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"tool-1","input":{"command":"pwd"}}}'
-IFS= read -r answer
+next_message
+case "$message" in *'"subtype":"interrupt"'*) ;; *) exit 21;; esac
+printf '%s\n' '{"type":"control_cancel_request","request_id":"permission-1"}'
+printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_tools"}'
+next_prompt
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"after"}]}}'
+printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43a2"}'
+next_message
 "#,
     );
     let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
     initialize(&mut child, &mut reader).await;
-    send(&mut child, json!({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":project,"mcpServers":[]}})).await;
-    let (new, _) = response(&mut reader, 2).await;
-    let id = new["result"]["sessionId"].as_str().unwrap().to_owned();
-    send(&mut child, json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":id,"prompt":[{"type":"text","text":"run pwd"}]}})).await;
-    loop {
-        if receive(&mut reader).await["method"] == "session/request_permission" {
-            break;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    send(&mut child, json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session,"prompt":[{"type":"text","text":"run pwd"}]}})).await;
+    let permission = loop {
+        let value = receive(&mut reader).await;
+        if value["method"] == "session/request_permission" {
+            break value;
         }
-    }
+    };
     send(
         &mut child,
-        json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":id}}),
+        json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session}}),
     )
     .await;
-    let (prompt, _) = response(&mut reader, 3).await;
-    assert_eq!(prompt["result"]["stopReason"], "cancelled");
+    let (result, updates) = response(&mut reader, 3).await;
+    assert_eq!(result["result"]["stopReason"], "cancelled", "{result}");
+    // An answer to the withdrawn request does not reach claude.
+    send(
+        &mut child,
+        json!({"jsonrpc":"2.0","id":permission["id"],"result":{"outcome":{"outcome":"cancelled"}}}),
+    )
+    .await;
+    assert!(
+        updates.iter().any(|v| {
+            v["params"]["update"]["toolCallId"] == "tool-1"
+                && v["params"]["update"]["status"] == "failed"
+        }),
+        "{updates:?}"
+    );
+
+    let (result, updates) = prompt(&mut child, &mut reader, 4, &session).await;
+    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+    assert!(
+        updates
+            .iter()
+            .any(|v| v["params"]["update"]["content"]["text"] == "after"),
+        "{updates:?}"
+    );
     child.kill().await.unwrap();
 }
 
@@ -490,12 +598,16 @@ async fn passes_stdio_mcp_servers_to_claude() {
 found=0
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "--mcp-config" ]; then
-    grep -q '"command":"node"' "$2" && grep -q '"server.js"' "$2" && grep -q '"TOKEN":"test"' "$2" && found=1
+    case "$2" in *'"filesystem":{'*) found=1;; *) exit 12;; esac
+    for part in '"command":"node"' '"args":["server.js"]' '"env":{"TOKEN":"test"}'; do
+      case "$2" in *"$part"*) ;; *) exit 12;; esac
+    done
     break
   fi
   shift
 done
 if [ "$found" -ne 1 ]; then exit 12; fi
+next_prompt
 printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"mcp ok"}]}}'
 printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43a2","result":"mcp ok"}'
 "#,
@@ -552,6 +664,7 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 if [ "$found" -ne 1 ]; then exit 13; fi
+next_prompt
 printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"resumed"}]}}'
 printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43a2","result":"resumed"}'
 "#,
@@ -606,7 +719,9 @@ async fn new_sessions_are_fresh_and_resume_is_explicit() {
         &bin,
         r#"
 printf '%s\n' "$*" >> calls
+next_prompt
 printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43a2"}'
+next_message
 "#,
     );
     let (mut child, mut reader) = start(&bin, &store);
@@ -639,8 +754,7 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
     assert!(resumed.get("result").is_some(), "{resumed}");
     send(&mut child, json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":first_id,"prompt":[{"type":"text","text":"continue"}]}})).await;
     response(&mut reader, 3).await;
-    let calls = fs::read_to_string(project.join("calls")).unwrap();
-    let calls: Vec<_> = calls.lines().collect();
+    let calls = calls(&project);
     assert_eq!(calls.len(), 3);
     assert!(!calls[0].contains("--resume"));
     assert!(!calls[1].contains("--resume"));
@@ -666,46 +780,44 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
 #[tokio::test]
 async fn failed_resume_does_not_retry_the_prompt() {
     let temp = tempfile::tempdir().unwrap();
-    let bin = temp.path().join("bin");
-    let project = temp.path().join("project");
-    fs::create_dir_all(&bin).unwrap();
-    fs::create_dir_all(&project).unwrap();
+    let (bin, project) = dirs(temp.path());
+    let store = temp.path().join("store");
+    // A claude that cannot resume reports why and exits without reading
+    // the prompt.
     fake_claude(
         &bin,
         r#"
 printf '%s\n' "$*" >> calls
 case " $* " in
   *' --resume '*)
-    printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"partial output"}]}}'
     printf '%s\n' '{"type":"result","is_error":true,"result":"resume failed"}'
     exit 1;;
 esac
+next_prompt
 printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43a2"}'
+next_message
 "#,
     );
-    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    let (mut child, mut reader) = start(&bin, &store);
     initialize(&mut child, &mut reader).await;
-    send(&mut child, json!({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":project,"mcpServers":[]}})).await;
-    let (new, _) = response(&mut reader, 2).await;
-    let id = new["result"]["sessionId"].clone();
-    for request_id in [3, 4] {
-        send(&mut child, json!({"jsonrpc":"2.0","id":request_id,"method":"session/prompt","params":{"sessionId":id,"prompt":[{"type":"text","text":"hello"}]}})).await;
-        let (_, updates) = response(&mut reader, request_id).await;
-        if request_id == 4 {
-            assert!(
-                updates
-                    .iter()
-                    .any(|v| v["params"]["update"]["content"]["text"] == "Error: resume failed")
-            );
-        }
-    }
-    assert_eq!(
-        fs::read_to_string(project.join("calls"))
-            .unwrap()
-            .lines()
-            .count(),
-        2
-    );
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    let (_, updates) = prompt(&mut child, &mut reader, 3, &session).await;
+    assert_eq!(error_text(&updates), None);
+    child.kill().await.unwrap();
+
+    let (mut child, mut reader) = start(&bin, &store);
+    initialize(&mut child, &mut reader).await;
+    send(&mut child, json!({"jsonrpc":"2.0","id":2,"method":"session/resume","params":{"sessionId":session,"cwd":project,"mcpServers":[]}})).await;
+    response(&mut reader, 2).await;
+    let (result, updates) = prompt(&mut child, &mut reader, 3, &session).await;
+    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+    let errors: Vec<&Value> = updates
+        .iter()
+        .map(|v| &v["params"]["update"]["content"]["text"])
+        .filter(|text| text.as_str().is_some_and(|s| s.starts_with("Error:")))
+        .collect();
+    assert_eq!(errors, ["Error: resume failed"]);
+    assert_eq!(calls(&project).len(), 2);
     child.kill().await.unwrap();
 }
 
@@ -730,6 +842,16 @@ fn write_transcript(temp: &Path, project: &Path, id: &str) {
         ),
     )
     .unwrap();
+}
+
+/// The arguments of each claude the bridge started in `project`, where a
+/// fake claude records them with `printf '%s\n' "$*" >> calls`.
+fn calls(project: &Path) -> Vec<String> {
+    fs::read_to_string(project.join("calls"))
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect()
 }
 
 async fn new_session(
@@ -766,6 +888,22 @@ async fn until_text(reader: &mut BufReader<ChildStdout>, text: &str) -> Vec<Valu
     }
 }
 
+/// Reads messages after `seen` until one of them all has `text` as its
+/// update content, and returns them all.
+async fn and_until_text(
+    mut seen: Vec<Value>,
+    reader: &mut BufReader<ChildStdout>,
+    text: &str,
+) -> Vec<Value> {
+    if !seen
+        .iter()
+        .any(|value| value["params"]["update"]["content"]["text"] == text)
+    {
+        seen.extend(until_text(reader, text).await);
+    }
+    seen
+}
+
 fn error_text(updates: &[Value]) -> Option<String> {
     updates.iter().find_map(|v| {
         v["params"]["update"]["content"]["text"]
@@ -775,159 +913,17 @@ fn error_text(updates: &[Value]) -> Option<String> {
     })
 }
 
-/// A FIFO a fake claude opens with `exec 3>'<path>'` before starting other
-/// processes, which inherit it. Reading it to its end waits for claude and
-/// all of them to exit.
-struct ExitWatch {
-    path: std::path::PathBuf,
-    done: Option<tokio::task::JoinHandle<()>>,
-}
-
-impl ExitWatch {
-    fn new(dir: &Path) -> Self {
-        let path = dir.join("hold");
-        let status = std::process::Command::new("mkfifo")
-            .arg(&path)
-            .status()
-            .unwrap();
-        assert!(status.success());
-        let reader = path.clone();
-        // Opening blocks until a process opens the FIFO for writing; reading
-        // ends once every process holding it has exited.
-        let done = tokio::task::spawn_blocking(move || {
-            let mut fifo = fs::File::open(reader).unwrap();
-            let mut rest = Vec::new();
-            std::io::Read::read_to_end(&mut fifo, &mut rest).unwrap();
-        });
-        Self {
-            path,
-            done: Some(done),
-        }
-    }
-
-    async fn exited(mut self) {
-        let done = self.done.take().unwrap();
-        timeout(Duration::from_secs(5), done)
-            .await
-            .expect("a process started by claude is still running")
-            .unwrap();
-    }
-}
-
-impl Drop for ExitWatch {
-    /// Ends the blocking reader if nothing ever opened the FIFO, so a failing
-    /// test does not hang.
-    fn drop(&mut self) {
-        use std::os::unix::fs::OpenOptionsExt;
-        let _ = fs::OpenOptions::new()
-            .write(true)
-            .custom_flags(libc::O_NONBLOCK)
-            .open(&self.path);
-    }
-}
-
-#[tokio::test]
-async fn a_process_holding_stderr_does_not_delay_the_turn() {
-    let temp = tempfile::tempdir().unwrap();
-    let (bin, project) = dirs(temp.path());
-    let background = ExitWatch::new(temp.path());
-    fake_claude(
-        &bin,
-        &format!(
-            r#"
-exec 3>'{}'
-IFS= read -r initial
-sleep 30 >/dev/null &
-printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
-"#,
-            background.path.display()
-        ),
-    );
-    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
-    initialize(&mut child, &mut reader).await;
-    let session = new_session(&mut child, &mut reader, 2, &project).await;
-    let (result, updates) = prompt(&mut child, &mut reader, 3, &session).await;
-    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
-    assert_eq!(error_text(&updates), None);
-    background.exited().await;
-    child.kill().await.unwrap();
-}
-
-#[tokio::test]
-async fn a_lingering_process_does_not_hold_the_turn_open() {
-    let temp = tempfile::tempdir().unwrap();
-    let (bin, project) = dirs(temp.path());
-    let background = ExitWatch::new(temp.path());
-    fake_claude(
-        &bin,
-        &format!(
-            r#"
-exec 3>'{}'
-IFS= read -r initial
-sleep 30 >/dev/null &
-printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
-exit 3
-"#,
-            background.path.display()
-        ),
-    );
-    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
-    initialize(&mut child, &mut reader).await;
-    let session = new_session(&mut child, &mut reader, 2, &project).await;
-    let (result, updates) = prompt(&mut child, &mut reader, 3, &session).await;
-    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
-    assert_eq!(error_text(&updates), None);
-    background.exited().await;
-    child.kill().await.unwrap();
-}
-
-#[tokio::test]
-async fn cancel_stops_processes_started_by_claude() {
-    let temp = tempfile::tempdir().unwrap();
-    let (bin, project) = dirs(temp.path());
-    let background = ExitWatch::new(temp.path());
-    fake_claude(
-        &bin,
-        &format!(
-            r#"
-exec 3>'{}'
-IFS= read -r initial
-sleep 30 >/dev/null 2>&1 &
-printf '%s\n' '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"started"}}]}}}}'
-sleep 30
-"#,
-            background.path.display()
-        ),
-    );
-    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
-    initialize(&mut child, &mut reader).await;
-    let session = new_session(&mut child, &mut reader, 2, &project).await;
-    send(&mut child, json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session,"prompt":[{"type":"text","text":"hello"}]}})).await;
-    until_text(&mut reader, "started").await;
-    send(
-        &mut child,
-        json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session}}),
-    )
-    .await;
-    let (result, _) = response(&mut reader, 3).await;
-    assert_eq!(result["result"]["stopReason"], "cancelled", "{result}");
-    background.exited().await;
-    child.kill().await.unwrap();
-}
-
 #[tokio::test]
 async fn cancel_sent_right_after_prompt_cancels_it() {
     let temp = tempfile::tempdir().unwrap();
     let (bin, project) = dirs(temp.path());
     fake_claude(
         &bin,
-        &format!(
-            r#"
-IFS= read -r initial
-sleep 2
-printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
-"#
-        ),
+        r"
+next_prompt
+interrupted
+next_message
+",
     );
     let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
     initialize(&mut child, &mut reader).await;
@@ -944,55 +940,47 @@ printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
     child.kill().await.unwrap();
 }
 
-fn interrupted_claude(bin: &Path) {
+/// A claude that names its session and exits in its first turn, and one
+/// that answers after it.
+fn exiting_claude(bin: &Path) {
     fake_claude(
         bin,
         &format!(
             r#"
 printf '%s\n' "$*" >> calls
-if [ "$(wc -l < calls)" -gt 1 ]; then
-  printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
-  exit 0
+next_prompt
+if [ "$(wc -l < calls)" -eq 1 ]; then
+  printf '%s\n' '{{"type":"system","subtype":"init","session_id":"{HISTORY_ID}"}}'
+  exit 1
 fi
-IFS= read -r initial
-printf '%s\n' '{{"type":"system","subtype":"init","session_id":"{HISTORY_ID}"}}'
-printf '%s\n' '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"working"}}]}}}}'
-exec sleep 30
+printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
+next_message
 "#
         ),
     );
 }
 
-async fn cancel_then_prompt_again(temp: &Path, bin: &Path, project: &Path) -> Vec<String> {
+async fn fail_then_prompt_again(temp: &Path, bin: &Path, project: &Path) -> Vec<String> {
     let (mut child, mut reader) = start(bin, &temp.join("store"));
     initialize(&mut child, &mut reader).await;
     let session = new_session(&mut child, &mut reader, 2, project).await;
-    send(&mut child, json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session,"prompt":[{"type":"text","text":"hello"}]}})).await;
-    until_text(&mut reader, "working").await;
-    send(
-        &mut child,
-        json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session}}),
-    )
-    .await;
-    let (result, _) = response(&mut reader, 3).await;
-    assert_eq!(result["result"]["stopReason"], "cancelled", "{result}");
-    let (result, _) = prompt(&mut child, &mut reader, 4, &session).await;
+    let (result, updates) = prompt(&mut child, &mut reader, 3, &session).await;
     assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+    assert!(error_text(&updates).is_some(), "{updates:?}");
+    let (result, updates) = prompt(&mut child, &mut reader, 4, &session).await;
+    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+    assert_eq!(error_text(&updates), None);
     child.kill().await.unwrap();
-    fs::read_to_string(project.join("calls"))
-        .unwrap()
-        .lines()
-        .map(str::to_owned)
-        .collect()
+    calls(project)
 }
 
 #[tokio::test]
-async fn cancelled_turn_keeps_a_resumable_conversation() {
+async fn a_claude_that_exits_is_replaced_by_one_that_resumes() {
     let temp = tempfile::tempdir().unwrap();
     let (bin, project) = dirs(temp.path());
-    interrupted_claude(&bin);
+    exiting_claude(&bin);
     write_transcript(temp.path(), &project, HISTORY_ID);
-    let calls = cancel_then_prompt_again(temp.path(), &bin, &project).await;
+    let calls = fail_then_prompt_again(temp.path(), &bin, &project).await;
     assert_eq!(calls.len(), 2);
     assert!(
         calls[1].contains(&format!("--resume {HISTORY_ID}")),
@@ -1001,11 +989,11 @@ async fn cancelled_turn_keeps_a_resumable_conversation() {
 }
 
 #[tokio::test]
-async fn cancelled_turn_without_a_transcript_starts_fresh() {
+async fn a_claude_that_exits_without_a_transcript_is_replaced_by_a_fresh_one() {
     let temp = tempfile::tempdir().unwrap();
     let (bin, project) = dirs(temp.path());
-    interrupted_claude(&bin);
-    let calls = cancel_then_prompt_again(temp.path(), &bin, &project).await;
+    exiting_claude(&bin);
+    let calls = fail_then_prompt_again(temp.path(), &bin, &project).await;
     assert_eq!(calls.len(), 2);
     assert!(!calls[1].contains("--resume"), "{calls:?}");
 }
@@ -1018,7 +1006,7 @@ async fn max_turns_reports_its_stop_reason() {
         &bin,
         &format!(
             r#"
-IFS= read -r initial
+next_prompt
 printf '%s\n' '{{"type":"result","subtype":"error_max_turns","is_error":true,"session_id":"{HISTORY_ID}","errors":["Reached maximum number of turns (6)"]}}'
 exit 1
 "#
@@ -1043,7 +1031,7 @@ async fn error_results_report_their_errors() {
     fake_claude(
         &bin,
         r#"
-IFS= read -r initial
+next_prompt
 printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["first","second"]}'
 exit 1
 "#,
@@ -1068,7 +1056,7 @@ async fn listed_sessions_can_be_loaded() {
         &bin,
         &format!(
             r#"
-IFS= read -r initial
+next_prompt
 printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
 "#
         ),
@@ -1187,10 +1175,11 @@ async fn cancel_fails_tool_calls_that_did_not_finish() {
     fake_claude(
         &bin,
         r#"
-IFS= read -r initial
+next_prompt
 printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"sleep 30"}}]}}'
 printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'
-exec sleep 30
+interrupted
+next_message
 "#,
     );
     let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
@@ -1225,8 +1214,8 @@ async fn prompt_content_reaches_claude() {
         &bin,
         &format!(
             r#"
-IFS= read -r initial || exit 10
-printf '%s\n' "$initial" > '{}'
+next_prompt
+printf '%s\n' "$message" > '{}'
 printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}","result":"done"}}'
 "#,
             captured.display()
@@ -1301,20 +1290,16 @@ async fn unsupported_prompt_content_is_rejected() {
 async fn failed_exit_reports_claude_stderr() {
     let temp = tempfile::tempdir().unwrap();
     let (bin, project) = dirs(temp.path());
-    let background = ExitWatch::new(temp.path());
-    // The background process keeps stderr open after claude exits.
+    // The background process keeps stdout and stderr open after claude exits.
     fake_claude(
         &bin,
-        &format!(
-            r#"
-exec 3>'{}'
-IFS= read -r initial
+        r#"
+next_prompt
+state running
 echo "unknown option --bogus" >&2
-sleep 30 >/dev/null &
+sleep 10 &
 exit 1
 "#,
-            background.path.display()
-        ),
     );
     let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
     initialize(&mut child, &mut reader).await;
@@ -1323,7 +1308,12 @@ exit 1
     assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
     let error = error_text(&updates).unwrap();
     assert!(error.ends_with(": unknown option --bogus"), "{error}");
-    background.exited().await;
+    // A claude that exits while working is no longer working.
+    let states: Vec<String> = describe_updates(&updates)
+        .into_iter()
+        .filter(|update| update.starts_with("agent_state"))
+        .collect();
+    assert_eq!(states, ["agent_state: running", "agent_state: idle"]);
     child.kill().await.unwrap();
 }
 
@@ -1357,12 +1347,16 @@ fn write_conversation(temp: &Path, project: &Path, id: &str) {
     .unwrap();
 }
 
-/// One line per replayed update: its kind and what it shows.
+/// One line per update, its kind and what it shows, and one per notice of
+/// the agent's state.
 fn describe_updates(notifications: &[Value]) -> Vec<String> {
     notifications
         .iter()
-        .filter(|n| n["method"] == "session/update")
+        .filter(|n| n["method"] == "session/update" || n["method"] == "_ox/agent_state")
         .map(|n| {
+            if n["method"] == "_ox/agent_state" {
+                return format!("agent_state: {}", n["params"]["state"].as_str().unwrap());
+            }
             let update = &n["params"]["update"];
             let kind = update["sessionUpdate"].as_str().unwrap();
             let detail = match kind {
@@ -1407,7 +1401,7 @@ async fn load_replays_a_claude_session_from_its_transcript() {
         &format!(
             r#"
 printf '%s\n' "$*" > args
-IFS= read -r initial
+next_prompt
 printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
 "#
         ),
@@ -1435,7 +1429,7 @@ async fn load_replays_a_bridge_session_from_its_claude_transcript() {
         &bin,
         &format!(
             r#"
-IFS= read -r initial
+next_prompt
 printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
 "#
         ),
@@ -1459,5 +1453,220 @@ printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
         "{notifications:?}"
     );
     assert_eq!(describe_updates(&notifications), REPLAY);
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_session_keeps_one_claude_across_prompts() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    fake_claude(
+        &bin,
+        &format!(
+            r#"
+printf '%s\n' "$*" >> calls
+turn=0
+while :; do
+  next_prompt
+  turn=$((turn + 1))
+  printf '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"turn %s"}}]}}}}\n' "$turn"
+  printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
+done
+"#
+        ),
+    );
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    for (request_id, text) in [(3, "turn 1"), (4, "turn 2"), (5, "turn 3")] {
+        let (result, updates) = prompt(&mut child, &mut reader, request_id, &session).await;
+        assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+        assert!(
+            updates
+                .iter()
+                .any(|v| v["params"]["update"]["content"]["text"] == text),
+            "missing {text} in {updates:?}"
+        );
+    }
+    let calls = calls(&project);
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn turns_claude_starts_reach_the_client() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    // After the prompt's turn, claude runs two turns of its own, as it does
+    // when a background task reports back. The second one fails.
+    fake_claude(
+        &bin,
+        &format!(
+            r#"
+next_prompt
+state running
+printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
+state idle
+state running
+printf '%s\n' '{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"tool-1","name":"Bash","input":{{"command":"pwd"}}}}]}}}}'
+state requires_action
+state running
+printf '%s\n' '{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"tool-1","content":""}}]}}}}'
+printf '%s\n' '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"woke"}}]}}}}'
+printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
+state idle
+state running
+printf '%s\n' '{{"type":"result","is_error":true,"result":"wake failed"}}'
+state idle
+printf '%s\n' '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"end"}}]}}}}'
+next_message
+"#
+        ),
+    );
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    let (result, before) = prompt(&mut child, &mut reader, 3, &session).await;
+    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+    let after = until_text(&mut reader, "end").await;
+    let describe = |messages: &[Value]| -> Vec<String> {
+        describe_updates(messages)
+            .into_iter()
+            .filter(|update| !update.starts_with("session_info_update"))
+            .collect()
+    };
+    // The client has the prompt's response before what claude does next.
+    assert_eq!(describe(&before), ["agent_state: running"]);
+    assert_eq!(
+        describe(&after),
+        [
+            "agent_state: idle",
+            "agent_state: running",
+            "tool_call: tool-1 pwd pending",
+            "tool_call_update: tool-1 completed",
+            "agent_message_chunk: woke",
+            "agent_state: idle",
+            "agent_state: running",
+            "agent_message_chunk: Error: wake failed",
+            "agent_state: idle",
+            "agent_message_chunk: end",
+        ]
+    );
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_prompt_sent_during_a_turn_claude_started_ends_with_its_own_result() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    // Claude reads the second prompt while a turn of its own runs, ends that
+    // turn, and only then starts the prompt's.
+    fake_claude(
+        &bin,
+        &format!(
+            r#"
+next_prompt
+printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
+printf '%s\n' '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"waking"}}]}}}}'
+next_message
+printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
+started
+printf '%s\n' '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"answer"}}]}}}}'
+printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
+next_message
+"#
+        ),
+    );
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    let (_, seen) = prompt(&mut child, &mut reader, 3, &session).await;
+    and_until_text(seen, &mut reader, "waking").await;
+    let (result, updates) = prompt(&mut child, &mut reader, 4, &session).await;
+    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+    assert!(
+        updates
+            .iter()
+            .any(|v| v["params"]["update"]["content"]["text"] == "answer"),
+        "{updates:?}"
+    );
+    child.kill().await.unwrap();
+}
+
+/// The process group of `pid`.
+fn process_group(pid: &str) -> String {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "pgid=", "-p", pid])
+        .output()
+        .unwrap();
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+#[tokio::test]
+async fn claude_runs_in_the_bridges_process_group() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    fake_claude(
+        &bin,
+        &format!(
+            r#"
+next_prompt
+printf '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"%s"}}]}}}}\n' "$$"
+printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
+next_message
+"#
+        ),
+    );
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    let (_, updates) = prompt(&mut child, &mut reader, 3, &session).await;
+    let claude = updates
+        .iter()
+        .find_map(|v| v["params"]["update"]["content"]["text"].as_str())
+        .unwrap();
+    let bridge = child.id().unwrap().to_string();
+    assert_eq!(process_group(claude), process_group(&bridge));
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn resuming_with_mcp_servers_starts_a_claude_that_has_them() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    fake_claude(
+        &bin,
+        &format!(
+            r#"
+printf '%s\n' "$*" >> calls
+while :; do
+  next_prompt
+  printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
+done
+"#
+        ),
+    );
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    prompt(&mut child, &mut reader, 3, &session).await;
+    send(
+        &mut child,
+        json!({"jsonrpc":"2.0","id":4,"method":"session/resume","params":{
+            "sessionId":session,"cwd":project,
+            "mcpServers":[{"name":"filesystem","command":"node","args":["server.js"],"env":[]}]
+        }}),
+    )
+    .await;
+    response(&mut reader, 4).await;
+    let (result, _) = prompt(&mut child, &mut reader, 5, &session).await;
+    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+    let calls = calls(&project);
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert!(!calls[0].contains("--mcp-config"), "{calls:?}");
+    assert!(
+        calls[1].contains("--mcp-config") && calls[1].contains(&format!("--resume {HISTORY_ID}")),
+        "{calls:?}"
+    );
     child.kill().await.unwrap();
 }

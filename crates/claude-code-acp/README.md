@@ -103,14 +103,31 @@ contain these content blocks, which reach Claude in order:
 
 The bridge advertises the `image` and `embeddedContext` prompt capabilities.
 
-Each prompt runs `claude` in its own process group. Clients can stop a prompt
-with `session/cancel`, including immediately after sending it or while a tool
-permission request is open. Cancelling or an error sends `SIGTERM`
-to the group and `SIGKILL` two seconds later; when Claude exits, any processes
-it left in the group are killed. Tool calls that started without a result are
-reported as failed when a prompt is cancelled or fails. A cancelled or failed
-prompt keeps its Claude conversation for the next prompt when Claude saved a
-transcript for it.
+A session's first prompt starts `claude`, and the session keeps that process:
+the bridge holds its stdin open and sends each later prompt to it as a
+message. Claude stays running between prompts, so background tasks it started
+keep running. When one reports back, Claude starts a turn by itself, and the
+bridge sends that turn's updates and permission requests to the client as it
+does a prompt's. `session/cancel` stops such a turn too.
+
+ACP reports a turn only as the answer to a prompt, so the bridge also sends
+the extension notification `_ox/agent_state`, with the `sessionId` and a
+`state` of `running` or `idle`, each time Claude starts or stops working. A
+prompt's response reaches the client before anything Claude does after that
+prompt's turn.
+
+Clients can stop a prompt with `session/cancel`, including immediately after
+sending it or while a tool permission request is open. The bridge interrupts
+Claude, which stops the turn and the tools it is running, withdraws an open
+permission request, and waits for the next prompt. Tool calls that started
+without a result are reported as failed when a turn ends.
+
+Claude runs in the bridge's process group, so a client that stops the bridge
+by killing its process group also stops Claude and the processes Claude
+started. Claude also exits when the bridge does, because its stdin closes.
+When `claude` exits while the bridge runs, the next prompt starts another
+that resumes the conversation, if Claude saved a transcript for it, and a
+prompt that was waiting reports the exit as its error.
 
 A prompt whose result Claude reports as `error_max_turns` ends with the
 `max_turn_requests` stop reason. Other Claude errors are reported as an `Error:` message and the
@@ -123,8 +140,10 @@ The bridge forwards stdio MCP server definitions to Claude.
 Model selection is exposed through `configOptions` and
 `session/set_config_option`.
 
-The mode selector offers `auto`, `manual`, `acceptEdits`, and `plan`. The bridge
-passes the selected mode to Claude as `--permission-mode` on each prompt.
+The mode selector offers `auto`, `manual`, `acceptEdits`, and `plan`. Claude
+starts with the session's model and mode. A change made while it runs is sent
+to it, and `session/set_config_option` returns Claude's error if it refuses
+the change.
 
 ### Tool permissions
 

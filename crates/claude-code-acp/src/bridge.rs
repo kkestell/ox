@@ -6,52 +6,55 @@ use std::{
 
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
-    self as acp, ContentBlock, ContentChunk, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigSelectOption, SessionUpdate, StopReason, TextContent,
+    self as acp, SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption,
+    SessionUpdate, StopReason,
 };
 use agent_client_protocol::{Client, Error};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use serde_json::Value;
-use tokio::sync::watch;
+use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use crate::{
     config::Config,
     content,
     history::{History, HistoryEntry},
-    runner::{self, Finish, McpServer, RunError, RunRequest},
+    runner::{Claude, Finish, McpServer, Refused, RunError, RunOutcome, StartRequest},
     store::{Session, Store},
-    updates::{Updates, notify},
+    updates::{Updates, error_message, notify},
     validation,
 };
 
-/// A prompt turn registered for its session.
+/// A prompt sent to its session's claude.
 struct Turn {
-    running: Running,
-    session: Session,
-    /// The prompt as Claude message content.
-    content: Vec<Value>,
-    /// The prompt's text, which titles an untitled session.
-    text: String,
-    cancelled: watch::Receiver<bool>,
-}
-
-/// A session's entry in `Bridge::running`, removed when dropped.
-struct Running {
-    bridge: Arc<Bridge>,
     id: String,
+    session: Session,
+    /// The receiver of the turn's outcome, or why claude could not start.
+    outcome: Result<oneshot::Receiver<RunOutcome>, String>,
 }
 
-impl Drop for Running {
-    fn drop(&mut self) {
-        self.bridge.running.lock().unwrap().remove(&self.id);
-    }
+/// Held until a prompt's response is sent; claude's output after the turn
+/// waits for it to drop.
+pub type Responding = Option<oneshot::Sender<()>>;
+
+/// A config option to change.
+enum Setting {
+    Mode(String),
+    Model(String),
+}
+
+/// A config change sent to its session's claude.
+struct ConfigChange {
+    id: String,
+    setting: Setting,
+    /// The receiver of claude's answer, when the session has a claude.
+    accepted: Option<oneshot::Receiver<Result<(), String>>>,
 }
 
 pub struct Bridge {
     store: Store,
     history: History,
-    running: Mutex<HashMap<String, watch::Sender<bool>>>,
+    /// The claude of each session that has taken a prompt.
+    claudes: Mutex<HashMap<String, Claude>>,
 }
 
 impl Bridge {
@@ -59,7 +62,7 @@ impl Bridge {
         Arc::new(Self {
             history: History::new(&config.claude_dir),
             store: Store::new(config.store_dir),
-            running: Mutex::new(HashMap::new()),
+            claudes: Mutex::new(HashMap::new()),
         })
     }
 
@@ -107,7 +110,7 @@ impl Bridge {
         let id = request.session_id.to_string();
         let session = self.open(&id, &request.cwd, request.mcp_servers)?;
         if let Some(claude_id) = &session.claude_session_id {
-            Updates::new(connection, &id, &session.cwd)
+            Updates::new(connection.clone(), &id, &session.cwd)
                 .replay(self.history.messages(claude_id, &session.cwd));
         }
         Ok(acp::LoadSessionResponse::new().config_options(Self::options(&session)))
@@ -191,7 +194,8 @@ impl Bridge {
 
     /// Finds a bridge session, or a Claude session from its transcripts,
     /// which becomes a bridge session under the same ID. The request's MCP
-    /// servers replace the session's.
+    /// servers replace the session's, and its next prompt starts a claude
+    /// that has them.
     fn open(
         &self,
         id: &str,
@@ -207,6 +211,7 @@ impl Bridge {
             if !servers.is_empty() {
                 self.store
                     .update(id, |session| session.mcp_servers = servers);
+                self.claudes.lock().unwrap().remove(id);
             }
         } else if self.history.find(id, &cwd) {
             let mut session = Session::new(cwd, servers);
@@ -221,30 +226,75 @@ impl Bridge {
         self.require(id)
     }
 
+    /// Sends a config change to its session's claude and returns the future
+    /// that saves it once claude accepts it. The change is sent before the
+    /// future is first polled, so it reaches claude ahead of a prompt that
+    /// follows it.
     pub fn set_config(
+        self: &Arc<Self>,
+        request: &acp::SetSessionConfigOptionRequest,
+        connection: ConnectionTo<Client>,
+    ) -> impl Future<Output = std::result::Result<acp::SetSessionConfigOptionResponse, Error>>
+    + Send
+    + 'static {
+        let change = self.send_config(request);
+        let bridge = self.clone();
+        async move { bridge.save_config(change?, &connection).await }
+    }
+
+    fn send_config(
         &self,
         request: &acp::SetSessionConfigOptionRequest,
-        connection: &ConnectionTo<Client>,
-    ) -> std::result::Result<acp::SetSessionConfigOptionResponse, Error> {
+    ) -> std::result::Result<ConfigChange, Error> {
         let id = request.session_id.to_string();
         self.require(&id)?;
-        let key = request.config_id.to_string();
         let value = request
             .value
             .as_value_id()
             .ok_or_else(|| invalid("Expected a select value"))?
             .to_string();
-        match key.as_str() {
+        let claudes = self.claudes.lock().unwrap();
+        let claude = claudes.get(&id);
+        let (setting, accepted) = match request.config_id.to_string().as_str() {
             "mode" if is_mode(&value) => {
-                self.store
-                    .update(&id, |session| session.mode = Some(value.clone()));
+                let accepted = claude.map(|claude| claude.set_permission_mode(&value));
+                (Setting::Mode(value), accepted)
             }
             "model" if is_model(&value) => {
-                self.store
-                    .update(&id, |session| session.model = Some(value));
+                let accepted = claude.map(|claude| claude.set_model(&value));
+                (Setting::Model(value), accepted)
             }
             _ => return Err(invalid("Unknown configuration option or value")),
+        };
+        Ok(ConfigChange {
+            id,
+            setting,
+            accepted,
+        })
+    }
+
+    async fn save_config(
+        &self,
+        change: ConfigChange,
+        connection: &ConnectionTo<Client>,
+    ) -> std::result::Result<acp::SetSessionConfigOptionResponse, Error> {
+        let ConfigChange {
+            id,
+            setting,
+            accepted,
+        } = change;
+        // A claude that exits before it answers leaves the change to the
+        // next claude, which starts with the saved options.
+        if let Some(Ok(Err(error))) = match accepted {
+            Some(accepted) => Some(accepted.await),
+            None => None,
+        } {
+            return Err(Error::new(-32603, error));
         }
+        self.store.update(&id, |session| match setting {
+            Setting::Mode(mode) => session.mode = Some(mode),
+            Setting::Model(model) => session.model = Some(model),
+        });
         let options = Self::options(&self.require(&id)?);
         notify(
             connection,
@@ -254,67 +304,71 @@ impl Bridge {
         Ok(acp::SetSessionConfigOptionResponse::new(options))
     }
 
+    /// Interrupts the session's turn, whether a prompt or claude started it.
     pub fn cancel(&self, id: &str) {
-        if let Some(sender) = self.running.lock().unwrap().get(id) {
-            let _ = sender.send(true);
+        if let Some(claude) = self.claudes.lock().unwrap().get(id) {
+            claude.interrupt();
         }
     }
 
-    /// Registers a prompt turn for its session and returns the future that
-    /// runs it. Registration happens before the future is first polled, so a
-    /// cancel that arrives right after the prompt reaches this turn.
+    /// Sends a prompt to its session's claude and returns the future that
+    /// waits for its turn. The prompt is sent before the future is first
+    /// polled, so a cancel that arrives right after the prompt stops this
+    /// turn. The future also returns what to drop once the response is sent.
     pub fn prompt(
         self: &Arc<Self>,
         request: &acp::PromptRequest,
         connection: ConnectionTo<Client>,
-    ) -> impl Future<Output = std::result::Result<acp::PromptResponse, Error>> + Send + 'static
-    {
-        let turn = self.start_turn(request);
+    ) -> impl Future<Output = (std::result::Result<acp::PromptResponse, Error>, Responding)>
+    + Send
+    + 'static {
+        let turn = self.start_turn(request, &connection);
         let bridge = self.clone();
-        async move { bridge.run_turn(turn?, connection).await }
+        async move {
+            match turn {
+                Ok(turn) => {
+                    let (response, responding) = bridge.finish_turn(turn, &connection).await;
+                    (Ok(response), responding)
+                }
+                Err(error) => (Err(error), None),
+            }
+        }
     }
 
     fn start_turn(
-        self: &Arc<Self>,
+        &self,
         request: &acp::PromptRequest,
+        connection: &ConnectionTo<Client>,
     ) -> std::result::Result<Turn, Error> {
         let id = request.session_id.to_string();
         let session = self.require(&id)?;
         let content = content::claude_content(&request.prompt).map_err(invalid)?;
         let text = content::prompt_text(&request.prompt);
-        let (cancel_tx, cancelled) = watch::channel(false);
-        {
-            let mut running = self.running.lock().unwrap();
-            if running.contains_key(&id) {
-                return Err(invalid("A prompt is already running for this session"));
-            }
-            running.insert(id.clone(), cancel_tx);
-        }
-        Ok(Turn {
-            running: Running {
-                bridge: self.clone(),
-                id,
-            },
-            session,
-            content,
-            text,
-            cancelled,
-        })
-    }
 
-    async fn run_turn(
-        &self,
-        turn: Turn,
-        connection: ConnectionTo<Client>,
-    ) -> std::result::Result<acp::PromptResponse, Error> {
-        let Turn {
-            running,
-            session,
-            content,
-            text,
-            cancelled,
-        } = turn;
-        let id = running.id.as_str();
+        let mut claudes = self.claudes.lock().unwrap();
+        let outcome = match claudes.get(&id).map(|claude| claude.prompt(&content)) {
+            Some(Ok(outcome)) => Ok(outcome),
+            Some(Err(Refused::Busy)) => return Err(invalid(Refused::Busy.to_string())),
+            // The session's claude has exited or it has none yet, so the
+            // prompt goes to a new one, which continues the conversation.
+            Some(Err(Refused::Exited(_))) | None => Claude::start(
+                &StartRequest {
+                    cwd: &session.cwd,
+                    resume: session.claude_session_id.as_deref(),
+                    model: session_model(&session),
+                    mode: session_mode(&session),
+                    mcp_servers: &session.mcp_servers,
+                },
+                Updates::new(connection.clone(), &id, &session.cwd),
+            )
+            .and_then(|claude| {
+                let outcome = claude.prompt(&content);
+                claudes.insert(id.clone(), claude);
+                outcome.map_err(|refused| refused.to_string())
+            }),
+        };
+        drop(claudes);
+
         if session.title.is_none() && !text.trim().is_empty() {
             let title: String = text
                 .split_whitespace()
@@ -324,30 +378,42 @@ impl Bridge {
                 .take(120)
                 .collect();
             self.store
-                .update(id, |session| session.title = Some(title.clone()));
+                .update(&id, |session| session.title = Some(title.clone()));
             notify(
-                &connection,
-                id,
+                connection,
+                &id,
                 SessionUpdate::SessionInfoUpdate(acp::SessionInfoUpdate::new().title(title)),
             );
         }
+        Ok(Turn {
+            id,
+            session,
+            outcome,
+        })
+    }
 
-        let updates = Updates::new(&connection, id, &session.cwd);
-        let model = session_model(&session);
-        let outcome = runner::run(
-            RunRequest {
-                cwd: &session.cwd,
-                content: &content,
-                resume: session.claude_session_id.as_deref(),
-                model,
-                mode: session_mode(&session),
-                mcp_servers: &session.mcp_servers,
-            },
-            cancelled,
-            |event| updates.event(event),
-            |permission| updates.permission(permission),
-        )
-        .await;
+    async fn finish_turn(
+        &self,
+        turn: Turn,
+        connection: &ConnectionTo<Client>,
+    ) -> (acp::PromptResponse, Responding) {
+        let Turn {
+            id,
+            session,
+            outcome,
+        } = turn;
+        let id = id.as_str();
+        let failed = |error: String| RunOutcome {
+            session_id: None,
+            result: Err(RunError::Failed(error)),
+            responding: None,
+        };
+        let outcome = match outcome {
+            Ok(outcome) => outcome
+                .await
+                .unwrap_or_else(|_| failed("claude stopped".into())),
+            Err(error) => failed(error),
+        };
         // A turn that did not finish only keeps its Claude session when Claude
         // saved a transcript that `--resume` can continue.
         let claude_id = outcome.session_id.filter(|claude_id| {
@@ -362,7 +428,7 @@ impl Bridge {
             Ok(finish) => {
                 if let Some(session) = self.store.get(id) {
                     notify(
-                        &connection,
+                        connection,
                         id,
                         SessionUpdate::SessionInfoUpdate(
                             acp::SessionInfoUpdate::new().updated_at(session.updated_at),
@@ -374,24 +440,13 @@ impl Bridge {
                     Finish::MaxTurns => StopReason::MaxTurnRequests,
                 }
             }
-            Err(RunError::Cancelled) => {
-                updates.fail_open_tools();
-                StopReason::Cancelled
-            }
+            Err(RunError::Cancelled) => StopReason::Cancelled,
             Err(RunError::Failed(error)) => {
-                updates.fail_open_tools();
-                notify(
-                    &connection,
-                    id,
-                    SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
-                        TextContent::new(format!("Error: {error}")),
-                    ))),
-                );
+                notify(connection, id, error_message(&error));
                 StopReason::EndTurn
             }
         };
-        drop(running);
-        Ok(acp::PromptResponse::new(stop_reason))
+        (acp::PromptResponse::new(stop_reason), outcome.responding)
     }
 
     fn require(&self, id: &str) -> std::result::Result<Session, Error> {

@@ -9,6 +9,9 @@
 //!   options, then a chunk `allowed`, `rejected` or `cancelled`
 //! - `late-permission`: after answering the prompt, a
 //!   `session/request_permission` outside any turn
+//! - `own-turn`: after answering the prompt, a turn the agent starts: it
+//!   says it is running, sends the chunk `own-turn`, and says it is idle
+//!   once it is cancelled
 //! - `exit <code>`: exit the process
 //! - `describe`: one chunk listing the prompt's blocks, such as
 //!   `text image:image/png link:file:///a resource:file:///b`
@@ -48,6 +51,7 @@ use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::schema as acp;
 use agent_client_protocol::v1::{ConnectionTo, Responder};
 use agent_client_protocol::{Client, Error, Stdio};
+use ox_protocol::{AgentState, AgentStateNotification};
 use tokio::sync::watch;
 
 struct State {
@@ -250,9 +254,10 @@ async fn main() -> agent_client_protocol::Result<()> {
                     let task_connection = connection.clone();
                     connection.spawn(async move {
                         let session_id = request.session_id.clone();
-                        let late_permission = script(&request)
-                            .lines()
-                            .any(|line| line.trim() == "late-permission");
+                        let directive =
+                            |name: &str| script(&request).lines().any(|line| line.trim() == name);
+                        let late_permission = directive("late-permission");
+                        let own_turn = directive("own-turn");
                         match run(&state, &task_connection, request).await {
                             Ok(stop_reason) => {
                                 responder.respond(acp::PromptResponse::new(stop_reason))?;
@@ -261,9 +266,28 @@ async fn main() -> agent_client_protocol::Result<()> {
                         }
                         if late_permission {
                             task_connection
-                                .send_request(permission_request(session_id))
+                                .send_request(permission_request(session_id.clone()))
                                 .block_task()
                                 .await?;
+                        }
+                        if own_turn {
+                            let says = |state| AgentStateNotification {
+                                session_id: session_id.clone(),
+                                state,
+                            };
+                            task_connection.send_notification(says(AgentState::Running))?;
+                            task_connection.send_notification(acp::SessionNotification::new(
+                                session_id.clone(),
+                                acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
+                                    acp::ContentBlock::Text(acp::TextContent::new("own-turn")),
+                                )),
+                            ))?;
+                            let _ = state
+                                .cancelled
+                                .subscribe()
+                                .wait_for(|cancelled| *cancelled)
+                                .await;
+                            task_connection.send_notification(says(AgentState::Idle))?;
                         }
                         Ok(())
                     })
@@ -310,7 +334,7 @@ async fn run(
     for line in script.lines() {
         let words: Vec<&str> = line.split_whitespace().collect();
         match words.as_slice() {
-            [] | ["late-permission"] => {}
+            [] | ["late-permission" | "own-turn"] => {}
             ["say", n, delay] => {
                 let n: u64 = parse(n)?;
                 let delay = Duration::from_millis(parse(delay)?);

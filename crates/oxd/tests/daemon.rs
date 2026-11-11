@@ -892,6 +892,53 @@ async fn permission_after_turn_returns_session_to_idle() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_turn_the_agent_starts_runs_until_the_agent_is_idle() {
+    let daemon = Daemon::start(1000).await;
+    let client = daemon.client().await;
+    let (session, started) = daemon.new_session(&client).await;
+    let mut events = client.subscribe(&session.id, started).await.unwrap();
+    client.prompt(&session.id, text("own-turn")).await.unwrap();
+    let history = until(&mut events, |kind| matches!(kind, EventKind::Update(_))).await;
+    assert_eq!(chunks(&history), ["own-turn"]);
+    assert!(matches!(
+        history[..3],
+        [
+            Event {
+                kind: EventKind::PromptStarted { .. },
+                ..
+            },
+            Event {
+                kind: EventKind::TurnEnded { .. },
+                ..
+            },
+            Event {
+                kind: EventKind::TurnStarted,
+                ..
+            },
+        ]
+    ));
+    assert_eq!(
+        info(&client, &session.id).await.state,
+        SessionState::Running
+    );
+    let refused = client.prompt(&session.id, text("pid")).await.unwrap_err();
+    assert_eq!(remote_code(refused), code::INVALID_STATE);
+
+    client.cancel(&session.id).await.unwrap();
+    let rest = until(&mut events, turn_ended).await;
+    assert_eq!(rest.len(), 1, "{rest:?}");
+    assert_eq!(
+        rest[0].kind,
+        EventKind::TurnEnded {
+            stop_reason: None,
+            error: None
+        }
+    );
+    assert_eq!(info(&client, &session.id).await.state, SessionState::Idle);
+    client.prompt(&session.id, text("pid")).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn exhausted_descriptors_do_not_stop_the_daemon() {
     let mut daemon = Daemon::start_with(1000, Some(64)).await;
     let mut streams = Vec::new();

@@ -61,6 +61,15 @@ describe("A session", () => {
     await expect(sessionEntry(folder).$('[aria-label="Awaiting permission"]')).not.toBeExisting();
   });
 
+  it("stops a turn the agent started", async () => {
+    await send("own-turn");
+    await expect(agentText()[0]).toHaveText("own-turn");
+    await expect(sessionEntry(folder).$('[aria-label="Running"]')).toBeDisplayed();
+    await $('form.composer button[aria-label="Stop"]').click();
+    await expect(sessionEntry(folder).$('[aria-label="Running"]')).not.toBeExisting();
+    await expect(sendButton()).toBeDisplayed();
+  });
+
   it("stops a running turn", async () => {
     await send("wait");
     await expect(sessionEntry(folder).$('[aria-label="Running"]')).toBeDisplayed();

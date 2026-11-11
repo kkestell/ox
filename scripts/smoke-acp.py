@@ -275,6 +275,8 @@ class SmokeRun:
 
         self.check_reconnect()
         self.check_permission()
+        if self.args.agent == "claude":
+            self.check_background_wake()
         self.check_cancellation()
         self.verify_model()
         self.check_load_after_restart()
@@ -401,6 +403,46 @@ class SmokeRun:
             "permission_survives_disconnect_and_allow_once",
             request_id=permission["request_id"],
         )
+
+    def check_background_wake(self):
+        token = f"woke-{self.directory.name}"
+        self.ctl(
+            "prompt",
+            self.session,
+            "Use the Bash tool with run_in_background set to true to run "
+            "`sleep 8; echo finished`. Then reply with only the word started and "
+            "end your turn without waiting for the command. When you are later "
+            f"told that the background command finished, reply with only {token}.",
+        )
+        while True:
+            events = self.until(
+                lambda e: kind(e) in ("permission_requested", "turn_ended")
+            )
+            if kind(events[-1]) == "turn_ended":
+                break
+            permission = events[-1]["kind"]["data"]
+            option = next(
+                o["optionId"]
+                for o in permission["options"]
+                if o["kind"] == "allow_once"
+            )
+            self.ctl("permit", self.session, permission["request_id"], option)
+        check(
+            events[-1]["kind"]["data"] == {"stop_reason": "end_turn", "error": None},
+            f"Unexpected turn result: {events[-1]}",
+        )
+        woke = self.until(lambda e: kind(e) == "turn_ended")
+        check(
+            kind(woke[0]) == "turn_started",
+            f"Claude's own turn did not start with turn_started: {woke[0]}",
+        )
+        check(
+            woke[-1]["kind"]["data"] == {"stop_reason": None, "error": None},
+            f"Unexpected end of Claude's own turn: {woke[-1]}",
+        )
+        check(token in text(woke), f"Claude did not answer: {text(woke)}")
+        check("\tidle\t" in self.ctl("ls"), "Session is not idle after the turn")
+        self.report("background_task_wakes_claude", response=text(woke).strip())
 
     def check_cancellation(self):
         self.ctl(

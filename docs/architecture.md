@@ -12,7 +12,7 @@ flowchart TB
     oxd["oxd"]
     bridge["claude-code-acp<br/>(one per session)"]
     opencode["opencode acp<br/>(one per session)"]
-    claude["claude<br/>(one per prompt)"]
+    claude["claude<br/>(one per session)"]
 
     ox -.-> oxd
     oxctl -.-> oxd
@@ -44,14 +44,24 @@ daemon is listening. A startup lock and an instance lock keep one daemon per
 socket. `oxd` accepts connections only from its own user, and exits after an
 idle period with no clients and no sessions. Each session runs its agent
 command in its own process group and speaks ACP to it over stdio; closing the
-session kills that group.
+session kills that group. A session is running from a prompt until the agent
+answers it. An agent that also starts turns by itself reports when it starts
+and stops working with the `_ox/agent_state` ACP extension notification, and
+the session is running during those turns too: `oxd` records `turn_started`
+and `turn_ended` around them and takes no prompt until they end.
 
-**claude-code-acp.** An ACP agent that bridges to the Claude Code CLI. Each
-prompt runs `claude -p` in its own process group, writes the prompt to its
-stdin as stream-json, reads streamed output and permission requests from its
-stdout, and answers permission requests with the client's decision. A later
-prompt passes `--resume` with the Claude session ID to continue the
-conversation. The bridge records its sessions in `acp-sessions.json` and
-replays Claude's transcripts on `session/load`.
+**claude-code-acp.** An ACP agent that bridges to the Claude Code CLI. A
+session's first prompt starts one `claude -p`, in the bridge's process group,
+and the session keeps it: the bridge holds its stdin open, writes each prompt
+to it as a stream-json message, reads streamed output and permission requests
+from its stdout, and answers permission requests with the client's decision.
+`session/cancel` interrupts the running turn, and a model or mode change goes
+to the running process as a control request. Claude keeps running between
+prompts, and the turns it starts by itself, when a background task reports
+back, stream to the client as a prompt's turn does. The bridge tells `oxd`
+when Claude starts and stops working with the `_ox/agent_state` notification. When `claude` has exited,
+the next prompt starts another with `--resume` and the Claude session ID. The
+bridge records its sessions in `acp-sessions.json` and replays Claude's
+transcripts on `session/load`.
 
 **claude.** The Claude Code CLI, authenticated with the user's subscription.

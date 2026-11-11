@@ -75,7 +75,8 @@ async fn main() -> Result<()> {
                 async move |request: acp::SetSessionConfigOptionRequest,
                             responder: Responder<acp::SetSessionConfigOptionResponse>,
                             connection: ConnectionTo<Client>| {
-                    respond(responder, bridge.set_config(&request, &connection))
+                    let change = bridge.set_config(&request, connection.clone());
+                    connection.spawn(async move { respond(responder, change.await) })
                 }
             },
             agent_client_protocol::on_receive_request!(),
@@ -95,7 +96,10 @@ async fn main() -> Result<()> {
                             responder: Responder<acp::PromptResponse>,
                             connection: ConnectionTo<Client>| {
                     let turn = bridge.prompt(&request, connection.clone());
-                    connection.spawn(async move { respond(responder, turn.await) })
+                    connection.spawn(async move {
+                        let (response, _responding) = turn.await;
+                        respond(responder, response)
+                    })
                 }
             },
             agent_client_protocol::on_receive_request!(),

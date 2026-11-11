@@ -345,6 +345,7 @@ fn describe(kind: &EventKind) -> String {
             let parts: Vec<String> = prompt.iter().map(describe_block).collect();
             format!("prompt: {}", parts.join(" "))
         }
+        EventKind::TurnStarted => "turn started".into(),
         EventKind::Update(update) => describe_update(update),
         EventKind::PermissionRequested {
             request_id,
