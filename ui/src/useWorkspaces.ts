@@ -1,12 +1,13 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
-import type { SessionInfo, SessionsMessage } from "./protocol";
+import type { SessionInfo, WatchMessage, WorkspaceInfo } from "./protocol";
 
 /**
- * The daemon's sessions, from a sessions watch that restarts, reconnecting,
- * when the connection drops.
+ * The daemon's workspaces and sessions, from a watch that restarts,
+ * reconnecting, when the connection drops.
  */
-export function useSessions() {
+export function useWorkspaces() {
+  const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -16,10 +17,11 @@ export function useSessions() {
   useEffect(() => {
     // Only the latest watch's channel is read.
     let current = true;
-    const channel = new Channel<SessionsMessage>();
+    const channel = new Channel<WatchMessage>();
     channel.onmessage = (message) => {
       if (!current) return;
-      if (message.type === "sessions") {
+      if (message.type === "list") {
+        setWorkspaces(message.workspaces);
         setSessions(message.sessions);
         setError(null);
       } else if (message.type === "error") {
@@ -28,11 +30,11 @@ export function useSessions() {
         setAttempt((attempt) => attempt + 1);
       }
     };
-    invoke("watch_sessions", { channel });
+    invoke("watch", { channel });
     return () => {
       current = false;
     };
   }, [attempt]);
 
-  return { sessions, error, retry };
+  return { workspaces, sessions, error, retry };
 }

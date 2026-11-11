@@ -170,6 +170,7 @@ class SmokeRun:
                 + "\n"
             )
         self.daemon = None
+        self.workspace = None
         self.session = None
         self.attachment = None
         self.agent_pids = set()
@@ -260,7 +261,8 @@ class SmokeRun:
     def run(self, daemon_log):
         self.daemon_log = daemon_log
         self.start_daemon()
-        self.session = self.ctl("new", "--cwd", str(self.project), "--", *self.agent)
+        self.workspace = self.ctl("workspace", "add", str(self.project))
+        self.session = self.ctl("new", "--workspace", self.workspace, "--", *self.agent)
         if self.args.agent == "claude":
             self.ctl("config", self.session, "model", self.args.model)
         self.remember_agents()
@@ -286,6 +288,9 @@ class SmokeRun:
         self.ctl("close", self.session)
         self.session = None
         check(self.ctl("ls") == "", "Closed session is still listed")
+        self.ctl("workspace", "rm", self.workspace)
+        check(self.ctl("workspace", "ls") == "", "Removed workspace is still listed")
+        self.workspace = None
         check(self.daemon.wait(timeout=15) == 0, "Daemon did not exit successfully")
         check(not self.socket.exists(), "Daemon left its socket behind")
         check(not running_after(self.agent_pids, 10), "ACP agent did not exit")
@@ -325,10 +330,16 @@ class SmokeRun:
         check(token in response, f"Conversation token was not retained: {response}")
         self.report("followup_retains_conversation", response=response)
 
+    def session_row(self):
+        """The fields of the session's row in `oxctl ls`: id, workspace id,
+        state, directory, command, title, and agent session id."""
+        row = next(r for r in self.ctl("ls").splitlines() if r.startswith(self.session))
+        return row.split("\t")
+
     def check_load_after_restart(self):
         token = self.directory.name
-        row = next(r for r in self.ctl("ls").splitlines() if r.startswith(self.session))
-        agent_session = row.split("\t")[-1]
+        title = self.session_row()[5]
+        check(title != "-", "The session has no title")
         self.disconnect()
         self.remember_agents()
         self.daemon.send_signal(signal.SIGTERM)
@@ -336,8 +347,19 @@ class SmokeRun:
         check(not running_after(self.agent_pids, 10), "ACP agent outlived the daemon")
 
         self.start_daemon()
-        self.session = self.ctl(
-            "load", agent_session, "--cwd", str(self.project), "--", *self.agent
+        check(
+            self.ctl("workspace", "ls") == f"{self.workspace}\t{self.project}",
+            "The workspace was not saved",
+        )
+        row = self.session_row()
+        check(row[2] == "exited", f"Saved session is not exited: {row}")
+        check(row[1] == self.workspace, f"Saved session lost its workspace: {row}")
+        check(row[5] == title, f"Saved session lost its title: {row}")
+        self.report("saved_session_listed_after_daemon_restart", title=title)
+
+        check(
+            self.ctl("load", self.session) == self.session,
+            "Load started another session",
         )
         self.remember_agents()
         self.seq = 0
@@ -353,7 +375,7 @@ class SmokeRun:
         )
         self.report(
             "load_replays_after_daemon_restart",
-            agent_session_id=agent_session,
+            session_id=self.session,
             replay_events=len(replay),
         )
         self.ctl(

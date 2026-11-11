@@ -9,15 +9,20 @@
   --muted-foreground: oklch(0.556 0 0);
   --accent: oklch(0.97 0 0);
   --destructive: oklch(0.577 0.245 27.325);
+  --success: oklch(0.627 0.194 149.214);
+  --warning: oklch(0.666 0.179 58.318);
   --border: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
   --sidebar: oklch(0.985 0 0);
   --text: oklch(0.371 0 0);
   --shadow-color: oklch(0 0 0 / 10%);
   --hover: var(--accent);
+  --selected: var(--muted);
   --surface: color-mix(in oklab, var(--background), var(--card));
   --focus-ring: color-mix(in oklab, var(--ring) 50%, transparent);
   --disabled-opacity: 0.5;
+  --dimmed-opacity: 0.6;
+  --busy-dot-opacity: 0.4;
 
   /* Spacing: every padding, margin, gap, and size is a multiple of this. */
   --spacing: 0.25rem;
@@ -29,6 +34,10 @@
   --text-sm: 0.875rem;
   --leading: 1.5;
 
+  /* Motion */
+  --transition-duration: 150ms;
+  --busy-dot-duration: 1s;
+
   /* Shape */
   --border-width: 1px;
   --ring-width: 3px;
@@ -38,14 +47,25 @@
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
   --radius-2xl: calc(var(--radius) + 6px);
+  --radius-full: 50%;
   --shadow-sm:
     0 var(--border-width) calc(var(--border-width) * 3) 0 var(--shadow-color),
     0 var(--border-width) calc(var(--border-width) * 2) calc(var(--border-width) * -1)
     var(--shadow-color);
+  --shadow-md:
+    0 var(--spacing) calc(var(--spacing) * 1.5) calc(var(--border-width) * -1) var(--shadow-color),
+    0 calc(var(--spacing) * 0.5) var(--spacing) calc(var(--spacing) * -0.5) var(--shadow-color);
 
   /* Components */
   --icon-size: calc(var(--spacing) * 4);
+  --icon-size-sm: calc(var(--spacing) * 3);
+  --status-dot-size: calc(var(--spacing) * 2);
   --icon-button-size: calc(var(--spacing) * 6);
+  --sidebar-padding: calc(var(--spacing) * 2);
+  --sidebar-row-height: calc(var(--spacing) * 8);
+  --sidebar-row-padding: calc(var(--spacing) * 2);
+  --workspace-header-height: calc(var(--spacing) * 7);
+  --menu-min-width: calc(var(--spacing) * 32);
   --composer-margin: calc(var(--spacing) * 4);
   --composer-padding: calc(var(--spacing) * 3);
   --composer-max-lines: 8;
@@ -67,6 +87,8 @@
     --muted-foreground: oklch(0.708 0 0);
     --accent: oklch(0.269 0 0);
     --destructive: oklch(0.704 0.191 22.216);
+    --success: oklch(0.723 0.219 149.579);
+    --warning: oklch(0.769 0.188 70.08);
     --border: oklch(1 0 0 / 10%);
     --ring: oklch(0.556 0 0);
     --sidebar: oklch(0.205 0 0);
@@ -133,13 +155,12 @@ body {
   min-height: 0;
 }
 
-.session-list {
-  height: 100%;
-  overflow: auto;
-}
-
-/* Icon buttons: the header's toggles and the composer's buttons. */
+/* Icon buttons: the header's toggles, the composer's buttons, and the sidebar's. */
 .toggles button,
+.new-session > button,
+.add-workspace,
+.workspace-header .remove,
+.session .close,
 .composer .input button {
   display: inline-flex;
   flex: none;
@@ -156,11 +177,19 @@ body {
 }
 
 .toggles button:hover,
+.new-session > button:hover,
+.add-workspace:hover,
+.workspace-header .remove:hover,
+.session .close:hover,
 .composer .input button:hover:enabled {
   background: var(--hover);
 }
 
 .toggles button:focus-visible,
+.new-session > button:focus-visible,
+.add-workspace:focus-visible,
+.workspace-header .remove:focus-visible,
+.session .close:focus-visible,
 .composer .input button:focus-visible {
   box-shadow: 0 0 0 var(--ring-width) var(--focus-ring);
 }
@@ -178,6 +207,211 @@ body {
 
 .toggles button[aria-pressed="true"] {
   color: var(--foreground);
+}
+
+/* Session list */
+
+.session-list {
+  box-sizing: border-box;
+  height: 100%;
+  overflow: auto;
+  padding: var(--spacing) var(--sidebar-padding) var(--sidebar-padding);
+}
+
+.session-list .error {
+  margin: 0 0 var(--spacing);
+  padding: var(--spacing) var(--sidebar-row-padding);
+  font-size: var(--text-xs);
+  color: var(--destructive);
+}
+
+.sidebar-header {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.workspace:not(:last-child) {
+  margin-bottom: calc(var(--spacing) * 2);
+}
+
+.workspace-header {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--spacing) * 2);
+  height: var(--workspace-header-height);
+  padding: 0 var(--spacing) 0 var(--sidebar-row-padding);
+}
+
+.workspace-header h2 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--text-xs);
+  font-weight: normal;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--muted-foreground);
+}
+
+.new-session {
+  position: relative;
+  margin-left: auto;
+}
+
+.add-workspace svg,
+.new-session > button svg,
+.workspace-header .remove svg,
+.session .close svg {
+  width: var(--icon-size-sm);
+  height: var(--icon-size-sm);
+}
+
+.new-session .menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: var(--menu-min-width);
+  padding: var(--spacing);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--card);
+  box-shadow: var(--shadow-md);
+}
+
+.new-session .menu button {
+  padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  text-align: left;
+  outline: none;
+}
+
+.new-session .menu button:hover,
+.new-session .menu button:focus-visible {
+  background: var(--accent);
+}
+
+.sessions {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.session {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: var(--sidebar-row-height);
+  border-radius: var(--radius-md);
+}
+
+.session:hover {
+  background: var(--hover);
+}
+
+.session:has(.select[aria-current="true"]) {
+  background: var(--selected);
+}
+
+.session .select {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: calc(var(--spacing) * 1.5);
+  min-width: 0;
+  height: 100%;
+  padding: 0 var(--sidebar-row-padding);
+  border: none;
+  border-radius: inherit;
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  text-align: left;
+  outline: none;
+}
+
+.session .select:focus-visible {
+  box-shadow: 0 0 0 var(--ring-width) var(--focus-ring);
+}
+
+.session:has(.status.exited) .select > * {
+  opacity: var(--dimmed-opacity);
+}
+
+/* A dot centred in an icon-sized box, coloured by the session's state. */
+.session .status {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: var(--icon-size);
+  height: var(--icon-size);
+  color: var(--muted-foreground);
+}
+
+.session .status::before {
+  content: "";
+  box-sizing: border-box;
+  width: var(--status-dot-size);
+  height: var(--status-dot-size);
+  border: var(--border-width) solid currentColor;
+  border-radius: var(--radius-full);
+  background: currentColor;
+}
+
+.session .status.running {
+  color: var(--success);
+  animation: breathe var(--busy-dot-duration) ease-in-out infinite alternate;
+}
+
+.session .status.awaiting_permission {
+  color: var(--warning);
+}
+
+.session .status.exited::before {
+  background: transparent;
+}
+
+@keyframes breathe {
+  to {
+    opacity: var(--busy-dot-opacity);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session .status.running {
+    animation: none;
+  }
+}
+
+.session .title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session .close {
+  position: absolute;
+  top: calc((var(--sidebar-row-height) - var(--icon-button-size)) / 2);
+  right: var(--spacing);
+  opacity: 0;
+  transition: opacity var(--transition-duration);
+}
+
+.session:hover .close,
+.session:focus-within .close {
+  opacity: 1;
 }
 
 /* Conversation */

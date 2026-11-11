@@ -6,7 +6,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use ox_protocol::schema::{ContentBlock, TextContent};
-use ox_protocol::{Client, ConfigValue, End, SessionInfo, content, default_socket_path};
+use ox_protocol::{
+    Client, ConfigValue, End, SessionInfo, WorkspaceInfo, content, default_socket_path,
+};
 use serde::{Deserialize, Serialize};
 use tauri::async_runtime::JoinHandle;
 use tauri::ipc::Channel;
@@ -52,8 +54,9 @@ impl App {
 
 #[derive(Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum SessionsMessage {
-    Sessions {
+enum WatchMessage {
+    List {
+        workspaces: Vec<WorkspaceInfo>,
         sessions: Vec<SessionInfo>,
     },
     /// The watch could not start.
@@ -77,40 +80,41 @@ enum Agent {
     Opencode,
 }
 
-// `watch_sessions` and `view_session` are synchronous, so they run on the
+// `watch` and `view_session` are synchronous, so they run on the
 // main thread in the order the webview calls them, and the last call's task
 // is the one that stays.
 
-/// Sends the sessions list on `channel` each time it changes, replacing the
-/// previous watch.
+/// Sends the workspaces and sessions lists on `channel` each time either
+/// changes, replacing the previous watch.
 #[tauri::command]
 #[expect(
     clippy::needless_pass_by_value,
     reason = "Tauri passes managed state to commands as `State` by value"
 )]
-fn watch_sessions(handle: AppHandle, app: State<'_, App>, channel: Channel<SessionsMessage>) {
+fn watch(handle: AppHandle, app: State<'_, App>, channel: Channel<WatchMessage>) {
     let task = tauri::async_runtime::spawn(async move {
         let app = handle.state::<App>();
         let watch = match app.client().await {
-            Ok(client) => client.watch_sessions().await.map_err(message),
+            Ok(client) => client.watch().await.map_err(message),
             Err(error) => Err(error),
         };
         let mut watch = match watch {
             Ok(watch) => watch,
             Err(message) => {
-                let _ = channel.send(SessionsMessage::Error { message });
+                let _ = channel.send(WatchMessage::Error { message });
                 return;
             }
         };
         loop {
-            let Ok(sessions) = watch.next().await else {
-                let _ = channel.send(SessionsMessage::Disconnected);
+            let Ok(listing) = watch.next().await else {
+                let _ = channel.send(WatchMessage::Disconnected);
                 return;
             };
-            if channel
-                .send(SessionsMessage::Sessions { sessions })
-                .is_err()
-            {
+            let list = WatchMessage::List {
+                workspaces: listing.workspaces,
+                sessions: listing.sessions,
+            };
+            if channel.send(list).is_err() {
                 return;
             }
         }
@@ -120,8 +124,7 @@ fn watch_sessions(handle: AppHandle, app: State<'_, App>, channel: Channel<Sessi
 
 /// Sends a session's conversation on `channel` from its first event,
 /// replacing the previous view; with no session, ends the previous view. A
-/// session that cannot be viewed, as after the daemon restarts, sends
-/// nothing.
+/// session that cannot be viewed, as one closed meanwhile, sends nothing.
 #[tauri::command]
 #[expect(
     clippy::needless_pass_by_value,
@@ -165,10 +168,28 @@ fn view_session(
 }
 
 #[tauri::command]
+async fn add_workspace(app: State<'_, App>, path: PathBuf) -> Result<WorkspaceInfo, String> {
+    app.client()
+        .await?
+        .add_workspace(path)
+        .await
+        .map_err(message)
+}
+
+#[tauri::command]
+async fn remove_workspace(app: State<'_, App>, workspace_id: String) -> Result<(), String> {
+    app.client()
+        .await?
+        .remove_workspace(&workspace_id)
+        .await
+        .map_err(message)
+}
+
+#[tauri::command]
 async fn new_session(
     app: State<'_, App>,
     agent: Agent,
-    cwd: PathBuf,
+    workspace_id: String,
 ) -> Result<SessionInfo, String> {
     let command = match agent {
         Agent::Claude => {
@@ -181,8 +202,19 @@ async fn new_session(
     };
     app.client()
         .await?
-        .new_session(command, cwd, utf8_env())
+        .new_session(&workspace_id, command, utf8_env())
         .await
+        .map_err(message)
+}
+
+/// Restarts the agent of an exited session, which replays its conversation.
+#[tauri::command]
+async fn load_session(app: State<'_, App>, session_id: String) -> Result<(), String> {
+    app.client()
+        .await?
+        .load_session(&session_id, utf8_env())
+        .await
+        .map(drop)
         .map_err(message)
 }
 
@@ -273,9 +305,12 @@ pub fn run() {
     builder
         .manage(App::default())
         .invoke_handler(tauri::generate_handler![
-            watch_sessions,
+            watch,
             view_session,
+            add_workspace,
+            remove_workspace,
             new_session,
+            load_session,
             prompt,
             cancel,
             permit,

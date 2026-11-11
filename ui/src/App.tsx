@@ -2,11 +2,11 @@ import { useEffect, useState } from "react";
 import { Composer } from "./Composer";
 import { Conversation } from "./Conversation";
 import { SessionList } from "./SessionList";
-import { useSessions } from "./useSessions";
+import { useWorkspaces } from "./useWorkspaces";
 import { Workbench } from "./Workbench";
 
 export function App() {
-  const { sessions, error, retry } = useSessions();
+  const { workspaces, sessions, error, retry } = useWorkspaces();
   // The viewed session survives a webview reload.
   const [viewed, setViewed] = useState(() => sessionStorage.getItem("viewed"));
   useEffect(() => {
@@ -19,6 +19,7 @@ export function App() {
     <Workbench
       left={
         <SessionList
+          workspaces={workspaces}
           sessions={sessions}
           selected={viewed}
           onSelect={setViewed}

@@ -7,8 +7,8 @@
   or on a pipe it holds. Timers serve only as timeouts on a wait, or where the
   passage of time is itself the behavior, such as an idle period.
   - `oxd` prints `ready` once it listens; `connect_or_start` reads that line.
-  - Idle exit watches a `watch::Sender<bool>` updated whenever clients or
-    sessions change, then starts its idle timer.
+  - Idle exit watches a `watch::Sender<()>` signalled whenever clients,
+    sessions, or a session's state change, then starts its idle timer.
 - Production code serves production. Tests drive the same interfaces users
   do; flags, environment variables, methods, and modes exist because a user
   of the program needs them. Test fixtures live with the tests.

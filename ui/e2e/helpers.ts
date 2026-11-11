@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { mkdtemp } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { mkdtemp, realpath } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const target = resolve(import.meta.dirname, "../../target/debug");
@@ -11,23 +11,30 @@ export function binary(name: string): string {
 }
 
 /**
- * Starts a session of the scripted fake agent in a new folder with `oxctl`,
- * and returns the folder's name, which the session list shows. Each line of a
- * prompt to the fake agent is a directive, such as `say 3 0`; its module
- * documentation lists them.
+ * Adds a new folder as a workspace with `oxctl`, starts a session of the
+ * scripted fake agent in it, and returns the folder's path, which the
+ * session's entry shows on hover. Each line of a prompt to the fake agent is a
+ * directive, such as `say 3 0`; its module documentation lists them.
  */
 export async function startSession(): Promise<string> {
-  const cwd = await mkdtemp(join(process.env.OX_E2E_DIR!, "session-"));
-  await oxctl("new", "--cwd", cwd, "--", binary("oxd-fake-agent"));
-  return basename(cwd);
+  const cwd = await realpath(await mkdtemp(join(process.env.OX_E2E_DIR!, "session-")));
+  const workspace = (await oxctl("workspace", "add", cwd)).trim();
+  await oxctl("new", "--workspace", workspace, "--", binary("oxd-fake-agent"));
+  return cwd;
 }
 
-/** Closes every session oxd has. */
-export async function closeSessions() {
-  const listing = await oxctl("ls");
-  for (const line of listing.split("\n").filter(Boolean)) {
+/** Closes every session oxd has and removes every workspace. */
+export async function resetDaemon() {
+  for (const line of lines(await oxctl("ls"))) {
     await oxctl("close", line.split("\t")[0]!);
   }
+  for (const line of lines(await oxctl("workspace", "ls"))) {
+    await oxctl("workspace", "rm", line.split("\t")[0]!);
+  }
+}
+
+function lines(output: string): string[] {
+  return output.split("\n").filter(Boolean);
 }
 
 async function oxctl(...args: string[]): Promise<string> {
@@ -35,14 +42,19 @@ async function oxctl(...args: string[]): Promise<string> {
   return stdout;
 }
 
-/** The session list's entry for the session in `folder`. */
-export function sessionEntry(folder: string) {
-  return $(`//li[@class="session"][.//span[@class="folder"][.="${folder}"]]`);
+/** The session list's group for the workspace in `cwd`. */
+export function workspaceGroup(cwd: string) {
+  return $(`//section[@class="workspace"][.//h2[@title="${cwd}"]]`);
 }
 
-/** Views the session in `folder`. */
-export async function openSession(folder: string) {
-  const select = sessionEntry(folder).$("button.select");
+/** The session list's entry for the session in `cwd`. */
+export function sessionEntry(cwd: string) {
+  return $(`//li[@class="session"][button[@class="select"][@title="${cwd}"]]`);
+}
+
+/** Views the session in `cwd`. */
+export async function openSession(cwd: string) {
+  const select = sessionEntry(cwd).$("button.select");
   await select.click();
   await expect(select).toHaveAttribute("aria-current", "true");
 }

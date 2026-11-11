@@ -26,30 +26,42 @@ pub enum Method {
     Hello { protocol_version: u32 },
     #[serde(rename = "session.list")]
     SessionList,
-    /// Starts a sessions watch: after the answer, the daemon sends the
-    /// sessions list at once and again each time it differs from the last
-    /// list it sent. The request's `id` names the watch in every list.
-    #[serde(rename = "sessions.watch")]
-    SessionsWatch,
-    /// Starts an agent. The result is the session in state `starting`; its
-    /// `agent_started` or `agent_exited` event follows.
+    /// Starts a watch: after the answer, the daemon sends the workspaces and
+    /// sessions lists at once and again each time either differs from the
+    /// last it sent. The request's `id` names the watch in every list.
+    #[serde(rename = "watch")]
+    Watch,
+    /// Adds a workspace. `path` must be an absolute path to a directory that
+    /// no workspace has.
+    #[serde(rename = "workspace.add")]
+    WorkspaceAdd { path: PathBuf },
+    /// Removes a workspace. Refused while any session, exited or not,
+    /// belongs to it.
+    #[serde(rename = "workspace.remove")]
+    WorkspaceRemove { workspace_id: String },
+    #[serde(rename = "workspace.list")]
+    WorkspaceList,
+    /// Starts an agent in the workspace's directory. The result is the
+    /// session in state `starting`; its `agent_started` or `agent_exited`
+    /// event follows.
     #[serde(rename = "session.new")]
     SessionNew {
+        workspace_id: String,
         command: Vec<String>,
-        cwd: PathBuf,
         #[serde(default)]
         env: BTreeMap<String, String>,
     },
-    /// Starts an agent on a session it has saved. The agent replays the
-    /// conversation, which the session records as `update` events before its
-    /// `agent_started` event.
+    /// Restarts the agent of an exited session that has an
+    /// `agent_session_id`, from the session's command and directory. The
+    /// result is the session in state `starting`. The agent replays the
+    /// conversation before its `agent_started` event. A session with no
+    /// events records the replay as `update` events; a session that has
+    /// events keeps them and drops the replay.
     #[serde(rename = "session.load")]
     SessionLoad {
-        command: Vec<String>,
-        cwd: PathBuf,
+        session_id: String,
         #[serde(default)]
         env: BTreeMap<String, String>,
-        agent_session_id: String,
     },
     #[serde(rename = "session.prompt")]
     SessionPrompt {
@@ -71,8 +83,7 @@ pub enum Method {
         #[serde(default)]
         after_seq: u64,
     },
-    /// Ends the subscription or sessions watch that request `subscription`
-    /// started. Messages the daemon was sending it may arrive after the
+    /// Ends the subscription or watch that request `subscription` started. Messages the daemon was sending it may arrive after the
     /// answer.
     #[serde(rename = "unsubscribe")]
     Unsubscribe { subscription: u64 },
@@ -130,15 +141,31 @@ impl SessionState {
     }
 }
 
+/// A directory the user added, which sessions run in.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceInfo {
+    pub id: String,
+    pub path: PathBuf,
+}
+
+/// What a watch delivers: the daemon's workspaces, in the order they were
+/// added, and its sessions, in the order they were created.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Listing {
+    pub workspaces: Vec<WorkspaceInfo>,
+    pub sessions: Vec<SessionInfo>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub id: String,
+    pub workspace_id: String,
     pub command: Vec<String>,
     pub cwd: PathBuf,
     pub state: SessionState,
     /// The title the agent reported in a `session_info_update`.
     pub title: Option<String>,
-    /// The agent's ID for the session, which `session.load` takes. Unset
+    /// The agent's ID for the session, which `session.load` resumes. Unset
     /// until the session has started.
     pub agent_session_id: Option<String>,
     /// The content the agent accepts in prompts. Empty until the session has
@@ -215,11 +242,13 @@ pub mod code {
     pub const NOT_FOUND: i32 = 3;
     pub const INVALID_STATE: i32 = 4;
     pub const AGENT: i32 = 5;
+    /// The daemon could not read or write its database.
+    pub const STORAGE: i32 = 6;
 }
 
-/// A daemon message: a response to request `id`, or an event or sessions
-/// list delivered to the subscription or sessions watch that request
-/// `subscription` started.
+/// A daemon message: a response to request `id`, or an event or listing
+/// delivered to the subscription or watch that request `subscription`
+/// started.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ServerMessage {
@@ -235,8 +264,9 @@ pub enum ServerMessage {
         subscription: u64,
         event: Box<Event>,
     },
-    Sessions {
+    List {
         subscription: u64,
+        workspaces: Vec<WorkspaceInfo>,
         sessions: Vec<SessionInfo>,
     },
 }
@@ -275,12 +305,44 @@ mod tests {
         ));
         let value = serde_json::to_value(Request {
             id: 9,
-            method: Method::SessionsWatch,
+            method: Method::Watch,
         })
         .unwrap();
-        assert_eq!(value, json!({"id": 9, "method": "sessions.watch"}));
+        assert_eq!(value, json!({"id": 9, "method": "watch"}));
         let request: Request = serde_json::from_value(value).unwrap();
-        assert!(matches!(request.method, Method::SessionsWatch));
+        assert!(matches!(request.method, Method::Watch));
+
+        let request: Request = serde_json::from_value(json!({
+            "id": 10,
+            "method": "workspace.add",
+            "params": {"path": "/work"}
+        }))
+        .unwrap();
+        assert!(matches!(
+            request.method,
+            Method::WorkspaceAdd { ref path } if path == std::path::Path::new("/work")
+        ));
+        let request: Request = serde_json::from_value(json!({
+            "id": 11,
+            "method": "session.new",
+            "params": {"workspace_id": "w", "command": ["agent"]}
+        }))
+        .unwrap();
+        assert!(matches!(
+            request.method,
+            Method::SessionNew { ref workspace_id, ref env, .. }
+                if workspace_id == "w" && env.is_empty()
+        ));
+        let request: Request = serde_json::from_value(json!({
+            "id": 12,
+            "method": "session.load",
+            "params": {"session_id": "s"}
+        }))
+        .unwrap();
+        assert!(matches!(
+            request.method,
+            Method::SessionLoad { ref session_id, .. } if session_id == "s"
+        ));
 
         let request: Request = serde_json::from_value(json!({
             "id": 5,
@@ -345,8 +407,9 @@ mod tests {
                 subscription: 3,
                 event: Box::new(event),
             },
-            ServerMessage::Sessions {
+            ServerMessage::List {
                 subscription: 4,
+                workspaces: Vec::new(),
                 sessions: Vec::new(),
             },
         ];
@@ -358,8 +421,10 @@ mod tests {
 
         let message: ServerMessage = serde_json::from_value(json!({
             "subscription": 5,
+            "workspaces": [{"id": "w", "path": "/tmp"}],
             "sessions": [{
                 "id": "s",
+                "workspace_id": "w",
                 "command": ["agent"],
                 "cwd": "/tmp",
                 "state": "idle",
@@ -372,8 +437,10 @@ mod tests {
         .unwrap();
         assert!(matches!(
             message,
-            ServerMessage::Sessions { subscription: 5, ref sessions }
-                if sessions[0].title.as_deref() == Some("Fix the build")
+            ServerMessage::List { subscription: 5, ref workspaces, ref sessions }
+                if workspaces[0].id == "w"
+                    && sessions[0].workspace_id == "w"
+                    && sessions[0].title.as_deref() == Some("Fix the build")
         ));
     }
 }

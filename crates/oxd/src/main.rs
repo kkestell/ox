@@ -2,6 +2,8 @@
 //!
 //! Usage: `oxd [--socket PATH] [--idle-exit-ms MS]`
 //!
+//! Workspaces and sessions are saved in `<socket>.db`.
+//!
 //! The daemon prints `ready` on stdout once a daemon is listening on the
 //! socket: itself, or one that was already running, in which case it exits.
 
@@ -9,6 +11,7 @@ mod conn;
 mod daemon;
 mod session;
 mod state;
+mod store;
 
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions, Permissions, TryLockError};
@@ -23,6 +26,7 @@ use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
 
 use crate::daemon::Daemon;
+use crate::store::Store;
 
 const DEFAULT_IDLE_EXIT: Duration = Duration::from_secs(5);
 
@@ -101,6 +105,15 @@ async fn run(args: Args) -> io::Result<()> {
         Err(TryLockError::Error(error)) => return Err(error),
     }
 
+    // The database sits beside the socket, so each socket has its own
+    // workspaces and sessions. The instance lock makes this daemon its only
+    // writer.
+    let database = with_suffix(&args.socket, ".db");
+    let store = Store::open(&database)
+        .map_err(|error| io::Error::other(format!("opening {}: {error}", database.display())))?;
+    let daemon = Daemon::new(store)
+        .map_err(|error| io::Error::other(format!("reading {}: {error}", database.display())))?;
+
     match std::fs::remove_file(&args.socket) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
         _ => {}
@@ -119,7 +132,7 @@ async fn run(args: Args) -> io::Result<()> {
 
     // SAFETY: `geteuid` has no preconditions.
     let uid = unsafe { libc::geteuid() };
-    let daemon = Arc::new(Daemon::new());
+    let daemon = Arc::new(daemon);
     let idle = daemon.idle(args.idle_exit);
     tokio::pin!(idle);
     loop {

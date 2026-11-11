@@ -9,12 +9,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use ox_protocol::schema::{
     AudioContent, ContentBlock, EmbeddedResource, EmbeddedResourceResource, ImageContent,
-    RequestPermissionOutcome, ResourceLink, SessionConfigKind, SessionConfigOption, SessionUpdate,
-    StopReason, TextContent, TextResourceContents,
+    PromptCapabilities, RequestPermissionOutcome, ResourceLink, SessionConfigKind,
+    SessionConfigOption, SessionUpdate, StopReason, TextContent, TextResourceContents,
 };
 use ox_protocol::{
-    Client, ConfigValue, End, Error, Event, EventKind, PROTOCOL_VERSION, SessionInfo, SessionState,
-    SessionsWatch, Subscription, code,
+    Client, ConfigValue, End, Error, Event, EventKind, Listing, PROTOCOL_VERSION, SessionInfo,
+    SessionState, Subscription, Watch, WorkspaceInfo, code,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -45,7 +45,12 @@ impl Daemon {
     /// Starts oxd, optionally with a limit on open file descriptors, and
     /// waits for it to report that it is ready.
     async fn start_with(idle_exit_ms: u64, fd_limit: Option<u32>) -> Self {
-        let dir = tempfile::tempdir().unwrap();
+        Self::start_in(tempfile::tempdir().unwrap(), idle_exit_ms, fd_limit).await
+    }
+
+    /// Like `start_with`, on the socket in `dir`. A daemon started on the
+    /// socket of one that exited finds its workspaces and sessions.
+    async fn start_in(dir: TempDir, idle_exit_ms: u64, fd_limit: Option<u32>) -> Self {
         let socket = dir.path().join("oxd.sock");
         let mut command = match fd_limit {
             Some(limit) => {
@@ -88,6 +93,28 @@ impl Daemon {
             .unwrap()
     }
 
+    /// Stops the daemon with SIGTERM, which keeps its sessions saved, and
+    /// waits for it to exit.
+    async fn stop(&mut self) {
+        // SAFETY: sends SIGTERM to the daemon this test started.
+        unsafe { libc::kill(self.child.id().unwrap().cast_signed(), libc::SIGTERM) };
+        assert!(self.wait_for_exit().await.success());
+    }
+
+    /// Starts another daemon on the socket of this one, which has exited.
+    async fn again(self, idle_exit_ms: u64) -> Self {
+        Self::start_in(self.dir, idle_exit_ms, None).await
+    }
+
+    /// The workspace for the daemon's directory, which sessions run in.
+    async fn workspace(&self, client: &Client) -> WorkspaceInfo {
+        let existing = client.list_workspaces().await.unwrap();
+        match existing.into_iter().find(|w| w.path == self.cwd()) {
+            Some(workspace) => workspace,
+            None => client.add_workspace(self.cwd()).await.unwrap(),
+        }
+    }
+
     async fn new_session(&self, client: &Client) -> (SessionInfo, u64) {
         self.new_session_with(client, &[]).await
     }
@@ -96,12 +123,9 @@ impl Daemon {
     /// to start, and returns the session and the seq of its `agent_started`
     /// event.
     async fn new_session_with(&self, client: &Client, args: &[&str]) -> (SessionInfo, u64) {
-        let command = std::iter::once(FAKE_AGENT)
-            .chain(args.iter().copied())
-            .map(String::from)
-            .collect();
+        let workspace = self.workspace(client).await;
         let session = client
-            .new_session(command, self.cwd(), BTreeMap::new())
+            .new_session(&workspace.id, fake_agent(args), BTreeMap::new())
             .await
             .unwrap();
         assert_eq!(session.state, SessionState::Starting);
@@ -140,6 +164,14 @@ impl Daemon {
             }
         }
     }
+}
+
+/// The command that runs the fake agent with `args`.
+fn fake_agent(args: &[&str]) -> Vec<String> {
+    std::iter::once(FAKE_AGENT)
+        .chain(args.iter().copied())
+        .map(String::from)
+        .collect()
 }
 
 async fn info(client: &Client, session_id: &str) -> SessionInfo {
@@ -335,22 +367,18 @@ async fn until(subscription: &mut Subscription, last: impl Fn(&EventKind) -> boo
     }
 }
 
-/// Lists from a sessions watch up to and including the first one matching
-/// `last`.
-async fn lists_until(
-    watch: &mut SessionsWatch,
-    is_last: impl Fn(&[SessionInfo]) -> bool,
-) -> Vec<Vec<SessionInfo>> {
-    let mut lists = Vec::new();
+/// Listings from a watch up to and including the first one matching `last`.
+async fn listings_until(watch: &mut Watch, is_last: impl Fn(&Listing) -> bool) -> Vec<Listing> {
+    let mut listings = Vec::new();
     loop {
-        let list = timeout(TIMEOUT, watch.next())
+        let listing = timeout(TIMEOUT, watch.next())
             .await
-            .expect("timed out waiting for a sessions list")
-            .expect("the sessions watch ended");
-        let done = is_last(&list);
-        lists.push(list);
+            .expect("timed out waiting for a listing")
+            .expect("the watch ended");
+        let done = is_last(&listing);
+        listings.push(listing);
         if done {
-            return lists;
+            return listings;
         }
     }
 }
@@ -608,10 +636,11 @@ async fn agent_exit() {
 async fn agent_that_cannot_start() {
     let daemon = Daemon::start(1000).await;
     let client = daemon.client().await;
+    let workspace = daemon.workspace(&client).await;
     let session = client
         .new_session(
+            &workspace.id,
             vec![daemon.cwd().join("missing").to_string_lossy().into()],
-            daemon.cwd(),
             BTreeMap::new(),
         )
         .await
@@ -785,10 +814,11 @@ async fn close_while_starting() {
     let mut daemon = Daemon::start(300).await;
     let client = daemon.client().await;
     let mut agent = ExitWatch::new(daemon.dir.path());
-    let mut command = vec![FAKE_AGENT.to_owned(), "--hang-initialize".to_owned()];
-    command.extend(agent.arg().map(String::from));
+    let mut args = vec!["--hang-initialize"];
+    args.extend(agent.arg());
+    let workspace = daemon.workspace(&client).await;
     let session = client
-        .new_session(command, daemon.cwd(), BTreeMap::new())
+        .new_session(&workspace.id, fake_agent(&args), BTreeMap::new())
         .await
         .unwrap();
     assert_eq!(session.state, SessionState::Starting);
@@ -1111,39 +1141,9 @@ async fn prompt_content_the_agent_does_not_accept_is_rejected() {
     assert_eq!(chunks(&turn), ["text link:file:///a.rs"]);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn load_replays_a_session_after_the_daemon_restarts() {
-    let mut first = Daemon::start(1000).await;
-    let client = first.client().await;
-    let (session, started) = first.new_session(&client).await;
-    let agent_session_id = session.agent_session_id.clone().unwrap();
-    let mut events = client.subscribe(&session.id, started).await.unwrap();
-    client.prompt(&session.id, text("say 2 0")).await.unwrap();
-    until(&mut events, turn_ended).await;
-    drop(client);
-    // SAFETY: sends SIGTERM to the daemon this test started.
-    unsafe { libc::kill(first.child.id().unwrap().cast_signed(), libc::SIGTERM) };
-    assert!(first.wait_for_exit().await.success());
-
-    let second = Daemon::start(1000).await;
-    let client = second.client().await;
-    let loaded = client
-        .load_session(
-            vec![FAKE_AGENT.into()],
-            first.cwd(),
-            BTreeMap::new(),
-            &agent_session_id,
-        )
-        .await
-        .unwrap();
-    assert_eq!(loaded.state, SessionState::Starting);
-    let mut events = client.subscribe(&loaded.id, 0).await.unwrap();
-    let history = until(&mut events, |kind| {
-        matches!(kind, EventKind::AgentStarted { .. })
-    })
-    .await;
-    assert_contiguous(&history, 1);
-    let replayed: Vec<String> = history
+/// The user and agent text a session's replayed history holds.
+fn replayed(events: &[Event]) -> Vec<String> {
+    events
         .iter()
         .filter_map(|event| match &event.kind {
             EventKind::Update(SessionUpdate::UserMessageChunk(chunk)) => match &chunk.content {
@@ -1152,15 +1152,202 @@ async fn load_replays_a_session_after_the_daemon_restarts() {
             },
             _ => chunk(event).map(|text| format!("agent: {text}")),
         })
-        .collect();
+        .collect()
+}
+
+fn agent_started(kind: &EventKind) -> bool {
+    matches!(kind, EventKind::AgentStarted { .. })
+}
+
+fn agent_exited(kind: &EventKind) -> bool {
+    matches!(kind, EventKind::AgentExited { .. })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_add_refuses_what_is_not_a_new_directory() {
+    let daemon = Daemon::start(1000).await;
+    let client = daemon.client().await;
+    let file = daemon.cwd().join("file");
+    std::fs::write(&file, "").unwrap();
+    for path in [
+        PathBuf::from("relative"),
+        file,
+        daemon.cwd().join("missing"),
+    ] {
+        let error = client.add_workspace(path.clone()).await.unwrap_err();
+        assert_eq!(remote_code(error), code::INVALID_REQUEST, "{path:?}");
+    }
+    assert!(client.list_workspaces().await.unwrap().is_empty());
+
+    let workspace = client.add_workspace(daemon.cwd()).await.unwrap();
+    assert_eq!(workspace.path, daemon.cwd());
+    let error = client.add_workspace(daemon.cwd()).await.unwrap_err();
+    assert_eq!(remote_code(error), code::INVALID_REQUEST);
+    assert_eq!(client.list_workspaces().await.unwrap(), [workspace]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_workspace_with_sessions_cannot_be_removed() {
+    let daemon = Daemon::start(1000).await;
+    let client = daemon.client().await;
+    let (session, started) = daemon.new_session(&client).await;
+    let workspace = daemon.workspace(&client).await;
+
+    let error = client.remove_workspace(&workspace.id).await.unwrap_err();
+    assert_eq!(remote_code(error), code::INVALID_STATE);
+    let error = client.remove_workspace("unknown").await.unwrap_err();
+    assert_eq!(remote_code(error), code::NOT_FOUND);
+
+    // An exited session still belongs to its workspace.
+    let mut events = client.subscribe(&session.id, started).await.unwrap();
+    client.prompt(&session.id, text("exit 1")).await.unwrap();
+    until(&mut events, agent_exited).await;
+    let error = client.remove_workspace(&workspace.id).await.unwrap_err();
+    assert_eq!(remote_code(error), code::INVALID_STATE);
     assert_eq!(
-        replayed,
-        ["user: say 2 0", "agent: chunk-1", "agent: chunk-2"]
+        client.list_workspaces().await.unwrap(),
+        std::slice::from_ref(&workspace)
+    );
+
+    client.close(&session.id).await.unwrap();
+    client.remove_workspace(&workspace.id).await.unwrap();
+    assert!(client.list_workspaces().await.unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_runs_in_its_workspace() {
+    let daemon = Daemon::start(1000).await;
+    let client = daemon.client().await;
+    let (session, _) = daemon.new_session(&client).await;
+    let workspace = daemon.workspace(&client).await;
+    assert_eq!(session.workspace_id, workspace.id);
+    assert_eq!(session.cwd, workspace.path);
+
+    let error = client
+        .new_session("unknown", fake_agent(&[]), BTreeMap::new())
+        .await
+        .unwrap_err();
+    assert_eq!(remote_code(error), code::NOT_FOUND);
+    let error = client
+        .new_session(&workspace.id, Vec::new(), BTreeMap::new())
+        .await
+        .unwrap_err();
+    assert_eq!(remote_code(error), code::INVALID_REQUEST);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspaces_and_sessions_survive_a_restart() {
+    let mut first = Daemon::start(1000).await;
+    let client = first.client().await;
+    let workspace = first.workspace(&client).await;
+    let (titled, started) = first.new_session(&client).await;
+    let mut events = client.subscribe(&titled.id, started).await.unwrap();
+    client
+        .prompt(&titled.id, text("say 1 0\ntitle Fix the build"))
+        .await
+        .unwrap();
+    until(&mut events, turn_ended).await;
+    let (plain, _) = first.new_session(&client).await;
+    // This agent never answers `initialize`, so its session never starts.
+    let unstarted = client
+        .new_session(
+            &workspace.id,
+            fake_agent(&["--hang-initialize"]),
+            BTreeMap::new(),
+        )
+        .await
+        .unwrap();
+    let titled = info(&client, &titled.id).await;
+    assert_eq!(titled.title.as_deref(), Some("Fix the build"));
+    drop(events);
+    drop(client);
+    first.stop().await;
+
+    let second = first.again(1000).await;
+    let client = second.client().await;
+    assert_eq!(client.list_workspaces().await.unwrap(), [workspace]);
+    let saved = |session: SessionInfo| SessionInfo {
+        state: SessionState::Exited,
+        prompt_capabilities: PromptCapabilities::default(),
+        config_options: Vec::new(),
+        ..session
+    };
+    assert_eq!(
+        client.list().await.unwrap(),
+        [saved(titled), saved(plain)],
+        "the session that never started ({}) is gone",
+        unstarted.id
+    );
+
+    // Sessions created after the restart follow the saved ones.
+    let (new, _) = second.new_session(&client).await;
+    let ids: Vec<String> = client
+        .list()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|session| session.id)
+        .collect();
+    assert_eq!(ids[2], new.id);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_closed_session_is_not_saved() {
+    let mut first = Daemon::start(1000).await;
+    let client = first.client().await;
+    let (session, _) = first.new_session(&client).await;
+    client.close(&session.id).await.unwrap();
+    drop(client);
+    first.stop().await;
+
+    let second = first.again(1000).await;
+    let client = second.client().await;
+    assert!(client.list().await.unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn loading_a_restored_session_replays_its_conversation() {
+    let mut first = Daemon::start(1000).await;
+    let client = first.client().await;
+    let (session, started) = first.new_session(&client).await;
+    let agent_session_id = session.agent_session_id.clone().unwrap();
+    let mut events = client.subscribe(&session.id, started).await.unwrap();
+    client
+        .prompt(&session.id, text("say 2 0\ntitle Replay me"))
+        .await
+        .unwrap();
+    until(&mut events, turn_ended).await;
+    drop(events);
+    drop(client);
+    first.stop().await;
+
+    let second = first.again(1000).await;
+    let client = second.client().await;
+    let loaded = client
+        .load_session(&session.id, BTreeMap::new())
+        .await
+        .unwrap();
+    assert_eq!(loaded.id, session.id);
+    assert_eq!(loaded.state, SessionState::Starting);
+    let mut events = client.subscribe(&loaded.id, 0).await.unwrap();
+    let history = until(&mut events, agent_started).await;
+    assert_contiguous(&history, 1);
+    assert_eq!(
+        replayed(&history),
+        [
+            "user: say 2 0\ntitle Replay me",
+            "agent: chunk-1",
+            "agent: chunk-2"
+        ]
     );
     assert!(matches!(
         &history.last().unwrap().kind,
         EventKind::AgentStarted { agent_session_id: id, .. } if *id == agent_session_id
     ));
+    let loaded = info(&client, &loaded.id).await;
+    assert_eq!(loaded.state, SessionState::Idle);
+    assert_eq!(loaded.title.as_deref(), Some("Replay me"));
+    assert_eq!(loaded.agent_session_id.as_deref(), Some(&*agent_session_id));
 
     client.prompt(&loaded.id, text("say 1 0")).await.unwrap();
     let turn = until(&mut events, turn_ended).await;
@@ -1168,51 +1355,217 @@ async fn load_replays_a_session_after_the_daemon_restarts() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn load_needs_an_agent_that_loads_sessions() {
+async fn loading_a_session_whose_agent_exited_keeps_its_history() {
     let daemon = Daemon::start(1000).await;
     let client = daemon.client().await;
-    let loaded = client
-        .load_session(
-            vec![FAKE_AGENT.into(), "--no-load".into()],
-            daemon.cwd(),
+    let (session, started) = daemon.new_session(&client).await;
+    let mut events = client.subscribe(&session.id, started).await.unwrap();
+    client.prompt(&session.id, text("say 1 0")).await.unwrap();
+    until(&mut events, turn_ended).await;
+    client.prompt(&session.id, text("exit 1")).await.unwrap();
+    let exited = until(&mut events, agent_exited).await.pop().unwrap();
+
+    client
+        .load_session(&session.id, BTreeMap::new())
+        .await
+        .unwrap();
+    let restarted = next(&mut events).await;
+    assert!(agent_started(&restarted.kind), "{restarted:?}");
+    // The replay is not recorded: nothing comes between the exit and the
+    // second start.
+    assert_eq!(restarted.seq, exited.seq + 1);
+
+    let mut all = client.subscribe(&session.id, 0).await.unwrap();
+    let mut history = Vec::new();
+    while history.len() < usize::try_from(restarted.seq).unwrap() {
+        history.push(next(&mut all).await);
+    }
+    assert_eq!(replayed(&history), ["agent: chunk-1"]);
+    assert_eq!(info(&client, &session.id).await.state, SessionState::Idle);
+
+    client.prompt(&session.id, text("say 1 0")).await.unwrap();
+    let turn = until(&mut events, turn_ended).await;
+    assert_eq!(chunks(&turn), ["chunk-1"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_loaded_agent_gets_new_permission_request_ids() {
+    let daemon = Daemon::start(1000).await;
+    let client = daemon.client().await;
+    let (session, started) = daemon.new_session(&client).await;
+    let mut events = client.subscribe(&session.id, started).await.unwrap();
+    let requested = |kind: &EventKind| matches!(kind, EventKind::PermissionRequested { .. });
+
+    client
+        .prompt(&session.id, text("permission"))
+        .await
+        .unwrap();
+    let history = until(&mut events, requested).await;
+    let EventKind::PermissionRequested {
+        request_id: old_id, ..
+    } = &history.last().unwrap().kind
+    else {
+        unreachable!()
+    };
+    client.permit(&session.id, old_id, "allow").await.unwrap();
+    until(&mut events, turn_ended).await;
+    client.prompt(&session.id, text("exit 1")).await.unwrap();
+    until(&mut events, agent_exited).await;
+
+    client
+        .load_session(&session.id, BTreeMap::new())
+        .await
+        .unwrap();
+    until(&mut events, agent_started).await;
+    client
+        .prompt(&session.id, text("permission"))
+        .await
+        .unwrap();
+    let history = until(&mut events, requested).await;
+    let EventKind::PermissionRequested { request_id, .. } = &history.last().unwrap().kind else {
+        unreachable!()
+    };
+    assert_ne!(request_id, old_id);
+
+    // An answer to the first agent's request does not answer the second's.
+    let error = client
+        .permit(&session.id, old_id, "reject")
+        .await
+        .unwrap_err();
+    assert_eq!(remote_code(error), code::INVALID_STATE);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_an_exited_session_that_started_can_be_loaded() {
+    let daemon = Daemon::start(1000).await;
+    let client = daemon.client().await;
+    let error = client
+        .load_session("unknown", BTreeMap::new())
+        .await
+        .unwrap_err();
+    assert_eq!(remote_code(error), code::NOT_FOUND);
+
+    let (running, _) = daemon.new_session(&client).await;
+    let error = client
+        .load_session(&running.id, BTreeMap::new())
+        .await
+        .unwrap_err();
+    assert_eq!(remote_code(error), code::INVALID_STATE);
+    assert_eq!(info(&client, &running.id).await.state, SessionState::Idle);
+
+    let workspace = daemon.workspace(&client).await;
+    let unstarted = client
+        .new_session(
+            &workspace.id,
+            vec![daemon.cwd().join("missing").to_string_lossy().into()],
             BTreeMap::new(),
-            "fake-unknown",
         )
         .await
         .unwrap();
-    let mut events = client.subscribe(&loaded.id, 0).await.unwrap();
-    let exited = next(&mut events).await;
-    assert!(
-        matches!(&exited.kind, EventKind::AgentExited { error: Some(error) } if error.contains("cannot load")),
-        "{exited:?}"
-    );
+    let mut events = client.subscribe(&unstarted.id, 0).await.unwrap();
+    until(&mut events, agent_exited).await;
+    let error = client
+        .load_session(&unstarted.id, BTreeMap::new())
+        .await
+        .unwrap_err();
+    assert_eq!(remote_code(error), code::INVALID_STATE);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn sessions_watch_starts_with_the_sessions_list() {
+async fn loading_needs_an_agent_that_loads_sessions() {
+    let daemon = Daemon::start(1000).await;
+    let client = daemon.client().await;
+    let (session, started) = daemon.new_session_with(&client, &["--no-load"]).await;
+    let mut events = client.subscribe(&session.id, started).await.unwrap();
+    client.prompt(&session.id, text("exit 1")).await.unwrap();
+    until(&mut events, agent_exited).await;
+
+    client
+        .load_session(&session.id, BTreeMap::new())
+        .await
+        .unwrap();
+    let failed = until(&mut events, agent_exited).await.pop().unwrap();
+    assert!(
+        matches!(&failed.kind, EventKind::AgentExited { error: Some(error) } if error.contains("cannot load")),
+        "{failed:?}"
+    );
+    // The session is still exited and can be loaded again.
+    let after = info(&client, &session.id).await;
+    assert_eq!(after.state, SessionState::Exited);
+    assert_eq!(after.agent_session_id, session.agent_session_id);
+    client
+        .load_session(&session.id, BTreeMap::new())
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn exited_sessions_do_not_keep_the_daemon_alive() {
+    let mut daemon = Daemon::start(300).await;
+    let client = daemon.client().await;
+    let (session, started) = daemon.new_session(&client).await;
+    let mut events = client.subscribe(&session.id, started).await.unwrap();
+    client.prompt(&session.id, text("exit 0")).await.unwrap();
+    until(&mut events, agent_exited).await;
+    drop(events);
+    drop(client);
+    assert!(daemon.wait_for_exit().await.success());
+
+    // The session was saved, so the next daemon lists it.
+    let daemon = daemon.again(1000).await;
+    let client = daemon.client().await;
+    let sessions = client.list().await.unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].id, session.id);
+    assert_eq!(sessions[0].state, SessionState::Exited);
+}
+#[tokio::test(flavor = "multi_thread")]
+async fn watch_starts_with_the_workspaces_and_sessions() {
     let daemon = Daemon::start(1000).await;
     let client = daemon.client().await;
     let (session, _) = daemon.new_session(&client).await;
-    let mut watch = client.watch_sessions().await.unwrap();
-    let first = lists_until(&mut watch, |_| true).await.remove(0);
-    assert_eq!(first, [session]);
+    let workspace = daemon.workspace(&client).await;
+    let mut watch = client.watch().await.unwrap();
+    let first = listings_until(&mut watch, |_| true).await.remove(0);
+    assert_eq!(first.workspaces, [workspace]);
+    assert_eq!(first.sessions, [session]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn sessions_watch_follows_a_session() {
+async fn watch_follows_workspaces() {
     let daemon = Daemon::start(1000).await;
     let client = daemon.client().await;
-    let mut watch = client.watch_sessions().await.unwrap();
-    lists_until(&mut watch, <[SessionInfo]>::is_empty).await;
+    let mut watch = client.watch().await.unwrap();
+    listings_until(&mut watch, |listing| listing.workspaces.is_empty()).await;
 
+    let workspace = client.add_workspace(daemon.cwd()).await.unwrap();
+    listings_until(&mut watch, |listing| {
+        listing.workspaces == [workspace.clone()]
+    })
+    .await;
+    client.remove_workspace(&workspace.id).await.unwrap();
+    listings_until(&mut watch, |listing| listing.workspaces.is_empty()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn watch_follows_a_session() {
+    let daemon = Daemon::start(1000).await;
+    let client = daemon.client().await;
+    let mut watch = client.watch().await.unwrap();
+    listings_until(&mut watch, |listing| listing.sessions.is_empty()).await;
+
+    let workspace = daemon.workspace(&client).await;
     let session = client
-        .new_session(vec![FAKE_AGENT.into()], daemon.cwd(), BTreeMap::new())
+        .new_session(&workspace.id, fake_agent(&[]), BTreeMap::new())
         .await
         .unwrap();
     let id = session.id.as_str();
     let mut events = client.subscribe(id, 0).await.unwrap();
     let mut reach = async |state: SessionState| {
-        lists_until(&mut watch, |list| state_in(list, id) == Some(state)).await;
+        listings_until(&mut watch, |listing| {
+            state_in(&listing.sessions, id) == Some(state)
+        })
+        .await;
     };
     reach(SessionState::Idle).await;
 
@@ -1234,20 +1587,23 @@ async fn sessions_watch_follows_a_session() {
     reach(SessionState::Idle).await;
 
     client.close(id).await.unwrap();
-    lists_until(&mut watch, |list| state_in(list, id).is_none()).await;
+    listings_until(&mut watch, |listing| {
+        state_in(&listing.sessions, id).is_none()
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn sessions_watch_sends_only_changed_lists() {
+async fn watch_sends_only_changed_listings() {
     let daemon = Daemon::start(1000).await;
     let client = daemon.client().await;
     let (session, started) = daemon.new_session(&client).await;
-    let mut watch = client.watch_sessions().await.unwrap();
+    let mut watch = client.watch().await.unwrap();
     let mut events = client.subscribe(&session.id, started).await.unwrap();
     client.prompt(&session.id, text("say 200 0")).await.unwrap();
     until(&mut events, turn_ended).await;
     client.close(&session.id).await.unwrap();
-    let lists = lists_until(&mut watch, <[SessionInfo]>::is_empty).await;
+    let lists = listings_until(&mut watch, |listing| listing.sessions.is_empty()).await;
     for pair in lists.windows(2) {
         assert_ne!(pair[0], pair[1]);
     }
@@ -1259,7 +1615,7 @@ async fn session_info_updates_set_the_title() {
     let client = daemon.client().await;
     let (session, started) = daemon.new_session(&client).await;
     assert_eq!(session.title, None);
-    let mut watch = client.watch_sessions().await.unwrap();
+    let mut watch = client.watch().await.unwrap();
     let mut events = client.subscribe(&session.id, started).await.unwrap();
     for (script, title) in [
         ("title Fix the build", Some("Fix the build")),
@@ -1273,22 +1629,23 @@ async fn session_info_updates_set_the_title() {
             title,
             "{script}"
         );
-        lists_until(&mut watch, |list| {
-            list[0].title.as_deref() == title && list[0].state == SessionState::Idle
+        listings_until(&mut watch, |listing| {
+            listing.sessions[0].title.as_deref() == title
+                && listing.sessions[0].state == SessionState::Idle
         })
         .await;
     }
 }
 
-/// After a sessions watch's `unsubscribe` is answered, the connection
-/// receives no more lists.
+/// After a watch's `unsubscribe` is answered, the connection receives no more
+/// listings.
 #[tokio::test(flavor = "multi_thread")]
-async fn unsubscribe_ends_a_sessions_watch() {
+async fn unsubscribe_ends_a_watch() {
     let daemon = Daemon::start(1000).await;
     let client = daemon.client().await;
     let (session, started) = daemon.new_session(&client).await;
     let mut raw = Raw::connect(&daemon).await;
-    let watch = raw.send("sessions.watch", Value::Null).await;
+    let watch = raw.send("watch", Value::Null).await;
     raw.answer(watch).await;
     let first = raw.read().await;
     assert_eq!(first["subscription"], watch);
@@ -1305,9 +1662,12 @@ async fn unsubscribe_ends_a_sessions_watch() {
 
     // A turn held open changes the session's state long enough for a watch
     // to send the list.
-    let mut running = client.watch_sessions().await.unwrap();
+    let mut running = client.watch().await.unwrap();
     client.prompt(&session.id, text("wait")).await.unwrap();
-    lists_until(&mut running, |list| list[0].state == SessionState::Running).await;
+    listings_until(&mut running, |listing| {
+        listing.sessions[0].state == SessionState::Running
+    })
+    .await;
     client.cancel(&session.id).await.unwrap();
     let messages = raw.messages_until(raw_turn_ended).await;
     assert!(

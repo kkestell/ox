@@ -18,6 +18,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::state::{self, Change, Request, State, invalid_state};
+use crate::store::{SavedSession, Store};
 
 type ConfigReply = oneshot::Sender<Result<Vec<SessionConfigOption>, String>>;
 
@@ -31,60 +32,118 @@ enum Command {
     },
 }
 
-/// One ACP agent process and its event history.
+/// One ACP agent process and its event history. The database keeps the
+/// session's workspace, command, directory, title, and agent session ID.
 pub struct Session {
     pub id: String,
     pub number: u64,
+    workspace_id: String,
     command: Vec<String>,
     cwd: PathBuf,
+    store: Arc<Store>,
     state: Mutex<State>,
     /// The seq of the session's last event. Updated under the state lock.
     last_seq: watch::Sender<u64>,
-    /// The daemon's signal that the sessions list changed, sent when this
-    /// session's `SessionInfo` changes.
-    sessions_changed: watch::Sender<()>,
-    commands: mpsc::UnboundedSender<Command>,
+    /// The daemon's signal that the lists or the sessions' states changed,
+    /// sent when this session's `SessionInfo` changes.
+    changed: watch::Sender<()>,
+    /// Sends to the running agent task. A load replaces it.
+    commands: Mutex<mpsc::UnboundedSender<Command>>,
     task: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Session {
-    /// Spawns the agent on a new ACP session, or on the saved session `load`.
-    /// The session records `AgentStarted` once the ACP session is open, or
-    /// `AgentExited` if it cannot be opened.
+    fn new(
+        store: Arc<Store>,
+        changed: watch::Sender<()>,
+        saved: SavedSession,
+        state: State,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(state),
+            id: saved.id,
+            number: saved.number,
+            workspace_id: saved.workspace_id,
+            command: saved.command,
+            cwd: saved.cwd,
+            store,
+            last_seq: watch::Sender::new(0),
+            changed,
+            commands: Mutex::new(mpsc::unbounded_channel().0),
+            task: Mutex::new(None),
+        })
+    }
+
+    /// Spawns the agent of a session just saved. The session records
+    /// `AgentStarted` once the ACP session is open, or `AgentExited` if it
+    /// cannot be opened.
     pub fn spawn(
-        number: u64,
-        command: Vec<String>,
-        cwd: PathBuf,
+        store: Arc<Store>,
+        changed: watch::Sender<()>,
+        saved: SavedSession,
+        env: BTreeMap<String, String>,
+    ) -> Arc<Self> {
+        let state = State::new(saved.id.clone());
+        let session = Self::new(store, changed, saved, state);
+        session.launch(&mut session.task.lock().unwrap(), env, None);
+        session
+    }
+
+    /// A saved session whose agent is not running: it is `exited` and has no
+    /// events until it loads.
+    pub fn restore(
+        store: Arc<Store>,
+        changed: watch::Sender<()>,
+        saved: SavedSession,
+    ) -> Option<Arc<Self>> {
+        let agent_session_id = saved.agent_session_id.clone()?;
+        let state = State::restored(saved.id.clone(), saved.title.clone(), agent_session_id);
+        Some(Self::new(store, changed, saved, state))
+    }
+
+    /// Starts the agent task in `task`, which opens a new ACP session or
+    /// loads the agent session `load`.
+    fn launch(
+        self: &Arc<Self>,
+        task: &mut Option<JoinHandle<()>>,
         env: BTreeMap<String, String>,
         load: Option<String>,
-        sessions_changed: watch::Sender<()>,
-    ) -> Arc<Self> {
+    ) {
         let (commands, commands_rx) = mpsc::unbounded_channel();
-        let id = uuid::Uuid::new_v4().to_string();
-        let session = Arc::new(Self {
-            state: Mutex::new(State::new(id.clone())),
-            id,
-            number,
-            command,
-            cwd,
-            last_seq: watch::Sender::new(0),
-            sessions_changed,
-            commands,
-            task: Mutex::new(None),
-        });
-        let task = tokio::spawn(session.clone().run(commands_rx, env, load));
-        *session.task.lock().unwrap() = Some(task);
-        session
+        *self.commands.lock().unwrap() = commands;
+        *task = Some(tokio::spawn(self.clone().run(commands_rx, env, load)));
+    }
+
+    /// Starts a new agent on an exited session that has an agent session ID,
+    /// which loads the session and replays its conversation. The session
+    /// records `AgentStarted` once the agent has loaded it, or `AgentExited`
+    /// if it cannot.
+    pub fn load(self: &Arc<Self>, env: BTreeMap<String, String>) -> Result<(), ErrorBody> {
+        // Holding the task slot keeps a concurrent `close` from missing the
+        // new task.
+        let mut task = self.task.lock().unwrap();
+        let agent_session_id = self.update(State::load)?;
+        self.launch(&mut task, env, Some(agent_session_id));
+        Ok(())
     }
 
     pub fn info(&self) -> SessionInfo {
         self.info_of(&self.lock())
     }
 
+    pub fn state(&self) -> SessionState {
+        self.lock().state()
+    }
+
+    pub fn workspace_id(&self) -> &str {
+        &self.workspace_id
+    }
+
     fn info_of(&self, state: &State) -> SessionInfo {
         let agent = state.agent();
         SessionInfo {
             id: self.id.clone(),
+            workspace_id: self.workspace_id.clone(),
             command: self.command.clone(),
             cwd: self.cwd.clone(),
             state: state.state(),
@@ -118,7 +177,7 @@ impl Session {
     pub fn prompt(&self, prompt: Vec<ContentBlock>) -> Result<(), ErrorBody> {
         self.update(|state| {
             state.request(Request::Prompt(prompt.clone()))?;
-            let _ = self.commands.send(Command::Prompt(prompt));
+            self.send(Command::Prompt(prompt));
             Ok(())
         })
     }
@@ -139,7 +198,7 @@ impl Session {
             ConfigValue::Id(id) => SessionConfigOptionValue::value_id(id),
         };
         let (reply, result) = oneshot::channel();
-        let _ = self.commands.send(Command::SetConfigOption {
+        self.send(Command::SetConfigOption {
             config_id,
             value,
             reply,
@@ -155,7 +214,7 @@ impl Session {
 
     /// Cancels the running turn and every pending permission request.
     pub fn cancel(&self) {
-        let _ = self.commands.send(Command::Cancel);
+        self.send(Command::Cancel);
     }
 
     pub fn permit(&self, request_id: &str, option_id: &str) -> Result<(), ErrorBody> {
@@ -181,17 +240,45 @@ impl Session {
         self.state.lock().unwrap()
     }
 
-    /// Changes the state, publishes the seq of its last event, and signals
-    /// the sessions list if the session's `SessionInfo` changed.
+    /// Sends a command to the running agent task. A session whose agent has
+    /// exited has none, and its commands are dropped.
+    fn send(&self, command: Command) {
+        let _ = self.commands.lock().unwrap().send(command);
+    }
+
+    /// Changes the state, publishes the seq of its last event, saves a
+    /// changed title or agent session ID, and signals the daemon if the
+    /// session's `SessionInfo` changed.
     fn update<R>(&self, change: impl FnOnce(&mut State) -> R) -> R {
         let mut state = self.lock();
         let before = self.info_of(&state);
         let result = change(&mut state);
         self.last_seq.send_replace(state.last_seq());
-        if self.info_of(&state) != before {
-            self.sessions_changed.send_replace(());
+        let after = self.info_of(&state);
+        if after != before {
+            self.save(&before, &after);
+            self.changed.send_replace(());
         }
         result
+    }
+
+    /// Writes what differs between two infos to the session's row. A failed
+    /// write goes to oxd's log and the session carries on.
+    fn save(&self, before: &SessionInfo, after: &SessionInfo) {
+        if after.title != before.title
+            && let Err(error) = self.store.set_title(&self.id, after.title.as_deref())
+        {
+            eprintln!("oxd: saving the title of session {}: {error}", self.id);
+        }
+        if after.agent_session_id != before.agent_session_id
+            && let Some(agent_session_id) = &after.agent_session_id
+            && let Err(error) = self.store.set_agent_session_id(&self.id, agent_session_id)
+        {
+            eprintln!(
+                "oxd: saving the agent session of session {}: {error}",
+                self.id
+            );
+        }
     }
 
     fn record(&self, change: Change) {

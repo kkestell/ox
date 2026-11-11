@@ -18,11 +18,18 @@ export type ConfigOption = { id: string; name: string } & (
   | { type: "boolean"; currentValue: boolean }
 );
 
+export interface WorkspaceInfo {
+  id: string;
+  path: string;
+}
+
 export interface SessionInfo {
   id: string;
+  workspace_id: string;
   cwd: string;
   state: SessionState;
   title: string | null;
+  agent_session_id: string | null;
   config_options: ConfigOption[];
 }
 
@@ -60,8 +67,8 @@ export type Item =
   | { type: "agent_exited"; key: string; error: string | null }
   | { type: "session_closed"; key: string };
 
-export type SessionsMessage =
-  | { type: "sessions"; sessions: SessionInfo[] }
+export type WatchMessage =
+  | { type: "list"; workspaces: WorkspaceInfo[]; sessions: SessionInfo[] }
   | { type: "error"; message: string }
   | { type: "disconnected" };
 

@@ -14,7 +14,7 @@ use ox_protocol::schema::{
     SessionConfigKind, SessionConfigOption, SessionConfigSelectOptions, SessionUpdate, StopReason,
     TextContent, ToolCallStatus,
 };
-use ox_protocol::{Client, ConfigValue, End, Event, EventKind, content};
+use ox_protocol::{Client, ConfigValue, End, Event, EventKind, SessionState, content};
 
 #[derive(Parser)]
 #[command(name = "oxctl", about = "Control oxd sessions")]
@@ -30,27 +30,25 @@ struct Cli {
 enum Command {
     /// List sessions
     Ls,
-    /// Start a session and print its id
+    /// Add, list, and remove workspaces
+    Workspace {
+        #[command(subcommand)]
+        command: WorkspaceCommand,
+    },
+    /// Start a session in a workspace and print its id
     New {
-        /// Working directory [default: current directory]
+        /// The workspace's id, as `workspace ls` shows it
         #[arg(long)]
-        cwd: Option<PathBuf>,
+        workspace: String,
         /// Agent command [default: claude-code-acp]
         #[arg(last = true)]
         command: Vec<String>,
     },
-    /// Start an agent on a session it saved, replaying its conversation, and
-    /// print the new session's id
+    /// Restart the agent of an exited session, replaying its conversation,
+    /// and print the session's id
     Load {
-        /// The agent's session id, as `ls` shows it
-        agent_session: String,
-        /// Working directory the session was started in [default: current
-        /// directory]
-        #[arg(long)]
-        cwd: Option<PathBuf>,
-        /// Agent command [default: claude-code-acp]
-        #[arg(last = true)]
-        command: Vec<String>,
+        /// The session's id, as `ls` shows it
+        session: String,
     },
     /// Send a prompt
     Prompt {
@@ -94,6 +92,16 @@ enum Command {
     Close { session: String },
 }
 
+#[derive(Subcommand)]
+enum WorkspaceCommand {
+    /// Add a directory as a workspace and print its id
+    Add { path: PathBuf },
+    /// List workspaces
+    Ls,
+    /// Remove a workspace that has no sessions
+    Rm { workspace: String },
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -113,8 +121,9 @@ async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
         Command::Ls => {
             for session in client.list().await? {
                 println!(
-                    "{}\t{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}",
                     session.id,
+                    session.workspace_id,
                     session.state.as_str(),
                     session.cwd.display(),
                     session.command.join(" "),
@@ -123,21 +132,30 @@ async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 );
             }
         }
-        Command::New { cwd, command } => {
-            let (cwd, command) = agent(cwd, command)?;
-            let session = client.new_session(command, cwd, utf8_env()).await?;
+        Command::Workspace { command } => match command {
+            WorkspaceCommand::Add { path } => {
+                let workspace = client.add_workspace(path.canonicalize()?).await?;
+                println!("{}", workspace.id);
+            }
+            WorkspaceCommand::Ls => {
+                for workspace in client.list_workspaces().await? {
+                    println!("{}\t{}", workspace.id, workspace.path.display());
+                }
+            }
+            WorkspaceCommand::Rm { workspace } => client.remove_workspace(&workspace).await?,
+        },
+        Command::New { workspace, command } => {
+            let command = if command.is_empty() {
+                vec!["claude-code-acp".to_owned()]
+            } else {
+                command
+            };
+            let session = client.new_session(&workspace, command, utf8_env()).await?;
             println!("{}", started(&client, &session.id).await?);
         }
-        Command::Load {
-            agent_session,
-            cwd,
-            command,
-        } => {
-            let (cwd, command) = agent(cwd, command)?;
-            let session = client
-                .load_session(command, cwd, utf8_env(), &agent_session)
-                .await?;
-            println!("{}", started(&client, &session.id).await?);
+        Command::Load { session } => {
+            client.load_session(&session, utf8_env()).await?;
+            println!("{}", loaded(&client, &session).await?);
         }
         Command::Prompt {
             session,
@@ -264,24 +282,6 @@ fn describe_option(option: &SessionConfigOption) -> String {
     }
 }
 
-/// The working directory and agent command, with their defaults.
-fn agent(
-    cwd: Option<PathBuf>,
-    command: Vec<String>,
-) -> Result<(PathBuf, Vec<String>), Box<dyn Error>> {
-    let cwd = match cwd {
-        Some(cwd) => cwd,
-        None => std::env::current_dir()?,
-    }
-    .canonicalize()?;
-    let command = if command.is_empty() {
-        vec!["claude-code-acp".to_owned()]
-    } else {
-        command
-    };
-    Ok((cwd, command))
-}
-
 /// Waits for a session's agent to start and returns the session's id. A
 /// session whose agent fails to start is closed.
 async fn started(client: &Client, session_id: &str) -> Result<String, Box<dyn Error>> {
@@ -301,6 +301,32 @@ async fn started(client: &Client, session_id: &str) -> Result<String, Box<dyn Er
                 return Err("the session closed while its agent was starting".into());
             }
             Err(End::Disconnected) => return Err(ox_protocol::Error::Closed.into()),
+        }
+    }
+}
+
+/// Waits for a loading session's agent to start and returns the session's id.
+/// A session whose agent fails to start stays exited, and can be loaded again.
+async fn loaded(client: &Client, session_id: &str) -> Result<String, Box<dyn Error>> {
+    let mut watch = client.watch().await?;
+    loop {
+        let listing = watch.next().await.map_err(|_| ox_protocol::Error::Closed)?;
+        let Some(session) = listing
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+        else {
+            return Err("the session closed while its agent was starting".into());
+        };
+        match session.state {
+            SessionState::Starting => {}
+            SessionState::Exited => {
+                return Err(format!(
+                    "the agent did not start; `oxctl attach {session_id}` shows why"
+                )
+                .into());
+            }
+            _ => return Ok(session_id.to_owned()),
         }
     }
 }

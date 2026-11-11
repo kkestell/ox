@@ -19,6 +19,18 @@ pub struct Agent {
     pub config_options: Vec<SessionConfigOption>,
 }
 
+impl Agent {
+    /// The agent session of a session whose agent is not running: its ID, and
+    /// nothing the agent reported.
+    fn saved(session_id: String) -> Self {
+        Self {
+            session_id,
+            prompt_capabilities: PromptCapabilities::default(),
+            config_options: Vec::new(),
+        }
+    }
+}
+
 /// What a client asks of a session. The session refuses a request its state
 /// does not allow.
 pub enum Request {
@@ -85,7 +97,6 @@ struct Live {
     agent: Agent,
     turn: Option<Turn>,
     pending: Vec<Pending>,
-    next_request: u64,
 }
 
 impl Live {
@@ -121,9 +132,19 @@ impl Live {
 }
 
 enum Phase {
-    Starting,
+    /// The agent is starting. A loading agent replays the conversation as
+    /// updates before it starts. `replay` holds them until the agent
+    /// starts, when they are recorded, or is `None` when the session keeps
+    /// its history and drops the replay. `previous` is the agent the session
+    /// had before it loaded.
+    Starting {
+        replay: Option<Vec<SessionUpdate>>,
+        previous: Option<Agent>,
+    },
     Live(Live),
-    /// The agent is gone. It holds what the agent reported if it started.
+    /// The agent is gone. It holds what the agent reported if it started,
+    /// or the saved agent session ID of a session restored from the
+    /// database.
     Exited(Option<Agent>),
     Closed,
 }
@@ -131,37 +152,54 @@ enum Phase {
 impl Phase {
     fn state(&self) -> SessionState {
         match self {
-            Self::Starting => SessionState::Starting,
+            Self::Starting { .. } => SessionState::Starting,
             Self::Live(live) => live.state(),
             Self::Exited(_) | Self::Closed => SessionState::Exited,
         }
     }
 
     /// The phase after `change` and the events that record it.
-    fn after(self, change: Change) -> (Self, Vec<EventKind>) {
+    /// Permission requests take their IDs from `next_request`, which the
+    /// session keeps across agents.
+    fn after(self, change: Change, next_request: &mut u64) -> (Self, Vec<EventKind>) {
         match (self, change) {
-            (Self::Starting, Change::Started(agent)) => {
-                let started = EventKind::AgentStarted {
+            (Self::Starting { replay, .. }, Change::Started(agent)) => {
+                let mut events: Vec<_> = replay
+                    .into_iter()
+                    .flatten()
+                    .map(EventKind::Update)
+                    .collect();
+                events.push(EventKind::AgentStarted {
                     agent_session_id: agent.session_id.clone(),
                     prompt_capabilities: agent.prompt_capabilities.clone(),
                     config_options: agent.config_options.clone(),
-                };
+                });
                 let live = Live {
                     agent,
                     turn: None,
                     pending: Vec::new(),
-                    next_request: 1,
                 };
-                (Self::Live(live), vec![started])
+                (Self::Live(live), events)
             }
-            // A loading agent replays its conversation before it starts.
-            (Self::Starting, Change::Update(update)) => {
-                (Self::Starting, vec![EventKind::Update(update)])
+            // A loading agent replays its conversation before it starts. A
+            // session that has a history keeps it and drops the replay.
+            (
+                Self::Starting {
+                    mut replay,
+                    previous,
+                },
+                Change::Update(update),
+            ) => {
+                if let Some(replay) = &mut replay {
+                    replay.push(update);
+                }
+                (Self::Starting { replay, previous }, Vec::new())
             }
-            (Self::Starting, Change::Exited(error)) => {
-                (Self::Exited(None), vec![EventKind::AgentExited { error }])
-            }
-            (Self::Starting | Self::Exited(_), Change::Closed) => {
+            (Self::Starting { previous, .. }, Change::Exited(error)) => (
+                Self::Exited(previous),
+                vec![EventKind::AgentExited { error }],
+            ),
+            (Self::Starting { .. } | Self::Exited(_), Change::Closed) => {
                 (Self::Closed, vec![EventKind::SessionClosed])
             }
 
@@ -183,8 +221,8 @@ impl Phase {
                 (Self::Live(live), events)
             }
             (Self::Live(mut live), Change::PermissionRequested { request, answer }) => {
-                let request_id = live.next_request.to_string();
-                live.next_request += 1;
+                let request_id = next_request.to_string();
+                *next_request += 1;
                 live.pending.push(Pending {
                     request_id: request_id.clone(),
                     options: request.options.clone(),
@@ -242,7 +280,7 @@ impl Phase {
             }
 
             (
-                phase @ Self::Starting,
+                phase @ Self::Starting { .. },
                 Change::ConfigOptionsSet(_)
                 | Change::PermissionRequested { .. }
                 | Change::Cancelled
@@ -280,16 +318,60 @@ pub struct State {
     /// cleared it.
     title: Option<String>,
     events: Vec<Event>,
+    /// The ID of the next permission request. Request IDs stay unique for
+    /// the session's lifetime, across every agent it loads.
+    next_request: u64,
 }
 
 impl State {
     pub fn new(session_id: String) -> Self {
         Self {
             session_id,
-            phase: Phase::Starting,
+            phase: Phase::Starting {
+                replay: Some(Vec::new()),
+                previous: None,
+            },
             title: None,
             events: Vec::new(),
+            next_request: 1,
         }
+    }
+
+    /// A session saved in the database: exited, with no events and no agent.
+    pub fn restored(session_id: String, title: Option<String>, agent_session_id: String) -> Self {
+        Self {
+            session_id,
+            phase: Phase::Exited(Some(Agent::saved(agent_session_id))),
+            title,
+            events: Vec::new(),
+            next_request: 1,
+        }
+    }
+
+    /// Starts a load: the session goes from `exited` to `starting` and
+    /// returns the agent session ID to load. A session whose agent has never
+    /// started records the agent's replay as its history; one whose agent
+    /// has started already has the conversation in its history.
+    pub fn load(&mut self) -> Result<String, ErrorBody> {
+        let id = match &self.phase {
+            Phase::Exited(Some(agent)) => agent.session_id.clone(),
+            Phase::Exited(None) => {
+                return Err(ErrorBody {
+                    code: code::INVALID_STATE,
+                    message: "the session never started, so it has nothing to load".into(),
+                });
+            }
+            phase => return Err(invalid_state(phase.state())),
+        };
+        self.phase = Phase::Starting {
+            replay: (!self
+                .events
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::AgentStarted { .. })))
+            .then(Vec::new),
+            previous: Some(Agent::saved(id.clone())),
+        };
+        Ok(id)
     }
 
     pub fn title(&self) -> Option<&str> {
@@ -305,8 +387,11 @@ impl State {
     pub fn agent(&self) -> Option<&Agent> {
         match &self.phase {
             Phase::Live(live) => Some(&live.agent),
-            Phase::Exited(agent) => agent.as_ref(),
-            Phase::Starting | Phase::Closed => None,
+            Phase::Exited(agent)
+            | Phase::Starting {
+                previous: agent, ..
+            } => agent.as_ref(),
+            Phase::Closed => None,
         }
     }
 
@@ -379,11 +464,14 @@ impl State {
                         SelectedPermissionOutcome::new(option_id),
                     ))
             }
-            (phase @ (Phase::Starting | Phase::Exited(_) | Phase::Closed), Request::Prompt(_)) => {
+            (
+                phase @ (Phase::Starting { .. } | Phase::Exited(_) | Phase::Closed),
+                Request::Prompt(_),
+            ) => {
                 return Err(invalid_state(phase.state()));
             }
             (
-                Phase::Starting | Phase::Exited(_) | Phase::Closed,
+                Phase::Starting { .. } | Phase::Exited(_) | Phase::Closed,
                 Request::Permit { request_id, .. },
             ) => return Err(not_pending(&request_id)),
         };
@@ -393,7 +481,7 @@ impl State {
 
     pub fn record(&mut self, change: Change) {
         let phase = std::mem::replace(&mut self.phase, Phase::Closed);
-        let (phase, events) = phase.after(change);
+        let (phase, events) = phase.after(change, &mut self.next_request);
         self.phase = phase;
         for event in events {
             self.append(event);
@@ -716,6 +804,111 @@ mod tests {
         assert_eq!(error.code, code::INVALID_REQUEST);
     }
 
+    fn replayed(text: &str) -> Change {
+        Change::Update(SessionUpdate::UserMessageChunk(ContentChunk::new(
+            ContentBlock::Text(TextContent::new(text)),
+        )))
+    }
+
+    fn restored() -> State {
+        State::restored("s".into(), Some("Fix the build".into()), "agent".into())
+    }
+
+    #[test]
+    fn a_restored_session_is_exited_and_loads_its_replay_as_history() {
+        let mut state = restored();
+        assert_eq!(state.state(), SessionState::Exited);
+        assert_eq!(state.title(), Some("Fix the build"));
+        assert_eq!(state.agent().unwrap().session_id, "agent");
+        assert_eq!(state.last_seq(), 0);
+        assert_eq!(prompt(&mut state).unwrap_err().code, code::INVALID_STATE);
+
+        assert_eq!(state.load().unwrap(), "agent");
+        assert_eq!(state.state(), SessionState::Starting);
+        state.record(replayed("hello"));
+        state.record(Change::Started(Agent {
+            session_id: "agent".into(),
+            prompt_capabilities: PromptCapabilities::default(),
+            config_options: Vec::new(),
+        }));
+        assert_eq!(state.state(), SessionState::Idle);
+        assert_eq!(kinds(&state, 0), ["update", "agent_started"]);
+        assert_eq!(state.title(), Some("Fix the build"));
+    }
+
+    #[test]
+    fn a_session_with_a_history_loads_without_duplicating_it() {
+        let mut state = started();
+        state.record(Change::Exited(None));
+        assert_eq!(state.load().unwrap(), "agent");
+        state.record(replayed("hello"));
+        state.record(Change::Started(Agent {
+            session_id: "agent".into(),
+            prompt_capabilities: PromptCapabilities::default(),
+            config_options: Vec::new(),
+        }));
+        assert_eq!(state.state(), SessionState::Idle);
+        assert_eq!(
+            kinds(&state, 0),
+            ["agent_started", "agent_exited", "agent_started"]
+        );
+    }
+
+    #[test]
+    fn only_an_exited_session_with_an_agent_session_loads() {
+        let mut state = State::new("s".into());
+        assert_eq!(state.load().unwrap_err().code, code::INVALID_STATE);
+        state.record(Change::Exited(Some("never started".into())));
+        assert_eq!(state.state(), SessionState::Exited);
+        assert_eq!(state.load().unwrap_err().code, code::INVALID_STATE);
+
+        let mut state = started();
+        assert_eq!(state.load().unwrap_err().code, code::INVALID_STATE);
+        state.record(Change::Closed);
+        assert_eq!(state.load().unwrap_err().code, code::INVALID_STATE);
+    }
+
+    #[test]
+    fn a_load_that_fails_leaves_the_session_loadable() {
+        let mut state = restored();
+        state.load().unwrap();
+        state.record(Change::Exited(Some("cannot load".into())));
+        assert_eq!(state.state(), SessionState::Exited);
+        assert_eq!(state.agent().unwrap().session_id, "agent");
+        assert_eq!(kinds(&state, 0), ["agent_exited"]);
+
+        // The failed load recorded no conversation, so the next one does.
+        assert_eq!(state.load().unwrap(), "agent");
+        state.record(replayed("hello"));
+        state.record(Change::Started(Agent {
+            session_id: "agent".into(),
+            prompt_capabilities: PromptCapabilities::default(),
+            config_options: Vec::new(),
+        }));
+        assert_eq!(kinds(&state, 1), ["update", "agent_started"]);
+    }
+
+    #[test]
+    fn a_load_that_fails_partway_through_its_replay_records_none_of_it() {
+        let mut state = restored();
+        state.load().unwrap();
+        state.record(replayed("hello"));
+        state.record(Change::Exited(Some("load interrupted".into())));
+        assert_eq!(kinds(&state, 0), ["agent_exited"]);
+
+        state.load().unwrap();
+        state.record(replayed("hello"));
+        state.record(Change::Started(Agent {
+            session_id: "agent".into(),
+            prompt_capabilities: PromptCapabilities::default(),
+            config_options: Vec::new(),
+        }));
+        assert_eq!(
+            kinds(&state, 0),
+            ["agent_exited", "update", "agent_started"]
+        );
+    }
+
     fn info(update: SessionInfoUpdate) -> Change {
         Change::Update(SessionUpdate::SessionInfoUpdate(update))
     }
@@ -725,7 +918,6 @@ mod tests {
         // A loading agent replays its title before it starts.
         let mut state = State::new("s".into());
         state.record(info(SessionInfoUpdate::new().title("Replayed")));
-        assert_eq!(state.title(), Some("Replayed"));
         state.record(Change::Started(Agent {
             session_id: "agent".into(),
             prompt_capabilities: PromptCapabilities::default(),

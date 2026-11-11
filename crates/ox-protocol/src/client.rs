@@ -18,8 +18,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::messages::{
-    ConfigValue, ErrorBody, Event, EventKind, HelloResult, Method, PROTOCOL_VERSION, Request,
-    ServerMessage, SessionInfo,
+    ConfigValue, ErrorBody, Event, EventKind, HelloResult, Listing, Method, PROTOCOL_VERSION,
+    Request, ServerMessage, SessionInfo, WorkspaceInfo,
 };
 
 /// How long a started daemon has to report that it is ready.
@@ -97,12 +97,11 @@ struct Routes {
     streams: HashMap<u64, Route>,
 }
 
-/// A stream's messages: a subscription's events, or a sessions watch's
-/// lists.
+/// A stream's messages: a subscription's events, or a watch's listings.
 #[derive(Debug)]
 enum Route {
     Events(mpsc::UnboundedSender<Event>),
-    Sessions(mpsc::UnboundedSender<Vec<SessionInfo>>),
+    Listings(mpsc::UnboundedSender<Listing>),
 }
 
 impl Routes {
@@ -199,20 +198,20 @@ impl Subscription {
     }
 }
 
-/// The daemon's sessions list, each time it changes. Dropping it
-/// unsubscribes.
+/// The daemon's workspaces and sessions, each time either changes. Dropping
+/// it unsubscribes.
 #[derive(Debug)]
-pub struct SessionsWatch {
-    lists: mpsc::UnboundedReceiver<Vec<SessionInfo>>,
+pub struct Watch {
+    listings: mpsc::UnboundedReceiver<Listing>,
     _unsubscribe: Unsubscribe,
 }
 
-impl SessionsWatch {
-    /// The next list, which differs from the one before it. The first is
-    /// the list when the watch started. A watch ends only with
+impl Watch {
+    /// The next listing, which differs from the one before it. The first is
+    /// the listing when the watch started. A watch ends only with
     /// [`End::Disconnected`].
-    pub async fn next(&mut self) -> Result<Vec<SessionInfo>, End> {
-        self.lists.recv().await.ok_or(End::Disconnected)
+    pub async fn next(&mut self) -> Result<Listing, End> {
+        self.listings.recv().await.ok_or(End::Disconnected)
     }
 }
 
@@ -281,27 +280,43 @@ impl Client {
         self.call(Method::SessionList).await
     }
 
+    pub async fn add_workspace(&self, path: PathBuf) -> Result<WorkspaceInfo, Error> {
+        self.call(Method::WorkspaceAdd { path }).await
+    }
+
+    pub async fn remove_workspace(&self, workspace_id: &str) -> Result<(), Error> {
+        self.ack(Method::WorkspaceRemove {
+            workspace_id: workspace_id.into(),
+        })
+        .await
+    }
+
+    pub async fn list_workspaces(&self) -> Result<Vec<WorkspaceInfo>, Error> {
+        self.call(Method::WorkspaceList).await
+    }
+
     pub async fn new_session(
         &self,
+        workspace_id: &str,
         command: Vec<String>,
-        cwd: PathBuf,
         env: BTreeMap<String, String>,
     ) -> Result<SessionInfo, Error> {
-        self.call(Method::SessionNew { command, cwd, env }).await
+        self.call(Method::SessionNew {
+            workspace_id: workspace_id.into(),
+            command,
+            env,
+        })
+        .await
     }
 
     pub async fn load_session(
         &self,
-        command: Vec<String>,
-        cwd: PathBuf,
+        session_id: &str,
         env: BTreeMap<String, String>,
-        agent_session_id: &str,
     ) -> Result<SessionInfo, Error> {
         self.call(Method::SessionLoad {
-            command,
-            cwd,
+            session_id: session_id.into(),
             env,
-            agent_session_id: agent_session_id.into(),
         })
         .await
     }
@@ -357,15 +372,15 @@ impl Client {
         Ok(subscription)
     }
 
-    /// Watches the daemon's sessions list.
-    pub async fn watch_sessions(&self) -> Result<SessionsWatch, Error> {
+    /// Watches the daemon's workspaces and sessions.
+    pub async fn watch(&self) -> Result<Watch, Error> {
         let id = self.connection.next_id();
-        let (sender, lists) = mpsc::unbounded_channel();
-        let watch = SessionsWatch {
-            lists,
-            _unsubscribe: Unsubscribe::route(&self.connection, id, Route::Sessions(sender)),
+        let (sender, listings) = mpsc::unbounded_channel();
+        let watch = Watch {
+            listings,
+            _unsubscribe: Unsubscribe::route(&self.connection, id, Route::Listings(sender)),
         };
-        self.send::<Value>(id, Method::SessionsWatch).await?;
+        self.send::<Value>(id, Method::Watch).await?;
         Ok(watch)
     }
 
@@ -447,12 +462,16 @@ async fn read_loop(read: OwnedReadHalf, connection: Arc<Connection>) {
                     let _ = events.send(*event);
                 }
             }
-            ServerMessage::Sessions {
+            ServerMessage::List {
                 subscription,
+                workspaces,
                 sessions,
             } => {
-                if let Some(Route::Sessions(lists)) = routes.streams.get(&subscription) {
-                    let _ = lists.send(sessions);
+                if let Some(Route::Listings(listings)) = routes.streams.get(&subscription) {
+                    let _ = listings.send(Listing {
+                        workspaces,
+                        sessions,
+                    });
                 }
             }
         }
@@ -613,10 +632,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dropping_a_sessions_watch_unsubscribes() {
+    async fn dropping_a_watch_unsubscribes() {
         let (client, mut daemon) = connect().await;
-        let (watch, request) = tokio::join!(client.watch_sessions(), daemon.answer(Value::Null));
-        assert!(matches!(request.method, Method::SessionsWatch));
+        let (watch, request) = tokio::join!(client.watch(), daemon.answer(Value::Null));
+        assert!(matches!(request.method, Method::Watch));
         drop(watch.unwrap());
         let unsubscribe = daemon.answer(Value::Null).await;
         assert!(matches!(
@@ -626,18 +645,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_sessions_watch_ends_with_its_connection() {
+    async fn a_watch_ends_with_its_connection() {
         let (client, mut daemon) = connect().await;
-        let (watch, request) = tokio::join!(client.watch_sessions(), daemon.answer(Value::Null));
+        let (watch, request) = tokio::join!(client.watch(), daemon.answer(Value::Null));
         let mut watch = watch.unwrap();
         daemon
-            .send(ServerMessage::Sessions {
+            .send(ServerMessage::List {
                 subscription: request.id,
+                workspaces: Vec::new(),
                 sessions: Vec::new(),
             })
             .await;
-        let list = timeout(TIMEOUT, watch.next()).await.unwrap();
-        assert_eq!(list, Ok(Vec::new()));
+        let listing = timeout(TIMEOUT, watch.next()).await.unwrap().unwrap();
+        assert_eq!(
+            listing,
+            Listing {
+                workspaces: Vec::new(),
+                sessions: Vec::new()
+            }
+        );
         assert!(!client.is_closed());
         drop(daemon);
         let end = timeout(TIMEOUT, watch.next()).await.unwrap();

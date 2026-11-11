@@ -10,17 +10,17 @@ import {
 } from "../helpers.ts";
 
 describe("A session", () => {
-  let folder: string;
+  let cwd: string;
 
   beforeEach(async () => {
-    folder = await startSession();
-    await openSession(folder);
+    cwd = await startSession();
+    await openSession(cwd);
   });
 
-  it("is listed by its folder until the agent names it", async () => {
-    await expect(sessionEntry(folder).$(".title")).toHaveText("New session");
+  it("is listed as a new session until the agent names it", async () => {
+    await expect(sessionEntry(cwd).$(".title")).toHaveText("New session");
     await send("title Release notes");
-    await expect(sessionEntry(folder).$(".title")).toHaveText("Release notes");
+    await expect(sessionEntry(cwd).$(".title")).toHaveText("Release notes");
   });
 
   it("shows the agent's reply while the turn runs", async () => {
@@ -31,9 +31,9 @@ describe("A session", () => {
     await expect(composer()).toHaveValue("say 1 0\nwait");
     await send();
     await expect(agentText()[0]).toHaveText("chunk-1");
-    await expect(sessionEntry(folder).$('[aria-label="Running"]')).toBeDisplayed();
+    await expect(sessionEntry(cwd).$('[aria-label="Running"]')).toBeDisplayed();
     await $('form.composer button[aria-label="Stop"]').click();
-    await expect(sessionEntry(folder).$('[aria-label="Running"]')).not.toBeExisting();
+    await expect(sessionEntry(cwd).$('[aria-label="Running"]')).not.toBeExisting();
   });
 
   it("shows the prompt and the agent's reply", async () => {
@@ -54,11 +54,11 @@ describe("A session", () => {
   it("asks for permission and reports the answer", async () => {
     await send("permission");
     const permission = $(".conversation .permission");
-    await expect(sessionEntry(folder).$('[aria-label="Awaiting permission"]')).toBeDisplayed();
+    await expect(sessionEntry(cwd).$('[aria-label="Awaiting permission"]')).toBeDisplayed();
     await permission.$("button=Allow").click();
     await expect(permission.$(".outcome")).toHaveText("Allow");
     await expect(agentText()[0]).toHaveText("allowed");
-    await expect(sessionEntry(folder).$('[aria-label="Awaiting permission"]')).not.toBeExisting();
+    await expect(sessionEntry(cwd).$('[aria-label="Awaiting permission"]')).not.toBeExisting();
   });
 
   it("shows a tool call's output", async () => {
@@ -73,17 +73,17 @@ describe("A session", () => {
   it("stops a turn the agent started", async () => {
     await send("own-turn");
     await expect(agentText()[0]).toHaveText("own-turn");
-    await expect(sessionEntry(folder).$('[aria-label="Running"]')).toBeDisplayed();
+    await expect(sessionEntry(cwd).$('[aria-label="Running"]')).toBeDisplayed();
     await $('form.composer button[aria-label="Stop"]').click();
-    await expect(sessionEntry(folder).$('[aria-label="Running"]')).not.toBeExisting();
+    await expect(sessionEntry(cwd).$('[aria-label="Running"]')).not.toBeExisting();
     await expect(sendButton()).toBeDisplayed();
   });
 
   it("stops a running turn", async () => {
     await send("wait");
-    await expect(sessionEntry(folder).$('[aria-label="Running"]')).toBeDisplayed();
+    await expect(sessionEntry(cwd).$('[aria-label="Running"]')).toBeDisplayed();
     await $('form.composer button[aria-label="Stop"]').click();
-    await expect(sessionEntry(folder).$('[aria-label="Running"]')).not.toBeExisting();
+    await expect(sessionEntry(cwd).$('[aria-label="Running"]')).not.toBeExisting();
     await expect(sendButton()).toBeDisplayed();
   });
 
@@ -100,7 +100,7 @@ describe("A session", () => {
     await send("say 2 0");
     await expect(agentText()[0]).toHaveText("chunk-1chunk-2");
     await browser.refresh();
-    await expect(sessionEntry(folder).$("button.select")).toHaveAttribute("aria-current", "true");
+    await expect(sessionEntry(cwd).$("button.select")).toHaveAttribute("aria-current", "true");
     await expect($(".conversation .prompt .text")).toHaveText("say 2 0");
     await expect(agentText()[0]).toHaveText("chunk-1chunk-2");
   });
@@ -108,12 +108,12 @@ describe("A session", () => {
   it("reports that the agent exited and disables the composer", async () => {
     await send("exit 3");
     await expect($(".conversation .agent-exited")).toBeDisplayed();
-    await expect(sessionEntry(folder).$('[aria-label="Exited"]')).toBeDisplayed();
+    await expect(sessionEntry(cwd).$('[aria-label="Exited"]')).toBeDisplayed();
     await expect(composer()).toBeDisabled();
   });
 
   it("is removed from the list when closed", async () => {
-    await sessionEntry(folder).$('button[aria-label="Close Session"]').click();
-    await expect(sessionEntry(folder)).not.toBeExisting();
+    await sessionEntry(cwd).$('button[aria-label="Close Session"]').click();
+    await expect(sessionEntry(cwd)).not.toBeExisting();
   });
 });

@@ -37,8 +37,8 @@ pub async fn serve(daemon: Arc<Daemon>, stream: UnixStream, _client: ClientGuard
     let (read, write) = stream.into_split();
     let (outgoing, outgoing_rx) = mpsc::channel(OUTGOING_CAPACITY);
     let mut writer = Task(tokio::spawn(write_loop(write, outgoing_rx)));
-    // Event subscriptions and sessions watches, by the id of the request
-    // that started each.
+    // Event subscriptions and watches, by the id of the request that started
+    // each.
     let mut subscriptions: HashMap<u64, Task> = HashMap::new();
     let mut lines = BufReader::new(read).lines();
     let mut greeted = false;
@@ -113,7 +113,7 @@ pub async fn serve(daemon: Arc<Daemon>, stream: UnixStream, _client: ClientGuard
                 }
                 Err(error) => Err(error),
             },
-            Method::SessionsWatch => {
+            Method::Watch => {
                 let ack = ServerMessage::Result {
                     id,
                     result: Value::Null,
@@ -121,7 +121,7 @@ pub async fn serve(daemon: Arc<Daemon>, stream: UnixStream, _client: ClientGuard
                 if outgoing.send(ack).await.is_err() {
                     break;
                 }
-                let task = tokio::spawn(watch_sessions(daemon.clone(), id, outgoing.clone()));
+                let task = tokio::spawn(watch(daemon.clone(), id, outgoing.clone()));
                 subscriptions.insert(id, Task(task));
                 continue;
             }
@@ -179,29 +179,26 @@ async fn forward(
     }
 }
 
-/// Sends sessions watch `subscription` the sessions list, then the list
-/// each time it differs from the last one sent.
-async fn watch_sessions(
-    daemon: Arc<Daemon>,
-    subscription: u64,
-    outgoing: mpsc::Sender<ServerMessage>,
-) {
-    let mut changed = daemon.sessions_changed();
+/// Sends watch `subscription` the workspaces and sessions lists, then both
+/// lists each time either differs from the last ones sent.
+async fn watch(daemon: Arc<Daemon>, subscription: u64, outgoing: mpsc::Sender<ServerMessage>) {
+    let mut changed = daemon.changed();
     let mut sent = None;
     loop {
-        // Marking the change seen before reading the list means a change
-        // made while the list is built wakes the watch again.
+        // Marking the change seen before reading the lists means a change
+        // made while they are built wakes the watch again.
         changed.borrow_and_update();
-        let sessions = daemon.list();
-        if sent.as_ref() != Some(&sessions) {
-            let message = ServerMessage::Sessions {
+        let listing = daemon.list();
+        if sent.as_ref() != Some(&listing) {
+            let message = ServerMessage::List {
                 subscription,
-                sessions: sessions.clone(),
+                workspaces: listing.workspaces.clone(),
+                sessions: listing.sessions.clone(),
             };
             if outgoing.send(message).await.is_err() {
                 return;
             }
-            sent = Some(sessions);
+            sent = Some(listing);
         }
         if changed.changed().await.is_err() {
             return;
