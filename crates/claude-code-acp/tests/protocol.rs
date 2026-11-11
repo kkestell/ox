@@ -240,8 +240,8 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
     let (new, _) = response(&mut reader, 2).await;
     let id = new["result"]["sessionId"].as_str().unwrap().to_owned();
 
-    for (index, mode) in ["manual", "auto", "acceptEdits", "plan"].iter().enumerate() {
-        let request_id = 3 + index as i64 * 2;
+    for (index, mode) in (0_i64..).zip(["manual", "auto", "acceptEdits", "plan"]) {
+        let request_id = 3 + index * 2;
         if index > 0 {
             send(&mut child, json!({"jsonrpc":"2.0","id":request_id,"method":"session/set_config_option","params":{"sessionId":id,"configId":"mode","value":mode}})).await;
             let (set, _) = response(&mut reader, request_id).await;
@@ -1372,8 +1372,7 @@ async fn unsupported_prompt_content_is_rejected() {
         json!([{"type": "text", "text": "  "}]),
         json!([]),
     ];
-    for (index, prompt) in prompts.into_iter().enumerate() {
-        let id = 10 + index as i64;
+    for (id, prompt) in (10_i64..).zip(prompts) {
         send(&mut child, json!({"jsonrpc":"2.0","id":id,"method":"session/prompt","params":{"sessionId":session,"prompt":prompt}})).await;
         let (result, _) = response(&mut reader, id).await;
         assert_eq!(result["error"]["code"], -32602, "{result}");

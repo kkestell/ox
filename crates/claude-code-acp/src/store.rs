@@ -89,13 +89,13 @@ impl Store {
             .collect()
     }
 
-    pub fn create(&self, id: String, session: Session) {
+    pub fn create(&self, id: String, session: &Session) {
         self.mcp_servers
             .lock()
             .unwrap()
             .insert(id.clone(), session.mcp_servers.clone());
         self.transaction(|entries| {
-            entries.insert(id, to_value(&session));
+            entries.insert(id, to_value(session));
             ((), true)
         });
     }
@@ -121,7 +121,7 @@ impl Store {
 
     fn with_servers(&self, id: &str, mut session: Session) -> Session {
         if let Some(servers) = self.mcp_servers.lock().unwrap().get(id) {
-            session.mcp_servers = servers.clone();
+            session.mcp_servers.clone_from(servers);
         }
         session
     }

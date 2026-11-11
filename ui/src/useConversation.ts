@@ -2,12 +2,10 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { useEffect, useReducer, useState } from "react";
 import type { Item, ViewMessage } from "./protocol";
 
-interface State {
-  keys: string[];
-  items: Record<string, Item>;
-}
+// Items by key, in the order their keys first appeared.
+type State = Map<string, Item>;
 
-const empty: State = { keys: [], items: {} };
+const empty: State = new Map();
 
 type Action = { type: "clear" } | { type: "item"; item: Item };
 
@@ -16,15 +14,14 @@ type Action = { type: "clear" } | { type: "item"; item: Item };
 function reduce(state: State, action: Action): State {
   if (action.type === "clear") return empty;
   const { item } = action;
-  const existing = state.items[item.key];
-  if (existing === undefined) {
-    return { keys: [...state.keys, item.key], items: { ...state.items, [item.key]: item } };
-  }
+  const existing = state.get(item.key);
   const next =
-    (item.type === "text" || item.type === "thought") && existing.type === item.type
+    existing !== undefined &&
+    (item.type === "text" || item.type === "thought") &&
+    existing.type === item.type
       ? { ...item, text: existing.text + item.text }
       : item;
-  return { keys: state.keys, items: { ...state.items, [item.key]: next } };
+  return new Map(state).set(item.key, next);
 }
 
 /**
@@ -35,6 +32,7 @@ export function useConversation(sessionId: string | null): Item[] {
   const [state, dispatch] = useReducer(reduce, empty);
   const [attempt, setAttempt] = useState(0);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: each attempt views the session again
   useEffect(() => {
     dispatch({ type: "clear" });
     // Only the latest view's channel is read. Viewing no session ends the
@@ -52,5 +50,5 @@ export function useConversation(sessionId: string | null): Item[] {
     };
   }, [sessionId, attempt]);
 
-  return state.keys.map((key) => state.items[key]);
+  return [...state.values()];
 }

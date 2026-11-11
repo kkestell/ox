@@ -87,26 +87,27 @@ export function SessionList({
         {sessions.map((session) => {
           const state = stateIcons[session.state];
           return (
-            <li
-              key={session.id}
-              className="session"
-              aria-selected={session.id === selected}
-              onClick={() => onSelect(session.id)}
-            >
-              <span className="title">{session.title ?? "New session"}</span>
-              <span className="folder" title={session.cwd}>
-                {session.cwd.split("/").filter(Boolean).pop() ?? session.cwd}
-              </span>
-              {state && <state.icon className={`state ${session.state}`} aria-label={state.label} />}
+            <li key={session.id} className="session">
+              <button
+                type="button"
+                className="select"
+                aria-current={session.id === selected}
+                onClick={() => onSelect(session.id)}
+              >
+                <span className="title">{session.title ?? "New session"}</span>
+                <span className="folder" title={session.cwd}>
+                  {session.cwd.split("/").filter(Boolean).pop() ?? session.cwd}
+                </span>
+                {state && (
+                  <state.icon className={`state ${session.state}`} aria-label={state.label} />
+                )}
+              </button>
               <button
                 type="button"
                 className="close"
                 title="Close Session"
                 aria-label="Close Session"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  close(session.id);
-                }}
+                onClick={() => close(session.id)}
               >
                 <X />
               </button>

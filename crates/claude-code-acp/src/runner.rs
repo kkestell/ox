@@ -256,7 +256,7 @@ impl ProcessGroup {
             // SAFETY: killpg only sends a signal; the group id is claude's pid,
             // which leads its own group because of `process_group(0)`.
             unsafe {
-                libc::killpg(pid as libc::pid_t, signal);
+                libc::killpg(pid.cast_signed(), signal);
             }
         }
     }
@@ -328,7 +328,7 @@ fn read_buffered(stderr: &ChildStderr, buffer: &mut Vec<u8>) {
         if n <= 0 {
             return;
         }
-        buffer.extend_from_slice(&chunk[..n as usize]);
+        buffer.extend_from_slice(&chunk[..n.cast_unsigned()]);
     }
 }
 

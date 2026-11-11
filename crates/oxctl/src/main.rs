@@ -19,7 +19,7 @@ use ox_protocol::{Client, ConfigValue, End, Event, EventKind, content};
 #[derive(Parser)]
 #[command(name = "oxctl", about = "Control oxd sessions")]
 struct Cli {
-    /// oxd socket [default: $OX_SOCKET, else <data dir>/ox/oxd.sock]
+    /// oxd socket [default: $`OX_SOCKET`, else <data dir>/ox/oxd.sock]
     #[arg(long, global = true)]
     socket: Option<PathBuf>,
     #[command(subcommand)]
@@ -372,7 +372,7 @@ fn describe(kind: &EventKind) -> String {
         },
         EventKind::TurnEnded { stop_reason, error } => match (stop_reason, error) {
             (_, Some(error)) => format!("turn ended: {error}"),
-            (Some(reason), None) => format!("turn ended: {}", stop_reason_name(reason)),
+            (Some(reason), None) => format!("turn ended: {}", stop_reason_name(*reason)),
             (None, None) => "turn ended".into(),
         },
         EventKind::AgentExited { error: Some(error) } => format!("agent exited: {error}"),
@@ -450,7 +450,7 @@ fn update_name(update: &SessionUpdate) -> &'static str {
     }
 }
 
-fn stop_reason_name(reason: &StopReason) -> &'static str {
+fn stop_reason_name(reason: StopReason) -> &'static str {
     match reason {
         StopReason::EndTurn => "end_turn",
         StopReason::MaxTokens => "max_tokens",

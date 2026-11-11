@@ -59,13 +59,13 @@ impl Bridge {
     pub fn new(config: Config) -> Arc<Self> {
         Arc::new(Self {
             store: Store::new(config.store_dir.clone()),
-            history: History::new(config.claude_dir.clone()),
+            history: History::new(&config.claude_dir),
             config,
             running: Mutex::new(HashMap::new()),
         })
     }
 
-    pub fn initialize(&self, request: acp::InitializeRequest) -> acp::InitializeResponse {
+    pub fn initialize(request: &acp::InitializeRequest) -> acp::InitializeResponse {
         acp::InitializeResponse::new(request.protocol_version)
             .agent_info(
                 acp::Implementation::new("claude-code-acp", env!("CARGO_PKG_VERSION"))
@@ -95,7 +95,7 @@ impl Bridge {
         let servers = parse_mcp(request.mcp_servers)?;
         let id = Uuid::new_v4().simple().to_string();
         let session = Session::new(cwd, servers);
-        self.store.create(id.clone(), session.clone());
+        self.store.create(id.clone(), &session);
         Ok(acp::NewSessionResponse::new(id).config_options(self.options(&session)))
     }
 
@@ -213,7 +213,7 @@ impl Bridge {
         } else if self.history.find(id, &cwd) {
             let mut session = Session::new(cwd, servers);
             session.claude_session_id = Some(id.to_owned());
-            self.store.create(id.to_owned(), session);
+            self.store.create(id.to_owned(), &session);
         } else {
             return Err(Error::new(
                 -32002,
@@ -225,7 +225,7 @@ impl Bridge {
 
     pub fn set_config(
         &self,
-        request: acp::SetSessionConfigOptionRequest,
+        request: &acp::SetSessionConfigOptionRequest,
         connection: &ConnectionTo<Client>,
     ) -> std::result::Result<acp::SetSessionConfigOptionResponse, Error> {
         let id = request.session_id.to_string();
@@ -275,11 +275,11 @@ impl Bridge {
     /// cancel that arrives right after the prompt reaches this turn.
     pub fn prompt(
         self: &Arc<Self>,
-        request: acp::PromptRequest,
+        request: &acp::PromptRequest,
         connection: ConnectionTo<Client>,
     ) -> impl Future<Output = std::result::Result<acp::PromptResponse, Error>> + Send + 'static
     {
-        let turn = self.start_turn(&request);
+        let turn = self.start_turn(request);
         let bridge = self.clone();
         async move { bridge.run_turn(turn?, connection).await }
     }
@@ -514,6 +514,6 @@ fn parse_mcp(servers: Vec<acp::McpServer>) -> std::result::Result<Vec<McpServer>
         .collect()
 }
 
-fn invalid(message: impl ToString) -> Error {
-    Error::new(-32602, message.to_string())
+fn invalid(message: impl Into<String>) -> Error {
+    Error::new(-32602, message)
 }

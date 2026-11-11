@@ -1,5 +1,6 @@
 //! Prompt content built from local files.
 
+use std::fmt::Write;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
@@ -30,7 +31,7 @@ fn file_uri(path: &Path) -> String {
         if byte.is_ascii_alphanumeric() || b"-._~/".contains(&byte) {
             uri.push(byte as char);
         } else {
-            uri.push_str(&format!("%{byte:02X}"));
+            let _ = write!(uri, "%{byte:02X}");
         }
     }
     uri

@@ -21,7 +21,7 @@ pub struct History {
 }
 
 impl History {
-    pub fn new(claude_dir: PathBuf) -> Self {
+    pub fn new(claude_dir: &Path) -> Self {
         Self {
             root: claude_dir.join("projects"),
         }

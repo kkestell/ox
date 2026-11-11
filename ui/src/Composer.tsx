@@ -10,8 +10,7 @@ export function Composer({ session }: { session: SessionInfo }) {
   const [error, setError] = useState<string | null>(null);
 
   const running = session.state === "running" || session.state === "awaiting_permission";
-  const canSend =
-    session.state === "idle" && (text.trim() !== "" || attachments.length > 0);
+  const canSend = session.state === "idle" && (text.trim() !== "" || attachments.length > 0);
   const disabled = session.state === "exited";
 
   const run = async (action: () => Promise<unknown>) => {
@@ -33,9 +32,7 @@ export function Composer({ session }: { session: SessionInfo }) {
   const stop = () => run(() => invoke("cancel", { sessionId: session.id }));
 
   const setOption = (option: ConfigOption, value: string | boolean) =>
-    run(() =>
-      invoke("set_config_option", { sessionId: session.id, configId: option.id, value }),
-    );
+    run(() => invoke("set_config_option", { sessionId: session.id, configId: option.id, value }));
 
   const attach = async () => {
     const paths = await open({ multiple: true, title: "Attach Files" });
@@ -90,7 +87,11 @@ export function Composer({ session }: { session: SessionInfo }) {
           <Paperclip />
         </button>
         {session.config_options.map((option) => (
-          <ConfigPicker key={option.id} option={option} onChange={(value) => setOption(option, value)} />
+          <ConfigPicker
+            key={option.id}
+            option={option}
+            onChange={(value) => setOption(option, value)}
+          />
         ))}
         <button
           type="submit"

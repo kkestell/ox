@@ -169,7 +169,8 @@ impl Session {
     /// subscription with `SessionClosed`.
     pub fn close(&self) {
         self.record(Change::Closed);
-        if let Some(task) = self.task.lock().unwrap().take() {
+        let task = self.task.lock().unwrap().take();
+        if let Some(task) = task {
             task.abort();
         }
     }

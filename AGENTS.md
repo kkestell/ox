@@ -76,13 +76,31 @@
 
 ## Verifying changes
 
+Run checks once, when a task is finished, and report their results. While
+the user is reviewing a change and asking for adjustments, make the
+adjustments without running checks, and run them when the user says the work
+is done or asks for them.
+
+Run the targets for the parts that changed:
+
+- `make check-rust` checks Rust formatting and runs clippy with warnings as
+  errors and the workspace tests.
+- `make check-ui` runs Biome and `tsc` on the UI.
+- `make check-scripts` runs ruff on `scripts/`.
+- `make check` runs all three.
+
+`make fix` applies the formatters and safe lint fixes.
+
+After changing the behaviour of `crates/ox` or of the UI's TypeScript, also
+run `make e2e` and report its result. It builds the app with its embedded
+WebDriver server and drives it through the tests in `ui/e2e`, against sessions
+of `oxd-fake-agent` that the tests start with `oxctl`. A change to
+`ui/src/styles.css` alone takes `make check-ui`.
+
 After changing `oxd`, `ox-protocol`, `oxctl`, `claude-code-acp`, or
-`scripts/smoke-acp.py`, run all of these and report their results:
+`scripts/smoke-acp.py`, also run these and report their results:
 
 ```sh
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
 make smoke-claude     # Haiku
 make smoke-opencode   # openai/gpt-6-luna
 ```

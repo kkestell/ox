@@ -155,14 +155,16 @@ impl Phase {
 
             (Self::Live(mut live), Change::Update(update)) => {
                 if let SessionUpdate::ConfigOptionUpdate(options) = &update {
-                    live.agent.config_options = options.config_options.clone();
+                    live.agent
+                        .config_options
+                        .clone_from(&options.config_options);
                 }
                 (Self::Live(live), vec![EventKind::Update(update)])
             }
             (Self::Live(mut live), Change::ConfigOptionsSet(options)) => {
                 let mut events = Vec::new();
                 if live.agent.config_options != options {
-                    live.agent.config_options = options.clone();
+                    live.agent.config_options.clone_from(&options);
                     let update = ConfigOptionUpdate::new(options);
                     events.push(EventKind::Update(SessionUpdate::ConfigOptionUpdate(update)));
                 }
@@ -295,7 +297,9 @@ impl State {
 
     /// The first events with `seq > after_seq`, in order.
     pub fn events_after(&self, after_seq: u64) -> Vec<Event> {
-        let start = (after_seq as usize).min(self.events.len());
+        let start = usize::try_from(after_seq)
+            .unwrap_or(usize::MAX)
+            .min(self.events.len());
         self.events[start..].iter().take(BATCH).cloned().collect()
     }
 

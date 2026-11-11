@@ -9,10 +9,12 @@ export function Conversation({ sessionId }: { sessionId: string | null }) {
   // Whether the view follows the end of the conversation as it grows.
   const following = useRef(true);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new session is followed from its end
   useLayoutEffect(() => {
     following.current = true;
   }, [sessionId]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: each change to the items scrolls a followed view
   useLayoutEffect(() => {
     const node = element.current!;
     if (following.current) node.scrollTop = node.scrollHeight;
@@ -40,6 +42,7 @@ function ItemView({ item, sessionId }: { item: Item; sessionId: string }) {
         <div className="prompt">
           <p className="text">{item.text}</p>
           {item.attachments.map((name, index) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: a prompt's attachments never change, and names can repeat
             <span key={index} className="attachment">
               {name}
             </span>

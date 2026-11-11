@@ -12,6 +12,7 @@ export function useSessions() {
   const [attempt, setAttempt] = useState(0);
   const retry = () => setAttempt((attempt) => attempt + 1);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: each attempt starts a new watch
   useEffect(() => {
     // Only the latest watch's channel is read.
     let current = true;
@@ -24,7 +25,7 @@ export function useSessions() {
       } else if (message.type === "error") {
         setError(`Cannot reach oxd: ${message.message}`);
       } else {
-        retry();
+        setAttempt((attempt) => attempt + 1);
       }
     };
     invoke("watch_sessions", { channel });

@@ -24,7 +24,7 @@ use tokio::signal::unix::{SignalKind, signal};
 
 use crate::daemon::Daemon;
 
-const DEFAULT_IDLE_EXIT: Duration = Duration::from_millis(5000);
+const DEFAULT_IDLE_EXIT: Duration = Duration::from_secs(5);
 
 /// Pause after a failed `accept`. Accepting fails while the process or the
 /// system is out of file descriptors, and descriptors other processes free

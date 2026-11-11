@@ -35,12 +35,26 @@ Build a release bundle from `ui/`:
 npm run tauri build
 ```
 
-Build and test every crate from the repository root:
+Build every crate, then check formatting, lints, and tests across the Rust
+workspace, the UI, and the scripts, from the repository root:
 
 ```sh
 cargo build --workspace
-cargo test --workspace
+make check
 ```
+
+`make fix` applies the formatters and safe lint fixes.
+
+Run the end-to-end tests of the app:
+
+```sh
+make e2e
+```
+
+`make e2e` builds the app with the `webdriver` feature, which embeds a
+WebDriver server, and runs the WebdriverIO specs in `ui/e2e` against it. The
+specs start sessions of `oxd-fake-agent`, a scripted ACP agent, with `oxctl`
+and drive them through the app's UI.
 
 Run live ACP smoke checks with an installed, authenticated Claude Code or
 OpenCode CLI:

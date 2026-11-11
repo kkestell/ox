@@ -339,7 +339,7 @@ async fn until(subscription: &mut Subscription, last: impl Fn(&EventKind) -> boo
 /// `last`.
 async fn lists_until(
     watch: &mut SessionsWatch,
-    last: impl Fn(&[SessionInfo]) -> bool,
+    is_last: impl Fn(&[SessionInfo]) -> bool,
 ) -> Vec<Vec<SessionInfo>> {
     let mut lists = Vec::new();
     loop {
@@ -347,7 +347,7 @@ async fn lists_until(
             .await
             .expect("timed out waiting for a sessions list")
             .expect("the sessions watch ended");
-        let done = last(&list);
+        let done = is_last(&list);
         lists.push(list);
         if done {
             return lists;
@@ -711,7 +711,7 @@ async fn subscriptions_to_one_session_are_independent() {
     assert_contiguous(&turn, started + 1);
     let history = until(&mut all, turn_ended).await;
     assert_contiguous(&history, 1);
-    assert_eq!(history[started as usize..], turn);
+    assert_eq!(history[usize::try_from(started).unwrap()..], turn);
 
     let last_seq = turn.last().unwrap().seq;
     let error = client
@@ -916,7 +916,7 @@ async fn sigterm_stops_agents_and_removes_the_socket() {
     daemon.new_session_with(&client, &agent.arg()).await;
     drop(client);
     // SAFETY: sends SIGTERM to the daemon this test started.
-    unsafe { libc::kill(daemon.child.id().unwrap() as i32, libc::SIGTERM) };
+    unsafe { libc::kill(daemon.child.id().unwrap().cast_signed(), libc::SIGTERM) };
     assert!(daemon.wait_for_exit().await.success());
     assert!(!daemon.socket.exists());
     agent.exited().await;
@@ -1075,7 +1075,7 @@ async fn load_replays_a_session_after_the_daemon_restarts() {
     until(&mut events, turn_ended).await;
     drop(client);
     // SAFETY: sends SIGTERM to the daemon this test started.
-    unsafe { libc::kill(first.child.id().unwrap() as i32, libc::SIGTERM) };
+    unsafe { libc::kill(first.child.id().unwrap().cast_signed(), libc::SIGTERM) };
     assert!(first.wait_for_exit().await.success());
 
     let second = Daemon::start(1000).await;

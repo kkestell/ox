@@ -7,13 +7,24 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "TAURI_APP_PATH=../crates/ox TAURI_FRONTEND_PATH=. tauri"
+    "check": "biome check --error-on-warnings . && tsc && tsc -p e2e",
+    "fix": "biome check --write .",
+    "tauri": "TAURI_APP_PATH=../crates/ox TAURI_FRONTEND_PATH=. tauri",
+    "e2e": "wdio run e2e/wdio.conf.ts"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.6.6",
     "@tauri-apps/cli": "^2",
+    "@types/node": "^22.20.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.3.0",
+    "@wdio/cli": "^9.32.0",
+    "@wdio/globals": "^9.31.3",
+    "@wdio/local-runner": "^9.32.0",
+    "@wdio/mocha-framework": "^9.32.0",
+    "@wdio/spec-reporter": "^9.32.0",
+    "@wdio/tauri-service": "^1.5.1",
     "typescript": "^7.0.2",
     "vite": "^8.0.16"
   },

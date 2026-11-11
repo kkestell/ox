@@ -1,8 +1,9 @@
-import { PanelBottom, PanelLeft, PanelRight, type LucideIcon } from "lucide-react";
+import { type LucideIcon, PanelBottom, PanelLeft, PanelRight } from "lucide-react";
 import {
   type CSSProperties,
   type PointerEvent,
   type ReactNode,
+  useCallback,
   useLayoutEffect,
   useRef,
   useState,
@@ -27,13 +28,7 @@ interface Drag {
   startSize: number;
 }
 
-export function Workbench({
-  left,
-  children,
-}: {
-  left: ReactNode;
-  children: ReactNode;
-}) {
+export function Workbench({ left, children }: { left: ReactNode; children: ReactNode }) {
   const workbench = useRef<HTMLDivElement>(null);
   const center = useRef<HTMLDivElement>(null);
   const drag = useRef<Drag | null>(null);
@@ -46,17 +41,20 @@ export function Workbench({
 
   // `size` limited to what leaves the content its minimum, beside the other
   // visible panels and the sashes.
-  const clamp = (panel: Panel, size: number, current: Record<Panel, number>) => {
-    let max: number;
-    if (panel === "bottom") {
-      max = center.current!.clientHeight - 1 - minContentHeight;
-    } else {
-      const other = panel === "left" ? "right" : "left";
-      const otherWidth = visible[other] ? current[other] + 1 : 0;
-      max = workbench.current!.clientWidth - otherWidth - 1 - minContentWidth;
-    }
-    return Math.max(minSizes[panel], Math.min(size, max));
-  };
+  const clamp = useCallback(
+    (panel: Panel, size: number, current: Record<Panel, number>) => {
+      let max: number;
+      if (panel === "bottom") {
+        max = center.current!.clientHeight - 1 - minContentHeight;
+      } else {
+        const other = panel === "left" ? "right" : "left";
+        const otherWidth = visible[other] ? current[other] + 1 : 0;
+        max = workbench.current!.clientWidth - otherWidth - 1 - minContentWidth;
+      }
+      return Math.max(minSizes[panel], Math.min(size, max));
+    },
+    [visible],
+  );
 
   const resize = (panel: Panel, size: number) =>
     setSizes((current) => ({ ...current, [panel]: clamp(panel, size, current) }));
@@ -74,7 +72,7 @@ export function Workbench({
     fit();
     window.addEventListener("resize", fit);
     return () => window.removeEventListener("resize", fit);
-  }, [visible]);
+  }, [visible, clamp]);
 
   const sash = (panel: Panel) => {
     const vertical = panel !== "bottom";

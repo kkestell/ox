@@ -38,12 +38,15 @@ body,
 }
 
 body {
-  font: 14px/1.5 system-ui, sans-serif;
+  font:
+    14px / 1.5 system-ui,
+    sans-serif;
   background: var(--background);
   color: var(--text);
 }
 
 [hidden] {
+  /* biome-ignore lint/complexity/noImportantStyles: hidden overrides the display of every layout class */
   display: none !important;
 }
 

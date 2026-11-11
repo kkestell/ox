@@ -211,7 +211,7 @@ async fn main() -> agent_client_protocol::Result<()> {
                     let value = request.value.as_value_id().map(ToString::to_string);
                     match value.as_deref() {
                         Some(value @ ("ask" | "code")) if &*request.config_id.0 == "mode" => {
-                            *state.mode.lock().unwrap() = value.to_owned();
+                            value.clone_into(&mut state.mode.lock().unwrap());
                         }
                         _ => {
                             return responder.respond_with_error(
@@ -255,7 +255,7 @@ async fn main() -> agent_client_protocol::Result<()> {
                             .any(|line| line.trim() == "late-permission");
                         match run(&state, &task_connection, request).await {
                             Ok(stop_reason) => {
-                                responder.respond(acp::PromptResponse::new(stop_reason))?
+                                responder.respond(acp::PromptResponse::new(stop_reason))?;
                             }
                             Err(error) => responder.respond_with_error(error)?,
                         }
@@ -310,7 +310,7 @@ async fn run(
     for line in script.lines() {
         let words: Vec<&str> = line.split_whitespace().collect();
         match words.as_slice() {
-            [] => {}
+            [] | ["late-permission"] => {}
             ["say", n, delay] => {
                 let n: u64 = parse(n)?;
                 let delay = Duration::from_millis(parse(delay)?);
@@ -332,7 +332,7 @@ async fn run(
                     acp::RequestPermissionOutcome::Selected(selected)
                         if &*selected.option_id.0 == "allow" =>
                     {
-                        say("allowed".into())?
+                        say("allowed".into())?;
                     }
                     acp::RequestPermissionOutcome::Selected(_) => say("rejected".into())?,
                     _ => {
@@ -341,7 +341,6 @@ async fn run(
                     }
                 }
             }
-            ["late-permission"] => {}
             ["describe"] => say(description.clone())?,
             ["mode"] => say(state.mode.lock().unwrap().clone())?,
             ["wait"] => {
@@ -354,7 +353,7 @@ async fn run(
             }
             ["title", ..] => {
                 let title = line.trim().strip_prefix("title").unwrap().trim();
-                info(acp::SessionInfoUpdate::new().title(title))?
+                info(acp::SessionInfoUpdate::new().title(title))?;
             }
             ["title-null"] => info(acp::SessionInfoUpdate::new().title(None::<String>))?,
             ["touch"] => info(acp::SessionInfoUpdate::new().updated_at("2026-11-11T00:00:00Z"))?,

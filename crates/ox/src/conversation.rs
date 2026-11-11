@@ -250,12 +250,6 @@ impl Conversation {
                 self.tool_calls.insert(id, call);
                 Some(self.create(item))
             }
-            SessionUpdate::Plan(_)
-            | SessionUpdate::AvailableCommandsUpdate(_)
-            | SessionUpdate::CurrentModeUpdate(_)
-            | SessionUpdate::ConfigOptionUpdate(_)
-            | SessionUpdate::SessionInfoUpdate(_)
-            | SessionUpdate::UsageUpdate(_) => None,
             _ => None,
         }
     }

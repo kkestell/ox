@@ -84,6 +84,10 @@ enum Agent {
 /// Sends the sessions list on `channel` each time it changes, replacing the
 /// previous watch.
 #[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri passes managed state to commands as `State` by value"
+)]
 fn watch_sessions(handle: AppHandle, app: State<'_, App>, channel: Channel<SessionsMessage>) {
     let task = tauri::async_runtime::spawn(async move {
         let app = handle.state::<App>();
@@ -119,6 +123,10 @@ fn watch_sessions(handle: AppHandle, app: State<'_, App>, channel: Channel<Sessi
 /// session that cannot be viewed, as after the daemon restarts, sends
 /// nothing.
 #[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri passes managed state to commands as `State` by value"
+)]
 fn view_session(
     handle: AppHandle,
     app: State<'_, App>,
@@ -259,8 +267,10 @@ fn utf8_env() -> BTreeMap<String, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
+    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    #[cfg(feature = "webdriver")]
+    let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
+    builder
         .manage(App::default())
         .invoke_handler(tauri::generate_handler![
             watch_sessions,

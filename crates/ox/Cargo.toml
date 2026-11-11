@@ -19,4 +19,14 @@ ox-protocol = { path = "../ox-protocol" }
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+tauri-plugin-wdio-webdriver = { version = "1.5.1", optional = true }
 tokio = { version = "1", features = ["sync"] }
+
+[features]
+# An embedded WebDriver server, which the end-to-end tests in `ui/e2e` drive
+# the app through.
+webdriver = ["dep:tauri-plugin-wdio-webdriver"]
+
+
+[lints]
+workspace = true

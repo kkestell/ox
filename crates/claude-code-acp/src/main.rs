@@ -18,13 +18,10 @@ async fn main() -> Result<()> {
         .v1()
         .name("claude-code-acp")
         .on_receive_request(
-            {
-                let bridge = bridge.clone();
-                async move |request: acp::InitializeRequest,
-                            responder: Responder<acp::InitializeResponse>,
-                            _connection: ConnectionTo<Client>| {
-                    responder.respond(bridge.initialize(request))
-                }
+            async move |request: acp::InitializeRequest,
+                        responder: Responder<acp::InitializeResponse>,
+                        _connection: ConnectionTo<Client>| {
+                responder.respond(bridge::Bridge::initialize(&request))
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -78,7 +75,7 @@ async fn main() -> Result<()> {
                 async move |request: acp::SetSessionConfigOptionRequest,
                             responder: Responder<acp::SetSessionConfigOptionResponse>,
                             connection: ConnectionTo<Client>| {
-                    respond(responder, bridge.set_config(request, &connection))
+                    respond(responder, bridge.set_config(&request, &connection))
                 }
             },
             agent_client_protocol::on_receive_request!(),
@@ -97,7 +94,7 @@ async fn main() -> Result<()> {
                 async move |request: acp::PromptRequest,
                             responder: Responder<acp::PromptResponse>,
                             connection: ConnectionTo<Client>| {
-                    let turn = bridge.prompt(request, connection.clone());
+                    let turn = bridge.prompt(&request, connection.clone());
                     connection.spawn(async move { respond(responder, turn.await) })
                 }
             },

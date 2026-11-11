@@ -16,3 +16,6 @@ tokio = { version = "1", features = ["net", "io-util", "sync", "rt", "process", 
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["macros"] }
+
+[lints]
+workspace = true
