@@ -50,15 +50,6 @@ pub fn mcp_arg(arg: &str) -> Result<(), String> {
     }
 }
 
-pub fn model_id(model: &str) -> Result<&str, String> {
-    let model = model.trim();
-    if model.is_empty() || model.len() > 200 {
-        Err("modelId must be 1 to 200 characters".into())
-    } else {
-        Ok(model)
-    }
-}
-
 fn has_metacharacters(value: &str) -> bool {
     value.chars().any(|c| ";|&$`(){}!<>".contains(c))
 }

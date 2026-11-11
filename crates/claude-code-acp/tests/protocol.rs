@@ -16,19 +16,7 @@ fn fake_claude(dir: &Path, script: &str) {
 }
 
 fn start(dir: &Path, store: &Path) -> (Child, BufReader<ChildStdout>) {
-    start_with_timeout(dir, store, None)
-}
-
-fn start_with_timeout(
-    dir: &Path,
-    store: &Path,
-    timeout_ms: Option<u64>,
-) -> (Child, BufReader<ChildStdout>) {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_claude-code-acp"));
-    if let Some(timeout_ms) = timeout_ms {
-        command.env("CLAUDE_ACP_TIMEOUT", timeout_ms.to_string());
-    }
-    let mut child = command
+    let mut child = Command::new(env!("CARGO_BIN_EXE_claude-code-acp"))
         .env(
             "PATH",
             format!("{}:{}", dir.display(), std::env::var("PATH").unwrap()),
@@ -718,78 +706,6 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
             .count(),
         2
     );
-    child.kill().await.unwrap();
-}
-
-#[tokio::test]
-async fn timeout_stops_a_hung_claude_and_allows_another_prompt() {
-    let temp = tempfile::tempdir().unwrap();
-    let bin = temp.path().join("bin");
-    let project = temp.path().join("project");
-    fs::create_dir_all(&bin).unwrap();
-    fs::create_dir_all(&project).unwrap();
-    fake_claude(&bin, "exec sleep 10");
-    let (mut child, mut reader) = start_with_timeout(&bin, &temp.path().join("store"), Some(300));
-    initialize(&mut child, &mut reader).await;
-    send(&mut child, json!({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":project,"mcpServers":[]}})).await;
-    let (new, _) = response(&mut reader, 2).await;
-    let id = new["result"]["sessionId"].clone();
-    for request_id in [3, 4] {
-        send(&mut child, json!({"jsonrpc":"2.0","id":request_id,"method":"session/prompt","params":{"sessionId":id,"prompt":[{"type":"text","text":"hello"}]}})).await;
-        let (result, updates) = response(&mut reader, request_id).await;
-        assert!(result.get("result").is_some(), "{result}");
-        assert!(
-            updates
-                .iter()
-                .any(|v| v["params"]["update"]["content"]["text"] == "Error: claude timed out")
-        );
-    }
-    child.kill().await.unwrap();
-}
-
-#[tokio::test]
-async fn permission_wait_does_not_count_toward_the_timeout() {
-    let temp = tempfile::tempdir().unwrap();
-    let bin = temp.path().join("bin");
-    let project = temp.path().join("project");
-    fs::create_dir_all(&bin).unwrap();
-    fs::create_dir_all(&project).unwrap();
-    fake_claude(
-        &bin,
-        r#"
-IFS= read -r initial || exit 10
-printf '%s\n' '{"type":"control_request","request_id":"permission-1","request":{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"tool-1","input":{"command":"pwd"}}}'
-IFS= read -r answer
-printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}'
-printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43a2"}'
-"#,
-    );
-    let (mut child, mut reader) = start_with_timeout(&bin, &temp.path().join("store"), Some(2000));
-    initialize(&mut child, &mut reader).await;
-    send(&mut child, json!({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":project,"mcpServers":[]}})).await;
-    let (new, _) = response(&mut reader, 2).await;
-    let id = new["result"]["sessionId"].clone();
-    send(&mut child, json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":id,"prompt":[{"type":"text","text":"run pwd"}]}})).await;
-    let permission = loop {
-        let value = receive(&mut reader).await;
-        if value["method"] == "session/request_permission" {
-            break value;
-        }
-    };
-    tokio::time::sleep(Duration::from_millis(2500)).await;
-    send(&mut child, json!({"jsonrpc":"2.0","id":permission["id"],"result":{"outcome":{"outcome":"selected","optionId":"allow_once"}}})).await;
-    let (result, updates) = response(&mut reader, 3).await;
-    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
-    assert!(
-        updates
-            .iter()
-            .any(|v| v["params"]["update"]["content"]["text"] == "done")
-    );
-    assert!(!updates.iter().any(|v| {
-        v["params"]["update"]["content"]["text"]
-            .as_str()
-            .is_some_and(|s| s.starts_with("Error:"))
-    }));
     child.kill().await.unwrap();
 }
 

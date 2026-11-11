@@ -10,10 +10,8 @@ use tokio::{
     process::{Child, ChildStderr, Command},
     sync::{oneshot, watch},
     task::JoinHandle,
-    time::{Instant, sleep_until, timeout},
+    time::timeout,
 };
-
-use crate::config::Config;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct McpServer {
@@ -106,22 +104,13 @@ async fn write_message(
 }
 
 pub async fn run<F: Future<Output = Value>>(
-    config: &Config,
     request: RunRequest<'_>,
     cancelled: watch::Receiver<bool>,
     on_event: impl FnMut(Event),
     on_permission: impl FnMut(PermissionRequest) -> F,
 ) -> RunOutcome {
     let session_id = Mutex::new(None);
-    let result = run_claude(
-        config,
-        request,
-        cancelled,
-        &session_id,
-        on_event,
-        on_permission,
-    )
-    .await;
+    let result = run_claude(request, cancelled, &session_id, on_event, on_permission).await;
     RunOutcome {
         session_id: session_id.into_inner().unwrap(),
         result,
@@ -129,7 +118,6 @@ pub async fn run<F: Future<Output = Value>>(
 }
 
 async fn run_claude<F: Future<Output = Value>>(
-    config: &Config,
     request: RunRequest<'_>,
     mut cancelled: watch::Receiver<bool>,
     session_id: &Mutex<Option<String>>,
@@ -150,25 +138,15 @@ async fn run_claude<F: Future<Output = Value>>(
             "--verbose",
             "--include-partial-messages",
         ])
-        .args(["--model", request.model]);
-    if let Some(id) = request.resume {
-        command.arg("--resume").arg(id);
-    }
-    if let Some(turns) = config.max_turns {
-        command.arg("--max-turns").arg(turns.to_string());
-    }
-    if config.skip_permissions {
-        command.arg("--dangerously-skip-permissions");
-    } else {
-        command.args([
+        .args(["--model", request.model])
+        .args([
             "--permission-mode",
             request.mode,
             "--permission-prompt-tool",
             "stdio",
         ]);
-    }
-    for tool in &config.allowed_tools {
-        command.arg("--allowedTools").arg(tool);
+    if let Some(id) = request.resume {
+        command.arg("--resume").arg(id);
     }
 
     let mut mcp_file = None;
@@ -205,12 +183,10 @@ async fn run_claude<F: Future<Output = Value>>(
         .map_err(|e| RunError::Failed(format!("failed to start claude: {e}")))?;
     let group = ProcessGroup(child.id());
     let mut stderr = Stderr::collect(child.stderr.take().expect("piped stderr"));
-    let budget = Budget::new(config.timeout);
     let exchange = async {
         let reported = read_output(
             &mut child,
             request.content,
-            &budget,
             session_id,
             on_event,
             on_permission,
@@ -235,7 +211,6 @@ async fn run_claude<F: Future<Output = Value>>(
     };
     let result = tokio::select! {
         result = exchange => result,
-        () = budget.exhausted() => Err(RunError::Failed("claude timed out".into())),
         _ = cancelled.wait_for(|cancelled| *cancelled) => Err(RunError::Cancelled),
     };
     if result.is_err() {
@@ -332,54 +307,9 @@ fn read_buffered(stderr: &ChildStderr, buffer: &mut Vec<u8>) {
     }
 }
 
-/// Limits how long claude works on a turn. Time spent waiting for a
-/// permission answer does not count, and each answer starts a full budget.
-struct Budget {
-    limit: Option<Duration>,
-    deadline: watch::Sender<Option<Instant>>,
-}
-
-impl Budget {
-    fn new(limit: Option<Duration>) -> Self {
-        let budget = Self {
-            limit,
-            deadline: watch::Sender::new(None),
-        };
-        budget.restart();
-        budget
-    }
-
-    fn restart(&self) {
-        self.deadline
-            .send_replace(self.limit.map(|limit| Instant::now() + limit));
-    }
-
-    fn pause(&self) {
-        self.deadline.send_replace(None);
-    }
-
-    /// Resolves once the running budget runs out.
-    async fn exhausted(&self) {
-        let mut deadline = self.deadline.subscribe();
-        loop {
-            let current = *deadline.borrow_and_update();
-            match current {
-                Some(at) => tokio::select! {
-                    () = sleep_until(at) => return,
-                    _ = deadline.changed() => {}
-                },
-                None => {
-                    let _ = deadline.changed().await;
-                }
-            }
-        }
-    }
-}
-
 async fn read_output<F: Future<Output = Value>>(
     child: &mut Child,
     content: &[Value],
-    budget: &Budget,
     session_id: &Mutex<Option<String>>,
     mut on_event: impl FnMut(Event),
     mut on_permission: impl FnMut(PermissionRequest) -> F,
@@ -445,9 +375,7 @@ async fn read_output<F: Future<Output = Value>>(
                         .as_bool()
                         .unwrap_or(false),
                 };
-                budget.pause();
                 let answer = on_permission(permission).await;
-                budget.restart();
                 write_message(
                     &mut stdin,
                     &json!({

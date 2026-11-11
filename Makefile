@@ -3,7 +3,7 @@
 
 PYTHON ?= python3
 RUFF ?= uvx ruff@0.17.4
-CLAUDE_MODEL ?= haiku
+CLAUDE_MODEL ?= claude-haiku-5-5
 OPENCODE_MODEL ?= openai/gpt-6-luna
 DEV_SOCKET := $(CURDIR)/target/dev/oxd.sock
 

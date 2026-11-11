@@ -60,7 +60,7 @@ Run live ACP smoke checks with an installed, authenticated Claude Code or
 OpenCode CLI:
 
 ```sh
-make smoke-claude     # haiku
+make smoke-claude     # claude-haiku-5-5
 make smoke-opencode   # openai/gpt-6-luna
 ```
 
@@ -73,7 +73,7 @@ directory containing its results, events, logs, and test project.
 To select a model explicitly or change the default 120-second timeout per phase:
 
 ```sh
-python3 scripts/smoke-acp.py claude --model haiku --timeout 180
+python3 scripts/smoke-acp.py claude --model claude-haiku-5-5 --timeout 180
 python3 scripts/smoke-acp.py opencode --model openai/gpt-6-luna
 ```
 

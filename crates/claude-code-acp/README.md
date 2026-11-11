@@ -50,11 +50,6 @@ cargo build --release -p claude-code-acp
 
 | Environment variable              | Meaning                                            | Default                            |
 | --------------------------------- | -------------------------------------------------- | ---------------------------------- |
-| `CLAUDE_ACP_MODEL`                | Initial model; clients can change it per session   | `claude-opus-5-5`                  |
-| `CLAUDE_ACP_ALLOWED_TOOLS`        | Comma-separated tools passed as `--allowedTools`   | none                               |
-| `CLAUDE_ACP_MAX_TURNS`            | Maximum Claude turns per prompt                    | unlimited                          |
-| `CLAUDE_ACP_TIMEOUT`              | Per-prompt limit in ms, excluding permission waits | none                               |
-| `CLAUDE_ACP_SKIP_PERMISSIONS`     | Pass `--dangerously-skip-permissions` when `true`  | `false`                            |
 | `CLAUDE_ACP_STORE_DIR`            | Bridge session metadata directory                  | `~/.local/share/claude-code-acp`   |
 | `CLAUDE_CONFIG_DIR`               | Claude Code directory for native session discovery | `~/.claude`                        |
 | `CLAUDE_ACP_MCP_ALLOWED_COMMANDS` | Comma-separated allowed MCP executable names       | `node,npx,python3,python,deno,bun` |
@@ -110,15 +105,15 @@ The bridge advertises the `image` and `embeddedContext` prompt capabilities.
 
 Each prompt runs `claude` in its own process group. Clients can stop a prompt
 with `session/cancel`, including immediately after sending it or while a tool
-permission request is open. Cancelling, a timeout, or an error sends `SIGTERM`
+permission request is open. Cancelling or an error sends `SIGTERM`
 to the group and `SIGKILL` two seconds later; when Claude exits, any processes
 it left in the group are killed. Tool calls that started without a result are
 reported as failed when a prompt is cancelled or fails. A cancelled or failed
 prompt keeps its Claude conversation for the next prompt when Claude saved a
 transcript for it.
 
-A prompt that reaches `CLAUDE_ACP_MAX_TURNS` ends with the `max_turn_requests`
-stop reason. Other Claude errors are reported as an `Error:` message and the
+A prompt whose result Claude reports as `error_max_turns` ends with the
+`max_turn_requests` stop reason. Other Claude errors are reported as an `Error:` message and the
 prompt ends with `end_turn`.
 
 The bridge forwards stdio MCP server definitions to Claude.
@@ -129,9 +124,7 @@ Model selection is exposed through `configOptions` and
 `session/set_config_option`.
 
 The mode selector offers `auto`, `manual`, `acceptEdits`, and `plan`. The bridge
-passes the selected mode to Claude as `--permission-mode` on each prompt. When
-`CLAUDE_ACP_SKIP_PERMISSIONS=true`, it passes
-`--dangerously-skip-permissions` instead.
+passes the selected mode to Claude as `--permission-mode` on each prompt.
 
 ### Tool permissions
 

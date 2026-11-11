@@ -49,7 +49,6 @@ impl Drop for Running {
 }
 
 pub struct Bridge {
-    config: Config,
     store: Store,
     history: History,
     running: Mutex<HashMap<String, watch::Sender<bool>>>,
@@ -58,9 +57,8 @@ pub struct Bridge {
 impl Bridge {
     pub fn new(config: Config) -> Arc<Self> {
         Arc::new(Self {
-            store: Store::new(config.store_dir.clone()),
             history: History::new(&config.claude_dir),
-            config,
+            store: Store::new(config.store_dir),
             running: Mutex::new(HashMap::new()),
         })
     }
@@ -96,7 +94,7 @@ impl Bridge {
         let id = Uuid::new_v4().simple().to_string();
         let session = Session::new(cwd, servers);
         self.store.create(id.clone(), &session);
-        Ok(acp::NewSessionResponse::new(id).config_options(self.options(&session)))
+        Ok(acp::NewSessionResponse::new(id).config_options(Self::options(&session)))
     }
 
     /// Opens a session and replays its conversation from Claude's
@@ -112,7 +110,7 @@ impl Bridge {
             Updates::new(connection, &id, &session.cwd)
                 .replay(self.history.messages(claude_id, &session.cwd));
         }
-        Ok(acp::LoadSessionResponse::new().config_options(self.options(&session)))
+        Ok(acp::LoadSessionResponse::new().config_options(Self::options(&session)))
     }
 
     pub fn list_sessions(
@@ -188,7 +186,7 @@ impl Bridge {
     ) -> std::result::Result<acp::ResumeSessionResponse, Error> {
         let id = request.session_id.to_string();
         let session = self.open(&id, &request.cwd, request.mcp_servers)?;
-        Ok(acp::ResumeSessionResponse::new().config_options(self.options(&session)))
+        Ok(acp::ResumeSessionResponse::new().config_options(Self::options(&session)))
     }
 
     /// Finds a bridge session, or a Claude session from its transcripts,
@@ -241,21 +239,13 @@ impl Bridge {
                 self.store
                     .update(&id, |session| session.mode = Some(value.clone()));
             }
-            "model" => {
-                validation::model_id(&value).map_err(invalid)?;
-                if !self
-                    .model_ids(&self.require(&id)?)
-                    .iter()
-                    .any(|candidate| candidate == &value)
-                {
-                    return Err(invalid(format!("Invalid model: {value}")));
-                }
+            "model" if is_model(&value) => {
                 self.store
                     .update(&id, |session| session.model = Some(value));
             }
             _ => return Err(invalid("Unknown configuration option or value")),
         }
-        let options = self.options(&self.require(&id)?);
+        let options = Self::options(&self.require(&id)?);
         notify(
             connection,
             &id,
@@ -343,9 +333,8 @@ impl Bridge {
         }
 
         let updates = Updates::new(&connection, id, &session.cwd);
-        let model = session.model.as_deref().unwrap_or(&self.config.model);
+        let model = session_model(&session);
         let outcome = runner::run(
-            &self.config,
             RunRequest {
                 cwd: &session.cwd,
                 content: &content,
@@ -411,51 +400,43 @@ impl Bridge {
             .ok_or_else(|| Error::new(-32002, format!("Session {id} not found")))
     }
 
-    fn options(&self, session: &Session) -> Vec<SessionConfigOption> {
+    fn options(session: &Session) -> Vec<SessionConfigOption> {
         let mode = session_mode(session);
-        let model = session.model.as_deref().unwrap_or(&self.config.model);
-        let model_options = self
-            .model_ids(session)
-            .into_iter()
-            .map(|id| {
-                let name = match id.as_str() {
-                    "claude-fable-5-2" => "Fable 5.2",
-                    "claude-opus-5-5" => "Opus 5.5",
-                    "claude-sonnet-5-5" => "Sonnet 5.5",
-                    "claude-haiku-5-5" => "Haiku 5.5",
-                    _ => id.as_str(),
-                };
-                SessionConfigSelectOption::new(id.clone(), name.to_owned())
-            })
-            .collect::<Vec<_>>();
+        let model = session_model(session);
         vec![
-            SessionConfigOption::select("model", "Model", model.to_owned(), model_options)
+            SessionConfigOption::select("model", "Model", model.to_owned(), model_options())
                 .category(SessionConfigOptionCategory::Model),
             SessionConfigOption::select("mode", "Mode", mode.to_owned(), mode_options())
                 .category(SessionConfigOptionCategory::Mode),
         ]
     }
+}
 
-    fn model_ids(&self, session: &Session) -> Vec<String> {
-        let mut models: Vec<String> = [
-            "claude-fable-5-2",
-            "claude-opus-5-5",
-            "claude-sonnet-5-5",
-            "claude-haiku-5-5",
-        ]
+/// The models a session can use, by id and name.
+const MODELS: [(&str, &str); 4] = [
+    ("claude-fable-5-2", "Fable 5.2"),
+    ("claude-opus-5-5", "Opus 5.5"),
+    ("claude-sonnet-5-5", "Sonnet 5.5"),
+    ("claude-haiku-5-5", "Haiku 5.5"),
+];
+
+fn is_model(value: &str) -> bool {
+    MODELS.iter().any(|(id, _)| *id == value)
+}
+
+fn session_model(session: &Session) -> &str {
+    session
+        .model
+        .as_deref()
+        .filter(|model| is_model(model))
+        .unwrap_or("claude-opus-5-5")
+}
+
+fn model_options() -> Vec<SessionConfigSelectOption> {
+    MODELS
         .into_iter()
-        .map(str::to_owned)
-        .collect();
-        for model in [
-            &self.config.model,
-            session.model.as_ref().unwrap_or(&self.config.model),
-        ] {
-            if !models.contains(model) {
-                models.push(model.clone());
-            }
-        }
-        models
-    }
+        .map(|(id, name)| SessionConfigSelectOption::new(id, name))
+        .collect()
 }
 
 fn is_mode(value: &str) -> bool {

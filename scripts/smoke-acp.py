@@ -153,12 +153,7 @@ class SmokeRun:
         if args.agent == "claude":
             self.agent = [str(binaries / "claude-code-acp")]
             self.env.update(
-                CLAUDE_ACP_MODEL=args.model,
                 CLAUDE_ACP_STORE_DIR=str(directory / "bridge-store"),
-                CLAUDE_ACP_SKIP_PERMISSIONS="false",
-                CLAUDE_ACP_ALLOWED_TOOLS="",
-                CLAUDE_ACP_TIMEOUT=str(int(args.timeout * 1000)),
-                CLAUDE_ACP_MAX_TURNS="6",
             )
         else:
             (self.project / "opencode.json").write_text(
@@ -266,6 +261,8 @@ class SmokeRun:
         self.daemon_log = daemon_log
         self.start_daemon()
         self.session = self.ctl("new", "--cwd", str(self.project), "--", *self.agent)
+        if self.args.agent == "claude":
+            self.ctl("config", self.session, "model", self.args.model)
         self.remember_agents()
         check(self.agent_pids, "Could not find the daemon's ACP agent process")
         check("\tidle\t" in self.ctl("ls"), "New session is not idle")
@@ -456,12 +453,8 @@ class SmokeRun:
                 model = json.loads(line).get("message", {}).get("model")
                 if model and model != "<synthetic>":
                     models.add(model)
-            expected = self.args.model
-            matches = lambda model: model == expected
-            if expected in ("haiku", "sonnet", "opus"):
-                matches = lambda model: model.startswith(f"claude-{expected}-")
             check(
-                models and all(matches(model) for model in models),
+                models == {self.args.model},
                 f"Unexpected transcript models: {sorted(models)}",
             )
         else:
@@ -521,9 +514,7 @@ def positive_seconds(value):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("agent", choices=("claude", "opencode"))
-    parser.add_argument(
-        "--model", required=True, help="Model ID or Claude alias; no fallback"
-    )
+    parser.add_argument("--model", required=True, help="Model ID; no fallback")
     parser.add_argument(
         "--timeout",
         type=positive_seconds,
