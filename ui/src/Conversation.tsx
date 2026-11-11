@@ -59,12 +59,7 @@ function ItemView({ item, sessionId }: { item: Item; sessionId: string }) {
         </details>
       );
     case "tool_call":
-      return (
-        <div className="tool-call" data-kind={item.kind} data-status={item.status}>
-          <span className="title">{item.title}</span>
-          <span className="status">{item.status.replace("_", " ")}</span>
-        </div>
-      );
+      return <ToolCall item={item} />;
     case "permission":
       return <Permission item={item} sessionId={sessionId} />;
     case "turn_error":
@@ -78,6 +73,41 @@ function ItemView({ item, sessionId }: { item: Item; sessionId: string }) {
     case "session_closed":
       return <p className="session-closed">Session closed</p>;
   }
+}
+
+function ToolCall({ item }: { item: Extract<Item, { type: "tool_call" }> }) {
+  const heading = (
+    <>
+      <span className="title">{item.title}</span>
+      <span className="status">{item.status.replace("_", " ")}</span>
+    </>
+  );
+  return (
+    <div className="tool-call" data-kind={item.kind} data-status={item.status}>
+      {item.content.length === 0 ? (
+        <div className="heading">{heading}</div>
+      ) : (
+        <details>
+          <summary className="heading">{heading}</summary>
+          {item.content.map((content, index) =>
+            content.type === "text" ? (
+              // biome-ignore lint/suspicious/noArrayIndexKey: a tool call's content is replaced whole
+              <p key={index} className="text">
+                {content.text}
+              </p>
+            ) : (
+              <img
+                // biome-ignore lint/suspicious/noArrayIndexKey: a tool call's content is replaced whole
+                key={index}
+                alt=""
+                src={`data:${content.mime_type};base64,${content.data}`}
+              />
+            ),
+          )}
+        </details>
+      )}
+    </div>
+  );
 }
 
 function Permission({

@@ -32,11 +32,22 @@ export interface PermissionOption {
   kind: "allow_once" | "allow_always" | "reject_once" | "reject_always";
 }
 
+export type ToolContent =
+  | { type: "text"; text: string }
+  | { type: "image"; mime_type: string; data: string };
+
 export type Item =
   | { type: "prompt"; key: string; text: string; attachments: string[] }
   | { type: "text"; key: string; text: string }
   | { type: "thought"; key: string; text: string }
-  | { type: "tool_call"; key: string; title: string; kind: string; status: string }
+  | {
+      type: "tool_call";
+      key: string;
+      title: string;
+      kind: string;
+      status: string;
+      content: ToolContent[];
+    }
   | {
       type: "permission";
       key: string;

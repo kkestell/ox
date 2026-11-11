@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use ox_protocol::schema::{
     ContentBlock, EmbeddedResourceResource, PermissionOption, RequestPermissionOutcome,
-    SessionUpdate, StopReason, ToolCall, ToolCallStatus, ToolKind,
+    SessionUpdate, StopReason, ToolCall, ToolCallContent, ToolCallStatus, ToolKind,
 };
 use ox_protocol::{Event, EventKind};
 use serde::Serialize;
@@ -31,12 +31,14 @@ pub enum Item {
         key: String,
         text: String,
     },
-    /// A tool call's current state.
+    /// A tool call's current state, with the text and images of its
+    /// content.
     ToolCall {
         key: String,
         title: String,
         kind: ToolKind,
         status: ToolCallStatus,
+        content: Vec<ToolContent>,
     },
     /// A permission request. `outcome` is set once it is resolved: the name
     /// of the chosen option, or `Cancelled`.
@@ -59,6 +61,14 @@ pub enum Item {
     SessionClosed {
         key: String,
     },
+}
+
+/// A text or image block of a tool call's content.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ToolContent {
+    Text { text: String },
+    Image { mime_type: String, data: String },
 }
 
 /// The block that the next chunk of its kind extends.
@@ -267,6 +277,23 @@ fn tool_call(call: &ToolCall) -> Item {
         title: call.title.clone(),
         kind: call.kind,
         status: call.status,
+        content: call
+            .content
+            .iter()
+            .filter_map(|content| match content {
+                ToolCallContent::Content(content) => match &content.content {
+                    ContentBlock::Text(text) => Some(ToolContent::Text {
+                        text: text.text.clone(),
+                    }),
+                    ContentBlock::Image(image) => Some(ToolContent::Image {
+                        mime_type: image.mime_type.clone(),
+                        data: image.data.clone(),
+                    }),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect(),
     }
 }
 
@@ -303,8 +330,8 @@ fn add_content(block: &ContentBlock, text: &mut Vec<String>, attachments: &mut V
 #[cfg(test)]
 mod tests {
     use ox_protocol::schema::{
-        ContentChunk, PermissionOptionKind, ResourceLink, SelectedPermissionOutcome, TextContent,
-        ToolCallUpdate, ToolCallUpdateFields,
+        ContentChunk, ImageContent, PermissionOptionKind, ResourceLink, SelectedPermissionOutcome,
+        TextContent, ToolCallUpdate, ToolCallUpdateFields,
     };
 
     use super::*;
@@ -417,26 +444,50 @@ mod tests {
                 ToolCallUpdateFields::new().status(status),
             )))
         };
+        let output = vec![
+            ToolCallContent::from(text("fn main() {}")),
+            ToolCallContent::from(ContentBlock::Image(ImageContent::new(
+                "iVBORw0KGgo=",
+                "image/png",
+            ))),
+        ];
         let items = fold(vec![
             agent("a"),
             EventKind::Update(SessionUpdate::ToolCall(call)),
             update(ToolCallStatus::InProgress),
-            update(ToolCallStatus::Completed),
+            EventKind::Update(SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                "t",
+                ToolCallUpdateFields::new()
+                    .status(ToolCallStatus::Completed)
+                    .content(output),
+            ))),
             agent("b"),
         ]);
-        let tool = |status| Item::ToolCall {
+        let tool = |status, content| Item::ToolCall {
             key: "tool:t".into(),
             title: "Read a.rs".into(),
             kind: ToolKind::Read,
             status,
+            content,
         };
         assert_eq!(
             items,
             [
                 item_text("1", "a"),
-                tool(ToolCallStatus::Pending),
-                tool(ToolCallStatus::InProgress),
-                tool(ToolCallStatus::Completed),
+                tool(ToolCallStatus::Pending, Vec::new()),
+                tool(ToolCallStatus::InProgress, Vec::new()),
+                tool(
+                    ToolCallStatus::Completed,
+                    vec![
+                        ToolContent::Text {
+                            text: "fn main() {}".into()
+                        },
+                        ToolContent::Image {
+                            mime_type: "image/png".into(),
+                            data: "iVBORw0KGgo=".into()
+                        },
+                    ]
+                ),
                 item_text("5", "b"),
             ]
         );

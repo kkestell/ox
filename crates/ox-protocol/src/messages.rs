@@ -188,8 +188,9 @@ pub enum EventKind {
     },
     /// A turn finished. For a prompt's turn, `stop_reason` is set when the
     /// agent answered the prompt and `error` when it answered with an error.
-    /// A turn the agent started has neither, unless the agent exited or the
-    /// session was closed during it, which sets `error`.
+    /// A turn the agent started has the `stop_reason` the agent reported
+    /// with its `Idle` state, if any, and `error` if the agent exited or the
+    /// session was closed during it.
     TurnEnded {
         stop_reason: Option<StopReason>,
         error: Option<String>,

@@ -85,13 +85,25 @@ them with the same code that converts a live prompt's output, so a replayed
 turn produces the same message, thought, and tool call updates, plus user
 message chunks for the prompts. Prompt resource links and embedded text replay
 as the text Claude received, and an embedded PDF as a `document` resource.
-Tool calls without a result end as failed. `session/resume` opens a session
+Claude keeps each subagent's transcript in the session's `subagents`
+directory, beside a `.meta.json` naming the tool call that started it, and
+the bridge replays it under that tool call as a live subagent shows. Tool
+calls without a result end as failed. `session/resume` opens a session
 without replaying it.
 
 ### Prompts and streaming
 
-`session/prompt` streams message, thought, and tool call updates. Prompts can
-contain these content blocks, which reach Claude in order:
+`session/prompt` streams message, thought, and tool call updates. A tool call's
+result sets its `content`: the result's text and images, with any other block
+Claude returns shown as its type in brackets, such as `[tool_reference]`.
+
+A subagent's lines carry `parent_tool_use_id`, the tool call that started it.
+Its messages and streamed text stay out of the conversation; each tool it
+calls adds a line with that tool's title to the parent tool call's `content`,
+ahead of the parent's result, which carries the subagent's answer. A tool
+call of the subagent that asks permission appears as a tool call of its own.
+
+Prompts can contain these content blocks, which reach Claude in order:
 
 | Block                     | Sent to Claude as                                      |
 | ------------------------- | ------------------------------------------------------ |
@@ -105,14 +117,19 @@ The bridge advertises the `image` and `embeddedContext` prompt capabilities.
 
 A session's first prompt starts `claude`, and the session keeps that process:
 the bridge holds its stdin open and sends each later prompt to it as a
-message. Claude stays running between prompts, so background tasks it started
+message with a `uuid`. The bridge takes the next turn's result as the prompt's
+once Claude says it started the prompt, with a `command_lifecycle` line in
+state `started` or, under `--replay-user-messages`, by echoing the prompt with
+`isReplay`. Claude stays running between prompts, so background tasks it started
 keep running. When one reports back, Claude starts a turn by itself, and the
 bridge sends that turn's updates and permission requests to the client as it
 does a prompt's. `session/cancel` stops such a turn too.
 
 ACP reports a turn only as the answer to a prompt, so the bridge also sends
 the extension notification `_ox/agent_state`, with the `sessionId` and a
-`state` of `running` or `idle`, each time Claude starts or stops working. A
+`state` of `running` or `idle`, each time Claude starts or stops working.
+After a turn Claude started, `idle` carries the turn's `stopReason`:
+`end_turn`, `max_turn_requests`, or `cancelled`. A
 prompt's response reaches the client before anything Claude does after that
 prompt's turn.
 

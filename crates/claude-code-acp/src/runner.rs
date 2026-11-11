@@ -9,6 +9,7 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
+use agent_client_protocol::v1::schema::StopReason;
 use ox_protocol::AgentState;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -53,7 +54,15 @@ pub enum Event {
     ToolResult {
         id: String,
         is_error: bool,
+        output: Vec<ToolOutput>,
     },
+}
+
+/// Part of what a tool returned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ToolOutput {
+    Text(String),
+    Image { data: String, mime_type: String },
 }
 
 #[derive(Debug)]
@@ -158,6 +167,7 @@ impl Claude {
                 "stream-json",
                 "--verbose",
                 "--include-partial-messages",
+                "--replay-user-messages",
             ])
             .args(["--model", request.model])
             .args([
@@ -210,6 +220,7 @@ impl Claude {
             saw_thought_delta: false,
             unclaimed_error: None,
             running: false,
+            ended: None,
         };
         tokio::spawn(output.read(child));
         Ok(Self { input, state })
@@ -315,6 +326,9 @@ struct Output {
     unclaimed_error: Option<String>,
     /// Claude last said it was working.
     running: bool,
+    /// How the last turn no prompt claimed ended, for the client to learn
+    /// when claude next says it is idle.
+    ended: Option<StopReason>,
 }
 
 impl Output {
@@ -376,7 +390,9 @@ impl Output {
             self.updates.state(if running {
                 AgentState::Running
             } else {
-                AgentState::Idle
+                AgentState::Idle {
+                    stop_reason: self.ended.take(),
+                }
             });
         }
     }
@@ -406,6 +422,23 @@ impl Output {
             .filter(|id| !id.is_empty())
         {
             self.state.lock().unwrap().session_id = Some(id.to_owned());
+        }
+        // A subagent's messages show as activity of the tool call that
+        // started it; its streamed text is not shown.
+        if let Some(parent) = value["parent_tool_use_id"].as_str() {
+            if matches!(value["type"].as_str(), Some("assistant" | "user")) {
+                for event in message_events(&value) {
+                    self.updates.subagent_event(parent, event);
+                }
+            }
+            return None;
+        }
+        // Claude echoes a prompt once its turn has taken it.
+        if value["isReplay"] == true {
+            if let Some(uuid) = value["uuid"].as_str() {
+                self.started(uuid);
+            }
+            return None;
         }
         let event = if value["type"] == "stream_event" {
             &value["event"]
@@ -439,15 +472,8 @@ impl Output {
                 }
             }
             Some("command_lifecycle") if event["state"] == "started" => {
-                let mut state = self.state.lock().unwrap();
-                if let Some(prompt) = &mut state.prompt
-                    && event["command_uuid"] == prompt.uuid.as_str()
-                {
-                    prompt.started = true;
-                    drop(state);
-                    if let Some(error) = self.unclaimed_error.take() {
-                        self.updates.error(&error);
-                    }
+                if let Some(uuid) = event["command_uuid"].as_str() {
+                    self.started(uuid);
                 }
             }
             Some("content_block_delta") => match event["delta"]["type"].as_str() {
@@ -495,6 +521,23 @@ impl Output {
             _ => {}
         }
         None
+    }
+
+    /// Notes that claude took the prompt sent as `uuid` into a turn, so the
+    /// turn's result is the prompt's. Claude says so with a `started`
+    /// lifecycle line and again by echoing the prompt; the first one counts.
+    fn started(&mut self, uuid: &str) {
+        let mut state = self.state.lock().unwrap();
+        if let Some(prompt) = &mut state.prompt
+            && prompt.uuid == uuid
+            && !prompt.started
+        {
+            prompt.started = true;
+            drop(state);
+            if let Some(error) = self.unclaimed_error.take() {
+                self.updates.error(&error);
+            }
+        }
     }
 
     /// Asks the client about a tool permission while output keeps flowing,
@@ -585,8 +628,12 @@ impl Output {
                 return Some(responded);
             }
             (None, Err(RunError::Failed(error))) if waiting => self.unclaimed_error = Some(error),
-            (None, Err(RunError::Failed(error))) => self.updates.error(&error),
-            (None, _) => {}
+            (None, result) => {
+                if let Err(RunError::Failed(error)) = &result {
+                    self.updates.error(error);
+                }
+                self.ended = Some(stop_reason(&result));
+            }
         }
         None
     }
@@ -656,6 +703,16 @@ fn read_buffered(stderr: &ChildStderr, buffer: &mut Vec<u8>) {
     }
 }
 
+/// The ACP stop reason of a turn's outcome. A failed turn reports its error
+/// as a message and ends as a turn does.
+pub fn stop_reason(result: &Result<Finish, RunError>) -> StopReason {
+    match result {
+        Ok(Finish::EndTurn) | Err(RunError::Failed(_)) => StopReason::EndTurn,
+        Ok(Finish::MaxTurns) => StopReason::MaxTurnRequests,
+        Err(RunError::Cancelled) => StopReason::Cancelled,
+    }
+}
+
 fn result_outcome(result: &Value) -> Result<Finish, RunError> {
     if result["subtype"] == "error_max_turns" {
         return Ok(Finish::MaxTurns);
@@ -683,12 +740,12 @@ fn result_outcome(result: &Value) -> Result<Finish, RunError> {
 }
 
 /// The events of one Claude message: an `assistant` or `user` line of
-/// claude's stream-json output, or the same entry in its transcript. Meta
-/// messages, which Claude adds for the model, and sidechain messages, which
-/// belong to subagents, have none, and neither do empty text and thinking
-/// blocks, which Claude records when it does not display thinking.
+/// claude's stream-json output, or the same entry in a transcript. Meta
+/// messages, which Claude adds for the model, have none, and neither do
+/// empty text and thinking blocks, which Claude records when it does not
+/// display thinking.
 pub fn message_events(entry: &Value) -> Vec<Event> {
-    if entry["isMeta"] == true || entry["isSidechain"] == true {
+    if entry["isMeta"] == true {
         return Vec::new();
     }
     let user = entry["type"] == "user";
@@ -725,6 +782,7 @@ pub fn message_events(entry: &Value) -> Vec<Event> {
                 (true, "tool_result") => Some(Event::ToolResult {
                     id: text("tool_use_id")?,
                     is_error: block["is_error"].as_bool().unwrap_or(false),
+                    output: tool_output(&block["content"]),
                 }),
                 (false, "text") => text("text").map(Event::Text),
                 (false, "thinking") => text("thinking").map(Event::Thought),
@@ -735,6 +793,35 @@ pub fn message_events(entry: &Value) -> Vec<Event> {
                 }),
                 _ => None,
             }
+        })
+        .collect()
+}
+
+/// What a tool result holds: a string, or text and image blocks. Other
+/// blocks show as their type.
+fn tool_output(content: &Value) -> Vec<ToolOutput> {
+    if let Some(text) = content.as_str() {
+        return if text.is_empty() {
+            Vec::new()
+        } else {
+            vec![ToolOutput::Text(text.to_owned())]
+        };
+    }
+    let Some(blocks) = content.as_array() else {
+        return Vec::new();
+    };
+    blocks
+        .iter()
+        .filter_map(|block| match block["type"].as_str()? {
+            "text" => block["text"]
+                .as_str()
+                .filter(|text| !text.is_empty())
+                .map(|text| ToolOutput::Text(text.to_owned())),
+            "image" if block["source"]["type"] == "base64" => Some(ToolOutput::Image {
+                data: block["source"]["data"].as_str()?.to_owned(),
+                mime_type: block["source"]["media_type"].as_str()?.to_owned(),
+            }),
+            other => Some(ToolOutput::Text(format!("[{other}]"))),
         })
         .collect()
 }

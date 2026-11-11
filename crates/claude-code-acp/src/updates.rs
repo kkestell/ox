@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -15,7 +15,7 @@ use ox_protocol::{AgentState, AgentStateNotification};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::runner::{Event, PermissionRequest, message_events};
+use crate::runner::{Event, PermissionRequest, ToolOutput, message_events};
 
 #[derive(Default)]
 struct Tools {
@@ -23,6 +23,9 @@ struct Tools {
     seen: HashSet<String>,
     /// Tool calls that have started and not reported a result.
     open: HashSet<String>,
+    /// The activity of each subagent, by the tool call that started it: a
+    /// line for each tool the subagent called.
+    activity: HashMap<String, Vec<ToolCallContent>>,
 }
 
 /// Translates a session's Claude events and permission requests into ACP updates.
@@ -102,28 +105,97 @@ impl Updates {
                         .raw_input(input),
                 )
             }
-            Event::ToolResult { id, is_error } => {
-                self.tools.lock().unwrap().open.remove(&id);
-                tool_status(
-                    id,
-                    if is_error {
-                        ToolCallStatus::Failed
-                    } else {
-                        ToolCallStatus::Completed
-                    },
-                )
+            Event::ToolResult {
+                id,
+                is_error,
+                output,
+            } => {
+                let output = output.into_iter().map(|output| match output {
+                    ToolOutput::Text(text) => {
+                        ToolCallContent::from(ContentBlock::Text(TextContent::new(text)))
+                    }
+                    ToolOutput::Image { data, mime_type } => ToolCallContent::from(
+                        ContentBlock::Image(acp::ImageContent::new(data, mime_type)),
+                    ),
+                });
+                let content = {
+                    let mut tools = self.tools.lock().unwrap();
+                    tools.open.remove(&id);
+                    // A subagent may go on in the background after its tool
+                    // call's result, and its activity follows the result.
+                    match tools.activity.get_mut(&id) {
+                        Some(activity) => {
+                            activity.extend(output);
+                            activity.clone()
+                        }
+                        None => output.collect(),
+                    }
+                };
+                let status = if is_error {
+                    ToolCallStatus::Failed
+                } else {
+                    ToolCallStatus::Completed
+                };
+                let mut fields = acp::ToolCallUpdateFields::new().status(status);
+                if !content.is_empty() {
+                    fields = fields.content(content);
+                }
+                SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(id, fields))
             }
         };
         self.send(update);
     }
 
+    /// Shows an event of the subagent that tool call `parent` started. Each
+    /// tool the subagent calls becomes a line of the parent's content, ahead
+    /// of the parent's result; the subagent's messages are its own, and its
+    /// answer is the parent's result. A tool call of the subagent that the
+    /// client has, because it asked permission for it, gets its result.
+    pub fn subagent_event(&self, parent: &str, event: Event) {
+        let update = {
+            let mut tools = self.tools.lock().unwrap();
+            match event {
+                Event::Tool { name, input, .. } if tools.seen.contains(parent) => {
+                    let activity = tools.activity.entry(parent.to_owned()).or_default();
+                    activity.push(ToolCallContent::from(ContentBlock::Text(TextContent::new(
+                        tool_title(&name, &input),
+                    ))));
+                    acp::ToolCallUpdate::new(
+                        parent.to_owned(),
+                        acp::ToolCallUpdateFields::new().content(activity.clone()),
+                    )
+                }
+                Event::ToolResult { ref id, .. } if tools.seen.contains(id) => {
+                    drop(tools);
+                    return self.event(event);
+                }
+                _ => return,
+            }
+        };
+        self.send(SessionUpdate::ToolCallUpdate(update));
+    }
+
     /// Sends a conversation from Claude's transcript as the updates its turns
-    /// produced. Tool calls left without a result belong to interrupted
-    /// turns and end as failed.
-    pub fn replay(&self, entries: impl IntoIterator<Item = Value>) {
+    /// produced, with the transcript of each subagent, keyed by the tool call
+    /// that started it, after that tool call. Tool calls left without a
+    /// result belong to interrupted turns and end as failed.
+    pub fn replay(
+        &self,
+        entries: impl IntoIterator<Item = Value>,
+        mut subagents: HashMap<String, Vec<Value>>,
+    ) {
         for entry in entries {
             for event in message_events(&entry) {
+                let subagent = match &event {
+                    Event::Tool { id: Some(id), .. } => subagents.remove_entry(id),
+                    _ => None,
+                };
                 self.event(event);
+                if let Some((parent, entries)) = subagent {
+                    for event in entries.iter().flat_map(message_events) {
+                        self.subagent_event(&parent, event);
+                    }
+                }
             }
         }
         self.fail_open_tools();

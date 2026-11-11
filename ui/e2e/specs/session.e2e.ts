@@ -61,6 +61,15 @@ describe("A session", () => {
     await expect(sessionEntry(folder).$('[aria-label="Awaiting permission"]')).not.toBeExisting();
   });
 
+  it("shows a tool call's output", async () => {
+    await send("tool listed a.rs");
+    const tool = $(".conversation .tool-call");
+    await expect(tool.$(".title")).toHaveText("Fake tool");
+    await tool.$("summary").click();
+    await expect(tool.$("p.text")).toHaveText("listed a.rs");
+    await expect(tool.$("img")).toBeDisplayed();
+  });
+
   it("stops a turn the agent started", async () => {
     await send("own-turn");
     await expect(agentText()[0]).toHaveText("own-turn");

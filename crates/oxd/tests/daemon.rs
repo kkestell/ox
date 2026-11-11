@@ -930,7 +930,7 @@ async fn a_turn_the_agent_starts_runs_until_the_agent_is_idle() {
     assert_eq!(
         rest[0].kind,
         EventKind::TurnEnded {
-            stop_reason: None,
+            stop_reason: Some(StopReason::Cancelled),
             error: None
         }
     );

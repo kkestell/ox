@@ -38,6 +38,12 @@ interrupted() {
 state() {
   printf '{"type":"system","subtype":"session_state_changed","state":"%s"}\n' "$1"
 }
+# Echoes the prompt in $message as taken into a turn, as claude does with
+# --replay-user-messages.
+echoed() {
+  uuid=$(printf '%s\n' "$message" | sed 's/.*"uuid":"\([^"]*\)".*/\1/')
+  printf '{"type":"user","uuid":"%s","isReplay":true,"message":{"role":"user","content":[{"type":"text","text":"hello"}]}}\n' "$uuid"
+}
 # Accepts the control request in $message.
 accept() {
   request=$(printf '%s\n' "$message" | sed 's/.*"request_id":"\([^"]*\)".*/\1/')
@@ -1337,14 +1343,38 @@ fn write_conversation(temp: &Path, project: &Path, id: &str) {
             {"type": "text", "text": "Look"},
             {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
         ]}}),
+        json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_3", "name": "Agent", "input": {"prompt": "Read /a"}}]}}),
+        json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_3", "content": [
+            {"type": "text", "text": "a says hi"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}
+        ]}]}}),
         json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_2", "name": "Read", "input": {"file_path": "/x"}}]}}),
     ];
-    let lines: Vec<String> = entries.iter().map(Value::to_string).collect();
+    write_lines(&transcripts.join(format!("{id}.jsonl")), &entries);
+    // The subagent toolu_3 started keeps its own transcript.
+    let subagents = transcripts.join(id).join("subagents");
+    fs::create_dir_all(&subagents).unwrap();
     fs::write(
-        transcripts.join(format!("{id}.jsonl")),
-        lines.join("\n") + "\n",
+        subagents.join("agent-a1.meta.json"),
+        json!({"agentType": "general-purpose", "toolUseId": "toolu_3"}).to_string(),
     )
     .unwrap();
+    write_lines(
+        &subagents.join("agent-a1.jsonl"),
+        &[
+            json!({"type": "user", "isSidechain": true, "message": {"role": "user", "content": "Read /a"}}),
+            json!({"type": "assistant", "isSidechain": true, "message": {"content": [
+                {"type": "text", "text": "subagent text"},
+                {"type": "tool_use", "id": "toolu_s1", "name": "Read", "input": {"file_path": "/a"}}
+            ]}}),
+            json!({"type": "user", "isSidechain": true, "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_s1", "content": "hi"}]}}),
+        ],
+    );
+}
+
+fn write_lines(path: &Path, entries: &[Value]) {
+    let lines: Vec<String> = entries.iter().map(Value::to_string).collect();
+    fs::write(path, lines.join("\n") + "\n").unwrap();
 }
 
 /// One line per update, its kind and what it shows, and one per notice of
@@ -1355,7 +1385,12 @@ fn describe_updates(notifications: &[Value]) -> Vec<String> {
         .filter(|n| n["method"] == "session/update" || n["method"] == "_ox/agent_state")
         .map(|n| {
             if n["method"] == "_ox/agent_state" {
-                return format!("agent_state: {}", n["params"]["state"].as_str().unwrap());
+                let params = &n["params"];
+                return match params["stopReason"].as_str() {
+                    Some(reason) => format!("agent_state: {} {reason}", params["state"]),
+                    None => format!("agent_state: {}", params["state"]),
+                }
+                .replace('"', "");
             }
             let update = &n["params"]["update"];
             let kind = update["sessionUpdate"].as_str().unwrap();
@@ -1367,7 +1402,25 @@ fn describe_updates(notifications: &[Value]) -> Vec<String> {
                     // ACP omits the default status, `pending`.
                     update["status"].as_str().unwrap_or("pending")
                 ),
-                "tool_call_update" => format!("{} {}", update["toolCallId"], update["status"]),
+                "tool_call_update" => {
+                    let mut detail = update["toolCallId"].to_string();
+                    if let Some(status) = update["status"].as_str() {
+                        detail = format!("{detail} {status}");
+                    }
+                    let content: Vec<String> = update["content"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|c| match c["content"]["text"].as_str() {
+                            Some(text) => text.to_owned(),
+                            None => c["content"]["type"].as_str().unwrap().to_owned(),
+                        })
+                        .collect();
+                    if !content.is_empty() {
+                        detail = format!("{detail} [{}]", content.join(" | "));
+                    }
+                    detail
+                }
                 _ => match update["content"]["type"].as_str() {
                     Some("text") => update["content"]["text"].to_string(),
                     Some(other) => other.to_owned(),
@@ -1379,14 +1432,17 @@ fn describe_updates(notifications: &[Value]) -> Vec<String> {
         .collect()
 }
 
-const REPLAY: [&str; 9] = [
+const REPLAY: [&str; 12] = [
     "user_message_chunk: Fix the build",
     "agent_thought_chunk: Checking",
     "agent_message_chunk: Running it",
     "tool_call: toolu_1 cargo build pending",
-    "tool_call_update: toolu_1 completed",
+    "tool_call_update: toolu_1 completed [ok]",
     "user_message_chunk: Look",
     "user_message_chunk: image",
+    "tool_call: toolu_3 Agent pending",
+    "tool_call_update: toolu_3 [Read /a]",
+    "tool_call_update: toolu_3 completed [Read /a | a says hi | image]",
     "tool_call: toolu_2 Read /x pending",
     "tool_call_update: toolu_2 failed",
 ];
@@ -1518,6 +1574,9 @@ state idle
 state running
 printf '%s\n' '{{"type":"result","is_error":true,"result":"wake failed"}}'
 state idle
+state running
+printf '%s\n' '{{"type":"result","subtype":"error_max_turns","is_error":true}}'
+state idle
 printf '%s\n' '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"end"}}]}}}}'
 next_message
 "#
@@ -1545,10 +1604,12 @@ next_message
             "tool_call: tool-1 pwd pending",
             "tool_call_update: tool-1 completed",
             "agent_message_chunk: woke",
-            "agent_state: idle",
+            "agent_state: idle end_turn",
             "agent_state: running",
             "agent_message_chunk: Error: wake failed",
-            "agent_state: idle",
+            "agent_state: idle end_turn",
+            "agent_state: running",
+            "agent_state: idle max_turn_requests",
             "agent_message_chunk: end",
         ]
     );
@@ -1667,6 +1728,139 @@ done
     assert!(
         calls[1].contains("--mcp-config") && calls[1].contains(&format!("--resume {HISTORY_ID}")),
         "{calls:?}"
+    );
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn tool_output_reaches_the_client() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    fake_claude(
+        &bin,
+        r#"
+next_prompt
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"ls"}},{"type":"tool_use","id":"tool-2","name":"Read","input":{"file_path":"/a.png"}}]}}'
+printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"a.png\nb.rs","is_error":true}]}}'
+printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-2","content":[{"type":"text","text":"Read an image"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}},{"type":"tool_reference"}]}]}}'
+printf '%s\n' '{"type":"result"}'
+next_message
+"#,
+    );
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    let (result, updates) = prompt(&mut child, &mut reader, 3, &session).await;
+    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+    assert_eq!(
+        describe_updates(&updates)[1..5],
+        [
+            "tool_call: tool-1 ls pending",
+            "tool_call: tool-2 Read /a.png pending",
+            "tool_call_update: tool-1 failed [a.png\nb.rs]",
+            "tool_call_update: tool-2 completed [Read an image | image | [tool_reference]]",
+        ]
+    );
+    let image = updates
+        .iter()
+        .find_map(|n| n["params"]["update"]["content"].as_array()?.get(1).cloned())
+        .unwrap();
+    assert_eq!(
+        image["content"],
+        json!({"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgo="})
+    );
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_subagents_activity_shows_under_its_tool_call() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    // The subagent's lines name the Agent tool call that started it. Its
+    // Bash call asks permission, so the client has that call.
+    fake_claude(
+        &bin,
+        r#"
+next_prompt
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"agent-1","name":"Agent","input":{"prompt":"Look"}}]}}'
+printf '%s\n' '{"type":"user","parent_tool_use_id":"agent-1","message":{"role":"user","content":[{"type":"text","text":"Look"}]}}'
+printf '%s\n' '{"type":"stream_event","parent_tool_use_id":"agent-1","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"sub streamed"}}}'
+printf '%s\n' '{"type":"stream_event","parent_tool_use_id":"agent-1","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"sub thinking"}}}'
+printf '%s\n' '{"type":"assistant","parent_tool_use_id":"agent-1","message":{"content":[{"type":"thinking","thinking":"sub thinking"},{"type":"text","text":"sub text"},{"type":"tool_use","id":"sub-1","name":"Read","input":{"file_path":"/a"}}]}}'
+printf '%s\n' '{"type":"user","parent_tool_use_id":"agent-1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"sub-1","content":"a"}]}}'
+printf '%s\n' '{"type":"assistant","parent_tool_use_id":"agent-1","message":{"content":[{"type":"tool_use","id":"sub-2","name":"Bash","input":{"command":"pwd"}}]}}'
+printf '%s\n' '{"type":"control_request","request_id":"perm-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"pwd"},"tool_use_id":"sub-2"}}'
+next_message
+printf '%s\n' '{"type":"user","parent_tool_use_id":"agent-1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"sub-2","content":"/"}]}}'
+printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"agent-1","content":[{"type":"text","text":"a says hi"}]}]}}'
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}'
+printf '%s\n' '{"type":"result"}'
+next_message
+"#,
+    );
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    send(&mut child, json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session,"prompt":[{"type":"text","text":"hello"}]}})).await;
+    let mut updates = Vec::new();
+    let permission = loop {
+        let value = receive(&mut reader).await;
+        if value["method"] == "session/request_permission" {
+            break value;
+        }
+        updates.push(value);
+    };
+    send(&mut child, json!({"jsonrpc":"2.0","id":permission["id"],"result":{"outcome":{"outcome":"selected","optionId":"allow_once"}}})).await;
+    let (result, rest) = response(&mut reader, 3).await;
+    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+    updates.extend(rest);
+    assert_eq!(
+        describe_updates(&updates)
+            .into_iter()
+            .filter(|update| !update.starts_with("session_info_update"))
+            .collect::<Vec<_>>(),
+        [
+            "tool_call: agent-1 Agent pending",
+            "tool_call_update: agent-1 [Read /a]",
+            "tool_call_update: agent-1 [Read /a | pwd]",
+            "tool_call: sub-2 pwd pending",
+            "tool_call_update: sub-2 in_progress",
+            "tool_call_update: sub-2 completed [/]",
+            "tool_call_update: agent-1 completed [Read /a | pwd | a says hi]",
+            "agent_message_chunk: done",
+        ]
+    );
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn claudes_echo_of_a_prompt_starts_its_turn() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    // Claude says it took the prompt only by echoing it, here while the
+    // turn streams, as it does for a prompt it folds into a running turn.
+    fake_claude(
+        &bin,
+        r#"
+next_message
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hello "}}}'
+echoed
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"hello world"}]}}'
+printf '%s\n' '{"type":"result"}'
+next_message
+"#,
+    );
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    let (result, updates) = prompt(&mut child, &mut reader, 3, &session).await;
+    assert_eq!(result["result"]["stopReason"], "end_turn", "{result}");
+    assert_eq!(
+        describe_updates(&updates)
+            .into_iter()
+            .filter(|update| !update.starts_with("session_info_update"))
+            .collect::<Vec<_>>(),
+        ["agent_message_chunk: hello "]
     );
     child.kill().await.unwrap();
 }

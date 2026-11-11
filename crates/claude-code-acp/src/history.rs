@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs::{self, File},
     io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
@@ -62,19 +63,42 @@ impl History {
     }
 
     /// The `user` and `assistant` entries of a session's transcript, in
-    /// order. The transcript's other entries are Claude's bookkeeping.
+    /// order. The transcript's other entries are Claude's bookkeeping, and
+    /// its sidechain entries belong to subagents.
     pub fn messages(&self, id: &str, cwd: &Path) -> Vec<Value> {
-        let Some(file) = self
+        self.transcript(id, cwd)
+            .map(|path| {
+                messages(&path)
+                    .into_iter()
+                    .filter(|entry| entry["isSidechain"] != true)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The `user` and `assistant` entries of each subagent of a session, by
+    /// the tool call that started it. Claude keeps a subagent's transcript
+    /// in `<session>/subagents/agent-<id>.jsonl`, beside a `.meta.json` that
+    /// names the tool call as `toolUseId`.
+    pub fn subagents(&self, id: &str, cwd: &Path) -> HashMap<String, Vec<Value>> {
+        let Some(dir) = self
             .transcript(id, cwd)
-            .and_then(|path| File::open(path).ok())
+            .map(|path| path.with_extension("").join("subagents"))
         else {
-            return Vec::new();
+            return HashMap::new();
         };
-        BufReader::new(file)
-            .lines()
-            .map_while(Result::ok)
-            .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
-            .filter(|entry| matches!(entry["type"].as_str(), Some("user" | "assistant")))
+        let Ok(files) = fs::read_dir(&dir) else {
+            return HashMap::new();
+        };
+        files
+            .flatten()
+            .filter_map(|file| {
+                let path = file.path();
+                let name = path.file_name()?.to_str()?.strip_suffix(".meta.json")?;
+                let meta: Value = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
+                let tool_use_id = meta["toolUseId"].as_str()?.to_owned();
+                Some((tool_use_id, messages(&dir.join(format!("{name}.jsonl")))))
+            })
             .collect()
     }
 
@@ -87,6 +111,19 @@ impl History {
             .map(|project| project.path().join(format!("{id}.jsonl")))
             .find(|path| read_entry(path, id).is_some_and(|entry| entry.cwd == cwd))
     }
+}
+
+/// The `user` and `assistant` entries of the transcript at `path`.
+fn messages(path: &Path) -> Vec<Value> {
+    let Ok(file) = File::open(path) else {
+        return Vec::new();
+    };
+    BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+        .filter(|entry| matches!(entry["type"].as_str(), Some("user" | "assistant")))
+        .collect()
 }
 
 fn read_entry(path: &Path, id: &str) -> Option<HistoryEntry> {

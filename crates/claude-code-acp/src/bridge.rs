@@ -7,7 +7,7 @@ use std::{
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
     self as acp, SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption,
-    SessionUpdate, StopReason,
+    SessionUpdate,
 };
 use agent_client_protocol::{Client, Error};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -18,7 +18,7 @@ use crate::{
     config::Config,
     content,
     history::{History, HistoryEntry},
-    runner::{Claude, Finish, McpServer, Refused, RunError, RunOutcome, StartRequest},
+    runner::{Claude, McpServer, Refused, RunError, RunOutcome, StartRequest, stop_reason},
     store::{Session, Store},
     updates::{Updates, error_message, notify},
     validation,
@@ -110,8 +110,10 @@ impl Bridge {
         let id = request.session_id.to_string();
         let session = self.open(&id, &request.cwd, request.mcp_servers)?;
         if let Some(claude_id) = &session.claude_session_id {
-            Updates::new(connection.clone(), &id, &session.cwd)
-                .replay(self.history.messages(claude_id, &session.cwd));
+            Updates::new(connection.clone(), &id, &session.cwd).replay(
+                self.history.messages(claude_id, &session.cwd),
+                self.history.subagents(claude_id, &session.cwd),
+            );
         }
         Ok(acp::LoadSessionResponse::new().config_options(Self::options(&session)))
     }
@@ -424,8 +426,8 @@ impl Bridge {
                 session.claude_session_id = Some(claude_id);
             });
         }
-        let stop_reason = match outcome.result {
-            Ok(finish) => {
+        match &outcome.result {
+            Ok(_) => {
                 if let Some(session) = self.store.get(id) {
                     notify(
                         connection,
@@ -435,17 +437,11 @@ impl Bridge {
                         ),
                     );
                 }
-                match finish {
-                    Finish::EndTurn => StopReason::EndTurn,
-                    Finish::MaxTurns => StopReason::MaxTurnRequests,
-                }
             }
-            Err(RunError::Cancelled) => StopReason::Cancelled,
-            Err(RunError::Failed(error)) => {
-                notify(connection, id, error_message(&error));
-                StopReason::EndTurn
-            }
-        };
+            Err(RunError::Cancelled) => {}
+            Err(RunError::Failed(error)) => notify(connection, id, error_message(error)),
+        }
+        let stop_reason = stop_reason(&outcome.result);
         (acp::PromptResponse::new(stop_reason), outcome.responding)
     }
 

@@ -234,10 +234,14 @@ body {
   margin-top: calc(var(--spacing) * 2);
 }
 
-.tool-call {
+.tool-call .heading {
   display: flex;
   align-items: baseline;
   gap: calc(var(--spacing) * 2);
+}
+
+.tool-call img {
+  max-width: 100%;
 }
 
 .permission {

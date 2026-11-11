@@ -48,14 +48,17 @@ session kills that group. A session is running from a prompt until the agent
 answers it. An agent that also starts turns by itself reports when it starts
 and stops working with the `_ox/agent_state` ACP extension notification, and
 the session is running during those turns too: `oxd` records `turn_started`
-and `turn_ended` around them and takes no prompt until they end.
+and `turn_ended` around them, with the stop reason the agent reports when it
+goes idle, and takes no prompt until they end.
 
 **claude-code-acp.** An ACP agent that bridges to the Claude Code CLI. A
 session's first prompt starts one `claude -p`, in the bridge's process group,
 and the session keeps it: the bridge holds its stdin open, writes each prompt
 to it as a stream-json message, reads streamed output and permission requests
 from its stdout, and answers permission requests with the client's decision.
-`session/cancel` interrupts the running turn, and a model or mode change goes
+A subagent's tool calls show as lines of the content of the tool call that
+started it, and a tool call's result as its content. `session/cancel`
+interrupts the running turn, and a model or mode change goes
 to the running process as a control request. Claude keeps running between
 prompts, and the turns it starts by itself, when a background task reports
 back, stream to the client as a prompt's turn does. The bridge tells `oxd`

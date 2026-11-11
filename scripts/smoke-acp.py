@@ -431,18 +431,32 @@ class SmokeRun:
             events[-1]["kind"]["data"] == {"stop_reason": "end_turn", "error": None},
             f"Unexpected turn result: {events[-1]}",
         )
+        output = [
+            block["content"]["text"]
+            for e in events
+            if kind(e) == "update"
+            and e["kind"]["data"]["sessionUpdate"] == "tool_call_update"
+            and e["kind"]["data"].get("status") == "completed"
+            for block in e["kind"]["data"].get("content") or []
+            if block.get("content", {}).get("type") == "text"
+        ]
+        check(output, "The Bash tool call reported no output")
         woke = self.until(lambda e: kind(e) == "turn_ended")
         check(
             kind(woke[0]) == "turn_started",
             f"Claude's own turn did not start with turn_started: {woke[0]}",
         )
         check(
-            woke[-1]["kind"]["data"] == {"stop_reason": None, "error": None},
+            woke[-1]["kind"]["data"] == {"stop_reason": "end_turn", "error": None},
             f"Unexpected end of Claude's own turn: {woke[-1]}",
         )
         check(token in text(woke), f"Claude did not answer: {text(woke)}")
         check("\tidle\t" in self.ctl("ls"), "Session is not idle after the turn")
-        self.report("background_task_wakes_claude", response=text(woke).strip())
+        self.report(
+            "background_task_wakes_claude",
+            tool_output=output[-1].strip(),
+            response=text(woke).strip(),
+        )
 
     def check_cancellation(self):
         self.ctl(

@@ -21,6 +21,8 @@
 //!   the line
 //! - `title-null`: a `session_info_update` clearing the title
 //! - `touch`: a `session_info_update` with only `updated_at`
+//! - `tool <text>`: a tool call `tool-<n>` titled `Fake tool`, then its
+//!   completion with the rest of the line and a 1×1 PNG as its content
 //!
 //! The agent accepts image and embedded resource prompts, and has one config
 //! option, `mode`, with values `ask` and `code`. Setting it sends a
@@ -44,6 +46,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -60,6 +63,8 @@ struct State {
     mode: Mutex<String>,
     /// Each session's record of prompts and message chunks.
     logs: Mutex<HashMap<String, PathBuf>>,
+    /// The number of tool calls made, which numbers the next.
+    tools: AtomicU64,
 }
 
 impl State {
@@ -128,6 +133,7 @@ async fn main() -> agent_client_protocol::Result<()> {
         cancelled: watch::Sender::new(false),
         mode: Mutex::new("ask".into()),
         logs: Mutex::default(),
+        tools: AtomicU64::new(0),
     });
     agent_client_protocol::Agent
         .v1()
@@ -287,7 +293,9 @@ async fn main() -> agent_client_protocol::Result<()> {
                                 .subscribe()
                                 .wait_for(|cancelled| *cancelled)
                                 .await;
-                            task_connection.send_notification(says(AgentState::Idle))?;
+                            task_connection.send_notification(says(AgentState::Idle {
+                                stop_reason: Some(acp::StopReason::Cancelled),
+                            }))?;
                         }
                         Ok(())
                     })
@@ -381,6 +389,35 @@ async fn run(
             }
             ["title-null"] => info(acp::SessionInfoUpdate::new().title(None::<String>))?,
             ["touch"] => info(acp::SessionInfoUpdate::new().updated_at("2026-11-11T00:00:00Z"))?,
+            ["tool", ..] => {
+                let output = line.trim().strip_prefix("tool").unwrap().trim();
+                let id = format!("tool-{}", state.tools.fetch_add(1, Ordering::Relaxed) + 1);
+                let update = |update| {
+                    connection.send_notification(acp::SessionNotification::new(
+                        session_id.clone(),
+                        update,
+                    ))
+                };
+                update(acp::SessionUpdate::ToolCall(acp::ToolCall::new(
+                    id.clone(),
+                    "Fake tool",
+                )))?;
+                update(acp::SessionUpdate::ToolCallUpdate(
+                    acp::ToolCallUpdate::new(
+                        id,
+                        acp::ToolCallUpdateFields::new()
+                            .status(acp::ToolCallStatus::Completed)
+                            .content(vec![
+                                acp::ToolCallContent::from(acp::ContentBlock::Text(
+                                    acp::TextContent::new(output),
+                                )),
+                                acp::ToolCallContent::from(acp::ContentBlock::Image(
+                                    acp::ImageContent::new(PIXEL, "image/png"),
+                                )),
+                            ]),
+                    ),
+                ))?;
+            }
             ["exit", code] => std::process::exit(parse(code)?),
             _ => return Err(Error::invalid_params().data(format!("unknown directive: {line}"))),
         }
@@ -391,6 +428,10 @@ async fn run(
         Ok(acp::StopReason::EndTurn)
     }
 }
+
+/// A 1×1 PNG.
+const PIXEL: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 
 fn script(request: &acp::PromptRequest) -> String {
     request

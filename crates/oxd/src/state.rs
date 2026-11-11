@@ -220,12 +220,12 @@ impl Phase {
                 live.turn = Some(Turn::Agent);
                 (Self::Live(live), vec![EventKind::TurnStarted])
             }
-            (Self::Live(mut live), Change::AgentState(AgentState::Idle))
+            (Self::Live(mut live), Change::AgentState(AgentState::Idle { stop_reason }))
                 if live.turn == Some(Turn::Agent) =>
             {
                 live.turn = None;
                 let ended = EventKind::TurnEnded {
-                    stop_reason: None,
+                    stop_reason,
                     error: None,
                 };
                 (Self::Live(live), vec![ended])
@@ -603,7 +603,7 @@ mod tests {
     #[test]
     fn the_agent_starts_and_ends_turns_of_its_own() {
         let mut state = started();
-        state.record(Change::AgentState(AgentState::Idle));
+        state.record(Change::AgentState(AgentState::Idle { stop_reason: None }));
         assert_eq!(kinds(&state, 1), [] as [&str; 0]);
 
         state.record(Change::AgentState(AgentState::Running));
@@ -619,9 +619,11 @@ mod tests {
         assert_eq!(outcome.try_recv(), Ok(RequestPermissionOutcome::Cancelled));
         assert_eq!(state.state(), SessionState::Running);
 
-        state.record(Change::AgentState(AgentState::Idle));
+        state.record(Change::AgentState(AgentState::Idle {
+            stop_reason: Some(StopReason::Cancelled),
+        }));
         assert_eq!(state.state(), SessionState::Idle);
-        state.record(Change::AgentState(AgentState::Idle));
+        state.record(Change::AgentState(AgentState::Idle { stop_reason: None }));
         assert_eq!(
             kinds(&state, 1),
             [
@@ -634,7 +636,7 @@ mod tests {
         assert_eq!(
             state.events_after(4)[0].kind,
             EventKind::TurnEnded {
-                stop_reason: None,
+                stop_reason: Some(StopReason::Cancelled),
                 error: None
             }
         );
@@ -647,7 +649,7 @@ mod tests {
         prompt(&mut state).unwrap();
         // The agent reports the work the prompt asked for, then stops.
         state.record(Change::AgentState(AgentState::Running));
-        state.record(Change::AgentState(AgentState::Idle));
+        state.record(Change::AgentState(AgentState::Idle { stop_reason: None }));
         assert_eq!(state.state(), SessionState::Running);
         state.record(Change::TurnEnded(Ok(StopReason::EndTurn)));
         assert_eq!(state.state(), SessionState::Idle);
