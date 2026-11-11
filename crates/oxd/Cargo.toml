@@ -1,0 +1,26 @@
+[package]
+name = "oxd"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Session daemon between Ox UIs and ACP agents"
+
+[[bin]]
+name = "oxd"
+path = "src/main.rs"
+
+[[bin]]
+name = "oxd-fake-agent"
+path = "src/bin/oxd-fake-agent.rs"
+
+[dependencies]
+agent-client-protocol = { version = "=5.2.0", features = ["process", "stdio"] }
+libc = "0.2"
+ox-protocol = { path = "../ox-protocol" }
+serde = "1"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time", "signal", "fs"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
