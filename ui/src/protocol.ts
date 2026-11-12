@@ -26,7 +26,34 @@ export type ConfigOption = {
 export interface WorkspaceInfo {
   id: string;
   path: string;
+  /** Whether sessions can run in a worktree of the workspace. */
+  git_working_tree: boolean;
 }
+
+/** Where a new session runs. */
+export type Checkout =
+  | { type: "workspace" }
+  | { type: "worktree"; branch: string | null; start: string | null };
+
+export interface WorktreeInfo {
+  path: string;
+  branch: string;
+  base: string;
+  created_branch: boolean;
+}
+
+/** A workspace's branches, each list most recently committed first. */
+export interface Branches {
+  local: string[];
+  /** Remote-tracking branches with their remote, such as `origin/main`. */
+  remote: string[];
+  fetch_error: string | null;
+}
+
+/** The outcome of deleting a session. */
+export type Deletion =
+  | { type: "deleted"; kept_branch: string | null }
+  | { type: "unsaved_work"; message: string };
 
 export interface SessionInfo {
   id: string;
@@ -36,6 +63,7 @@ export interface SessionInfo {
   title: string | null;
   agent_session_id: string | null;
   config_options: ConfigOption[];
+  worktree: WorktreeInfo | null;
 }
 
 export interface PermissionOption {

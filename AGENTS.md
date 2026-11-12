@@ -12,7 +12,7 @@
 - Production code serves production. Tests drive the same interfaces users
   do; flags, environment variables, methods, and modes exist because a user
   of the program needs them. Test fixtures live with the tests.
-  - A session stuck in startup is closed with `session.close`, the method a
+  - A session stuck in startup is deleted with `session.delete`, the method a
     UI uses, rather than through a test-only timeout flag.
   - Tests build text prompts with a helper in the test file; `Client` has
     one `prompt` method.

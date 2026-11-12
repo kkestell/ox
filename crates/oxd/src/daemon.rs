@@ -1,27 +1,46 @@
+use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use ox_protocol::{ErrorBody, Listing, Method, SessionInfo, SessionState, WorkspaceInfo, code};
+use ox_protocol::{
+    Branches, Checkout, Deleted, ErrorBody, Listing, Method, SessionInfo, SessionState,
+    WorkspaceInfo, code,
+};
 use serde_json::Value;
-use tokio::sync::watch;
+use tokio::sync::{OwnedMutexGuard, watch};
 
+use crate::branches;
 use crate::session::Session;
-use crate::store::{SavedSession, Store};
+use crate::store::{SavedSession, SavedWorkspace, SavedWorktree, Store};
+use crate::worktree::{self, Git, WorktreePlan};
+
+/// The outcome of a fetch, once it has one.
+type FetchOutcome = Option<Result<(), String>>;
 
 struct Registry {
-    workspaces: Vec<WorkspaceInfo>,
+    workspaces: Vec<SavedWorkspace>,
     sessions: HashMap<String, Arc<Session>>,
     clients: usize,
+    /// Whether the startup cleanup is still running.
+    cleaning: bool,
 }
 
 pub struct Daemon {
     registry: Mutex<Registry>,
     store: Arc<Store>,
+    /// The directory that holds sessions' worktrees.
+    worktrees_dir: PathBuf,
     /// Sent when a workspace or session is added or removed, a client
     /// connects or disconnects, or a session's `SessionInfo` changes.
     changed: watch::Sender<()>,
+    /// The fetches running, by the common Git directory of the repository
+    /// each fetches, so that requests for one repository share one fetch.
+    fetches: Arc<Mutex<HashMap<PathBuf, watch::Receiver<FetchOutcome>>>>,
+    /// The sessions that never started and have a worktree to remove, each
+    /// with its lifecycle guard, until `clean_up` takes them.
+    unstarted: Mutex<Vec<(Arc<Session>, OwnedMutexGuard<()>)>>,
 }
 
 /// Counts one connected client for as long as it lives.
@@ -34,29 +53,75 @@ impl Drop for ClientGuard {
 }
 
 impl Daemon {
-    /// A daemon with the workspaces and sessions `store` holds. Each saved
-    /// session is `exited`, with no agent, until it loads. A saved session
-    /// that never started has nothing to load, and is deleted.
-    pub fn new(store: Store) -> rusqlite::Result<Self> {
+    /// A daemon with the workspaces and sessions `store` holds, which adds
+    /// sessions' worktrees in `worktrees_dir`. Each saved session is
+    /// `exited`, with no agent, until it loads. A saved session that never
+    /// started has nothing to load. One without a worktree is deleted; one
+    /// with a worktree waits, `exited`, for `clean_up`.
+    pub fn new(store: Store, worktrees_dir: PathBuf) -> rusqlite::Result<Self> {
         let store = Arc::new(store);
-        store.remove_unstarted_sessions()?;
         let changed = watch::Sender::new(());
-        let sessions = store
-            .sessions()?
-            .into_iter()
-            .filter_map(|saved| Session::restore(store.clone(), changed.clone(), saved))
-            .map(|session| (session.id.clone(), session))
-            .collect();
+        let mut sessions = HashMap::new();
+        let mut unstarted = Vec::new();
+        let saved_sessions = store.sessions()?;
+        for saved in saved_sessions {
+            let started = saved.agent_session_id.is_some();
+            if !started && saved.worktree.is_none() {
+                store.remove_session(&saved.id)?;
+                continue;
+            }
+            let session = Session::restore(store.clone(), changed.clone(), saved);
+            if !started {
+                let guard = session.hold_lifecycle();
+                unstarted.push((session.clone(), guard));
+            }
+            sessions.insert(session.id.clone(), session);
+        }
         let registry = Registry {
             workspaces: store.workspaces()?,
             sessions,
             clients: 0,
+            cleaning: !unstarted.is_empty(),
         };
         Ok(Self {
             registry: Mutex::new(registry),
             store,
+            worktrees_dir,
             changed,
+            fetches: Arc::default(),
+            unstarted: Mutex::new(unstarted),
         })
+    }
+
+    /// Removes the worktrees and branches of the sessions that never
+    /// started, one at a time, with the daemon's own environment, as a delete
+    /// without `discard` does, and deletes those sessions. A session whose
+    /// worktree would lose work, or cannot be removed, stays to be deleted by
+    /// the user. The daemon is not idle until this ends.
+    pub async fn clean_up(&self) {
+        let unstarted = std::mem::take(&mut *self.unstarted.lock().unwrap());
+        for (session, _lifecycle) in unstarted {
+            let worktree = session
+                .worktree()
+                .expect("an unstarted session waiting for cleanup has a worktree");
+            match remove_unstarted(&worktree).await {
+                Ok(()) => {
+                    if let Err(error) = self.forget(&session.id) {
+                        eprintln!(
+                            "oxd: deleting session {}, which never started: {}",
+                            session.id, error.message
+                        );
+                        continue;
+                    }
+                    session.close();
+                }
+                Err(error) => eprintln!(
+                    "oxd: keeping session {}, which never started: {}",
+                    session.id, error.message
+                ),
+            }
+        }
+        self.update(|registry| registry.cleaning = false);
     }
 
     pub fn client(self: &Arc<Self>) -> ClientGuard {
@@ -86,7 +151,8 @@ impl Daemon {
 
     fn is_idle(&self) -> bool {
         let registry = self.lock();
-        registry.clients == 0
+        !registry.cleaning
+            && registry.clients == 0
             && registry
                 .sessions
                 .values()
@@ -126,13 +192,23 @@ impl Daemon {
                 Ok(Value::Null)
             }
             Method::WorkspaceList => Ok(to_value(self.list().workspaces)),
+            Method::WorkspaceBranches {
+                workspace_id,
+                fetch,
+                env,
+            } => Ok(to_value(self.branches(&workspace_id, fetch, env).await?)),
             Method::SessionNew {
                 workspace_id,
                 command,
                 env,
-            } => Ok(to_value(self.new_session(&workspace_id, command, env)?)),
+                checkout,
+            } => Ok(to_value(
+                self.new_session(&workspace_id, command, env, checkout)
+                    .await?,
+            )),
             Method::SessionLoad { session_id, env } => {
                 let session = self.session(&session_id)?;
+                let _lifecycle = self.lifecycle(&session).await?;
                 session.load(env)?;
                 Ok(to_value(session.info()))
             }
@@ -160,10 +236,13 @@ impl Daemon {
                 self.session(&session_id)?.permit(&request_id, &option_id)?;
                 Ok(Value::Null)
             }
-            Method::SessionClose { session_id } => {
-                self.close_session(&session_id)?;
-                Ok(Value::Null)
-            }
+            Method::SessionDelete {
+                session_id,
+                discard,
+                env,
+            } => Ok(to_value(
+                self.delete_session(&session_id, discard, env).await?,
+            )),
             Method::Hello { .. }
             | Method::SessionSubscribe { .. }
             | Method::Watch
@@ -187,7 +266,8 @@ impl Daemon {
     }
 
     /// The workspaces in the order they were added and the sessions in the
-    /// order they were created.
+    /// order they were created. Whether each workspace is in a Git working
+    /// tree is worked out now.
     pub fn list(&self) -> Listing {
         let registry = self.lock();
         let workspaces = registry.workspaces.clone();
@@ -195,7 +275,7 @@ impl Daemon {
         drop(registry);
         sessions.sort_by_key(|session| session.number);
         Listing {
-            workspaces,
+            workspaces: workspaces.into_iter().map(workspace_info).collect(),
             sessions: sessions.iter().map(|session| session.info()).collect(),
         }
     }
@@ -213,7 +293,7 @@ impl Daemon {
                 path.display()
             )));
         }
-        let workspace = WorkspaceInfo {
+        let workspace = SavedWorkspace {
             id: uuid::Uuid::new_v4().to_string(),
             path,
         };
@@ -229,7 +309,7 @@ impl Daemon {
                 )));
             }
             registry.workspaces.push(workspace.clone());
-            Ok(workspace)
+            Ok(workspace_info(workspace))
         })
     }
 
@@ -240,10 +320,11 @@ impl Daemon {
                 .iter()
                 .position(|workspace| workspace.id == id)
                 .ok_or_else(|| not_found("workspace", id))?;
-            if registry
-                .sessions
-                .values()
-                .any(|session| session.workspace_id() == id)
+            // The store has the rows of sessions still being created.
+            if self
+                .store
+                .workspace_has_sessions(id)
+                .map_err(|error| storage(&error))?
             {
                 return Err(ErrorBody {
                     code: code::INVALID_STATE,
@@ -258,62 +339,223 @@ impl Daemon {
         })
     }
 
-    fn new_session(
+    /// Creates a session in the workspace's directory or in a new worktree.
+    /// For a worktree, the branch is resolved and created here, and the
+    /// session's startup adds the worktree.
+    async fn new_session(
         &self,
         workspace_id: &str,
         command: Vec<String>,
         env: BTreeMap<String, String>,
+        checkout: Checkout,
     ) -> Result<SessionInfo, ErrorBody> {
         if command.is_empty() {
             return Err(invalid_request("command is empty".into()));
         }
+        let id = uuid::Uuid::new_v4().to_string();
+        let Checkout::Worktree { branch, start } = checkout else {
+            return self.add_session(id, workspace_id, command, env, &mut None);
+        };
+        let workspace = self.workspace_path(workspace_id)?;
+        let git = Git::for_client(env.clone());
+        let plan =
+            worktree::plan(&git, &workspace, branch, start, &self.worktrees_dir, &id).await?;
+        worktree::create_branch(&git, &plan).await?;
+        let mut worktree = Some((git, plan));
+        let added = self.add_session(id, workspace_id, command, env, &mut worktree);
+        if let Some((git, plan)) = worktree
+            && let Err(error) = worktree::roll_back(&git, &plan, false).await
+        {
+            eprintln!("oxd: undoing a session that was not saved: {error}");
+        }
+        added
+    }
+
+    /// Saves a session, with its worktree if it has one, and spawns it,
+    /// taking the worktree to add. A session that cannot be saved leaves the
+    /// worktree where it is.
+    fn add_session(
+        &self,
+        id: String,
+        workspace_id: &str,
+        command: Vec<String>,
+        env: BTreeMap<String, String>,
+        worktree: &mut Option<(Git, WorktreePlan)>,
+    ) -> Result<SessionInfo, ErrorBody> {
         self.update(|registry| {
             let workspace = registry
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.id == workspace_id)
                 .ok_or_else(|| not_found("workspace", workspace_id))?;
-            let id = uuid::Uuid::new_v4().to_string();
+            let (cwd, info) = match worktree {
+                Some((_, plan)) => (plan.cwd.clone(), Some(plan.saved())),
+                None => (workspace.path.clone(), None),
+            };
             let number = self
                 .store
-                .add_session(&id, workspace_id, &command, &workspace.path)
+                .add_session(&id, workspace_id, &command, &cwd, info.as_ref())
                 .map_err(|error| storage(&error))?;
             let saved = SavedSession {
                 number,
                 id,
                 workspace_id: workspace_id.into(),
                 command,
-                cwd: workspace.path.clone(),
+                cwd,
                 title: None,
                 agent_session_id: None,
+                worktree: info,
             };
-            let session = Session::spawn(self.store.clone(), self.changed.clone(), saved, env);
+            let session = Session::spawn(
+                self.store.clone(),
+                self.changed.clone(),
+                saved,
+                env,
+                worktree.take(),
+            );
             let info = session.info();
             registry.sessions.insert(session.id.clone(), session);
             Ok(info)
         })
     }
 
-    /// Deletes the session's row, then stops its agent and forgets it.
-    fn close_session(&self, id: &str) -> Result<(), ErrorBody> {
-        let session = self.update(|registry| {
-            if !registry.sessions.contains_key(id) {
-                return Err(not_found("session", id));
+    fn workspace_path(&self, id: &str) -> Result<PathBuf, ErrorBody> {
+        self.lock()
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == id)
+            .map(|workspace| workspace.path.clone())
+            .ok_or_else(|| not_found("workspace", id))
+    }
+
+    /// The branches of the workspace's repository, listed after a fetch
+    /// when `fetch` is set.
+    async fn branches(
+        &self,
+        workspace_id: &str,
+        fetch: bool,
+        env: BTreeMap<String, String>,
+    ) -> Result<Branches, ErrorBody> {
+        let workspace = self.workspace_path(workspace_id)?;
+        let git = Git::for_client(env);
+        let common_dir = branches::common_dir(&git, &workspace).await?;
+        let fetch_error = if fetch {
+            self.fetch(&git, common_dir, &workspace).await.err()
+        } else {
+            None
+        };
+        let (local, remote) = branches::list(&git, &workspace).await?;
+        Ok(Branches {
+            local,
+            remote,
+            fetch_error,
+        })
+    }
+
+    /// Fetches the repository whose common Git directory is `common_dir`,
+    /// from `workspace` with `git`, or waits for the fetch of it already
+    /// running. The fetch runs in its own task, so it finishes even when
+    /// every request waiting for it is dropped.
+    async fn fetch(&self, git: &Git, common_dir: PathBuf, workspace: &Path) -> Result<(), String> {
+        let mut outcome = match self.fetches.lock().unwrap().entry(common_dir) {
+            Entry::Occupied(running) => running.get().clone(),
+            Entry::Vacant(entry) => {
+                let (sender, outcome) = watch::channel(None);
+                let common_dir = entry.key().clone();
+                entry.insert(outcome.clone());
+                let fetches = self.fetches.clone();
+                let git = git.clone();
+                let workspace = workspace.to_owned();
+                tokio::spawn(async move {
+                    sender.send_replace(Some(branches::fetch(&git, &workspace).await));
+                    fetches.lock().unwrap().remove(&common_dir);
+                });
+                outcome
             }
+        };
+        match outcome.wait_for(Option::is_some).await {
+            Ok(outcome) => outcome.clone().expect("waited for an outcome"),
+            Err(_) => Err("the fetch stopped without an outcome".into()),
+        }
+    }
+
+    /// Waits until the session is not starting, loading or being deleted,
+    /// and returns the guard that keeps it so. A session deleted meanwhile
+    /// is not found.
+    async fn lifecycle<'a>(
+        &self,
+        session: &'a Session,
+    ) -> Result<tokio::sync::MutexGuard<'a, ()>, ErrorBody> {
+        let guard = session.lifecycle().await;
+        if !self.lock().sessions.contains_key(&session.id) {
+            return Err(not_found("session", &session.id));
+        }
+        Ok(guard)
+    }
+
+    /// Deletes a session once its startup has finished. A session in a
+    /// worktree has its agent stopped, then its worktree removed and the
+    /// branch rule applied, with git run with `env`. A worktree that would
+    /// lose work refuses the delete unless `discard` is set, leaving the
+    /// session as it was, or `exited` when the work appeared after its agent
+    /// stopped.
+    async fn delete_session(
+        &self,
+        id: &str,
+        discard: bool,
+        env: BTreeMap<String, String>,
+    ) -> Result<Deleted, ErrorBody> {
+        let session = self.session(id)?;
+        let _lifecycle = self.lifecycle(&session).await?;
+        let mut kept_branch = None;
+        if let Some(worktree) = session.worktree() {
+            let git = Git::for_client(env);
+            if !discard {
+                let unsaved = worktree::unsaved(&git, &worktree).await?;
+                if !unsaved.is_empty() {
+                    return Err(worktree::unsaved_work(&unsaved));
+                }
+            }
+            session.stop().await;
+            worktree::remove_worktree(&git, &worktree, discard).await?;
+            kept_branch = worktree::apply_branch_rule(&git, &worktree).await?;
+        }
+        self.forget(id)?;
+        session.close();
+        Ok(Deleted { kept_branch })
+    }
+
+    /// Deletes the session's rows and removes it from the registry.
+    fn forget(&self, id: &str) -> Result<(), ErrorBody> {
+        self.update(|registry| {
             self.store
                 .remove_session(id)
                 .map_err(|error| storage(&error))?;
-            Ok(registry
-                .sessions
-                .remove(id)
-                .expect("the session was just found"))
-        })?;
-        session.close();
-        Ok(())
+            registry.sessions.remove(id);
+            Ok(())
+        })
     }
 }
 
-fn invalid_request(message: String) -> ErrorBody {
+/// Removes the worktree and branch of a session that never started, with
+/// the daemon's own environment, as a delete without `discard` would.
+async fn remove_unstarted(worktree: &SavedWorktree) -> Result<(), ErrorBody> {
+    let git = Git::own();
+    worktree::remove_worktree(&git, worktree, false).await?;
+    worktree::apply_branch_rule(&git, worktree).await?;
+    Ok(())
+}
+
+/// The workspace as clients see it.
+fn workspace_info(workspace: SavedWorkspace) -> WorkspaceInfo {
+    WorkspaceInfo {
+        git_working_tree: branches::git_working_tree(&workspace.path),
+        id: workspace.id,
+        path: workspace.path,
+    }
+}
+
+pub(crate) fn invalid_request(message: String) -> ErrorBody {
     ErrorBody {
         code: code::INVALID_REQUEST,
         message,

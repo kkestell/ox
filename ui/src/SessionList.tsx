@@ -1,10 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FolderPlus, Plus, X } from "lucide-react";
-import type { SessionInfo, SessionState, WorkspaceInfo } from "./protocol";
+import { useState } from "react";
+import { Dialog } from "./Dialog";
+import { NewBranchDialog } from "./NewBranchDialog";
+import type { Checkout, Deletion, SessionInfo, SessionState, WorkspaceInfo } from "./protocol";
 import { showError } from "./showError";
 
-const agents = [{ id: "claude", name: "Claude" }];
+type Agent = { id: string; name: string };
+
+const agents: [Agent, ...Agent[]] = [{ id: "claude", name: "Claude" }];
 
 const stateLabels: Record<SessionState, string> = {
   starting: "Starting",
@@ -30,6 +35,16 @@ export function SessionList({
   selected: string | null;
   onSelect: (sessionId: string) => void;
 }) {
+  // The agent the New Session menus start.
+  const [agent, setAgent] = useState(agents[0].id);
+  // The workspace and agent the New Worktree on Branch dialog is for.
+  const [newBranch, setNewBranch] = useState<{ workspaceId: string; agent: string } | null>(null);
+  // The sessions whose deletes are in flight.
+  const [deleting, setDeleting] = useState<ReadonlySet<string>>(new Set());
+  // A delete that would lose the unsaved work `message` lists.
+  const [unsaved, setUnsaved] = useState<{ sessionId: string; message: string } | null>(null);
+  const [keptBranch, setKeptBranch] = useState<string | null>(null);
+
   const run = async (action: () => Promise<unknown>) => {
     try {
       await action();
@@ -47,9 +62,9 @@ export function SessionList({
   const removeWorkspace = (workspaceId: string) =>
     run(() => invoke("remove_workspace", { workspaceId }));
 
-  const newSession = (workspaceId: string, agent: string) =>
+  const newSession = (workspaceId: string, agent: string, checkout: Checkout) =>
     run(async () => {
-      const session = await invoke<SessionInfo>("new_session", { agent, workspaceId });
+      const session = await invoke<SessionInfo>("new_session", { agent, workspaceId, checkout });
       onSelect(session.id);
     });
 
@@ -62,7 +77,25 @@ export function SessionList({
     onSelect(session.id);
   };
 
-  const close = (sessionId: string) => run(() => invoke("close_session", { sessionId }));
+  const deleteSession = async (sessionId: string, discard: boolean) => {
+    setDeleting((deleting) => new Set(deleting).add(sessionId));
+    try {
+      const deletion = await invoke<Deletion>("delete_session", { sessionId, discard });
+      if (deletion.type === "unsaved_work") {
+        setUnsaved({ sessionId, message: deletion.message });
+      } else if (deletion.kept_branch !== null) {
+        setKeptBranch(deletion.kept_branch);
+      }
+    } catch (e) {
+      await showError(e);
+    } finally {
+      setDeleting((deleting) => {
+        const rest = new Set(deleting);
+        rest.delete(sessionId);
+        return rest;
+      });
+    }
+  };
 
   return (
     <div className="sidebar">
@@ -104,30 +137,67 @@ export function SessionList({
                 </button>
                 <div
                   id={`new-session-${workspace.id}`}
-                  className="menu"
+                  className="menu new-session-menu"
                   role="menu"
                   popover="auto"
                   style={{ positionAnchor: `--new-session-${workspace.id}` }}
                 >
-                  {agents.map((agent) => (
-                    <button
-                      key={agent.id}
-                      type="button"
-                      role="menuitem"
-                      popoverTarget={`new-session-${workspace.id}`}
-                      popoverTargetAction="hide"
-                      onClick={() => newSession(workspace.id, agent.id)}
-                    >
-                      {agent.name}
-                    </button>
-                  ))}
+                  <select
+                    aria-label="Agent"
+                    title="Agent"
+                    value={agent}
+                    onChange={(event) => setAgent(event.target.value)}
+                  >
+                    {agents.map((choice) => (
+                      <option key={choice.id} value={choice.id}>
+                        {choice.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    popoverTarget={`new-session-${workspace.id}`}
+                    popoverTargetAction="hide"
+                    onClick={() => newSession(workspace.id, agent, { type: "workspace" })}
+                  >
+                    Existing Checkout
+                  </button>
+                  {workspace.git_working_tree && (
+                    <>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        popoverTarget={`new-session-${workspace.id}`}
+                        popoverTargetAction="hide"
+                        onClick={() =>
+                          newSession(workspace.id, agent, {
+                            type: "worktree",
+                            branch: null,
+                            start: null,
+                          })
+                        }
+                      >
+                        New Worktree
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        popoverTarget={`new-session-${workspace.id}`}
+                        popoverTargetAction="hide"
+                        onClick={() => setNewBranch({ workspaceId: workspace.id, agent })}
+                      >
+                        New Worktree on Branch…
+                      </button>
+                    </>
+                  )}
                 </div>
                 <button
                   type="button"
                   className="icon-button"
                   title={
                     workspaceSessions.length > 0
-                      ? "Close the workspace's sessions to remove it"
+                      ? "Delete the workspace's sessions to remove it"
                       : "Remove Workspace"
                   }
                   aria-label="Remove Workspace"
@@ -160,9 +230,10 @@ export function SessionList({
                       <button
                         type="button"
                         className="icon-button close"
-                        title="Close Session"
-                        aria-label="Close Session"
-                        onClick={() => close(session.id)}
+                        title="Delete Session"
+                        aria-label="Delete Session"
+                        disabled={deleting.has(session.id)}
+                        onClick={() => deleteSession(session.id, false)}
                       >
                         <X />
                       </button>
@@ -174,6 +245,57 @@ export function SessionList({
           );
         })}
       </div>
+      {newBranch !== null && (
+        <NewBranchDialog
+          agent={newBranch.agent}
+          workspaceId={newBranch.workspaceId}
+          onCreated={(session) => {
+            setNewBranch(null);
+            onSelect(session.id);
+          }}
+          onClose={() => setNewBranch(null)}
+        />
+      )}
+      {unsaved !== null && (
+        <Dialog
+          title="Discard unsaved work?"
+          onClose={() => setUnsaved(null)}
+          actions={
+            <>
+              <button type="button" className="text-button" onClick={() => setUnsaved(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => {
+                  setUnsaved(null);
+                  deleteSession(unsaved.sessionId, true);
+                }}
+              >
+                Discard and Delete
+              </button>
+            </>
+          }
+        >
+          <p className="message">{unsaved.message}</p>
+        </Dialog>
+      )}
+      {keptBranch !== null && (
+        <Dialog
+          title="Branch kept"
+          onClose={() => setKeptBranch(null)}
+          actions={
+            <button type="button" className="text-button" onClick={() => setKeptBranch(null)}>
+              OK
+            </button>
+          }
+        >
+          <p className="message">
+            Ox kept the branch <code>{keptBranch}</code>.
+          </p>
+        </Dialog>
+      )}
     </div>
   );
 }

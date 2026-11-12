@@ -287,16 +287,16 @@ class SmokeRun:
         self.report("all_event_sequences_contiguous", event_count=self.seq)
 
         self.disconnect()
-        self.ctl("close", self.session)
+        self.ctl("delete", self.session)
         self.session = None
-        check(self.ctl("ls") == "", "Closed session is still listed")
+        check(self.ctl("ls") == "", "Deleted session is still listed")
         self.ctl("workspace", "rm", self.workspace)
         check(self.ctl("workspace", "ls") == "", "Removed workspace is still listed")
         self.workspace = None
         check(self.daemon.wait(timeout=15) == 0, "Daemon did not exit successfully")
         check(not self.socket.exists(), "Daemon left its socket behind")
         check(not running_after(self.agent_pids, 10), "ACP agent did not exit")
-        self.report("close_and_idle_exit", agent_exited=True, socket_removed=True)
+        self.report("delete_and_idle_exit", agent_exited=True, socket_removed=True)
 
     def check_reconnect(self):
         token = self.directory.name
@@ -556,13 +556,13 @@ class SmokeRun:
             if self.daemon is not None and self.daemon.poll() is None:
                 self.remember_agents()
                 if self.session is not None:
-                    self.ctl("close", self.session)
+                    self.ctl("delete", self.session)
         finally:
             try:
                 if self.daemon is not None:
                     self.daemon.wait(timeout=8)
             except subprocess.TimeoutExpired:
-                # A failed close must not leave a live model request behind.
+                # A failed delete must not leave a live model request behind.
                 for pid in self.agent_pids:
                     try:
                         os.killpg(pid, signal.SIGKILL)

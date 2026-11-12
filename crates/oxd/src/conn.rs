@@ -129,9 +129,15 @@ pub async fn serve(daemon: Arc<Daemon>, stream: UnixStream, _client: ClientGuard
                 subscriptions.remove(&subscription);
                 Ok(Value::Null)
             }
-            // Setting a config option waits on the agent, so it runs in its
-            // own task and the connection keeps serving other requests.
-            method @ Method::SessionSetConfigOption { .. } => {
+            // Setting a config option waits on the agent, and creating a
+            // session in a worktree, deleting a session and listing branches
+            // wait on git, so each runs in its own task and the connection
+            // keeps serving other requests. A client that disconnects does
+            // not cancel it.
+            method @ (Method::SessionSetConfigOption { .. }
+            | Method::SessionNew { .. }
+            | Method::SessionDelete { .. }
+            | Method::WorkspaceBranches { .. }) => {
                 let daemon = daemon.clone();
                 let outgoing = outgoing.clone();
                 tokio::spawn(async move {

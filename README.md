@@ -57,7 +57,9 @@ make e2e
 `make e2e` builds the app with the `webdriver` feature, which embeds a
 WebDriver server, and runs the WebdriverIO specs in `ui/e2e` against it. The
 specs start sessions of `oxd-fake-agent`, a scripted ACP agent, with `oxctl`
-and drive them through the app's UI.
+and drive them through the app's UI. Sessions started from the app's New
+Session menu run the Claude bridge, which starts `claude` only for a prompt,
+and the specs send them none.
 
 Run live ACP smoke checks with an installed, authenticated Claude Code CLI:
 

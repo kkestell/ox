@@ -2,16 +2,19 @@
 //!
 //! Usage: `oxd [--socket PATH] [--idle-exit-ms MS]`
 //!
-//! Workspaces and sessions are saved in `<socket>.db`.
+//! Workspaces and sessions are saved in `<socket>.db`, and sessions'
+//! worktrees are added in `worktrees` beside the socket.
 //!
 //! The daemon prints `ready` on stdout once a daemon is listening on the
 //! socket: itself, or one that was already running, in which case it exits.
 
+mod branches;
 mod conn;
 mod daemon;
 mod session;
 mod state;
 mod store;
+mod worktree;
 
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions, Permissions, TryLockError};
@@ -111,8 +114,12 @@ async fn run(args: Args) -> io::Result<()> {
     let database = with_suffix(&args.socket, ".db");
     let store = Store::open(&database)
         .map_err(|error| io::Error::other(format!("opening {}: {error}", database.display())))?;
-    let daemon = Daemon::new(store)
+    // Worktrees sit beside the socket too. Git runs them from the
+    // repository, so the path is absolute.
+    let worktrees = std::path::absolute(args.socket.with_file_name("worktrees"))?;
+    let daemon = Daemon::new(store, worktrees)
         .map_err(|error| io::Error::other(format!("reading {}: {error}", database.display())))?;
+    let daemon = Arc::new(daemon);
 
     match std::fs::remove_file(&args.socket) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
@@ -129,10 +136,15 @@ async fn run(args: Args) -> io::Result<()> {
 
     report_ready();
     startup.unlock()?;
+    // Clients connect while the worktrees of sessions that never started are
+    // removed. Shutting down does not wait for it.
+    tokio::spawn({
+        let daemon = daemon.clone();
+        async move { daemon.clean_up().await }
+    });
 
     // SAFETY: `geteuid` has no preconditions.
     let uid = unsafe { libc::geteuid() };
-    let daemon = Arc::new(daemon);
     let idle = daemon.idle(args.idle_exit);
     tokio::pin!(idle);
     loop {

@@ -6,7 +6,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use ox_protocol::schema::{ContentBlock, TextContent};
-use ox_protocol::{Client, ConfigValue, SessionInfo, WorkspaceInfo, content, default_socket_path};
+use ox_protocol::{
+    Branches, Checkout, Client, ConfigValue, Deleted, Error, SessionInfo, WorkspaceInfo, code,
+    content, default_socket_path,
+};
 use serde::{Deserialize, Serialize};
 use tauri::async_runtime::JoinHandle;
 use tauri::ipc::Channel;
@@ -169,11 +172,26 @@ async fn remove_workspace(app: State<'_, App>, workspace_id: String) -> Result<(
         .map_err(message)
 }
 
+/// The workspace's branches, after fetching its remotes when `fetch` is set.
+#[tauri::command]
+async fn workspace_branches(
+    app: State<'_, App>,
+    workspace_id: String,
+    fetch: bool,
+) -> Result<Branches, String> {
+    app.client()
+        .await?
+        .branches(&workspace_id, fetch, utf8_env())
+        .await
+        .map_err(message)
+}
+
 #[tauri::command]
 async fn new_session(
     app: State<'_, App>,
     agent: Agent,
     workspace_id: String,
+    checkout: Checkout,
 ) -> Result<SessionInfo, String> {
     let command = match agent {
         Agent::Claude => {
@@ -185,7 +203,7 @@ async fn new_session(
     };
     app.client()
         .await?
-        .new_session(&workspace_id, command, utf8_env())
+        .new_session(&workspace_id, command, utf8_env(), checkout)
         .await
         .map_err(message)
 }
@@ -260,13 +278,50 @@ async fn set_config_option(
         .map_err(message)
 }
 
+/// The outcome of deleting a session.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Deletion {
+    Deleted {
+        kept_branch: Option<String>,
+    },
+    /// The session's worktree has work the delete would lose; `message`
+    /// lists it.
+    UnsavedWork {
+        message: String,
+    },
+}
+
+/// Deletes a session, giving up its worktree's unsaved work if `discard`.
 #[tauri::command]
-async fn close_session(app: State<'_, App>, session_id: String) -> Result<(), String> {
-    app.client()
-        .await?
-        .close(&session_id)
-        .await
-        .map_err(message)
+async fn delete_session(
+    app: State<'_, App>,
+    session_id: String,
+    discard: bool,
+) -> Result<Deletion, String> {
+    deletion(
+        app.client()
+            .await?
+            .delete(&session_id, discard, utf8_env())
+            .await,
+    )
+}
+
+/// The outcome of a `session.delete` answer. A session that is already gone
+/// counts as deleted.
+fn deletion(answer: Result<Deleted, Error>) -> Result<Deletion, String> {
+    match answer {
+        Ok(Deleted { kept_branch }) => Ok(Deletion::Deleted { kept_branch }),
+        Err(Error::Remote(error)) if error.code == code::UNSAVED_WORK => {
+            Ok(Deletion::UnsavedWork {
+                message: error.message,
+            })
+        }
+        Err(Error::Remote(error)) if error.code == code::NOT_FOUND => {
+            Ok(Deletion::Deleted { kept_branch: None })
+        }
+        Err(error) => Err(message(error)),
+    }
 }
 
 fn message(error: impl Display) -> String {
@@ -292,14 +347,59 @@ pub fn run() {
             view_session,
             add_workspace,
             remove_workspace,
+            workspace_branches,
             new_session,
             load_session,
             prompt,
             cancel,
             permit,
             set_config_option,
-            close_session,
+            delete_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use ox_protocol::ErrorBody;
+
+    use super::*;
+
+    fn remote(code: i32, message: &str) -> Result<Deleted, Error> {
+        Err(Error::Remote(ErrorBody {
+            code,
+            message: message.into(),
+        }))
+    }
+
+    #[test]
+    fn deletion_maps_the_answer() {
+        assert_eq!(
+            deletion(Ok(Deleted {
+                kept_branch: Some("ox/1".into())
+            })),
+            Ok(Deletion::Deleted {
+                kept_branch: Some("ox/1".into())
+            })
+        );
+        assert_eq!(
+            deletion(remote(code::UNSAVED_WORK, "untracked a.txt")),
+            Ok(Deletion::UnsavedWork {
+                message: "untracked a.txt".into()
+            })
+        );
+        assert_eq!(
+            deletion(remote(code::NOT_FOUND, "no session s")),
+            Ok(Deletion::Deleted { kept_branch: None })
+        );
+        assert_eq!(
+            deletion(remote(code::GIT, "worktree is locked")),
+            Err("worktree is locked".into())
+        );
+        assert_eq!(
+            deletion(Err(Error::Closed)),
+            Err("connection to oxd closed".into())
+        );
+    }
 }

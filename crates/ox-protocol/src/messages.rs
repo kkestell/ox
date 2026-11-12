@@ -41,18 +41,39 @@ pub enum Method {
     WorkspaceRemove { workspace_id: String },
     #[serde(rename = "workspace.list")]
     WorkspaceList,
-    /// Starts an agent in the workspace's directory. The result is the
-    /// session in state `starting`; its `agent_started` or `agent_exited`
-    /// event follows.
+    /// The workspace's local and remote-tracking branches, for naming the
+    /// branch of a new worktree. Refused outside a Git working tree. With
+    /// `fetch`, the daemon first runs `git fetch --all`, shared with any
+    /// fetch of the same repository already running and stopped after 60
+    /// seconds; a fetch that fails sets `fetch_error` and the lists are
+    /// answered as they stand. Git runs with `env` over the daemon's
+    /// environment, as for `session.new`.
+    #[serde(rename = "workspace.branches")]
+    WorkspaceBranches {
+        workspace_id: String,
+        #[serde(default)]
+        fetch: bool,
+        #[serde(default)]
+        env: BTreeMap<String, String>,
+    },
+    /// Starts an agent in the workspace's directory or in a new worktree of
+    /// its Git repository, as `checkout` says. The result is the session in
+    /// state `starting`; its `agent_started` or `agent_exited` event
+    /// follows. A worktree's branch is resolved and created before the
+    /// answer, and the worktree is added during the session's startup. Git
+    /// runs with `env` over the daemon's environment, as the agent does.
     #[serde(rename = "session.new")]
     SessionNew {
         workspace_id: String,
         command: Vec<String>,
         #[serde(default)]
         env: BTreeMap<String, String>,
+        #[serde(default)]
+        checkout: Checkout,
     },
     /// Restarts the agent of an exited session that has an
-    /// `agent_session_id`, from the session's command and directory. The
+    /// `agent_session_id`, from the session's command and directory, which
+    /// must still exist. The
     /// result is the session in state `starting`. The agent replays the
     /// conversation before its `agent_started` event. A session with no
     /// events records the replay as `update` events; a session that has
@@ -99,8 +120,68 @@ pub enum Method {
         config_id: String,
         value: ConfigValue,
     },
-    #[serde(rename = "session.close")]
-    SessionClose { session_id: String },
+    /// Stops the session's agent and deletes the session. A session in a
+    /// worktree waits for its startup to finish, then has its worktree
+    /// removed. The removal is refused with `UNSAVED_WORK`, leaving the
+    /// session as it was, while the worktree has uncommitted changes,
+    /// commits on no branch, or submodule commits on no remote branch,
+    /// unless `discard` is set. A branch the daemon created is then deleted
+    /// if all its commits are on another branch, tag or remote branch, and
+    /// kept otherwise; a branch that existed before the session is always
+    /// kept. Git runs with `env` over the daemon's environment, as for
+    /// `session.new`. The result is [`Deleted`].
+    #[serde(rename = "session.delete")]
+    SessionDelete {
+        session_id: String,
+        #[serde(default)]
+        discard: bool,
+        #[serde(default)]
+        env: BTreeMap<String, String>,
+    },
+}
+
+/// Where a new session runs.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Checkout {
+    /// The workspace's directory.
+    #[default]
+    Workspace,
+    /// A new worktree of the workspace's repository, in the same
+    /// subdirectory the workspace is of its checkout. With no `branch`, the
+    /// worktree is on a new branch `ox/<first 8 digits of the session ID>`.
+    /// A `branch` that exists locally is checked out; one that exists only
+    /// on a remote, named `<branch>` or `<remote>/<branch>`, becomes a local
+    /// branch tracking it; any other name is a new branch. A new branch
+    /// starts at `start`, `HEAD` when unset, and has no upstream. `start` is
+    /// refused for any other branch.
+    Worktree {
+        #[serde(default)]
+        branch: Option<String>,
+        #[serde(default)]
+        start: Option<String>,
+    },
+}
+
+/// A session's worktree.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeInfo {
+    /// The worktree's top level. The session's `cwd` is this directory or a
+    /// subdirectory of it.
+    pub path: PathBuf,
+    pub branch: String,
+    /// The commit the session started at.
+    pub base: String,
+    /// Whether the daemon created the branch for the session.
+    pub created_branch: bool,
+}
+
+/// The result of `session.delete`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Deleted {
+    /// The branch the daemon created for the session's worktree, kept
+    /// because it has commits on no other branch, tag or remote branch.
+    pub kept_branch: Option<String>,
 }
 
 /// A value for a session config option: the value id of a select option, or
@@ -146,6 +227,23 @@ impl SessionState {
 pub struct WorkspaceInfo {
     pub id: String,
     pub path: PathBuf,
+    /// Whether the directory looks like it is in a Git working tree: it is
+    /// not inside a `.git` directory, and it or a parent has a `.git`. Only
+    /// then can a session run in a worktree of it. The daemon works this out
+    /// each time it sends the workspace, without running git.
+    pub git_working_tree: bool,
+}
+
+/// A workspace's branches, each list most recently committed first.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Branches {
+    /// Local branch names, such as `main`.
+    pub local: Vec<String>,
+    /// Remote-tracking branch names with their remote, such as
+    /// `origin/main`, without symbolic refs such as `origin/HEAD`.
+    pub remote: Vec<String>,
+    /// Why the fetch the request asked for failed, if it did.
+    pub fetch_error: Option<String>,
 }
 
 /// What a watch delivers: the daemon's workspaces, in the order they were
@@ -173,6 +271,9 @@ pub struct SessionInfo {
     pub prompt_capabilities: PromptCapabilities,
     /// The agent's current config options, such as model and mode.
     pub config_options: Vec<SessionConfigOption>,
+    /// The worktree the session runs in, if it has one. Unset again when
+    /// the worktree could not be added.
+    pub worktree: Option<WorktreeInfo>,
 }
 
 /// One entry in a session's history. `seq` starts at 1 and increases by one
@@ -251,6 +352,11 @@ pub mod code {
     pub const AGENT: i32 = 5;
     /// The daemon could not read or write its database.
     pub const STORAGE: i32 = 6;
+    /// Deleting the session would lose work in its worktree, which the
+    /// message lists. Deleting it with `discard` set loses that work.
+    pub const UNSAVED_WORK: i32 = 7;
+    /// A git command failed. The message carries git's error output.
+    pub const GIT: i32 = 8;
 }
 
 /// A daemon message: a response to request `id`, or an event or listing
@@ -337,9 +443,94 @@ mod tests {
         .unwrap();
         assert!(matches!(
             request.method,
-            Method::SessionNew { ref workspace_id, ref env, .. }
+            Method::SessionNew { ref workspace_id, ref env, checkout: Checkout::Workspace, .. }
                 if workspace_id == "w" && env.is_empty()
         ));
+        let method = Method::SessionNew {
+            workspace_id: "w".into(),
+            command: vec!["agent".into()],
+            env: BTreeMap::new(),
+            checkout: Checkout::Worktree {
+                branch: Some("feature".into()),
+                start: None,
+            },
+        };
+        let value = serde_json::to_value(Request { id: 13, method }).unwrap();
+        assert_eq!(
+            value["params"]["checkout"],
+            json!({"type": "worktree", "branch": "feature", "start": null})
+        );
+        let request: Request = serde_json::from_value(value).unwrap();
+        assert!(matches!(
+            request.method,
+            Method::SessionNew {
+                checkout: Checkout::Worktree { branch: Some(ref branch), start: None },
+                ..
+            } if branch == "feature"
+        ));
+        let request: Request = serde_json::from_value(json!({
+            "id": 14,
+            "method": "session.new",
+            "params": {"workspace_id": "w", "command": ["agent"], "checkout": {"type": "worktree"}}
+        }))
+        .unwrap();
+        assert!(matches!(
+            request.method,
+            Method::SessionNew {
+                checkout: Checkout::Worktree {
+                    branch: None,
+                    start: None
+                },
+                ..
+            }
+        ));
+        let request: Request = serde_json::from_value(json!({
+            "id": 16,
+            "method": "session.delete",
+            "params": {"session_id": "s"}
+        }))
+        .unwrap();
+        assert!(matches!(
+            request.method,
+            Method::SessionDelete { ref session_id, discard: false, ref env }
+                if session_id == "s" && env.is_empty()
+        ));
+        let request: Request = serde_json::from_value(json!({
+            "id": 15,
+            "method": "workspace.branches",
+            "params": {"workspace_id": "w"}
+        }))
+        .unwrap();
+        assert!(matches!(
+            request.method,
+            Method::WorkspaceBranches { ref workspace_id, fetch: false, ref env }
+                if workspace_id == "w" && env.is_empty()
+        ));
+        let method = Method::WorkspaceBranches {
+            workspace_id: "w".into(),
+            fetch: true,
+            env: BTreeMap::from([("PATH".into(), "/bin".into())]),
+        };
+        let value = serde_json::to_value(Request { id: 16, method }).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "id": 16,
+                "method": "workspace.branches",
+                "params": {"workspace_id": "w", "fetch": true, "env": {"PATH": "/bin"}}
+            })
+        );
+        let branches = Branches {
+            local: vec!["main".into()],
+            remote: vec!["origin/main".into()],
+            fetch_error: Some("no network".into()),
+        };
+        let value = serde_json::to_value(&branches).unwrap();
+        assert_eq!(
+            value,
+            json!({"local": ["main"], "remote": ["origin/main"], "fetch_error": "no network"})
+        );
+        assert_eq!(serde_json::from_value::<Branches>(value).unwrap(), branches);
         let request: Request = serde_json::from_value(json!({
             "id": 12,
             "method": "session.load",
@@ -428,7 +619,7 @@ mod tests {
 
         let message: ServerMessage = serde_json::from_value(json!({
             "subscription": 5,
-            "workspaces": [{"id": "w", "path": "/tmp"}],
+            "workspaces": [{"id": "w", "path": "/tmp", "git_working_tree": true}],
             "sessions": [{
                 "id": "s",
                 "workspace_id": "w",
@@ -438,7 +629,13 @@ mod tests {
                 "title": "Fix the build",
                 "agent_session_id": "a",
                 "prompt_capabilities": {},
-                "config_options": []
+                "config_options": [],
+                "worktree": {
+                    "path": "/worktrees/tmp-01234567",
+                    "branch": "ox/01234567",
+                    "base": "abc",
+                    "created_branch": true
+                }
             }]
         }))
         .unwrap();
@@ -446,8 +643,12 @@ mod tests {
             message,
             ServerMessage::List { subscription: 5, ref workspaces, ref sessions }
                 if workspaces[0].id == "w"
+                    && workspaces[0].git_working_tree
                     && sessions[0].workspace_id == "w"
                     && sessions[0].title.as_deref() == Some("Fix the build")
+                    && sessions[0].worktree.as_ref().is_some_and(|worktree| {
+                        worktree.branch == "ox/01234567" && worktree.created_branch
+                    })
         ));
     }
 }

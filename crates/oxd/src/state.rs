@@ -395,6 +395,18 @@ impl State {
         }
     }
 
+    /// A saved session whose agent never started: exited, with no events and
+    /// nothing to load.
+    pub fn unstarted(session_id: String, title: Option<String>) -> Self {
+        Self {
+            session_id,
+            phase: Phase::Exited(None),
+            title,
+            events: Vec::new(),
+            next_request: 1,
+        }
+    }
+
     /// Starts a load: the session goes from `exited` to `starting` and
     /// returns the agent session ID to load. A session whose agent has never
     /// started records the agent's replay as its history; one whose agent

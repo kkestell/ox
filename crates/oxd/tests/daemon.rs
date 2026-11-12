@@ -13,8 +13,8 @@ use ox_protocol::schema::{
     SessionConfigOption, SessionUpdate, StateUpdate, StopReason, TextContent, TextResourceContents,
 };
 use ox_protocol::{
-    Client, ConfigValue, End, Error, Event, EventKind, Listing, PROTOCOL_VERSION, SessionInfo,
-    SessionState, Subscription, Watch, WorkspaceInfo, code,
+    Checkout, Client, ConfigValue, End, Error, Event, EventKind, Listing, PROTOCOL_VERSION,
+    SessionInfo, SessionState, Subscription, Watch, WorkspaceInfo, code,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -125,7 +125,12 @@ impl Daemon {
     async fn new_session_with(&self, client: &Client, args: &[&str]) -> (SessionInfo, u64) {
         let workspace = self.workspace(client).await;
         let session = client
-            .new_session(&workspace.id, fake_agent(args), BTreeMap::new())
+            .new_session(
+                &workspace.id,
+                fake_agent(args),
+                BTreeMap::new(),
+                Checkout::Workspace,
+            )
             .await
             .unwrap();
         assert_eq!(session.state, SessionState::Starting);
@@ -647,7 +652,10 @@ async fn agent_exit() {
     let error = client.prompt(&session.id, text("pid")).await.unwrap_err();
     assert_eq!(remote_code(error), code::INVALID_STATE);
 
-    client.close(&session.id).await.unwrap();
+    client
+        .delete(&session.id, false, BTreeMap::new())
+        .await
+        .unwrap();
     assert!(client.list().await.unwrap().is_empty());
     let error = client.subscribe(&session.id, 0).await.unwrap_err();
     assert_eq!(remote_code(error), code::NOT_FOUND);
@@ -663,6 +671,7 @@ async fn agent_that_cannot_start() {
             &workspace.id,
             vec![daemon.cwd().join("missing").to_string_lossy().into()],
             BTreeMap::new(),
+            Checkout::Workspace,
         )
         .await
         .unwrap();
@@ -690,7 +699,10 @@ async fn lifetime() {
     assert!(daemon.socket.exists());
 
     let client = daemon.client().await;
-    client.close(&session.id).await.unwrap();
+    client
+        .delete(&session.id, false, BTreeMap::new())
+        .await
+        .unwrap();
     drop(client);
     assert!(daemon.wait_for_exit().await.success());
     assert!(!daemon.socket.exists());
@@ -832,7 +844,7 @@ async fn slow_subscriber_receives_every_event() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn close_while_starting() {
+async fn delete_while_starting() {
     let mut daemon = Daemon::start(300).await;
     let client = daemon.client().await;
     let mut agent = ExitWatch::new(daemon.dir.path());
@@ -840,7 +852,12 @@ async fn close_while_starting() {
     args.extend(agent.arg());
     let workspace = daemon.workspace(&client).await;
     let session = client
-        .new_session(&workspace.id, fake_agent(&args), BTreeMap::new())
+        .new_session(
+            &workspace.id,
+            fake_agent(&args),
+            BTreeMap::new(),
+            Checkout::Workspace,
+        )
         .await
         .unwrap();
     assert_eq!(session.state, SessionState::Starting);
@@ -852,7 +869,10 @@ async fn close_while_starting() {
     );
 
     let mut events = client.subscribe(&session.id, 0).await.unwrap();
-    client.close(&session.id).await.unwrap();
+    client
+        .delete(&session.id, false, BTreeMap::new())
+        .await
+        .unwrap();
     assert!(matches!(
         next(&mut events).await.kind,
         EventKind::SessionClosed
@@ -863,20 +883,23 @@ async fn close_while_starting() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn close_ends_other_clients_subscriptions() {
+async fn delete_ends_other_clients_subscriptions() {
     let daemon = Daemon::start(1000).await;
     let watcher = daemon.client().await;
     let (session, started) = daemon.new_session(&watcher).await;
     let mut events = watcher.subscribe(&session.id, started).await.unwrap();
-    let closer = daemon.client().await;
-    closer.close(&session.id).await.unwrap();
+    let deleter = daemon.client().await;
+    deleter
+        .delete(&session.id, false, BTreeMap::new())
+        .await
+        .unwrap();
     let last = next(&mut events).await;
     assert!(matches!(last.kind, EventKind::SessionClosed));
     assert_eq!(end(&mut events).await, End::SessionClosed);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn close_ends_the_turn_and_its_permission_request() {
+async fn delete_ends_the_turn_and_its_permission_request() {
     let daemon = Daemon::start(1000).await;
     let client = daemon.client().await;
     let (session, started) = daemon.new_session(&client).await;
@@ -889,7 +912,10 @@ async fn close_ends_the_turn_and_its_permission_request() {
         matches!(kind, EventKind::PermissionRequested { .. })
     })
     .await;
-    client.close(&session.id).await.unwrap();
+    client
+        .delete(&session.id, false, BTreeMap::new())
+        .await
+        .unwrap();
     let rest = until(&mut events, |kind| matches!(kind, EventKind::SessionClosed)).await;
     assert_eq!(rest.len(), 3, "{rest:?}");
     assert!(matches!(
@@ -1048,7 +1074,10 @@ async fn exhausted_descriptors_do_not_stop_the_daemon() {
     drop(streams);
     let client = daemon.client().await;
     let (session, _) = daemon.new_session(&client).await;
-    client.close(&session.id).await.unwrap();
+    client
+        .delete(&session.id, false, BTreeMap::new())
+        .await
+        .unwrap();
     assert!(daemon.child.try_wait().unwrap().is_none(), "oxd exited");
 }
 
@@ -1139,12 +1168,15 @@ async fn sigterm_stops_agents_and_removes_the_socket() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn close_stops_the_agent() {
+async fn delete_stops_the_agent() {
     let daemon = Daemon::start(1000).await;
     let client = daemon.client().await;
     let agent = ExitWatch::new(daemon.dir.path());
     let (session, _) = daemon.new_session_with(&client, &agent.arg()).await;
-    client.close(&session.id).await.unwrap();
+    client
+        .delete(&session.id, false, BTreeMap::new())
+        .await
+        .unwrap();
     agent.exited().await;
 }
 
@@ -1353,7 +1385,10 @@ async fn a_workspace_with_sessions_cannot_be_removed() {
         std::slice::from_ref(&workspace)
     );
 
-    client.close(&session.id).await.unwrap();
+    client
+        .delete(&session.id, false, BTreeMap::new())
+        .await
+        .unwrap();
     client.remove_workspace(&workspace.id).await.unwrap();
     assert!(client.list_workspaces().await.unwrap().is_empty());
 }
@@ -1368,12 +1403,22 @@ async fn a_session_runs_in_its_workspace() {
     assert_eq!(session.cwd, workspace.path);
 
     let error = client
-        .new_session("unknown", fake_agent(&[]), BTreeMap::new())
+        .new_session(
+            "unknown",
+            fake_agent(&[]),
+            BTreeMap::new(),
+            Checkout::Workspace,
+        )
         .await
         .unwrap_err();
     assert_eq!(remote_code(error), code::NOT_FOUND);
     let error = client
-        .new_session(&workspace.id, Vec::new(), BTreeMap::new())
+        .new_session(
+            &workspace.id,
+            Vec::new(),
+            BTreeMap::new(),
+            Checkout::Workspace,
+        )
         .await
         .unwrap_err();
     assert_eq!(remote_code(error), code::INVALID_REQUEST);
@@ -1398,6 +1443,7 @@ async fn workspaces_and_sessions_survive_a_restart() {
             &workspace.id,
             fake_agent(&["--hang-initialize"]),
             BTreeMap::new(),
+            Checkout::Workspace,
         )
         .await
         .unwrap();
@@ -1436,11 +1482,14 @@ async fn workspaces_and_sessions_survive_a_restart() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_closed_session_is_not_saved() {
+async fn a_deleted_session_is_not_saved() {
     let mut first = Daemon::start(1000).await;
     let client = first.client().await;
     let (session, _) = first.new_session(&client).await;
-    client.close(&session.id).await.unwrap();
+    client
+        .delete(&session.id, false, BTreeMap::new())
+        .await
+        .unwrap();
     drop(client);
     first.stop().await;
 
@@ -1604,6 +1653,7 @@ async fn only_an_exited_session_that_started_can_be_loaded() {
             &workspace.id,
             vec![daemon.cwd().join("missing").to_string_lossy().into()],
             BTreeMap::new(),
+            Checkout::Workspace,
         )
         .await
         .unwrap();
@@ -1626,6 +1676,7 @@ async fn an_agent_without_session_capabilities_cannot_run_sessions() {
             &workspace.id,
             fake_agent(&["--no-sessions"]),
             BTreeMap::new(),
+            Checkout::Workspace,
         )
         .await
         .unwrap();
@@ -1648,6 +1699,7 @@ async fn a_session_resumed_while_its_agent_is_working_runs_until_the_agent_is_id
             &workspace.id,
             fake_agent(&["--busy-on-resume"]),
             BTreeMap::new(),
+            Checkout::Workspace,
         )
         .await
         .unwrap();
@@ -1756,7 +1808,12 @@ async fn watch_follows_a_session() {
 
     let workspace = daemon.workspace(&client).await;
     let session = client
-        .new_session(&workspace.id, fake_agent(&[]), BTreeMap::new())
+        .new_session(
+            &workspace.id,
+            fake_agent(&[]),
+            BTreeMap::new(),
+            Checkout::Workspace,
+        )
         .await
         .unwrap();
     let id = session.id.as_str();
@@ -1786,7 +1843,7 @@ async fn watch_follows_a_session() {
     client.permit(id, request_id, "allow").await.unwrap();
     reach(SessionState::Idle).await;
 
-    client.close(id).await.unwrap();
+    client.delete(id, false, BTreeMap::new()).await.unwrap();
     listings_until(&mut watch, |listing| {
         state_in(&listing.sessions, id).is_none()
     })
@@ -1802,7 +1859,10 @@ async fn watch_sends_only_changed_listings() {
     let mut events = client.subscribe(&session.id, started).await.unwrap();
     client.prompt(&session.id, text("say 200 0")).await.unwrap();
     until(&mut events, turn_ended).await;
-    client.close(&session.id).await.unwrap();
+    client
+        .delete(&session.id, false, BTreeMap::new())
+        .await
+        .unwrap();
     let lists = listings_until(&mut watch, |listing| listing.sessions.is_empty()).await;
     for pair in lists.windows(2) {
         assert_ne!(pair[0], pair[1]);

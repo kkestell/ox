@@ -34,6 +34,7 @@ export function Permission({
           <button
             key={option.optionId}
             type="button"
+            className="text-button"
             data-kind={option.kind}
             disabled={pending}
             onClick={() => permit(option.optionId)}

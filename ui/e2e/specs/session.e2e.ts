@@ -116,8 +116,8 @@ describe("A session", () => {
     await expect(composer()).toBeDisabled();
   });
 
-  it("is removed from the list when closed", async () => {
-    await sessionEntry(cwd).$('button[aria-label="Close Session"]').click();
+  it("is removed from the list when deleted", async () => {
+    await sessionEntry(cwd).$('button[aria-label="Delete Session"]').click();
     await expect(sessionEntry(cwd)).not.toBeExisting();
   });
 });

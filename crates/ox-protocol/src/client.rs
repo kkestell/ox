@@ -19,8 +19,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::messages::{
-    ConfigValue, ErrorBody, Event, EventKind, HelloResult, Listing, Method, PROTOCOL_VERSION,
-    Request, ServerMessage, SessionInfo, WorkspaceInfo,
+    Branches, Checkout, ConfigValue, Deleted, ErrorBody, Event, EventKind, HelloResult, Listing,
+    Method, PROTOCOL_VERSION, Request, ServerMessage, SessionInfo, WorkspaceInfo,
 };
 
 /// How long a started daemon has to report that it is ready.
@@ -309,16 +309,34 @@ impl Client {
         self.call(Method::WorkspaceList).await
     }
 
+    /// The workspace's branches, after fetching its remotes when `fetch` is
+    /// set. Git runs with `env` over the daemon's environment.
+    pub async fn branches(
+        &self,
+        workspace_id: &str,
+        fetch: bool,
+        env: BTreeMap<String, String>,
+    ) -> Result<Branches, Error> {
+        self.call(Method::WorkspaceBranches {
+            workspace_id: workspace_id.into(),
+            fetch,
+            env,
+        })
+        .await
+    }
+
     pub async fn new_session(
         &self,
         workspace_id: &str,
         command: Vec<String>,
         env: BTreeMap<String, String>,
+        checkout: Checkout,
     ) -> Result<SessionInfo, Error> {
         self.call(Method::SessionNew {
             workspace_id: workspace_id.into(),
             command,
             env,
+            checkout,
         })
         .await
     }
@@ -412,9 +430,19 @@ impl Client {
         .await
     }
 
-    pub async fn close(&self, session_id: &str) -> Result<(), Error> {
-        self.ack(Method::SessionClose {
+    /// Deletes a session, removing its worktree unless that loses work
+    /// `discard` does not give up. Git runs with `env` over the daemon's
+    /// environment.
+    pub async fn delete(
+        &self,
+        session_id: &str,
+        discard: bool,
+        env: BTreeMap<String, String>,
+    ) -> Result<Deleted, Error> {
+        self.call(Method::SessionDelete {
             session_id: session_id.into(),
+            discard,
+            env,
         })
         .await
     }

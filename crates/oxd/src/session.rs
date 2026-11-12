@@ -12,11 +12,12 @@ use agent_client_protocol::v2::schema::{
 use agent_client_protocol::v2::{ConnectionTo, InitializeOutcome, Responder};
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, Client};
 use ox_protocol::{ConfigValue, ErrorBody, Event, SessionInfo, SessionState, code};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{OwnedMutexGuard, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::state::{self, Change, Request, State, invalid_state};
-use crate::store::{SavedSession, Store};
+use crate::store::{SavedSession, SavedWorktree, Store};
+use crate::worktree::{self, Git, WorktreePlan};
 
 type ConfigReply = oneshot::Sender<Result<Vec<SessionConfigOption>, String>>;
 
@@ -35,13 +36,19 @@ enum Command {
 }
 
 /// One ACP agent process and its event history. The database keeps the
-/// session's workspace, command, directory, title, and agent session ID.
+/// session's workspace, command, directory, title, agent session ID, and
+/// worktree.
 pub struct Session {
     pub id: String,
     pub number: u64,
     workspace_id: String,
     command: Vec<String>,
     cwd: PathBuf,
+    /// The worktree the session runs in. Unset when it could not be added.
+    worktree: Mutex<Option<SavedWorktree>>,
+    /// Held while the session adds its worktree and launches its agent,
+    /// while it loads, and while it is deleted.
+    lifecycle: Arc<tokio::sync::Mutex<()>>,
     store: Arc<Store>,
     state: Mutex<State>,
     /// The seq of the session's last event. Updated under the state lock.
@@ -68,6 +75,8 @@ impl Session {
             workspace_id: saved.workspace_id,
             command: saved.command,
             cwd: saved.cwd,
+            worktree: Mutex::new(saved.worktree),
+            lifecycle: Arc::default(),
             store,
             last_seq: watch::Sender::new(0),
             changed,
@@ -76,31 +85,81 @@ impl Session {
         })
     }
 
-    /// Spawns the agent of a session just saved. The session records
-    /// `AgentStarted` once the ACP session is open, or `AgentExited` if it
-    /// cannot be opened.
+    /// Starts a session just saved: adds its worktree, if it has one to
+    /// add, then spawns its agent. The session records `AgentStarted` once
+    /// the ACP session is open, or `AgentExited` if the worktree cannot be
+    /// added or the session cannot be opened.
     pub fn spawn(
         store: Arc<Store>,
         changed: watch::Sender<()>,
         saved: SavedSession,
         env: BTreeMap<String, String>,
+        worktree: Option<(Git, WorktreePlan)>,
     ) -> Arc<Self> {
         let state = State::new(saved.id.clone());
         let session = Self::new(store, changed, saved, state);
-        session.launch(&mut session.task.lock().unwrap(), env, None);
+        match worktree {
+            None => session.launch(&mut session.task.lock().unwrap(), env, None),
+            Some((git, plan)) => {
+                let lifecycle = session.hold_lifecycle();
+                tokio::spawn(session.clone().start_in_worktree(lifecycle, git, plan, env));
+            }
+        }
         session
     }
 
+    /// Adds the session's worktree, then launches its agent in it. If the
+    /// worktree cannot be added, undoes the branch and the worktree, and the
+    /// session exits with git's error and no worktree.
+    async fn start_in_worktree(
+        self: Arc<Self>,
+        _lifecycle: OwnedMutexGuard<()>,
+        git: Git,
+        plan: WorktreePlan,
+        env: BTreeMap<String, String>,
+    ) {
+        if let Err(mut message) = worktree::add(&git, &plan).await {
+            if let Err(error) = worktree::roll_back(&git, &plan, true).await {
+                eprintln!("oxd: undoing the worktree of session {}: {error}", self.id);
+                message = format!("{message}; undoing it failed: {error}");
+            }
+            if let Err(error) = self.store.remove_worktree(&self.id) {
+                eprintln!(
+                    "oxd: forgetting the worktree of session {}: {error}",
+                    self.id
+                );
+                message = format!("{message}; forgetting the worktree failed: {error}");
+            }
+            self.update(|state| {
+                *self.worktree.lock().unwrap() = None;
+                state.record(Change::Exited(Some(message)));
+            });
+            return;
+        }
+        // Holding the task slot keeps a concurrent `close` from missing the
+        // agent's task. A session closed while its worktree was added stays
+        // closed.
+        let mut task = self.task.lock().unwrap();
+        if self.state() == SessionState::Starting {
+            self.launch(&mut task, env, None);
+        }
+    }
+
     /// A saved session whose agent is not running: it is `exited` and has no
-    /// events until it loads.
+    /// events until it loads. A session whose agent never started has
+    /// nothing to load.
     pub fn restore(
         store: Arc<Store>,
         changed: watch::Sender<()>,
         saved: SavedSession,
-    ) -> Option<Arc<Self>> {
-        let agent_session_id = saved.agent_session_id.clone()?;
-        let state = State::restored(saved.id.clone(), saved.title.clone(), agent_session_id);
-        Some(Self::new(store, changed, saved, state))
+    ) -> Arc<Self> {
+        let state = match saved.agent_session_id.clone() {
+            Some(agent_session_id) => {
+                State::restored(saved.id.clone(), saved.title.clone(), agent_session_id)
+            }
+            None => State::unstarted(saved.id.clone(), saved.title.clone()),
+        };
+        Self::new(store, changed, saved, state)
     }
 
     /// Starts the agent task in `task`, which opens a new ACP session or
@@ -121,6 +180,15 @@ impl Session {
     /// records `AgentStarted` once the agent has resumed it, or `AgentExited`
     /// if it cannot.
     pub fn load(self: &Arc<Self>, env: BTreeMap<String, String>) -> Result<(), ErrorBody> {
+        if !self.cwd.is_dir() {
+            return Err(ErrorBody {
+                code: code::INVALID_STATE,
+                message: format!(
+                    "the session's directory {} no longer exists",
+                    self.cwd.display()
+                ),
+            });
+        }
         // Holding the task slot keeps a concurrent `close` from missing the
         // new task.
         let mut task = self.task.lock().unwrap();
@@ -133,12 +201,27 @@ impl Session {
         self.info_of(&self.lock())
     }
 
-    pub fn state(&self) -> SessionState {
-        self.lock().state()
+    pub fn worktree(&self) -> Option<SavedWorktree> {
+        self.worktree.lock().unwrap().clone()
     }
 
-    pub fn workspace_id(&self) -> &str {
-        &self.workspace_id
+    /// The lifecycle guard of a session no one else has seen yet, such as one
+    /// just created or restored.
+    pub fn hold_lifecycle(&self) -> OwnedMutexGuard<()> {
+        self.lifecycle
+            .clone()
+            .try_lock_owned()
+            .expect("nothing else holds a new session's lifecycle lock")
+    }
+
+    /// Waits until the session is not starting in its worktree, loading, or
+    /// being deleted, and keeps others from doing so while the guard lives.
+    pub async fn lifecycle(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.lifecycle.lock().await
+    }
+
+    pub fn state(&self) -> SessionState {
+        self.lock().state()
     }
 
     fn info_of(&self, state: &State) -> SessionInfo {
@@ -157,6 +240,12 @@ impl Session {
             config_options: agent
                 .map(|agent| agent.config_options.clone())
                 .unwrap_or_default(),
+            worktree: self
+                .worktree
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|worktree| worktree.info.clone()),
         }
     }
 
@@ -229,6 +318,19 @@ impl Session {
                 option_id: option_id.into(),
             })
         })
+    }
+
+    /// Stops the agent, killing its process group, and returns once the
+    /// agent's task has ended. The session is `exited`, and keeps its
+    /// subscriptions.
+    pub async fn stop(&self) {
+        let task = self.task.lock().unwrap().take();
+        if let Some(task) = task {
+            task.abort();
+            // The task ends cancelled, having dropped the agent.
+            let _ = task.await;
+        }
+        self.record(Change::Exited(None));
     }
 
     /// Stops the agent, killing its process group, and ends every

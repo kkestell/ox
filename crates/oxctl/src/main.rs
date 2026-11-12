@@ -14,7 +14,7 @@ use ox_protocol::schema::{
     SessionConfigKind, SessionConfigOption, SessionConfigSelectOptions, SessionUpdate, StateUpdate,
     StopReason, TextContent, ToolCallStatus,
 };
-use ox_protocol::{Client, ConfigValue, End, Event, EventKind, SessionState, content};
+use ox_protocol::{Checkout, Client, ConfigValue, End, Event, EventKind, SessionState, content};
 
 #[derive(Parser)]
 #[command(name = "oxctl", about = "Control oxd sessions")]
@@ -40,6 +40,17 @@ enum Command {
         /// The workspace's id, as `workspace ls` shows it
         #[arg(long)]
         workspace: String,
+        /// Run in a new worktree of the workspace's repository, on a new
+        /// branch named for the session
+        #[arg(long)]
+        worktree: bool,
+        /// Run in a new worktree on this branch: a local branch, a remote
+        /// branch to track, or a new branch
+        #[arg(long)]
+        branch: Option<String>,
+        /// Start a new branch at this commit [default: HEAD]
+        #[arg(long)]
+        start: Option<String>,
         /// Agent command [default: claude-code-acp]
         #[arg(last = true)]
         command: Vec<String>,
@@ -88,8 +99,16 @@ enum Command {
     },
     /// Cancel the running turn
     Cancel { session: String },
-    /// Stop a session's agent and forget the session
-    Close { session: String },
+    /// Stop a session's agent and delete the session, with its worktree
+    /// and the branch Ox created for it, unless the branch has commits on no
+    /// other branch
+    Delete {
+        session: String,
+        /// Delete the worktree even if that loses uncommitted changes or
+        /// commits
+        #[arg(long)]
+        discard: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -144,13 +163,26 @@ async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             }
             WorkspaceCommand::Rm { workspace } => client.remove_workspace(&workspace).await?,
         },
-        Command::New { workspace, command } => {
+        Command::New {
+            workspace,
+            worktree,
+            branch,
+            start,
+            command,
+        } => {
             let command = if command.is_empty() {
                 vec!["claude-code-acp".to_owned()]
             } else {
                 command
             };
-            let session = client.new_session(&workspace, command, utf8_env()).await?;
+            let checkout = if worktree || branch.is_some() || start.is_some() {
+                Checkout::Worktree { branch, start }
+            } else {
+                Checkout::Workspace
+            };
+            let session = client
+                .new_session(&workspace, command, utf8_env(), checkout)
+                .await?;
             println!("{}", started(&client, &session.id).await?);
         }
         Command::Load { session } => {
@@ -227,7 +259,12 @@ async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             option_id,
         } => client.permit(&session, &request_id, &option_id).await?,
         Command::Cancel { session } => client.cancel(&session).await?,
-        Command::Close { session } => client.close(&session).await?,
+        Command::Delete { session, discard } => {
+            let deleted = client.delete(&session, discard, utf8_env()).await?;
+            if let Some(branch) = deleted.kept_branch {
+                println!("kept branch {branch}");
+            }
+        }
     }
     Ok(())
 }
@@ -286,7 +323,7 @@ fn describe_option(option: &SessionConfigOption) -> String {
 }
 
 /// Waits for a session's agent to start and returns the session's id. A
-/// session whose agent fails to start is closed.
+/// session whose agent fails to start is deleted.
 async fn started(client: &Client, session_id: &str) -> Result<String, Box<dyn Error>> {
     let mut events = client.subscribe(session_id, 0).await?;
     loop {
@@ -294,9 +331,11 @@ async fn started(client: &Client, session_id: &str) -> Result<String, Box<dyn Er
             Ok(event) => match event.kind {
                 EventKind::AgentStarted { .. } => return Ok(session_id.to_owned()),
                 EventKind::AgentExited { error } => {
-                    client.close(session_id).await?;
+                    // The agent never ran, so the worktree has nothing of
+                    // its own to lose.
+                    client.delete(session_id, true, utf8_env()).await?;
                     let error = error.unwrap_or_else(|| "it exited".into());
-                    return Err(format!("the agent did not start: {error}").into());
+                    return Err(format!("the session did not start: {error}").into());
                 }
                 _ => {}
             },

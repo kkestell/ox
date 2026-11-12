@@ -69,6 +69,7 @@
   --menu-min-width: calc(var(--spacing) * 32);
   --menu-item-padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2);
   --model-menu-width: calc(var(--spacing) * 80);
+  --dialog-width: calc(var(--spacing) * 96);
   --slider-track-height: calc(var(--spacing) * 1.5);
   --slider-thumb-size: calc(var(--spacing) * 4);
   --slider-tick-height: calc(var(--spacing) * 1.5);
@@ -251,20 +252,25 @@ body {
   margin-left: auto;
 }
 
-/* A popover menu, placed below the right edge of the button that opens it. */
-.menu {
-  inset: auto;
-  top: anchor(bottom);
-  right: anchor(right);
-  min-width: var(--menu-min-width);
-  margin: 0;
-  padding: var(--spacing);
+/* A popover menu, placed beside the top of the button that opens it. */
+/* A surface that floats over the app: a popover menu or a dialog. */
+.menu,
+.dialog {
   border: var(--border-width) solid var(--border);
   border-radius: var(--radius-md);
   background: var(--card);
   box-shadow: var(--shadow-md);
   font-size: var(--text-sm);
   color: var(--foreground);
+}
+
+.menu {
+  inset: auto;
+  top: anchor(top);
+  left: anchor(right);
+  min-width: var(--menu-min-width);
+  margin: 0 0 0 var(--spacing);
+  padding: var(--spacing);
 }
 
 .menu:popover-open {
@@ -289,6 +295,12 @@ body {
   background: var(--accent);
 }
 
+/* A menu's select, above its items. */
+.menu select {
+  font: inherit;
+  color: inherit;
+}
+
 /* The model menu, placed above the left edge of the model picker. */
 .model-menu {
   top: auto;
@@ -296,7 +308,7 @@ body {
   bottom: anchor(top);
   left: anchor(left);
   width: var(--model-menu-width);
-  margin-bottom: var(--spacing);
+  margin: 0 0 var(--spacing);
 }
 
 .model-picker svg,
@@ -682,7 +694,11 @@ code,
   gap: calc(var(--spacing) * 2);
 }
 
-.permission .options button {
+/* A button labelled with text, such as a permission option or a dialog's
+   action. */
+/* A text button and a text field share one box. */
+.text-button,
+.text-field {
   height: calc(var(--spacing) * 8);
   padding: 0 calc(var(--spacing) * 3);
   border: var(--border-width) solid var(--border);
@@ -694,17 +710,68 @@ code,
   box-shadow: var(--shadow-sm);
 }
 
-.permission .options button:hover:enabled {
+.text-button:hover:enabled {
   background: var(--accent);
 }
 
-.permission .options button:focus-visible {
+.text-button:focus-visible,
+.text-field:focus-visible {
   box-shadow: 0 0 0 var(--ring-width) var(--focus-ring);
+}
+
+.text-field:disabled {
+  opacity: var(--disabled-opacity);
 }
 
 .turn-error,
 .agent-exited {
   color: var(--destructive);
+}
+
+/* Dialogs */
+
+/* A dialog is as tall as its content, centred in the window. */
+.dialog {
+  inset-block: 50% auto;
+  translate: 0 -50%;
+  height: auto;
+  width: var(--dialog-width);
+  padding: calc(var(--spacing) * 4);
+}
+
+.dialog::backdrop {
+  background: var(--shadow-color);
+}
+
+.dialog[open],
+.dialog .fields {
+  display: grid;
+  gap: calc(var(--spacing) * 3);
+}
+
+.dialog label {
+  display: grid;
+  gap: var(--spacing);
+}
+
+.dialog h2,
+.dialog .message {
+  margin: 0;
+}
+
+.dialog h2 {
+  font-size: inherit;
+}
+
+.dialog .message {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.dialog .actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: calc(var(--spacing) * 2);
 }
 
 /* Composer */
