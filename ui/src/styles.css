@@ -58,12 +58,12 @@
 
   /* Components */
   --icon-size: calc(var(--spacing) * 4);
-  --icon-size-sm: calc(var(--spacing) * 3);
   --status-dot-size: calc(var(--spacing) * 2);
   --icon-button-size: calc(var(--spacing) * 6);
   --sidebar-padding: calc(var(--spacing) * 2);
   --sidebar-row-height: calc(var(--spacing) * 8);
   --sidebar-row-padding: calc(var(--spacing) * 2);
+  --row-action-inset: var(--spacing);
   --workspace-header-height: calc(var(--spacing) * 7);
   --menu-min-width: calc(var(--spacing) * 32);
   --composer-margin: calc(var(--spacing) * 4);
@@ -138,13 +138,17 @@ body {
   background: var(--surface);
 }
 
-.content-header {
+/* The bar along the top of a pane; panes side by side share its centre line. */
+.pane-header {
   display: flex;
   flex: none;
   align-items: center;
   justify-content: flex-end;
   height: calc(var(--spacing) * 7);
   padding: calc(var(--spacing) * 2);
+}
+
+.content-header {
   border-bottom: var(--border-width) solid var(--border);
 }
 
@@ -155,13 +159,7 @@ body {
   min-height: 0;
 }
 
-/* Icon buttons: the header's toggles, the composer's buttons, and the sidebar's. */
-.toggles button,
-.new-session > button,
-.add-workspace,
-.workspace-header .remove,
-.session .close,
-.composer .input button {
+.icon-button {
   display: inline-flex;
   flex: none;
   align-items: center;
@@ -172,30 +170,19 @@ body {
   border: none;
   border-radius: var(--radius-md);
   background: transparent;
-  color: var(--muted-foreground);
+  color: var(--foreground);
   outline: none;
 }
 
-.toggles button:hover,
-.new-session > button:hover,
-.add-workspace:hover,
-.workspace-header .remove:hover,
-.session .close:hover,
-.composer .input button:hover:enabled {
+.icon-button:hover:enabled {
   background: var(--hover);
 }
 
-.toggles button:focus-visible,
-.new-session > button:focus-visible,
-.add-workspace:focus-visible,
-.workspace-header .remove:focus-visible,
-.session .close:focus-visible,
-.composer .input button:focus-visible {
+.icon-button:focus-visible {
   box-shadow: 0 0 0 var(--ring-width) var(--focus-ring);
 }
 
-.toggles svg,
-.composer svg {
+.icon-button svg {
   width: var(--icon-size);
   height: var(--icon-size);
 }
@@ -205,15 +192,21 @@ body {
   align-items: center;
 }
 
-.toggles button[aria-pressed="true"] {
-  color: var(--foreground);
+.toggles .icon-button[aria-pressed="false"] {
+  color: var(--muted-foreground);
 }
 
 /* Session list */
 
-.session-list {
-  box-sizing: border-box;
+.sidebar {
+  display: flex;
+  flex-direction: column;
   height: 100%;
+}
+
+.session-list {
+  flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: var(--spacing) var(--sidebar-padding) var(--sidebar-padding);
 }
@@ -225,9 +218,9 @@ body {
   color: var(--destructive);
 }
 
+/* The sidebar's actions share a column with its rows' actions. */
 .sidebar-header {
-  display: flex;
-  justify-content: flex-end;
+  padding-inline: calc(var(--sidebar-padding) + var(--row-action-inset));
 }
 
 .workspace:not(:last-child) {
@@ -237,14 +230,13 @@ body {
 .workspace-header {
   display: flex;
   align-items: center;
-  gap: calc(var(--spacing) * 2);
   height: var(--workspace-header-height);
-  padding: 0 var(--spacing) 0 var(--sidebar-row-padding);
+  padding: 0 var(--row-action-inset) 0 var(--sidebar-row-padding);
 }
 
 .workspace-header h2 {
   min-width: 0;
-  margin: 0;
+  margin: 0 calc(var(--spacing) * 2) 0 0;
   overflow: hidden;
   font-size: var(--text-xs);
   font-weight: normal;
@@ -255,26 +247,16 @@ body {
 }
 
 .new-session {
-  position: relative;
   margin-left: auto;
 }
 
-.add-workspace svg,
-.new-session > button svg,
-.workspace-header .remove svg,
-.session .close svg {
-  width: var(--icon-size-sm);
-  height: var(--icon-size-sm);
-}
-
-.new-session .menu {
-  position: absolute;
-  top: 100%;
-  right: 0;
-  z-index: 1;
-  display: flex;
-  flex-direction: column;
+/* A popover menu, placed below the right edge of the button that opens it. */
+.menu {
+  inset: auto;
+  top: anchor(bottom);
+  right: anchor(right);
   min-width: var(--menu-min-width);
+  margin: 0;
   padding: var(--spacing);
   border: var(--border-width) solid var(--border);
   border-radius: var(--radius-md);
@@ -282,7 +264,12 @@ body {
   box-shadow: var(--shadow-md);
 }
 
-.new-session .menu button {
+.menu:popover-open {
+  display: flex;
+  flex-direction: column;
+}
+
+.menu button {
   padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2);
   border: none;
   border-radius: var(--radius-sm);
@@ -293,8 +280,8 @@ body {
   outline: none;
 }
 
-.new-session .menu button:hover,
-.new-session .menu button:focus-visible {
+.menu button:hover,
+.menu button:focus-visible {
   background: var(--accent);
 }
 
@@ -404,7 +391,7 @@ body {
 .session .close {
   position: absolute;
   top: calc((var(--sidebar-row-height) - var(--icon-button-size)) / 2);
-  right: var(--spacing);
+  right: var(--row-action-inset);
   opacity: 0;
   transition: opacity var(--transition-duration);
 }
@@ -412,6 +399,17 @@ body {
 .session:hover .close,
 .session:focus-within .close {
   opacity: 1;
+}
+
+/* While the close button shows, the title fades out under it, over whatever
+   background the row has. */
+.session:where(:hover, :focus-within) .title {
+  --covered: calc(var(--row-action-inset) + var(--icon-button-size) - var(--sidebar-row-padding));
+  mask-image: linear-gradient(
+    to left,
+    transparent var(--covered),
+    black calc(var(--covered) + var(--icon-button-size))
+  );
 }
 
 /* Conversation */
@@ -553,16 +551,12 @@ body {
   gap: var(--spacing);
 }
 
-.composer .input button {
+.composer .input .icon-button {
   margin-bottom: var(--spacing);
 }
 
-.composer .input button:disabled {
+.icon-button:disabled {
   opacity: var(--disabled-opacity);
-}
-
-.composer button[type="submit"] {
-  color: var(--foreground);
 }
 
 .composer textarea {

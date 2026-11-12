@@ -34,8 +34,6 @@ export function SessionList({
   error: string | null;
   onRetry: () => void;
 }) {
-  // The id of the workspace whose New Session menu is open.
-  const [menuOpen, setMenuOpen] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const run = async (action: () => Promise<unknown>) => {
@@ -56,16 +54,11 @@ export function SessionList({
   const removeWorkspace = (workspaceId: string) =>
     run(() => invoke("remove_workspace", { workspaceId }));
 
-  const newSession = async (workspace: WorkspaceInfo, agent: (typeof agents)[number]) => {
-    setMenuOpen(null);
-    await run(async () => {
-      const session = await invoke<SessionInfo>("new_session", {
-        agent: agent.id,
-        workspaceId: workspace.id,
-      });
+  const newSession = (workspaceId: string, agent: string) =>
+    run(async () => {
+      const session = await invoke<SessionInfo>("new_session", { agent, workspaceId });
       onSelect(session.id);
     });
-  };
 
   // Viewing a saved session whose agent is not running starts its agent, which
   // replays the conversation.
@@ -79,109 +72,116 @@ export function SessionList({
   const close = (sessionId: string) => run(() => invoke("close_session", { sessionId }));
 
   return (
-    <div className="session-list">
-      {error && (
-        <p className="error">
-          {error}{" "}
-          <button type="button" onClick={onRetry}>
-            Retry
-          </button>
-        </p>
-      )}
-      {actionError && <p className="error">{actionError}</p>}
-      <div className="sidebar-header">
+    <div className="sidebar">
+      <header className="pane-header sidebar-header">
         <button
           type="button"
-          className="add-workspace"
+          className="icon-button"
           title="Add Workspace"
           aria-label="Add Workspace"
           onClick={addWorkspace}
         >
           <FolderPlus />
         </button>
-      </div>
-      {workspaces.map((workspace) => (
-        <section
-          key={workspace.id}
-          className="workspace"
-          aria-labelledby={`workspace-${workspace.id}`}
-        >
-          <div className="workspace-header">
-            <h2 id={`workspace-${workspace.id}`} title={workspace.path}>
-              {directoryName(workspace.path)}
-            </h2>
-            <div className="new-session">
+      </header>
+      <div className="session-list">
+        {error && (
+          <p className="error">
+            {error}{" "}
+            <button type="button" onClick={onRetry}>
+              Retry
+            </button>
+          </p>
+        )}
+        {actionError && <p className="error">{actionError}</p>}
+        {workspaces.map((workspace) => (
+          <section
+            key={workspace.id}
+            className="workspace"
+            aria-labelledby={`workspace-${workspace.id}`}
+          >
+            <div className="workspace-header">
+              <h2 id={`workspace-${workspace.id}`} title={workspace.path}>
+                {directoryName(workspace.path)}
+              </h2>
               <button
                 type="button"
+                className="icon-button new-session"
                 title="New Session"
                 aria-label="New Session"
-                aria-expanded={menuOpen === workspace.id}
-                onClick={() => setMenuOpen(menuOpen === workspace.id ? null : workspace.id)}
+                popoverTarget={`new-session-${workspace.id}`}
+                style={{ anchorName: `--new-session-${workspace.id}` }}
               >
                 <Plus />
               </button>
-              {menuOpen === workspace.id && (
-                <div className="menu" role="menu">
-                  {agents.map((agent) => (
-                    <button
-                      key={agent.id}
-                      type="button"
-                      role="menuitem"
-                      onClick={() => newSession(workspace, agent)}
-                    >
-                      {agent.name}
-                    </button>
-                  ))}
-                </div>
-              )}
+              <div
+                id={`new-session-${workspace.id}`}
+                className="menu"
+                role="menu"
+                popover="auto"
+                style={{ positionAnchor: `--new-session-${workspace.id}` }}
+              >
+                {agents.map((agent) => (
+                  <button
+                    key={agent.id}
+                    type="button"
+                    role="menuitem"
+                    popoverTarget={`new-session-${workspace.id}`}
+                    popoverTargetAction="hide"
+                    onClick={() => newSession(workspace.id, agent.id)}
+                  >
+                    {agent.name}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                className="icon-button"
+                title="Remove Workspace"
+                aria-label="Remove Workspace"
+                onClick={() => removeWorkspace(workspace.id)}
+              >
+                <X />
+              </button>
             </div>
-            <button
-              type="button"
-              className="remove"
-              title="Remove Workspace"
-              aria-label="Remove Workspace"
-              onClick={() => removeWorkspace(workspace.id)}
-            >
-              <X />
-            </button>
-          </div>
-          <ul className="sessions">
-            {sessions
-              .filter((session) => session.workspace_id === workspace.id)
-              .map((session) => {
-                const state = stateLabels[session.state];
-                return (
-                  <li key={session.id} className="session">
-                    <button
-                      type="button"
-                      className="select"
-                      title={session.cwd}
-                      aria-current={session.id === selected}
-                      onClick={() => select(session)}
-                    >
-                      <span
-                        className={`status ${session.state}`}
-                        role="img"
-                        aria-label={state}
-                        title={state}
-                      />
-                      <span className="title">{session.title ?? "New session"}</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="close"
-                      title="Close Session"
-                      aria-label="Close Session"
-                      onClick={() => close(session.id)}
-                    >
-                      <X />
-                    </button>
-                  </li>
-                );
-              })}
-          </ul>
-        </section>
-      ))}
+            <ul className="sessions">
+              {sessions
+                .filter((session) => session.workspace_id === workspace.id)
+                .map((session) => {
+                  const state = stateLabels[session.state];
+                  return (
+                    <li key={session.id} className="session">
+                      <button
+                        type="button"
+                        className="select"
+                        title={session.cwd}
+                        aria-current={session.id === selected}
+                        onClick={() => select(session)}
+                      >
+                        <span
+                          className={`status ${session.state}`}
+                          role="img"
+                          aria-label={state}
+                          title={state}
+                        />
+                        <span className="title">{session.title ?? "New session"}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-button close"
+                        title="Close Session"
+                        aria-label="Close Session"
+                        onClick={() => close(session.id)}
+                      >
+                        <X />
+                      </button>
+                    </li>
+                  );
+                })}
+            </ul>
+          </section>
+        ))}
+      </div>
     </div>
   );
 }

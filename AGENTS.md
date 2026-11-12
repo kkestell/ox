@@ -49,8 +49,31 @@
     Claude.
 - The UI is idiomatic React (`ui/src/*.tsx`) with icons from `lucide-react`.
   The user designs the app's look: UI changes add only the CSS a layout needs
-  to work, such as a scrolling region or `white-space: pre-wrap`, and no
-  colours, spacing, borders, or other styling.
+  to work, such as a scrolling region or `white-space: pre-wrap`, and styling
+  only where the user asks for it or where it makes an element match its peers.
+- Elements of the same kind look the same everywhere. A new element takes its
+  class and tokens from the existing elements of its kind, and the CSS states
+  each shared value once, in one rule for the kind. Elements in neighbouring
+  regions that nearly line up share an edge or a centre line exactly. Before
+  finishing a UI change, compare the element with every peer on screen for
+  size, colour, spacing, and alignment, and fix any difference the user's
+  design does not call for.
+- UI changes go through the shared abstractions: a class per kind of element,
+  tokens for sizes and colours, and shared layout components for regions that
+  line up. A requested change that would make one element differ from its
+  peers, or that adjusts a value by a few pixels to make things line up,
+  points at a missing or wrong abstraction. Say so, propose the abstraction,
+  and build it before making the change, so the change lands in the shared
+  rule rather than as a one-off. Hold that position through follow-up
+  requests; a value that has to be nudged into place is a structural problem
+  to solve first.
+  - Every icon button has the `icon-button` class, which sets its size, its
+    icon's size, and its colour; a panel toggle that is off is muted.
+  - Icon buttons in a group sit flush, like the panel toggles.
+  - The sidebar and content headers share the `pane-header` class, so their
+    buttons share a centre line; only the content header has a bottom border.
+  - Workspace and session actions sit `--row-action-inset` from the row's
+    end, and the sidebar header uses the same inset, so all three line up.
 
 ## Testing
 

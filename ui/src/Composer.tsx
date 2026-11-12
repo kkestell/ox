@@ -70,6 +70,7 @@ export function Composer({ session }: { session: SessionInfo }) {
         <div className="input">
           <button
             type="button"
+            className="icon-button"
             title="Attach Files"
             aria-label="Attach Files"
             disabled={disabled}
@@ -92,6 +93,7 @@ export function Composer({ session }: { session: SessionInfo }) {
           />
           <button
             type="submit"
+            className="icon-button"
             title={running ? "Stop" : "Send"}
             aria-label={running ? "Stop" : "Send"}
             disabled={!running && !canSend}

@@ -114,7 +114,7 @@ export function Workbench({ left, children }: { left: ReactNode; children: React
       {sash("left")}
       <div className="center" ref={center}>
         <main className="content">
-          <header className="content-header">
+          <header className="pane-header content-header">
             <div className="toggles">
               {panels.map((panel) => {
                 const { icon: Icon, title } = toggles[panel];
@@ -122,6 +122,7 @@ export function Workbench({ left, children }: { left: ReactNode; children: React
                   <button
                     key={panel}
                     type="button"
+                    className="icon-button"
                     title={title}
                     aria-label={title}
                     aria-pressed={visible[panel]}
