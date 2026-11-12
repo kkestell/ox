@@ -14,7 +14,9 @@ mod client;
 mod messages;
 
 #[cfg(unix)]
-pub use client::{Client, End, Error, Subscription, Watch, daemon_binary, default_socket_path};
+pub use client::{
+    Client, End, Error, Subscription, Watch, daemon_binary, data_dir, default_socket_path,
+};
 #[cfg(unix)]
 pub mod content;
 pub use messages::*;

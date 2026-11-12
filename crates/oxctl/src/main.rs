@@ -19,7 +19,7 @@ use ox_protocol::{Client, ConfigValue, End, Event, EventKind, SessionState, cont
 #[derive(Parser)]
 #[command(name = "oxctl", about = "Control oxd sessions")]
 struct Cli {
-    /// oxd socket [default: $`OX_SOCKET`, else <data dir>/ox/oxd.sock]
+    /// oxd socket [default: $`OX_SOCKET`, else oxd.sock in $`XDG_DATA_HOME`/ox, else ~/.local/share/ox]
     #[arg(long, global = true)]
     socket: Option<PathBuf>,
     #[command(subcommand)]

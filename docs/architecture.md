@@ -38,7 +38,9 @@ environment to the session.
 **oxctl.** A command-line client of `oxd` that speaks the same protocol as
 the app.
 
-**oxd.** A per-user daemon on `$OX_SOCKET`, or `<data dir>/ox/oxd.sock`.
+**oxd.** A per-user daemon on `$OX_SOCKET`, or `oxd.sock` in Ox's data
+directory: `$XDG_DATA_HOME/ox` when `XDG_DATA_HOME` is an absolute path, else
+`~/.local/share/ox`.
 `Client::connect_or_start` starts `oxd` from beside the client's executable
 when no daemon answers, in a new session (`setsid`) with stderr appended to
 `oxd.log` beside the socket, and reads the `ready` line it prints once a

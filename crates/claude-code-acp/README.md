@@ -50,10 +50,10 @@ cargo build --release -p claude-code-acp
 
 ## Configuration
 
-| Environment variable   | Meaning                                            | Default                          |
-| ---------------------- | -------------------------------------------------- | -------------------------------- |
-| `CLAUDE_ACP_STORE_DIR` | Bridge session metadata directory                  | `~/.local/share/claude-code-acp` |
-| `CLAUDE_CONFIG_DIR`    | Claude Code directory for native session discovery | `~/.claude`                      |
+| Environment variable   | Meaning                                            | Default                                                                               |
+| ---------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `CLAUDE_ACP_STORE_DIR` | Bridge session metadata directory                  | `$XDG_DATA_HOME/claude-code-acp` when absolute, else `~/.local/share/claude-code-acp` |
+| `CLAUDE_CONFIG_DIR`    | Claude Code directory for native session discovery | `~/.claude`                                                                           |
 
 The bridge removes `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the
 Claude subprocess environment so an inherited API credential cannot change the
@@ -73,8 +73,8 @@ bridge's support of it.
 Clients create, list, resume, and close sessions with `session/new`,
 `session/list`, `session/resume`, and `session/close`. A session takes
 prompts once it is new or resumed, until it is closed. Bridge session
-metadata is stored in `~/.local/share/claude-code-acp/acp-sessions.json`,
-which several bridge processes can share; each change is written under a lock
+metadata is stored in `acp-sessions.json` in `CLAUDE_ACP_STORE_DIR`, which
+several bridge processes can share; each change is written under a lock
 file beside it. A request that cannot lock, read, or write the registry fails
 with an internal error (`-32603`). A registry file that cannot be parsed is
 moved aside to `acp-sessions.json.corrupt-<time>` and a new one is started.

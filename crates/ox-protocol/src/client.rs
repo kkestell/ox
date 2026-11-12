@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::ffi::OsString;
 use std::fmt;
 use std::fs::OpenOptions;
 use std::io;
@@ -64,15 +65,28 @@ impl From<serde_json::Error> for Error {
     }
 }
 
-/// The socket path: `$OX_SOCKET`, else `<data dir>/ox/oxd.sock`.
+/// Ox's data directory: `$XDG_DATA_HOME/ox` when `XDG_DATA_HOME` is an
+/// absolute path, else `~/.local/share/ox`, else `<temp dir>/ox` when there is
+/// no home directory.
+pub fn data_dir() -> PathBuf {
+    data_dir_from(std::env::var_os("XDG_DATA_HOME"), dirs::home_dir())
+}
+
+fn data_dir_from(xdg: Option<OsString>, home: Option<PathBuf>) -> PathBuf {
+    let base = match (xdg.map(PathBuf::from), home) {
+        (Some(xdg), _) if xdg.is_absolute() => xdg,
+        (_, Some(home)) => home.join(".local/share"),
+        (_, None) => std::env::temp_dir(),
+    };
+    base.join("ox")
+}
+
+/// The socket path: `$OX_SOCKET`, else `<data dir>/oxd.sock`.
 pub fn default_socket_path() -> PathBuf {
     if let Some(path) = std::env::var_os("OX_SOCKET") {
         return PathBuf::from(path);
     }
-    dirs::data_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("ox")
-        .join("oxd.sock")
+    data_dir().join("oxd.sock")
 }
 
 /// The daemon binary: `oxd` beside the current executable.
@@ -688,5 +702,42 @@ mod tests {
         let (mut subscription, _) = subscribe(&client, &mut daemon).await;
         drop(client);
         assert_eq!(next(&mut subscription).await, Err(End::Disconnected));
+    }
+
+    fn home() -> PathBuf {
+        PathBuf::from("/home/user")
+    }
+
+    #[test]
+    fn data_dir_is_under_an_absolute_xdg_data_home() {
+        assert_eq!(
+            data_dir_from(Some("/data".into()), Some(home())),
+            Path::new("/data/ox")
+        );
+    }
+
+    #[test]
+    fn data_dir_ignores_a_relative_xdg_data_home() {
+        assert_eq!(
+            data_dir_from(Some("data".into()), Some(home())),
+            Path::new("/home/user/.local/share/ox")
+        );
+    }
+
+    #[test]
+    fn data_dir_ignores_an_empty_xdg_data_home() {
+        assert_eq!(
+            data_dir_from(Some("".into()), Some(home())),
+            Path::new("/home/user/.local/share/ox")
+        );
+        assert_eq!(
+            data_dir_from(None, Some(home())),
+            Path::new("/home/user/.local/share/ox")
+        );
+    }
+
+    #[test]
+    fn data_dir_without_a_home_is_in_the_temp_dir() {
+        assert_eq!(data_dir_from(None, None), std::env::temp_dir().join("ox"));
     }
 }
