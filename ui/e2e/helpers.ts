@@ -106,3 +106,25 @@ export async function choose(selector: string, value: string) {
     value,
   );
 }
+
+/**
+ * Moves the slider `selector` matches to `value`. The embedded driver neither
+ * drags a slider's thumb nor sends it keys, so this sets the value through the
+ * input's own setter, which React's tracking does not see, and dispatches
+ * `input`, as the webview does when a user moves the thumb.
+ */
+export async function slide(selector: string, value: number) {
+  await $(selector).waitForExist();
+  await browser.execute(
+    (selector, value) => {
+      const input = document.querySelector<HTMLInputElement>(selector)!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+        input,
+        String(value),
+      );
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    },
+    selector,
+    value,
+  );
+}

@@ -19,7 +19,8 @@
 //! - `exit <code>`: exit the process
 //! - `describe`: one chunk listing the prompt's blocks, such as
 //!   `text image:image/png link:file:///a resource:file:///b`
-//! - `mode`: one chunk with the current value of the `mode` config option
+//! - `config <id>`: one chunk with the current value of the config option
+//!   `id`
 //! - `wait`: keep the turn open until it is cancelled
 //! - `title <text>`: a `session_info_update` setting the title to the rest of
 //!   the line
@@ -36,9 +37,11 @@
 //! - `deferred-reject`: report `running` and `idle` without inserting the
 //!   prompt, and answer it with an error only when the next prompt arrives
 //!
-//! The agent accepts image and embedded resource prompts, and has one config
-//! option, `mode`, with values `ask` and `code`. Setting it sends a
-//! `config_option_update` before the response.
+//! The agent accepts image and embedded resource prompts, and has three
+//! select config options: `mode`, with values `ask` and `code`; `model`, in
+//! the `model` category, with values `fast` and `smart`; and `effort`, in the
+//! `thought_level` category, with values `low`, `medium`, and `high`. Setting
+//! one sends a `config_option_update` before the response.
 //!
 //! Each session records its prompts and message chunks in
 //! `fake-agent-<session id>.jsonl` in its cwd; `session/resume` with
@@ -72,10 +75,45 @@ use agent_client_protocol::v2::{ConnectionTo, Responder};
 use agent_client_protocol::{Client, Error, Stdio};
 use tokio::sync::watch;
 
+/// A select config option: its ID, name, category, values by ID and name,
+/// and the value it starts with.
+struct ConfigOption {
+    id: &'static str,
+    name: &'static str,
+    category: Option<fn() -> acp::SessionConfigOptionCategory>,
+    values: &'static [(&'static str, &'static str)],
+    initial: &'static str,
+}
+
+const CONFIG: [ConfigOption; 3] = [
+    ConfigOption {
+        id: "model",
+        name: "Model",
+        category: Some(|| acp::SessionConfigOptionCategory::Model),
+        values: &[("fast", "Fast"), ("smart", "Smart")],
+        initial: "smart",
+    },
+    ConfigOption {
+        id: "effort",
+        name: "Effort",
+        category: Some(|| acp::SessionConfigOptionCategory::ThoughtLevel),
+        values: &[("low", "Low"), ("medium", "Medium"), ("high", "High")],
+        initial: "medium",
+    },
+    ConfigOption {
+        id: "mode",
+        name: "Mode",
+        category: None,
+        values: &[("ask", "Ask"), ("code", "Code")],
+        initial: "ask",
+    },
+];
+
 struct State {
     /// Whether the current turn was cancelled.
     cancelled: watch::Sender<bool>,
-    mode: Mutex<String>,
+    /// The current value of each config option, by ID.
+    config: Mutex<HashMap<&'static str, String>>,
     /// Each session's record of prompts and message chunks.
     logs: Mutex<HashMap<String, PathBuf>>,
     /// The number of tool calls made, which numbers the next.
@@ -113,15 +151,44 @@ impl State {
     }
 
     fn config_options(&self) -> Vec<acp::SessionConfigOption> {
-        vec![acp::SessionConfigOption::select(
-            "mode",
-            "Mode",
-            self.mode.lock().unwrap().clone(),
-            vec![
-                acp::SessionConfigSelectOption::new("ask", "Ask"),
-                acp::SessionConfigSelectOption::new("code", "Code"),
-            ],
-        )]
+        let config = self.config.lock().unwrap();
+        CONFIG
+            .iter()
+            .map(|option| {
+                let select = acp::SessionConfigOption::select(
+                    option.id,
+                    option.name,
+                    config[option.id].clone(),
+                    option
+                        .values
+                        .iter()
+                        .map(|(value, name)| acp::SessionConfigSelectOption::new(*value, *name))
+                        .collect::<Vec<_>>(),
+                );
+                match option.category {
+                    Some(category) => select.category(category()),
+                    None => select,
+                }
+            })
+            .collect()
+    }
+
+    /// Sets config option `id` to `value`, if it has that value.
+    fn set_config(&self, id: &str, value: &str) -> bool {
+        let Some(option) = CONFIG.iter().find(|option| option.id == id) else {
+            return false;
+        };
+        let known = option
+            .values
+            .iter()
+            .any(|(candidate, _)| *candidate == value);
+        if known {
+            self.config
+                .lock()
+                .unwrap()
+                .insert(option.id, value.to_owned());
+        }
+        known
     }
 
     /// Waits until the current turn is cancelled.
@@ -196,7 +263,12 @@ async fn main() -> agent_client_protocol::Result<()> {
     });
     let state = Arc::new(State {
         cancelled: watch::Sender::new(false),
-        mode: Mutex::new("ask".into()),
+        config: Mutex::new(
+            CONFIG
+                .iter()
+                .map(|option| (option.id, option.initial.to_owned()))
+                .collect(),
+        ),
         logs: Mutex::default(),
         tools: AtomicU64::new(0),
         deferred_rejection: Mutex::new(None),
@@ -362,15 +434,10 @@ async fn main() -> agent_client_protocol::Result<()> {
                             responder: Responder<acp::SetSessionConfigOptionResponse>,
                             connection: ConnectionTo<Client>| {
                     let value = request.value.as_id().map(ToString::to_string);
-                    match value.as_deref() {
-                        Some(value @ ("ask" | "code")) if &*request.config_id.0 == "mode" => {
-                            value.clone_into(&mut state.mode.lock().unwrap());
-                        }
-                        _ => {
-                            return responder.respond_with_error(
-                                Error::invalid_params().data("unknown option or value"),
-                            );
-                        }
+                    if !value.is_some_and(|value| state.set_config(&request.config_id.0, &value)) {
+                        return responder.respond_with_error(
+                            Error::invalid_params().data("unknown option or value"),
+                        );
                     }
                     let options = state.config_options();
                     let update = acp::UpdateSessionNotification::new(
@@ -460,7 +527,7 @@ enum Directive {
     LatePermission,
     OwnTurn,
     Describe,
-    Mode,
+    Config(String),
     Wait,
     Title(String),
     TitleNull,
@@ -488,7 +555,7 @@ fn parse(script: &str) -> Result<Vec<Directive>, Error> {
             ["late-permission"] => Directive::LatePermission,
             ["own-turn"] => Directive::OwnTurn,
             ["describe"] => Directive::Describe,
-            ["mode"] => Directive::Mode,
+            ["config", id] => Directive::Config((*id).to_owned()),
             ["wait"] => Directive::Wait,
             ["title", ..] => Directive::Title(rest("title")),
             ["title-null"] => Directive::TitleNull,
@@ -601,7 +668,10 @@ async fn run(
             }
             Directive::LatePermission | Directive::OwnTurn => {}
             Directive::Describe => say(description.clone())?,
-            Directive::Mode => say(state.mode.lock().unwrap().clone())?,
+            Directive::Config(id) => {
+                let value = state.config.lock().unwrap().get(id.as_str()).cloned();
+                say(value.unwrap_or_else(|| format!("no config option {id}")))?;
+            }
             Directive::Wait => {
                 state.until_cancelled().await;
                 return Ok(acp::StopReason::Cancelled);

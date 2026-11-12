@@ -27,6 +27,8 @@ pub struct Session {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(skip)]
     pub mcp_servers: Vec<McpServer>,
@@ -41,6 +43,7 @@ impl Session {
             updated_at: now,
             mode: None,
             model: None,
+            effort: None,
             title: None,
             mcp_servers,
         }

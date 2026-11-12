@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ArrowUp, Paperclip, Square, X } from "lucide-react";
 import { useState } from "react";
+import { ModelPicker, type SelectConfig } from "./ModelPicker";
 import { Permission } from "./Permission";
 import type { ConfigOption, Item, SelectOption, SessionInfo } from "./protocol";
 import { showError } from "./showError";
@@ -21,11 +22,14 @@ export function Composer({
   const canSend = session.state === "idle" && (text.trim() !== "" || attachments.length > 0);
   const disabled = session.state === "exited";
 
+  /** Runs `action`, shows its error if it fails, and resolves to whether it succeeded. */
   const run = async (action: () => Promise<unknown>) => {
     try {
       await action();
+      return true;
     } catch (e) {
       await showError(e);
+      return false;
     }
   };
 
@@ -42,6 +46,15 @@ export function Composer({
     run(() =>
       invoke("set_config_option", { sessionId: session.id, configId: option.configId, value }),
     );
+
+  // The model picker shows the model and effort options; the rest show as
+  // pickers of their own.
+  const selects = session.config_options.filter(
+    (option): option is SelectConfig => option.type === "select",
+  );
+  const model = selects.find((option) => option.category === "model");
+  const effort = model && selects.find((option) => option.category === "thought_level");
+  const others = session.config_options.filter((option) => option !== model && option !== effort);
 
   const attach = async () => {
     const paths = await open({ multiple: true, title: "Attach Files" });
@@ -116,7 +129,8 @@ export function Composer({
       </div>
       {session.config_options.length > 0 && (
         <div className="settings">
-          {session.config_options.map((option) => (
+          {model && <ModelPicker model={model} effort={effort} onChange={setOption} />}
+          {others.map((option) => (
             <ConfigPicker
               key={option.configId}
               option={option}

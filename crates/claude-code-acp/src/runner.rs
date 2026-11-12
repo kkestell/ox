@@ -84,6 +84,7 @@ pub struct StartRequest<'a> {
     pub cwd: &'a Path,
     pub resume: Option<&'a str>,
     pub model: &'a str,
+    pub effort: &'a str,
     pub mode: &'a str,
     pub mcp_servers: &'a [McpServer],
 }
@@ -175,6 +176,7 @@ impl Claude {
                 "--replay-user-messages",
             ])
             .args(["--model", request.model])
+            .args(["--effort", request.effort])
             .args([
                 "--permission-mode",
                 request.mode,
@@ -306,6 +308,15 @@ impl Claude {
     /// answer.
     pub fn set_model(&self, model: &str) -> oneshot::Receiver<Result<(), String>> {
         self.control(&json!({"subtype": "set_model", "model": model}))
+    }
+
+    /// Asks claude to change its effort level and returns the receiver of
+    /// its answer.
+    pub fn set_effort(&self, effort: &str) -> oneshot::Receiver<Result<(), String>> {
+        self.control(&json!({
+            "subtype": "apply_flag_settings",
+            "settings": {"effortLevel": effort},
+        }))
     }
 
     /// Sends a control request and returns the receiver of claude's answer,

@@ -1192,7 +1192,10 @@ async fn config_options_are_listed_and_set() {
         let listed = other.list().await.unwrap();
         assert_eq!(current(&listed[0].config_options, "mode"), "code");
 
-        client.prompt(&session.id, text("mode")).await.unwrap();
+        client
+            .prompt(&session.id, text("config mode"))
+            .await
+            .unwrap();
         let turn = until(&mut events, turn_ended).await;
         let reported: Vec<String> = turn
             .iter()

@@ -229,20 +229,33 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
     .await;
     let (new, _) = response(&mut reader, 2).await;
     let id = new["result"]["sessionId"].as_str().unwrap().to_owned();
-    assert_eq!(new["result"]["configOptions"].as_array().unwrap().len(), 2);
-    let mode = new["result"]["configOptions"]
+    let categories: Vec<_> = new["result"]["configOptions"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|option| option["category"] == "mode")
-        .expect("mode config option");
-    assert_eq!(mode["configId"], "mode");
+        .map(|option| (option["configId"].clone(), option["category"].clone()))
+        .collect();
+    assert_eq!(
+        categories,
+        [
+            (json!("model"), json!("model")),
+            (json!("effort"), json!("thought_level")),
+            (json!("mode"), json!("mode")),
+        ]
+    );
+    let mode = option(&new, "mode");
     assert_eq!(mode["currentValue"], "manual");
     assert_eq!(mode["options"].as_array().unwrap().len(), 4);
-    assert_eq!(
-        new["result"]["configOptions"][0]["currentValue"],
-        "claude-opus-5-5"
-    );
+    assert_eq!(option(&new, "model")["currentValue"], "claude-opus-5-5");
+    let effort = option(&new, "effort");
+    assert_eq!(effort["currentValue"], "high");
+    let efforts: Vec<_> = effort["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|choice| choice["value"].as_str().unwrap())
+        .collect();
+    assert_eq!(efforts, ["low", "medium", "high", "xhigh"]);
 
     send(
         &mut child,
@@ -252,13 +265,7 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
     )
     .await;
     let (set_mode, mode_updates) = response(&mut reader, 7).await;
-    let mode = set_mode["result"]["configOptions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|option| option["configId"] == "mode")
-        .unwrap();
-    assert_eq!(mode["currentValue"], "plan");
+    assert_eq!(option(&set_mode, "mode")["currentValue"], "plan");
     assert!(
         mode_updates.iter().any(|update| {
             update["params"]["update"]["sessionUpdate"] == "config_option_update"
@@ -273,10 +280,7 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
     )
     .await;
     let (set, _) = response(&mut reader, 3).await;
-    assert_eq!(
-        set["result"]["configOptions"][0]["currentValue"],
-        "claude-opus-5-5"
-    );
+    assert_eq!(option(&set, "model")["currentValue"], "claude-opus-5-5");
 
     send(
         &mut child,
@@ -311,12 +315,19 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
     )
     .await;
     let (resume, _) = response(&mut reader, 5).await;
-    assert_eq!(
-        resume["result"]["configOptions"][0]["currentValue"],
-        "claude-opus-5-5"
-    );
-    assert_eq!(resume["result"]["configOptions"][1]["currentValue"], "plan");
+    assert_eq!(option(&resume, "model")["currentValue"], "claude-opus-5-5");
+    assert_eq!(option(&resume, "mode")["currentValue"], "plan");
     child.kill().await.unwrap();
+}
+
+/// The config option `id` in a response's `configOptions`.
+fn option<'a>(response: &'a Value, id: &str) -> &'a Value {
+    response["result"]["configOptions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no config options: {response}"))
+        .iter()
+        .find(|option| option["configId"] == id)
+        .unwrap_or_else(|| panic!("no {id} option: {response}"))
 }
 
 /// Sets a config option and returns the response.
@@ -336,8 +347,8 @@ async fn set_config(
 async fn config_changes_reach_the_running_claude() {
     let temp = tempfile::tempdir().unwrap();
     let (bin, project) = dirs(temp.path());
-    // Each turn says the mode and model claude has: those it started with,
-    // then those it was asked to change to. It refuses Sonnet.
+    // Each turn says the mode, model and effort claude has: those it started
+    // with, then those it was asked to change to. It refuses Sonnet.
     fake_claude(
         &bin,
         r#"
@@ -346,6 +357,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --permission-mode) mode="$2";;
     --model) model="$2";;
+    --effort) effort="$2";;
   esac
   shift
 done
@@ -361,9 +373,12 @@ while :; do
     *'"subtype":"set_model"'*)
       model=$(printf '%s\n' "$message" | sed 's/.*"model":"\([^"]*\)".*/\1/')
       accept;;
+    *'"subtype":"apply_flag_settings"'*)
+      effort=$(printf '%s\n' "$message" | sed 's/.*"effortLevel":"\([^"]*\)".*/\1/')
+      accept;;
     *)
       started
-      printf '{"type":"assistant","message":{"content":[{"type":"text","text":"%s %s"}]}}\n' "$mode" "$model"
+      printf '{"type":"assistant","message":{"content":[{"type":"text","text":"%s %s %s"}]}}\n' "$mode" "$model" "$effort"
       printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43a2"}';;
   esac
 done
@@ -376,15 +391,19 @@ done
     assert!(
         updates
             .iter()
-            .any(|v| shown_text(v) == Some("manual claude-opus-5-5")),
+            .any(|v| shown_text(v) == Some("manual claude-opus-5-5 high")),
         "{updates:?}"
     );
 
     let set = set_config(&mut child, &mut reader, 4, &session, "mode", "plan").await;
-    assert_eq!(set["result"]["configOptions"][1]["currentValue"], "plan");
+    assert_eq!(option(&set, "mode")["currentValue"], "plan");
     let model = "claude-haiku-5-5";
     let set = set_config(&mut child, &mut reader, 5, &session, "model", model).await;
-    assert_eq!(set["result"]["configOptions"][0]["currentValue"], model);
+    assert_eq!(option(&set, "model")["currentValue"], model);
+    let set = set_config(&mut child, &mut reader, 9, &session, "effort", "low").await;
+    assert_eq!(option(&set, "effort")["currentValue"], "low");
+    let set = set_config(&mut child, &mut reader, 10, &session, "effort", "max").await;
+    assert_eq!(set["error"]["code"], -32602, "{set}");
     let refused = "claude-sonnet-5-5";
     let set = set_config(&mut child, &mut reader, 6, &session, "model", refused).await;
     assert_eq!(set["error"]["message"], "no such model", "{set}");
@@ -393,12 +412,13 @@ done
     assert!(
         updates
             .iter()
-            .any(|v| shown_text(v) == Some("plan claude-haiku-5-5")),
+            .any(|v| shown_text(v) == Some("plan claude-haiku-5-5 low")),
         "{updates:?}"
     );
     send(&mut child, json!({"jsonrpc":"2.0","id":8,"method":"session/resume","params":{"sessionId":session,"cwd":project,"mcpServers":[]}})).await;
     let (resumed, _) = response(&mut reader, 8).await;
-    assert_eq!(resumed["result"]["configOptions"][0]["currentValue"], model);
+    assert_eq!(option(&resumed, "model")["currentValue"], model);
+    assert_eq!(option(&resumed, "effort")["currentValue"], "low");
     assert_eq!(calls(&project).len(), 1);
     child.kill().await.unwrap();
 }

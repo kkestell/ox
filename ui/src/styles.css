@@ -16,6 +16,7 @@
   --sidebar: oklch(0.985 0 0);
   --text: oklch(0.371 0 0);
   --shadow-color: oklch(0 0 0 / 10%);
+  --claude: oklch(0.672 0.131 38.756);
   --hover: var(--accent);
   --selected: var(--muted);
   --surface: color-mix(in oklab, var(--background), var(--card));
@@ -66,6 +67,11 @@
   --row-action-inset: var(--spacing);
   --workspace-header-height: calc(var(--spacing) * 7);
   --menu-min-width: calc(var(--spacing) * 32);
+  --menu-item-padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2);
+  --model-menu-width: calc(var(--spacing) * 80);
+  --slider-track-height: calc(var(--spacing) * 1.5);
+  --slider-thumb-size: calc(var(--spacing) * 4);
+  --slider-tick-height: calc(var(--spacing) * 1.5);
   --composer-margin: calc(var(--spacing) * 4);
   --composer-padding: calc(var(--spacing) * 3);
   --composer-max-lines: 8;
@@ -257,6 +263,8 @@ body {
   border-radius: var(--radius-md);
   background: var(--card);
   box-shadow: var(--shadow-md);
+  font-size: var(--text-sm);
+  color: var(--foreground);
 }
 
 .menu:popover-open {
@@ -265,7 +273,7 @@ body {
 }
 
 .menu button {
-  padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2);
+  padding: var(--menu-item-padding);
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -276,8 +284,133 @@ body {
 }
 
 .menu button:hover,
-.menu button:focus-visible {
+.menu button:focus-visible,
+.menu button.active {
   background: var(--accent);
+}
+
+/* The model menu, placed above the left edge of the model picker. */
+.model-menu {
+  top: auto;
+  right: auto;
+  bottom: anchor(top);
+  left: anchor(left);
+  width: var(--model-menu-width);
+  margin-bottom: var(--spacing);
+}
+
+.model-picker svg,
+.model-menu svg {
+  flex: none;
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
+.claude-logo {
+  color: var(--claude);
+}
+
+/* A slider whose stops are named below it. Its fill and each stop sit at
+   --position, from 0 to 1, along the thumb's travel. */
+.effort {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--spacing) * 2);
+  margin-top: calc(var(--spacing) * 2);
+}
+
+.effort input,
+.effort .stops span {
+  --along: calc(var(--slider-thumb-size) / 2 + (100% - var(--slider-thumb-size)) * var(--position));
+}
+
+.effort input {
+  appearance: none;
+  width: 100%;
+  height: var(--slider-thumb-size);
+  margin: 0;
+  background: transparent;
+  outline: none;
+}
+
+.effort input::-webkit-slider-runnable-track {
+  height: var(--slider-track-height);
+  border-radius: calc(var(--slider-track-height) / 2);
+  background: linear-gradient(to right, var(--foreground) var(--along), var(--muted) var(--along));
+}
+
+.effort input::-webkit-slider-thumb {
+  appearance: none;
+  width: var(--slider-thumb-size);
+  height: var(--slider-thumb-size);
+  margin-top: calc((var(--slider-track-height) - var(--slider-thumb-size)) / 2);
+  border-radius: var(--radius-full);
+  background: var(--foreground);
+  box-shadow: var(--shadow-sm);
+}
+
+.effort input:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 var(--ring-width) var(--focus-ring);
+}
+
+.effort .stops {
+  display: grid;
+  font-size: var(--text-xs);
+  color: var(--muted-foreground);
+}
+
+.effort .stops span {
+  display: flex;
+  flex-direction: column;
+  grid-area: 1 / 1;
+  align-items: center;
+  justify-self: start;
+  gap: var(--spacing);
+  margin-left: var(--along);
+  translate: -50% 0;
+}
+
+.effort .stops span::before {
+  content: "";
+  width: var(--border-width);
+  height: var(--slider-tick-height);
+  background: currentColor;
+}
+
+.model-menu [role="listbox"] {
+  display: flex;
+  flex-direction: column;
+}
+
+.model-menu .search,
+.model-menu [role="option"] {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--spacing) * 2);
+}
+
+.model-menu .search,
+.model-menu .effort {
+  padding: var(--menu-item-padding);
+}
+
+.model-menu .search svg {
+  color: var(--muted-foreground);
+}
+
+.model-menu .search input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  outline: none;
+}
+
+.model-menu .lucide-check {
+  margin-left: auto;
 }
 
 .sessions {
@@ -673,9 +806,23 @@ code,
 }
 
 .composer .settings select,
-.composer .settings label {
+.composer .settings label,
+.model-picker {
   font: inherit;
   color: inherit;
+}
+
+.model-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--spacing) * 1.5);
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+
+.model-picker .effort-name {
+  opacity: var(--dimmed-opacity);
 }
 
 /* Workbench panels */

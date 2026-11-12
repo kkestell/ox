@@ -278,6 +278,7 @@ class SmokeRun:
         )
 
         self.check_reconnect()
+        self.check_effort()
         self.check_permission()
         self.check_background_wake()
         self.check_cancellation()
@@ -330,6 +331,17 @@ class SmokeRun:
         response = text(self.finish()).strip()
         check(token in response, f"Conversation token was not retained: {response}")
         self.report("followup_retains_conversation", response=response)
+
+    def check_effort(self):
+        """Sets the effort of the session's running Claude."""
+        options = self.ctl("config", self.session, "effort", "low")
+        effort = next(
+            line.split("\t")
+            for line in options.splitlines()
+            if line.startswith("effort\t")
+        )
+        check(effort[1] == "low", f"Effort was not set: {effort}")
+        self.report("effort_set_on_running_claude", effort=effort[1])
 
     def session_row(self):
         """The fields of the session's row in `oxctl ls`: id, workspace id,

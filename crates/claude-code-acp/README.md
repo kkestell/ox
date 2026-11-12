@@ -173,21 +173,22 @@ The bridge forwards stdio MCP server definitions to Claude. An MCP server's
 
 ### Models and modes
 
-Model selection is exposed through `configOptions` and
-`session/set_config_option`.
+The session's model, effort, and mode are exposed through `configOptions` and
+`session/set_config_option`, with the categories `model`, `thought_level`, and
+`mode`.
 
-The mode selector offers `auto`, `manual`, `acceptEdits`, and `plan`. Claude
-starts with the session's model and mode. A change made while it runs is sent
-to it, and `session/set_config_option` returns Claude's error if it refuses
-the change.
+The effort selector offers `low`, `medium`, `high`, and `xhigh`, and starts at
+`high`. The mode selector offers `auto`, `manual`, `acceptEdits`, and `plan`.
+Claude starts with the session's model, effort, and mode. A change made while
+it runs is sent to it, and `session/set_config_option` returns Claude's error
+if it refuses the change.
 
 ### Tool permissions
 
 When Claude asks for tool permission, the bridge sends an ACP permission request
 to the client and forwards the decision to the running Claude process. The
-request's tool call carries the tool's title and input. A call without an
-argument to show takes Claude's own title for the request, escaped as Markdown
-text. The client can offer `Allow always` when Claude supplies a rule to save.
+request's tool call carries the tool's title and input. The client can offer
+`Allow always` when Claude supplies a rule to save.
 
 ## Development
 

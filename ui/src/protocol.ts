@@ -13,7 +13,12 @@ export interface SelectGroup {
   options: SelectOption[];
 }
 
-export type ConfigOption = { configId: string; name: string } & (
+export type ConfigOption = {
+  configId: string;
+  name: string;
+  /** What the option selects, such as `model`, `thought_level`, or `mode`. */
+  category?: string;
+} & (
   | { type: "select"; currentValue: string; options: SelectOption[] | SelectGroup[] }
   | { type: "boolean"; currentValue: boolean }
 );

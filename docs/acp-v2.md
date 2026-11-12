@@ -33,7 +33,7 @@ a client; a caveat says where `oxd` only records it.
 | `session/resume` | supported | supported | claude-code-acp: `replayFrom: start` replays the conversation from Claude's transcript, then the session's state is sent, then the response. Without `replayFrom` nothing replays. Any other cursor is rejected with `-32602`. oxd: Sends `replayFrom: start` for a saved session. The replay is recorded as the session's history unless the session already has one. |
 | `session/close` | unsupported | supported | claude-code-acp: Interrupts and stops the session's `claude`, answers once it has exited, and leaves the session resumable. Closing a session that is not open succeeds. oxd: Closing a session kills the agent's process group. |
 | `session/prompt` | supported | supported | claude-code-acp: Answers with the `messageId` of the user message the prompt becomes, once `claude` takes the prompt into a turn. A prompt sent during a turn waits for it. A prompt dropped by `session/cancel` before that is answered with `-32800`. oxd: Checks the prompt against the agent's prompt capabilities first. The answer matters only when it is an error: the prompt was not inserted, and the turn ends with that error unless the agent already reported work for it. |
-| `session/set_config_option` | supported | supported | claude-code-acp: Options `model` and `mode`, both selects. oxd: Selects and booleans. |
+| `session/set_config_option` | supported | supported | claude-code-acp: Options `model`, `effort`, and `mode`, all selects. oxd: Selects and booleans. |
 | `session/delete` | unsupported | unsupported | |
 | `session/fork` (unstable) | unsupported | unsupported | |
 | `session/archive` (unstable) | unsupported | unsupported | |

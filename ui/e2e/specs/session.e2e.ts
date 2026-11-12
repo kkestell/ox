@@ -96,7 +96,7 @@ describe("A session", () => {
     await expect($(mode)).toHaveValue("ask");
     await choose(mode, "code");
     await expect($(mode)).toHaveValue("code");
-    await send("mode");
+    await send("config mode");
     await expect(agentText()[0]).toHaveText("code");
   });
 

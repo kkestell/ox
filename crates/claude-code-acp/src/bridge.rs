@@ -29,6 +29,7 @@ use crate::{
 enum Setting {
     Mode(String),
     Model(String),
+    Effort(String),
 }
 
 /// A config change sent to its session's claude.
@@ -281,6 +282,10 @@ impl Bridge {
                 let accepted = claude.map(|claude| claude.set_model(&value));
                 (Setting::Model(value), accepted)
             }
+            "effort" if is_effort(&value) => {
+                let accepted = claude.map(|claude| claude.set_effort(&value));
+                (Setting::Effort(value), accepted)
+            }
             _ => return Err(invalid("Unknown configuration option or value")),
         };
         Ok(ConfigChange {
@@ -312,6 +317,7 @@ impl Bridge {
             .update(&id, |session| match setting {
                 Setting::Mode(mode) => session.mode = Some(mode),
                 Setting::Model(model) => session.model = Some(model),
+                Setting::Effort(effort) => session.effort = Some(effort),
             })
             .map_err(store_error)?;
         let options = Self::options(&self.require(&id)?);
@@ -367,6 +373,7 @@ impl Bridge {
                     cwd: &session.cwd,
                     resume: session.claude_session_id.as_deref(),
                     model: session_model(&session),
+                    effort: session_effort(&session),
                     mode: session_mode(&session),
                     mcp_servers: &session.mcp_servers,
                 },
@@ -465,9 +472,12 @@ impl Bridge {
     fn options(session: &Session) -> Vec<SessionConfigOption> {
         let mode = session_mode(session);
         let model = session_model(session);
+        let effort = session_effort(session);
         vec![
             SessionConfigOption::select("model", "Model", model.to_owned(), model_options())
                 .category(SessionConfigOptionCategory::Model),
+            SessionConfigOption::select("effort", "Effort", effort.to_owned(), effort_options())
+                .category(SessionConfigOptionCategory::ThoughtLevel),
             SessionConfigOption::select("mode", "Mode", mode.to_owned(), mode_options())
                 .category(SessionConfigOptionCategory::Mode),
         ]
@@ -496,6 +506,33 @@ fn session_model(session: &Session) -> &str {
 
 fn model_options() -> Vec<SessionConfigSelectOption> {
     MODELS
+        .into_iter()
+        .map(|(id, name)| SessionConfigSelectOption::new(id, name))
+        .collect()
+}
+
+/// The effort levels a session can use, by id and name.
+const EFFORTS: [(&str, &str); 4] = [
+    ("low", "Low"),
+    ("medium", "Medium"),
+    ("high", "High"),
+    ("xhigh", "XHigh"),
+];
+
+fn is_effort(value: &str) -> bool {
+    EFFORTS.iter().any(|(id, _)| *id == value)
+}
+
+fn session_effort(session: &Session) -> &str {
+    session
+        .effort
+        .as_deref()
+        .filter(|effort| is_effort(effort))
+        .unwrap_or("high")
+}
+
+fn effort_options() -> Vec<SessionConfigSelectOption> {
+    EFFORTS
         .into_iter()
         .map(|(id, name)| SessionConfigSelectOption::new(id, name))
         .collect()
