@@ -118,11 +118,11 @@ shows nothing for the other updates, which `oxd` still records.
 
 | `state` | oxd | claude-code-acp | Caveats |
 | --- | --- | --- | --- |
-| `running` | supported | supported | claude-code-acp: Sent when `claude` takes a prompt or starts a turn of its own, and when a permission request is answered or withdrawn. oxd: Starts a turn when none is running, recorded as `turn_started`. |
+| `running` | supported | supported | claude-code-acp: Sent when `claude` takes a prompt or starts a turn of its own, including the turn a finished background task starts, and when a permission request is answered or withdrawn. oxd: Starts a turn when none is running, recorded as `turn_started`. |
 | `idle` | supported | supported | claude-code-acp: Sent when a turn ends, with its `stopReason`. A `claude` that exits during a turn ends it with `error`, or `cancelled` when the session is closing. oxd: Ends the running turn, recorded as `turn_ended` with the stop reason. After a prompt, an `idle` before the agent reports work for it is a repeated snapshot and ends nothing. In a resume snapshot it sets the session idle. |
 | `requires_action` | supported | supported | claude-code-acp: Sent while a permission request is open. oxd: Counts as work, like `running`. |
 | `unknown` (unstable) | unsupported | unsupported | |
-| `background` work lists | unsupported | unsupported | Ignored. |
+| `background` work lists | supported | supported | claude-code-acp: Every state update carries the list, `[]` when nothing runs, including the `idle` it sends after `session/new` and in a resume snapshot. It holds `claude`'s live background tasks and the scheduled prompts it infers from `CronCreate`, `CronDelete` and `ScheduleWakeup`; each is a `tool_call` item when the client has the tool call, otherwise a custom `_claude_task` or `_claude_schedule` item. A listed tool call stays `in_progress`, or `pending` for a schedule, until its work ends. Schedules last until their fire time has passed and a turn that started after it has ended, until `CronDelete`, or after seven days for a recurring job; a call the bridge cannot read lasts until `claude` exits. Durable jobs saved by another session in the same folder are not listed. oxd: Kept per session; a session whose agent last reported `[]`, with no turn and no pending permission request, can be parked. An agent that reports no list is never parked. |
 | Other states | supported | unsupported | Count as work, never as idle. |
 
 ## Stop reasons

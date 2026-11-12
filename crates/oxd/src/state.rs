@@ -2,9 +2,10 @@
 
 use agent_client_protocol::schema::MaybeUndefined;
 use agent_client_protocol::v2::schema::{
-    CancelledPermissionOutcome, ConfigOptionUpdate, ContentBlock, EmbeddedResourceResource,
-    PermissionOption, PromptCapabilities, RequestPermissionOutcome, RequestPermissionRequest,
-    SelectedPermissionOutcome, SessionConfigOption, SessionUpdate, StateUpdate,
+    BackgroundWork, CancelledPermissionOutcome, ConfigOptionUpdate, ContentBlock,
+    EmbeddedResourceResource, PermissionOption, PromptCapabilities, RequestPermissionOutcome,
+    RequestPermissionRequest, SelectedPermissionOutcome, SessionConfigOption, SessionUpdate,
+    StateUpdate,
 };
 use ox_protocol::{ErrorBody, Event, EventKind, SessionState, code};
 use tokio::sync::oneshot;
@@ -73,6 +74,9 @@ pub enum Change {
         error: String,
     },
     Exited(Option<String>),
+    /// The daemon stopped the agent of a session that was idle, with no
+    /// background work, and unviewed.
+    Parked,
     Closed,
 }
 
@@ -112,9 +116,18 @@ struct Live {
     agent: Agent,
     turn: Option<Turn>,
     pending: Vec<Pending>,
+    /// The background work the agent last reported. `None` when it does not
+    /// report any.
+    background: Option<Vec<BackgroundWork>>,
 }
 
 impl Live {
+    /// No turn, no pending permission request, and the agent reports no
+    /// background work.
+    fn quiet(&self) -> bool {
+        self.turn.is_none() && self.pending.is_empty() && self.background.as_deref() == Some(&[])
+    }
+
     fn state(&self) -> SessionState {
         if !self.pending.is_empty() {
             SessionState::AwaitingPermission
@@ -179,11 +192,13 @@ enum Phase {
     /// updates, then reports its state, before it starts. `replay` holds
     /// them until the agent starts, when they are recorded, or is `None`
     /// when the session keeps its history and drops the replay. `busy` is
-    /// whether the last state reported was not `idle`. `previous` is the
+    /// whether the last state reported was not `idle`, and `background` the
+    /// work it listed. `previous` is the
     /// agent the session had before it resumed.
     Starting {
         replay: Option<Vec<SessionUpdate>>,
         busy: bool,
+        background: Option<Vec<BackgroundWork>>,
         previous: Option<Agent>,
     },
     Live(Live),
@@ -208,7 +223,15 @@ impl Phase {
     /// session keeps across agents.
     fn after(self, change: Change, next_request: &mut u64) -> (Self, Vec<EventKind>) {
         match (self, change) {
-            (Self::Starting { replay, busy, .. }, Change::Started(agent)) => {
+            (
+                Self::Starting {
+                    replay,
+                    busy,
+                    background,
+                    ..
+                },
+                Change::Started(agent),
+            ) => {
                 let mut events: Vec<_> = replay
                     .into_iter()
                     .flatten()
@@ -225,6 +248,7 @@ impl Phase {
                     agent,
                     turn: busy.then_some(Turn::Working { recorded: false }),
                     pending: Vec::new(),
+                    background,
                 };
                 (Self::Live(live), events)
             }
@@ -235,12 +259,14 @@ impl Phase {
                 Self::Starting {
                     mut replay,
                     mut busy,
+                    mut background,
                     previous,
                 },
                 Change::Update(update),
             ) => {
                 if let SessionUpdate::StateUpdate(state) = &update {
                     busy = !matches!(state, StateUpdate::Idle(_));
+                    background = state.background().map(<[_]>::to_vec);
                 }
                 if let Some(replay) = &mut replay {
                     replay.push(update);
@@ -249,6 +275,7 @@ impl Phase {
                     Self::Starting {
                         replay,
                         busy,
+                        background,
                         previous,
                     },
                     Vec::new(),
@@ -270,7 +297,10 @@ impl Phase {
                             .config_options
                             .clone_from(&options.config_options);
                     }
-                    SessionUpdate::StateUpdate(state) => turn = live.follow(state),
+                    SessionUpdate::StateUpdate(state) => {
+                        live.background = state.background().map(<[_]>::to_vec);
+                        turn = live.follow(state);
+                    }
                     _ => {}
                 }
                 let mut events = vec![EventKind::Update(update)];
@@ -324,6 +354,13 @@ impl Phase {
                 events.push(EventKind::AgentExited { error });
                 (Self::Exited(Some(agent)), events)
             }
+            // The daemon parks a quiet session. One that stopped being quiet
+            // before the agent was stopped ends what the agent left open.
+            (Self::Live(live), Change::Parked) => {
+                let (agent, mut events) = live.end("the agent was parked");
+                events.push(EventKind::AgentParked);
+                (Self::Exited(Some(agent)), events)
+            }
             (Self::Live(live), Change::Closed) => {
                 let (_, mut events) = live.end("the session was closed");
                 events.push(EventKind::SessionClosed);
@@ -346,8 +383,10 @@ impl Phase {
                 | Change::PermissionRequested { .. }
                 | Change::Cancelled
                 | Change::PromptRejected { .. }
-                | Change::Exited(_),
+                | Change::Exited(_)
+                | Change::Parked,
             )
+            | (phase @ Self::Starting { .. }, Change::Parked)
             | (phase @ Self::Closed, _) => (phase, Vec::new()),
         }
     }
@@ -376,6 +415,7 @@ impl State {
             phase: Phase::Starting {
                 replay: Some(Vec::new()),
                 busy: false,
+                background: None,
                 previous: None,
             },
             title: None,
@@ -424,6 +464,7 @@ impl State {
         };
         self.phase = Phase::Starting {
             busy: false,
+            background: None,
             replay: (!self
                 .events
                 .iter()
@@ -432,6 +473,12 @@ impl State {
             previous: Some(Agent::saved(id.clone())),
         };
         Ok(id)
+    }
+
+    /// Whether the agent is running with nothing to do: no turn, no pending
+    /// permission request, and no background work.
+    pub fn quiet(&self) -> bool {
+        matches!(&self.phase, Phase::Live(live) if live.quiet())
     }
 
     pub fn title(&self) -> Option<&str> {
@@ -620,7 +667,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use agent_client_protocol::v2::schema::{
-        ContentChunk, IdleStateUpdate, OtherStateUpdate, PermissionOptionKind,
+        BackgroundToolCall, ContentChunk, IdleStateUpdate, OtherStateUpdate, PermissionOptionKind,
         RequiresActionStateUpdate, RunningStateUpdate, SessionInfoUpdate, StopReason, TextContent,
     };
 
@@ -696,6 +743,7 @@ mod tests {
                 EventKind::PermissionResolved { .. } => "permission_resolved",
                 EventKind::TurnEnded { .. } => "turn_ended",
                 EventKind::AgentExited { .. } => "agent_exited",
+                EventKind::AgentParked => "agent_parked",
                 EventKind::SessionClosed => "session_closed",
             })
             .collect()
@@ -1049,6 +1097,74 @@ mod tests {
         assert_eq!(state.state(), SessionState::Idle);
         assert_eq!(kinds(&state, 0), ["update", "agent_started"]);
         assert_eq!(state.title(), Some("Fix the build"));
+    }
+
+    fn idle_with(background: Vec<BackgroundWork>) -> Change {
+        state_change(StateUpdate::Idle(
+            IdleStateUpdate::new().background(background),
+        ))
+    }
+
+    fn work() -> BackgroundWork {
+        BackgroundWork::ToolCall(BackgroundToolCall::new("tool"))
+    }
+
+    #[test]
+    fn a_session_is_quiet_when_the_agent_reports_no_background_work() {
+        let mut state = started();
+        assert!(!state.quiet(), "an agent that reports no list is not quiet");
+        state.record(idle_with(vec![work()]));
+        assert!(!state.quiet());
+        state.record(idle_with(Vec::new()));
+        assert!(state.quiet());
+        state.record(idle(None));
+        assert!(!state.quiet(), "a state without the list is not quiet");
+
+        state.record(idle_with(Vec::new()));
+        prompt(&mut state).unwrap();
+        assert!(!state.quiet());
+        state.record(idle_with(Vec::new()));
+        state.record(running());
+        state.record(idle_with(Vec::new()));
+        assert!(state.quiet());
+        let _answer = request_permission(&mut state);
+        assert!(!state.quiet());
+    }
+
+    #[test]
+    fn the_resume_snapshot_gives_the_session_its_background_work() {
+        let resumed = |snapshot: Change| {
+            let mut state = restored();
+            state.load().unwrap();
+            state.record(snapshot);
+            state.record(Change::Started(Agent {
+                session_id: "agent".into(),
+                prompt_capabilities: PromptCapabilities::default(),
+                config_options: Vec::new(),
+            }));
+            state
+        };
+        assert!(resumed(idle_with(Vec::new())).quiet());
+        assert!(!resumed(idle_with(vec![work()])).quiet());
+        assert!(!resumed(idle(None)).quiet());
+    }
+
+    #[test]
+    fn parking_exits_a_quiet_session_and_records_it() {
+        let mut state = started();
+        state.record(idle_with(Vec::new()));
+        state.record(Change::Parked);
+        assert_eq!(state.state(), SessionState::Exited);
+        assert_eq!(
+            kinds(&state, 0),
+            ["agent_started", "update", "agent_parked"]
+        );
+        assert_eq!(state.load().unwrap(), "agent");
+
+        let mut state = State::new("s".into());
+        state.record(Change::Parked);
+        assert_eq!(state.state(), SessionState::Starting);
+        assert!(kinds(&state, 0).is_empty());
     }
 
     #[test]

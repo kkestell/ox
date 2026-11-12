@@ -333,6 +333,10 @@ pub enum EventKind {
     AgentExited {
         error: Option<String>,
     },
+    /// The daemon stopped the agent because the session was idle, with no
+    /// background work, and unviewed. The session is `exited`;
+    /// `session.load` resumes it.
+    AgentParked,
     /// The session was closed. It is the last event of a session.
     SessionClosed,
 }

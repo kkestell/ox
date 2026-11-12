@@ -117,7 +117,7 @@ impl Bridge {
         }
         let state = match self.claudes.lock().unwrap().get(&id) {
             Some(claude) => claude.state(),
-            None => acp::StateUpdate::Idle(acp::IdleStateUpdate::new()),
+            None => crate::updates::idle_state(),
         };
         notify(connection, &id, SessionUpdate::StateUpdate(state));
         Ok(acp::ResumeSessionResponse::new().config_options(Self::options(&session)))
@@ -376,6 +376,11 @@ impl Bridge {
                     effort: session_effort(&session),
                     mode: session_mode(&session),
                     mcp_servers: &session.mcp_servers,
+                    transcript: &session
+                        .claude_session_id
+                        .as_deref()
+                        .map(|claude_id| self.history.entries(claude_id, &session.cwd))
+                        .unwrap_or_default(),
                 },
                 Updates::new(connection.clone(), &id),
                 self.turn_recorder(&id, &session.cwd, connection),

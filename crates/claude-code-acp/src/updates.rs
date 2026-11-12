@@ -6,13 +6,15 @@ use std::{
 use agent_client_protocol::Client;
 use agent_client_protocol::v2::ConnectionTo;
 use agent_client_protocol::v2::schema::{
-    self as acp, ContentBlock, ContentChunk, MessageId, PermissionOption, PermissionOptionKind,
-    RequestPermissionOutcome, RequestPermissionRequest, SessionUpdate, StateUpdate, StopReason,
-    TextContent, ToolCallContent, ToolCallStatus, ToolKind, UpdateSessionNotification,
+    self as acp, BackgroundWork, ContentBlock, ContentChunk, MessageId, PermissionOption,
+    PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest, SessionUpdate,
+    StateUpdate, StopReason, TextContent, ToolCallContent, ToolCallStatus, ToolKind,
+    UpdateSessionNotification,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use crate::background::{Background, HeldStatus, now_ms};
 use crate::runner::{Event, PermissionRequest, ToolOutput, message_events};
 
 #[derive(Default)]
@@ -24,6 +26,9 @@ struct Tools {
     /// The activity of each subagent, by the tool call that started it: a
     /// line for each tool the subagent called.
     activity: HashMap<String, Vec<ToolCallContent>>,
+    /// Tool calls that have a result but stand for background work that
+    /// goes on, with the content they showed.
+    held: HashMap<String, Vec<ToolCallContent>>,
 }
 
 /// What the session is doing, as far as the client is concerned.
@@ -35,6 +40,12 @@ struct Work {
     asking: usize,
     /// The last state sent to the client; a new session is idle.
     sent: Sent,
+    /// The last background list sent to the client; a new session has none.
+    sent_background: Vec<BackgroundWork>,
+    /// Claude's background tasks and scheduled prompts.
+    background: Background,
+    /// When the running turn started, in epoch milliseconds.
+    turn_started: Option<u64>,
 }
 
 #[derive(Default, PartialEq, Clone, Copy)]
@@ -70,8 +81,25 @@ impl Updates {
     /// Tells the client that Claude started working, if it has not said so.
     pub fn working(&self) {
         let mut work = self.work.lock().unwrap();
-        work.working = true;
+        Self::start_turn(&mut work);
         self.publish(&mut work, None);
+    }
+
+    fn start_turn(work: &mut Work) {
+        if !work.working {
+            work.turn_started = Some(now_ms());
+        }
+        work.working = true;
+    }
+
+    /// Ends the running turn's part in the schedules: what it fulfilled is
+    /// dropped, and so are the tool calls of the work that ended.
+    fn end_turn(&self, work: &mut Work) {
+        work.working = false;
+        if let Some(started) = work.turn_started.take() {
+            work.background.turn_ended(started, now_ms());
+            self.release(work);
+        }
     }
 
     /// Whether Claude is working on a turn.
@@ -85,24 +113,111 @@ impl Updates {
     pub fn idle(&self, stop_reason: StopReason) {
         let mut work = self.work.lock().unwrap();
         if !work.working && matches!(stop_reason, StopReason::Error(_)) {
-            work.working = true;
+            Self::start_turn(&mut work);
             self.publish(&mut work, None);
         }
-        work.working = false;
+        self.end_turn(&mut work);
         self.publish(&mut work, Some(stop_reason));
     }
 
     /// Tells the client that Claude stopped working, without a reason.
     pub fn idle_without_reason(&self) {
         let mut work = self.work.lock().unwrap();
-        work.working = false;
+        self.end_turn(&mut work);
         self.publish(&mut work, None);
     }
 
     /// The state to give a client that resumes the session.
     pub fn state(&self) -> StateUpdate {
         let work = self.work.lock().unwrap();
-        state_update(Self::current(&work), None)
+        state_update(Self::current(&work), None, self.render(&work))
+    }
+
+    /// The background list: work whose tool call the client has, and has
+    /// not seen end, is listed as that tool call.
+    fn render(&self, work: &Work) -> Vec<BackgroundWork> {
+        let tools = self.tools.lock().unwrap();
+        work.background.items(|id| tools.open.contains(id))
+    }
+
+    /// Notes that claude started a task, which `tool_use_id` started.
+    pub fn task_started(&self, task_id: &str, tool_use_id: &str) {
+        let mut work = self.work.lock().unwrap();
+        work.background.task_started(task_id, tool_use_id);
+        self.publish(&mut work, None);
+    }
+
+    /// Replaces the live background tasks with claude's latest set.
+    pub fn background_tasks(&self, tasks: Vec<String>) {
+        let mut work = self.work.lock().unwrap();
+        work.background.set_tasks(tasks);
+        self.release(&work);
+        self.publish(&mut work, None);
+    }
+
+    /// Notes the scheduling tool calls of a message of claude's output.
+    pub fn scheduling(&self, message: &Value, main_thread: bool) {
+        let mut work = self.work.lock().unwrap();
+        if work.background.observe(message, now_ms(), main_thread) {
+            self.release(&work);
+            self.publish(&mut work, None);
+        }
+    }
+
+    /// Seeds the schedules a resumed conversation has from its transcript.
+    pub fn seed(&self, transcript: &[Value]) {
+        self.work
+            .lock()
+            .unwrap()
+            .background
+            .seed(transcript, now_ms());
+    }
+
+    /// Gives the final status to the tool call of a task that reported its
+    /// end, with its summary added to the content.
+    pub fn task_notification(&self, tool_use_id: &str, status: &str, summary: &str) {
+        let mut tools = self.tools.lock().unwrap();
+        let Some(held) = tools.held.remove(tool_use_id) else {
+            return;
+        };
+        tools.open.remove(tool_use_id);
+        let mut content = tools.activity.get(tool_use_id).cloned().unwrap_or(held);
+        if !summary.is_empty() {
+            content.push(ToolCallContent::from(ContentBlock::Text(TextContent::new(
+                summary,
+            ))));
+        }
+        let status = if status == "failed" {
+            ToolCallStatus::Failed
+        } else {
+            ToolCallStatus::Completed
+        };
+        drop(tools);
+        self.send(SessionUpdate::ToolCallUpdate(
+            acp::ToolCallUpdate::new(tool_use_id.to_owned())
+                .status(status)
+                .content(content),
+        ));
+    }
+
+    /// Completes the held tool calls of work that has ended.
+    fn release(&self, work: &Work) {
+        let listed = work.background.tool_calls();
+        let mut tools = self.tools.lock().unwrap();
+        let ended: Vec<String> = tools
+            .held
+            .keys()
+            .filter(|id| !listed.contains(*id))
+            .cloned()
+            .collect();
+        for id in &ended {
+            tools.held.remove(id);
+            tools.open.remove(id);
+        }
+        drop(tools);
+        for id in ended {
+            self.send(tool_status(id, ToolCallStatus::Completed));
+        }
     }
 
     fn current(work: &Work) -> Sent {
@@ -118,11 +233,14 @@ impl Updates {
     /// Sends the session's state when it differs from the last one sent.
     fn publish(&self, work: &mut Work, stop_reason: Option<StopReason>) {
         let current = Self::current(work);
-        if current != work.sent {
+        let background = self.render(work);
+        if current != work.sent || work.sent_background != background {
             work.sent = current;
+            work.sent_background.clone_from(&background);
             self.send(SessionUpdate::StateUpdate(state_update(
                 current,
                 stop_reason,
+                background,
             )));
         }
     }
@@ -195,23 +313,35 @@ impl Updates {
                         ContentBlock::Image(acp::ImageContent::new(data, mime_type)),
                     ),
                 });
+                // Work that goes on in the background keeps its tool call open.
+                let held = if is_error {
+                    None
+                } else {
+                    self.work.lock().unwrap().background.held_status(&id)
+                };
                 let content = {
                     let mut tools = self.tools.lock().unwrap();
-                    tools.open.remove(&id);
                     // A subagent may go on in the background after its tool
                     // call's result, and its activity follows the result.
-                    match tools.activity.get_mut(&id) {
+                    let content: Vec<ToolCallContent> = match tools.activity.get_mut(&id) {
                         Some(activity) => {
                             activity.extend(output);
                             activity.clone()
                         }
                         None => output.collect(),
+                    };
+                    if held.is_some() {
+                        tools.held.insert(id.clone(), content.clone());
+                    } else {
+                        tools.open.remove(&id);
                     }
+                    content
                 };
-                let status = if is_error {
-                    ToolCallStatus::Failed
-                } else {
-                    ToolCallStatus::Completed
+                let status = match (held, is_error) {
+                    (Some(HeldStatus::Pending), _) => ToolCallStatus::Pending,
+                    (Some(HeldStatus::InProgress), _) => ToolCallStatus::InProgress,
+                    (None, true) => ToolCallStatus::Failed,
+                    (None, false) => ToolCallStatus::Completed,
                 };
                 let mut update = acp::ToolCallUpdate::new(id).status(status);
                 if !content.is_empty() {
@@ -294,12 +424,34 @@ impl Updates {
         }
     }
 
-    /// Marks every tool call that started without reporting a result as failed.
+    /// Marks every tool call that started without reporting a result as
+    /// failed, except those that stand for listed background work.
     pub fn fail_open_tools(&self) {
-        let open: Vec<String> = self.tools.lock().unwrap().open.drain().collect();
+        let listed = self.work.lock().unwrap().background.tool_calls();
+        let mut tools = self.tools.lock().unwrap();
+        let open: Vec<String> = tools
+            .open
+            .iter()
+            .filter(|id| !listed.contains(*id))
+            .cloned()
+            .collect();
+        for id in &open {
+            tools.open.remove(id);
+        }
+        drop(tools);
         for id in open {
             self.send(tool_status(id, ToolCallStatus::Failed));
         }
+    }
+
+    /// Ends what claude left open when it exited: every unfinished tool call
+    /// fails, and no background work is left.
+    pub fn exited(&self) {
+        self.work.lock().unwrap().background.clear();
+        self.tools.lock().unwrap().held.clear();
+        self.fail_open_tools();
+        let mut work = self.work.lock().unwrap();
+        self.publish(&mut work, None);
     }
 
     pub async fn permission(&self, permission: PermissionRequest) -> Value {
@@ -404,7 +556,7 @@ impl<'a> Asking<'a> {
     fn new(updates: &'a Updates) -> Self {
         let mut work = updates.work.lock().unwrap();
         work.asking += 1;
-        work.working = true;
+        Updates::start_turn(&mut work);
         updates.publish(&mut work, None);
         Self(updates)
     }
@@ -418,12 +570,30 @@ impl Drop for Asking<'_> {
     }
 }
 
-fn state_update(state: Sent, stop_reason: Option<StopReason>) -> StateUpdate {
+fn state_update(
+    state: Sent,
+    stop_reason: Option<StopReason>,
+    background: Vec<BackgroundWork>,
+) -> StateUpdate {
+    let background = Some(background);
     match state {
-        Sent::Idle => StateUpdate::Idle(acp::IdleStateUpdate::new().stop_reason(stop_reason)),
-        Sent::Running => StateUpdate::Running(acp::RunningStateUpdate::new()),
-        Sent::RequiresAction => StateUpdate::RequiresAction(acp::RequiresActionStateUpdate::new()),
+        Sent::Idle => StateUpdate::Idle(
+            acp::IdleStateUpdate::new()
+                .stop_reason(stop_reason)
+                .background(background),
+        ),
+        Sent::Running => {
+            StateUpdate::Running(acp::RunningStateUpdate::new().background(background))
+        }
+        Sent::RequiresAction => StateUpdate::RequiresAction(
+            acp::RequiresActionStateUpdate::new().background(background),
+        ),
     }
+}
+
+/// The state of a session that is idle with nothing running.
+pub fn idle_state() -> StateUpdate {
+    state_update(Sent::Idle, None, Vec::new())
 }
 
 fn new_message_id() -> MessageId {

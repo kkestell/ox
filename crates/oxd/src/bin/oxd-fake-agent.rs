@@ -16,6 +16,10 @@
 //! - `own-turn`: after the turn ends, a turn the agent starts: it says it is
 //!   running, sends the chunk `own-turn`, and says it is idle once it is
 //!   cancelled
+//! - `background-start <name>`: a tool call `bg-<name>` left `in_progress`
+//!   and listed as background work (with `--background`)
+//! - `background-end <name>`: its completion, and the end of the work's
+//!   listing (with `--background`)
 //! - `exit <code>`: exit the process
 //! - `describe`: one chunk listing the prompt's blocks, such as
 //!   `text image:image/png link:file:///a resource:file:///b`
@@ -56,6 +60,9 @@
 //!   `idle` with the stop reason `cancelled` once it is cancelled
 //! - `--turn-after-resume`: after answering `session/resume`, run a turn of
 //!   its own: `running`, the chunk `after-resume`, and `idle`
+//! - `--background`: report the background work on every state update, `[]`
+//!   when none is running, starting after `session/new`, and accept the
+//!   `background-start` and `background-end` directives
 //! - `--silent-config`: send no `config_option_update` when an option is set
 //! - `--late-config-update`: send the `config_option_update` after the
 //!   response
@@ -65,6 +72,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -226,11 +234,36 @@ fn notify(
     ))
 }
 
+/// The tool calls of the background work running, with `--background`.
+static BACKGROUND: LazyLock<Mutex<Vec<String>>> = LazyLock::new(Mutex::default);
+
+/// Adds the background work to a state, with `--background`.
+fn with_background(state: acp::StateUpdate) -> acp::StateUpdate {
+    if !flag("--background") {
+        return state;
+    }
+    let work: Vec<_> = BACKGROUND
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|tool| acp::BackgroundWork::ToolCall(acp::BackgroundToolCall::new(tool.as_str())))
+        .collect();
+    match state {
+        acp::StateUpdate::Running(update) => acp::StateUpdate::Running(update.background(work)),
+        acp::StateUpdate::Idle(update) => acp::StateUpdate::Idle(update.background(work)),
+        acp::StateUpdate::RequiresAction(update) => {
+            acp::StateUpdate::RequiresAction(update.background(work))
+        }
+        other => other,
+    }
+}
+
 fn state_update(
     connection: &ConnectionTo<Client>,
     session_id: &acp::SessionId,
     state: acp::StateUpdate,
 ) -> agent_client_protocol::Result<()> {
+    let state = with_background(state);
     notify(
         connection,
         session_id,
@@ -311,12 +344,21 @@ async fn main() -> agent_client_protocol::Result<()> {
                 let state = state.clone();
                 async move |request: acp::NewSessionRequest,
                             responder: Responder<acp::NewSessionResponse>,
-                            _connection: ConnectionTo<Client>| {
+                            connection: ConnectionTo<Client>| {
                     let id = acp::SessionId::new(format!("fake-{}", uuid::Uuid::new_v4()));
                     state.open_log(&id, &request.cwd.0);
                     responder.respond(
-                        acp::NewSessionResponse::new(id).config_options(state.config_options()),
-                    )
+                        acp::NewSessionResponse::new(id.clone())
+                            .config_options(state.config_options()),
+                    )?;
+                    if flag("--background") {
+                        state_update(
+                            &connection,
+                            &id,
+                            acp::StateUpdate::Idle(acp::IdleStateUpdate::new()),
+                        )?;
+                    }
+                    Ok(())
                 }
             },
             agent_client_protocol::on_receive_request!(),
@@ -533,6 +575,8 @@ enum Directive {
     TitleNull,
     Touch,
     Tool(String),
+    BackgroundStart(String),
+    BackgroundEnd(String),
     Exit(i32),
     Fail(String),
 }
@@ -561,6 +605,8 @@ fn parse(script: &str) -> Result<Vec<Directive>, Error> {
             ["title-null"] => Directive::TitleNull,
             ["touch"] => Directive::Touch,
             ["tool", ..] => Directive::Tool(rest("tool")),
+            ["background-start", name] => Directive::BackgroundStart((*name).to_owned()),
+            ["background-end", name] => Directive::BackgroundEnd((*name).to_owned()),
             ["exit", code] => Directive::Exit(parse_number(code)?),
             ["fail", ..] => Directive::Fail(rest("fail")),
             ["reject", ..] => return Err(Error::invalid_params().data(rest("reject"))),
@@ -709,6 +755,34 @@ async fn run(
                             )),
                         ]),
                 )?;
+            }
+            Directive::BackgroundStart(name) => {
+                let tool = format!("bg-{name}");
+                notify(
+                    connection,
+                    &session_id,
+                    acp::SessionUpdate::ToolCallUpdate(
+                        acp::ToolCallUpdate::new(tool.as_str())
+                            .name("fake_background")
+                            .title(format!("Background {name}"))
+                            .status(acp::ToolCallStatus::InProgress),
+                    ),
+                )?;
+                BACKGROUND.lock().unwrap().push(tool);
+                state_update(connection, &session_id, running())?;
+            }
+            Directive::BackgroundEnd(name) => {
+                let tool = format!("bg-{name}");
+                notify(
+                    connection,
+                    &session_id,
+                    acp::SessionUpdate::ToolCallUpdate(
+                        acp::ToolCallUpdate::new(tool.as_str())
+                            .status(acp::ToolCallStatus::Completed),
+                    ),
+                )?;
+                BACKGROUND.lock().unwrap().retain(|listed| *listed != tool);
+                state_update(connection, &session_id, running())?;
             }
             Directive::Exit(code) => std::process::exit(code),
             Directive::Fail(message) => {

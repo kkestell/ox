@@ -446,6 +446,7 @@ fn describe(kind: &EventKind) -> String {
         },
         EventKind::AgentExited { error: Some(error) } => format!("agent exited: {error}"),
         EventKind::AgentExited { error: None } => "agent exited".into(),
+        EventKind::AgentParked => "agent parked".into(),
         EventKind::SessionClosed => "session closed".into(),
     }
 }

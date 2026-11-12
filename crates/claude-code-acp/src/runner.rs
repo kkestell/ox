@@ -87,6 +87,9 @@ pub struct StartRequest<'a> {
     pub effort: &'a str,
     pub mode: &'a str,
     pub mcp_servers: &'a [McpServer],
+    /// The resumed conversation's transcript entries, from which the bridge
+    /// finds the scheduled prompts Claude restores.
+    pub transcript: &'a [Value],
 }
 
 #[derive(Debug)]
@@ -209,7 +212,10 @@ impl Claude {
             .env_remove("ANTHROPIC_API_KEY")
             .env_remove("ANTHROPIC_AUTH_TOKEN")
             // Claude reports when it starts and stops working only if asked.
-            .env("CLAUDE_CODE_SDK_READS_SESSION_STATE", "1")
+            .env("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", "1")
+            // Claude reports `idle` at a turn's end while background tasks run,
+            // and `running` when the turn they start begins.
+            .env("CLAUDE_CODE_BG_TASKS_REPORT_RUNNING", "0")
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| format!("failed to start claude: {e}"))?;
@@ -219,6 +225,7 @@ impl Claude {
             child.stdin.take().expect("piped stdin"),
             messages,
         ));
+        updates.seed(request.transcript);
         let updates = Arc::new(updates);
         let (exit, exited) = oneshot::channel();
         let output = Output {
@@ -421,7 +428,7 @@ impl Output {
                 state.cancelling,
             )
         };
-        self.updates.fail_open_tools();
+        self.updates.exited();
         let result = if closing || cancelling {
             Err(RunError::Cancelled)
         } else {
@@ -471,6 +478,7 @@ impl Output {
         // started it; its streamed text is not shown.
         if let Some(parent) = value["parent_tool_use_id"].as_str() {
             if matches!(value["type"].as_str(), Some("assistant" | "user")) {
+                self.updates.scheduling(&value, false);
                 for event in message_events(&value) {
                     self.updates.subagent_event(parent, event);
                 }
@@ -539,6 +547,7 @@ impl Output {
                 _ => {}
             },
             Some("assistant" | "user") => {
+                self.updates.scheduling(&value, true);
                 for event in message_events(&value) {
                     match event {
                         // Deltas already streamed this text.
@@ -555,15 +564,43 @@ impl Output {
                 self.text_id = None;
                 self.thought_id = None;
             }
-            Some("system") if event["subtype"] == "session_state_changed" => {
-                // Claude's third state, waiting for a permission, is part of
-                // working; the client has the request itself.
-                match event["state"].as_str() {
-                    Some("running") => self.updates.working(),
-                    Some("idle") => self.updates.idle_without_reason(),
-                    _ => {}
+            Some("system") => match event["subtype"].as_str() {
+                Some("session_state_changed") => {
+                    // Claude's third state, waiting for a permission, is part
+                    // of working; the client has the request itself.
+                    match event["state"].as_str() {
+                        Some("running") => self.updates.working(),
+                        Some("idle") => self.updates.idle_without_reason(),
+                        _ => {}
+                    }
                 }
-            }
+                Some("task_started") => {
+                    if let (Some(task), Some(tool)) =
+                        (event["task_id"].as_str(), event["tool_use_id"].as_str())
+                    {
+                        self.updates.task_started(task, tool);
+                    }
+                }
+                Some("task_notification") => {
+                    if let Some(tool) = event["tool_use_id"].as_str() {
+                        self.updates.task_notification(
+                            tool,
+                            event["status"].as_str().unwrap_or(""),
+                            event["summary"].as_str().unwrap_or(""),
+                        );
+                    }
+                }
+                Some("background_tasks_changed") => {
+                    let tasks = event["tasks"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|task| task["task_id"].as_str().map(str::to_owned))
+                        .collect();
+                    self.updates.background_tasks(tasks);
+                }
+                _ => {}
+            },
             Some("result") => self.result(&value),
             _ => {}
         }

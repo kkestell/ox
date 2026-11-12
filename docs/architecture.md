@@ -189,6 +189,17 @@ removed, is kept as `exited`, with the reason in `oxd`'s log, and can only
 be deleted. `oxd` does not idle-exit while this runs, and a shutdown does
 not wait for it; sessions it has not reached are cleaned up at the next
 start.
+**Parking.** `oxd` stops the agent of a session that has stayed parkable for
+the park delay, `--park-after-ms` (default 15 minutes), without a break. A
+session is parkable when its agent is idle, no permission request is pending,
+the agent last reported no background work (`background` is `[]`; an agent
+that reports none never parks), and no client subscribes to the session; a
+watch is not a subscription. Any change that ends one of these restarts the
+delay. A parked session keeps its conversation, worktree, and branch, records
+`agent_parked`, and is `exited`; no subscription ends. `session.load` wakes
+it, as it does any exited session. Parking holds the session's lifecycle lock,
+so a load, delete, or startup in progress finishes first.
+
 `session.load` restarts the agent of an exited session that has an agent
 session ID, from the session's stored command and directory, on the same
 session: the session ID, subscriptions, and sidebar selection stay the same,

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v2::schema::{
@@ -59,6 +60,31 @@ pub struct Session {
     /// Sends to the running agent task. A load replaces it.
     commands: Mutex<mpsc::UnboundedSender<Command>>,
     task: Mutex<Option<JoinHandle<()>>>,
+    /// The subscriptions to the session's events. Locked after the state.
+    viewers: Mutex<usize>,
+    /// Whether the session may be parked, and how many times it has stopped
+    /// being parkable.
+    parkable: watch::Sender<Parkable>,
+    /// Stops the agent of a session that stays parkable for the park delay.
+    parker: Mutex<Option<JoinHandle<()>>>,
+}
+
+/// Whether a session is quiet and unviewed. `lapses` counts the times it
+/// stopped being so, which a change that reverts before the park task looks
+/// still counts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Parkable {
+    parkable: bool,
+    lapses: u64,
+}
+
+/// A subscription to a session's events. A session with one is not parked.
+pub struct Viewer(Arc<Session>);
+
+impl Drop for Viewer {
+    fn drop(&mut self) {
+        self.0.update(|_| *self.0.viewers.lock().unwrap() -= 1);
+    }
 }
 
 impl Session {
@@ -67,8 +93,9 @@ impl Session {
         changed: watch::Sender<()>,
         saved: SavedSession,
         state: State,
+        park_after: Duration,
     ) -> Arc<Self> {
-        Arc::new(Self {
+        let session = Arc::new(Self {
             state: Mutex::new(state),
             id: saved.id,
             number: saved.number,
@@ -82,7 +109,42 @@ impl Session {
             changed,
             commands: Mutex::new(mpsc::unbounded_channel().0),
             task: Mutex::new(None),
-        })
+            viewers: Mutex::new(0),
+            parkable: watch::Sender::new(Parkable {
+                parkable: false,
+                lapses: 0,
+            }),
+            parker: Mutex::new(None),
+        });
+        *session.parker.lock().unwrap() =
+            Some(tokio::spawn(session.clone().park_when_idle(park_after)));
+        session
+    }
+
+    /// Parks the session each time it stays parkable for `park_after`. Any
+    /// change that makes it not parkable restarts the delay.
+    async fn park_when_idle(self: Arc<Self>, park_after: Duration) {
+        let mut parkable = self.parkable.subscribe();
+        loop {
+            let Ok(seen) = parkable.wait_for(|p| p.parkable).await.map(|p| p.lapses) else {
+                return;
+            };
+            tokio::select! {
+                () = tokio::time::sleep(park_after) => {}
+                lapsed = parkable.wait_for(|p| !p.parkable || p.lapses != seen) => {
+                    if lapsed.is_err() {
+                        return;
+                    }
+                    continue;
+                }
+            }
+            // A load, startup or delete in progress finishes first, and the
+            // session is checked again after.
+            let _lifecycle = self.lifecycle().await;
+            if self.parkable.borrow().parkable {
+                self.stop(Change::Parked).await;
+            }
+        }
     }
 
     /// Starts a session just saved: adds its worktree, if it has one to
@@ -92,12 +154,13 @@ impl Session {
     pub fn spawn(
         store: Arc<Store>,
         changed: watch::Sender<()>,
+        park_after: Duration,
         saved: SavedSession,
         env: BTreeMap<String, String>,
         worktree: Option<(Git, WorktreePlan)>,
     ) -> Arc<Self> {
         let state = State::new(saved.id.clone());
-        let session = Self::new(store, changed, saved, state);
+        let session = Self::new(store, changed, saved, state, park_after);
         match worktree {
             None => session.launch(&mut session.task.lock().unwrap(), env, None),
             Some((git, plan)) => {
@@ -151,6 +214,7 @@ impl Session {
     pub fn restore(
         store: Arc<Store>,
         changed: watch::Sender<()>,
+        park_after: Duration,
         saved: SavedSession,
     ) -> Arc<Self> {
         let state = match saved.agent_session_id.clone() {
@@ -159,7 +223,7 @@ impl Session {
             }
             None => State::unstarted(saved.id.clone(), saved.title.clone()),
         };
-        Self::new(store, changed, saved, state)
+        Self::new(store, changed, saved, state, park_after)
     }
 
     /// Starts the agent task in `task`, which opens a new ACP session or
@@ -249,6 +313,12 @@ impl Session {
         }
     }
 
+    /// Counts a subscription to the session's events while the guard lives.
+    pub fn view(self: &Arc<Self>) -> Viewer {
+        self.update(|_| *self.viewers.lock().unwrap() += 1);
+        Viewer(self.clone())
+    }
+
     /// Checks that events follow `after_seq`, now or later.
     pub fn subscribe(&self, after_seq: u64) -> Result<(), ErrorBody> {
         self.lock().subscribe(after_seq)
@@ -322,15 +392,16 @@ impl Session {
 
     /// Stops the agent, killing its process group, and returns once the
     /// agent's task has ended. The session is `exited`, and keeps its
-    /// subscriptions.
-    pub async fn stop(&self) {
+    /// subscriptions. `change` is what the session records: `Exited(None)`,
+    /// or `Parked`.
+    pub async fn stop(&self, change: Change) {
         let task = self.task.lock().unwrap().take();
         if let Some(task) = task {
             task.abort();
             // The task ends cancelled, having dropped the agent.
             let _ = task.await;
         }
-        self.record(Change::Exited(None));
+        self.record(change);
     }
 
     /// Stops the agent, killing its process group, and ends every
@@ -340,6 +411,10 @@ impl Session {
         let task = self.task.lock().unwrap().take();
         if let Some(task) = task {
             task.abort();
+        }
+        let parker = self.parker.lock().unwrap().take();
+        if let Some(parker) = parker {
+            parker.abort();
         }
     }
 
@@ -361,6 +436,17 @@ impl Session {
         let before = self.info_of(&state);
         let result = change(&mut state);
         self.last_seq.send_replace(state.last_seq());
+        let parkable = state.quiet() && *self.viewers.lock().unwrap() == 0;
+        self.parkable.send_if_modified(|p| {
+            if p.parkable == parkable {
+                return false;
+            }
+            p.parkable = parkable;
+            if !parkable {
+                p.lapses += 1;
+            }
+            true
+        });
         let after = self.info_of(&state);
         if after != before {
             self.save(&before, &after);

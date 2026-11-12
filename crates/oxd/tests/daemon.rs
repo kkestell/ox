@@ -45,12 +45,28 @@ impl Daemon {
     /// Starts oxd, optionally with a limit on open file descriptors, and
     /// waits for it to report that it is ready.
     async fn start_with(idle_exit_ms: u64, fd_limit: Option<u32>) -> Self {
-        Self::start_in(tempfile::tempdir().unwrap(), idle_exit_ms, fd_limit).await
+        Self::start_in(tempfile::tempdir().unwrap(), idle_exit_ms, fd_limit, None).await
+    }
+
+    /// Starts oxd with sessions parking after `park_after_ms`.
+    async fn start_parking(idle_exit_ms: u64, park_after_ms: u64) -> Self {
+        Self::start_in(
+            tempfile::tempdir().unwrap(),
+            idle_exit_ms,
+            None,
+            Some(park_after_ms),
+        )
+        .await
     }
 
     /// Like `start_with`, on the socket in `dir`. A daemon started on the
     /// socket of one that exited finds its workspaces and sessions.
-    async fn start_in(dir: TempDir, idle_exit_ms: u64, fd_limit: Option<u32>) -> Self {
+    async fn start_in(
+        dir: TempDir,
+        idle_exit_ms: u64,
+        fd_limit: Option<u32>,
+        park_after_ms: Option<u64>,
+    ) -> Self {
         let socket = dir.path().join("oxd.sock");
         let mut command = match fd_limit {
             Some(limit) => {
@@ -69,6 +85,11 @@ impl Daemon {
             .arg(&socket)
             .arg("--idle-exit-ms")
             .arg(idle_exit_ms.to_string())
+            .args(
+                park_after_ms
+                    .iter()
+                    .flat_map(|ms| ["--park-after-ms".to_owned(), ms.to_string()]),
+            )
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
@@ -103,7 +124,7 @@ impl Daemon {
 
     /// Starts another daemon on the socket of this one, which has exited.
     async fn again(self, idle_exit_ms: u64) -> Self {
-        Self::start_in(self.dir, idle_exit_ms, None).await
+        Self::start_in(self.dir, idle_exit_ms, None, None).await
     }
 
     /// The workspace for the daemon's directory, which sessions run in.
@@ -1936,4 +1957,163 @@ async fn unsubscribe_ends_a_watch() {
             .all(|message| message.get("sessions").is_none()),
         "{messages:?}"
     );
+}
+
+/// A session whose fake agent reports background work.
+async fn parking_session(daemon: &Daemon, client: &Client, args: &[&str]) -> (SessionInfo, u64) {
+    let args: Vec<&str> = ["--background"]
+        .into_iter()
+        .chain(args.iter().copied())
+        .collect();
+    daemon.new_session_with(client, &args).await
+}
+
+/// Waits until the watch lists session `id` as `exited`.
+async fn parked(watch: &mut Watch, id: &str) {
+    listings_until(watch, |listing| {
+        state_in(&listing.sessions, id) == Some(SessionState::Exited)
+    })
+    .await;
+}
+
+/// The message chunks in a session's first `seq` events.
+async fn chunks_before(client: &Client, id: &str, seq: u64) -> Vec<String> {
+    let mut events = client.subscribe(id, 0).await.unwrap();
+    let mut history = Vec::new();
+    while history.len() < usize::try_from(seq).unwrap() {
+        history.push(next(&mut events).await);
+    }
+    chunks(&history).into_iter().map(String::from).collect()
+}
+
+/// The seq of the `agent_parked` event in a session's history.
+async fn parked_seq(client: &Client, id: &str) -> u64 {
+    let mut events = client.subscribe(id, 0).await.unwrap();
+    until(&mut events, |kind| matches!(kind, EventKind::AgentParked))
+        .await
+        .pop()
+        .unwrap()
+        .seq
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_idle_unviewed_session_is_parked_and_its_agent_exits() {
+    let daemon = Daemon::start_parking(5000, 300).await;
+    let client = daemon.client().await;
+    let agent = ExitWatch::new(daemon.dir.path());
+    let (session, _) = parking_session(&daemon, &client, &agent.arg()).await;
+    let mut watch = client.watch().await.unwrap();
+    parked(&mut watch, &session.id).await;
+    agent.exited().await;
+    parked_seq(&client, &session.id).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_parked_session_loads_again() {
+    let daemon = Daemon::start_parking(5000, 300).await;
+    let client = daemon.client().await;
+    let (session, started) = parking_session(&daemon, &client, &[]).await;
+    let mut events = client.subscribe(&session.id, started).await.unwrap();
+    client.prompt(&session.id, text("say 1 0")).await.unwrap();
+    until(&mut events, turn_ended).await;
+    drop(events);
+    let mut watch = client.watch().await.unwrap();
+    parked(&mut watch, &session.id).await;
+    let seq = parked_seq(&client, &session.id).await;
+
+    // The parked session loads like any exited one, and keeps its history.
+    assert_eq!(chunks_before(&client, &session.id, seq).await, ["chunk-1"]);
+    let mut events = client.subscribe(&session.id, seq).await.unwrap();
+    client
+        .load_session(&session.id, BTreeMap::new())
+        .await
+        .unwrap();
+    let restarted = next(&mut events).await;
+    assert!(agent_started(&restarted.kind), "{restarted:?}");
+    assert_eq!(restarted.seq, seq + 1);
+    client.prompt(&session.id, text("say 1 0")).await.unwrap();
+    let turn = until(&mut events, turn_ended).await;
+    assert_eq!(chunks(&turn), ["chunk-1"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_viewed_session_is_not_parked() {
+    let daemon = Daemon::start_parking(5000, 300).await;
+    let client = daemon.client().await;
+    let (viewed, started) = parking_session(&daemon, &client, &[]).await;
+    let view = client.subscribe(&viewed.id, started).await.unwrap();
+    let (control, _) = parking_session(&daemon, &client, &[]).await;
+    let mut watch = client.watch().await.unwrap();
+    parked(&mut watch, &control.id).await;
+    assert_ne!(info(&client, &viewed.id).await.state, SessionState::Exited);
+
+    drop(view);
+    parked(&mut watch, &viewed.id).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_with_background_work_is_not_parked() {
+    let daemon = Daemon::start_parking(5000, 300).await;
+    let client = daemon.client().await;
+    let (busy, started) = parking_session(&daemon, &client, &[]).await;
+    let mut events = client.subscribe(&busy.id, started).await.unwrap();
+    client
+        .prompt(&busy.id, text("background-start job"))
+        .await
+        .unwrap();
+    until(&mut events, turn_ended).await;
+    drop(events);
+    let (control, _) = parking_session(&daemon, &client, &[]).await;
+    let mut watch = client.watch().await.unwrap();
+    parked(&mut watch, &control.id).await;
+    assert_eq!(info(&client, &busy.id).await.state, SessionState::Idle);
+
+    let mut events = client.subscribe(&busy.id, 0).await.unwrap();
+    client
+        .prompt(&busy.id, text("background-end job"))
+        .await
+        .unwrap();
+    until(&mut events, turn_ended).await;
+    drop(events);
+    parked(&mut watch, &busy.id).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_whose_agent_reports_no_background_work_is_not_parked() {
+    let daemon = Daemon::start_parking(5000, 300).await;
+    let client = daemon.client().await;
+    let (silent, _) = daemon.new_session(&client).await;
+    let (control, _) = parking_session(&daemon, &client, &[]).await;
+    let mut watch = client.watch().await.unwrap();
+    parked(&mut watch, &control.id).await;
+    assert_eq!(info(&client, &silent.id).await.state, SessionState::Idle);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn becoming_busy_restarts_the_park_delay() {
+    let daemon = Daemon::start_parking(5000, 800).await;
+    let client = daemon.client().await;
+    let (restarted, _) = parking_session(&daemon, &client, &[]).await;
+    let (control, _) = parking_session(&daemon, &client, &[]).await;
+    let mut watch = client.watch().await.unwrap();
+    // The delay is the behavior under test: prompt the session part-way
+    // through it.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let mut events = client.subscribe(&restarted.id, 0).await.unwrap();
+    client.prompt(&restarted.id, text("say 1 0")).await.unwrap();
+    until(&mut events, turn_ended).await;
+    drop(events);
+    parked(&mut watch, &control.id).await;
+    assert_eq!(info(&client, &restarted.id).await.state, SessionState::Idle);
+    parked(&mut watch, &restarted.id).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_whose_sessions_are_parked_exits() {
+    let mut daemon = Daemon::start_parking(300, 300).await;
+    let client = daemon.client().await;
+    parking_session(&daemon, &client, &[]).await;
+    drop(client);
+    assert!(daemon.wait_for_exit().await.success());
+    assert!(!daemon.socket.exists());
 }

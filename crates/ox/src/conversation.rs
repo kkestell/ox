@@ -162,7 +162,9 @@ impl Conversation {
     pub fn apply(&mut self, event: &Event) -> Vec<Item> {
         let key = event.seq.to_string();
         match &event.kind {
-            EventKind::AgentStarted { .. } | EventKind::TurnStarted => Vec::new(),
+            EventKind::AgentStarted { .. } | EventKind::TurnStarted | EventKind::AgentParked => {
+                Vec::new()
+            }
             EventKind::PromptStarted { prompt } => {
                 self.in_turn = true;
                 let mut text = Vec::new();

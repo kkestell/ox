@@ -495,9 +495,7 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
     );
     let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
     initialize(&mut child, &mut reader).await;
-    send(&mut child, json!({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":project,"mcpServers":[]}})).await;
-    let (new, _) = response(&mut reader, 2).await;
-    let id = new["result"]["sessionId"].as_str().unwrap().to_owned();
+    let id = new_session(&mut child, &mut reader, 2, &project).await;
     send(
         &mut child,
         json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{
@@ -961,7 +959,13 @@ async fn new_session(
 ) -> Value {
     send(child, json!({"jsonrpc":"2.0","id":request_id,"method":"session/new","params":{"cwd":project,"mcpServers":[]}})).await;
     let (new, _) = response(reader, request_id).await;
-    new["result"]["sessionId"].clone()
+    let session = new["result"]["sessionId"].clone();
+    // The new session reports itself idle, with nothing running.
+    let snapshot = receive(reader).await;
+    assert!(is_state(&snapshot, "idle"), "{snapshot}");
+    assert_eq!(update(&snapshot)["background"], json!([]), "{snapshot}");
+    assert_eq!(snapshot["params"]["sessionId"], session, "{snapshot}");
+    session
 }
 
 async fn prompt(
@@ -1551,6 +1555,22 @@ fn write_lines(path: &Path, entries: &[Value]) {
     fs::write(path, lines.join("\n") + "\n").unwrap();
 }
 
+/// The work a state update lists: a tool call's ID, or a custom item's type
+/// and ID.
+fn background_items(list: &Value) -> Vec<String> {
+    list.as_array()
+        .into_iter()
+        .flatten()
+        .map(|item| match item["type"].as_str().unwrap() {
+            "tool_call" => item["toolCallId"].as_str().unwrap().to_owned(),
+            kind => format!(
+                "{kind}:{}",
+                item["taskId"].as_str().or(item["id"].as_str()).unwrap()
+            ),
+        })
+        .collect()
+}
+
 /// One line per update: its kind and what it shows.
 fn describe_updates(notifications: &[Value]) -> Vec<String> {
     notifications
@@ -1579,6 +1599,10 @@ fn describe_updates(notifications: &[Value]) -> Vec<String> {
                     }
                     if let Some(error) = update["error"]["message"].as_str() {
                         detail = format!("{detail} {error}");
+                    }
+                    let background = background_items(&update["background"]);
+                    if !background.is_empty() {
+                        detail = format!("{detail} [{}]", background.join(" "));
                     }
                     detail
                 }
@@ -2362,4 +2386,428 @@ exit 1
         idle["stopReason"], "cancelled",
         "cancellation was classified as a failure: {idle}"
     );
+}
+
+/// A fake claude that starts the background Bash `bg-1` as task `t1`, as
+/// claude does, with `rest` after the turn it started in.
+fn background_task(rest: &str) -> String {
+    format!(
+        r#"
+next_prompt
+state running
+printf '%s\n' '{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"bg-1","name":"Bash","input":{{"command":"sleep 5","run_in_background":true}}}}]}}}}'
+printf '%s\n' '{{"type":"system","subtype":"background_tasks_changed","tasks":[{{"task_id":"t1"}}]}}'
+printf '%s\n' '{{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"bg-1","is_backgrounded":true}}'
+printf '%s\n' '{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"bg-1","content":"started"}}]}}}}'
+printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
+state idle
+{rest}
+"#
+    )
+}
+
+#[tokio::test]
+async fn a_background_task_keeps_its_tool_call_open_until_it_ends() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    fake_claude(
+        &bin,
+        &background_task(&format!(
+            r#"
+printf '%s\n' '{{"type":"system","subtype":"task_notification","task_id":"t1","tool_use_id":"bg-1","status":"completed","summary":"slept"}}'
+printf '%s\n' '{{"type":"system","subtype":"background_tasks_changed","tasks":[]}}'
+state running
+printf '%s\n' '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"woke"}}]}}}}'
+printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
+state idle
+next_message
+"#
+        )),
+    );
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    let (idle, before) = prompt(&mut child, &mut reader, 3, &session).await;
+    assert_eq!(
+        idle["background"],
+        json!([{"type": "tool_call", "toolCallId": "bg-1"}])
+    );
+    // The result does not finish the tool call, and the turn's end does not
+    // fail it.
+    let describe = |messages: &[Value]| -> Vec<String> {
+        describe_updates(messages)
+            .into_iter()
+            .filter(|update| !update.starts_with("session_info_update"))
+            .collect()
+    };
+    assert_eq!(
+        describe(&before),
+        [
+            "user_message: hello",
+            "state_update: running",
+            "tool_call_update: bg-1 Bash `sleep 5` pending",
+            "state_update: running [_claude_task:t1]",
+            "state_update: running [bg-1]",
+            "tool_call_update: bg-1 in_progress [started]",
+            "state_update: idle end_turn [bg-1]",
+        ]
+    );
+    // The task ends: its tool call completes before the list drops it, and
+    // the turn claude starts afterwards is reported.
+    let after = until_text(&mut reader, "woke").await;
+    let mut after = and_until_idle(&mut reader, after).await;
+    after.retain(|value| value["method"] == "session/update");
+    assert_eq!(
+        describe(&after),
+        [
+            "tool_call_update: bg-1 completed [started | slept]",
+            "state_update: idle",
+            "state_update: running",
+            "agent_message: woke",
+            "state_update: idle end_turn",
+        ]
+    );
+    child.kill().await.unwrap();
+}
+
+/// Reads until an idle state update follows what was `seen`.
+async fn and_until_idle(reader: &mut BufReader<ChildStdout>, mut seen: Vec<Value>) -> Vec<Value> {
+    while !seen.last().is_some_and(|value| is_state(value, "idle")) {
+        seen.push(receive(reader).await);
+    }
+    seen
+}
+
+#[tokio::test]
+async fn claude_exiting_fails_the_tool_calls_of_its_background_work() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    fake_claude(&bin, &background_task("exit 0"));
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    let (idle, _) = prompt(&mut child, &mut reader, 3, &session).await;
+    assert_eq!(
+        idle["background"],
+        json!([{"type": "tool_call", "toolCallId": "bg-1"}])
+    );
+    let mut seen = Vec::new();
+    while !seen.last().is_some_and(|value| is_state(value, "idle")) {
+        seen.push(receive(&mut reader).await);
+    }
+    assert_eq!(
+        describe_updates(&seen),
+        ["tool_call_update: bg-1 failed", "state_update: idle"]
+    );
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_foreground_task_lists_nothing_and_a_resume_reports_the_list() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    fake_claude(
+        &bin,
+        &format!(
+            r#"
+next_prompt
+state running
+printf '%s\n' '{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"fg-1","name":"Agent","input":{{}}}}]}}}}'
+printf '%s\n' '{{"type":"system","subtype":"task_started","task_id":"t0","tool_use_id":"fg-1","is_backgrounded":false}}'
+printf '%s\n' '{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"fg-1","content":"ok"}}]}}}}'
+printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
+state idle
+next_prompt
+state running
+printf '%s\n' '{{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"unknown-call","is_backgrounded":true}}'
+printf '%s\n' '{{"type":"system","subtype":"background_tasks_changed","tasks":[{{"task_id":"t1"}}]}}'
+printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
+state idle
+next_message
+"#
+        ),
+    );
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    let (idle, updates) = prompt(&mut child, &mut reader, 3, &session).await;
+    assert_eq!(idle["background"], json!([]));
+    assert!(
+        updates
+            .iter()
+            .any(|v| update(v)["toolCallId"] == "fg-1" && update(v)["status"] == "completed"),
+        "{updates:?}"
+    );
+    let (idle, _) = prompt(&mut child, &mut reader, 4, &session).await;
+    assert_eq!(
+        idle["background"],
+        json!([{"type": "_claude_task", "taskId": "t1"}])
+    );
+
+    send(&mut child, json!({"jsonrpc":"2.0","id":5,"method":"session/resume","params":{"sessionId":session,"cwd":project,"mcpServers":[]}})).await;
+    let (_, notifications) = response(&mut reader, 5).await;
+    assert_eq!(
+        describe_updates(&notifications),
+        ["state_update: idle [_claude_task:t1]"]
+    );
+    child.kill().await.unwrap();
+}
+
+/// A turn of a fake claude that makes the scheduling call `name` with
+/// `input`, and gets `output` as its result.
+fn scheduling_turn(id: &str, name: &str, input: &str, output: &str) -> String {
+    format!(
+        r#"
+next_prompt
+state running
+printf '%s\n' '{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"{id}","name":"{name}","input":{input}}}]}}}}'
+printf '%s\n' '{{"type":"user",{output}"message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"{id}","content":"ok"}}]}}}}'
+printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
+state idle
+"#
+    )
+}
+
+#[tokio::test]
+async fn scheduled_prompts_keep_the_session_listed() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    let far = 99_999_999_999_999_u64;
+    let turns = [
+        // A recurring job lasts until it is deleted.
+        scheduling_turn(
+            "cron-1",
+            "CronCreate",
+            "{}",
+            &format!(r#""tool_use_result":{{"id":"job1","recurring":true,"nextFireAt":{far}}},"#),
+        ),
+        scheduling_turn(
+            "cron-2",
+            "CronDelete",
+            r#"{"id":"job1"}"#,
+            r#""tool_use_result":{"id":"job1"},"#,
+        ),
+        // A one-shot job whose time has passed ends with the turn that made it.
+        scheduling_turn(
+            "cron-3",
+            "CronCreate",
+            "{}",
+            r#""tool_use_result":{"id":"job2","recurring":false,"nextFireAt":1},"#,
+        ),
+        // A wakeup lasts until it is stopped.
+        scheduling_turn(
+            "wake-1",
+            "ScheduleWakeup",
+            "{}",
+            &format!(r#""tool_use_result":{{"scheduledFor":{far}}},"#),
+        ),
+        scheduling_turn(
+            "wake-2",
+            "ScheduleWakeup",
+            r#"{"stop":true}"#,
+            r#""tool_use_result":{"stopped":true},"#,
+        ),
+        // A call whose result cannot be read lasts until claude exits.
+        scheduling_turn("cron-4", "CronCreate", "{}", ""),
+    ]
+    .concat();
+    fake_claude(&bin, &format!("{turns}\nexit 0"));
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    let mut turn = async |id: i64| {
+        let (_, updates) = prompt(&mut child, &mut reader, id, &session).await;
+        describe_updates(&updates)
+            .into_iter()
+            .filter(|update| {
+                !update.starts_with("session_info_update") && !update.starts_with("user_message")
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        turn(3).await,
+        [
+            "state_update: running",
+            "tool_call_update: cron-1 CronCreate pending",
+            "state_update: running [cron-1]",
+            "tool_call_update: cron-1 pending [ok]",
+            "state_update: idle end_turn [cron-1]",
+        ]
+    );
+    assert_eq!(
+        turn(4).await,
+        [
+            "state_update: running [cron-1]",
+            "tool_call_update: cron-2 CronDelete pending",
+            "tool_call_update: cron-1 completed",
+            "state_update: running",
+            "tool_call_update: cron-2 completed [ok]",
+            "state_update: idle end_turn",
+        ]
+    );
+    assert_eq!(
+        turn(5).await,
+        [
+            "state_update: running",
+            "tool_call_update: cron-3 CronCreate pending",
+            "state_update: running [cron-3]",
+            "tool_call_update: cron-3 pending [ok]",
+            "tool_call_update: cron-3 completed",
+            "state_update: idle end_turn",
+        ]
+    );
+    assert_eq!(
+        turn(6).await,
+        [
+            "state_update: running",
+            "tool_call_update: wake-1 ScheduleWakeup pending",
+            "state_update: running [wake-1]",
+            "tool_call_update: wake-1 pending [ok]",
+            "state_update: idle end_turn [wake-1]",
+        ]
+    );
+    assert_eq!(
+        turn(7).await,
+        [
+            "state_update: running [wake-1]",
+            "tool_call_update: wake-2 ScheduleWakeup pending",
+            "tool_call_update: wake-1 completed",
+            "state_update: running",
+            "tool_call_update: wake-2 completed [ok]",
+            "state_update: idle end_turn",
+        ]
+    );
+    assert_eq!(
+        turn(8).await,
+        [
+            "state_update: running",
+            "tool_call_update: cron-4 CronCreate pending",
+            "state_update: running [_claude_schedule:cron-4]",
+            "tool_call_update: cron-4 completed [ok]",
+            "state_update: idle end_turn [_claude_schedule:cron-4]",
+        ]
+    );
+    // Claude exits, and nothing is left listed.
+    let mut exit = Vec::new();
+    while !exit.last().is_some_and(|value| is_state(value, "idle")) {
+        exit.push(receive(&mut reader).await);
+    }
+    assert_eq!(describe_updates(&exit), ["state_update: idle"]);
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_failed_stop_leaves_the_wakeup_listed() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    let far = 99_999_999_999_999_u64;
+    let failed = format!(
+        r#"
+next_prompt
+state running
+printf '%s\n' '{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"wake-2","name":"ScheduleWakeup","input":{{"stop":true}}}}]}}}}'
+printf '%s\n' '{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"wake-2","is_error":true,"content":"failed"}}]}}}}'
+printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
+state idle
+next_message
+"#
+    );
+    let turns = [
+        scheduling_turn(
+            "wake-1",
+            "ScheduleWakeup",
+            "{}",
+            &format!(r#""tool_use_result":{{"scheduledFor":{far}}},"#),
+        ),
+        failed,
+    ]
+    .concat();
+    fake_claude(&bin, &turns);
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    let (idle, _) = prompt(&mut child, &mut reader, 3, &session).await;
+    assert_eq!(background_items(&idle["background"]), ["wake-1"]);
+    let (idle, _) = prompt(&mut child, &mut reader, 4, &session).await;
+    assert_eq!(
+        background_items(&idle["background"]),
+        ["wake-1", "_claude_schedule:wake-2"]
+    );
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_resume_lists_the_scheduled_jobs_claude_restores() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    let entry = |kind: &str, body: Value| {
+        let mut entry = json!({
+            "cwd": project, "timestamp": chrono::Utc::now().to_rfc3339(), "type": kind, "message": {"content": body},
+        });
+        entry["isSidechain"] = json!(false);
+        entry
+    };
+    let far = 99_999_999_999_999_u64;
+    let mut entries =
+        vec![json!({"cwd": project, "type": "user", "message": {"content": "Schedule"}})];
+    for (id, output) in [
+        (
+            "recurring",
+            json!({"id": "keep", "recurring": true, "nextFireAt": far}),
+        ),
+        (
+            "due",
+            json!({"id": "due", "recurring": false, "nextFireAt": 1}),
+        ),
+        (
+            "later",
+            json!({"id": "later", "recurring": false, "nextFireAt": far}),
+        ),
+    ] {
+        entries.push(entry(
+            "assistant",
+            json!([{"type": "tool_use", "id": id, "name": "CronCreate", "input": {}}]),
+        ));
+        let mut result = entry(
+            "user",
+            json!([{"type": "tool_result", "tool_use_id": id, "content": "ok"}]),
+        );
+        result["toolUseResult"] = output;
+        entries.push(result);
+    }
+    entries.push(entry(
+        "assistant",
+        json!([{"type": "tool_use", "id": "w", "name": "ScheduleWakeup", "input": {}}]),
+    ));
+    let mut result = entry(
+        "user",
+        json!([{"type": "tool_result", "tool_use_id": "w", "content": "ok"}]),
+    );
+    result["toolUseResult"] = json!({"scheduledFor": far});
+    entries.push(result);
+    let transcripts = temp.path().join("empty-claude/projects/sample");
+    fs::create_dir_all(&transcripts).unwrap();
+    write_lines(&transcripts.join(format!("{HISTORY_ID}.jsonl")), &entries);
+    fake_claude(
+        &bin,
+        &format!(
+            r#"
+next_prompt
+state running
+printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
+state idle
+next_message
+"#
+        ),
+    );
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    send(&mut child, json!({"jsonrpc":"2.0","id":2,"method":"session/resume","params":{"sessionId":HISTORY_ID,"cwd":project,"mcpServers":[]}})).await;
+    response(&mut reader, 2).await;
+    let (idle, _) = prompt(&mut child, &mut reader, 3, &json!(HISTORY_ID)).await;
+    assert_eq!(
+        background_items(&idle["background"]),
+        ["_claude_schedule:keep", "_claude_schedule:later"]
+    );
+    child.kill().await.unwrap();
 }

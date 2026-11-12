@@ -154,6 +154,38 @@ Claude error, with the error's message as its details. A `claude` that exits
 during a turn ends it with `error`, carrying `claude`'s stderr, or with
 `cancelled` when the session is closing.
 
+Every `state_update` carries `background`, the work that keeps the session
+busy between turns, and `[]` when nothing runs. A new session reports `idle`
+with `[]` right after `session/new` answers. The list holds each task of
+Claude's live background set, which `claude` reports in
+`background_tasks_changed`, and each scheduled prompt the bridge infers from
+`CronCreate`, `CronDelete` and `ScheduleWakeup` calls. Work whose tool call
+the client has is listed as that `tool_call`; the rest is a custom item,
+`_claude_task` with a `taskId` or `_claude_schedule` with an `id`. The tool
+call of listed work stays `in_progress` (`pending` for a schedule) after its
+result, and gets its final status, from the task's `task_notification` or when
+its schedule ends, before the list drops it. A turn's end does not fail it;
+`claude` exiting does. `claude` runs with `CLAUDE_CODE_BG_TASKS_REPORT_RUNNING=0`,
+so it reports `idle` while background tasks run and `running` for the turn
+they start when they report back.
+
+Schedules last as long as they may fire, so a session with one stays listed:
+
+- A recurring `CronCreate` job lasts until a `CronDelete` names it, or until
+  a turn that started seven days after its creation ends.
+- A one-shot job, and a `ScheduleWakeup` wakeup, last until a turn that
+  started at or after its fire time ends. A wakeup that ends in a turn
+  without a `ScheduleWakeup` call leaves an implied fallback wakeup 20 minutes
+  after the turn, which ends the same way and adds no further one.
+  `ScheduleWakeup` with `stop` drops every wakeup.
+- A scheduling call whose result the bridge cannot read lasts until `claude`
+  exits.
+- After `--resume`, the bridge reads the transcript and lists the recurring
+  jobs younger than seven days and the one-shot jobs not yet due, which
+  Claude restores.
+- Durable jobs that another session saved to `.claude/scheduled_tasks.json`
+  in the same folder are not listed.
+
 Clients can stop a turn with `session/cancel`, including immediately after
 sending a prompt or while a tool permission request is open. The bridge
 interrupts Claude, which stops the turn and the tools it is running, withdraws

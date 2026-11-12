@@ -66,13 +66,16 @@ impl History {
     /// order. The transcript's other entries are Claude's bookkeeping, and
     /// its sidechain entries belong to subagents.
     pub fn messages(&self, id: &str, cwd: &Path) -> Vec<Value> {
+        let mut entries = self.entries(id, cwd);
+        entries.retain(|entry| entry["isSidechain"] != true);
+        entries
+    }
+
+    /// The `user` and `assistant` entries of a session's transcript, in
+    /// order, with the sidechain entries of subagents.
+    pub fn entries(&self, id: &str, cwd: &Path) -> Vec<Value> {
         self.transcript(id, cwd)
-            .map(|path| {
-                messages(&path)
-                    .into_iter()
-                    .filter(|entry| entry["isSidechain"] != true)
-                    .collect()
-            })
+            .map(|path| messages(&path))
             .unwrap_or_default()
     }
 

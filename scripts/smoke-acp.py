@@ -7,6 +7,7 @@ import os
 import select
 import shutil
 import signal
+import socket
 import subprocess
 import tempfile
 import time
@@ -157,9 +158,63 @@ class Attachment:
         self.process.stdout.close()
 
 
+class Watch:
+    """A daemon watch on the socket, read without attaching to any session.
+    A watch does not count as a viewer."""
+
+    def __init__(self, path, session, timeout):
+        self.session = session
+        self.timeout = timeout
+        self.socket = socket.socket(socket.AF_UNIX)
+        self.socket.connect(str(path))
+        self.buffer = b""
+        self.send({"id": 1, "method": "hello", "params": {"protocol_version": 1}})
+        self.send({"id": 2, "method": "watch"})
+        for id in (1, 2):
+            reply = self.read(time.monotonic() + timeout)
+            check(reply.get("id") == id and "result" in reply, f"Watch failed: {reply}")
+
+    def send(self, message):
+        self.socket.sendall(json.dumps(message).encode() + b"\n")
+
+    def read(self, deadline):
+        while b"\n" not in self.buffer:
+            remaining = deadline - time.monotonic()
+            check(remaining > 0, "Timed out waiting for the session's state to change")
+            ready, _, _ = select.select([self.socket], [], [], remaining)
+            check(ready, "Timed out waiting for the session's state to change")
+            data = self.socket.recv(65536)
+            check(data, "The daemon closed the watch")
+            self.buffer += data
+        line, self.buffer = self.buffer.split(b"\n", 1)
+        return json.loads(line)
+
+    def until(self, state):
+        """Waits for a listing that shows the session in `state` and returns
+        the states listed on the way."""
+        deadline = time.monotonic() + self.timeout
+        states = []
+        while True:
+            message = self.read(deadline)
+            if "sessions" not in message:
+                continue
+            current = next(
+                (s["state"] for s in message["sessions"] if s["id"] == self.session),
+                None,
+            )
+            check(current is not None, "The session left the listing")
+            states.append(current)
+            if current == state:
+                return states
+
+    def close(self):
+        self.socket.close()
+
+
 class SmokeRun:
-    def __init__(self, args, directory, binaries, events, stderr):
+    def __init__(self, args, directory, binaries, events, stderr, daemon_args=()):
         self.args = args
+        self.daemon_args = list(daemon_args)
         self.directory = directory
         self.project = directory / "project"
         self.project.mkdir()
@@ -249,7 +304,12 @@ class SmokeRun:
 
     def start_daemon(self):
         self.daemon = subprocess.Popen(
-            [str(self.binaries / "oxd"), "--socket", str(self.socket)],
+            [
+                str(self.binaries / "oxd"),
+                "--socket",
+                str(self.socket),
+                *self.daemon_args,
+            ],
             stdout=subprocess.PIPE,
             stderr=self.daemon_log,
         )
@@ -284,6 +344,7 @@ class SmokeRun:
         self.check_cancellation()
         self.verify_model()
         self.check_load_after_restart()
+        self.check_parking()
         self.report("all_event_sequences_contiguous", event_count=self.seq)
 
         self.disconnect()
@@ -466,20 +527,51 @@ class SmokeRun:
             events[-1]["kind"]["data"] == turn_result("end_turn"),
             f"Unexpected turn result: {events[-1]}",
         )
+
+        def tool_updates(events, status):
+            return [
+                e["kind"]["data"]
+                for e in events
+                if kind(e) == "update"
+                and e["kind"]["data"]["sessionUpdate"] == "tool_call_update"
+                and e["kind"]["data"].get("status") == status
+            ]
+
+        # The Bash call stays in progress while its command runs.
+        running = [u for u in tool_updates(events, "in_progress") if u.get("content")]
+        check(running, "The background Bash tool call was not in progress")
+        tool_call = running[-1]["toolCallId"]
+        check(
+            not any(
+                u["toolCallId"] == tool_call for u in tool_updates(events, "completed")
+            ),
+            "The background Bash tool call completed before its command ended",
+        )
         output = [
             block["content"]["text"]
-            for e in events
-            if kind(e) == "update"
-            and e["kind"]["data"]["sessionUpdate"] == "tool_call_update"
-            and e["kind"]["data"].get("status") == "completed"
-            for block in e["kind"]["data"].get("content") or []
+            for block in running[-1]["content"]
             if block.get("content", {}).get("type") == "text"
         ]
         check(output, "The Bash tool call reported no output")
         woke = self.until(lambda e: kind(e) == "turn_ended")
+        started = next(
+            (i for i, e in enumerate(woke) if kind(e) == "turn_started"), None
+        )
         check(
-            any(kind(e) == "turn_started" for e in woke),
+            started is not None,
             f"Claude's own turn did not start with turn_started: {woke}",
+        )
+        completed = [
+            i
+            for i, e in enumerate(woke)
+            if kind(e) == "update"
+            and e["kind"]["data"]["sessionUpdate"] == "tool_call_update"
+            and e["kind"]["data"]["toolCallId"] == tool_call
+            and e["kind"]["data"].get("status") == "completed"
+        ]
+        check(
+            completed and completed[0] < started,
+            "The Bash tool call did not complete before Claude's own turn",
         )
         check(
             woke[-1]["kind"]["data"] == turn_result("end_turn"),
@@ -492,6 +584,88 @@ class SmokeRun:
             tool_output=output[-1].strip(),
             response=text(woke).strip(),
         )
+
+    def check_parking(self):
+        """A session with a background command is not parked while it runs,
+        and is parked once Claude has handled it and the session has been idle
+        and unviewed for the delay, in a daemon of its own with a short
+        delay."""
+        delay = 10
+        directory = self.directory / "parking"
+        directory.mkdir()
+        run = SmokeRun(
+            self.args,
+            directory,
+            self.binaries,
+            self.events,
+            self.stderr,
+            ["--park-after-ms", str(delay * 1000)],
+        )
+        run.daemon_log = self.daemon_log
+        watch = None
+        try:
+            run.start_daemon()
+            workspace = run.ctl("workspace", "add", str(run.project))
+            run.session = run.ctl("new", "--workspace", workspace, "--", *run.agent)
+            run.ctl("config", run.session, "model", self.args.model)
+            run.remember_agents()
+            token = f"parked-{directory.parent.name}"
+            run.attach(0)
+            run.ctl(
+                "prompt",
+                run.session,
+                "Use the Bash tool with run_in_background set to true to run "
+                f"`sleep {delay * 2 + 5}; echo finished`. Then reply with only the "
+                "word started and end your turn without waiting for the command. "
+                "When you are later told that the background command finished, "
+                f"reply with only {token}.",
+            )
+            while True:
+                events = run.until(
+                    lambda e: kind(e) in ("permission_requested", "turn_ended")
+                )
+                if kind(events[-1]) == "turn_ended":
+                    break
+                permission = events[-1]["kind"]["data"]
+                option = next(
+                    o["optionId"]
+                    for o in permission["options"]
+                    if o["kind"] == "allow_once"
+                )
+                run.ctl("permit", run.session, permission["request_id"], option)
+            # Following the session through the watch leaves it unviewed.
+            run.disconnect()
+            watch = Watch(run.socket, run.session, self.args.timeout)
+            before_wake = watch.until("running")
+            check(
+                "exited" not in before_wake,
+                f"The session was parked while its command ran: {before_wake}",
+            )
+            watch.until("exited")
+            run.attach(0)
+            seen = []
+            deadline = time.monotonic() + self.args.timeout
+            while True:
+                event = run.attachment.read(deadline)
+                seen.append(kind(event))
+                if kind(event) == "agent_parked":
+                    break
+            check(
+                "turn_started" in seen,
+                f"Claude's own turn is not in the history: {seen}",
+            )
+            check(
+                seen.index("turn_started") < seen.index("agent_parked"),
+                f"The session was parked before Claude's own turn: {seen}",
+            )
+            self.report(
+                "idle_session_with_background_work_parks_after_it",
+                park_after_seconds=delay,
+            )
+        finally:
+            if watch is not None:
+                watch.close()
+            run.cleanup()
 
     def check_cancellation(self):
         self.ctl(

@@ -170,6 +170,8 @@ async fn forward(
     mut seq: u64,
     outgoing: mpsc::Sender<ServerMessage>,
 ) {
+    // A session with a subscription is not parked.
+    let _viewer = session.view();
     loop {
         for event in session.events_after(seq).await {
             seq = event.seq;

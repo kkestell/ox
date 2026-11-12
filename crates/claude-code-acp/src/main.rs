@@ -1,3 +1,4 @@
+mod background;
 mod bridge;
 mod config;
 mod content;
@@ -30,8 +31,20 @@ async fn main() -> Result<()> {
                 let bridge = bridge.clone();
                 async move |request: acp::NewSessionRequest,
                             responder: Responder<acp::NewSessionResponse>,
-                            _connection: ConnectionTo<Client>| {
-                    respond(responder, bridge.new_session(request))
+                            connection: ConnectionTo<Client>| {
+                    let response = bridge.new_session(request);
+                    // A new session is idle with nothing running, which it
+                    // reports once the client knows its ID.
+                    let id = response.as_ref().ok().map(|new| new.session_id.to_string());
+                    respond(responder, response)?;
+                    if let Some(id) = id {
+                        updates::notify(
+                            &connection,
+                            &id,
+                            acp::SessionUpdate::StateUpdate(updates::idle_state()),
+                        );
+                    }
+                    Ok(())
                 }
             },
             agent_client_protocol::on_receive_request!(),

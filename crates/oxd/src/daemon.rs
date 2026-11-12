@@ -13,6 +13,7 @@ use tokio::sync::{OwnedMutexGuard, watch};
 
 use crate::branches;
 use crate::session::Session;
+use crate::state::Change;
 use crate::store::{SavedSession, SavedWorkspace, SavedWorktree, Store};
 use crate::worktree::{self, Git, WorktreePlan};
 
@@ -32,6 +33,9 @@ pub struct Daemon {
     store: Arc<Store>,
     /// The directory that holds sessions' worktrees.
     worktrees_dir: PathBuf,
+    /// How long a session stays idle, with no background work, and unviewed
+    /// before its agent is parked.
+    park_after: Duration,
     /// Sent when a workspace or session is added or removed, a client
     /// connects or disconnects, or a session's `SessionInfo` changes.
     changed: watch::Sender<()>,
@@ -54,11 +58,17 @@ impl Drop for ClientGuard {
 
 impl Daemon {
     /// A daemon with the workspaces and sessions `store` holds, which adds
-    /// sessions' worktrees in `worktrees_dir`. Each saved session is
+    /// sessions' worktrees in `worktrees_dir`, and parks the agent of a session
+    /// that has been idle, with no background work, and unviewed for
+    /// `park_after`. Each saved session is
     /// `exited`, with no agent, until it loads. A saved session that never
     /// started has nothing to load. One without a worktree is deleted; one
     /// with a worktree waits, `exited`, for `clean_up`.
-    pub fn new(store: Store, worktrees_dir: PathBuf) -> rusqlite::Result<Self> {
+    pub fn new(
+        store: Store,
+        worktrees_dir: PathBuf,
+        park_after: Duration,
+    ) -> rusqlite::Result<Self> {
         let store = Arc::new(store);
         let changed = watch::Sender::new(());
         let mut sessions = HashMap::new();
@@ -70,7 +80,7 @@ impl Daemon {
                 store.remove_session(&saved.id)?;
                 continue;
             }
-            let session = Session::restore(store.clone(), changed.clone(), saved);
+            let session = Session::restore(store.clone(), changed.clone(), park_after, saved);
             if !started {
                 let guard = session.hold_lifecycle();
                 unstarted.push((session.clone(), guard));
@@ -87,6 +97,7 @@ impl Daemon {
             registry: Mutex::new(registry),
             store,
             worktrees_dir,
+            park_after,
             changed,
             fetches: Arc::default(),
             unstarted: Mutex::new(unstarted),
@@ -409,6 +420,7 @@ impl Daemon {
             let session = Session::spawn(
                 self.store.clone(),
                 self.changed.clone(),
+                self.park_after,
                 saved,
                 env,
                 worktree.take(),
@@ -516,7 +528,7 @@ impl Daemon {
                     return Err(worktree::unsaved_work(&unsaved));
                 }
             }
-            session.stop().await;
+            session.stop(Change::Exited(None)).await;
             worktree::remove_worktree(&git, &worktree, discard).await?;
             kept_branch = worktree::apply_branch_rule(&git, &worktree).await?;
         }

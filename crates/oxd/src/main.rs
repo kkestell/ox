@@ -1,6 +1,6 @@
 //! oxd: a per-user daemon that owns ACP agent sessions on behalf of Ox UIs.
 //!
-//! Usage: `oxd [--socket PATH] [--idle-exit-ms MS]`
+//! Usage: `oxd [--socket PATH] [--idle-exit-ms MS] [--park-after-ms MS]`
 //!
 //! Workspaces and sessions are saved in `<socket>.db`, and sessions'
 //! worktrees are added in `worktrees` beside the socket.
@@ -33,6 +33,10 @@ use crate::store::Store;
 
 const DEFAULT_IDLE_EXIT: Duration = Duration::from_secs(5);
 
+/// How long a session stays idle, with no background work, and unviewed
+/// before its agent is parked.
+const DEFAULT_PARK_AFTER: Duration = Duration::from_mins(15);
+
 /// Pause after a failed `accept`. Accepting fails while the process or the
 /// system is out of file descriptors, and descriptors other processes free
 /// produce no event here.
@@ -41,11 +45,13 @@ const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
 struct Args {
     socket: PathBuf,
     idle_exit: Duration,
+    park_after: Duration,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut socket = None;
     let mut idle_exit = DEFAULT_IDLE_EXIT;
+    let mut park_after = DEFAULT_PARK_AFTER;
     let mut args = std::env::args_os().skip(1);
     while let Some(arg) = args.next() {
         let mut value = || {
@@ -62,12 +68,21 @@ fn parse_args() -> Result<Args, String> {
                     .map(Duration::from_millis)
                     .ok_or_else(|| format!("invalid --idle-exit-ms: {}", value.display()))?;
             }
+            Some("--park-after-ms") => {
+                let value = value()?;
+                park_after = value
+                    .to_str()
+                    .and_then(|value| value.parse().ok())
+                    .map(Duration::from_millis)
+                    .ok_or_else(|| format!("invalid --park-after-ms: {}", value.display()))?;
+            }
             _ => return Err(format!("unexpected argument: {}", arg.display())),
         }
     }
     Ok(Args {
         socket: socket.unwrap_or_else(ox_protocol::default_socket_path),
         idle_exit,
+        park_after,
     })
 }
 
@@ -117,7 +132,7 @@ async fn run(args: Args) -> io::Result<()> {
     // Worktrees sit beside the socket too. Git runs them from the
     // repository, so the path is absolute.
     let worktrees = std::path::absolute(args.socket.with_file_name("worktrees"))?;
-    let daemon = Daemon::new(store, worktrees)
+    let daemon = Daemon::new(store, worktrees, args.park_after)
         .map_err(|error| io::Error::other(format!("reading {}: {error}", database.display())))?;
     let daemon = Arc::new(daemon);
 
