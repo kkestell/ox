@@ -4,6 +4,7 @@ import {
   agentText,
   commit,
   composer,
+  deleteSessions,
   git,
   gitWorkspace,
   send,
@@ -152,7 +153,8 @@ describe("An archived session", () => {
     await entry(cwd).$('button[aria-label="Archive Session"]').click();
     await openArchived(cwd);
 
-    await entry(cwd).$('button[aria-label="Delete Session"]').click();
+    await expect(entry(cwd)).toBeExisting();
+    await deleteSessions(cwd);
     await expect(entry(cwd)).not.toBeExisting();
     await expect(archivedToggle(cwd)).not.toBeExisting();
   });

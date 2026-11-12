@@ -211,6 +211,8 @@ body {
   display: flex;
   flex-direction: column;
   height: 100%;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .session-list {
@@ -237,6 +239,7 @@ body {
 }
 
 .workspace-header h2 {
+  flex: 1;
   min-width: 0;
   margin: 0 calc(var(--spacing) * 2) 0 0;
   overflow: hidden;
@@ -246,10 +249,6 @@ body {
   text-transform: uppercase;
   white-space: nowrap;
   color: var(--muted-foreground);
-}
-
-.new-session {
-  margin-left: auto;
 }
 
 /* A popover menu, placed beside the top of the button that opens it. */
@@ -553,12 +552,7 @@ body {
 /* While the row actions show, the title fades out under them, over whatever
    background the row has. */
 .session:where(:hover, :focus-within) .title {
-  --covered: calc(
-    var(--row-action-inset) +
-    2 *
-    var(--icon-button-size) -
-    var(--sidebar-row-padding)
-  );
+  --covered: calc(var(--row-action-inset) + var(--icon-button-size) - var(--sidebar-row-padding));
   mask-image: linear-gradient(
     to left,
     transparent var(--covered),

@@ -1,15 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
+import { Menu } from "@tauri-apps/api/menu";
 import { open } from "@tauri-apps/plugin-dialog";
-import {
-  Archive,
-  ArchiveRestore,
-  ChevronDown,
-  ChevronRight,
-  FolderPlus,
-  Plus,
-  X,
-} from "lucide-react";
-import { useState } from "react";
+import { Archive, ArchiveRestore, ChevronDown, ChevronRight, FolderPlus, Plus } from "lucide-react";
+import { type MouseEvent, useState } from "react";
 import { Dialog } from "./Dialog";
 import { NewBranchDialog } from "./NewBranchDialog";
 import type {
@@ -33,6 +26,16 @@ const stateLabels: Record<SessionState, string> = {
   awaiting_permission: "Awaiting permission",
   exited: "Exited",
 };
+
+/** Opens a native context menu of `items` at the pointer. */
+async function contextMenu(
+  event: MouseEvent,
+  items: { text: string; enabled: boolean; action: () => void }[],
+) {
+  event.preventDefault();
+  const menu = await Menu.new({ items });
+  await menu.popup();
+}
 
 /** The last component of a workspace's path. */
 function directoryName(path: string) {
@@ -145,7 +148,19 @@ export function SessionList({
   const sessionRow = (session: SessionInfo) => {
     const state = stateLabels[session.state];
     return (
-      <li key={session.id} className="session">
+      <li
+        key={session.id}
+        className="session"
+        onContextMenu={(event) =>
+          contextMenu(event, [
+            {
+              text: "Delete Session",
+              enabled: !busy.has(session.id),
+              action: () => deleteSession(session.id, false),
+            },
+          ])
+        }
+      >
         <button
           type="button"
           className="select"
@@ -180,16 +195,6 @@ export function SessionList({
               <Archive />
             </button>
           )}
-          <button
-            type="button"
-            className="icon-button"
-            title="Delete Session"
-            aria-label="Delete Session"
-            disabled={busy.has(session.id)}
-            onClick={() => deleteSession(session.id, false)}
-          >
-            <X />
-          </button>
         </div>
       </li>
     );
@@ -223,12 +228,24 @@ export function SessionList({
               aria-labelledby={`workspace-${workspace.id}`}
             >
               <div className="workspace-header">
-                <h2 id={`workspace-${workspace.id}`} title={workspace.path}>
+                <h2
+                  id={`workspace-${workspace.id}`}
+                  title={workspace.path}
+                  onContextMenu={(event) =>
+                    contextMenu(event, [
+                      {
+                        text: "Remove Workspace",
+                        enabled: workspaceSessions.length === 0,
+                        action: () => removeWorkspace(workspace.id),
+                      },
+                    ])
+                  }
+                >
                   {directoryName(workspace.path)}
                 </h2>
                 <button
                   type="button"
-                  className="icon-button new-session"
+                  className="icon-button"
                   title="New Session"
                   aria-label="New Session"
                   popoverTarget={`new-session-${workspace.id}`}
@@ -293,20 +310,6 @@ export function SessionList({
                     </>
                   )}
                 </div>
-                <button
-                  type="button"
-                  className="icon-button"
-                  title={
-                    workspaceSessions.length > 0
-                      ? "Delete the workspace's sessions to remove it"
-                      : "Remove Workspace"
-                  }
-                  aria-label="Remove Workspace"
-                  disabled={workspaceSessions.length > 0}
-                  onClick={() => removeWorkspace(workspace.id)}
-                >
-                  <X />
-                </button>
               </div>
               <ul className="sessions">
                 {active.map(sessionRow)}

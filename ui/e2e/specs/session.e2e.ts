@@ -2,6 +2,7 @@ import {
   agentText,
   choose,
   composer,
+  deleteSessions,
   openSession,
   send,
   sendButton,
@@ -117,7 +118,8 @@ describe("A session", () => {
   });
 
   it("is removed from the list when deleted", async () => {
-    await sessionEntry(cwd).$('button[aria-label="Delete Session"]').click();
+    await expect(sessionEntry(cwd)).toBeExisting();
+    await deleteSessions(cwd);
     await expect(sessionEntry(cwd)).not.toBeExisting();
   });
 });

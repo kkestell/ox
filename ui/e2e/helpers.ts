@@ -87,6 +87,28 @@ async function addWorkspace(cwd: string): Promise<string> {
   return (await oxctl("workspace", "add", cwd)).trim();
 }
 
+/** Deletes the sessions of the workspace in `cwd` with `oxctl`. */
+export async function deleteSessions(cwd: string) {
+  const workspace = await workspaceId(cwd);
+  for (const line of lines(await oxctl("ls"))) {
+    const [id, sessionWorkspace] = line.split("\t");
+    if (sessionWorkspace === workspace) await oxctl("delete", "--discard", id!);
+  }
+}
+
+/** Removes the workspace in `cwd` with `oxctl`. */
+export async function removeWorkspace(cwd: string) {
+  await oxctl("workspace", "rm", await workspaceId(cwd));
+}
+
+async function workspaceId(cwd: string): Promise<string> {
+  for (const line of lines(await oxctl("workspace", "ls"))) {
+    const [id, path] = line.split("\t");
+    if (path === cwd) return id!;
+  }
+  throw new Error(`no workspace in ${cwd}`);
+}
+
 /** Deletes every session oxd has and removes every workspace. */
 export async function resetDaemon() {
   for (const line of lines(await oxctl("ls"))) {

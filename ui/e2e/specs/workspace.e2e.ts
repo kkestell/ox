@@ -1,4 +1,4 @@
-import { sessionEntry, startSession, workspaceGroup } from "../helpers.ts";
+import { deleteSessions, removeWorkspace, startSession, workspaceGroup } from "../helpers.ts";
 
 describe("A workspace", () => {
   it("groups its sessions under the name of its folder", async () => {
@@ -9,16 +9,14 @@ describe("A workspace", () => {
     await expect(group.$(`button.select[title="${cwd}"]`)).toBeDisplayed();
   });
 
-  it("is removed once its sessions are deleted", async () => {
+  it("disappears when removed", async () => {
     const cwd = await startSession();
     const group = workspaceGroup(cwd);
-    const remove = group.$('button[aria-label="Remove Workspace"]');
-    await expect(remove).toBeDisabled();
+    await expect(group).toBeExisting();
 
-    await sessionEntry(cwd).$('button[aria-label="Delete Session"]').click();
-    await expect(sessionEntry(cwd)).not.toBeExisting();
-    await expect(remove).toBeEnabled();
-    await remove.click();
+    await deleteSessions(cwd);
+    await expect(group.$$("li.session")).toBeElementsArrayOfSize(0);
+    await removeWorkspace(cwd);
     await expect(group).not.toBeExisting();
   });
 });

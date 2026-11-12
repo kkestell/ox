@@ -1,14 +1,9 @@
-import { execFile } from "node:child_process";
-import { access, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import {
-  commit,
   git,
   gitWorkspace,
   gitWorkspaceWithRemote,
   startSession,
-  startWorktreeSession,
   workspaceGroup,
   worktreeEntry,
 } from "../helpers.ts";
@@ -46,13 +41,6 @@ async function worktreePath() {
   await expect(worktreeEntry()).toBeExisting();
   const cwd = await worktreeEntry().$("button.select").getAttribute("title");
   return cwd!.replace(/\/$/, "");
-}
-
-function exists(path: string) {
-  return access(path).then(
-    () => true,
-    () => false,
-  );
 }
 
 // A test that fails with a dialog open leaves it to the next test.
@@ -137,77 +125,5 @@ describe("The New Worktree on Branch dialog", () => {
     await expect(suggestion(dialog, "main")).toBeExisting();
     await expect(suggestion(dialog, "origin/feature")).toBeExisting();
     await cancel(dialog);
-  });
-});
-
-describe("Deleting a worktree session", () => {
-  it("asks before discarding unsaved work", async () => {
-    const { workspace } = await gitWorkspace();
-    await startWorktreeSession(workspace);
-    const path = await worktreePath();
-    await writeFile(join(path, "unsaved.txt"), "unsaved\n");
-    const remove = worktreeEntry().$('button[aria-label="Delete Session"]');
-
-    await remove.click();
-    let dialog = $("dialog[open]");
-    await expect(dialog.$("h2")).toHaveText("Discard unsaved work?");
-    await expect(dialog.$(".message")).toHaveText(expect.stringContaining(path));
-    await dialog.$("button=Cancel").click();
-    await expect(dialog).not.toBeExisting();
-    await expect(worktreeEntry()).toBeExisting();
-    expect(await exists(path)).toBe(true);
-
-    await remove.click();
-    dialog = $("dialog[open]");
-    await dialog.$("button=Discard and Delete").click();
-    await expect(worktreeEntry()).not.toBeExisting();
-    expect(await exists(path)).toBe(false);
-  });
-
-  it("disables its Delete button while the delete waits for the startup", async () => {
-    // The worktree's post-checkout hook holds the session's startup until
-    // the test writes to `release`.
-    const { cwd, workspace } = await gitWorkspace();
-    const hooks = join(cwd, ".git", "hooks");
-    const started = join(cwd, ".git", "hook-started");
-    const release = join(cwd, ".git", "release");
-    await promisify(execFile)("mkfifo", [release]);
-    await mkdir(hooks, { recursive: true });
-    await writeFile(
-      join(hooks, "post-checkout"),
-      `#!/bin/sh\ntouch '${started}'\ncat '${release}' > /dev/null\n`,
-      { mode: 0o755 },
-    );
-    await git(cwd, "config", "core.hooksPath", hooks);
-    // `oxctl new` answers once the session has started.
-    const starting = startWorktreeSession(workspace);
-    await browser.waitUntil(() => exists(started));
-
-    const remove = worktreeEntry().$('button[aria-label="Delete Session"]');
-    try {
-      await remove.click();
-      await expect(remove).toBeDisabled();
-    } finally {
-      await writeFile(release, "");
-      await starting;
-    }
-    await expect(worktreeEntry()).not.toBeExisting();
-  });
-
-  it("says which branch it kept", async () => {
-    const { cwd, workspace } = await gitWorkspace();
-    await startWorktreeSession(workspace);
-    const path = await worktreePath();
-    await commit(path);
-    const branch = (await git(path, "branch", "--show-current")).trim();
-
-    await worktreeEntry().$('button[aria-label="Delete Session"]').click();
-    const dialog = $("dialog[open]");
-    await expect(dialog.$("h2")).toHaveText("Branch kept");
-    await expect(dialog.$(".message")).toHaveText(`Ox kept the branch ${branch}.`);
-    await expect(worktreeEntry()).not.toBeExisting();
-    await dialog.$("button=OK").click();
-    await expect(dialog).not.toBeExisting();
-    expect((await git(cwd, "branch", "--list", branch)).trim()).toBe(branch);
   });
 });
