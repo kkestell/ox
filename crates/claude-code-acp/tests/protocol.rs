@@ -1248,6 +1248,62 @@ async fn a_corrupt_store_is_set_aside() {
 }
 
 #[tokio::test]
+async fn an_unusable_store_fails_session_requests() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    fake_claude(&bin, "exit 0");
+    write_transcript(temp.path(), &project, HISTORY_ID);
+    let store = temp.path().join("store");
+    fs::write(&store, "").unwrap();
+    let (mut child, mut reader) = start(&bin, &store);
+    initialize(&mut child, &mut reader).await;
+    let requests = [
+        json!({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":project,"mcpServers":[]}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"session/list","params":{"cwd":project}}),
+        json!({"jsonrpc":"2.0","id":4,"method":"session/resume","params":{
+            "sessionId":HISTORY_ID,"cwd":project,"mcpServers":[]
+        }}),
+    ];
+    for request in requests {
+        let id = request["id"].as_i64().unwrap();
+        let method = request["method"].clone();
+        send(&mut child, request).await;
+        let (answer, _) = response(&mut reader, id).await;
+        assert_eq!(answer["error"]["code"], -32603, "{method}: {answer}");
+    }
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_registry_reads_and_writes_fail_session_new() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    fake_claude(&bin, "exit 0");
+    // A registry that is a directory cannot be read.
+    let unreadable = temp.path().join("unreadable");
+    fs::create_dir_all(unreadable.join("acp-sessions.json")).unwrap();
+    // A read-only store can be locked and read, but not written.
+    let read_only = temp.path().join("read-only");
+    fs::create_dir_all(&read_only).unwrap();
+    fs::write(read_only.join("acp-sessions.lock"), "").unwrap();
+    fs::write(read_only.join("acp-sessions.json"), "{}").unwrap();
+    fs::set_permissions(&read_only, fs::Permissions::from_mode(0o555)).unwrap();
+    let mut answers = Vec::new();
+    for store in [&unreadable, &read_only] {
+        let (mut child, mut reader) = start(&bin, store);
+        initialize(&mut child, &mut reader).await;
+        send(&mut child, json!({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":project,"mcpServers":[]}})).await;
+        let (answer, _) = response(&mut reader, 2).await;
+        child.kill().await.unwrap();
+        answers.push((store.display().to_string(), answer));
+    }
+    fs::set_permissions(&read_only, fs::Permissions::from_mode(0o755)).unwrap();
+    for (store, answer) in answers {
+        assert_eq!(answer["error"]["code"], -32603, "{store}: {answer}");
+    }
+}
+
+#[tokio::test]
 async fn unreadable_store_entries_survive_updates() {
     let temp = tempfile::tempdir().unwrap();
     let (bin, project) = dirs(temp.path());

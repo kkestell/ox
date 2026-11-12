@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     future::Future,
+    io,
     sync::{Arc, Mutex},
 };
 
@@ -85,7 +86,9 @@ impl Bridge {
         let servers = parse_mcp(request.mcp_servers)?;
         let id = Uuid::new_v4().simple().to_string();
         let session = Session::new(cwd, servers);
-        self.store.create(id.clone(), &session);
+        self.store
+            .create(id.clone(), &session)
+            .map_err(store_error)?;
         self.active.lock().unwrap().insert(id.clone());
         Ok(acp::NewSessionResponse::new(id).config_options(Self::options(&session)))
     }
@@ -133,6 +136,7 @@ impl Bridge {
         for (id, session) in self
             .store
             .list(request.cwd.as_ref().map(|cwd| cwd.0.as_path()))
+            .map_err(store_error)?
         {
             let transcript = session
                 .claude_session_id
@@ -201,19 +205,22 @@ impl Bridge {
     ) -> std::result::Result<Session, Error> {
         let cwd = validation::cwd(cwd).map_err(invalid)?;
         let servers = parse_mcp(servers)?;
-        if let Some(session) = self.store.get(id) {
+        if let Some(session) = self.store.get(id).map_err(store_error)? {
             if session.cwd != cwd {
                 return Err(invalid("Session cwd does not match"));
             }
             if !servers.is_empty() {
                 self.store
-                    .update(id, |session| session.mcp_servers = servers);
+                    .update(id, |session| session.mcp_servers = servers)
+                    .map_err(store_error)?;
                 self.claudes.lock().unwrap().remove(id);
             }
         } else if self.history.find(id, &cwd) {
             let mut session = Session::new(cwd, servers);
             session.claude_session_id = Some(id.to_owned());
-            self.store.create(id.to_owned(), &session);
+            self.store
+                .create(id.to_owned(), &session)
+                .map_err(store_error)?;
         } else {
             return Err(Error::new(
                 -32002,
@@ -301,10 +308,12 @@ impl Bridge {
         } {
             return Err(Error::new(-32603, error));
         }
-        self.store.update(&id, |session| match setting {
-            Setting::Mode(mode) => session.mode = Some(mode),
-            Setting::Model(model) => session.model = Some(model),
-        });
+        self.store
+            .update(&id, |session| match setting {
+                Setting::Mode(mode) => session.mode = Some(mode),
+                Setting::Model(model) => session.model = Some(model),
+            })
+            .map_err(store_error)?;
         let options = Self::options(&self.require(&id)?);
         notify(
             connection,
@@ -386,13 +395,18 @@ impl Bridge {
                 .chars()
                 .take(120)
                 .collect();
-            self.store
-                .update(&id, |session| session.title = Some(title.clone()));
-            notify(
-                connection,
-                &id,
-                SessionUpdate::SessionInfoUpdate(acp::SessionInfoUpdate::new().title(title)),
-            );
+            // The prompt is already with claude, so a failed save is logged.
+            match self
+                .store
+                .update(&id, |session| session.title = Some(title.clone()))
+            {
+                Ok(()) => notify(
+                    connection,
+                    &id,
+                    SessionUpdate::SessionInfoUpdate(acp::SessionInfoUpdate::new().title(title)),
+                ),
+                Err(error) => eprintln!("failed to save session {id}: {error}"),
+            }
         }
         Ok(())
     }
@@ -415,21 +429,26 @@ impl Bridge {
             let claude_id = end
                 .session_id
                 .filter(|claude_id| end.finished || bridge.history.find(claude_id, &cwd));
-            if let Some(claude_id) = claude_id {
-                bridge.store.update(&id, |session| {
+            if let Some(claude_id) = claude_id
+                && let Err(error) = bridge.store.update(&id, |session| {
                     session.claude_session_id = Some(claude_id);
-                });
-            }
-            if end.finished
-                && let Some(session) = bridge.store.get(&id)
+                })
             {
-                notify(
+                eprintln!("failed to save session {id}: {error}");
+            }
+            if !end.finished {
+                return;
+            }
+            match bridge.store.get(&id) {
+                Ok(Some(session)) => notify(
                     &connection,
                     &id,
                     SessionUpdate::SessionInfoUpdate(
                         acp::SessionInfoUpdate::new().updated_at(session.updated_at),
                     ),
-                );
+                ),
+                Ok(None) => {}
+                Err(error) => eprintln!("failed to read session {id}: {error}"),
             }
         })
     }
@@ -438,6 +457,7 @@ impl Bridge {
     fn require(&self, id: &str) -> std::result::Result<Session, Error> {
         self.store
             .get(id)
+            .map_err(store_error)?
             .filter(|_| self.active.lock().unwrap().contains(id))
             .ok_or_else(|| acp::Error::session_not_found(id.to_owned()).into())
     }
@@ -538,4 +558,12 @@ fn parse_mcp(servers: Vec<acp::McpServer>) -> std::result::Result<Vec<McpServer>
 
 fn invalid(message: impl Into<String>) -> Error {
     Error::new(-32602, message)
+}
+
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` passes the error by value"
+)]
+fn store_error(error: io::Error) -> Error {
+    Error::new(-32603, format!("session registry: {error}"))
 }

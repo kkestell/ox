@@ -52,7 +52,8 @@ impl Session {
 
 /// The session registry, shared by every bridge process that uses the same
 /// store directory. Each operation reads and rewrites the registry file under
-/// an exclusive lock. MCP servers are kept per process.
+/// an exclusive lock, and fails if it cannot lock, read, or write it. MCP
+/// servers are kept per process.
 pub struct Store {
     dir: PathBuf,
     mcp_servers: Mutex<HashMap<String, Vec<McpServer>>>,
@@ -66,12 +67,12 @@ impl Store {
         }
     }
 
-    pub fn get(&self, id: &str) -> Option<Session> {
+    pub fn get(&self, id: &str) -> io::Result<Option<Session>> {
         let session = self.transaction(|entries| (entries.get(id).and_then(parse), false))?;
-        Some(self.with_servers(id, session))
+        Ok(session.map(|session| self.with_servers(id, session)))
     }
 
-    pub fn list(&self, cwd: Option<&Path>) -> Vec<(String, Session)> {
+    pub fn list(&self, cwd: Option<&Path>) -> io::Result<Vec<(String, Session)>> {
         let sessions: Vec<(String, Session)> = self.transaction(|entries| {
             let sessions = entries
                 .iter()
@@ -79,28 +80,31 @@ impl Store {
                 .filter(|(_, session)| cwd.is_none_or(|cwd| cwd == session.cwd))
                 .collect();
             (sessions, false)
-        });
-        sessions
+        })?;
+        Ok(sessions
             .into_iter()
             .map(|(id, session)| {
                 let session = self.with_servers(&id, session);
                 (id, session)
             })
-            .collect()
+            .collect())
     }
 
-    pub fn create(&self, id: String, session: &Session) {
+    pub fn create(&self, id: String, session: &Session) -> io::Result<()> {
+        self.transaction(|entries| {
+            entries.insert(id.clone(), to_value(session));
+            ((), true)
+        })?;
         self.mcp_servers
             .lock()
             .unwrap()
-            .insert(id.clone(), session.mcp_servers.clone());
-        self.transaction(|entries| {
-            entries.insert(id, to_value(session));
-            ((), true)
-        });
+            .insert(id, session.mcp_servers.clone());
+        Ok(())
     }
 
-    pub fn update(&self, id: &str, update: impl FnOnce(&mut Session)) {
+    /// Changes a session's entry. A session with no readable entry is left
+    /// as it is.
+    pub fn update(&self, id: &str, update: impl FnOnce(&mut Session)) -> io::Result<()> {
         let servers = self.transaction(|entries| {
             let Some(session) = entries.get(id).and_then(parse) else {
                 return (None, false);
@@ -110,13 +114,14 @@ impl Store {
             session.touch();
             entries.insert(id.to_owned(), to_value(&session));
             (Some(session.mcp_servers), true)
-        });
+        })?;
         if let Some(servers) = servers {
             self.mcp_servers
                 .lock()
                 .unwrap()
                 .insert(id.to_owned(), servers);
         }
+        Ok(())
     }
 
     fn with_servers(&self, id: &str, mut session: Session) -> Session {
@@ -128,30 +133,17 @@ impl Store {
 
     /// Runs `operation` on the registry's entries under the registry lock and
     /// saves them when it returns `true`.
-    fn transaction<T>(&self, operation: impl FnOnce(&mut Map<String, Value>) -> (T, bool)) -> T {
-        let _lock = self
-            .lock()
-            .inspect_err(|err| eprintln!("failed to lock session registry: {err}"))
-            .ok();
-        let (mut entries, readable) = match self.read() {
-            Ok(entries) => (entries, true),
-            Err(err) => {
-                eprintln!("failed to read session registry: {err}");
-                (Map::new(), false)
-            }
-        };
+    fn transaction<T>(
+        &self,
+        operation: impl FnOnce(&mut Map<String, Value>) -> (T, bool),
+    ) -> io::Result<T> {
+        let _lock = self.lock()?;
+        let mut entries = self.read()?;
         let (value, changed) = operation(&mut entries);
         if changed {
-            let result = if readable {
-                self.write(&entries)
-            } else {
-                Err(io::Error::other("the registry could not be read"))
-            };
-            if let Err(err) = result {
-                eprintln!("failed to save session registry: {err}");
-            }
+            self.write(&entries)?;
         }
-        value
+        Ok(value)
     }
 
     fn lock(&self) -> io::Result<File> {

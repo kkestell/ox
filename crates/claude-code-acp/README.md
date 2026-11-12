@@ -76,15 +76,16 @@ Clients create, list, resume, and close sessions with `session/new`,
 prompts once it is new or resumed, until it is closed. Bridge session
 metadata is stored in `~/.local/share/claude-code-acp/acp-sessions.json`,
 which several bridge processes can share; each change is written under a lock
-file beside it. A registry file that cannot be parsed is moved aside to
-`acp-sessions.json.corrupt-<time>` and a new one is started. Native Claude
-sessions are discovered from local project transcripts. `session/list` returns
-up to 50 sessions per page and lists a bridge session under its own ID in place
-of the Claude transcript it continues, so every listed ID can be resumed.
-Resuming a session requires its original `cwd` and applies the request's MCP
-servers. New sessions start fresh; continuing a conversation requires resuming
-its session ID. A failed resumed prompt reports the error without retrying in
-a fresh conversation.
+file beside it. A request that cannot lock, read, or write the registry fails
+with an internal error (`-32603`). A registry file that cannot be parsed is
+moved aside to `acp-sessions.json.corrupt-<time>` and a new one is started.
+Native Claude sessions are discovered from local project transcripts.
+`session/list` returns up to 50 sessions per page and lists a bridge session
+under its own ID in place of the Claude transcript it continues, so every
+listed ID can be resumed. Resuming a session requires its original `cwd` and
+applies the request's MCP servers. New sessions start fresh; continuing a
+conversation requires resuming its session ID. A failed resumed prompt reports
+the error without retrying in a fresh conversation.
 
 `session/resume` with `replayFrom: {"type": "start"}` replays the conversation
 before it answers. The bridge reads the `user` and `assistant` entries of the
