@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { Composer } from "./Composer";
 import { Conversation } from "./Conversation";
+import type { Item } from "./protocol";
 import { SessionList } from "./SessionList";
+import { useConversation } from "./useConversation";
 import { useWorkspaces } from "./useWorkspaces";
 import { Workbench } from "./Workbench";
 
@@ -14,6 +16,11 @@ export function App() {
     else sessionStorage.setItem("viewed", viewed);
   }, [viewed]);
   const session = sessions.find((session) => session.id === viewed);
+  const items = useConversation(viewed);
+  const permission = items.find(
+    (item): item is Extract<Item, { type: "permission" }> =>
+      item.type === "permission" && !item.answered,
+  );
 
   return (
     <Workbench
@@ -28,8 +35,8 @@ export function App() {
         />
       }
     >
-      <Conversation sessionId={viewed} />
-      {session && <Composer key={session.id} session={session} />}
+      <Conversation sessionId={viewed} items={items} />
+      {session && <Composer key={session.id} session={session} permission={permission} />}
     </Workbench>
   );
 }

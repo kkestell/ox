@@ -1,10 +1,9 @@
-import { invoke } from "@tauri-apps/api/core";
-import { useLayoutEffect, useRef, useState } from "react";
-import type { Item } from "./protocol";
-import { useConversation } from "./useConversation";
+import { Check, X } from "lucide-react";
+import { useLayoutEffect, useRef } from "react";
+import { CodeSpans } from "./CodeSpans";
+import type { Item, ToolCallStatus } from "./protocol";
 
-export function Conversation({ sessionId }: { sessionId: string | null }) {
-  const items = useConversation(sessionId);
+export function Conversation({ sessionId, items }: { sessionId: string | null; items: Item[] }) {
   const element = useRef<HTMLDivElement>(null);
   // Whether the view follows the end of the conversation as it grows.
   const following = useRef(true);
@@ -29,13 +28,12 @@ export function Conversation({ sessionId }: { sessionId: string | null }) {
         following.current = node.scrollHeight - node.scrollTop - node.clientHeight < 1;
       }}
     >
-      {sessionId &&
-        items.map((item) => <ItemView key={item.key} item={item} sessionId={sessionId} />)}
+      {sessionId && items.map((item) => <ItemView key={item.key} item={item} />)}
     </div>
   );
 }
 
-function ItemView({ item, sessionId }: { item: Item; sessionId: string }) {
+function ItemView({ item }: { item: Item }) {
   switch (item.type) {
     case "prompt":
       return (
@@ -52,6 +50,7 @@ function ItemView({ item, sessionId }: { item: Item; sessionId: string }) {
     case "text":
       return <p className="text">{item.text}</p>;
     case "thought":
+      if (item.text.trim() === "") return null;
       return (
         <details className="thought">
           <summary>Thinking</summary>
@@ -60,8 +59,9 @@ function ItemView({ item, sessionId }: { item: Item; sessionId: string }) {
       );
     case "tool_call":
       return <ToolCall item={item} />;
+    // Permission requests show in the composer while they await an answer.
     case "permission":
-      return <Permission item={item} sessionId={sessionId} />;
+      return null;
     case "turn_error":
       return <p className="turn-error">{item.message}</p>;
     case "agent_exited":
@@ -75,82 +75,72 @@ function ItemView({ item, sessionId }: { item: Item; sessionId: string }) {
   }
 }
 
+function ToolStatus({ status }: { status: ToolCallStatus }) {
+  switch (status) {
+    case "pending":
+    case "in_progress":
+      return <span className="status running" role="img" aria-label="Running" title="Running" />;
+    case "completed":
+      return (
+        <span className="status completed" role="img" aria-label="Completed" title="Completed">
+          <Check />
+        </span>
+      );
+    case "failed":
+      return (
+        <span className="status failed" role="img" aria-label="Failed" title="Failed">
+          <X />
+        </span>
+      );
+  }
+}
+
 function ToolCall({ item }: { item: Extract<Item, { type: "tool_call" }> }) {
   const heading = (
     <>
-      <span className="title">{item.title}</span>
-      <span className="status">{item.status.replace("_", " ")}</span>
+      <ToolStatus status={item.status} />
+      <span className="title">
+        <CodeSpans text={item.title} />
+      </span>
     </>
   );
-  return (
-    <div className="tool-call" data-kind={item.kind} data-status={item.status}>
-      {item.content.length === 0 ? (
+  const input = item.raw_input;
+  if (input === null && item.content.length === 0) {
+    return (
+      <div className="tool-call">
         <div className="heading">{heading}</div>
-      ) : (
-        <details>
-          <summary className="heading">{heading}</summary>
-          {item.content.map((content, index) =>
-            content.type === "text" ? (
-              // biome-ignore lint/suspicious/noArrayIndexKey: a tool call's content is replaced whole
-              <p key={index} className="text">
-                {content.text}
-              </p>
-            ) : (
-              <img
-                // biome-ignore lint/suspicious/noArrayIndexKey: a tool call's content is replaced whole
-                key={index}
-                alt=""
-                src={`data:${content.mime_type};base64,${content.data}`}
-              />
-            ),
-          )}
-        </details>
-      )}
-    </div>
-  );
-}
-
-function Permission({
-  item,
-  sessionId,
-}: {
-  item: Extract<Item, { type: "permission" }>;
-  sessionId: string;
-}) {
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const permit = async (optionId: string) => {
-    setPending(true);
-    try {
-      await invoke("permit", { sessionId, requestId: item.request_id, optionId });
-    } catch (e) {
-      setError(String(e));
-      setPending(false);
-    }
-  };
-
+      </div>
+    );
+  }
   return (
-    <div className="permission">
-      <p className="title">{item.title}</p>
-      {item.outcome === null ? (
-        <div className="options">
-          {item.options.map((option) => (
-            <button
-              key={option.optionId}
-              type="button"
-              data-kind={option.kind}
-              disabled={pending}
-              onClick={() => permit(option.optionId)}
-            >
-              {option.name}
-            </button>
-          ))}
-        </div>
-      ) : (
-        <p className="outcome">{item.outcome}</p>
-      )}
-      {error && <p className="error">{error}</p>}
-    </div>
+    <details className="tool-call">
+      <summary className="heading">{heading}</summary>
+      <div className="details">
+        {input !== null && (
+          <section>
+            <p className="label">Arguments</p>
+            <pre>{JSON.stringify(input, null, 2)}</pre>
+          </section>
+        )}
+        {item.content.length > 0 && (
+          <section>
+            <p className="label">Output</p>
+            {item.content.map((content, index) =>
+              content.type === "text" ? (
+                // biome-ignore lint/suspicious/noArrayIndexKey: a tool call's content is replaced whole
+                <pre key={index}>{content.text}</pre>
+              ) : (
+                <img
+                  // biome-ignore lint/suspicious/noArrayIndexKey: a tool call's content is replaced whole
+                  key={index}
+                  alt=""
+                  src={`data:${content.mime_type};base64,${content.data}`}
+                />
+              ),
+            )}
+          </section>
+        )}
+      </div>
+    </details>
   );
 }

@@ -4,9 +4,8 @@
 use std::collections::HashMap;
 
 use ox_protocol::schema::{
-    ContentBlock, EmbeddedResourceResource, MessageId, PermissionOption, RequestPermissionOutcome,
-    RequestPermissionSubject, SessionUpdate, StopReason, ToolCallContent, ToolCallId,
-    ToolCallStatus, ToolCallUpdate, ToolKind,
+    ContentBlock, EmbeddedResourceResource, MessageId, PermissionOption, RequestPermissionSubject,
+    SessionUpdate, StopReason, ToolCallContent, ToolCallId, ToolCallStatus, ToolCallUpdate,
 };
 use ox_protocol::{Event, EventKind, MaybeUndefined};
 use serde::Serialize;
@@ -35,23 +34,23 @@ pub enum Item {
         text: String,
         replace: bool,
     },
-    /// A tool call's current state, with the text and images of its
-    /// content.
+    /// A tool call's current state: its Markdown title, its input, and the
+    /// text and images of its content.
     ToolCall {
         key: String,
         title: String,
-        kind: ToolKind,
         status: ToolCallStatus,
+        raw_input: Option<serde_json::Value>,
         content: Vec<ToolContent>,
     },
-    /// A permission request. `outcome` is set once it is resolved: the name
-    /// of the chosen option, or `Cancelled`.
+    /// A permission request, with its Markdown title. `answered` is set once
+    /// it is resolved.
     Permission {
         key: String,
         request_id: String,
         title: String,
         options: Vec<PermissionOption>,
-        outcome: Option<String>,
+        answered: bool,
     },
     /// A turn that ended with an error, or stopped short of its end.
     TurnError {
@@ -86,8 +85,8 @@ struct Request {
 struct Call {
     name: Option<String>,
     title: Option<String>,
-    kind: ToolKind,
     status: ToolCallStatus,
+    raw_input: Option<serde_json::Value>,
     content: Vec<ToolCallContent>,
 }
 
@@ -97,11 +96,7 @@ impl Call {
     fn patch(&mut self, update: &ToolCallUpdate) {
         update.name.clone().update_to(&mut self.name);
         update.title.clone().update_to(&mut self.title);
-        match &update.kind {
-            MaybeUndefined::Undefined => {}
-            MaybeUndefined::Null => self.kind = ToolKind::default(),
-            MaybeUndefined::Value(kind) => self.kind = kind.clone(),
-        }
+        update.raw_input.clone().update_to(&mut self.raw_input);
         match &update.status {
             MaybeUndefined::Undefined => {}
             MaybeUndefined::Null => self.status = ToolCallStatus::default(),
@@ -122,8 +117,8 @@ impl Call {
                 .clone()
                 .or_else(|| self.name.clone())
                 .unwrap_or_else(|| "Tool call".into()),
-            kind: self.kind.clone(),
             status: self.status.clone(),
+            raw_input: self.raw_input.clone(),
             content: self
                 .content
                 .iter()
@@ -200,27 +195,15 @@ impl Conversation {
                     title: title.clone(),
                     options: options.clone(),
                 };
-                items.push(permission(request_id, &request, None));
+                items.push(permission(request_id, &request, false));
                 self.requests.insert(request_id.clone(), request);
                 items
             }
-            EventKind::PermissionResolved {
-                request_id,
-                outcome,
-            } => {
+            EventKind::PermissionResolved { request_id, .. } => {
                 let Some(request) = self.requests.remove(request_id) else {
                     return Vec::new();
                 };
-                let outcome = match outcome {
-                    RequestPermissionOutcome::Selected(selected) => request
-                        .options
-                        .iter()
-                        .find(|option| option.option_id == selected.option_id)
-                        .map(|option| option.name.clone())
-                        .unwrap_or_else(|| selected.option_id.to_string()),
-                    _ => "Cancelled".into(),
-                };
-                vec![permission(request_id, &request, Some(outcome))]
+                vec![permission(request_id, &request, true)]
             }
             EventKind::TurnEnded { stop_reason, error } => {
                 self.in_turn = false;
@@ -379,13 +362,13 @@ fn user_item(id: &MessageId, message: &UserMessage) -> Item {
     }
 }
 
-fn permission(request_id: &str, request: &Request, outcome: Option<String>) -> Item {
+fn permission(request_id: &str, request: &Request, answered: bool) -> Item {
     Item::Permission {
         key: format!("permission:{request_id}"),
         request_id: request_id.into(),
         title: request.title.clone(),
         options: request.options.clone(),
-        outcome,
+        answered,
     }
 }
 
@@ -413,9 +396,12 @@ fn add_content(block: &ContentBlock, text: &mut Vec<String>, attachments: &mut V
 mod tests {
     use ox_protocol::schema::{
         AgentMessage, CancelledPermissionOutcome, ContentChunk, ErrorStopReason, ImageContent,
-        PermissionOptionKind, ResourceLink, SelectedPermissionOutcome, TextContent,
-        ToolCallContentChunk, ToolCallPermissionSubject, UserMessage as UserMessageUpdate,
+        PermissionOptionKind, RequestPermissionOutcome, ResourceLink, SelectedPermissionOutcome,
+        TextContent, ToolCallContentChunk, ToolCallPermissionSubject,
+        UserMessage as UserMessageUpdate,
     };
+
+    use serde_json::json;
 
     use super::*;
 
@@ -500,8 +486,8 @@ mod tests {
         Item::ToolCall {
             key: "tool:t".into(),
             title: "Read a.rs".into(),
-            kind: ToolKind::Read,
             status,
+            raw_input: Some(json!({"file_path": "a.rs"})),
             content,
         }
     }
@@ -565,7 +551,7 @@ mod tests {
         ];
         let mut created = ToolCallUpdate::new("t");
         created.title = MaybeUndefined::Value("Read a.rs".into());
-        created.kind = MaybeUndefined::Value(ToolKind::Read);
+        created.raw_input = MaybeUndefined::Value(json!({"file_path": "a.rs"}));
         let mut progress = ToolCallUpdate::new("t");
         progress.status = MaybeUndefined::Value(ToolCallStatus::InProgress);
         let mut done = ToolCallUpdate::new("t");
@@ -603,7 +589,7 @@ mod tests {
     fn content_chunks_append_to_a_tool_calls_content() {
         let mut created = ToolCallUpdate::new("t");
         created.title = MaybeUndefined::Value("Read a.rs".into());
-        created.kind = MaybeUndefined::Value(ToolKind::Read);
+        created.raw_input = MaybeUndefined::Value(json!({"file_path": "a.rs"}));
         let chunk = |content: &str| {
             EventKind::Update(SessionUpdate::ToolCallContentChunk(
                 ToolCallContentChunk::new("t", ToolCallContent::from(text(content))),
@@ -721,20 +707,20 @@ mod tests {
                 )),
             },
         ]);
-        let outcomes: Vec<(String, Option<String>)> = items
+        let answers: Vec<(String, bool)> = items
             .into_iter()
             .map(|item| match item {
-                Item::Permission { key, outcome, .. } => (key, outcome),
+                Item::Permission { key, answered, .. } => (key, answered),
                 other => panic!("{other:?}"),
             })
             .collect();
         assert_eq!(
-            outcomes,
+            answers,
             [
-                ("permission:1".into(), None),
-                ("permission:2".into(), None),
-                ("permission:2".into(), Some("Cancelled".into())),
-                ("permission:1".into(), Some("Allow".into())),
+                ("permission:1".into(), false),
+                ("permission:2".into(), false),
+                ("permission:2".into(), true),
+                ("permission:1".into(), true),
             ]
         );
     }
@@ -743,7 +729,7 @@ mod tests {
     fn a_tool_call_subject_patches_its_tool_call() {
         let mut details = ToolCallUpdate::new("t");
         details.title = MaybeUndefined::Value("Read a.rs".into());
-        details.kind = MaybeUndefined::Value(ToolKind::Read);
+        details.raw_input = MaybeUndefined::Value(json!({"file_path": "a.rs"}));
         let items = fold(vec![EventKind::PermissionRequested {
             request_id: "1".into(),
             title: "Allow Read?".into(),

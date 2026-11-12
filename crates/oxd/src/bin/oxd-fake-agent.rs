@@ -25,8 +25,10 @@
 //!   the line
 //! - `title-null`: a `session_info_update` clearing the title
 //! - `touch`: a `session_info_update` with only `updated_at`
-//! - `tool <text>`: a tool call `tool-<n>` titled `Fake tool`, then its
-//!   completion with the rest of the line and a 1×1 PNG as its content
+//! - `tool <text>`: a tool call `tool-<n>` titled `Fake tool` followed by
+//!   the rest of the line as a code span fenced with two backticks, with the
+//!   input `{"text": <text>}`, then its completion with the rest of the line
+//!   and a 1×1 PNG as its content
 //! - `fail <text>`: end the turn with the stop reason `error` and the rest
 //!   of the line as its message
 //! - `reject <text>`: answer the prompt with an error carrying the rest of
@@ -621,8 +623,9 @@ async fn run(
                 update(
                     acp::ToolCallUpdate::new(id.as_str())
                         .name("fake_tool")
-                        .title("Fake tool")
-                        .status(acp::ToolCallStatus::Pending),
+                        .title(format!("Fake tool `` {output} ``"))
+                        .status(acp::ToolCallStatus::Pending)
+                        .raw_input(serde_json::json!({ "text": output })),
                 )?;
                 update(
                     acp::ToolCallUpdate::new(id.as_str())

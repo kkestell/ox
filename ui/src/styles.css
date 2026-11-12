@@ -70,6 +70,7 @@
   --composer-padding: calc(var(--spacing) * 3);
   --composer-max-lines: 8;
   --prompt-max-width: 75%;
+  --tool-call-gap: calc(var(--spacing) * 2);
   /* The transcript's text lines up with the composer's text. */
   --conversation-inset: calc(
     var(--composer-margin) +
@@ -182,7 +183,8 @@ body {
   box-shadow: 0 0 0 var(--ring-width) var(--focus-ring);
 }
 
-.icon-button svg {
+.icon-button svg,
+.status svg {
   width: var(--icon-size);
   height: var(--icon-size);
 }
@@ -334,8 +336,8 @@ body {
   opacity: var(--dimmed-opacity);
 }
 
-/* A dot centred in an icon-sized box, coloured by the session's state. */
-.session .status {
+/* A state shown in an icon-sized box: a dot, or an icon. */
+.status {
   display: flex;
   flex: none;
   align-items: center;
@@ -345,7 +347,7 @@ body {
   color: var(--muted-foreground);
 }
 
-.session .status::before {
+.status:empty::before {
   content: "";
   box-sizing: border-box;
   width: var(--status-dot-size);
@@ -355,16 +357,20 @@ body {
   background: currentColor;
 }
 
-.session .status.running {
+.status.running {
   color: var(--success);
   animation: breathe var(--busy-dot-duration) ease-in-out infinite alternate;
 }
 
-.session .status.awaiting_permission {
+.status.awaiting_permission {
   color: var(--warning);
 }
 
-.session .status.exited::before {
+.status.failed {
+  color: var(--destructive);
+}
+
+.status.exited::before {
   background: transparent;
 }
 
@@ -375,7 +381,7 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .session .status.running {
+  .status.running {
     animation: none;
   }
 }
@@ -425,11 +431,13 @@ body {
   color: var(--foreground);
 }
 
-.conversation p {
+.conversation p,
+.composer p {
   margin: 0;
 }
 
-.conversation .text {
+.conversation .text,
+.tool-call pre {
   white-space: pre-wrap;
   overflow-wrap: break-word;
 }
@@ -448,7 +456,7 @@ body {
 }
 
 .prompt .attachment,
-.tool-call .status,
+.tool-call .label,
 .session-closed {
   font-size: var(--text-xs);
   color: var(--muted-foreground);
@@ -458,7 +466,8 @@ body {
   color: var(--muted-foreground);
 }
 
-.thought summary {
+.thought summary,
+.tool-call summary {
   cursor: default;
 }
 
@@ -468,28 +477,82 @@ body {
 
 .tool-call .heading {
   display: flex;
-  align-items: baseline;
+  align-items: center;
+  gap: var(--tool-call-gap);
+}
+
+.tool-call summary {
+  list-style: none;
+}
+
+.tool-call summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-call .title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+code,
+.tool-call pre {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.tool-call .title code,
+.permission .title code {
+  color: var(--muted-foreground);
+}
+
+/* The expanded call lines up with its title. */
+.tool-call .details {
+  margin: calc(var(--spacing) * 2) 0 0 calc(var(--icon-size) + var(--tool-call-gap));
+  overflow: hidden;
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+}
+
+.tool-call section {
+  display: flex;
+  flex-direction: column;
   gap: calc(var(--spacing) * 2);
+  padding: calc(var(--spacing) * 3) calc(var(--spacing) * 4);
+}
+
+.tool-call section + section {
+  border-top: var(--border-width) solid var(--border);
+}
+
+.tool-call pre {
+  margin: 0;
 }
 
 .tool-call img {
   max-width: 100%;
 }
 
+/* A request rises from behind the composer's box, inset from its sides, its
+   lower edge hidden under the box. */
 .permission {
   display: flex;
   flex-direction: column;
   gap: calc(var(--spacing) * 3);
-  padding: calc(var(--spacing) * 4);
+  margin: 0 var(--composer-padding) calc(var(--radius-2xl) * -1);
+  padding: calc(var(--spacing) * 4) calc(var(--spacing) * 4)
+    calc(var(--spacing) * 4 + var(--radius-2xl));
   border: var(--border-width) solid var(--border);
-  border-radius: var(--radius-2xl);
+  border-radius: var(--radius-2xl) var(--radius-2xl) 0 0;
   background: var(--card);
+  color: var(--foreground);
 }
 
 .permission .options {
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
   gap: calc(var(--spacing) * 2);
 }
 
@@ -513,13 +576,8 @@ body {
   box-shadow: 0 0 0 var(--ring-width) var(--focus-ring);
 }
 
-.permission .outcome {
-  color: var(--muted-foreground);
-}
-
 .turn-error,
 .agent-exited,
-.permission .error,
 .composer .error {
   color: var(--destructive);
 }
@@ -534,7 +592,13 @@ body {
   margin: var(--composer-margin);
 }
 
+.composer .stack {
+  display: flex;
+  flex-direction: column;
+}
+
 .composer .box {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--spacing);
@@ -623,7 +687,6 @@ body {
 }
 
 .composer .error {
-  margin: 0;
   padding-left: var(--spacing);
   font-size: var(--text-xs);
 }

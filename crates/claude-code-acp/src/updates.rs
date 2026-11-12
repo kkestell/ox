@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, HashSet},
-    path::{Path, PathBuf},
     sync::Mutex,
 };
 
@@ -50,17 +49,15 @@ enum Sent {
 pub struct Updates {
     connection: ConnectionTo<Client>,
     session_id: String,
-    cwd: PathBuf,
     tools: Mutex<Tools>,
     work: Mutex<Work>,
 }
 
 impl Updates {
-    pub fn new(connection: ConnectionTo<Client>, session_id: &str, cwd: &Path) -> Self {
+    pub fn new(connection: ConnectionTo<Client>, session_id: &str) -> Self {
         Self {
             connection,
             session_id: session_id.to_owned(),
-            cwd: cwd.to_owned(),
             tools: Mutex::new(Tools::default()),
             work: Mutex::new(Work::default()),
         }
@@ -238,7 +235,7 @@ impl Updates {
                 Event::Tool { name, input, .. } if tools.seen.contains(parent) => {
                     let activity = tools.activity.entry(parent.to_owned()).or_default();
                     activity.push(ToolCallContent::from(ContentBlock::Text(TextContent::new(
-                        tool_title(&name, &input),
+                        tool_line(&name, &input),
                     ))));
                     acp::ToolCallUpdate::new(parent.to_owned()).content(activity.clone())
                 }
@@ -312,21 +309,12 @@ impl Updates {
             permission.tool_use_id.clone()
         };
         let title = tool_title(&permission.name, &permission.input);
-        let title = if title == permission.name {
-            permission.title.clone().unwrap_or(title)
-        } else {
-            title
-        };
-        let content = vec![ToolCallContent::from(ContentBlock::Text(TextContent::new(
-            permission_content(&permission, &self.cwd),
-        )))];
         let update = acp::ToolCallUpdate::new(tool_id.clone())
             .title(title.clone())
             .name(permission.name.clone())
             .kind(ToolKind::Execute)
             .status(ToolCallStatus::Pending)
-            .raw_input(permission.input.clone())
-            .content(content);
+            .raw_input(permission.input.clone());
         {
             let mut tools = self.tools.lock().unwrap();
             tools.open.insert(tool_id.clone());
@@ -465,40 +453,63 @@ fn tool_status(id: String, status: ToolCallStatus) -> SessionUpdate {
     SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(id).status(status))
 }
 
+/// The title of a call of tool `name`: the tool's name, followed by its
+/// argument as Markdown inline code.
 fn tool_title(name: &str, input: &Value) -> String {
-    let detail = if name == "Bash" {
-        input.get("command").and_then(Value::as_str)
-    } else {
-        input
-            .get("file_path")
-            .or_else(|| input.get("path"))
-            .and_then(Value::as_str)
-    };
-    let Some(first_line) = detail.and_then(|text| text.trim().lines().next()) else {
-        return name.to_owned();
-    };
-    let mut title: String = first_line.chars().take(160).collect();
-    if first_line.chars().count() > 160 {
-        title.push('…');
-    }
-    if title.is_empty() {
-        name.to_owned()
-    } else if name == "Bash" {
-        title
-    } else {
-        format!("{name} {title}")
+    match tool_argument(input) {
+        Some(argument) => format!("{name} {}", code_span(&argument)),
+        None => name.to_owned(),
     }
 }
 
-fn permission_content(permission: &PermissionRequest, cwd: &Path) -> String {
-    let detail = match permission.input.get("command").and_then(Value::as_str) {
-        Some(command) if permission.name == "Bash" => format!("Command:\n\n{command}"),
-        _ => format!(
-            "Arguments:\n\n{}",
-            serde_json::to_string_pretty(&permission.input).unwrap_or_default()
-        ),
+/// A plain line for a call of tool `name`: the tool's name and its argument.
+fn tool_line(name: &str, input: &Value) -> String {
+    match tool_argument(input) {
+        Some(argument) => format!("{name} {argument}"),
+        None => name.to_owned(),
+    }
+}
+
+/// The first line of a tool call's main argument.
+fn tool_argument(input: &Value) -> Option<String> {
+    let argument = [
+        "command",
+        "file_path",
+        "notebook_path",
+        "pattern",
+        "path",
+        "url",
+        "query",
+        "skill",
+        "description",
+    ]
+    .iter()
+    .find_map(|key| input.get(key).and_then(Value::as_str));
+    argument
+        .and_then(|text| text.trim().lines().next())
+        .map(|first_line| {
+            let mut argument: String = first_line.chars().take(160).collect();
+            if first_line.chars().count() > 160 {
+                argument.push('…');
+            }
+            argument
+        })
+}
+
+/// `text` as a Markdown code span, fenced by a run of backticks longer than
+/// any run inside it. A space pads each side where text starting or ending
+/// with a backtick would extend the fence, or where Markdown would strip one
+/// of the spaces `text` starts and ends with.
+fn code_span(text: &str) -> String {
+    let longest = text.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    let fence = "`".repeat(longest + 1);
+    let stripped = text.starts_with(' ') && text.ends_with(' ') && text.contains(|c| c != ' ');
+    let pad = if text.starts_with('`') || text.ends_with('`') || stripped {
+        " "
+    } else {
+        ""
     };
-    format!("Working directory: {}\n\n{detail}", cwd.display())
+    format!("{fence}{pad}{text}{pad}{fence}")
 }
 
 pub fn notify(connection: &ConnectionTo<Client>, id: &str, update: SessionUpdate) {
@@ -506,5 +517,19 @@ pub fn notify(connection: &ConnectionTo<Client>, id: &str, update: SessionUpdate
         connection.send_notification(UpdateSessionNotification::new(id.to_owned(), update))
     {
         eprintln!("failed to send session update: {error}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_code_span_fences_backticks_with_a_longer_run() {
+        assert_eq!(code_span("ls -la"), "`ls -la`");
+        assert_eq!(code_span("a``b"), "```a``b```");
+        assert_eq!(code_span("echo `date`"), "`` echo `date` ``");
+        assert_eq!(code_span(" a "), "`  a  `");
+        assert_eq!(code_span("  "), "`  `");
     }
 }

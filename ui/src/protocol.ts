@@ -39,6 +39,8 @@ export interface PermissionOption {
   kind: "allow_once" | "allow_always" | "reject_once" | "reject_always";
 }
 
+export type ToolCallStatus = "pending" | "in_progress" | "completed" | "failed";
+
 export type ToolContent =
   | { type: "text"; text: string }
   | { type: "image"; mime_type: string; data: string };
@@ -51,8 +53,9 @@ export type Item =
       type: "tool_call";
       key: string;
       title: string;
-      kind: string;
-      status: string;
+      status: ToolCallStatus;
+      /** The tool's input as JSON, or `null`. */
+      raw_input: unknown;
       content: ToolContent[];
     }
   | {
@@ -61,7 +64,7 @@ export type Item =
       request_id: string;
       title: string;
       options: PermissionOption[];
-      outcome: string | null;
+      answered: boolean;
     }
   | { type: "turn_error"; key: string; message: string }
   | { type: "agent_exited"; key: string; error: string | null }

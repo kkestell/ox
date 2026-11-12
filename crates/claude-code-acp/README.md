@@ -112,9 +112,10 @@ that ID. The turn's output follows as `session/update` notifications:
 `agent_message_chunk` and `agent_thought_chunk` while `claude` streams, and
 `agent_message` and `agent_thought` for text it did not stream. Every tool
 call reports through `tool_call_update`. The first update for a tool call ID
-carries its name, title, kind, status `pending`, and input. A tool call's
-result sets its `content`: the result's text and images, with any other block
-Claude returns shown as its type in brackets, such as `[tool_reference]`.
+carries its name, title, kind, status `pending`, and input. The title is
+Markdown: the tool's name followed by the first line of its main argument as
+inline code. A tool call's result sets its `content`: the result's text and
+images, with any other block Claude returns shown as its JSON.
 
 A subagent's lines carry `parent_tool_use_id`, the tool call that started it.
 Its messages and streamed text stay out of the conversation; each tool it
@@ -185,7 +186,9 @@ the change.
 
 When Claude asks for tool permission, the bridge sends an ACP permission request
 to the client and forwards the decision to the running Claude process. The
-client can offer `Allow always` when Claude supplies a rule to save.
+request's tool call carries the tool's title and input. A call without an
+argument to show takes Claude's own title for the request, escaped as Markdown
+text. The client can offer `Allow always` when Claude supplies a rule to save.
 
 ## Development
 

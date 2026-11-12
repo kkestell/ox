@@ -51,23 +51,27 @@ describe("A session", () => {
     await expect(agentText()[0]).toHaveText("chunk-1");
   });
 
-  it("asks for permission and reports the answer", async () => {
+  it("asks for permission above the composer until it is answered", async () => {
     await send("permission");
-    const permission = $(".conversation .permission");
+    const permission = $("form.composer .permission");
     await expect(sessionEntry(cwd).$('[aria-label="Awaiting permission"]')).toBeDisplayed();
     await permission.$("button=Allow").click();
-    await expect(permission.$(".outcome")).toHaveText("Allow");
     await expect(agentText()[0]).toHaveText("allowed");
+    await expect(permission).not.toBeExisting();
+    await expect($(".conversation .permission")).not.toBeExisting();
     await expect(sessionEntry(cwd).$('[aria-label="Awaiting permission"]')).not.toBeExisting();
   });
 
   it("shows a tool call's output", async () => {
-    await send("tool listed a.rs");
+    await send("tool listed `a.rs`");
     const tool = $(".conversation .tool-call");
-    await expect(tool.$(".title")).toHaveText("Fake tool");
+    await expect(tool.$(".title")).toHaveText("Fake tool listed `a.rs`");
+    await expect(tool.$(".title code")).toHaveText("listed `a.rs`");
+    await expect(tool.$('.status[aria-label="Completed"] svg')).toBeDisplayed();
     await tool.$("summary").click();
-    await expect(tool.$("p.text")).toHaveText("listed a.rs");
-    await expect(tool.$("img")).toBeDisplayed();
+    await expect(tool.$("section:first-child pre")).toHaveText('{\n  "text": "listed `a.rs`"\n}');
+    await expect(tool.$("section:last-child pre")).toHaveText("listed `a.rs`");
+    await expect(tool.$("section:last-child img")).toBeDisplayed();
   });
 
   it("stops a turn the agent started", async () => {

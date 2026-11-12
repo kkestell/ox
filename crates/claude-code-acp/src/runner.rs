@@ -70,7 +70,6 @@ pub struct PermissionRequest {
     pub name: String,
     pub input: Value,
     pub tool_use_id: String,
-    pub title: Option<String>,
     pub suggestions: Vec<Value>,
     pub suppress_always_allow_rule: bool,
 }
@@ -518,7 +517,10 @@ impl Output {
                     }
                 }
                 Some("thinking_delta") => {
-                    if let Some(text) = event["delta"]["thinking"].as_str() {
+                    if let Some(text) = event["delta"]["thinking"]
+                        .as_str()
+                        .filter(|text| !text.is_empty())
+                    {
                         let id = self.thought_id.get_or_insert_with(new_id);
                         self.updates.thought_chunk(id, text.into());
                     }
@@ -591,7 +593,6 @@ impl Output {
             name: request["tool_name"].as_str().unwrap_or("Tool").to_owned(),
             input: request["input"].clone(),
             tool_use_id: request["tool_use_id"].as_str().unwrap_or("").to_owned(),
-            title: request["title"].as_str().map(str::to_owned),
             suggestions: request["permission_suggestions"]
                 .as_array()
                 .cloned()
@@ -830,7 +831,7 @@ pub fn message_events(entry: &Value) -> Vec<Event> {
 }
 
 /// What a tool result holds: a string, or text and image blocks. Other
-/// blocks show as their type.
+/// blocks show as their JSON.
 fn tool_output(content: &Value) -> Vec<ToolOutput> {
     if let Some(text) = content.as_str() {
         return if text.is_empty() {
@@ -844,16 +845,16 @@ fn tool_output(content: &Value) -> Vec<ToolOutput> {
     };
     blocks
         .iter()
-        .filter_map(|block| match block["type"].as_str()? {
-            "text" => block["text"]
+        .filter_map(|block| match block["type"].as_str() {
+            Some("text") => block["text"]
                 .as_str()
                 .filter(|text| !text.is_empty())
                 .map(|text| ToolOutput::Text(text.to_owned())),
-            "image" if block["source"]["type"] == "base64" => Some(ToolOutput::Image {
+            Some("image") if block["source"]["type"] == "base64" => Some(ToolOutput::Image {
                 data: block["source"]["data"].as_str()?.to_owned(),
                 mime_type: block["source"]["media_type"].as_str()?.to_owned(),
             }),
-            other => Some(ToolOutput::Text(format!("[{other}]"))),
+            _ => Some(ToolOutput::Text(block.to_string())),
         })
         .collect()
 }

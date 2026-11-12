@@ -106,7 +106,7 @@ impl Bridge {
         let id = request.session_id.to_string();
         let session = self.open(&id, &request.cwd.0, request.mcp_servers)?;
         if replay && let Some(claude_id) = &session.claude_session_id {
-            Updates::new(connection.clone(), &id, &session.cwd).replay(
+            Updates::new(connection.clone(), &id).replay(
                 self.history.messages(claude_id, &session.cwd),
                 self.history.subagents(claude_id, &session.cwd),
             );
@@ -361,7 +361,7 @@ impl Bridge {
                     mode: session_mode(&session),
                     mcp_servers: &session.mcp_servers,
                 },
-                Updates::new(connection.clone(), &id, &session.cwd),
+                Updates::new(connection.clone(), &id),
                 self.turn_recorder(&id, &session.cwd, connection),
             );
             match claude {

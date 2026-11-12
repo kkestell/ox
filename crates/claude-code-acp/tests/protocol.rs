@@ -497,15 +497,14 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
     assert_eq!(tool_call["toolCallId"], "tool-1", "{permission}");
     assert_eq!(
         permission["params"]["title"],
-        "touch /tmp/claude-approval-test"
+        "Bash `touch /tmp/claude-approval-test`"
     );
     assert_eq!(
         tool_call["rawInput"]["command"],
         "touch /tmp/claude-approval-test"
     );
-    let content = tool_call["content"][0]["content"]["text"].as_str().unwrap();
-    assert!(content.contains("touch /tmp/claude-approval-test"));
-    assert!(content.contains(project.to_str().unwrap()));
+    // The input is the tool call's only description of the request.
+    assert!(tool_call["content"].is_null(), "{tool_call}");
     send(
         &mut child,
         json!({"jsonrpc":"2.0","id":permission["id"],"result":{
@@ -581,6 +580,27 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
     send(&mut child, json!({"jsonrpc":"2.0","id":second["id"],"result":{"outcome":{"outcome":"selected","optionId":"reject_once"}}})).await;
     let (idle, _) = finish(&mut reader, 3, seen).await;
     assert_eq!(idle["stopReason"], "end_turn", "{idle}");
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_permission_without_an_argument_is_titled_with_its_tool_name() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    fake_claude(
+        &bin,
+        r#"
+next_prompt
+printf '%s\n' '{"type":"control_request","request_id":"permission-1","request":{"subtype":"can_use_tool","tool_name":"mcp__x__act","tool_use_id":"tool-1","input":{},"title":"Claude wants to use `act`"}}'
+next_message
+"#,
+    );
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize(&mut child, &mut reader).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    send(&mut child, json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session,"prompt":[{"type":"text","text":"act"}]}})).await;
+    let (permission, _) = until_permission(&mut reader).await;
+    assert_eq!(permission["params"]["title"], "mcp__x__act");
     child.kill().await.unwrap();
 }
 
@@ -1526,13 +1546,13 @@ const REPLAY: [&str; 11] = [
     "user_message: Fix the build",
     "agent_thought: Checking",
     "agent_message: Running it",
-    "tool_call_update: toolu_1 cargo build pending",
+    "tool_call_update: toolu_1 Bash `cargo build` pending",
     "tool_call_update: toolu_1 completed [ok]",
     "user_message: Look | image",
     "tool_call_update: toolu_3 Agent pending",
     "tool_call_update: toolu_3 [Read /a]",
     "tool_call_update: toolu_3 completed [Read /a | a says hi | image]",
-    "tool_call_update: toolu_2 Read /x pending",
+    "tool_call_update: toolu_2 Read `/x` pending",
     "tool_call_update: toolu_2 failed",
 ];
 
@@ -1717,7 +1737,7 @@ next_message
         describe(&after),
         [
             "state_update: running",
-            "tool_call_update: tool-1 pwd pending",
+            "tool_call_update: tool-1 Bash `pwd` pending",
             "tool_call_update: tool-1 completed",
             "agent_message: woke",
             "state_update: idle end_turn",
@@ -1856,7 +1876,7 @@ async fn tool_output_reaches_the_client() {
 next_prompt
 printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"ls"}},{"type":"tool_use","id":"tool-2","name":"Read","input":{"file_path":"/a.png"}}]}}'
 printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"a.png\nb.rs","is_error":true}]}}'
-printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-2","content":[{"type":"text","text":"Read an image"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}},{"type":"tool_reference"}]}]}}'
+printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-2","content":[{"type":"text","text":"Read an image"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}},{"type":"tool_reference","tool_name":"WebSearch"}]}]}}'
 printf '%s\n' '{"type":"result"}'
 next_message
 "#,
@@ -1869,10 +1889,10 @@ next_message
     assert_eq!(
         describe_updates(&updates)[3..7],
         [
-            "tool_call_update: tool-1 ls pending",
-            "tool_call_update: tool-2 Read /a.png pending",
+            "tool_call_update: tool-1 Bash `ls` pending",
+            "tool_call_update: tool-2 Read `/a.png` pending",
             "tool_call_update: tool-1 failed [a.png\nb.rs]",
-            "tool_call_update: tool-2 completed [Read an image | image | [tool_reference]]",
+            "tool_call_update: tool-2 completed [Read an image | image | {type:tool_reference,tool_name:WebSearch}]",
         ]
     );
     let image = updates
@@ -1930,16 +1950,13 @@ next_message
             "state_update: running",
             "tool_call_update: agent-1 Agent pending",
             "tool_call_update: agent-1 [Read /a]",
-            "tool_call_update: agent-1 [Read /a | pwd]",
-            &format!(
-                "tool_call_update: sub-2 pwd pending [Working directory: {}\n\nCommand:\n\npwd]",
-                project.display()
-            ),
+            "tool_call_update: agent-1 [Read /a | Bash pwd]",
+            "tool_call_update: sub-2 Bash `pwd` pending",
             "state_update: requires_action",
             "tool_call_update: sub-2 in_progress",
             "state_update: running",
             "tool_call_update: sub-2 completed [/]",
-            "tool_call_update: agent-1 completed [Read /a | pwd | a says hi]",
+            "tool_call_update: agent-1 completed [Read /a | Bash pwd | a says hi]",
             "agent_message: done",
             "state_update: idle end_turn",
         ]

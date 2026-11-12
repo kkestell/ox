@@ -2,9 +2,17 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ArrowUp, Paperclip, Square, X } from "lucide-react";
 import { useState } from "react";
-import type { ConfigOption, SelectOption, SessionInfo } from "./protocol";
+import { Permission } from "./Permission";
+import type { ConfigOption, Item, SelectOption, SessionInfo } from "./protocol";
 
-export function Composer({ session }: { session: SessionInfo }) {
+export function Composer({
+  session,
+  permission,
+}: {
+  session: SessionInfo;
+  /** The session's oldest unanswered permission request. */
+  permission: Extract<Item, { type: "permission" }> | undefined;
+}) {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -50,56 +58,61 @@ export function Composer({ session }: { session: SessionInfo }) {
         else if (canSend) send();
       }}
     >
-      <div className="box">
-        {attachments.length > 0 && (
-          <ul className="attachments">
-            {attachments.map((path) => (
-              <li key={path} title={path}>
-                {path.split("/").pop()}
-                <button
-                  type="button"
-                  aria-label="Remove"
-                  onClick={() => setAttachments((current) => current.filter((p) => p !== path))}
-                >
-                  <X />
-                </button>
-              </li>
-            ))}
-          </ul>
+      <div className="stack">
+        {permission && (
+          <Permission key={permission.request_id} item={permission} sessionId={session.id} />
         )}
-        <div className="input">
-          <button
-            type="button"
-            className="icon-button"
-            title="Attach Files"
-            aria-label="Attach Files"
-            disabled={disabled}
-            onClick={attach}
-          >
-            <Paperclip />
-          </button>
-          <textarea
-            rows={1}
-            aria-label="Message"
-            value={text}
-            disabled={disabled}
-            onChange={(event) => setText(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                event.preventDefault();
-                if (canSend) send();
-              }
-            }}
-          />
-          <button
-            type="submit"
-            className="icon-button"
-            title={running ? "Stop" : "Send"}
-            aria-label={running ? "Stop" : "Send"}
-            disabled={!running && !canSend}
-          >
-            {running ? <Square /> : <ArrowUp />}
-          </button>
+        <div className="box">
+          {attachments.length > 0 && (
+            <ul className="attachments">
+              {attachments.map((path) => (
+                <li key={path} title={path}>
+                  {path.split("/").pop()}
+                  <button
+                    type="button"
+                    aria-label="Remove"
+                    onClick={() => setAttachments((current) => current.filter((p) => p !== path))}
+                  >
+                    <X />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="input">
+            <button
+              type="button"
+              className="icon-button"
+              title="Attach Files"
+              aria-label="Attach Files"
+              disabled={disabled}
+              onClick={attach}
+            >
+              <Paperclip />
+            </button>
+            <textarea
+              rows={1}
+              aria-label="Message"
+              value={text}
+              disabled={disabled}
+              onChange={(event) => setText(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  if (canSend) send();
+                }
+              }}
+            />
+            <button
+              type="submit"
+              className="icon-button"
+              title={running ? "Stop" : "Send"}
+              aria-label={running ? "Stop" : "Send"}
+              disabled={!running && !canSend}
+            >
+              {running ? <Square /> : <ArrowUp />}
+            </button>
+          </div>
         </div>
       </div>
       {session.config_options.length > 0 && (

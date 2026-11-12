@@ -34,8 +34,8 @@ export function Workbench({ left, children }: { left: ReactNode; children: React
   const drag = useRef<Drag | null>(null);
   const [visible, setVisible] = useState<Record<Panel, boolean>>({
     left: true,
-    bottom: true,
-    right: true,
+    bottom: false,
+    right: false,
   });
   const [sizes, setSizes] = useState<Record<Panel, number>>(minSizes);
 

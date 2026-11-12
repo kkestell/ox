@@ -2742,6 +2742,7 @@ version = "0.1.0"
 dependencies = [
  "ox-protocol",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
