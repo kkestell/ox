@@ -1,7 +1,4 @@
-use std::{
-    env,
-    path::{Component, Path, PathBuf},
-};
+use std::path::{Component, Path, PathBuf};
 
 pub fn cwd(path: &Path) -> Result<PathBuf, String> {
     if !path.is_absolute() {
@@ -23,39 +20,14 @@ pub fn cwd(path: &Path) -> Result<PathBuf, String> {
     Ok(resolved)
 }
 
-/// An MCP server command is an absolute path, as ACP v2 types it, to an
-/// executable whose name is allowed.
+/// An MCP server command is an absolute path, as ACP v2 types it.
 pub fn mcp_command(command: &Path) -> Result<(), String> {
-    let path = command.to_string_lossy();
-    let name = command
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    if !command.is_absolute() || name.is_empty() || has_metacharacters(&path) {
-        return Err(format!("invalid MCP server command: {path}"));
-    }
-    let allowed = env::var("CLAUDE_ACP_MCP_ALLOWED_COMMANDS")
-        .unwrap_or_else(|_| "node,npx,python3,python,deno,bun".into());
-    if !allowed
-        .split(',')
-        .map(str::trim)
-        .any(|candidate| candidate == name)
-    {
-        return Err(format!("MCP server command not allowed: {path}"));
-    }
-    Ok(())
-}
-
-pub fn mcp_arg(arg: &str) -> Result<(), String> {
-    if has_metacharacters(arg) {
-        Err(format!(
-            "MCP server argument contains shell metacharacters: {arg}"
-        ))
-    } else {
+    if command.is_absolute() {
         Ok(())
+    } else {
+        Err(format!(
+            "MCP server command must be an absolute path: {}",
+            command.display()
+        ))
     }
-}
-
-fn has_metacharacters(value: &str) -> bool {
-    value.chars().any(|c| ";|&$`(){}!<>".contains(c))
 }

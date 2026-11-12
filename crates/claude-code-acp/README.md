@@ -50,11 +50,10 @@ cargo build --release -p claude-code-acp
 
 ## Configuration
 
-| Environment variable              | Meaning                                            | Default                            |
-| --------------------------------- | -------------------------------------------------- | ---------------------------------- |
-| `CLAUDE_ACP_STORE_DIR`            | Bridge session metadata directory                  | `~/.local/share/claude-code-acp`   |
-| `CLAUDE_CONFIG_DIR`               | Claude Code directory for native session discovery | `~/.claude`                        |
-| `CLAUDE_ACP_MCP_ALLOWED_COMMANDS` | Comma-separated allowed MCP executable names       | `node,npx,python3,python,deno,bun` |
+| Environment variable   | Meaning                                            | Default                          |
+| ---------------------- | -------------------------------------------------- | -------------------------------- |
+| `CLAUDE_ACP_STORE_DIR` | Bridge session metadata directory                  | `~/.local/share/claude-code-acp` |
+| `CLAUDE_CONFIG_DIR`    | Claude Code directory for native session discovery | `~/.claude`                      |
 
 The bridge removes `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the
 Claude subprocess environment so an inherited API credential cannot change the
@@ -170,8 +169,7 @@ that resumes the conversation, if Claude saved a transcript for it. A prompt
 that was waiting for Claude to take it reports the exit as its error.
 
 The bridge forwards stdio MCP server definitions to Claude. An MCP server's
-`command` is an absolute path to an executable whose name is in
-`CLAUDE_ACP_MCP_ALLOWED_COMMANDS`.
+`command` is an absolute path.
 
 ### Models and modes
 

@@ -156,7 +156,7 @@ shows nothing for the other updates, which `oxd` still records.
 | `session.prompt.image` | supported | supported | Gates image prompts. |
 | `session.prompt.embeddedContext` | supported | supported | Gates resource prompts. |
 | `session.prompt.audio` | supported | unsupported | Gates audio prompts. |
-| `session.mcp.stdio` | unsupported | supported | The command is an absolute path whose file name is in `CLAUDE_ACP_MCP_ALLOWED_COMMANDS`. |
+| `session.mcp.stdio` | unsupported | supported | The command is an absolute path. |
 | `session.mcp.http` | unsupported | unsupported | A request with an HTTP server is rejected with invalid params. |
 | `session.mcp.acp` (unstable) | unsupported | unsupported | |
 | `session.delete` | unsupported | unsupported | |

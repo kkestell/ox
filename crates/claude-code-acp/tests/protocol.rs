@@ -677,53 +677,52 @@ next_message
 #[tokio::test]
 async fn passes_stdio_mcp_servers_to_claude() {
     let temp = tempfile::tempdir().unwrap();
-    let bin = temp.path().join("bin");
-    let project = temp.path().join("project");
-    fs::create_dir_all(&bin).unwrap();
-    fs::create_dir_all(&project).unwrap();
+    let (bin, project) = dirs(temp.path());
     fake_claude(
         &bin,
-        r#"
-found=0
+        &format!(
+            r#"
 while [ "$#" -gt 0 ]; do
-  if [ "$1" = "--mcp-config" ]; then
-    case "$2" in *'"filesystem":{'*) found=1;; *) exit 12;; esac
-    for part in '"command":"/usr/bin/node"' '"args":["server.js"]' '"env":{"TOKEN":"test"}'; do
-      case "$2" in *"$part"*) ;; *) exit 12;; esac
-    done
-    break
-  fi
+  if [ "$1" = "--mcp-config" ]; then printf '%s' "$2" > mcp-config.json; break; fi
   shift
 done
-if [ "$found" -ne 1 ]; then exit 12; fi
 next_prompt
-printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"mcp ok"}]}}'
-printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43a2","result":"mcp ok"}'
-"#,
+printf '%s\n' '{{"type":"result","session_id":"{HISTORY_ID}"}}'
+next_message
+"#
+        ),
     );
     let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
     initialize(&mut child, &mut reader).await;
+    let args = json!([
+        "--url",
+        "https://example.com/mcp?a=1&b=2",
+        "{\"root\":\"/tmp\"}"
+    ]);
     send(
         &mut child,
         json!({"jsonrpc":"2.0","id":2,"method":"session/new","params":{
-            "cwd":project,"mcpServers":[{"type":"stdio","name":"filesystem","command":"/usr/bin/node","args":["server.js"],
+            "cwd":project,"mcpServers":[{"type":"stdio","name":"filesystem","command":"/opt/tools/mcp-filesystem","args":args,
                 "env":[{"name":"TOKEN","value":"test"}]}]
         }}),
     )
     .await;
     let (new, _) = response(&mut reader, 2).await;
-    let id = new["result"]["sessionId"].as_str().unwrap().to_owned();
-    send(
-        &mut child,
-        json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{
-            "sessionId":id,"prompt":[{"type":"text","text":"use mcp"}]
-        }}),
-    )
-    .await;
-    let (idle, updates) = finished(&mut reader, 3).await;
-    assert_eq!(idle["stopReason"], "end_turn");
-    assert!(updates.iter().any(|v| shown_text(v) == Some("mcp ok")));
+    let id = new["result"]["sessionId"]
+        .as_str()
+        .expect("a session ID")
+        .to_owned();
+    let (idle, _) = prompt(&mut child, &mut reader, 3, &json!(id)).await;
     child.kill().await.unwrap();
+    assert_eq!(idle["stopReason"], "end_turn");
+    let config: Value =
+        serde_json::from_slice(&fs::read(project.join("mcp-config.json")).unwrap()).unwrap();
+    assert_eq!(
+        config,
+        json!({"mcpServers":{"filesystem":{
+            "command":"/opt/tools/mcp-filesystem","args":args,"env":{"TOKEN":"test"}
+        }}})
+    );
 }
 
 #[tokio::test]
@@ -2172,19 +2171,17 @@ next_message
 }
 
 #[tokio::test]
-async fn mcp_commands_are_allowed_absolute_paths() {
+async fn mcp_commands_are_absolute_paths() {
     let temp = tempfile::tempdir().unwrap();
     let (bin, project) = dirs(temp.path());
     fake_claude(&bin, "exit 0");
     let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
     initialize(&mut child, &mut reader).await;
-    for (id, command) in [(2, "node"), (3, "/usr/bin/curl"), (4, "/usr/bin/node;rm")] {
-        send(&mut child, json!({"jsonrpc":"2.0","id":id,"method":"session/new","params":{
-            "cwd":project,"mcpServers":[{"type":"stdio","name":"x","command":command,"args":[],"env":[]}]
-        }})).await;
-        let (refused, _) = response(&mut reader, id).await;
-        assert_eq!(refused["error"]["code"], -32602, "{command}: {refused}");
-    }
+    send(&mut child, json!({"jsonrpc":"2.0","id":2,"method":"session/new","params":{
+        "cwd":project,"mcpServers":[{"type":"stdio","name":"x","command":"node","args":[],"env":[]}]
+    }})).await;
+    let (refused, _) = response(&mut reader, 2).await;
+    assert_eq!(refused["error"]["code"], -32602, "{refused}");
     child.kill().await.unwrap();
 }
 

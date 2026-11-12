@@ -539,9 +539,6 @@ fn parse_mcp(servers: Vec<acp::McpServer>) -> std::result::Result<Vec<McpServer>
                 return Err(invalid("only stdio MCP servers are supported"));
             };
             validation::mcp_command(&server.command.0).map_err(invalid)?;
-            for arg in &server.args {
-                validation::mcp_arg(arg).map_err(invalid)?;
-            }
             Ok(McpServer {
                 name: server.name,
                 command: server.command.0.to_string_lossy().into_owned(),
