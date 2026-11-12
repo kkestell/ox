@@ -33,6 +33,15 @@ export async function resetDaemon() {
   }
 }
 
+/**
+ * Stops the run's oxd. It runs as `oxd --socket <OX_SOCKET>`, as the client
+ * starts it.
+ */
+export async function stopDaemon() {
+  const socket = process.env.OX_SOCKET!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  await promisify(execFile)("pkill", ["-TERM", "-f", `oxd --socket ${socket}$`]);
+}
+
 function lines(output: string): string[] {
   return output.split("\n").filter(Boolean);
 }

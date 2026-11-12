@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useState } from "react";
 import { CodeSpans } from "./CodeSpans";
 import type { Item } from "./protocol";
+import { showError } from "./showError";
 
 /** A permission request awaiting its answer, with the options the agent offers. */
 export function Permission({
@@ -12,15 +13,14 @@ export function Permission({
   sessionId: string;
 }) {
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const permit = async (optionId: string) => {
     setPending(true);
     try {
       await invoke("permit", { sessionId, requestId: item.request_id, optionId });
     } catch (e) {
-      setError(String(e));
       setPending(false);
+      await showError(e);
     }
   };
 
@@ -42,7 +42,6 @@ export function Permission({
           </button>
         ))}
       </div>
-      {error && <p className="error">{error}</p>}
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { ArrowUp, Paperclip, Square, X } from "lucide-react";
 import { useState } from "react";
 import { Permission } from "./Permission";
 import type { ConfigOption, Item, SelectOption, SessionInfo } from "./protocol";
+import { showError } from "./showError";
 
 export function Composer({
   session,
@@ -15,7 +16,6 @@ export function Composer({
 }) {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<string[]>([]);
-  const [error, setError] = useState<string | null>(null);
 
   const running = session.state === "running" || session.state === "awaiting_permission";
   const canSend = session.state === "idle" && (text.trim() !== "" || attachments.length > 0);
@@ -24,9 +24,8 @@ export function Composer({
   const run = async (action: () => Promise<unknown>) => {
     try {
       await action();
-      setError(null);
     } catch (e) {
-      setError(String(e));
+      await showError(e);
     }
   };
 
@@ -126,7 +125,6 @@ export function Composer({
           ))}
         </div>
       )}
-      {error && <p className="error">{error}</p>}
     </form>
   );
 }

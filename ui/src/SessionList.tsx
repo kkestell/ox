@@ -1,8 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FolderPlus, Plus, X } from "lucide-react";
-import { useState } from "react";
 import type { SessionInfo, SessionState, WorkspaceInfo } from "./protocol";
+import { showError } from "./showError";
 
 const agents = [{ id: "claude", name: "Claude" }];
 
@@ -24,24 +24,17 @@ export function SessionList({
   sessions,
   selected,
   onSelect,
-  error,
-  onRetry,
 }: {
   workspaces: WorkspaceInfo[];
   sessions: SessionInfo[];
   selected: string | null;
   onSelect: (sessionId: string) => void;
-  error: string | null;
-  onRetry: () => void;
 }) {
-  const [actionError, setActionError] = useState<string | null>(null);
-
   const run = async (action: () => Promise<unknown>) => {
     try {
       await action();
-      setActionError(null);
     } catch (e) {
-      setActionError(String(e));
+      await showError(e);
     }
   };
 
@@ -85,69 +78,67 @@ export function SessionList({
         </button>
       </header>
       <div className="session-list">
-        {error && (
-          <p className="error">
-            {error}{" "}
-            <button type="button" onClick={onRetry}>
-              Retry
-            </button>
-          </p>
-        )}
-        {actionError && <p className="error">{actionError}</p>}
-        {workspaces.map((workspace) => (
-          <section
-            key={workspace.id}
-            className="workspace"
-            aria-labelledby={`workspace-${workspace.id}`}
-          >
-            <div className="workspace-header">
-              <h2 id={`workspace-${workspace.id}`} title={workspace.path}>
-                {directoryName(workspace.path)}
-              </h2>
-              <button
-                type="button"
-                className="icon-button new-session"
-                title="New Session"
-                aria-label="New Session"
-                popoverTarget={`new-session-${workspace.id}`}
-                style={{ anchorName: `--new-session-${workspace.id}` }}
-              >
-                <Plus />
-              </button>
-              <div
-                id={`new-session-${workspace.id}`}
-                className="menu"
-                role="menu"
-                popover="auto"
-                style={{ positionAnchor: `--new-session-${workspace.id}` }}
-              >
-                {agents.map((agent) => (
-                  <button
-                    key={agent.id}
-                    type="button"
-                    role="menuitem"
-                    popoverTarget={`new-session-${workspace.id}`}
-                    popoverTargetAction="hide"
-                    onClick={() => newSession(workspace.id, agent.id)}
-                  >
-                    {agent.name}
-                  </button>
-                ))}
+        {workspaces.map((workspace) => {
+          const workspaceSessions = sessions.filter(
+            (session) => session.workspace_id === workspace.id,
+          );
+          return (
+            <section
+              key={workspace.id}
+              className="workspace"
+              aria-labelledby={`workspace-${workspace.id}`}
+            >
+              <div className="workspace-header">
+                <h2 id={`workspace-${workspace.id}`} title={workspace.path}>
+                  {directoryName(workspace.path)}
+                </h2>
+                <button
+                  type="button"
+                  className="icon-button new-session"
+                  title="New Session"
+                  aria-label="New Session"
+                  popoverTarget={`new-session-${workspace.id}`}
+                  style={{ anchorName: `--new-session-${workspace.id}` }}
+                >
+                  <Plus />
+                </button>
+                <div
+                  id={`new-session-${workspace.id}`}
+                  className="menu"
+                  role="menu"
+                  popover="auto"
+                  style={{ positionAnchor: `--new-session-${workspace.id}` }}
+                >
+                  {agents.map((agent) => (
+                    <button
+                      key={agent.id}
+                      type="button"
+                      role="menuitem"
+                      popoverTarget={`new-session-${workspace.id}`}
+                      popoverTargetAction="hide"
+                      onClick={() => newSession(workspace.id, agent.id)}
+                    >
+                      {agent.name}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  className="icon-button"
+                  title={
+                    workspaceSessions.length > 0
+                      ? "Close the workspace's sessions to remove it"
+                      : "Remove Workspace"
+                  }
+                  aria-label="Remove Workspace"
+                  disabled={workspaceSessions.length > 0}
+                  onClick={() => removeWorkspace(workspace.id)}
+                >
+                  <X />
+                </button>
               </div>
-              <button
-                type="button"
-                className="icon-button"
-                title="Remove Workspace"
-                aria-label="Remove Workspace"
-                onClick={() => removeWorkspace(workspace.id)}
-              >
-                <X />
-              </button>
-            </div>
-            <ul className="sessions">
-              {sessions
-                .filter((session) => session.workspace_id === workspace.id)
-                .map((session) => {
+              <ul className="sessions">
+                {workspaceSessions.map((session) => {
                   const state = stateLabels[session.state];
                   return (
                     <li key={session.id} className="session">
@@ -178,9 +169,10 @@ export function SessionList({
                     </li>
                   );
                 })}
-            </ul>
-          </section>
-        ))}
+              </ul>
+            </section>
+          );
+        })}
       </div>
     </div>
   );

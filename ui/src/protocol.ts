@@ -74,5 +74,3 @@ export type WatchMessage =
   | { type: "list"; workspaces: WorkspaceInfo[]; sessions: SessionInfo[] }
   | { type: "error"; message: string }
   | { type: "disconnected" };
-
-export type ViewMessage = { type: "item"; item: Item } | { type: "disconnected" };

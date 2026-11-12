@@ -6,9 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use ox_protocol::schema::{ContentBlock, TextContent};
-use ox_protocol::{
-    Client, ConfigValue, End, SessionInfo, WorkspaceInfo, content, default_socket_path,
-};
+use ox_protocol::{Client, ConfigValue, SessionInfo, WorkspaceInfo, content, default_socket_path};
 use serde::{Deserialize, Serialize};
 use tauri::async_runtime::JoinHandle;
 use tauri::ipc::Channel;
@@ -66,13 +64,6 @@ enum WatchMessage {
     Disconnected,
 }
 
-#[derive(Clone, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ViewMessage {
-    Item { item: Item },
-    Disconnected,
-}
-
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Agent {
@@ -122,8 +113,11 @@ fn watch(handle: AppHandle, app: State<'_, App>, channel: Channel<WatchMessage>)
 }
 
 /// Sends a session's conversation on `channel` from its first event,
-/// replacing the previous view; with no session, ends the previous view. A
-/// session that cannot be viewed, as one closed meanwhile, sends nothing.
+/// replacing the previous view; with no session, ends the previous view. The
+/// view ends when the session closes or the connection drops, and a view that
+/// cannot connect or subscribe sends nothing. The workspace watch reports the
+/// connection, and the webview views the session again once the watch
+/// reconnects.
 #[tauri::command]
 #[expect(
     clippy::needless_pass_by_value,
@@ -133,7 +127,7 @@ fn view_session(
     handle: AppHandle,
     app: State<'_, App>,
     session_id: Option<String>,
-    channel: Channel<ViewMessage>,
+    channel: Channel<Item>,
 ) {
     let task = session_id.map(|session_id| {
         Task(tauri::async_runtime::spawn(async move {
@@ -145,18 +139,9 @@ fn view_session(
                 return;
             };
             let mut conversation = Conversation::default();
-            loop {
-                match events.next().await {
-                    Ok(event) => {
-                        for item in conversation.apply(&event) {
-                            if channel.send(ViewMessage::Item { item }).is_err() {
-                                return;
-                            }
-                        }
-                    }
-                    Err(End::SessionClosed) => return,
-                    Err(End::Disconnected) => {
-                        let _ = channel.send(ViewMessage::Disconnected);
+            while let Ok(event) = events.next().await {
+                for item in conversation.apply(&event) {
+                    if channel.send(item).is_err() {
                         return;
                     }
                 }

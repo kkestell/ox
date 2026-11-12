@@ -12,13 +12,13 @@ describe("A workspace", () => {
   it("is removed once its sessions are closed", async () => {
     const cwd = await startSession();
     const group = workspaceGroup(cwd);
-    await group.$('button[aria-label="Remove Workspace"]').click();
-    await expect($(".session-list .error")).toHaveText("the workspace has sessions");
-    await expect(group).toBeDisplayed();
+    const remove = group.$('button[aria-label="Remove Workspace"]');
+    await expect(remove).toBeDisabled();
 
     await sessionEntry(cwd).$('button[aria-label="Close Session"]').click();
     await expect(sessionEntry(cwd)).not.toBeExisting();
-    await group.$('button[aria-label="Remove Workspace"]').click();
+    await expect(remove).toBeEnabled();
+    await remove.click();
     await expect(group).not.toBeExisting();
   });
 });

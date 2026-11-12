@@ -8,7 +8,7 @@ import { useWorkspaces } from "./useWorkspaces";
 import { Workbench } from "./Workbench";
 
 export function App() {
-  const { workspaces, sessions, error, retry } = useWorkspaces();
+  const { workspaces, sessions, connection } = useWorkspaces();
   // The viewed session survives a webview reload.
   const [viewed, setViewed] = useState(() => sessionStorage.getItem("viewed"));
   useEffect(() => {
@@ -16,7 +16,7 @@ export function App() {
     else sessionStorage.setItem("viewed", viewed);
   }, [viewed]);
   const session = sessions.find((session) => session.id === viewed);
-  const items = useConversation(viewed);
+  const items = useConversation(viewed, connection);
   const permission = items.find(
     (item): item is Extract<Item, { type: "permission" }> =>
       item.type === "permission" && !item.answered,
@@ -30,8 +30,6 @@ export function App() {
           sessions={sessions}
           selected={viewed}
           onSelect={setViewed}
-          error={error}
-          onRetry={retry}
         />
       }
     >

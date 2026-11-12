@@ -213,13 +213,6 @@ body {
   padding: var(--spacing) var(--sidebar-padding) var(--sidebar-padding);
 }
 
-.session-list .error {
-  margin: 0 0 var(--spacing);
-  padding: var(--spacing) var(--sidebar-row-padding);
-  font-size: var(--text-xs);
-  color: var(--destructive);
-}
-
 /* The sidebar's actions share a column with its rows' actions. */
 .sidebar-header {
   padding-inline: calc(var(--sidebar-padding) + var(--row-action-inset));
@@ -577,8 +570,7 @@ code,
 }
 
 .turn-error,
-.agent-exited,
-.composer .error {
+.agent-exited {
   color: var(--destructive);
 }
 
@@ -684,11 +676,6 @@ code,
 .composer .settings label {
   font: inherit;
   color: inherit;
-}
-
-.composer .error {
-  padding-left: var(--spacing);
-  font-size: var(--text-xs);
 }
 
 /* Workbench panels */
