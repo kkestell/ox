@@ -75,7 +75,7 @@ pub enum Change {
     },
     Exited(Option<String>),
     /// The daemon stopped the agent of a session that was idle, with no
-    /// background work, and unviewed.
+    /// background work, and unviewed, or that it archived.
     Parked,
     Closed,
 }
@@ -354,10 +354,11 @@ impl Phase {
                 events.push(EventKind::AgentExited { error });
                 (Self::Exited(Some(agent)), events)
             }
-            // The daemon parks a quiet session. One that stopped being quiet
-            // before the agent was stopped ends what the agent left open.
+            // The daemon parks a quiet session, and archives any session. One
+            // that stopped being quiet before the agent was stopped, or that
+            // is archived while it works, ends what the agent left open.
             (Self::Live(live), Change::Parked) => {
-                let (agent, mut events) = live.end("the agent was parked");
+                let (agent, mut events) = live.end("the agent was stopped");
                 events.push(EventKind::AgentParked);
                 (Self::Exited(Some(agent)), events)
             }

@@ -307,6 +307,57 @@ async fn delete_session(
     )
 }
 
+/// The outcome of archiving a session.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Archival {
+    Archived,
+    /// The session's worktree has work the archive would lose; `message`
+    /// lists it.
+    UnsavedWork {
+        message: String,
+    },
+}
+
+/// Archives a session, giving up its worktree's unsaved work if `discard`.
+#[tauri::command]
+async fn archive_session(
+    app: State<'_, App>,
+    session_id: String,
+    discard: bool,
+) -> Result<Archival, String> {
+    archival(
+        app.client()
+            .await?
+            .archive(&session_id, discard, utf8_env())
+            .await,
+    )
+}
+
+/// Unarchives a session.
+#[tauri::command]
+async fn unarchive_session(app: State<'_, App>, session_id: String) -> Result<(), String> {
+    app.client()
+        .await?
+        .unarchive(&session_id, utf8_env())
+        .await
+        .map(drop)
+        .map_err(message)
+}
+
+/// The outcome of a `session.archive` answer.
+fn archival<T>(answer: Result<T, Error>) -> Result<Archival, String> {
+    match answer {
+        Ok(_) => Ok(Archival::Archived),
+        Err(Error::Remote(error)) if error.code == code::UNSAVED_WORK => {
+            Ok(Archival::UnsavedWork {
+                message: error.message,
+            })
+        }
+        Err(error) => Err(message(error)),
+    }
+}
+
 /// The outcome of a `session.delete` answer. A session that is already gone
 /// counts as deleted.
 fn deletion(answer: Result<Deleted, Error>) -> Result<Deletion, String> {
@@ -355,6 +406,8 @@ pub fn run() {
             permit,
             set_config_option,
             delete_session,
+            archive_session,
+            unarchive_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -366,11 +419,25 @@ mod tests {
 
     use super::*;
 
-    fn remote(code: i32, message: &str) -> Result<Deleted, Error> {
+    fn remote<T>(code: i32, message: &str) -> Result<T, Error> {
         Err(Error::Remote(ErrorBody {
             code,
             message: message.into(),
         }))
+    }
+
+    #[test]
+    fn archival_maps_the_answer() {
+        assert_eq!(
+            archival(remote::<()>(code::UNSAVED_WORK, "untracked a.txt")),
+            Ok(Archival::UnsavedWork {
+                message: "untracked a.txt".into()
+            })
+        );
+        assert_eq!(
+            archival(remote::<()>(code::NOT_FOUND, "no session s")),
+            Err("no session s".into())
+        );
     }
 
     #[test]

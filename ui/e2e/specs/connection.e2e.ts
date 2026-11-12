@@ -16,11 +16,13 @@ describe("The connection to oxd", () => {
 
     await stopDaemon();
     // Only the restarted oxd lists the session as exited, and the view it
-    // starts again on the new connection shows no agent text yet.
+    // starts again on the new connection shows the stored history once.
     await expect(sessionEntry(cwd).$('[aria-label="Exited"]')).toBeDisplayed();
-    await expect(agentText()).toBeElementsArrayOfSize(0);
+    await expect(agentText()).toBeElementsArrayOfSize(1);
+    await expect(agentText()[0]).toHaveText("chunk-1");
 
     await openSession(cwd);
+    await expect(agentText()).toBeElementsArrayOfSize(1);
     await expect(agentText()[0]).toHaveText("chunk-1");
   });
 });

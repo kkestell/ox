@@ -474,6 +474,10 @@ body {
   opacity: var(--dimmed-opacity);
 }
 
+.archived-toggle .select {
+  color: var(--muted-foreground);
+}
+
 /* A state shown in an icon-sized box: a dot, or an icon. */
 .status {
   display: flex;
@@ -532,23 +536,29 @@ body {
   white-space: nowrap;
 }
 
-.session .close {
+.row-actions {
   position: absolute;
   top: calc((var(--sidebar-row-height) - var(--icon-button-size)) / 2);
   right: var(--row-action-inset);
+  display: flex;
   opacity: 0;
   transition: opacity var(--transition-duration);
 }
 
-.session:hover .close,
-.session:focus-within .close {
+.session:hover .row-actions,
+.session:focus-within .row-actions {
   opacity: 1;
 }
 
-/* While the close button shows, the title fades out under it, over whatever
+/* While the row actions show, the title fades out under them, over whatever
    background the row has. */
 .session:where(:hover, :focus-within) .title {
-  --covered: calc(var(--row-action-inset) + var(--icon-button-size) - var(--sidebar-row-padding));
+  --covered: calc(
+    var(--row-action-inset) +
+    2 *
+    var(--icon-button-size) -
+    var(--sidebar-row-padding)
+  );
   mask-image: linear-gradient(
     to left,
     transparent var(--covered),

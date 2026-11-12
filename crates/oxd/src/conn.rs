@@ -134,6 +134,8 @@ pub async fn serve(daemon: Arc<Daemon>, stream: UnixStream, _client: ClientGuard
             method @ (Method::SessionSetConfigOption { .. }
             | Method::SessionNew { .. }
             | Method::SessionDelete { .. }
+            | Method::SessionArchive { .. }
+            | Method::SessionUnarchive { .. }
             | Method::WorkspaceBranches { .. }) => {
                 let daemon = daemon.clone();
                 let outgoing = outgoing.clone();

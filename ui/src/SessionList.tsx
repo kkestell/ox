@@ -1,10 +1,25 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { FolderPlus, Plus, X } from "lucide-react";
+import {
+  Archive,
+  ArchiveRestore,
+  ChevronDown,
+  ChevronRight,
+  FolderPlus,
+  Plus,
+  X,
+} from "lucide-react";
 import { useState } from "react";
 import { Dialog } from "./Dialog";
 import { NewBranchDialog } from "./NewBranchDialog";
-import type { Checkout, Deletion, SessionInfo, SessionState, WorkspaceInfo } from "./protocol";
+import type {
+  Archival,
+  Checkout,
+  Deletion,
+  SessionInfo,
+  SessionState,
+  WorkspaceInfo,
+} from "./protocol";
 import { showError } from "./showError";
 
 type Agent = { id: string; name: string };
@@ -39,10 +54,16 @@ export function SessionList({
   const [agent, setAgent] = useState(agents[0].id);
   // The workspace and agent the New Worktree on Branch dialog is for.
   const [newBranch, setNewBranch] = useState<{ workspaceId: string; agent: string } | null>(null);
-  // The sessions whose deletes are in flight.
-  const [deleting, setDeleting] = useState<ReadonlySet<string>>(new Set());
-  // A delete that would lose the unsaved work `message` lists.
-  const [unsaved, setUnsaved] = useState<{ sessionId: string; message: string } | null>(null);
+  // The sessions whose archives, unarchives or deletes are in flight.
+  const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
+  // The workspaces whose Archived groups are open.
+  const [openArchives, setOpenArchives] = useState<ReadonlySet<string>>(new Set());
+  // An archive or delete that would lose the unsaved work `message` lists.
+  const [unsaved, setUnsaved] = useState<{
+    sessionId: string;
+    action: "archive" | "delete";
+    message: string;
+  } | null>(null);
   const [keptBranch, setKeptBranch] = useState<string | null>(null);
 
   const run = async (action: () => Promise<unknown>) => {
@@ -71,30 +92,107 @@ export function SessionList({
   // Viewing a saved session whose agent is not running starts its agent, which
   // replays the conversation.
   const select = async (session: SessionInfo) => {
-    if (session.state === "exited" && session.agent_session_id !== null) {
+    if (session.state === "exited" && !session.archived && session.agent_session_id !== null) {
       await run(() => invoke("load_session", { sessionId: session.id }));
     }
     onSelect(session.id);
   };
 
-  const deleteSession = async (sessionId: string, discard: boolean) => {
-    setDeleting((deleting) => new Set(deleting).add(sessionId));
+  // Runs `action` with the session's row actions disabled.
+  const withBusy = async (sessionId: string, action: () => Promise<void>) => {
+    setBusy((busy) => new Set(busy).add(sessionId));
     try {
-      const deletion = await invoke<Deletion>("delete_session", { sessionId, discard });
-      if (deletion.type === "unsaved_work") {
-        setUnsaved({ sessionId, message: deletion.message });
-      } else if (deletion.kept_branch !== null) {
-        setKeptBranch(deletion.kept_branch);
-      }
+      await action();
     } catch (e) {
       await showError(e);
     } finally {
-      setDeleting((deleting) => {
-        const rest = new Set(deleting);
+      setBusy((busy) => {
+        const rest = new Set(busy);
         rest.delete(sessionId);
         return rest;
       });
     }
+  };
+
+  const deleteSession = (sessionId: string, discard: boolean) =>
+    withBusy(sessionId, async () => {
+      const deletion = await invoke<Deletion>("delete_session", { sessionId, discard });
+      if (deletion.type === "unsaved_work") {
+        setUnsaved({ sessionId, action: "delete", message: deletion.message });
+      } else if (deletion.kept_branch !== null) {
+        setKeptBranch(deletion.kept_branch);
+      }
+    });
+
+  const archiveSession = (sessionId: string, discard: boolean) =>
+    withBusy(sessionId, async () => {
+      const archival = await invoke<Archival>("archive_session", { sessionId, discard });
+      if (archival.type === "unsaved_work") {
+        setUnsaved({ sessionId, action: "archive", message: archival.message });
+      }
+    });
+
+  const unarchiveSession = (sessionId: string) =>
+    withBusy(sessionId, () => invoke("unarchive_session", { sessionId }));
+
+  const toggleArchive = (workspaceId: string) =>
+    setOpenArchives((open) => {
+      const next = new Set(open);
+      if (!next.delete(workspaceId)) next.add(workspaceId);
+      return next;
+    });
+
+  const sessionRow = (session: SessionInfo) => {
+    const state = stateLabels[session.state];
+    return (
+      <li key={session.id} className="session">
+        <button
+          type="button"
+          className="select"
+          title={session.cwd}
+          aria-current={session.id === selected}
+          onClick={() => select(session)}
+        >
+          <span className={`status ${session.state}`} role="img" aria-label={state} title={state} />
+          <span className="title">{session.title ?? "New session"}</span>
+        </button>
+        <div className="row-actions">
+          {session.archived ? (
+            <button
+              type="button"
+              className="icon-button"
+              title="Unarchive Session"
+              aria-label="Unarchive Session"
+              disabled={busy.has(session.id)}
+              onClick={() => unarchiveSession(session.id)}
+            >
+              <ArchiveRestore />
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="icon-button"
+              title="Archive Session"
+              aria-label="Archive Session"
+              disabled={busy.has(session.id)}
+              onClick={() => archiveSession(session.id, false)}
+            >
+              <Archive />
+            </button>
+          )}
+          <button
+            type="button"
+            className="icon-button"
+            title="Delete Session"
+            aria-label="Delete Session"
+            disabled={busy.has(session.id)}
+            onClick={() => deleteSession(session.id, false)}
+          >
+            <X />
+          </button>
+        </div>
+      </li>
+    );
   };
 
   return (
@@ -115,6 +213,9 @@ export function SessionList({
           const workspaceSessions = sessions.filter(
             (session) => session.workspace_id === workspace.id,
           );
+          const active = workspaceSessions.filter((session) => !session.archived);
+          const archived = workspaceSessions.filter((session) => session.archived);
+          const archiveOpen = openArchives.has(workspace.id);
           return (
             <section
               key={workspace.id}
@@ -208,38 +309,23 @@ export function SessionList({
                 </button>
               </div>
               <ul className="sessions">
-                {workspaceSessions.map((session) => {
-                  const state = stateLabels[session.state];
-                  return (
-                    <li key={session.id} className="session">
-                      <button
-                        type="button"
-                        className="select"
-                        title={session.cwd}
-                        aria-current={session.id === selected}
-                        onClick={() => select(session)}
-                      >
-                        <span
-                          className={`status ${session.state}`}
-                          role="img"
-                          aria-label={state}
-                          title={state}
-                        />
-                        <span className="title">{session.title ?? "New session"}</span>
-                      </button>
-                      <button
-                        type="button"
-                        className="icon-button close"
-                        title="Delete Session"
-                        aria-label="Delete Session"
-                        disabled={deleting.has(session.id)}
-                        onClick={() => deleteSession(session.id, false)}
-                      >
-                        <X />
-                      </button>
-                    </li>
-                  );
-                })}
+                {active.map(sessionRow)}
+                {archived.length > 0 && (
+                  <li className="session archived-toggle">
+                    <button
+                      type="button"
+                      className="select"
+                      aria-expanded={archiveOpen}
+                      onClick={() => toggleArchive(workspace.id)}
+                    >
+                      <span className="status">
+                        {archiveOpen ? <ChevronDown /> : <ChevronRight />}
+                      </span>
+                      <span className="title">Archived ({archived.length})</span>
+                    </button>
+                  </li>
+                )}
+                {archiveOpen && archived.map(sessionRow)}
               </ul>
             </section>
           );
@@ -270,10 +356,11 @@ export function SessionList({
                 className="text-button"
                 onClick={() => {
                   setUnsaved(null);
-                  deleteSession(unsaved.sessionId, true);
+                  if (unsaved.action === "archive") archiveSession(unsaved.sessionId, true);
+                  else deleteSession(unsaved.sessionId, true);
                 }}
               >
-                Discard and Delete
+                {unsaved.action === "archive" ? "Discard and Archive" : "Discard and Delete"}
               </button>
             </>
           }

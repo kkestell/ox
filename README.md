@@ -15,6 +15,31 @@ Code ACP bridge.
 See [architecture](docs/architecture.md), [ACP v2 support](docs/acp-v2.md), and
 [research inherited from Hypercube](docs/research/README.md).
 
+## Features
+
+- **Bring your own ACP agent.** Run compatible ACP v2 agents in one app.
+- **Claude Code bridge included.** A custom ACP wrapper brings Claude Code into
+  Ox, including model and effort controls, tool permissions, and background tasks.
+- **Multiple projects, parallel sessions.** Organize sessions by workspace and
+  keep independent tasks running.
+- **Isolated Git worktrees.** Give each task its own checkout, using a new,
+  existing, or remote branch.
+- **Sessions that survive the app.** Close and reopen Ox without interrupting
+  agents; resume saved conversations after daemon restarts.
+- **Live conversation and tool activity.** Follow streaming responses, thinking,
+  tool calls, results, and background-task updates.
+- **File and image attachments.** Send text, images, and PDFs to agents that
+  support them.
+- **Permission controls.** Approve or reject tool requests and interrupt running
+  work.
+- **Persistent history.** Retain conversations, tool output, and images
+  independently of the agent process.
+- **Archive and restore.** Release a session's worktree while keeping its
+  conversation and branch.
+- **Safe cleanup.** Detect unsaved work before removing worktrees and preserve
+  branches containing unique commits.
+- **CLI access.** Start, prompt, monitor, and manage sessions through `oxctl`.
+
 ## Development
 
 Run the app from the repository root:

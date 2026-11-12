@@ -345,6 +345,7 @@ class SmokeRun:
         self.verify_model()
         self.check_load_after_restart()
         self.check_parking()
+        self.check_archive()
         self.report("all_event_sequences_contiguous", event_count=self.seq)
 
         self.disconnect()
@@ -679,6 +680,65 @@ class SmokeRun:
             if watch is not None:
                 watch.close()
             run.cleanup()
+
+    def check_archive(self):
+        """An archived session stops its agent and keeps its conversation
+        across a daemon restart; unarchiving it lets it resume."""
+        token = self.directory.name
+        self.disconnect()
+        self.remember_agents()
+        self.ctl("archive", self.session)
+        row = self.session_row()
+        check(row[2] == "archived", f"Archived session is not listed so: {row}")
+        check(
+            not running_after(self.agent_pids, 10), "Archiving left the agent running"
+        )
+        self.daemon.send_signal(signal.SIGTERM)
+        check(self.daemon.wait(timeout=15) == 0, "Daemon did not stop on SIGTERM")
+        self.start_daemon()
+        check(
+            self.session_row()[2] == "archived",
+            "The session is not archived after a restart",
+        )
+        self.seq = 0
+        self.attach(0)
+        history = []
+        deadline = time.monotonic() + self.args.timeout
+        while True:
+            event = self.attachment.read(deadline)
+            check(event["seq"] == self.seq + 1, f"Sequence gap or duplicate: {event}")
+            self.seq = event["seq"]
+            history.append(event)
+            if kind(event) == "agent_parked":
+                break
+        check(
+            token in text(history),
+            f"The archive lacks the conversation: {text(history)[:300]}",
+        )
+        self.report(
+            "archived_session_history_survives_daemon_restart", events=len(history)
+        )
+
+        self.ctl("unarchive", self.session)
+        check(self.session_row()[2] == "exited", "Unarchived session is not exited")
+        self.ctl("load", self.session)
+        self.remember_agents()
+        restarted = self.until(lambda e: kind(e) == "agent_started")
+        check(
+            len(restarted) == 1,
+            f"Load recorded the agent's replay again: {restarted[:3]}",
+        )
+        self.ctl(
+            "prompt",
+            self.session,
+            "What exact token did I ask you to remember at the start of this "
+            "conversation? Reply with only that token. Do not use tools.",
+        )
+        response = text(self.finish()).strip()
+        check(
+            token in response, f"Unarchived session lost the conversation: {response}"
+        )
+        self.report("unarchived_session_retains_conversation", response=response)
 
     def check_cancellation(self):
         self.ctl(

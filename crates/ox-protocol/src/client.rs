@@ -447,6 +447,36 @@ impl Client {
         .await
     }
 
+    /// Archives a session, removing its worktree unless that loses work
+    /// `discard` does not give up. Git runs with `env` over the daemon's
+    /// environment.
+    pub async fn archive(
+        &self,
+        session_id: &str,
+        discard: bool,
+        env: BTreeMap<String, String>,
+    ) -> Result<SessionInfo, Error> {
+        self.call(Method::SessionArchive {
+            session_id: session_id.into(),
+            discard,
+            env,
+        })
+        .await
+    }
+
+    /// Adds an archived session's worktree again and unarchives it.
+    pub async fn unarchive(
+        &self,
+        session_id: &str,
+        env: BTreeMap<String, String>,
+    ) -> Result<SessionInfo, Error> {
+        self.call(Method::SessionUnarchive {
+            session_id: session_id.into(),
+            env,
+        })
+        .await
+    }
+
     async fn ack(&self, method: Method) -> Result<(), Error> {
         self.call::<Value>(method).await.map(drop)
     }

@@ -140,6 +140,31 @@ pub enum Method {
         #[serde(default)]
         env: BTreeMap<String, String>,
     },
+    /// Stops the session's agent, removes its worktree, and marks the
+    /// session archived, keeping its branch. The conversation stays readable
+    /// by subscribing; `session.load` refuses an archived session. The
+    /// worktree removal is refused with `UNSAVED_WORK`, as for
+    /// `session.delete`, unless `discard` is set. Git runs with `env` over
+    /// the daemon's environment. The result is the session's
+    /// [`SessionInfo`].
+    #[serde(rename = "session.archive")]
+    SessionArchive {
+        session_id: String,
+        #[serde(default)]
+        discard: bool,
+        #[serde(default)]
+        env: BTreeMap<String, String>,
+    },
+    /// Adds an archived session's worktree again, on its branch, and marks
+    /// the session not archived. It is then an `exited` session, which
+    /// `session.load` resumes. Git runs with `env` over the daemon's
+    /// environment. The result is the session's [`SessionInfo`].
+    #[serde(rename = "session.unarchive")]
+    SessionUnarchive {
+        session_id: String,
+        #[serde(default)]
+        env: BTreeMap<String, String>,
+    },
 }
 
 /// Where a new session runs.
@@ -276,6 +301,9 @@ pub struct SessionInfo {
     /// The worktree the session runs in, if it has one. Unset again when
     /// the worktree could not be added.
     pub worktree: Option<WorktreeInfo>,
+    /// Whether the session is archived: it is `exited`, its worktree is
+    /// removed, and only its history can be read.
+    pub archived: bool,
 }
 
 /// One entry in a session's history. `seq` starts at 1 and increases by one
@@ -336,7 +364,7 @@ pub enum EventKind {
         error: Option<String>,
     },
     /// The daemon stopped the agent because the session was idle, with no
-    /// background work, and unviewed. The session is `exited`;
+    /// background work, and unviewed, or because the session was archived. The session is `exited`;
     /// `session.load` resumes it.
     AgentParked,
     /// The session was closed. It is the last event of a session.
@@ -502,6 +530,28 @@ mod tests {
                 if session_id == "s" && env.is_empty()
         ));
         let request: Request = serde_json::from_value(json!({
+            "id": 17,
+            "method": "session.archive",
+            "params": {"session_id": "s"}
+        }))
+        .unwrap();
+        assert!(matches!(
+            request.method,
+            Method::SessionArchive { ref session_id, discard: false, ref env }
+                if session_id == "s" && env.is_empty()
+        ));
+        let request: Request = serde_json::from_value(json!({
+            "id": 18,
+            "method": "session.unarchive",
+            "params": {"session_id": "s"}
+        }))
+        .unwrap();
+        assert!(matches!(
+            request.method,
+            Method::SessionUnarchive { ref session_id, ref env }
+                if session_id == "s" && env.is_empty()
+        ));
+        let request: Request = serde_json::from_value(json!({
             "id": 15,
             "method": "workspace.branches",
             "params": {"workspace_id": "w"}
@@ -641,7 +691,8 @@ mod tests {
                     "branch": "ox/01234567",
                     "base": "abc",
                     "created_branch": true
-                }
+                },
+                "archived": false
             }]
         }))
         .unwrap();

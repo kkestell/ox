@@ -260,6 +260,16 @@ impl Daemon {
             } => Ok(to_value(
                 self.delete_session(&session_id, discard, env).await?,
             )),
+            Method::SessionArchive {
+                session_id,
+                discard,
+                env,
+            } => Ok(to_value(
+                self.archive_session(&session_id, discard, env).await?,
+            )),
+            Method::SessionUnarchive { session_id, env } => {
+                Ok(to_value(self.unarchive_session(&session_id, env).await?))
+            }
             Method::Hello { .. }
             | Method::SessionSubscribe { .. }
             | Method::Watch
@@ -423,6 +433,7 @@ impl Daemon {
                 agent_session_id: None,
                 worktree: info,
                 last_seq: 0,
+                archived: false,
             };
             let session = Session::spawn(
                 self.store.clone(),
@@ -544,6 +555,66 @@ impl Daemon {
         Ok(Deleted { kept_branch })
     }
 
+    /// Archives a session once its startup has finished: its agent is
+    /// stopped and its worktree removed, with git run with `env`, and the
+    /// branch is kept. A worktree that would lose work refuses the archive
+    /// unless `discard` is set, leaving the session as it was, or `exited`
+    /// when the work appeared after its agent stopped.
+    async fn archive_session(
+        &self,
+        id: &str,
+        discard: bool,
+        env: BTreeMap<String, String>,
+    ) -> Result<SessionInfo, ErrorBody> {
+        let session = self.session(id)?;
+        let _lifecycle = self.lifecycle(&session).await?;
+        if session.archived() {
+            return Err(invalid_state("the session is already archived"));
+        }
+        let git = Git::for_client(env);
+        let worktree = session.worktree();
+        if let Some(worktree) = &worktree
+            && !discard
+        {
+            let unsaved = worktree::unsaved(&git, worktree).await?;
+            if !unsaved.is_empty() {
+                return Err(worktree::unsaved_work(&unsaved));
+            }
+        }
+        session.started().await;
+        session.stop(Change::Parked).await;
+        if let Some(worktree) = &worktree {
+            worktree::remove_worktree(&git, worktree, discard).await?;
+        }
+        self.store
+            .set_archived(id, true)
+            .map_err(|error| storage(&error))?;
+        session.set_archived(true);
+        Ok(session.info())
+    }
+
+    /// Adds an archived session's worktree again, with git run with `env`,
+    /// and unarchives it.
+    async fn unarchive_session(
+        &self,
+        id: &str,
+        env: BTreeMap<String, String>,
+    ) -> Result<SessionInfo, ErrorBody> {
+        let session = self.session(id)?;
+        let _lifecycle = self.lifecycle(&session).await?;
+        if !session.archived() {
+            return Err(invalid_state("the session is not archived"));
+        }
+        if let Some(worktree) = session.worktree() {
+            worktree::restore(&Git::for_client(env), &worktree).await?;
+        }
+        self.store
+            .set_archived(id, false)
+            .map_err(|error| storage(&error))?;
+        session.set_archived(false);
+        Ok(session.info())
+    }
+
     /// Deletes the session's rows and removes it from the registry.
     fn forget(&self, id: &str) -> Result<(), ErrorBody> {
         self.update(|registry| {
@@ -585,6 +656,13 @@ fn not_found(kind: &str, id: &str) -> ErrorBody {
     ErrorBody {
         code: code::NOT_FOUND,
         message: format!("no {kind} {id}"),
+    }
+}
+
+fn invalid_state(message: &str) -> ErrorBody {
+    ErrorBody {
+        code: code::INVALID_STATE,
+        message: message.into(),
     }
 }
 

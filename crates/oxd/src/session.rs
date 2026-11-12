@@ -47,6 +47,8 @@ pub struct Session {
     cwd: PathBuf,
     /// The worktree the session runs in. Unset when it could not be added.
     worktree: Mutex<Option<SavedWorktree>>,
+    /// Whether the session is archived.
+    archived: Mutex<bool>,
     /// Held while the session adds its worktree and launches its agent,
     /// while it loads, and while it is deleted.
     lifecycle: Arc<tokio::sync::Mutex<()>>,
@@ -107,6 +109,7 @@ impl Session {
             command: saved.command,
             cwd: saved.cwd,
             worktree: Mutex::new(saved.worktree),
+            archived: Mutex::new(saved.archived),
             lifecycle: Arc::default(),
             store,
             changed,
@@ -250,6 +253,12 @@ impl Session {
     /// records `AgentStarted` once the agent has resumed it, or `AgentExited`
     /// if it cannot.
     pub fn load(self: &Arc<Self>, env: BTreeMap<String, String>) -> Result<(), ErrorBody> {
+        if self.archived() {
+            return Err(ErrorBody {
+                code: code::INVALID_STATE,
+                message: "the session is archived".into(),
+            });
+        }
         if !self.cwd.is_dir() {
             return Err(ErrorBody {
                 code: code::INVALID_STATE,
@@ -269,6 +278,27 @@ impl Session {
 
     pub fn info(&self) -> SessionInfo {
         self.info_of(&self.lock())
+    }
+
+    pub fn archived(&self) -> bool {
+        *self.archived.lock().unwrap()
+    }
+
+    /// Marks the session archived, or not, and signals the change.
+    pub fn set_archived(&self, archived: bool) {
+        self.update(|_| *self.archived.lock().unwrap() = archived);
+    }
+
+    /// Waits until the session is not `starting`.
+    pub async fn started(&self) {
+        loop {
+            let mut seq = self.last_seq.subscribe();
+            if self.state() != SessionState::Starting {
+                return;
+            }
+            // Leaving `starting` records an event.
+            let _ = seq.changed().await;
+        }
     }
 
     pub fn worktree(&self) -> Option<SavedWorktree> {
@@ -316,6 +346,7 @@ impl Session {
                 .unwrap()
                 .as_ref()
                 .map(|worktree| worktree.info.clone()),
+            archived: *self.archived.lock().unwrap(),
         }
     }
 

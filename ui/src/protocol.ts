@@ -55,6 +55,8 @@ export type Deletion =
   | { type: "deleted"; kept_branch: string | null }
   | { type: "unsaved_work"; message: string };
 
+export type Archival = { type: "archived" } | { type: "unsaved_work"; message: string };
+
 export interface SessionInfo {
   id: string;
   workspace_id: string;
@@ -64,6 +66,7 @@ export interface SessionInfo {
   agent_session_id: string | null;
   config_options: ConfigOption[];
   worktree: WorktreeInfo | null;
+  archived: boolean;
 }
 
 export interface PermissionOption {

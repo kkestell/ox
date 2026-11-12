@@ -48,7 +48,9 @@ elements; errors show in a native message box.
 the app. `oxctl new --worktree` starts a session in a new worktree, on a
 branch `--branch` names, started at `--start`. `oxctl delete` deletes a
 session, and with `--discard` gives up its worktree's unsaved work; it prints
-the branch it kept, if any.
+the branch it kept, if any. `oxctl archive` archives a session, with
+`--discard` as for delete, and `oxctl unarchive` undoes it; `oxctl ls` shows
+`archived` in place of an archived session's state.
 
 **oxd.** A per-user daemon on `$OX_SOCKET`, or `oxd.sock` in Ox's data
 directory: `$XDG_DATA_HOME/ox` when `XDG_DATA_HOME` is an absolute path, else
@@ -221,6 +223,21 @@ delay. A parked session keeps its conversation, worktree, and branch, records
 `agent_parked`, and is `exited`; no subscription ends. `session.load` wakes
 it, as it does any exited session. Parking holds the session's lifecycle lock,
 so a load, delete, or startup in progress finishes first.
+
+**Archiving.** `session.archive` waits for the session's startup to finish,
+refuses with `UNSAVED_WORK` as `session.delete` does unless `discard` is set,
+stops the agent (ending an open turn and pending permission requests with the
+error "the agent was stopped", and recording `agent_parked`), removes the
+worktree, and marks the session archived in the `archived` table. The branch is
+always kept and the branch rule is not applied. The session is `exited` with
+`SessionInfo.archived` true; subscribing to it delivers its stored history
+with no agent, and `session.load` refuses it. A refusal or git failure leaves
+the session not archived. `session.unarchive` runs `git worktree add <path>
+<branch>` in the recorded repository, answering `GIT` and leaving the session
+archived if git refuses, such as for a deleted branch or one checked out
+elsewhere, then clears the mark. The session is then an ordinary `exited`
+session that `session.load` resumes, from Claude's transcript. `session.delete`
+deletes an archived session as any other.
 
 `session.load` restarts the agent of an exited session that has an agent
 session ID, from the session's stored command and directory, on the same

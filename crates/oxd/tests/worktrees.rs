@@ -2048,3 +2048,253 @@ async fn the_daemon_stays_up_until_startup_cleanup_ends() {
         .unwrap();
     assert!(status.success());
 }
+
+fn text(prompt: &str) -> Vec<ContentBlock> {
+    vec![ContentBlock::Text(TextContent::new(prompt))]
+}
+
+async fn archive(client: &Client, session_id: &str, discard: bool) -> Result<SessionInfo, Error> {
+    timeout(
+        TIMEOUT,
+        client.archive(session_id, discard, BTreeMap::new()),
+    )
+    .await
+    .expect("timed out archiving the session")
+}
+
+async fn unarchive(client: &Client, session_id: &str) -> Result<SessionInfo, Error> {
+    timeout(TIMEOUT, client.unarchive(session_id, BTreeMap::new()))
+        .await
+        .expect("timed out unarchiving the session")
+}
+
+/// Subscribes to the session after `seq` and returns its events up to the one
+/// `last` accepts.
+async fn events_until(
+    client: &Client,
+    session_id: &str,
+    seq: u64,
+    last: impl Fn(&EventKind) -> bool,
+) -> Vec<ox_protocol::Event> {
+    let mut events = client.subscribe(session_id, seq).await.unwrap();
+    let mut seen = Vec::new();
+    loop {
+        let event = timeout(TIMEOUT, events.next())
+            .await
+            .expect("timed out waiting for an event")
+            .unwrap();
+        let done = last(&event.kind);
+        seen.push(event);
+        if done {
+            return seen;
+        }
+    }
+}
+
+/// A session of the fake agent in a new worktree that has had one turn, with
+/// the agent's transcript committed on its branch so that a resumed agent
+/// finds it in the restored worktree.
+async fn session_with_a_turn(
+    client: &Client,
+    repo: &Path,
+) -> (SessionInfo, Vec<ox_protocol::Event>) {
+    let session = new_session(client, repo, in_worktree(None, None))
+        .await
+        .unwrap();
+    let session = started(client, &session).await;
+    let mut events = client.subscribe(&session.id, 0).await.unwrap();
+    client.prompt(&session.id, text("say 1 0")).await.unwrap();
+    let mut seen = Vec::new();
+    loop {
+        let event = timeout(TIMEOUT, events.next())
+            .await
+            .expect("the agent did not answer")
+            .unwrap();
+        let done = matches!(event.kind, EventKind::TurnEnded { .. });
+        seen.push(event);
+        if done {
+            break;
+        }
+    }
+    let worktree = session_worktree(&session);
+    git(&worktree.path, &["add", "."]);
+    git(&worktree.path, &["commit", "--quiet", "-m", "transcript"]);
+    (session, seen)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn archiving_removes_the_worktree_and_keeps_the_branch_and_the_conversation() {
+    let repo = repo();
+    let daemon = Daemon::start().await;
+    let client = daemon.client().await;
+    let (session, turn) = session_with_a_turn(&client, repo.path()).await;
+    let worktree = session_worktree(&session).clone();
+
+    let archived = archive(&client, &session.id, false).await.unwrap();
+    assert!(archived.archived);
+    assert_eq!(archived.state, SessionState::Exited);
+    assert_removed(repo.path(), &worktree);
+    assert!(branch_exists(repo.path(), &worktree.branch));
+    assert!(info(&client, &session.id).await.unwrap().archived);
+
+    let parked = |kind: &EventKind| matches!(kind, EventKind::AgentParked);
+    let history = events_until(&client, &session.id, 0, parked).await;
+    assert!(history.len() > turn.len());
+    assert_eq!(history[..turn.len()], turn);
+    drop(client);
+
+    let daemon = daemon.restart().await;
+    let client = daemon.client().await;
+    let restored = info(&client, &session.id).await.unwrap();
+    assert!(restored.archived);
+    assert_eq!(restored.state, SessionState::Exited);
+    assert_eq!(events_until(&client, &session.id, 0, parked).await, history);
+    assert_eq!(
+        info(&client, &session.id).await.unwrap().state,
+        SessionState::Exited
+    );
+
+    // An archived session cannot run.
+    let refused = refusal(client.load_session(&session.id, BTreeMap::new()).await);
+    assert_eq!(refused.code, code::INVALID_STATE);
+    assert!(refused.message.contains("archived"), "{refused:?}");
+    refusal(client.prompt(&session.id, text("say 1 0")).await);
+    let refused = refusal(archive(&client, &session.id, false).await);
+    assert_eq!(refused.code, code::INVALID_STATE);
+
+    // Unarchiving brings the worktree back on its branch, and the session
+    // resumes without replaying its history.
+    let unarchived = unarchive(&client, &session.id).await.unwrap();
+    assert!(!unarchived.archived);
+    assert_eq!(unarchived.state, SessionState::Exited);
+    assert_eq!(
+        git(&worktree.path, &["branch", "--show-current"]),
+        worktree.branch
+    );
+    client
+        .load_session(&session.id, BTreeMap::new())
+        .await
+        .unwrap();
+    let last = history.last().unwrap().seq;
+    let resumed = events_until(&client, &session.id, last, |kind| {
+        matches!(
+            kind,
+            EventKind::AgentStarted { .. } | EventKind::AgentExited { .. }
+        )
+    })
+    .await;
+    assert_eq!(resumed.len(), 1, "{resumed:?}");
+    assert!(matches!(resumed[0].kind, EventKind::AgentStarted { .. }));
+    let next = resumed[0].seq;
+    let mut events = client.subscribe(&session.id, next).await.unwrap();
+    client.prompt(&session.id, text("say 1 0")).await.unwrap();
+    loop {
+        let event = timeout(TIMEOUT, events.next())
+            .await
+            .expect("the agent did not answer")
+            .unwrap();
+        if let EventKind::TurnEnded { error, .. } = event.kind {
+            assert_eq!(error, None);
+            break;
+        }
+    }
+
+    let refused = refusal(unarchive(&client, &session.id).await);
+    assert_eq!(refused.code, code::INVALID_STATE);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn archiving_refuses_unsaved_work_unless_it_is_discarded() {
+    let repo = repo();
+    let daemon = Daemon::start().await;
+    let client = daemon.client().await;
+    let mut agent = ExitWatch::new(daemon.dir.path());
+    let session = started_holding(&client, repo.path(), None, &mut agent).await;
+    let worktree = session_worktree(&session).clone();
+    std::fs::write(worktree.path.join("unsaved"), "work\n").unwrap();
+
+    let refused = refusal(archive(&client, &session.id, false).await);
+    assert_eq!(refused.code, code::UNSAVED_WORK);
+    assert!(refused.message.contains("uncommitted"), "{refused:?}");
+    assert!(worktree.path.join("unsaved").exists());
+    let listed = info(&client, &session.id).await.unwrap();
+    assert!(!listed.archived);
+    assert_eq!(listed.state, SessionState::Idle);
+
+    let archived = archive(&client, &session.id, true).await.unwrap();
+    assert!(archived.archived);
+    agent.exited().await;
+    assert_removed(repo.path(), &worktree);
+    assert!(branch_exists(repo.path(), &worktree.branch));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn archiving_a_running_session_ends_its_turn() {
+    let repo = repo();
+    let daemon = Daemon::start().await;
+    let client = daemon.client().await;
+    let session = new_session(&client, repo.path(), in_worktree(None, None))
+        .await
+        .unwrap();
+    let session = started(&client, &session).await;
+    let mut events = client.subscribe(&session.id, 0).await.unwrap();
+    client.prompt(&session.id, text("wait")).await.unwrap();
+    until_state(&client, &session.id, SessionState::Running).await;
+
+    archive(&client, &session.id, true).await.unwrap();
+    loop {
+        let event = timeout(TIMEOUT, events.next())
+            .await
+            .expect("the turn did not end")
+            .unwrap();
+        if let EventKind::TurnEnded { error, .. } = event.kind {
+            assert_eq!(error.as_deref(), Some("the agent was stopped"));
+            break;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unarchiving_needs_a_branch_git_can_check_out() {
+    let repo = repo();
+    let daemon = Daemon::start().await;
+    let client = daemon.client().await;
+    for deleted in [true, false] {
+        let session = new_session(&client, repo.path(), in_worktree(None, None))
+            .await
+            .unwrap();
+        let session = started(&client, &session).await;
+        let worktree = session_worktree(&session).clone();
+        archive(&client, &session.id, true).await.unwrap();
+        if deleted {
+            git(repo.path(), &["branch", "-D", &worktree.branch]);
+        } else {
+            git(repo.path(), &["checkout", "--quiet", &worktree.branch]);
+        }
+
+        let refused = refusal(unarchive(&client, &session.id).await);
+        assert_eq!(refused.code, code::GIT, "{refused:?}");
+        assert!(info(&client, &session.id).await.unwrap().archived);
+        assert!(!worktree.path.exists());
+        git(repo.path(), &["checkout", "--quiet", "main"]);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_an_archived_session_removes_it_and_applies_the_branch_rule() {
+    let repo = repo();
+    let daemon = Daemon::start().await;
+    let client = daemon.client().await;
+    let session = new_session(&client, repo.path(), in_worktree(None, None))
+        .await
+        .unwrap();
+    let session = started(&client, &session).await;
+    let worktree = session_worktree(&session).clone();
+    archive(&client, &session.id, true).await.unwrap();
+
+    let deleted = delete(&client, &session.id, false).await.unwrap();
+    assert_eq!(deleted, Deleted { kept_branch: None });
+    assert!(info(&client, &session.id).await.is_none());
+    assert!(!branch_exists(repo.path(), &worktree.branch));
+    assert_removed(repo.path(), &worktree);
+}

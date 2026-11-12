@@ -541,6 +541,29 @@ pub async fn add(git: &Git, plan: &WorktreePlan) -> Result<(), String> {
     .map_err(|error| error.to_string())
 }
 
+/// Adds the worktree again at its saved path, on its saved branch.
+pub async fn restore(git: &Git, worktree: &SavedWorktree) -> Result<(), ErrorBody> {
+    let path = worktree.info.path.as_path();
+    if let Some(dir) = path.parent() {
+        tokio::fs::create_dir_all(dir)
+            .await
+            .map_err(|error| ErrorBody {
+                code: code::INVALID_STATE,
+                message: format!("creating {}: {error}", dir.display()),
+            })?;
+    }
+    Repository::new(git, &worktree.common_dir)
+        .run(&[
+            &"worktree",
+            &"add",
+            &"--end-of-options",
+            &path,
+            &worktree.info.branch,
+        ])
+        .await?;
+    Ok(())
+}
+
 /// Undoes `create_branch`, and a failed `add` when `added` says it ran:
 /// removes the worktree if git registered it, and deletes the branch if it
 /// was created, still points at its base, and no worktree has it checked

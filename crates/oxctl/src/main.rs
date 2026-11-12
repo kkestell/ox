@@ -109,6 +109,17 @@ enum Command {
         #[arg(long)]
         discard: bool,
     },
+    /// Stop a session's agent and remove its worktree, keeping the branch
+    /// and the conversation
+    Archive {
+        session: String,
+        /// Remove the worktree even if that loses uncommitted changes or
+        /// commits
+        #[arg(long)]
+        discard: bool,
+    },
+    /// Add an archived session's worktree again
+    Unarchive { session: String },
 }
 
 #[derive(Subcommand)]
@@ -143,7 +154,11 @@ async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                     "{}\t{}\t{}\t{}\t{}\t{}\t{}",
                     session.id,
                     session.workspace_id,
-                    session.state.as_str(),
+                    if session.archived {
+                        "archived"
+                    } else {
+                        session.state.as_str()
+                    },
                     session.cwd.display(),
                     session.command.join(" "),
                     session.title.as_deref().unwrap_or("-"),
@@ -264,6 +279,12 @@ async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             if let Some(branch) = deleted.kept_branch {
                 println!("kept branch {branch}");
             }
+        }
+        Command::Archive { session, discard } => {
+            client.archive(&session, discard, utf8_env()).await?;
+        }
+        Command::Unarchive { session } => {
+            client.unarchive(&session, utf8_env()).await?;
         }
     }
     Ok(())

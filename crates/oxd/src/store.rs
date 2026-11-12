@@ -28,6 +28,8 @@ pub struct SavedSession {
     pub worktree: Option<SavedWorktree>,
     /// The seq of the session's last stored event, 0 if it has none.
     pub last_seq: u64,
+    /// Whether the session is archived.
+    pub archived: bool,
 }
 
 /// A session's worktree as the database holds it: what clients see, and the
@@ -94,7 +96,10 @@ impl Store {
                 seq        INTEGER NOT NULL,
                 kind       TEXT    NOT NULL,  -- JSON of EventKind
                 PRIMARY KEY (session_id, seq)
-            ) WITHOUT ROWID;",
+            ) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS archived (
+                session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE
+            );",
         )?;
         let connection = Arc::new(Mutex::new(connection));
         let (writer, queue) = mpsc::channel();
@@ -180,7 +185,8 @@ impl Store {
         let mut query = connection.prepare(
             "SELECT number, id, workspace_id, command, cwd, title, agent_session_id,
                 worktrees.path, branch, base, created_branch, common_dir,
-                (SELECT COALESCE(MAX(seq), 0) FROM events WHERE session_id = sessions.id)
+                (SELECT COALESCE(MAX(seq), 0) FROM events WHERE session_id = sessions.id),
+                EXISTS (SELECT 1 FROM archived WHERE session_id = sessions.id)
             FROM sessions LEFT JOIN worktrees ON worktrees.session_id = sessions.id
             ORDER BY number",
         )?;
@@ -214,6 +220,7 @@ impl Store {
                         None => None,
                     },
                     last_seq: u64::try_from(row.get::<_, i64>(12)?).expect("seqs are positive"),
+                    archived: row.get(13)?,
                 })
             })?
             .collect()
@@ -285,6 +292,17 @@ impl Store {
             "UPDATE sessions SET agent_session_id = ?2 WHERE id = ?1",
             params![id, agent_session_id],
         )?;
+        Ok(())
+    }
+
+    /// Marks a session archived, or not.
+    pub fn set_archived(&self, id: &str, archived: bool) -> rusqlite::Result<()> {
+        let sql = if archived {
+            "INSERT OR IGNORE INTO archived (session_id) VALUES (?1)"
+        } else {
+            "DELETE FROM archived WHERE session_id = ?1"
+        };
+        self.lock().execute(sql, [id])?;
         Ok(())
     }
 
@@ -404,6 +422,7 @@ mod tests {
                     agent_session_id: None,
                     worktree: None,
                     last_seq: 0,
+                    archived: false,
                 },
                 SavedSession {
                     number: second,
@@ -415,9 +434,31 @@ mod tests {
                     agent_session_id: None,
                     worktree: None,
                     last_seq: 0,
+                    archived: false,
                 },
             ]
         );
+    }
+
+    #[test]
+    fn archiving_is_saved_and_deleted_with_the_session() {
+        let store = store();
+        store.add_workspace(&workspace("w", "/work")).unwrap();
+        store
+            .add_session("one", "w", &command(), Path::new("/work"), None)
+            .unwrap();
+        assert!(!store.sessions().unwrap()[0].archived);
+        store.set_archived("one", true).unwrap();
+        assert!(store.sessions().unwrap()[0].archived);
+        store.set_archived("one", false).unwrap();
+        assert!(!store.sessions().unwrap()[0].archived);
+        store.set_archived("one", true).unwrap();
+        store.remove_session("one").unwrap();
+        let rows: i64 = store
+            .lock()
+            .query_row("SELECT COUNT(*) FROM archived", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
     }
 
     #[test]
