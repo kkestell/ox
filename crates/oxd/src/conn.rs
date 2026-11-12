@@ -95,10 +95,7 @@ pub async fn serve(daemon: Arc<Daemon>, stream: UnixStream, _client: ClientGuard
             Method::SessionSubscribe {
                 session_id,
                 after_seq,
-            } => match daemon
-                .session(&session_id)
-                .and_then(|session| session.subscribe(after_seq).map(|()| session))
-            {
+            } => match subscribable(&daemon, &session_id, after_seq).await {
                 Ok(session) => {
                     let ack = ServerMessage::Result {
                         id,
@@ -159,6 +156,19 @@ pub async fn serve(daemon: Arc<Daemon>, stream: UnixStream, _client: ClientGuard
             break;
         }
     }
+}
+
+/// The session, once its history is loaded, if it has events after
+/// `after_seq` to send.
+async fn subscribable(
+    daemon: &Daemon,
+    session_id: &str,
+    after_seq: u64,
+) -> Result<Arc<Session>, ErrorBody> {
+    let session = daemon.session(session_id)?;
+    session.history().await?;
+    session.subscribe(after_seq)?;
+    Ok(session)
 }
 
 /// Sends subscription `subscription` the session's events after `seq` as

@@ -52,6 +52,8 @@ pub struct Session {
     lifecycle: Arc<tokio::sync::Mutex<()>>,
     store: Arc<Store>,
     state: Mutex<State>,
+    /// Set once the stored history is in the state.
+    history: tokio::sync::OnceCell<()>,
     /// The seq of the session's last event. Updated under the state lock.
     last_seq: watch::Sender<u64>,
     /// The daemon's signal that the lists or the sessions' states changed,
@@ -96,7 +98,9 @@ impl Session {
         park_after: Duration,
     ) -> Arc<Self> {
         let session = Arc::new(Self {
+            last_seq: watch::Sender::new(state.last_seq()),
             state: Mutex::new(state),
+            history: tokio::sync::OnceCell::new(),
             id: saved.id,
             number: saved.number,
             workspace_id: saved.workspace_id,
@@ -105,7 +109,6 @@ impl Session {
             worktree: Mutex::new(saved.worktree),
             lifecycle: Arc::default(),
             store,
-            last_seq: watch::Sender::new(0),
             changed,
             commands: Mutex::new(mpsc::unbounded_channel().0),
             task: Mutex::new(None),
@@ -208,8 +211,8 @@ impl Session {
         }
     }
 
-    /// A saved session whose agent is not running: it is `exited` and has no
-    /// events until it loads. A session whose agent never started has
+    /// A saved session whose agent is not running: it is `exited`, and its
+    /// stored history is read by `history`. A session whose agent never started has
     /// nothing to load.
     pub fn restore(
         store: Arc<Store>,
@@ -218,9 +221,12 @@ impl Session {
         saved: SavedSession,
     ) -> Arc<Self> {
         let state = match saved.agent_session_id.clone() {
-            Some(agent_session_id) => {
-                State::restored(saved.id.clone(), saved.title.clone(), agent_session_id)
-            }
+            Some(agent_session_id) => State::restored(
+                saved.id.clone(),
+                saved.title.clone(),
+                agent_session_id,
+                saved.last_seq,
+            ),
             None => State::unstarted(saved.id.clone(), saved.title.clone()),
         };
         Self::new(store, changed, saved, state, park_after)
@@ -317,6 +323,30 @@ impl Session {
     pub fn view(self: &Arc<Self>) -> Viewer {
         self.update(|_| *self.viewers.lock().unwrap() += 1);
         Viewer(self.clone())
+    }
+
+    /// Reads the session's stored history into its state, once. Callers wait
+    /// for it before they subscribe to the session or load it.
+    pub async fn history(&self) -> Result<(), ErrorBody> {
+        self.history
+            .get_or_try_init(|| async {
+                if self.lock().loaded() {
+                    return Ok(());
+                }
+                let store = self.store.clone();
+                let id = self.id.clone();
+                let history = tokio::task::spawn_blocking(move || store.events(&id))
+                    .await
+                    .expect("the history read does not panic")
+                    .map_err(|error| ErrorBody {
+                        code: code::STORAGE,
+                        message: error.to_string(),
+                    })?;
+                self.update(|state| state.fill(history));
+                Ok(())
+            })
+            .await
+            .copied()
     }
 
     /// Checks that events follow `after_seq`, now or later.
@@ -428,7 +458,8 @@ impl Session {
         let _ = self.commands.lock().unwrap().send(command);
     }
 
-    /// Changes the state, publishes the seq of its last event, saves a
+    /// Changes the state, publishes the seq of its last event, queues its new
+    /// events for the database, saves a
     /// changed title or agent session ID, and signals the daemon if the
     /// session's `SessionInfo` changed.
     fn update<R>(&self, change: impl FnOnce(&mut State) -> R) -> R {
@@ -436,6 +467,10 @@ impl Session {
         let before = self.info_of(&state);
         let result = change(&mut state);
         self.last_seq.send_replace(state.last_seq());
+        let events = state.take_unlogged();
+        if !events.is_empty() {
+            self.store.log(events);
+        }
         let parkable = state.quiet() && *self.viewers.lock().unwrap() == 0;
         self.parkable.send_if_modified(|p| {
             if p.parkable == parkable {

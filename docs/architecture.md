@@ -90,6 +90,28 @@ ID changes. The database holds no environment variables: a client passes its
 environment each time it starts an agent, with `session.new` and
 `session.load`. The schema has no migrations.
 
+**Event log.** `oxd` stores every event a session records, except
+`session_closed`, in the database's `events` table, keyed by session and
+`seq`, as the event's JSON. A thread of its own writes them, batching whatever
+is queued into one transaction, so recording an event never waits on SQLite;
+`oxd` flushes the queue on shutdown, and events still queued when it is killed
+are lost. The database runs in WAL mode with `synchronous = NORMAL`. A restored
+session knows its last `seq` from the table and reads its events the first
+time a client subscribes to it or loads it. Reading closes what a stop left
+open: a turn without a `turn_ended` ends with the error "oxd stopped during
+the turn", and a permission request without a resolution is cancelled.
+Permission request IDs continue after the largest in the log. So every
+session's history, with its original `seq`s, survives `oxd` restarts and does
+not need an agent or Claude's transcript. Deleting a session deletes its
+events.
+
+The database keeps every session's full history, tool output and images
+included, until the session is deleted. Continuing a conversation still needs
+Claude's transcript, so a session older than Claude's `cleanupPeriodDays`
+(default 30 days,
+https://code.claude.com/docs/en/data-usage#data-retention) can be read but
+cannot resume.
+
 **Worktrees.** `session.new` takes a `checkout`: the workspace's directory, or
 a new worktree of the workspace's Git repository. `oxd` runs every Git
 operation as the `git` CLI, with the client's environment over its own and
@@ -208,10 +230,10 @@ replays the conversation, then reports its state, before it answers
 `session/resume` with `replayFrom: start`. An agent that reports it is working
 leaves the session `running` until its `idle`, with no `turn_started` or
 `turn_ended` for work the history did not see start. A session whose
-agent has not started yet records the replay as its history once the agent
-starts, so a load that fails partway records none of it; one whose agent
-has started, such as one that crashed, keeps its history and drops the
-replay, and its history shows a second `agent_started` after the
+agent has not started yet, or has no stored events, records the replay as
+its history once the agent starts, so a load that fails partway records none
+of it; one whose agent has started, such as one that crashed or was
+restored from the database, keeps its history and drops the replay, and its history shows a second `agent_started` after the
 `agent_exited`.
 
 **claude-code-acp.** An ACP agent, speaking draft protocol v2, that bridges to

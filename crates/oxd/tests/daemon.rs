@@ -117,9 +117,14 @@ impl Daemon {
     /// Stops the daemon with SIGTERM, which keeps its sessions saved, and
     /// waits for it to exit.
     async fn stop(&mut self) {
+        self.stop_signal();
+        assert!(self.wait_for_exit().await.success());
+    }
+
+    /// Sends the daemon SIGTERM without waiting for it to exit.
+    fn stop_signal(&self) {
         // SAFETY: sends SIGTERM to the daemon this test started.
         unsafe { libc::kill(self.child.id().unwrap().cast_signed(), libc::SIGTERM) };
-        assert!(self.wait_for_exit().await.success());
     }
 
     /// Starts another daemon on the socket of this one, which has exited.
@@ -1520,7 +1525,7 @@ async fn a_deleted_session_is_not_saved() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn loading_a_restored_session_replays_its_conversation() {
+async fn loading_a_restored_session_keeps_its_stored_history() {
     let mut first = Daemon::start(1000).await;
     let client = first.client().await;
     let (session, started) = first.new_session(&client).await;
@@ -1530,22 +1535,24 @@ async fn loading_a_restored_session_replays_its_conversation() {
         .prompt(&session.id, text("say 2 0\ntitle Replay me"))
         .await
         .unwrap();
-    until(&mut events, turn_ended).await;
+    let turn = until(&mut events, turn_ended).await;
+    let last_seq = turn.last().unwrap().seq;
     drop(events);
     drop(client);
     first.stop().await;
 
     let second = first.again(1000).await;
     let client = second.client().await;
-    let loaded = client
-        .load_session(&session.id, BTreeMap::new())
-        .await
-        .unwrap();
-    assert_eq!(loaded.id, session.id);
-    assert_eq!(loaded.state, SessionState::Starting);
-    let mut events = client.subscribe(&loaded.id, 0).await.unwrap();
-    let history = until(&mut events, agent_started).await;
+    // The history comes from the database with its seqs, and the
+    // subscription stays open for what follows.
+    let mut events = client.subscribe(&session.id, 0).await.unwrap();
+    let mut history = Vec::new();
+    while history.len() < usize::try_from(last_seq).unwrap() {
+        history.push(next(&mut events).await);
+    }
     assert_contiguous(&history, 1);
+    assert_eq!(history[0].seq, 1);
+    assert!(matches!(&history[0].kind, EventKind::AgentStarted { .. }));
     assert_eq!(
         replayed(&history),
         [
@@ -1554,18 +1561,152 @@ async fn loading_a_restored_session_replays_its_conversation() {
             "agent: chunk-2"
         ]
     );
+    assert!(
+        !history
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::SessionClosed))
+    );
+    let mut middle = client.subscribe(&session.id, started).await.unwrap();
+    assert_eq!(next(&mut middle).await.seq, started + 1);
+
+    let loaded = client
+        .load_session(&session.id, BTreeMap::new())
+        .await
+        .unwrap();
+    assert_eq!(loaded.state, SessionState::Starting);
+    // The agent's replay is not recorded again.
+    let restarted = next(&mut events).await;
+    assert_eq!(restarted.seq, last_seq + 1);
     assert!(matches!(
-        &history.last().unwrap().kind,
+        &restarted.kind,
         EventKind::AgentStarted { agent_session_id: id, .. } if *id == agent_session_id
     ));
     let loaded = info(&client, &loaded.id).await;
     assert_eq!(loaded.state, SessionState::Idle);
     assert_eq!(loaded.title.as_deref(), Some("Replay me"));
-    assert_eq!(loaded.agent_session_id.as_deref(), Some(&*agent_session_id));
 
     client.prompt(&loaded.id, text("say 1 0")).await.unwrap();
     let turn = until(&mut events, turn_ended).await;
     assert_eq!(chunks(&turn), ["chunk-1"]);
+    assert_contiguous(&turn, last_seq + 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stopped_daemon_stores_the_end_of_the_turn_it_interrupted() {
+    let mut first = Daemon::start(1000).await;
+    let client = first.client().await;
+    let (session, started) = first.new_session(&client).await;
+    let mut events = client.subscribe(&session.id, started).await.unwrap();
+    client
+        .prompt(&session.id, text("permission"))
+        .await
+        .unwrap();
+    until(&mut events, |kind| {
+        matches!(kind, EventKind::PermissionRequested { .. })
+    })
+    .await;
+    let ended = {
+        // The daemon records the end of the turn as it closes, and the
+        // subscription sees it before the daemon exits.
+        first.stop_signal();
+        until(&mut events, turn_ended).await.pop().unwrap()
+    };
+    assert!(first.wait_for_exit().await.success());
+    drop(events);
+    drop(client);
+
+    let second = first.again(1000).await;
+    let client = second.client().await;
+    let mut events = client.subscribe(&session.id, 0).await.unwrap();
+    let history = until(&mut events, turn_ended).await;
+    assert_eq!(history.last().unwrap(), &ended);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_history_that_a_crash_left_open_ends_its_turn() {
+    let mut first = Daemon::start(1000).await;
+    let client = first.client().await;
+    let (session, started) = first.new_session(&client).await;
+    drop(client);
+    first.stop().await;
+    // What a daemon killed mid-turn leaves in the database: a turn that
+    // started and a permission request nobody answered.
+    let database = rusqlite::Connection::open(first.dir.path().join("oxd.sock.db")).unwrap();
+    for (seq, kind) in [
+        (started + 1, EventKind::TurnStarted),
+        (
+            started + 2,
+            EventKind::PermissionRequested {
+                request_id: "1".into(),
+                title: "Tool".into(),
+                description: None,
+                subject: None,
+                options: Vec::new(),
+            },
+        ),
+    ] {
+        database
+            .execute(
+                "INSERT INTO events (session_id, seq, kind) VALUES (?1, ?2, ?3)",
+                (
+                    &session.id,
+                    i64::try_from(seq).unwrap(),
+                    serde_json::to_string(&kind).unwrap(),
+                ),
+            )
+            .unwrap();
+    }
+    drop(database);
+
+    let second = first.again(1000).await;
+    let client = second.client().await;
+    let mut events = client.subscribe(&session.id, started).await.unwrap();
+    let rest = until(&mut events, turn_ended).await;
+    assert_contiguous(&rest, started + 1);
+    assert!(matches!(&rest[0].kind, EventKind::TurnStarted));
+    assert!(matches!(
+        &rest[2].kind,
+        EventKind::PermissionResolved {
+            outcome: RequestPermissionOutcome::Cancelled(_),
+            ..
+        }
+    ));
+    assert!(matches!(
+        &rest.last().unwrap().kind,
+        EventKind::TurnEnded { error: Some(error), .. } if error == "oxd stopped during the turn"
+    ));
+
+    // The next events continue the seqs.
+    client
+        .load_session(&session.id, BTreeMap::new())
+        .await
+        .unwrap();
+    let restarted = next(&mut events).await;
+    assert_eq!(restarted.seq, rest.last().unwrap().seq + 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_deleted_session_loses_its_history() {
+    let mut first = Daemon::start(1000).await;
+    let client = first.client().await;
+    let (session, _) = first.new_session(&client).await;
+    let (kept, _) = first.new_session(&client).await;
+    client
+        .delete(&session.id, false, BTreeMap::new())
+        .await
+        .unwrap();
+    drop(client);
+    first.stop().await;
+
+    let second = first.again(1000).await;
+    let client = second.client().await;
+    let error = client.subscribe(&session.id, 0).await.unwrap_err();
+    assert_eq!(remote_code(error), code::NOT_FOUND);
+    let mut events = client.subscribe(&kept.id, 0).await.unwrap();
+    assert!(matches!(
+        next(&mut events).await.kind,
+        EventKind::AgentStarted { .. }
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1739,6 +1880,8 @@ async fn a_session_resumed_while_its_agent_is_working_runs_until_the_agent_is_id
         .await
         .unwrap();
     let mut events = client.subscribe(&session.id, 0).await.unwrap();
+    // The history holds the first agent's start; the second follows it.
+    until(&mut events, agent_started).await;
     let started_seq = until(&mut events, agent_started).await.last().unwrap().seq;
     // The agent reported `running` on resume: the session is running, and no
     // turn began that the history saw.

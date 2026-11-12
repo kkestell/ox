@@ -179,6 +179,11 @@ impl Daemon {
         }
     }
 
+    /// Returns once every recorded event is in the database.
+    pub async fn flush(&self) {
+        self.store.flush().await;
+    }
+
     /// A receiver that sees a change each time the lists may have changed.
     pub fn changed(&self) -> watch::Receiver<()> {
         self.changed.subscribe()
@@ -220,6 +225,7 @@ impl Daemon {
             Method::SessionLoad { session_id, env } => {
                 let session = self.session(&session_id)?;
                 let _lifecycle = self.lifecycle(&session).await?;
+                session.history().await?;
                 session.load(env)?;
                 Ok(to_value(session.info()))
             }
@@ -416,6 +422,7 @@ impl Daemon {
                 title: None,
                 agent_session_id: None,
                 worktree: info,
+                last_seq: 0,
             };
             let session = Session::spawn(
                 self.store.clone(),

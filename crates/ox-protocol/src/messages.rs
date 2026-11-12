@@ -76,8 +76,9 @@ pub enum Method {
     /// must still exist. The
     /// result is the session in state `starting`. The agent replays the
     /// conversation before its `agent_started` event. A session with no
-    /// events records the replay as `update` events; a session that has
-    /// events keeps them and drops the replay.
+    /// stored events records the replay as `update` events; a session that has
+    /// them, including one restored after an `oxd` restart, keeps them and
+    /// drops the replay.
     #[serde(rename = "session.load")]
     SessionLoad {
         session_id: String,
@@ -94,7 +95,8 @@ pub enum Method {
     #[serde(rename = "session.cancel")]
     SessionCancel { session_id: String },
     /// Starts a subscription: after the answer, the daemon sends the
-    /// session's events with `seq > after_seq`, then each later event. The
+    /// session's events with `seq > after_seq`, from the daemon's database
+    /// for a session restored after an `oxd` restart, then each later event. The
     /// request's `id` names the subscription in every event it delivers. A
     /// subscription ends with the session's `session_closed` event. An
     /// `after_seq` that no event will follow is refused.

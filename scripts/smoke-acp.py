@@ -414,6 +414,7 @@ class SmokeRun:
         token = self.directory.name
         title = self.session_row()[5]
         check(title != "-", "The session has no title")
+        stored = self.seq
         self.disconnect()
         self.remember_agents()
         self.daemon.send_signal(signal.SIGTERM)
@@ -438,19 +439,31 @@ class SmokeRun:
         self.remember_agents()
         self.seq = 0
         self.attach(0)
-        replay = self.until(lambda e: kind(e) == "agent_started")
+        # The history comes from the daemon's database with its original seqs.
+        replay = []
+        deadline = time.monotonic() + self.args.timeout
+        while self.seq < stored:
+            event = self.attachment.read(deadline)
+            check(event["seq"] == self.seq + 1, f"Sequence gap or duplicate: {event}")
+            self.seq = event["seq"]
+            replay.append(event)
         check(
             f"Remember this token for my next message: {token}" in user_text(replay),
-            f"Replay lacks the first prompt: {user_text(replay)[:300]}",
+            f"History lacks the first prompt: {user_text(replay)[:300]}",
         )
         check(
             token in text(replay),
-            f"Replay lacks the agent's answer: {text(replay)[:300]}",
+            f"History lacks the agent's answer: {text(replay)[:300]}",
+        )
+        restarted = self.until(lambda e: kind(e) == "agent_started")
+        check(
+            len(restarted) == 1,
+            f"Load recorded the agent's replay again: {restarted[:3]}",
         )
         self.report(
-            "load_replays_after_daemon_restart",
+            "history_survives_daemon_restart",
             session_id=self.session,
-            replay_events=len(replay),
+            history_events=len(replay),
         )
         self.ctl(
             "prompt",

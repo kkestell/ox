@@ -1,10 +1,12 @@
 //! The daemon's saved workspaces and sessions, in one `SQLite` database.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex, MutexGuard};
 
-use ox_protocol::WorktreeInfo;
+use ox_protocol::{Event, EventKind, WorktreeInfo};
 use rusqlite::{Connection, params};
+use tokio::sync::oneshot;
 
 /// A workspace as the database holds it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,6 +26,8 @@ pub struct SavedSession {
     pub title: Option<String>,
     pub agent_session_id: Option<String>,
     pub worktree: Option<SavedWorktree>,
+    /// The seq of the session's last stored event, 0 if it has none.
+    pub last_seq: u64,
 }
 
 /// A session's worktree as the database holds it: what clients see, and the
@@ -35,10 +39,19 @@ pub struct SavedWorktree {
     pub common_dir: PathBuf,
 }
 
+/// What the event writer thread is sent.
+enum Write {
+    Events(Vec<Event>),
+    /// Acknowledged once everything sent before it is committed.
+    Flush(oneshot::Sender<()>),
+}
+
 /// One connection to the database. Every query is a small local read or
-/// write, so it runs inline.
+/// write, so it runs inline. Events are written by a thread of their own, so
+/// recording one never waits on the database.
 pub struct Store {
-    connection: Mutex<Connection>,
+    connection: Arc<Mutex<Connection>>,
+    writer: Sender<Write>,
 }
 
 impl Store {
@@ -51,7 +64,10 @@ impl Store {
 
     fn with(connection: Connection) -> rusqlite::Result<Self> {
         connection.execute_batch(
-            "PRAGMA foreign_keys = ON;
+            "PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            PRAGMA auto_vacuum = FULL;
+            PRAGMA foreign_keys = ON;
             CREATE TABLE IF NOT EXISTS workspaces (
                 id   TEXT PRIMARY KEY,
                 path TEXT NOT NULL UNIQUE
@@ -72,11 +88,56 @@ impl Store {
                 base           TEXT NOT NULL,
                 created_branch INTEGER NOT NULL,
                 common_dir     TEXT NOT NULL
-            );",
+            );
+            CREATE TABLE IF NOT EXISTS events (
+                session_id TEXT    NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                seq        INTEGER NOT NULL,
+                kind       TEXT    NOT NULL,  -- JSON of EventKind
+                PRIMARY KEY (session_id, seq)
+            ) WITHOUT ROWID;",
         )?;
-        Ok(Self {
-            connection: Mutex::new(connection),
-        })
+        let connection = Arc::new(Mutex::new(connection));
+        let (writer, queue) = mpsc::channel();
+        let target = connection.clone();
+        std::thread::spawn(move || write_events(&target, &queue));
+        Ok(Self { connection, writer })
+    }
+
+    /// Queues events for writing and returns at once. Events of a session
+    /// deleted before they are written are dropped.
+    pub fn log(&self, events: Vec<Event>) {
+        let _ = self.writer.send(Write::Events(events));
+    }
+
+    /// Returns once every event logged before the call is committed.
+    pub async fn flush(&self) {
+        let (done, committed) = oneshot::channel();
+        if self.writer.send(Write::Flush(done)).is_ok() {
+            let _ = committed.await;
+        }
+    }
+
+    /// A session's stored events, in order.
+    pub fn events(&self, session_id: &str) -> rusqlite::Result<Vec<Event>> {
+        let connection = self.lock();
+        let mut query = connection
+            .prepare("SELECT seq, kind FROM events WHERE session_id = ?1 ORDER BY seq")?;
+        query
+            .query_map([session_id], |row| {
+                let kind: String = row.get(1)?;
+                Ok(Event {
+                    session_id: session_id.into(),
+                    seq: u64::try_from(row.get::<_, i64>(0)?).expect("seqs are positive"),
+                    kind: serde_json::from_str::<EventKind>(&kind).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            1,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?,
+                })
+            })?
+            .collect()
     }
 
     fn lock(&self) -> MutexGuard<'_, Connection> {
@@ -118,7 +179,8 @@ impl Store {
         let connection = self.lock();
         let mut query = connection.prepare(
             "SELECT number, id, workspace_id, command, cwd, title, agent_session_id,
-                worktrees.path, branch, base, created_branch, common_dir
+                worktrees.path, branch, base, created_branch, common_dir,
+                (SELECT COALESCE(MAX(seq), 0) FROM events WHERE session_id = sessions.id)
             FROM sessions LEFT JOIN worktrees ON worktrees.session_id = sessions.id
             ORDER BY number",
         )?;
@@ -151,6 +213,7 @@ impl Store {
                         }),
                         None => None,
                     },
+                    last_seq: u64::try_from(row.get::<_, i64>(12)?).expect("seqs are positive"),
                 })
             })?
             .collect()
@@ -232,6 +295,49 @@ impl Store {
     }
 }
 
+/// Writes each batch the queue holds in one transaction, until every sender
+/// is dropped. A failed write goes to oxd's log and the thread carries on.
+fn write_events(connection: &Mutex<Connection>, queue: &Receiver<Write>) {
+    while let Ok(first) = queue.recv() {
+        let mut batch = vec![first];
+        batch.extend(queue.try_iter());
+        let mut flushes = Vec::new();
+        let mut connection = connection.lock().unwrap();
+        let result = (|| {
+            let transaction = connection.transaction()?;
+            {
+                let mut insert = transaction.prepare_cached(
+                    "INSERT INTO events SELECT ?1, ?2, ?3
+                    WHERE EXISTS (SELECT 1 FROM sessions WHERE id = ?1)",
+                )?;
+                for write in &batch {
+                    if let Write::Events(events) = write {
+                        for event in events {
+                            let seq = i64::try_from(event.seq).expect("seqs fit an i64");
+                            let kind = serde_json::to_string(&event.kind)
+                                .expect("an event kind serializes");
+                            insert.execute(params![event.session_id, seq, kind])?;
+                        }
+                    }
+                }
+            }
+            transaction.commit()
+        })();
+        drop(connection);
+        if let Err(error) = result {
+            eprintln!("oxd: writing events: {error}");
+        }
+        for write in batch {
+            if let Write::Flush(done) = write {
+                flushes.push(done);
+            }
+        }
+        for done in flushes {
+            let _ = done.send(());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,6 +403,7 @@ mod tests {
                     title: None,
                     agent_session_id: None,
                     worktree: None,
+                    last_seq: 0,
                 },
                 SavedSession {
                     number: second,
@@ -307,6 +414,7 @@ mod tests {
                     title: None,
                     agent_session_id: None,
                     worktree: None,
+                    last_seq: 0,
                 },
             ]
         );
@@ -439,5 +547,65 @@ mod tests {
             .unwrap();
         assert!(store.workspace_has_sessions("w").unwrap());
         assert!(!store.workspace_has_sessions("v").unwrap());
+    }
+
+    fn event(session: &str, seq: u64, kind: EventKind) -> Event {
+        Event {
+            session_id: session.into(),
+            seq,
+            kind,
+        }
+    }
+
+    fn exited(session: &str, seq: u64) -> Event {
+        event(session, seq, EventKind::AgentExited { error: None })
+    }
+
+    fn store_with_session() -> Store {
+        let store = store();
+        store.add_workspace(&workspace("w", "/work")).unwrap();
+        store
+            .add_session("s", "w", &command(), Path::new("/work"), None)
+            .unwrap();
+        store
+    }
+
+    #[tokio::test]
+    async fn events_round_trip_in_order_across_batches() {
+        let store = store_with_session();
+        store.log(vec![exited("s", 1), exited("s", 2)]);
+        store.log(vec![exited("s", 3)]);
+        store.flush().await;
+        let seqs: Vec<_> = store
+            .events("s")
+            .unwrap()
+            .into_iter()
+            .map(|event| event.seq)
+            .collect();
+        assert_eq!(seqs, [1, 2, 3]);
+        assert_eq!(store.sessions().unwrap()[0].last_seq, 3);
+        assert_eq!(store.events("s").unwrap()[0], exited("s", 1));
+    }
+
+    #[tokio::test]
+    async fn events_of_a_deleted_session_are_dropped() {
+        let store = store_with_session();
+        store.remove_session("s").unwrap();
+        store.log(vec![exited("s", 1)]);
+        store.flush().await;
+        assert!(store.events("s").unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn deleting_a_session_removes_its_events() {
+        let store = store_with_session();
+        store
+            .add_session("t", "w", &command(), Path::new("/work"), None)
+            .unwrap();
+        store.log(vec![exited("s", 1), exited("t", 1)]);
+        store.flush().await;
+        store.remove_session("s").unwrap();
+        assert!(store.events("s").unwrap().is_empty());
+        assert_eq!(store.events("t").unwrap().len(), 1);
     }
 }
