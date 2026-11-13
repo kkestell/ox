@@ -21,7 +21,8 @@ Copied from Hypercube's `.agents/research/harnesses/`:
   permissions, background work, skills, and command discovery.
 - [OpenCode V2](harnesses/opencode.md): server ownership, configuration, event
   streams, permissions, native skill attachments, and catalogs.
-- [Pi](harnesses/pi.md): RPC, steering, settled idle, resource loading, and skills.
+- [Pi](harnesses/pi.md): RPC, steering, settled idle, resource loading, skills, and
+  ACP adapters (added in Ox).
 - [Codex CLI](harnesses/codex.md): app-server protocol, threads, approvals, and
   native history. Retained as background, not a commitment to support Codex.
 
