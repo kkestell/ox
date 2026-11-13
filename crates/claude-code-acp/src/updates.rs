@@ -66,6 +66,7 @@ pub struct Updates {
     /// The client takes form elicitations, so `AskUserQuestion`'s questions
     /// can be asked.
     forms: bool,
+    commands: Mutex<Vec<acp::AvailableCommand>>,
     tools: Mutex<Tools>,
     work: Mutex<Work>,
 }
@@ -76,6 +77,7 @@ impl Updates {
             connection,
             session_id: session_id.to_owned(),
             forms,
+            commands: Mutex::new(Vec::new()),
             tools: Mutex::new(Tools::default()),
             work: Mutex::new(Work::default()),
         }
@@ -83,6 +85,17 @@ impl Updates {
 
     fn send(&self, update: SessionUpdate) {
         notify(&self.connection, &self.session_id, update);
+    }
+
+    pub fn commands(&self) -> Vec<acp::AvailableCommand> {
+        self.commands.lock().unwrap().clone()
+    }
+
+    pub fn set_commands(&self, commands: Vec<acp::AvailableCommand>) {
+        self.commands.lock().unwrap().clone_from(&commands);
+        self.send(SessionUpdate::AvailableCommandsUpdate(
+            acp::AvailableCommandsUpdate::new(commands),
+        ));
     }
 
     /// Tells the client that Claude started working, if it has not said so.

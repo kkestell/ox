@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::updates::Updates;
+use crate::{commands, updates::Updates};
 use agent_client_protocol::v2::Responder;
 use agent_client_protocol::v2::schema::{
     ContentBlock, ErrorStopReason, PromptResponse, StateUpdate, StopReason,
@@ -127,6 +127,8 @@ impl Prompt {
 
 #[derive(Default)]
 struct State {
+    /// Whether claude has yet to answer the initialize request.
+    initializing: bool,
     /// Prompts claude has not taken yet, by the `uuid` claude knows them by.
     prompts: HashMap<String, Prompt>,
     /// Control requests waiting for claude's response, by request ID.
@@ -223,7 +225,10 @@ impl Claude {
             .spawn()
             .map_err(|e| format!("failed to start claude: {e}"))?;
         let (input, messages) = mpsc::unbounded_channel();
-        let state = Arc::new(Mutex::new(State::default()));
+        let state = Arc::new(Mutex::new(State {
+            initializing: true,
+            ..State::default()
+        }));
         tokio::spawn(write_input(
             child.stdin.take().expect("piped stdin"),
             messages,
@@ -242,6 +247,11 @@ impl Claude {
             _exit: exit,
         };
         tokio::spawn(output.read(child));
+        let _ = input.send(json!({
+            "type": "control_request",
+            "request_id": "initialize",
+            "request": {"subtype": "initialize"}
+        }));
         Ok(Self {
             input,
             state,
@@ -253,6 +263,14 @@ impl Claude {
     /// What claude is doing now, for a client that resumes the session.
     pub fn state(&self) -> StateUpdate {
         self.updates.state()
+    }
+
+    pub fn commands(&self) -> Vec<agent_client_protocol::v2::schema::AvailableCommand> {
+        self.updates.commands()
+    }
+
+    pub fn has_exited(&self) -> bool {
+        self.state.lock().unwrap().exited.is_some()
     }
 
     /// Stops claude and returns once it has exited. Its turn is cancelled,
@@ -425,6 +443,7 @@ impl Output {
         let (prompts, session_id, closing, cancelling) = {
             let mut state = self.state.lock().unwrap();
             state.exited = Some(error.clone());
+            state.initializing = false;
             state.controls.clear();
             for (_, permission) in state.permissions.drain() {
                 permission.abort();
@@ -527,6 +546,22 @@ impl Output {
             }
             Some("control_response") => {
                 let response = &event["response"];
+                if response["request_id"] == "initialize" {
+                    self.state.lock().unwrap().initializing = false;
+                    if response["subtype"] == "error" {
+                        // Prompts that fail once claude exits report why.
+                        self.unclaimed_error = Some(
+                            response["error"]
+                                .as_str()
+                                .unwrap_or("claude refused to initialize")
+                                .to_owned(),
+                        );
+                    } else {
+                        self.updates
+                            .set_commands(commands::catalog(&response["response"]["commands"]));
+                    }
+                    return;
+                }
                 let reply = response["request_id"]
                     .as_str()
                     .and_then(|id| self.state.lock().unwrap().controls.remove(id));
@@ -583,6 +618,10 @@ impl Output {
                 self.thought_id = None;
             }
             Some("system") => match event["subtype"].as_str() {
+                Some("commands_changed") => {
+                    self.updates
+                        .set_commands(commands::catalog(&event["commands"]));
+                }
                 Some("session_state_changed") => {
                     // Claude's third state, waiting for a permission, is part
                     // of working; the client has the request itself.
@@ -717,6 +756,12 @@ impl Output {
             Err(_) if cancelling => Err(RunError::Cancelled),
             outcome => outcome,
         };
+        if self.state.lock().unwrap().initializing
+            && let Err(RunError::Failed(error)) = &outcome
+        {
+            self.unclaimed_error = Some(error.clone());
+            return;
+        }
         self.updates.fail_open_tools();
         self.text_id = None;
         self.thought_id = None;

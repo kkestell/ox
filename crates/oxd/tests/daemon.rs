@@ -1619,6 +1619,7 @@ async fn workspaces_and_sessions_survive_a_restart() {
         state: SessionState::Exited,
         prompt_capabilities: PromptCapabilities::default(),
         config_options: Vec::new(),
+        available_commands: Vec::new(),
         ..session
     };
     assert_eq!(
@@ -2098,6 +2099,69 @@ async fn watch_starts_with_the_workspaces_and_sessions() {
     let first = listings_until(&mut watch, |_| true).await.remove(0);
     assert_eq!(first.workspaces, [workspace]);
     assert_eq!(first.sessions, [session]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn command_catalogs_reach_current_and_reconnecting_watchers() {
+    let daemon = Daemon::start(1000).await;
+    let client = daemon.client().await;
+    let (session, seq) = daemon.new_session(&client).await;
+    assert_eq!(session.available_commands.len(), 3);
+    let mut events = client.subscribe(&session.id, seq).await.unwrap();
+    let mut watch = client.watch().await.unwrap();
+    let initial = listings_until(&mut watch, |_| true).await.remove(0);
+    assert_eq!(
+        initial.sessions[0].available_commands,
+        session.available_commands
+    );
+    let replacement = json!([{"type":"command","name":"echo","description":"Updated","input":{"type":"text","hint":"message"}}]);
+    client
+        .prompt(&session.id, text(&format!("commands {replacement}")))
+        .await
+        .unwrap();
+    until(&mut events, |kind| {
+        matches!(kind, EventKind::TurnEnded { .. })
+    })
+    .await;
+    let changed = listings_until(&mut watch, |listing| {
+        listing.sessions[0].available_commands.len() == 1
+    })
+    .await
+    .pop()
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(&changed.sessions[0].available_commands).unwrap(),
+        replacement
+    );
+
+    let reconnected = daemon.client().await;
+    let mut fresh = reconnected.watch().await.unwrap();
+    let snapshot = listings_until(&mut fresh, |_| true).await.remove(0);
+    assert_eq!(
+        snapshot.sessions[0].available_commands,
+        changed.sessions[0].available_commands
+    );
+
+    client
+        .prompt(&session.id, text("commands []"))
+        .await
+        .unwrap();
+    until(&mut events, |kind| {
+        matches!(kind, EventKind::TurnEnded { .. })
+    })
+    .await;
+    listings_until(&mut watch, |listing| {
+        listing.sessions[0].available_commands.is_empty()
+    })
+    .await;
+    assert!(
+        info(&client, &session.id)
+            .await
+            .available_commands
+            .is_empty()
+    );
+    let (empty, _) = daemon.new_session_with(&client, &["--no-commands"]).await;
+    assert!(empty.available_commands.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]

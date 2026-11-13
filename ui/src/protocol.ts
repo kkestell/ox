@@ -29,6 +29,14 @@ export type ConfigOption = {
   | { type: "boolean"; currentValue: boolean }
 );
 
+/** A slash command advertised by the current agent. */
+export interface Command {
+  type: "command";
+  name: string;
+  description: string;
+  input?: { type: string; hint?: string } | null;
+}
+
 export interface WorkspaceInfo {
   id: string;
   path: string;
@@ -71,6 +79,7 @@ export interface SessionInfo {
   title: string | null;
   agent_session_id: string | null;
   config_options: ConfigOption[];
+  available_commands: Command[];
   worktree: WorktreeInfo | null;
   archived: boolean;
 }

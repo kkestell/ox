@@ -218,6 +218,15 @@ class SmokeRun:
         self.directory = directory
         self.project = directory / "project"
         self.project.mkdir()
+        skill = self.project / ".claude" / "skills" / "ox-command-probe"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: ox-command-probe\n"
+            "description: Return the smoke command marker\n"
+            "argument-hint: value\ndisable-model-invocation: true\n---\n"
+            "Reply with exactly OX_NATIVE_COMMAND_$ARGUMENTS and nothing else. "
+            "Do not use tools.\n"
+        )
         self.socket = directory / "oxd.sock"
         self.cli = [str(binaries / "oxctl"), "--socket", str(self.socket)]
         self.binaries = binaries
@@ -337,8 +346,21 @@ class SmokeRun:
             requested_model=self.args.model,
         )
 
+        watch = Watch(self.socket, self.session, self.args.timeout)
+        try:
+            listing = watch.read(time.monotonic() + self.args.timeout)
+            current = next(s for s in listing["sessions"] if s["id"] == self.session)
+            commands = current["available_commands"]
+            probe = next(c for c in commands if c["name"] == "ox-command-probe")
+            check(probe["input"] == {"type": "text", "hint": "value"}, probe)
+            check("smoke command marker" in probe["description"], probe)
+            self.report("native_commands_discovered_before_prompt", command=probe)
+        finally:
+            watch.close()
+
         self.check_reconnect()
         self.check_effort()
+        self.check_commands()
         self.check_permission()
         self.check_question()
         self.check_background_wake()
@@ -394,6 +416,20 @@ class SmokeRun:
         response = text(self.finish()).strip()
         check(token in response, f"Conversation token was not retained: {response}")
         self.report("followup_retains_conversation", response=response)
+
+    def check_commands(self):
+        """Invokes a native skill through the same content blocks the app sends."""
+        self.ctl("prompt", self.session, "/ox-command-probe ARGUMENTS")
+        response = text(self.finish()).strip()
+        check(response == "OX_NATIVE_COMMAND_ARGUMENTS", response)
+        self.report("native_skill_invoked_with_arguments", response=response)
+        self.ctl("prompt", self.session, "/model")
+        response = text(self.finish()).strip()
+        check(
+            "Current model:" in response,
+            f"Local command did not return model: {response}",
+        )
+        self.report("native_local_command_completed", response=response)
 
     def check_effort(self):
         """Sets the effort of the session's running Claude."""

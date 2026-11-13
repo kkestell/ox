@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use agent_client_protocol::v2::schema::{
-    ContentBlock, ElicitationAction, ElicitationSchema, PermissionOption, PromptCapabilities,
-    RequestPermissionOutcome, RequestPermissionSubject, SessionConfigOption, SessionUpdate,
-    StopReason, ToolCallId,
+    AvailableCommand, ContentBlock, ElicitationAction, ElicitationSchema, PermissionOption,
+    PromptCapabilities, RequestPermissionOutcome, RequestPermissionSubject, SessionConfigOption,
+    SessionUpdate, StopReason, ToolCallId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -315,6 +315,8 @@ pub struct SessionInfo {
     pub prompt_capabilities: PromptCapabilities,
     /// The agent's current config options, such as model and mode.
     pub config_options: Vec<SessionConfigOption>,
+    /// The agent's complete current slash-command catalog.
+    pub available_commands: Vec<AvailableCommand>,
     /// The worktree the session runs in, if it has one. Unset again when
     /// the worktree could not be added.
     pub worktree: Option<WorktreeInfo>,
@@ -345,6 +347,7 @@ pub enum EventKind {
         agent_session_id: String,
         prompt_capabilities: PromptCapabilities,
         config_options: Vec<SessionConfigOption>,
+        available_commands: Vec<AvailableCommand>,
     },
     PromptStarted {
         prompt: Vec<ContentBlock>,
@@ -797,6 +800,7 @@ mod tests {
                 "agent_session_id": "a",
                 "prompt_capabilities": {},
                 "config_options": [],
+                "available_commands": [],
                 "worktree": {
                     "path": "/worktrees/tmp-01234567",
                     "branch": "ox/01234567",

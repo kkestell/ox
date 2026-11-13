@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use agent_client_protocol::schema::MaybeUndefined;
 use agent_client_protocol::v2::schema::{
-    BackgroundWork, CancelledPermissionOutcome, ConfigOptionUpdate, ContentBlock,
+    AvailableCommand, BackgroundWork, CancelledPermissionOutcome, ConfigOptionUpdate, ContentBlock,
     CreateElicitationRequest, ElicitationAction, ElicitationContentValue, ElicitationMode,
     ElicitationPropertySchema, ElicitationSchema, ElicitationScope, EmbeddedResourceResource,
     MultiSelectItems, PermissionOption, PromptCapabilities, RequestPermissionOutcome,
@@ -22,6 +22,7 @@ pub struct Agent {
     pub session_id: String,
     pub prompt_capabilities: PromptCapabilities,
     pub config_options: Vec<SessionConfigOption>,
+    pub available_commands: Vec<AvailableCommand>,
 }
 
 impl Agent {
@@ -32,6 +33,7 @@ impl Agent {
             session_id,
             prompt_capabilities: PromptCapabilities::default(),
             config_options: Vec::new(),
+            available_commands: Vec::new(),
         }
     }
 }
@@ -308,6 +310,7 @@ impl Phase {
                     agent_session_id: agent.session_id.clone(),
                     prompt_capabilities: agent.prompt_capabilities.clone(),
                     config_options: agent.config_options.clone(),
+                    available_commands: agent.available_commands.clone(),
                 });
                 // A resumed agent that is working has a turn the session did
                 // not see start.
@@ -363,6 +366,11 @@ impl Phase {
                         live.agent
                             .config_options
                             .clone_from(&options.config_options);
+                    }
+                    SessionUpdate::AvailableCommandsUpdate(commands) => {
+                        live.agent
+                            .available_commands
+                            .clone_from(&commands.available_commands);
                     }
                     SessionUpdate::StateUpdate(state) => {
                         live.background = state.background().map(<[_]>::to_vec);
@@ -1100,8 +1108,50 @@ mod tests {
             session_id: "agent".into(),
             prompt_capabilities: PromptCapabilities::default(),
             config_options: Vec::new(),
+            available_commands: Vec::new(),
         }));
         state
+    }
+
+    #[test]
+    fn commands_replace_the_catalog_including_on_resume_without_replay() {
+        let commands = |name: &str| {
+            vec![AvailableCommand::Command(
+                agent_client_protocol::v2::schema::Command::new(name, "Run"),
+            )]
+        };
+        let mut state = State::new("s".into());
+        state.record(Change::Started(Agent {
+            available_commands: commands("first"),
+            ..Agent::saved("agent".into())
+        }));
+        assert_eq!(state.agent().unwrap().available_commands, commands("first"));
+        state.record(Change::Update(SessionUpdate::AvailableCommandsUpdate(
+            agent_client_protocol::v2::schema::AvailableCommandsUpdate::new(commands("second")),
+        )));
+        assert_eq!(
+            state.agent().unwrap().available_commands,
+            commands("second")
+        );
+        state.record(Change::Parked);
+        state.load().unwrap();
+        // The session keeps its old history, but the new setup catalog wins.
+        state.record(Change::Started(Agent {
+            available_commands: commands("resumed"),
+            ..Agent::saved("agent".into())
+        }));
+        assert_eq!(
+            state.agent().unwrap().available_commands,
+            commands("resumed")
+        );
+        state.record(Change::Update(SessionUpdate::AvailableCommandsUpdate(
+            agent_client_protocol::v2::schema::AvailableCommandsUpdate::new(Vec::new()),
+        )));
+        assert!(state.agent().unwrap().available_commands.is_empty());
+        state.record(Change::Parked);
+        state.load().unwrap();
+        state.record(Change::Started(Agent::saved("agent".into())));
+        assert!(state.agent().unwrap().available_commands.is_empty());
     }
 
     fn prompt(state: &mut State) -> Result<(), ErrorBody> {
@@ -1521,6 +1571,7 @@ mod tests {
             agent_session_id: "agent".into(),
             prompt_capabilities: PromptCapabilities::default(),
             config_options: Vec::new(),
+            available_commands: Vec::new(),
         }
     }
 
@@ -1608,6 +1659,7 @@ mod tests {
             session_id: "agent".into(),
             prompt_capabilities: PromptCapabilities::default(),
             config_options: Vec::new(),
+            available_commands: Vec::new(),
         }));
         state.record(running());
         let _outcome = request_permission(&mut state);
@@ -1643,6 +1695,7 @@ mod tests {
             session_id: "agent".into(),
             prompt_capabilities: PromptCapabilities::default(),
             config_options: Vec::new(),
+            available_commands: Vec::new(),
         }));
         assert_eq!(state.state(), SessionState::Idle);
         assert_eq!(kinds(&state, 0), ["update", "agent_started"]);
@@ -1691,6 +1744,7 @@ mod tests {
                 session_id: "agent".into(),
                 prompt_capabilities: PromptCapabilities::default(),
                 config_options: Vec::new(),
+                available_commands: Vec::new(),
             }));
             state
         };
@@ -1727,6 +1781,7 @@ mod tests {
                 session_id: "agent".into(),
                 prompt_capabilities: PromptCapabilities::default(),
                 config_options: Vec::new(),
+                available_commands: Vec::new(),
             }));
         };
 
@@ -1776,6 +1831,7 @@ mod tests {
             session_id: "agent".into(),
             prompt_capabilities: PromptCapabilities::default(),
             config_options: Vec::new(),
+            available_commands: Vec::new(),
         }));
         assert_eq!(state.state(), SessionState::Idle);
         assert_eq!(
@@ -1814,6 +1870,7 @@ mod tests {
             session_id: "agent".into(),
             prompt_capabilities: PromptCapabilities::default(),
             config_options: Vec::new(),
+            available_commands: Vec::new(),
         }));
         assert_eq!(kinds(&state, 1), ["update", "agent_started"]);
     }
@@ -1832,6 +1889,7 @@ mod tests {
             session_id: "agent".into(),
             prompt_capabilities: PromptCapabilities::default(),
             config_options: Vec::new(),
+            available_commands: Vec::new(),
         }));
         assert_eq!(
             kinds(&state, 0),
@@ -1852,6 +1910,7 @@ mod tests {
             session_id: "agent".into(),
             prompt_capabilities: PromptCapabilities::default(),
             config_options: Vec::new(),
+            available_commands: Vec::new(),
         }));
         assert_eq!(state.title(), Some("Replayed"));
 

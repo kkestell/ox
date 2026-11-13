@@ -49,7 +49,7 @@ pub struct Bridge {
     /// The sessions opened with `session/new` or `session/resume` and not
     /// closed.
     active: Mutex<HashSet<String>>,
-    /// The claude of each session that has taken a prompt.
+    /// The claude of each open session.
     claudes: Mutex<HashMap<String, Claude>>,
     /// The client advertised form elicitation, so Claude's `AskUserQuestion`
     /// questions can be asked as forms.
@@ -94,6 +94,9 @@ impl Bridge {
         )
     }
 
+    /// Opens a new session without starting its claude: the client learns
+    /// the session first, then `start_new` starts claude, whose commands
+    /// follow as an update.
     pub fn new_session(
         &self,
         request: acp::NewSessionRequest,
@@ -109,33 +112,59 @@ impl Bridge {
         Ok(acp::NewSessionResponse::new(id).config_options(Self::options(&session)))
     }
 
-    /// Opens a session. `replayFrom: start` replays its conversation from
-    /// Claude's transcript first. The session's current state follows, and
-    /// then the response.
+    /// Starts a new session's claude once the client knows the session. A
+    /// claude that fails to start fails the session's first prompt.
+    pub fn start_new(self: &Arc<Self>, id: &str, connection: &ConnectionTo<Client>) {
+        let started = self
+            .require(id)
+            .and_then(|session| self.start_claude(id, &session, connection));
+        if let Err(error) = started {
+            eprintln!("failed to start claude for session {id}: {error}");
+        }
+    }
+
+    /// Opens the native session and obtains its current commands. Replay and
+    /// the current state precede the response, as on the live update path.
     pub fn resume_session(
-        &self,
+        self: &Arc<Self>,
         request: acp::ResumeSessionRequest,
         connection: &ConnectionTo<Client>,
-    ) -> std::result::Result<acp::ResumeSessionResponse, Error> {
-        let replay = match request.replay_from {
-            None => false,
-            Some(acp::ReplayFrom::Start(_)) => true,
-            Some(_) => return Err(invalid("Unsupported replay cursor")),
-        };
-        let id = request.session_id.to_string();
-        let session = self.open(&id, &request.cwd.0, request.mcp_servers)?;
-        if replay && let Some(claude_id) = &session.claude_session_id {
-            Updates::new(connection.clone(), &id, self.forms()).replay(
-                self.history.messages(claude_id, &session.cwd),
-                self.history.subagents(claude_id, &session.cwd),
-            );
+    ) -> impl Future<Output = std::result::Result<acp::ResumeSessionResponse, Error>> + Send + 'static
+    {
+        let prepared = (|| {
+            let replay = match request.replay_from {
+                None => false,
+                Some(acp::ReplayFrom::Start(_)) => true,
+                Some(_) => return Err(invalid("Unsupported replay cursor")),
+            };
+            let id = request.session_id.to_string();
+            let session = self.open(&id, &request.cwd.0, request.mcp_servers)?;
+            self.start_claude(&id, &session, connection)?;
+            Ok((id, session, replay))
+        })();
+        let bridge = self.clone();
+        let connection = connection.clone();
+        async move {
+            let (id, session, replay) = prepared?;
+            bridge.require(&id)?;
+            if replay && let Some(claude_id) = &session.claude_session_id {
+                Updates::new(connection.clone(), &id, bridge.forms()).replay(
+                    bridge.history.messages(claude_id, &session.cwd),
+                    bridge.history.subagents(claude_id, &session.cwd),
+                );
+            }
+            let state = bridge
+                .claudes
+                .lock()
+                .unwrap()
+                .get(&id)
+                .expect("an open session has its claude")
+                .state();
+            notify(&connection, &id, SessionUpdate::StateUpdate(state));
+            Ok(acp::ResumeSessionResponse::new()
+                .config_options(Self::options(&session))
+                .available_commands(bridge.commands(&id)))
         }
-        let state = match self.claudes.lock().unwrap().get(&id) {
-            Some(claude) => claude.state(),
-            None => crate::updates::idle_state(),
-        };
-        notify(connection, &id, SessionUpdate::StateUpdate(state));
-        Ok(acp::ResumeSessionResponse::new().config_options(Self::options(&session)))
     }
 
     pub fn list_sessions(
@@ -372,46 +401,20 @@ impl Bridge {
         let text = content::prompt_text(&request.prompt);
         let message_id = Uuid::new_v4().to_string();
 
-        let mut claudes = self.claudes.lock().unwrap();
-        // A session whose claude has exited or that has none yet starts a
-        // new one, which continues the conversation.
-        let responder = match claudes.get(&id) {
-            Some(claude) => claude
-                .prompt(&message_id, request.prompt.clone(), &content, responder)
-                .err()
-                .map(|responder| *responder),
-            None => Some(responder),
-        };
-        if let Some(responder) = responder {
-            let claude = Claude::start(
-                &StartRequest {
-                    cwd: &session.cwd,
-                    resume: session.claude_session_id.as_deref(),
-                    model: session_model(&session),
-                    effort: session_effort(&session),
-                    mode: session_mode(&session),
-                    mcp_servers: &session.mcp_servers,
-                    ask_user_question: self.forms(),
-                    transcript: &session
-                        .claude_session_id
-                        .as_deref()
-                        .map(|claude_id| self.history.entries(claude_id, &session.cwd))
-                        .unwrap_or_default(),
-                },
-                Updates::new(connection.clone(), &id, self.forms()),
-                self.turn_recorder(&id, &session.cwd, connection),
-            );
-            match claude {
-                Ok(claude) => {
-                    if let Err(responder) =
-                        claude.prompt(&message_id, request.prompt.clone(), &content, responder)
-                    {
-                        return responder.respond_with_error(Error::new(-32603, "claude exited"));
-                    }
-                    claudes.insert(id.clone(), claude);
-                }
-                Err(error) => return responder.respond_with_error(Error::new(-32603, error)),
-            }
+        // The initialization request precedes this prompt on stdin, including
+        // when a native process that exited has to be restarted. Enqueue the
+        // prompt before returning so a subsequent cancellation stays after it.
+        if let Err(error) = self.start_claude(&id, &session, connection) {
+            return responder.respond_with_error(error);
+        }
+        let claudes = self.claudes.lock().unwrap();
+        let claude = claudes
+            .get(&id)
+            .expect("start_claude installed the process");
+        if let Err(responder) =
+            claude.prompt(&message_id, request.prompt.clone(), &content, responder)
+        {
+            return responder.respond_with_error(Error::new(-32603, "claude exited"));
         }
         drop(claudes);
 
@@ -437,6 +440,53 @@ impl Bridge {
             }
         }
         Ok(())
+    }
+
+    /// Starts the session's one native process if needed and sends initialize
+    /// before any prompt or config change can be queued on its input channel.
+    fn start_claude(
+        self: &Arc<Self>,
+        id: &str,
+        session: &Session,
+        connection: &ConnectionTo<Client>,
+    ) -> std::result::Result<(), Error> {
+        let mut claudes = self.claudes.lock().unwrap();
+        if claudes.get(id).is_some_and(|claude| !claude.has_exited()) {
+            return Ok(());
+        }
+        let transcript = session
+            .claude_session_id
+            .as_deref()
+            .map(|claude_id| self.history.entries(claude_id, &session.cwd))
+            .unwrap_or_default();
+        let claude = Claude::start(
+            &StartRequest {
+                cwd: &session.cwd,
+                resume: session.claude_session_id.as_deref(),
+                model: session_model(session),
+                effort: session_effort(session),
+                mode: session_mode(session),
+                mcp_servers: &session.mcp_servers,
+                ask_user_question: self.forms(),
+                transcript: &transcript,
+            },
+            Updates::new(connection.clone(), id, self.forms()),
+            self.turn_recorder(id, &session.cwd, connection),
+        )
+        .map_err(|error| Error::new(-32603, error))?;
+        claudes.insert(id.to_owned(), claude);
+        Ok(())
+    }
+
+    /// The session's commands so far. Claude sends them once it has
+    /// initialized, as an update when the session is already open.
+    fn commands(&self, id: &str) -> Vec<acp::AvailableCommand> {
+        self.claudes
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(Claude::commands)
+            .unwrap_or_default()
     }
 
     /// What a session's claude calls when a turn ends: it saves the Claude

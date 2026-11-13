@@ -1,5 +1,6 @@
 mod background;
 mod bridge;
+mod commands;
 mod config;
 mod content;
 mod history;
@@ -38,7 +39,8 @@ async fn main() -> Result<()> {
                             connection: ConnectionTo<Client>| {
                     let response = bridge.new_session(request);
                     // A new session is idle with nothing running, which it
-                    // reports once the client knows its ID.
+                    // reports once the client knows its ID, and then starts
+                    // its claude.
                     let id = response.as_ref().ok().map(|new| new.session_id.to_string());
                     respond(responder, response)?;
                     if let Some(id) = id {
@@ -47,6 +49,7 @@ async fn main() -> Result<()> {
                             &id,
                             acp::SessionUpdate::StateUpdate(updates::idle_state()),
                         );
+                        bridge.start_new(&id, &connection);
                     }
                     Ok(())
                 }
@@ -70,7 +73,8 @@ async fn main() -> Result<()> {
                 async move |request: acp::ResumeSessionRequest,
                             responder: Responder<acp::ResumeSessionResponse>,
                             connection: ConnectionTo<Client>| {
-                    respond(responder, bridge.resume_session(request, &connection))
+                    let opening = bridge.resume_session(request, &connection);
+                    connection.spawn(async move { respond(responder, opening.await) })
                 }
             },
             agent_client_protocol::on_receive_request!(),

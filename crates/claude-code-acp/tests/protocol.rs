@@ -23,8 +23,14 @@ started() {
 }
 # Reads a prompt and starts its turn.
 next_prompt() {
-  next_message
-  case "$message" in *'"type":"user"'*) ;; *) exit 20;; esac
+  while :; do
+    next_message
+    case "$message" in
+      *'"type":"user"'*) break;;
+      *'"type":"control_request"'*) accept;;
+      *) exit 20;;
+    esac
+  done
   started
 }
 # Waits for an interrupt and ends the turn it stops.
@@ -52,8 +58,24 @@ accept() {
 "#;
 
 fn fake_claude(dir: &Path, script: &str) {
+    fake_claude_with_init(
+        dir,
+        r#"
+next_message
+case "$message" in *'"subtype":"initialize"'*) ;; *) exit 19;; esac
+printf '%s\n' '{"type":"control_response","response":{"subtype":"success","request_id":"initialize","response":{"commands":[]}}}'
+"#,
+        script,
+    );
+}
+
+fn fake_claude_with_init(dir: &Path, initialization: &str, script: &str) {
     let path = dir.join("claude");
-    fs::write(&path, format!("#!/bin/sh\n{FAKE_CLAUDE}\n{script}\n")).unwrap();
+    fs::write(
+        &path,
+        format!("#!/bin/sh\n{FAKE_CLAUDE}\n{initialization}\n{script}\n"),
+    )
+    .unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
@@ -217,6 +239,174 @@ async fn initialize_with(
 }
 
 #[tokio::test]
+async fn commands_are_discovered_before_a_prompt_and_replaced_live() {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    let store = temp.path().join("store");
+    fake_claude_with_init(
+        &bin,
+        r#"
+printf '%s\n' "$*" >> calls
+next_message
+case "$message" in *'"subtype":"initialize"'*) ;; *) exit 19;; esac
+printf '%s\n' '{"type":"control_response","response":{"subtype":"success","request_id":"initialize","response":{"commands":[{"name":"review","description":"Review a file","argumentHint":"file"},{"name":"clear","description":"Clear context","builtin":true}]}}}'
+"#,
+        r#"
+next_prompt
+printf '%s\n' "$message" > captured-prompt.json
+printf '%s\n' '{"type":"system","subtype":"commands_changed","commands":[{"name":"plugin:check","description":"Check","argumentHint":"target"}]}'
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"reviewed"}]}}'
+printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43a2"}'
+next_prompt
+printf '%s\n' '{"type":"system","subtype":"commands_changed","commands":[]}'
+printf '%s\n' '{"type":"result","local_command":"clear","num_turns":0}'
+next_message
+"#,
+    );
+    let (mut child, mut reader) = start(&bin, &store);
+    initialize(&mut child, &mut reader).await;
+    send(
+        &mut child,
+        json!({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":project}}),
+    )
+    .await;
+    let (new, _) = response(&mut reader, 2).await;
+    let session = new["result"]["sessionId"].clone();
+    assert_eq!(
+        new["result"]["configOptions"].as_array().unwrap().len(),
+        3,
+        "{new}"
+    );
+    let snapshot = receive(&mut reader).await;
+    assert!(is_state(&snapshot, "idle"), "{snapshot}");
+    let initial = json!([
+        {"type":"command","name":"review","description":"Review a file","input":{"type":"text","hint":"file"}},
+        {"type":"command","name":"clear","description":"Clear context"}
+    ]);
+    let discovered = receive(&mut reader).await;
+    assert_eq!(
+        update(&discovered)["sessionUpdate"],
+        "available_commands_update",
+        "{discovered}"
+    );
+    assert_eq!(
+        update(&discovered)["availableCommands"],
+        initial,
+        "{discovered}"
+    );
+    assert_eq!(
+        calls(&project).len(),
+        1,
+        "discovery starts exactly one process"
+    );
+
+    send(&mut child, json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session,"prompt":[{"type":"text","text":"/review src/main.rs"}]}})).await;
+    let (_, updates) = finished(&mut reader, 3).await;
+    assert!(
+        updates
+            .iter()
+            .any(|value| shown_text(value) == Some("reviewed")),
+        "{updates:?}"
+    );
+    let captured: Value =
+        serde_json::from_slice(&fs::read(project.join("captured-prompt.json")).unwrap()).unwrap();
+    assert_eq!(
+        captured["message"]["content"],
+        json!([
+            {"type":"text", "text":"/review src/main.rs"}
+        ])
+    );
+    let changed = updates
+        .iter()
+        .find(|value| update(value)["sessionUpdate"] == "available_commands_update")
+        .unwrap();
+    assert_eq!(
+        update(changed)["availableCommands"][0]["name"],
+        "plugin:check"
+    );
+
+    send(&mut child, json!({"jsonrpc":"2.0","id":4,"method":"session/resume","params":{"sessionId":session,"cwd":project}})).await;
+    let (resumed, _) = response(&mut reader, 4).await;
+    assert_eq!(
+        resumed["result"]["availableCommands"],
+        update(changed)["availableCommands"]
+    );
+    assert_eq!(
+        calls(&project).len(),
+        1,
+        "resume reuses the initialized process"
+    );
+
+    send(&mut child, json!({"jsonrpc":"2.0","id":5,"method":"session/prompt","params":{"sessionId":session,"prompt":[{"type":"text","text":"/clear"}]}})).await;
+    let (idle, updates) = finished(&mut reader, 5).await;
+    assert_eq!(idle["stopReason"], "end_turn");
+    assert!(
+        updates.iter().any(
+            |value| update(value)["sessionUpdate"] == "available_commands_update"
+                && update(value)["availableCommands"] == json!([])
+        ),
+        "{updates:?}"
+    );
+    child.kill().await.unwrap();
+
+    let (mut child, mut reader) = start(&bin, &store);
+    initialize(&mut child, &mut reader).await;
+    send(&mut child, json!({"jsonrpc":"2.0","id":2,"method":"session/resume","params":{"sessionId":session,"cwd":project,"replayFrom":{"type":"start"}}})).await;
+    response(&mut reader, 2).await;
+    let discovered = loop {
+        let message = receive(&mut reader).await;
+        if update(&message)["sessionUpdate"] == "available_commands_update" {
+            break message;
+        }
+    };
+    assert_eq!(update(&discovered)["availableCommands"], initial);
+    assert_eq!(calls(&project).len(), 2);
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_initialization_failure_fails_the_first_prompt() {
+    for (initialization, expected) in [
+        (
+            r#"next_message
+printf '%s\n' '{"type":"control_response","response":{"subtype":"error","request_id":"initialize","error":"initialization refused"}}'
+next_message"#,
+            "initialization refused",
+        ),
+        (
+            "printf '%s\\n' 'startup diagnostic' >&2\nexit 23",
+            "startup diagnostic",
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let (bin, project) = dirs(temp.path());
+        let store = temp.path().join("store");
+        fake_claude_with_init(&bin, initialization, "");
+        let (mut child, mut reader) = start(&bin, &store);
+        initialize(&mut child, &mut reader).await;
+        send(
+            &mut child,
+            json!({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":project}}),
+        )
+        .await;
+        let (new, _) = response(&mut reader, 2).await;
+        let session = new["result"]["sessionId"].clone();
+        assert!(session.is_string(), "{new}");
+        send(&mut child, json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session,"prompt":[{"type":"text","text":"hello"}]}})).await;
+        let (failed, _) = response(&mut reader, 3).await;
+        assert_eq!(failed["error"]["code"], -32603, "{failed}");
+        assert!(
+            failed["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(expected),
+            "{failed}"
+        );
+        child.kill().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn streams_and_resumes_a_persisted_session() {
     let temp = tempfile::tempdir().unwrap();
     let bin = temp.path().join("bin");
@@ -233,7 +423,7 @@ while [ "$#" -gt 0 ]; do
   if [ "$1" = '--permission-mode' ]; then mode="$2"; break; fi
   shift
 done
-if [ "$mode" != 'plan' ]; then exit 12; fi
+printf '%s\n' "$mode" >> launch-modes
 next_prompt
 printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hello "}}}'
 printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"hello world"},{"type":"tool_use","name":"Read","input":{"file_path":"x"}}]}}'
@@ -339,6 +529,11 @@ printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43
     let (resume, _) = response(&mut reader, 5).await;
     assert_eq!(option(&resume, "model")["currentValue"], "claude-opus-5-5");
     assert_eq!(option(&resume, "mode")["currentValue"], "plan");
+    prompt(&mut child, &mut reader, 6, &json!(id)).await;
+    assert_eq!(
+        fs::read_to_string(project.join("launch-modes")).unwrap(),
+        "manual\nplan\n"
+    );
     child.kill().await.unwrap();
 }
 
@@ -1095,13 +1290,13 @@ next_message
 }
 
 #[tokio::test]
-async fn failed_resume_does_not_retry_the_prompt() {
+async fn failed_resume_fails_the_next_prompt() {
     let temp = tempfile::tempdir().unwrap();
     let (bin, project) = dirs(temp.path());
     let store = temp.path().join("store");
     // A claude that cannot resume reports why and exits without reading
     // the prompt.
-    fake_claude(
+    fake_claude_with_init(
         &bin,
         r#"
 printf '%s\n' "$*" >> calls
@@ -1110,6 +1305,10 @@ case " $* " in
     printf '%s\n' '{"type":"result","is_error":true,"result":"resume failed"}'
     exit 1;;
 esac
+next_message
+printf '%s\n' '{"type":"control_response","response":{"subtype":"success","request_id":"initialize","response":{"commands":[]}}}'
+"#,
+        r#"
 next_prompt
 printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43a2"}'
 next_message
@@ -1125,19 +1324,16 @@ next_message
     let (mut child, mut reader) = start(&bin, &store);
     initialize(&mut child, &mut reader).await;
     send(&mut child, json!({"jsonrpc":"2.0","id":2,"method":"session/resume","params":{"sessionId":session,"cwd":project,"mcpServers":[]}})).await;
-    response(&mut reader, 2).await;
+    let (resumed, _) = response(&mut reader, 2).await;
+    assert!(resumed["error"].is_null(), "{resumed}");
     send(&mut child, json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session,"prompt":[{"type":"text","text":"hello"}]}})).await;
     let (failed, updates) = response(&mut reader, 3).await;
     assert_eq!(failed["error"]["message"], "resume failed", "{failed}");
-    // The prompt never entered the conversation, so the turn it would have
-    // started is not reported.
+    // The prompt never entered the conversation, so no turn is reported.
     assert!(
-        !updates
-            .iter()
-            .any(|v| update(v)["sessionUpdate"] == "state_update"),
+        !updates.iter().any(|v| is_state(v, "running")),
         "{updates:?}"
     );
-    assert_eq!(calls(&project).len(), 2);
     child.kill().await.unwrap();
 }
 
@@ -1188,6 +1384,13 @@ async fn new_session(
     assert!(is_state(&snapshot, "idle"), "{snapshot}");
     assert_eq!(update(&snapshot)["background"], json!([]), "{snapshot}");
     assert_eq!(snapshot["params"]["sessionId"], session, "{snapshot}");
+    // Its claude starts next and reports its commands.
+    let commands = receive(reader).await;
+    assert_eq!(
+        update(&commands)["sessionUpdate"],
+        "available_commands_update",
+        "{commands}"
+    );
     session
 }
 
@@ -1668,7 +1871,21 @@ async fn unsupported_prompt_content_is_rejected() {
     let temp = tempfile::tempdir().unwrap();
     let (bin, project) = dirs(temp.path());
     let ran = temp.path().join("ran");
-    fake_claude(&bin, &format!("touch '{}'", ran.display()));
+    fake_claude(
+        &bin,
+        &format!(
+            r#"
+while :; do
+  next_message
+  case "$message" in
+    *'"type":"user"'*) printf '%s\n' "$message" >> '{}';;
+    *'"type":"control_request"'*) accept;;
+  esac
+done
+"#,
+            ran.display()
+        ),
+    );
     let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
     initialize(&mut child, &mut reader).await;
     let session = new_session(&mut child, &mut reader, 2, &project).await;
@@ -1684,7 +1901,10 @@ async fn unsupported_prompt_content_is_rejected() {
         let (result, _) = response(&mut reader, id).await;
         assert_eq!(result["error"]["code"], -32602, "{result}");
     }
-    assert!(!ran.exists(), "claude ran for a rejected prompt");
+    // The config acknowledgement follows anything the bridge sent before it.
+    let configured = set_config(&mut child, &mut reader, 20, &session, "mode", "plan").await;
+    assert_eq!(option(&configured, "mode")["currentValue"], "plan");
+    assert!(!ran.exists(), "a rejected prompt reached claude");
     let _ = child.kill().await;
 }
 

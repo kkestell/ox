@@ -105,7 +105,7 @@ export function ModelPicker({
             }}
           />
         </label>
-        <div id="model-list" role="listbox" aria-label={model.name}>
+        <div id="model-list" className="menu-list" role="listbox" aria-label={model.name}>
           {models.map((choice, index) => (
             <button
               key={choice.value}

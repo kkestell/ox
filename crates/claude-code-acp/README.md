@@ -135,7 +135,8 @@ Prompts can contain these content blocks, which reach Claude in order:
 | Embedded text resource    | Text in a `<context ref="uri">` block                  |
 | Embedded image or PDF     | An image or a document                                 |
 
-A session's first prompt starts `claude`, and the session keeps that process:
+Opening a session starts `claude` and initializes its native command catalog
+before answering. The session keeps that process:
 the bridge holds its stdin open and sends each later prompt to it as a
 message with a `uuid`, the prompt's `messageId`. A prompt sent while a turn
 runs waits for Claude to take it. The bridge takes the prompt as inserted once
@@ -204,6 +205,17 @@ that was waiting for Claude to take it reports the exit as its error.
 
 The bridge forwards stdio MCP server definitions to Claude. An MCP server's
 `command` is an absolute path.
+
+### Slash commands
+
+Opening or resuming a session returns Claude's current command names,
+descriptions and argument hints in `availableCommands`. Native
+`commands_changed` events replace that catalog through
+`available_commands_update`, including an empty list. Commands and user-invoked
+skills run as ordinary prompt text, such as `/review src/main.rs`, with the same
+prompt acknowledgement and turn lifecycle. Catalog discovery sends no prompt.
+The bridge follows native command discovery; it does not watch skill files or
+force their reload.
 
 ### Models and modes
 

@@ -67,6 +67,7 @@
   --row-action-inset: var(--spacing);
   --workspace-header-height: calc(var(--spacing) * 7);
   --menu-min-width: calc(var(--spacing) * 32);
+  --menu-list-max-height: 40vh;
   --menu-item-padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2);
   --model-menu-width: calc(var(--spacing) * 80);
   --dialog-width: calc(var(--spacing) * 96);
@@ -407,13 +408,15 @@ body {
   background: currentColor;
 }
 
-.model-menu [role="listbox"] {
+.menu-list {
   display: flex;
   flex-direction: column;
+  max-height: var(--menu-list-max-height);
+  overflow: auto;
 }
 
 .model-menu .search,
-.model-menu [role="option"] {
+.menu-list [role="option"] {
   display: flex;
   align-items: center;
   gap: calc(var(--spacing) * 2);
@@ -441,6 +444,20 @@ body {
 
 .model-menu .lucide-check {
   margin-left: auto;
+}
+
+.command-menu {
+  position: absolute;
+  inset: auto 0 100%;
+  z-index: 1;
+  margin: 0 0 var(--spacing);
+}
+
+.menu-item-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .sessions {
@@ -621,7 +638,8 @@ body {
 .tool-call .label,
 .session-closed,
 .request-panel legend,
-.choice .description {
+.choice .description,
+.menu-detail {
   font-size: var(--text-xs);
   color: var(--muted-foreground);
 }
@@ -844,8 +862,11 @@ code,
   flex-direction: column;
 }
 
-.composer .box {
+.composer .entry {
   position: relative;
+}
+
+.composer .box {
   display: flex;
   flex-direction: column;
   gap: var(--spacing);

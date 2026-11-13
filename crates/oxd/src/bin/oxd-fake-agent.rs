@@ -37,6 +37,8 @@
 //! - `exit <code>`: exit the process
 //! - `describe`: one chunk listing the prompt's blocks, such as
 //!   `text image:image/png link:file:///a resource:file:///b`
+//! - `/echo <text>`, `/review <text>`, `/plugin:check <text>`: echo the command arguments
+//! - `commands <JSON array>`: replace the advertised command catalog
 //! - `config <id>`: one chunk with the current value of the config option
 //!   `id`
 //! - `wait`: keep the turn open until it is cancelled
@@ -77,6 +79,7 @@
 //! - `--background`: report the background work on every state update, `[]`
 //!   when none is running, starting after `session/new`, and accept the
 //!   `background-start` and `background-end` directives
+//! - `--no-commands`: omit commands from setup responses
 //! - `--silent-config`: send no `config_option_update` when an option is set
 //! - `--late-config-update`: send the `config_option_update` after the
 //!   response
@@ -131,11 +134,27 @@ const CONFIG: [ConfigOption; 3] = [
     },
 ];
 
+fn commands() -> Vec<acp::AvailableCommand> {
+    [
+        ("echo", "Echo the arguments", Some("text")),
+        ("review", "Review a file", Some("file")),
+        ("plugin:check", "Check the project", None),
+    ]
+    .into_iter()
+    .map(|(name, description, hint)| {
+        acp::AvailableCommand::Command(acp::Command::new(name, description).input(
+            hint.map(|hint| acp::AvailableCommandInput::Text(acp::TextCommandInput::new(hint))),
+        ))
+    })
+    .collect()
+}
+
 struct State {
     /// Whether the current turn was cancelled.
     cancelled: watch::Sender<bool>,
     /// The current value of each config option, by ID.
     config: Mutex<HashMap<&'static str, String>>,
+    commands: Mutex<Vec<acp::AvailableCommand>>,
     /// Each session's record of prompts and message chunks.
     logs: Mutex<HashMap<String, PathBuf>>,
     /// The number of tool calls made, which numbers the next.
@@ -318,6 +337,11 @@ async fn main() -> agent_client_protocol::Result<()> {
                 .map(|option| (option.id, option.initial.to_owned()))
                 .collect(),
         ),
+        commands: Mutex::new(if flag("--no-commands") {
+            Vec::new()
+        } else {
+            commands()
+        }),
         logs: Mutex::default(),
         tools: AtomicU64::new(0),
         deferred_rejection: Mutex::new(None),
@@ -380,7 +404,8 @@ async fn main() -> agent_client_protocol::Result<()> {
                     state.open_log(&id, &request.cwd.0);
                     responder.respond(
                         acp::NewSessionResponse::new(id.clone())
-                            .config_options(state.config_options()),
+                            .config_options(state.config_options())
+                            .available_commands(state.commands.lock().unwrap().clone()),
                     )?;
                     if flag("--background") {
                         state_update(
@@ -460,7 +485,9 @@ async fn main() -> agent_client_protocol::Result<()> {
                         },
                     )?;
                     responder.respond(
-                        acp::ResumeSessionResponse::new().config_options(state.config_options()),
+                        acp::ResumeSessionResponse::new()
+                            .config_options(state.config_options())
+                            .available_commands(state.commands.lock().unwrap().clone()),
                     )?;
                     if flag("--turn-after-resume") {
                         state_update(&connection, &session_id, running())?;
@@ -602,6 +629,8 @@ enum Directive {
     OwnTurn,
     Describe,
     Config(String),
+    Echo(String),
+    Commands(Vec<acp::AvailableCommand>),
     Wait,
     Title(String),
     TitleNull,
@@ -633,6 +662,11 @@ fn parse(script: &str) -> Result<Vec<Directive>, Error> {
             ["own-turn"] => Directive::OwnTurn,
             ["describe"] => Directive::Describe,
             ["config", id] => Directive::Config((*id).to_owned()),
+            ["/echo" | "/review" | "/plugin:check", ..] => Directive::Echo(rest(words[0])),
+            ["commands", ..] => Directive::Commands(
+                serde_json::from_str(&rest("commands"))
+                    .map_err(|error| Error::invalid_params().data(error.to_string()))?,
+            ),
             ["wait"] => Directive::Wait,
             ["title", ..] => Directive::Title(rest("title")),
             ["title-null"] => Directive::TitleNull,
@@ -782,6 +816,17 @@ async fn run(
             }
             Directive::LatePermission | Directive::OwnTurn => {}
             Directive::Describe => say(description.clone())?,
+            Directive::Echo(text) => say(text)?,
+            Directive::Commands(commands) => {
+                state.commands.lock().unwrap().clone_from(&commands);
+                notify(
+                    connection,
+                    &session_id,
+                    acp::SessionUpdate::AvailableCommandsUpdate(acp::AvailableCommandsUpdate::new(
+                        commands,
+                    )),
+                )?;
+            }
             Directive::Config(id) => {
                 let value = state.config.lock().unwrap().get(id.as_str()).cloned();
                 say(value.unwrap_or_else(|| format!("no config option {id}")))?;

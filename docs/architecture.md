@@ -266,8 +266,10 @@ restored from the database, keeps its history and drops the replay, and its hist
 
 **claude-code-acp.** An ACP agent, speaking draft protocol v2, that bridges to
 the Claude Code CLI. [`acp-v2.md`](acp-v2.md) charts its support of the
-protocol. A session's first prompt starts one `claude -p`, in the bridge's
-process group, and the session keeps it: the bridge holds its stdin open,
+protocol. Opening a session answers at once with the session's settings, then
+starts and initializes one `claude -p`, in the bridge's process group, whose
+commands follow as an update; a `claude` that fails to start fails the next
+prompt with its error. The session keeps that process: the bridge holds its stdin open,
 writes each prompt to it as a stream-json message, reads streamed output and
 permission requests from its stdout, and answers permission requests with the
 client's decision. A prompt is answered when Claude takes it into a turn: the
