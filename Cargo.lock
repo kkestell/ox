@@ -2844,6 +2844,7 @@ dependencies = [
 name = "ox"
 version = "0.1.0"
 dependencies = [
+ "ox-github",
  "ox-protocol",
  "serde",
  "serde_json",
@@ -2852,6 +2853,16 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "tauri-plugin-wdio-webdriver",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "ox-github"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
  "tokio",
 ]
 

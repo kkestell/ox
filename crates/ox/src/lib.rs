@@ -1,4 +1,5 @@
 mod conversation;
+mod github;
 
 use std::collections::BTreeMap;
 use std::fmt::Display;
@@ -30,6 +31,7 @@ impl Drop for Task {
 /// the webview.
 #[derive(Default)]
 struct App {
+    github: tokio::sync::Mutex<github::Feed>,
     client: tokio::sync::Mutex<Option<Arc<Client>>>,
     watch: Mutex<Option<Task>>,
     view: Mutex<Option<Task>>,
@@ -51,6 +53,11 @@ impl App {
         *client = Some(connected.clone());
         Ok(connected)
     }
+}
+
+#[tauri::command]
+async fn github_refresh(app: State<'_, App>) -> Result<github::Snapshot, String> {
+    Ok(app.github.lock().await.refresh().await)
 }
 
 #[derive(Clone, Serialize)]
@@ -410,6 +417,7 @@ pub fn run() {
     builder
         .manage(App::default())
         .invoke_handler(tauri::generate_handler![
+            github_refresh,
             watch,
             view_session,
             add_workspace,
