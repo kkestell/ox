@@ -12,7 +12,6 @@
   --success: oklch(0.627 0.194 149.214);
   --warning: oklch(0.666 0.179 58.318);
   --border: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
   --sidebar: oklch(0.985 0 0);
   --text: oklch(0.371 0 0);
   --shadow-color: oklch(0 0 0 / 10%);
@@ -20,7 +19,6 @@
   --hover: var(--accent);
   --selected: var(--muted);
   --surface: color-mix(in oklab, var(--background), var(--card));
-  --focus-ring: color-mix(in oklab, var(--ring) 50%, transparent);
   --disabled-opacity: 0.5;
   --dimmed-opacity: 0.6;
   --busy-dot-opacity: 0.4;
@@ -41,7 +39,6 @@
 
   /* Shape */
   --border-width: 1px;
-  --ring-width: 3px;
   --radius: 0.625rem;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -101,7 +98,6 @@
     --success: oklch(0.723 0.219 149.579);
     --warning: oklch(0.769 0.188 70.08);
     --border: oklch(1 0 0 / 10%);
-    --ring: oklch(0.556 0 0);
     --sidebar: oklch(0.205 0 0);
     --text: oklch(0.87 0 0);
     --hover: color-mix(in oklab, var(--accent) 50%, transparent);
@@ -122,6 +118,11 @@ body {
   line-height: var(--leading);
   background: var(--background);
   color: var(--text);
+}
+
+/* Focus does not add a border or ring to any control. */
+:focus {
+  outline: none;
 }
 
 [hidden] {
@@ -182,15 +183,10 @@ body {
   border-radius: var(--radius-md);
   background: transparent;
   color: var(--foreground);
-  outline: none;
 }
 
 .icon-button:hover:enabled {
   background: var(--hover);
-}
-
-.icon-button:focus-visible {
-  box-shadow: 0 0 0 var(--ring-width) var(--focus-ring);
 }
 
 .icon-button svg,
@@ -305,7 +301,6 @@ body {
   color: var(--foreground);
   font: inherit;
   text-align: left;
-  outline: none;
 }
 
 .menu button:hover,
@@ -361,7 +356,6 @@ body {
   height: var(--slider-thumb-size);
   margin: 0;
   background: transparent;
-  outline: none;
 }
 
 .effort input::-webkit-slider-runnable-track {
@@ -378,10 +372,6 @@ body {
   border-radius: var(--radius-full);
   background: var(--foreground);
   box-shadow: var(--shadow-sm);
-}
-
-.effort input:focus-visible::-webkit-slider-thumb {
-  box-shadow: 0 0 0 var(--ring-width) var(--focus-ring);
 }
 
 .effort .stops {
@@ -439,7 +429,6 @@ body {
   background: transparent;
   color: inherit;
   font: inherit;
-  outline: none;
 }
 
 .model-menu .lucide-check {
@@ -498,11 +487,6 @@ body {
   color: var(--foreground);
   font: inherit;
   text-align: left;
-  outline: none;
-}
-
-.session .select:focus-visible {
-  box-shadow: 0 0 0 var(--ring-width) var(--focus-ring);
 }
 
 .session:has(.status.exited) .select > * {
@@ -787,12 +771,9 @@ code,
   gap: calc(var(--spacing) * 3);
 }
 
-/* The panel's content scrolls inside its padding, above the actions. Its
-   controls' focus rings sit in the region's own inset. */
+/* The panel's content scrolls inside its padding, above the actions. */
 .request-panel .scroll {
   min-height: 0;
-  margin: calc(var(--ring-width) * -1);
-  padding: var(--ring-width);
   overflow: auto;
 }
 
@@ -829,17 +810,11 @@ code,
   background: var(--background);
   color: var(--foreground);
   font: inherit;
-  outline: none;
   box-shadow: var(--shadow-sm);
 }
 
 .text-button:hover:enabled {
   background: var(--accent);
-}
-
-.text-button:focus-visible,
-.text-field:focus-visible {
-  box-shadow: 0 0 0 var(--ring-width) var(--focus-ring);
 }
 
 .text-field:disabled {
@@ -953,7 +928,6 @@ code,
   font: inherit;
   line-height: calc(var(--spacing) * 6);
   resize: none;
-  outline: none;
 }
 
 .composer .attachments {
