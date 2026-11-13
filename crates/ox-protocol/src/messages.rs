@@ -43,7 +43,8 @@ pub enum Method {
     #[serde(rename = "workspace.list")]
     WorkspaceList,
     /// The workspace's local and remote-tracking branches, for naming the
-    /// branch of a new worktree. Refused outside a Git working tree. With
+    /// branch of a new worktree, with the worktree that has each local
+    /// branch checked out. Refused outside a Git working tree. With
     /// `fetch`, the daemon first runs `git fetch --all`, shared with any
     /// fetch of the same repository already running and stopped after 60
     /// seconds; a fetch that fails sets `fetch_error` and the lists are
@@ -60,9 +61,10 @@ pub enum Method {
     /// Starts an agent in the workspace's directory or in a new worktree of
     /// its Git repository, as `checkout` says. The result is the session in
     /// state `starting`; its `agent_started` or `agent_exited` event
-    /// follows. A worktree's branch is resolved and created before the
-    /// answer, and the worktree is added during the session's startup. Git
-    /// runs with `env` over the daemon's environment, as the agent does.
+    /// follows. A worktree's branch is checked, and created unless it is a
+    /// local branch already, before the answer, and the worktree is added
+    /// during the session's startup. Git runs with `env` over the daemon's
+    /// environment, as the agent does.
     #[serde(rename = "session.new")]
     SessionNew {
         workspace_id: String,
@@ -189,16 +191,28 @@ pub enum Checkout {
     #[default]
     Workspace,
     /// A new worktree of the workspace's repository, in the same
-    /// subdirectory the workspace is of its checkout. With no `branch`, the
-    /// worktree is on a new branch `ox/<first 8 digits of the session ID>`.
-    /// A `branch` that exists locally is checked out; one that exists only
-    /// on a remote, named `<branch>` or `<remote>/<branch>`, becomes a local
-    /// branch tracking it; any other name is a new branch. A new branch
-    /// starts at `start`, `HEAD` when unset, and has no upstream. `start` is
-    /// refused for any other branch.
+    /// subdirectory the workspace is of its checkout, on `branch`. With no
+    /// `branch`, the worktree is on a new branch `ox/<first 8 digits of the
+    /// session ID>` that starts at `HEAD`.
     Worktree {
         #[serde(default)]
-        branch: Option<String>,
+        branch: Option<WorktreeBranch>,
+    },
+}
+
+/// The branch a new worktree is on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WorktreeBranch {
+    /// A local branch no worktree has checked out, or a remote branch,
+    /// named `<branch>` or `<remote>/<branch>`, that becomes a local branch
+    /// tracking it. Refused if no such branch exists.
+    Existing { name: String },
+    /// A new branch that starts at `start`, `HEAD` when unset, with no
+    /// upstream. Refused if a local branch, a remote branch's full name
+    /// `<remote>/<branch>`, or a branch on any remote has the name.
+    New {
+        name: String,
         #[serde(default)]
         start: Option<String>,
     },
@@ -281,13 +295,23 @@ pub struct WorkspaceInfo {
 /// A workspace's branches, each list most recently committed first.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Branches {
-    /// Local branch names, such as `main`.
-    pub local: Vec<String>,
+    /// Local branches, such as `main`.
+    pub local: Vec<LocalBranch>,
     /// Remote-tracking branch names with their remote, such as
     /// `origin/main`, without symbolic refs such as `origin/HEAD`.
     pub remote: Vec<String>,
     /// Why the fetch the request asked for failed, if it did.
     pub fetch_error: Option<String>,
+}
+
+/// A local branch.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalBranch {
+    pub name: String,
+    /// The top level of the worktree that has the branch checked out: the
+    /// repository's own checkout, a session's worktree, or any other
+    /// worktree of the repository.
+    pub worktree: Option<PathBuf>,
 }
 
 /// What a watch delivers: the daemon's workspaces, in the order they were
@@ -515,28 +539,6 @@ mod tests {
             Method::SessionNew { ref workspace_id, ref env, checkout: Checkout::Workspace, .. }
                 if workspace_id == "w" && env.is_empty()
         ));
-        let method = Method::SessionNew {
-            workspace_id: "w".into(),
-            command: vec!["agent".into()],
-            env: BTreeMap::new(),
-            checkout: Checkout::Worktree {
-                branch: Some("feature".into()),
-                start: None,
-            },
-        };
-        let value = serde_json::to_value(Request { id: 13, method }).unwrap();
-        assert_eq!(
-            value["params"]["checkout"],
-            json!({"type": "worktree", "branch": "feature", "start": null})
-        );
-        let request: Request = serde_json::from_value(value).unwrap();
-        assert!(matches!(
-            request.method,
-            Method::SessionNew {
-                checkout: Checkout::Worktree { branch: Some(ref branch), start: None },
-                ..
-            } if branch == "feature"
-        ));
         let request: Request = serde_json::from_value(json!({
             "id": 14,
             "method": "session.new",
@@ -546,13 +548,60 @@ mod tests {
         assert!(matches!(
             request.method,
             Method::SessionNew {
-                checkout: Checkout::Worktree {
-                    branch: None,
-                    start: None
-                },
+                checkout: Checkout::Worktree { branch: None },
                 ..
             }
         ));
+        for (branch, wire) in [
+            (None, json!({"type": "worktree", "branch": null})),
+            (
+                Some(WorktreeBranch::Existing {
+                    name: "feature".into(),
+                }),
+                json!({"type": "worktree", "branch": {"type": "existing", "name": "feature"}}),
+            ),
+            (
+                Some(WorktreeBranch::New {
+                    name: "topic".into(),
+                    start: None,
+                }),
+                json!({"type": "worktree", "branch": {"type": "new", "name": "topic", "start": null}}),
+            ),
+            (
+                Some(WorktreeBranch::New {
+                    name: "topic".into(),
+                    start: Some("main".into()),
+                }),
+                json!({"type": "worktree", "branch": {"type": "new", "name": "topic", "start": "main"}}),
+            ),
+        ] {
+            let checkout = Checkout::Worktree { branch };
+            let method = Method::SessionNew {
+                workspace_id: "w".into(),
+                command: vec!["agent".into()],
+                env: BTreeMap::new(),
+                checkout: checkout.clone(),
+            };
+            let value = serde_json::to_value(Request { id: 13, method }).unwrap();
+            assert_eq!(value["params"]["checkout"], wire);
+            let request: Request = serde_json::from_value(value).unwrap();
+            assert!(matches!(
+                request.method,
+                Method::SessionNew { checkout: ref decoded, .. } if *decoded == checkout
+            ));
+        }
+        assert_eq!(
+            serde_json::from_value::<Checkout>(
+                json!({"type": "worktree", "branch": {"type": "new", "name": "topic"}})
+            )
+            .unwrap(),
+            Checkout::Worktree {
+                branch: Some(WorktreeBranch::New {
+                    name: "topic".into(),
+                    start: None
+                })
+            }
+        );
         let request: Request = serde_json::from_value(json!({
             "id": 16,
             "method": "session.delete",
@@ -612,14 +661,30 @@ mod tests {
             })
         );
         let branches = Branches {
-            local: vec!["main".into()],
+            local: vec![
+                LocalBranch {
+                    name: "main".into(),
+                    worktree: Some("/work".into()),
+                },
+                LocalBranch {
+                    name: "topic".into(),
+                    worktree: None,
+                },
+            ],
             remote: vec!["origin/main".into()],
             fetch_error: Some("no network".into()),
         };
         let value = serde_json::to_value(&branches).unwrap();
         assert_eq!(
             value,
-            json!({"local": ["main"], "remote": ["origin/main"], "fetch_error": "no network"})
+            json!({
+                "local": [
+                    {"name": "main", "worktree": "/work"},
+                    {"name": "topic", "worktree": null}
+                ],
+                "remote": ["origin/main"],
+                "fetch_error": "no network"
+            })
         );
         assert_eq!(serde_json::from_value::<Branches>(value).unwrap(), branches);
         let request: Request = serde_json::from_value(json!({

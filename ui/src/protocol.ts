@@ -45,9 +45,15 @@ export interface WorkspaceInfo {
 }
 
 /** Where a new session runs. */
-export type Checkout =
-  | { type: "workspace" }
-  | { type: "worktree"; branch: string | null; start: string | null };
+export type Checkout = { type: "workspace" } | { type: "worktree"; branch: WorktreeBranch | null };
+
+/**
+ * The branch of a new worktree: an existing local branch, or a remote branch
+ * to track; or a new branch that starts at `start`, `HEAD` when unset.
+ */
+export type WorktreeBranch =
+  | { type: "existing"; name: string }
+  | { type: "new"; name: string; start: string | null };
 
 export interface WorktreeInfo {
   path: string;
@@ -58,10 +64,16 @@ export interface WorktreeInfo {
 
 /** A workspace's branches, each list most recently committed first. */
 export interface Branches {
-  local: string[];
+  local: LocalBranch[];
   /** Remote-tracking branches with their remote, such as `origin/main`. */
   remote: string[];
   fetch_error: string | null;
+}
+
+export interface LocalBranch {
+  name: string;
+  /** The worktree that has the branch checked out. */
+  worktree: string | null;
 }
 
 /** The outcome of deleting a session. */

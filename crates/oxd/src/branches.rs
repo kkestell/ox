@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use ox_protocol::ErrorBody;
+use ox_protocol::{ErrorBody, LocalBranch};
 use tokio::io::AsyncReadExt;
 
 use crate::worktree::{Git, not_a_working_tree};
@@ -51,15 +51,19 @@ pub async fn common_dir(git: &Git, workspace: &Path) -> Result<PathBuf, ErrorBod
 
 /// The local and remote-tracking branches of the repository `workspace` is
 /// in, most recently committed first, without symbolic refs such as
-/// `origin/HEAD`. Remote branches keep their remote's name.
-pub async fn list(git: &Git, workspace: &Path) -> Result<(Vec<String>, Vec<String>), ErrorBody> {
+/// `origin/HEAD`. Each local branch names the worktree that has it checked
+/// out; remote branches keep their remote's name.
+pub async fn list(
+    git: &Git,
+    workspace: &Path,
+) -> Result<(Vec<LocalBranch>, Vec<String>), ErrorBody> {
     let output = git
         .run(
             workspace,
             &[
                 &"for-each-ref",
                 &"--sort=-committerdate",
-                &"--format=%(refname)%00%(symref)",
+                &"--format=%(refname)%00%(symref)%00%(worktreepath)",
                 &"refs/heads",
                 &"refs/remotes",
             ],
@@ -67,12 +71,19 @@ pub async fn list(git: &Git, workspace: &Path) -> Result<(Vec<String>, Vec<Strin
         .await?;
     let mut local = Vec::new();
     let mut remote = Vec::new();
-    for line in String::from_utf8_lossy(&output).lines() {
-        let Some((name, "")) = line.split_once('\0') else {
+    for line in output.split(|&byte| byte == b'\n') {
+        let mut fields = line.split(|&byte| byte == 0);
+        let (Some(name), Some(b""), Some(worktree)) = (fields.next(), fields.next(), fields.next())
+        else {
             continue;
         };
+        let name = String::from_utf8_lossy(name);
         if let Some(branch) = name.strip_prefix("refs/heads/") {
-            local.push(branch.to_owned());
+            local.push(LocalBranch {
+                name: branch.to_owned(),
+                worktree: (!worktree.is_empty())
+                    .then(|| PathBuf::from(OsStr::from_bytes(worktree))),
+            });
         } else if let Some(branch) = name.strip_prefix("refs/remotes/") {
             remote.push(branch.to_owned());
         }

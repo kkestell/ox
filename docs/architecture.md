@@ -33,10 +33,14 @@ sessions under their workspaces; a workspace is added by choosing a directory.
 A workspace's New Session menu opens beside its button with an agent select
 above **Existing Checkout**,
 which runs the session in the workspace's directory, and, in a Git working
-tree, **New Worktree**, on a new branch, and **New Worktree on Branch…**, which
-asks for a branch and, for a new branch, the commit it starts from. That
-dialog suggests the workspace's branches at once, then again once a fetch of
-its remotes answers, and notes a failed fetch. Selecting a saved session whose
+tree, **New Worktree**, on a new branch, **New Worktree on Existing
+Branch…**, and **New Worktree on New Branch…**. The existing-branch dialog
+picks from the local branches, showing each one a worktree has checked out
+with that worktree and not offering it, and the remote branches with no local
+branch of the same name. The new-branch dialog asks for a name, noting one a
+local or remote branch has, and the commit it starts from. Both dialogs list
+the workspace's branches at once, then again once a fetch of its remotes
+answers, and note a failed fetch. Selecting a saved session whose
 agent is not running loads it. A new session runs `claude-code-acp` from
 beside the app's executable. The app passes its environment to the session
 and to every request that runs git. **Delete Session** asks before discarding
@@ -45,8 +49,9 @@ that is already gone as deleted. The app's dialogs are in-window `<dialog>`
 elements; errors show in a native message box.
 
 **oxctl.** A command-line client of `oxd` that speaks the same protocol as
-the app. `oxctl new --worktree` starts a session in a new worktree, on a
-branch `--branch` names, started at `--start`. `oxctl delete` deletes a
+the app. `oxctl new --worktree` starts a session in a new worktree on its own
+branch, `--branch` in one on an existing branch, and `--new-branch` in one on
+a new branch started at `--start`. `oxctl delete` deletes a
 session, and with `--discard` gives up its worktree's unsaved work; it prints
 the branch it kept, if any. `oxctl archive` archives a session, with
 `--discard` as for delete, and `oxctl unarchive` undoes it; `oxctl ls` shows
@@ -129,20 +134,23 @@ cannot resume.
 a new worktree of the workspace's Git repository. `oxd` runs every Git
 operation as the `git` CLI, with the client's environment over its own and
 without the variables that point git at one repository (`GIT_DIR` and the
-rest of `git rev-parse --local-env-vars`). A worktree's branch is one of
-three kinds:
+rest of `git rev-parse --local-env-vars`). The request says which branch the
+worktree is on: none, an existing branch, or a new one. A worktree's branch
+is one of three kinds:
 
-- **New**: with no name, `ox/<first 8 digits of the session ID>`, or a name
-  that is neither a local nor a remote branch. It starts at the request's
-  `start`, or `HEAD`, and has no upstream.
-- **Existing**: a local branch, which is refused while any worktree has it
-  checked out.
-- **Track**: a name found only on a remote, as `<branch>` or
+- **New**: with no branch, `ox/<first 8 digits of the session ID>` from
+  `HEAD`, or a new branch the request names, which starts at its `start`, or
+  `HEAD`, and is refused when a local branch, a remote branch's full name, or
+  a branch on any remote has the name. It has no upstream.
+- **Existing**: an existing local branch, which is refused while any worktree
+  has it checked out.
+- **Track**: an existing branch found only on a remote, as `<branch>` or
   `<remote>/<branch>`, which becomes a local branch tracking it. A name on
   several remotes takes the one `checkout.defaultRemote` names, and is
   otherwise refused.
 
-`start` applies only to a new branch. The worktree is
+An existing branch that is neither local nor on a remote is refused. The
+worktree is
 `worktrees/<checkout name>-<first 8 digits of the session ID>` beside the
 socket, where the checkout name is the final component of the top level of
 the workspace's checkout, and the session runs in the same subdirectory of
@@ -199,7 +207,8 @@ workspace's path is `.git` and the path or one of its parents has a `.git`
 entry. A `git init` therefore shows in the next lists `oxd` sends, on the
 next session change or client connection. `workspace.branches` answers the
 local and remote-tracking branches of a workspace's repository, each most
-recently committed first, without symbolic refs such as `origin/HEAD`.
+recently committed first, without symbolic refs such as `origin/HEAD`, with
+the worktree that has each local branch checked out.
 `workspace.branches` and `session.new` with a worktree refuse a workspace
 git finds in no working tree, including one whose `.git` git rejects, with
 git's reason in the message. With `fetch`, `oxd` first runs `git

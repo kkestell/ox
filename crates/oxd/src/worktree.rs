@@ -9,7 +9,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use ox_protocol::{ErrorBody, WorktreeInfo, code};
+use ox_protocol::{ErrorBody, WorktreeBranch, WorktreeInfo, code};
 use tokio::process::Command;
 
 use crate::daemon::invalid_request;
@@ -210,7 +210,8 @@ impl<'a> Repository<'a> {
 /// How a session's branch comes to exist.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Kind {
-    /// A branch created from `base`, with no upstream.
+    /// A branch created from `base`, with no upstream: the session's
+    /// `ox/<id8>` branch, or a new branch the client named.
     New,
     /// A local branch that already exists.
     Existing,
@@ -253,15 +254,15 @@ impl WorktreePlan {
 }
 
 /// Resolves the worktree for session `session_id` in `workspace`, on
-/// `branch`, or on a new branch named for the session when there is none,
-/// starting a new branch at `start`. Refuses, having changed nothing, a
-/// workspace outside a Git working tree, a branch it cannot use, or a
-/// worktree directory in `worktrees_dir` that exists already.
+/// `branch`, or on a new branch named for the session that starts at `HEAD`
+/// when there is none. Refuses, having changed nothing, a workspace outside
+/// a Git working tree, an existing branch that is not there or is checked
+/// out, a new branch whose name is taken, a start point that is not a
+/// commit, or a worktree directory in `worktrees_dir` that exists already.
 pub async fn plan(
     git: &Git,
     workspace: &Path,
-    branch: Option<String>,
-    start: Option<String>,
+    branch: Option<WorktreeBranch>,
     worktrees_dir: &Path,
     session_id: &str,
 ) -> Result<WorktreePlan, ErrorBody> {
@@ -300,9 +301,16 @@ pub async fn plan(
         )));
     }
 
-    let (branch, kind) = match branch {
-        None => (format!("ox/{id8}"), Kind::New),
-        Some(name) => resolve(git, &top, &common_dir, name).await?,
+    let (branch, kind, start) = match branch {
+        None => (format!("ox/{id8}"), Kind::New, None),
+        Some(WorktreeBranch::Existing { name }) => {
+            let (name, kind) = resolve_existing(git, &top, &common_dir, name).await?;
+            (name, kind, None)
+        }
+        Some(WorktreeBranch::New { name, start }) => {
+            check_new(git, &top, &name).await?;
+            (name, Kind::New, start)
+        }
     };
     let base = match (&kind, start) {
         (Kind::New, Some(start)) => git
@@ -313,13 +321,8 @@ pub async fn plan(
             .commit(&top, "HEAD")
             .await
             .ok_or_else(|| invalid_request("the repository has no commits".into()))?,
-        (_, Some(_)) => {
-            return Err(invalid_request(format!(
-                "a start point applies only to a new branch, and {branch} exists"
-            )));
-        }
-        (Kind::Existing, None) => tip(git, &top, &format!("refs/heads/{branch}")).await?,
-        (Kind::Track { remote }, None) => {
+        (Kind::Existing, _) => tip(git, &top, &format!("refs/heads/{branch}")).await?,
+        (Kind::Track { remote }, _) => {
             tip(git, &top, &format!("refs/remotes/{remote}/{branch}")).await?
         }
     };
@@ -357,9 +360,10 @@ pub fn not_a_working_tree(workspace: &Path, reason: &str) -> ErrorBody {
     })
 }
 
-/// What a branch the user named is: a local branch that no worktree has
-/// checked out, a remote branch, or a new branch.
-async fn resolve(
+/// What an existing branch the user named is: a local branch that no
+/// worktree has checked out, or a remote branch, named `<branch>` or
+/// `<remote>/<branch>`, to track. Refuses a name that is neither.
+async fn resolve_existing(
     git: &Git,
     top: &Path,
     common_dir: &Path,
@@ -417,7 +421,11 @@ async fn resolve(
         }
     }
     let remote = match found[..] {
-        [] => return Ok((name, Kind::New)),
+        [] => {
+            return Err(invalid_request(format!(
+                "no branch {name} locally or on a remote"
+            )));
+        }
         [remote] => remote.to_owned(),
         _ => {
             let default = git
@@ -437,6 +445,38 @@ async fn resolve(
         }
     };
     Ok((name, Kind::Track { remote }))
+}
+
+/// Refuses a new branch name that git does not take as written, or that a
+/// local branch, a remote branch's full name `<remote>/<branch>`, or a
+/// branch on any remote already has.
+async fn check_new(git: &Git, top: &Path, name: &str) -> Result<(), ErrorBody> {
+    check_branch_name(git, top, name).await?;
+    if git
+        .commit(top, &format!("refs/heads/{name}"))
+        .await
+        .is_some()
+    {
+        return Err(invalid_request(format!("a branch {name} exists")));
+    }
+    if git
+        .commit(top, &format!("refs/remotes/{name}"))
+        .await
+        .is_some()
+    {
+        return Err(invalid_request(format!("a remote branch {name} exists")));
+    }
+    let remotes = git.text(top, &[&"remote"]).await?;
+    for remote in remotes.lines() {
+        if git
+            .commit(top, &format!("refs/remotes/{remote}/{name}"))
+            .await
+            .is_some()
+        {
+            return Err(invalid_request(format!("{name} exists on {remote}")));
+        }
+    }
+    Ok(())
 }
 
 /// Refuses a name git does not take as a branch name as written.

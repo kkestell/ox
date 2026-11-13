@@ -15,7 +15,9 @@ use ox_protocol::schema::{
     RequestPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigSelectOptions,
     SessionUpdate, StateUpdate, StopReason, TextContent, ToolCallStatus,
 };
-use ox_protocol::{Checkout, Client, ConfigValue, End, Event, EventKind, SessionState, content};
+use ox_protocol::{
+    Checkout, Client, ConfigValue, End, Event, EventKind, SessionState, WorktreeBranch, content,
+};
 
 #[derive(Parser)]
 #[command(name = "oxctl", about = "Control oxd sessions")]
@@ -43,14 +45,17 @@ enum Command {
         workspace: String,
         /// Run in a new worktree of the workspace's repository, on a new
         /// branch named for the session
-        #[arg(long)]
+        #[arg(long, group = "checkout")]
         worktree: bool,
-        /// Run in a new worktree on this branch: a local branch, a remote
-        /// branch to track, or a new branch
-        #[arg(long)]
+        /// Run in a new worktree on this existing branch: a local branch, or
+        /// a remote branch to track
+        #[arg(long, group = "checkout")]
         branch: Option<String>,
-        /// Start a new branch at this commit [default: HEAD]
-        #[arg(long)]
+        /// Run in a new worktree on this new branch
+        #[arg(long, group = "checkout")]
+        new_branch: Option<String>,
+        /// Start the new branch at this commit [default: HEAD]
+        #[arg(long, requires = "new_branch")]
         start: Option<String>,
         /// Agent command [default: claude-code-acp]
         #[arg(last = true)]
@@ -197,6 +202,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             workspace,
             worktree,
             branch,
+            new_branch,
             start,
             command,
         } => {
@@ -205,10 +211,15 @@ async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             } else {
                 command
             };
-            let checkout = if worktree || branch.is_some() || start.is_some() {
-                Checkout::Worktree { branch, start }
-            } else {
-                Checkout::Workspace
+            let checkout = match (branch, new_branch) {
+                (Some(name), _) => Checkout::Worktree {
+                    branch: Some(WorktreeBranch::Existing { name }),
+                },
+                (_, Some(name)) => Checkout::Worktree {
+                    branch: Some(WorktreeBranch::New { name, start }),
+                },
+                (None, None) if worktree => Checkout::Worktree { branch: None },
+                (None, None) => Checkout::Workspace,
             };
             let session = client
                 .new_session(&workspace, command, utf8_env(), checkout)

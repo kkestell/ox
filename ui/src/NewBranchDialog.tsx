@@ -1,12 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useId, useState } from "react";
+import { useId, useState } from "react";
 import { Dialog } from "./Dialog";
-import type { Branches, SessionInfo } from "./protocol";
+import type { SessionInfo } from "./protocol";
 import { showError } from "./showError";
+import { useBranches } from "./useBranches";
 
 /**
- * Asks for the branch of a new worktree session and the commit a new branch
- * starts from, suggesting the workspace's branches, and starts the session.
+ * Asks for the name of a new branch for a new worktree session and the
+ * commit it starts from, suggesting the workspace's branches as starting
+ * points, and starts the session. A name a local or remote branch has is
+ * refused before Create.
  */
 export function NewBranchDialog({
   agent,
@@ -19,38 +22,15 @@ export function NewBranchDialog({
   onCreated: (session: SessionInfo) => void;
   onClose: () => void;
 }) {
-  const [branches, setBranches] = useState<Branches>({ local: [], remote: [], fetch_error: null });
-  const [fetchError, setFetchError] = useState<string | null>(null);
+  const { branches, fetchError } = useBranches(workspaceId);
   const [branch, setBranch] = useState("");
   const [start, setStart] = useState("");
   const [sending, setSending] = useState(false);
   const form = useId();
   const suggestions = useId();
 
-  // The branches as they are, then again once the remotes are fetched.
-  useEffect(() => {
-    let open = true;
-    (async () => {
-      try {
-        const listed = await invoke<Branches>("workspace_branches", { workspaceId, fetch: false });
-        if (!open) return;
-        setBranches(listed);
-        const fetched = await invoke<Branches>("workspace_branches", { workspaceId, fetch: true });
-        if (!open) return;
-        if (fetched.fetch_error === null) setBranches(fetched);
-        else setFetchError(fetched.fetch_error);
-      } catch (e) {
-        if (open) await showError(e);
-      }
-    })();
-    return () => {
-      open = false;
-    };
-  }, [workspaceId]);
-
-  // Only a new branch has a starting point.
-  const existing =
-    branches.local.includes(branch) ||
+  const exists =
+    branches.local.some((local) => local.name === branch) ||
     branches.remote.some(
       (remote) => remote === branch || remote.slice(remote.indexOf("/") + 1) === branch,
     );
@@ -61,7 +41,7 @@ export function NewBranchDialog({
       const session = await invoke<SessionInfo>("new_session", {
         agent,
         workspaceId,
-        checkout: { type: "worktree", branch, start: existing ? null : start || null },
+        checkout: { type: "worktree", branch: { type: "new", name: branch, start: start || null } },
       });
       onCreated(session);
     } catch (e) {
@@ -72,7 +52,7 @@ export function NewBranchDialog({
 
   return (
     <Dialog
-      title="New Worktree on Branch"
+      title="New Worktree on New Branch"
       onClose={onClose}
       actions={
         <>
@@ -83,7 +63,7 @@ export function NewBranchDialog({
             type="submit"
             className="text-button"
             form={form}
-            disabled={sending || branch === ""}
+            disabled={sending || branch === "" || exists}
           >
             Create
           </button>
@@ -104,7 +84,6 @@ export function NewBranchDialog({
             className="text-field"
             name="branch"
             required
-            list={suggestions}
             value={branch}
             onChange={(event) => setBranch(event.target.value)}
           />
@@ -116,17 +95,17 @@ export function NewBranchDialog({
             name="start"
             placeholder="HEAD"
             list={suggestions}
-            disabled={existing}
-            value={existing ? "" : start}
+            value={start}
             onChange={(event) => setStart(event.target.value)}
           />
         </label>
         <datalist id={suggestions}>
-          {[...branches.local, ...branches.remote].map((name) => (
+          {[...branches.local.map((local) => local.name), ...branches.remote].map((name) => (
             <option key={name} value={name} />
           ))}
         </datalist>
       </form>
+      {exists && <p className="message branch-exists">A branch named {branch} exists</p>}
       {fetchError !== null && (
         <p className="message fetch-error">Could not fetch the remotes: {fetchError}</p>
       )}

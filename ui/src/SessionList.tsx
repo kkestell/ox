@@ -4,6 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { Archive, ArchiveRestore, ChevronDown, ChevronRight, FolderPlus, Plus } from "lucide-react";
 import { type MouseEvent, useState } from "react";
 import { Dialog } from "./Dialog";
+import { ExistingBranchDialog } from "./ExistingBranchDialog";
 import { NewBranchDialog } from "./NewBranchDialog";
 import type {
   Archival,
@@ -56,7 +57,12 @@ export function SessionList({
 }) {
   // The agent the New Session menus start.
   const [agent, setAgent] = useState(agents[0].id);
-  // The workspace and agent the New Worktree on Branch dialog is for.
+  // The workspace and agent the New Worktree on Existing Branch dialog is for.
+  const [existingBranch, setExistingBranch] = useState<{
+    workspaceId: string;
+    agent: string;
+  } | null>(null);
+  // The workspace and agent the New Worktree on New Branch dialog is for.
   const [newBranch, setNewBranch] = useState<{ workspaceId: string; agent: string } | null>(null);
   // The sessions whose archives, unarchives or deletes are in flight.
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
@@ -290,11 +296,7 @@ export function SessionList({
                         popoverTarget={`new-session-${workspace.id}`}
                         popoverTargetAction="hide"
                         onClick={() =>
-                          newSession(workspace.id, agent, {
-                            type: "worktree",
-                            branch: null,
-                            start: null,
-                          })
+                          newSession(workspace.id, agent, { type: "worktree", branch: null })
                         }
                       >
                         New Worktree
@@ -304,9 +306,18 @@ export function SessionList({
                         role="menuitem"
                         popoverTarget={`new-session-${workspace.id}`}
                         popoverTargetAction="hide"
+                        onClick={() => setExistingBranch({ workspaceId: workspace.id, agent })}
+                      >
+                        New Worktree on Existing Branch…
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        popoverTarget={`new-session-${workspace.id}`}
+                        popoverTargetAction="hide"
                         onClick={() => setNewBranch({ workspaceId: workspace.id, agent })}
                       >
-                        New Worktree on Branch…
+                        New Worktree on New Branch…
                       </button>
                     </>
                   )}
@@ -335,6 +346,17 @@ export function SessionList({
           );
         })}
       </div>
+      {existingBranch !== null && (
+        <ExistingBranchDialog
+          agent={existingBranch.agent}
+          workspaceId={existingBranch.workspaceId}
+          onCreated={(session) => {
+            setExistingBranch(null);
+            onSelect(session.id);
+          }}
+          onClose={() => setExistingBranch(null)}
+        />
+      )}
       {newBranch !== null && (
         <NewBranchDialog
           agent={newBranch.agent}

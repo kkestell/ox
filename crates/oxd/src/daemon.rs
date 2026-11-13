@@ -389,13 +389,12 @@ impl Daemon {
             return Err(invalid_request("command is empty".into()));
         }
         let id = uuid::Uuid::new_v4().to_string();
-        let Checkout::Worktree { branch, start } = checkout else {
+        let Checkout::Worktree { branch } = checkout else {
             return self.add_session(id, workspace_id, command, env, &mut None);
         };
         let workspace = self.workspace_path(workspace_id)?;
         let git = Git::for_client(env.clone());
-        let plan =
-            worktree::plan(&git, &workspace, branch, start, &self.worktrees_dir, &id).await?;
+        let plan = worktree::plan(&git, &workspace, branch, &self.worktrees_dir, &id).await?;
         worktree::create_branch(&git, &plan).await?;
         let mut worktree = Some((git, plan));
         let added = self.add_session(id, workspace_id, command, env, &mut worktree);
