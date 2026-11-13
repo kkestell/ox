@@ -177,7 +177,7 @@ export async function send(text?: string) {
 
 /** The agent's text items in the viewed conversation. */
 export function agentText() {
-  return $$(".conversation > p.text");
+  return $$(".conversation > .text");
 }
 
 /**

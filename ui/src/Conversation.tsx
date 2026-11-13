@@ -1,6 +1,7 @@
 import { Check, X } from "lucide-react";
 import { useLayoutEffect, useRef } from "react";
 import { CodeSpans } from "./CodeSpans";
+import { Markdown } from "./Markdown";
 import type { Item, ToolCallStatus } from "./protocol";
 
 export function Conversation({ sessionId, items }: { sessionId: string | null; items: Item[] }) {
@@ -38,7 +39,7 @@ function ItemView({ item }: { item: Item }) {
     case "prompt":
       return (
         <div className="prompt">
-          <p className="text">{item.text}</p>
+          <Markdown text={item.text} />
           {item.attachments.map((name, index) => (
             // biome-ignore lint/suspicious/noArrayIndexKey: a prompt's attachments never change, and names can repeat
             <span key={index} className="attachment">
@@ -48,13 +49,13 @@ function ItemView({ item }: { item: Item }) {
         </div>
       );
     case "text":
-      return <p className="text">{item.text}</p>;
+      return <Markdown text={item.text} />;
     case "thought":
       if (item.text.trim() === "") return null;
       return (
         <details className="thought">
           <summary>Thinking</summary>
-          <p className="text">{item.text}</p>
+          <Markdown text={item.text} />
         </details>
       );
     case "tool_call":

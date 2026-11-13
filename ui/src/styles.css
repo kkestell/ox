@@ -615,10 +615,60 @@ body {
   margin: 0;
 }
 
-.conversation .text,
 .tool-call pre {
   white-space: pre-wrap;
   overflow-wrap: break-word;
+}
+
+/* Every transcript message shares Markdown layout, including thinking. */
+.markdown {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.markdown > :not(:first-child) {
+  margin-top: calc(var(--spacing) * 3);
+}
+
+.markdown :where(h1, h2, h3, h4, h5, h6, blockquote, ul, ol, pre, hr) {
+  margin: 0;
+}
+
+.markdown :is(ul, ol) {
+  padding-left: calc(var(--spacing) * 6);
+}
+
+.markdown blockquote {
+  padding-left: calc(var(--spacing) * 3);
+  border-left: var(--border-width) solid var(--border);
+}
+
+.markdown pre,
+.markdown-table {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.markdown pre {
+  white-space: pre;
+}
+
+.markdown table {
+  border-collapse: collapse;
+  overflow-wrap: normal;
+}
+
+.markdown :is(th, td) {
+  padding: var(--spacing) calc(var(--spacing) * 2);
+  border: var(--border-width) solid var(--border);
+}
+
+.markdown img {
+  max-width: 100%;
+}
+
+.markdown a {
+  color: inherit;
 }
 
 .prompt {

@@ -9,6 +9,14 @@
     "core:default",
     "dialog:allow-open",
     "dialog:allow-message",
-    "dialog:allow-ask"
+    "dialog:allow-ask",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "http://*" },
+        { "url": "https://*" },
+        { "url": "mailto:*" }
+      ]
+    }
   ]
 }

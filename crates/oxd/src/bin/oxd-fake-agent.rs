@@ -7,6 +7,8 @@
 //!
 //! - `say <n> <delay_ms>`: n `agent_message_chunk` updates `chunk-1..n` of
 //!   one message, spaced by the delay
+//! - `text <JSON string>`: append the decoded text to the turn's message
+//! - `thought <JSON string>`: append the decoded text to the turn's thinking
 //! - `pid`: one chunk containing the process id
 //! - `permission`: `requires_action` and a `session/request_permission` with
 //!   allow and reject options, then `running` and a chunk `allowed`,
@@ -321,6 +323,13 @@ fn message_chunk(id: &acp::MessageId, text: impl Into<String>) -> acp::SessionUp
     ))
 }
 
+fn thought_chunk(id: &acp::MessageId, text: impl Into<String>) -> acp::SessionUpdate {
+    acp::SessionUpdate::AgentThoughtChunk(acp::ContentChunk::new(
+        acp::ContentBlock::Text(acp::TextContent::new(text)),
+        id.clone(),
+    ))
+}
+
 #[tokio::main]
 async fn main() -> agent_client_protocol::Result<()> {
     let _held = value("--hold").map(|path| {
@@ -469,6 +478,8 @@ async fn main() -> agent_client_protocol::Result<()> {
                                     acp::ContentBlock::Text(acp::TextContent::new(text)),
                                 ]),
                             )
+                        } else if entry["role"] == "thought" {
+                            thought_chunk(&message_id(), text)
                         } else {
                             message_chunk(&message_id(), text)
                         };
@@ -622,6 +633,7 @@ async fn main() -> agent_client_protocol::Result<()> {
 
 enum Directive {
     Say { count: u64, delay: Duration },
+    Thought(String),
     Pid,
     Permission,
     Elicit,
@@ -656,6 +668,15 @@ fn parse(script: &str) -> Result<Vec<Directive>, Error> {
                 delay: Duration::from_millis(parse_number(delay)?),
             },
             ["pid"] => Directive::Pid,
+            ["text" | "thought", ..] => {
+                let text = serde_json::from_str(&rest(words[0]))
+                    .map_err(|error| Error::invalid_params().data(error.to_string()))?;
+                if words[0] == "text" {
+                    Directive::Echo(text)
+                } else {
+                    Directive::Thought(text)
+                }
+            }
             ["permission"] => Directive::Permission,
             ["elicit"] => Directive::Elicit,
             ["late-permission"] => Directive::LatePermission,
@@ -755,6 +776,10 @@ async fn run(
                 }
             }
             Directive::Pid => say(std::process::id().to_string())?,
+            Directive::Thought(text) => {
+                state.record(&session_id, "thought", &text);
+                notify(connection, &session_id, thought_chunk(&message, text))?;
+            }
             Directive::Permission => {
                 state_update(
                     connection,
