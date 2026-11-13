@@ -1,12 +1,9 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    future::Future,
     os::fd::AsRawFd,
     path::Path,
-    pin::pin,
     process::Stdio,
     sync::{Arc, Mutex},
-    task::{Context, Poll, Waker},
 };
 
 use crate::updates::Updates;
@@ -18,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    process::{Child, ChildStderr, ChildStdin, Command},
+    process::{Child, ChildStderr, ChildStdin, ChildStdout, Command},
     sync::{mpsc, oneshot},
     task::{AbortHandle, JoinHandle},
 };
@@ -363,12 +360,12 @@ async fn write_input(mut stdin: ChildStdin, mut messages: mpsc::UnboundedReceive
     }
 }
 
-/// Polls `future` once, for a result that needs no waiting.
-fn ready<T>(future: impl Future<Output = T>) -> Option<T> {
-    match pin!(future).poll(&mut Context::from_waker(Waker::noop())) {
-        Poll::Ready(value) => Some(value),
-        Poll::Pending => None,
-    }
+/// Appends what claude's stdout holds once claude has exited: the reader's
+/// buffer, then the pipe's contents, read from the descriptor directly because
+/// the runtime may not yet have seen the pipe become readable.
+fn drain(stdout: &BufReader<ChildStdout>, bytes: &mut Vec<u8>) {
+    bytes.extend_from_slice(stdout.buffer());
+    read_buffered(stdout.get_ref(), bytes);
 }
 
 /// Claude's output, translated as it arrives.
@@ -395,20 +392,25 @@ impl Output {
     /// open.
     async fn read(mut self, mut child: Child) {
         let mut stderr = Stderr::collect(child.stderr.take().expect("piped stderr"));
-        let mut lines = BufReader::new(child.stdout.take().expect("piped stdout")).lines();
+        let mut stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
+        // A line being read; `read_until` keeps a partial line here when the
+        // other branch wins.
+        let mut line = Vec::new();
         let status = loop {
             tokio::select! {
                 biased;
-                line = lines.next_line() => match line {
-                    Ok(Some(line)) => self.translate(&line),
+                read = stdout.read_until(b'\n', &mut line) => match read {
+                    Ok(n) if n > 0 => {
+                        self.translate_lines(&line);
+                        line.clear();
+                    }
                     _ => break child.wait().await,
                 },
                 status = child.wait() => {
                     // Everything claude wrote is in the pipe; a process it
                     // started may hold the pipe open.
-                    while let Some(Ok(Some(line))) = ready(lines.next_line()) {
-                        self.translate(&line);
-                    }
+                    drain(&stdout, &mut line);
+                    self.translate_lines(&line);
                     break status;
                 }
             }
@@ -465,6 +467,16 @@ impl Output {
     fn send(&self, message: Value) {
         if let Some(input) = self.input.upgrade() {
             let _ = input.send(message);
+        }
+    }
+
+    /// Translates each complete or final line in `bytes`.
+    fn translate_lines(&mut self, bytes: &[u8]) {
+        for line in bytes.split(|&byte| byte == b'\n') {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            if !line.is_empty() {
+                self.translate(&String::from_utf8_lossy(line));
+            }
         }
     }
 
@@ -778,12 +790,12 @@ async fn read_stderr(mut stderr: ChildStderr, mut finished: oneshot::Receiver<()
 
 /// Reads what the pipe holds now. Tokio opens child pipes non-blocking, so
 /// `read` fails with `EAGAIN` instead of waiting once the pipe is empty.
-fn read_buffered(stderr: &ChildStderr, buffer: &mut Vec<u8>) {
+fn read_buffered(pipe: &impl AsRawFd, buffer: &mut Vec<u8>) {
     let mut chunk = [0u8; 8192];
     loop {
         // SAFETY: reads at most `chunk.len()` bytes into `chunk` from a
-        // descriptor `stderr` owns and keeps open for the call.
-        let n = unsafe { libc::read(stderr.as_raw_fd(), chunk.as_mut_ptr().cast(), chunk.len()) };
+        // descriptor `pipe` owns and keeps open for the call.
+        let n = unsafe { libc::read(pipe.as_raw_fd(), chunk.as_mut_ptr().cast(), chunk.len()) };
         if n <= 0 {
             return;
         }
@@ -915,4 +927,30 @@ fn tool_output(content: &Value) -> Vec<ToolOutput> {
             _ => Some(ToolOutput::Text(block.to_string())),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Claude's last lines reach the pipe before it exits, and the bridge
+    /// learns of the exit before the runtime sees the pipe become readable.
+    /// Draining reads them all the same.
+    #[tokio::test(flavor = "current_thread")]
+    async fn drain_reads_what_an_exited_process_left_in_the_pipe() {
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "printf 'first\\nsecond\\npartial'"])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+        assert!(child.wait().unwrap().success());
+        // The runtime registers the pipe here and, with this task not
+        // yielding, does not learn that it is readable.
+        let stdout = BufReader::new(ChildStdout::from_std(stdout).unwrap());
+
+        let mut bytes = Vec::new();
+        drain(&stdout, &mut bytes);
+        assert_eq!(bytes, b"first\nsecond\npartial");
+    }
 }
