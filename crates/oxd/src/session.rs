@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -14,10 +14,13 @@ use agent_client_protocol::v2::schema::{
 };
 use agent_client_protocol::v2::{ConnectionTo, InitializeOutcome, Responder};
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, Client};
-use ox_protocol::{ConfigValue, ErrorBody, Event, SessionInfo, SessionState, code};
-use tokio::sync::{OwnedMutexGuard, mpsc, oneshot, watch};
+use ox_protocol::{
+    Comparison, ConfigValue, ErrorBody, Event, EventKind, SessionInfo, SessionState, code,
+};
+use tokio::sync::{Notify, OwnedMutexGuard, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
+use crate::branches;
 use crate::state::{self, Change, Request, State, invalid_state};
 use crate::store::{SavedSession, SavedWorktree, Store};
 use crate::worktree::{self, Git, WorktreePlan};
@@ -73,6 +76,17 @@ pub struct Session {
     parkable: watch::Sender<Parkable>,
     /// Stops the agent of a session that stays parkable for the park delay.
     parker: Mutex<Option<JoinHandle<()>>>,
+    /// How the worktree's branch compares with its comparison ref, as last
+    /// computed.
+    comparison: Mutex<Option<Comparison>>,
+    /// Held while a comparison is computed and published, so that one that
+    /// read git later is published later.
+    comparing: tokio::sync::Mutex<()>,
+    /// Asks the comparing task to compute the comparison again.
+    recompare: Notify,
+    /// Computes the comparison of a session with a worktree when it is
+    /// created or restored, and again each time `recompare` is notified.
+    comparer: Mutex<Option<JoinHandle<()>>>,
 }
 
 /// Whether a session is quiet and unviewed. `lapses` counts the times it
@@ -123,10 +137,59 @@ impl Session {
                 lapses: 0,
             }),
             parker: Mutex::new(None),
+            comparison: Mutex::new(None),
+            comparing: tokio::sync::Mutex::new(()),
+            recompare: Notify::new(),
+            comparer: Mutex::new(None),
         });
         *session.parker.lock().unwrap() =
             Some(tokio::spawn(session.clone().park_when_idle(park_after)));
+        if session.worktree.lock().unwrap().is_some() {
+            *session.comparer.lock().unwrap() =
+                Some(tokio::spawn(session.clone().compare_when_asked()));
+        }
         session
+    }
+
+    /// Computes the comparison, then again each time `recompare` is
+    /// notified. Notifications that arrive while it computes make one more
+    /// computation.
+    async fn compare_when_asked(self: Arc<Self>) {
+        loop {
+            self.compare().await;
+            self.recompare.notified().await;
+        }
+    }
+
+    /// Computes how the worktree's branch compares with its comparison ref
+    /// and publishes it.
+    pub async fn compare(&self) {
+        let _comparing = self.comparing.lock().await;
+        let comparison = match self.worktree() {
+            Some(worktree) => branches::compare(&Git::own(), &worktree).await,
+            None => None,
+        };
+        self.update(|_| *self.comparison.lock().unwrap() = comparison);
+    }
+
+    /// Asks the comparing task to compute the comparison again.
+    pub fn recompare(&self) {
+        self.recompare.notify_one();
+    }
+
+    /// Sets or clears the worktree's comparison ref, which the caller has
+    /// saved, and publishes it with the comparison computed for it.
+    pub async fn set_compare(&self, compare: Option<String>) {
+        let _comparing = self.comparing.lock().await;
+        let Some(mut worktree) = self.worktree() else {
+            return;
+        };
+        worktree.info.compare = compare;
+        let comparison = branches::compare(&Git::own(), &worktree).await;
+        self.update(|_| {
+            *self.worktree.lock().unwrap() = Some(worktree);
+            *self.comparison.lock().unwrap() = comparison;
+        });
     }
 
     /// Parks the session each time it stays parkable for `park_after`. Any
@@ -303,6 +366,11 @@ impl Session {
         }
     }
 
+    /// The directory the session's agent runs in.
+    pub fn cwd(&self) -> &Path {
+        &self.cwd
+    }
+
     pub fn worktree(&self) -> Option<SavedWorktree> {
         self.worktree.lock().unwrap().clone()
     }
@@ -328,6 +396,18 @@ impl Session {
 
     fn info_of(&self, state: &State) -> SessionInfo {
         let agent = state.agent();
+        let worktree = self
+            .worktree
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|worktree| worktree.info.clone());
+        // A worktree that could not be added, or a cleared ref, has no
+        // comparison, whatever a comparison under way stores.
+        let comparison = worktree
+            .as_ref()
+            .and_then(|worktree| worktree.compare.as_ref())
+            .and_then(|_| self.comparison.lock().unwrap().clone());
         SessionInfo {
             id: self.id.clone(),
             workspace_id: self.workspace_id.clone(),
@@ -345,13 +425,9 @@ impl Session {
             available_commands: agent
                 .map(|agent| agent.available_commands.clone())
                 .unwrap_or_default(),
-            worktree: self
-                .worktree
-                .lock()
-                .unwrap()
-                .as_ref()
-                .map(|worktree| worktree.info.clone()),
+            worktree,
             archived: *self.archived.lock().unwrap(),
+            comparison,
         }
     }
 
@@ -512,6 +588,10 @@ impl Session {
         if let Some(parker) = parker {
             parker.abort();
         }
+        let comparer = self.comparer.lock().unwrap().take();
+        if let Some(comparer) = comparer {
+            comparer.abort();
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -526,14 +606,21 @@ impl Session {
 
     /// Changes the state, publishes the seq of its last event, queues its new
     /// events for the database, saves a
-    /// changed title or agent session ID, and signals the daemon if the
-    /// session's `SessionInfo` changed.
+    /// changed title or agent session ID, signals the daemon if the
+    /// session's `SessionInfo` changed, and asks for the comparison again
+    /// when a turn ended.
     fn update<R>(&self, change: impl FnOnce(&mut State) -> R) -> R {
         let mut state = self.lock();
         let before = self.info_of(&state);
         let result = change(&mut state);
         self.last_seq.send_replace(state.last_seq());
         let events = state.take_unlogged();
+        if events
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::TurnEnded { .. }))
+        {
+            self.recompare();
+        }
         if !events.is_empty() {
             self.store.log(events);
         }

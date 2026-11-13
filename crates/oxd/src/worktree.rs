@@ -158,14 +158,14 @@ impl Git {
 /// A repository named by its common Git directory. Git runs in that
 /// directory with `--git-dir` set to it, so it never discovers another
 /// repository, whatever has become of the checkouts.
-struct Repository<'a> {
+pub(crate) struct Repository<'a> {
     git: &'a Git,
     common_dir: &'a Path,
     git_dir: OsString,
 }
 
 impl<'a> Repository<'a> {
-    fn new(git: &'a Git, common_dir: &'a Path) -> Self {
+    pub(crate) fn new(git: &'a Git, common_dir: &'a Path) -> Self {
         let mut git_dir = OsString::from("--git-dir=");
         git_dir.push(common_dir);
         Self {
@@ -175,20 +175,20 @@ impl<'a> Repository<'a> {
         }
     }
 
-    async fn run(&self, args: &[Arg<'_>]) -> Result<Vec<u8>, GitError> {
+    pub(crate) async fn run(&self, args: &[Arg<'_>]) -> Result<Vec<u8>, GitError> {
         let mut all: Vec<Arg<'_>> = vec![&self.git_dir];
         all.extend_from_slice(args);
         self.git.run(self.common_dir, &all).await
     }
 
-    async fn text(&self, args: &[Arg<'_>]) -> Result<String, GitError> {
+    pub(crate) async fn text(&self, args: &[Arg<'_>]) -> Result<String, GitError> {
         let output = self.run(args).await?;
         let text = String::from_utf8_lossy(&output);
         Ok(text.strip_suffix('\n').unwrap_or(&text).to_owned())
     }
 
     /// The commit `rev` names, if it names one.
-    async fn commit(&self, rev: &str) -> Option<String> {
+    pub(crate) async fn commit(&self, rev: &str) -> Option<String> {
         let rev = format!("{rev}^{{commit}}");
         self.text(&[
             &"rev-parse",
@@ -236,6 +236,8 @@ pub struct WorktreePlan {
     kind: Kind,
     /// The commit the worktree starts at.
     base: String,
+    /// The ref the branch is compared with.
+    compare: Option<String>,
 }
 
 impl WorktreePlan {
@@ -247,6 +249,7 @@ impl WorktreePlan {
                 branch: self.branch.clone(),
                 base: self.base.clone(),
                 created_branch: self.kind != Kind::Existing,
+                compare: self.compare.clone(),
             },
             common_dir: self.common_dir.clone(),
         }
@@ -255,14 +258,16 @@ impl WorktreePlan {
 
 /// Resolves the worktree for session `session_id` in `workspace`, on
 /// `branch`, or on a new branch named for the session that starts at `HEAD`
-/// when there is none. Refuses, having changed nothing, a workspace outside
-/// a Git working tree, an existing branch that is not there or is checked
-/// out, a new branch whose name is taken, a start point that is not a
-/// commit, or a worktree directory in `worktrees_dir` that exists already.
+/// when there is none, compared with `compare`. Refuses, having changed
+/// nothing, a workspace outside a Git working tree, an existing branch that
+/// is not there or is checked out, a new branch whose name is taken, a start
+/// point or comparison ref that is not a commit, or a worktree directory in
+/// `worktrees_dir` that exists already.
 pub async fn plan(
     git: &Git,
     workspace: &Path,
     branch: Option<WorktreeBranch>,
+    compare: Option<String>,
     worktrees_dir: &Path,
     session_id: &str,
 ) -> Result<WorktreePlan, ErrorBody> {
@@ -326,6 +331,11 @@ pub async fn plan(
             tip(git, &top, &format!("refs/remotes/{remote}/{branch}")).await?
         }
     };
+    if let Some(compare) = &compare
+        && git.commit(&top, compare).await.is_none()
+    {
+        return Err(invalid_request(format!("{compare} is not a commit")));
+    }
     if !prefix.as_os_str().is_empty() {
         let mut object = OsString::from(format!("{base}:"));
         object.push(prefix.as_os_str());
@@ -344,6 +354,7 @@ pub async fn plan(
         branch,
         kind,
         base,
+        compare,
     })
 }
 
@@ -493,7 +504,7 @@ async fn check_branch_name(git: &Git, top: &Path, name: &str) -> Result<(), Erro
 }
 
 /// The worktree that has local branch `branch` checked out, if any.
-async fn checked_out_at(
+pub(crate) async fn checked_out_at(
     repository: &Repository<'_>,
     branch: &str,
 ) -> Result<Option<String>, GitError> {

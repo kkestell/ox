@@ -65,7 +65,13 @@ elements; errors show in a native message box.
 **oxctl.** A command-line client of `oxd` that speaks the same protocol as
 the app. `oxctl new --worktree` starts a session in a new worktree on its own
 branch, `--branch` in one on an existing branch, and `--new-branch` in one on
-a new branch started at `--start`. `oxctl delete` deletes a
+a new branch started at `--start`; with any of them, `--compare <ref>` sets
+the session's comparison ref. `oxctl compare <session>` prints the ref, the
+branch's commit, the ref's commit, and the commits ahead and behind, after
+refreshing the comparison, or after setting the ref it is given or clearing
+it with `--clear`. `oxctl move-branch --workspace <id> <branch> <to>
+--expected <commit>` moves a branch, with `--force` when the move is not a
+fast-forward. `oxctl delete` deletes a
 session, and with `--discard` gives up its worktree's unsaved work; it prints
 the branch it kept, if any. `oxctl archive` archives a session, with
 `--discard` as for delete, and `oxctl unarchive` undoes it; `oxctl ls` shows
@@ -233,6 +239,39 @@ task of its own. A fetch runs in its own process group and is sent
 `SIGTERM` after 60 seconds. A fetch that fails or is stopped is reported in
 `fetch_error`, beside the lists as they stand. Session creation never waits
 on a fetch.
+
+A worktree session can have a comparison ref, such as `main` or
+`origin/main`: `session.new` takes it as the checkout's `compare`, and
+`session.set_compare` sets or clears it. Both refuse a ref that names no
+commit, and `session.set_compare` refuses a session with no worktree. The
+ref is saved in the `compare_refs` table, deleted with the session, and
+sent as the worktree's `compare`. The session's `comparison` carries the
+branch's commit, the ref's commit, and the counts of commits ahead of and
+behind the ref, from `git rev-list --left-right --count` in the recorded
+common Git directory with `oxd`'s own environment; a ref or branch that no
+longer names a commit makes it `failed`, with the reason. A task of each
+worktree session computes it when the session is created or restored, and
+again when the session's agent ends a turn, after a `branch.move`, a session
+delete or a fetch in the session's repository, whether or not the fetch
+succeeded. Triggers that arrive while it computes make one more computation,
+and a changed comparison goes to every watch. `session.set_compare` and
+`session.refresh` answer the session with the comparison computed for the
+request.
+
+`branch.move` sets a local branch of the workspace's repository to a commit.
+It is refused, changing nothing, when the branch is not at the request's
+`expected` commit (`INVALID_STATE`), or when the new commit does not descend
+from `expected` and `force` is not set (`INVALID_REQUEST`). When a checkout,
+the workspace's own or a worktree, has the branch, the move is refused while
+a session whose directory is in that checkout is `starting`, `running`,
+`awaiting_permission` or `awaiting_input`, and with `UNSAVED_WORK` while
+tracked files there have uncommitted changes (`git status
+--untracked-files=no`). `oxd` then moves the branch with `git update-ref`,
+which fails if the branch moved since it was read, and moves the checkout's
+index and files with `git read-tree -u -m <expected> <to>`, which refuses to
+overwrite an untracked file. When that fails, `oxd` puts the branch back and
+answers git's error with `GIT`. Untracked files the move does not touch stay
+as they are. Submodule checkouts are not updated.
 
 Shutdown on SIGTERM, SIGINT, or idle exit kills the agents and keeps every
 row. When `oxd` starts it registers each saved session in state `exited`,

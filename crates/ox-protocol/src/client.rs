@@ -492,6 +492,50 @@ impl Client {
         .await
     }
 
+    /// Sets the workspace's local branch `branch` to `to`, if it is at
+    /// `expected`. Git runs with `env` over the daemon's environment.
+    pub async fn move_branch(
+        &self,
+        workspace_id: &str,
+        branch: &str,
+        to: &str,
+        expected: &str,
+        force: bool,
+        env: BTreeMap<String, String>,
+    ) -> Result<(), Error> {
+        self.ack(Method::BranchMove {
+            workspace_id: workspace_id.into(),
+            branch: branch.into(),
+            to: to.into(),
+            expected: expected.into(),
+            force,
+            env,
+        })
+        .await
+    }
+
+    /// Sets or clears the session's comparison ref and returns the session
+    /// with its comparison recomputed.
+    pub async fn set_compare(
+        &self,
+        session_id: &str,
+        compare: Option<String>,
+    ) -> Result<SessionInfo, Error> {
+        self.call(Method::SessionSetCompare {
+            session_id: session_id.into(),
+            compare,
+        })
+        .await
+    }
+
+    /// Recomputes the session's comparison and returns the session.
+    pub async fn refresh(&self, session_id: &str) -> Result<SessionInfo, Error> {
+        self.call(Method::SessionRefresh {
+            session_id: session_id.into(),
+        })
+        .await
+    }
+
     async fn ack(&self, method: Method) -> Result<(), Error> {
         self.call::<Value>(method).await.map(drop)
     }

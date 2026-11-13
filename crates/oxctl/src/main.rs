@@ -16,7 +16,8 @@ use ox_protocol::schema::{
     SessionUpdate, StateUpdate, StopReason, TextContent, ToolCallStatus,
 };
 use ox_protocol::{
-    Checkout, Client, ConfigValue, End, Event, EventKind, SessionState, WorktreeBranch, content,
+    Checkout, Client, Comparison, ConfigValue, End, Event, EventKind, SessionState, WorktreeBranch,
+    content,
 };
 
 #[derive(Parser)]
@@ -57,6 +58,9 @@ enum Command {
         /// Start the new branch at this commit [default: HEAD]
         #[arg(long, requires = "new_branch")]
         start: Option<String>,
+        /// Compare the worktree's branch with this ref, such as main
+        #[arg(long, requires = "checkout")]
+        compare: Option<String>,
         /// Agent command [default: claude-code-acp]
         #[arg(last = true)]
         command: Vec<String>,
@@ -140,6 +144,35 @@ enum Command {
     },
     /// Add an archived session's worktree again
     Unarchive { session: String },
+    /// Print how a worktree session's branch compares with its comparison
+    /// ref, after setting the ref, clearing it, or comparing again: the ref,
+    /// the branch's commit, the ref's commit, and the commits ahead and
+    /// behind
+    Compare {
+        session: String,
+        /// Compare with this ref, such as main
+        #[arg(value_name = "REF")]
+        reference: Option<String>,
+        /// Stop comparing the session's branch
+        #[arg(long, conflicts_with = "reference")]
+        clear: bool,
+    },
+    /// Set a branch of a workspace's repository to a commit, moving the
+    /// checkout that has the branch along with it
+    MoveBranch {
+        /// The workspace's id, as `workspace ls` shows it
+        #[arg(long)]
+        workspace: String,
+        branch: String,
+        /// The commit to move the branch to
+        to: String,
+        /// The commit the branch must be at
+        #[arg(long)]
+        expected: String,
+        /// Move the branch even if that is not a fast-forward
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -204,6 +237,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             branch,
             new_branch,
             start,
+            compare,
             command,
         } => {
             let command = if command.is_empty() {
@@ -214,11 +248,16 @@ async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             let checkout = match (branch, new_branch) {
                 (Some(name), _) => Checkout::Worktree {
                     branch: Some(WorktreeBranch::Existing { name }),
+                    compare,
                 },
                 (_, Some(name)) => Checkout::Worktree {
                     branch: Some(WorktreeBranch::New { name, start }),
+                    compare,
                 },
-                (None, None) if worktree => Checkout::Worktree { branch: None },
+                (None, None) if worktree => Checkout::Worktree {
+                    branch: None,
+                    compare,
+                },
                 (None, None) => Checkout::Workspace,
             };
             let session = client
@@ -334,6 +373,42 @@ async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
         }
         Command::Unarchive { session } => {
             client.unarchive(&session, utf8_env()).await?;
+        }
+        Command::Compare {
+            session,
+            reference,
+            clear,
+        } => {
+            let info = match reference {
+                Some(reference) => client.set_compare(&session, Some(reference)).await?,
+                None if clear => client.set_compare(&session, None).await?,
+                None => client.refresh(&session).await?,
+            };
+            let reference = info.worktree.and_then(|worktree| worktree.compare);
+            match (reference, info.comparison) {
+                (
+                    Some(reference),
+                    Some(Comparison::Compared {
+                        tip,
+                        compare_tip,
+                        ahead,
+                        behind,
+                    }),
+                ) => println!("{reference}\t{tip}\t{compare_tip}\t{ahead}\t{behind}"),
+                (_, Some(Comparison::Failed { error })) => return Err(error.into()),
+                _ => {}
+            }
+        }
+        Command::MoveBranch {
+            workspace,
+            branch,
+            to,
+            expected,
+            force,
+        } => {
+            client
+                .move_branch(&workspace, &branch, &to, &expected, force, utf8_env())
+                .await?;
         }
     }
     Ok(())

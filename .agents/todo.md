@@ -5,7 +5,7 @@
 Spec: [git-workflows](specs/git-workflows.md). Two `/kplan` → `/kwork` →
 `/kreview` cycles. Sizes are rough estimates of lines changed, tests included.
 
-- [ ] **Daemon and CLI** (~1,800). Tested through `oxctl`.
+- [x] **Daemon and CLI** (~1,800). Tested through `oxctl`.
   - Move a branch: fast-forward or forced, the expected-commit check,
     updating a checkout that has the branch, refusing unsaved work or a
     running agent.

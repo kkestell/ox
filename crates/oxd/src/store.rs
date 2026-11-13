@@ -99,6 +99,10 @@ impl Store {
             ) WITHOUT ROWID;
             CREATE TABLE IF NOT EXISTS archived (
                 session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS compare_refs (
+                session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+                ref        TEXT NOT NULL
             );",
         )?;
         let connection = Arc::new(Mutex::new(connection));
@@ -186,8 +190,11 @@ impl Store {
             "SELECT number, id, workspace_id, command, cwd, title, agent_session_id,
                 worktrees.path, branch, base, created_branch, common_dir,
                 (SELECT COALESCE(MAX(seq), 0) FROM events WHERE session_id = sessions.id),
-                EXISTS (SELECT 1 FROM archived WHERE session_id = sessions.id)
-            FROM sessions LEFT JOIN worktrees ON worktrees.session_id = sessions.id
+                EXISTS (SELECT 1 FROM archived WHERE session_id = sessions.id),
+                compare_refs.ref
+            FROM sessions
+                LEFT JOIN worktrees ON worktrees.session_id = sessions.id
+                LEFT JOIN compare_refs ON compare_refs.session_id = sessions.id
             ORDER BY number",
         )?;
         query
@@ -214,6 +221,7 @@ impl Store {
                                 branch: row.get(8)?,
                                 base: row.get(9)?,
                                 created_branch: row.get(10)?,
+                                compare: row.get(14)?,
                             },
                             common_dir: PathBuf::from(row.get::<_, String>(11)?),
                         }),
@@ -259,9 +267,31 @@ impl Store {
                     common_dir.to_string_lossy()
                 ],
             )?;
+            if let Some(compare) = &info.compare {
+                transaction.execute(
+                    "INSERT INTO compare_refs (session_id, ref) VALUES (?1, ?2)",
+                    params![id, compare],
+                )?;
+            }
         }
         transaction.commit()?;
         Ok(number)
+    }
+
+    /// Sets or clears a session's comparison ref.
+    pub fn set_compare(&self, session_id: &str, compare: Option<&str>) -> rusqlite::Result<()> {
+        let connection = self.lock();
+        match compare {
+            Some(compare) => connection.execute(
+                "INSERT OR REPLACE INTO compare_refs (session_id, ref) VALUES (?1, ?2)",
+                params![session_id, compare],
+            )?,
+            None => connection.execute(
+                "DELETE FROM compare_refs WHERE session_id = ?1",
+                [session_id],
+            )?,
+        };
+        Ok(())
     }
 
     /// Forgets a session's worktree, keeping the session.
@@ -512,9 +542,47 @@ mod tests {
                 branch: "ox/01234567".into(),
                 base: "abc".into(),
                 created_branch: true,
+                compare: None,
             },
             common_dir: "/repos/work/.git".into(),
         }
+    }
+
+    /// A worktree session's comparison ref is saved with it, replaced and
+    /// cleared, and deleted with the session.
+    #[test]
+    fn a_comparison_ref_round_trips_and_goes_with_its_session() {
+        let store = store();
+        store.add_workspace(&workspace("w", "/work")).unwrap();
+        let mut compared = worktree();
+        compared.info.compare = Some("main".into());
+        store
+            .add_session(
+                "s",
+                "w",
+                &command(),
+                Path::new("/worktrees/work-01234567"),
+                Some(&compared),
+            )
+            .unwrap();
+        assert_eq!(
+            store.sessions().unwrap()[0].worktree,
+            Some(compared.clone())
+        );
+
+        store.set_compare("s", Some("origin/main")).unwrap();
+        compared.info.compare = Some("origin/main".into());
+        assert_eq!(store.sessions().unwrap()[0].worktree, Some(compared));
+        store.set_compare("s", None).unwrap();
+        assert_eq!(store.sessions().unwrap()[0].worktree, Some(worktree()));
+
+        store.set_compare("s", Some("main")).unwrap();
+        store.remove_session("s").unwrap();
+        let rows: i64 = store
+            .lock()
+            .query_row("SELECT COUNT(*) FROM compare_refs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
     }
 
     /// The worktree, with its repository's location, comes back as saved.

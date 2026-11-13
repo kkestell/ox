@@ -117,6 +117,7 @@ impl Daemon {
                 .expect("an unstarted session waiting for cleanup has a worktree");
             match remove_unstarted(&worktree).await {
                 Ok(()) => {
+                    self.recompare(&worktree.common_dir);
                     if let Err(error) = self.forget(&session.id) {
                         eprintln!(
                             "oxd: deleting session {}, which never started: {}",
@@ -279,6 +280,27 @@ impl Daemon {
             Method::SessionUnarchive { session_id, env } => {
                 Ok(to_value(self.unarchive_session(&session_id, env).await?))
             }
+            Method::BranchMove {
+                workspace_id,
+                branch,
+                to,
+                expected,
+                force,
+                env,
+            } => {
+                self.move_branch(&workspace_id, &branch, &to, &expected, force, env)
+                    .await?;
+                Ok(Value::Null)
+            }
+            Method::SessionSetCompare {
+                session_id,
+                compare,
+            } => Ok(to_value(self.set_compare(&session_id, compare).await?)),
+            Method::SessionRefresh { session_id } => {
+                let session = self.session(&session_id)?;
+                session.compare().await;
+                Ok(to_value(session.info()))
+            }
             Method::Hello { .. }
             | Method::SessionSubscribe { .. }
             | Method::Watch
@@ -389,12 +411,13 @@ impl Daemon {
             return Err(invalid_request("command is empty".into()));
         }
         let id = uuid::Uuid::new_v4().to_string();
-        let Checkout::Worktree { branch } = checkout else {
+        let Checkout::Worktree { branch, compare } = checkout else {
             return self.add_session(id, workspace_id, command, env, &mut None);
         };
         let workspace = self.workspace_path(workspace_id)?;
         let git = Git::for_client(env.clone());
-        let plan = worktree::plan(&git, &workspace, branch, &self.worktrees_dir, &id).await?;
+        let plan =
+            worktree::plan(&git, &workspace, branch, compare, &self.worktrees_dir, &id).await?;
         worktree::create_branch(&git, &plan).await?;
         let mut worktree = Some((git, plan));
         let added = self.add_session(id, workspace_id, command, env, &mut worktree);
@@ -492,9 +515,21 @@ impl Daemon {
 
     /// Fetches the repository whose common Git directory is `common_dir`,
     /// from `workspace` with `git`, or waits for the fetch of it already
-    /// running. The fetch runs in its own task, so it finishes even when
-    /// every request waiting for it is dropped.
+    /// running, then asks the sessions in the repository to compare again.
+    /// The fetch runs in its own task, so it finishes even when every request
+    /// waiting for it is dropped.
     async fn fetch(&self, git: &Git, common_dir: PathBuf, workspace: &Path) -> Result<(), String> {
+        let outcome = self.fetched(git, common_dir.clone(), workspace).await;
+        self.recompare(&common_dir);
+        outcome
+    }
+
+    async fn fetched(
+        &self,
+        git: &Git,
+        common_dir: PathBuf,
+        workspace: &Path,
+    ) -> Result<(), String> {
         let mut outcome = match self.fetches.lock().unwrap().entry(common_dir) {
             Entry::Occupied(running) => running.get().clone(),
             Entry::Vacant(entry) => {
@@ -557,6 +592,7 @@ impl Daemon {
             session.stop(Change::Exited(None)).await;
             worktree::remove_worktree(&git, &worktree, discard).await?;
             kept_branch = worktree::apply_branch_rule(&git, &worktree).await?;
+            self.recompare(&worktree.common_dir);
         }
         self.forget(id)?;
         session.close();
@@ -623,6 +659,95 @@ impl Daemon {
         Ok(session.info())
     }
 
+    /// Moves local branch `branch` of the workspace's repository from
+    /// `expected` to `to`, with git run with `env`, unless a session's agent
+    /// in the checkout that has the branch is busy, and asks the sessions in
+    /// the repository to compare again.
+    async fn move_branch(
+        &self,
+        workspace_id: &str,
+        branch: &str,
+        to: &str,
+        expected: &str,
+        force: bool,
+        env: BTreeMap<String, String>,
+    ) -> Result<(), ErrorBody> {
+        let workspace = self.workspace_path(workspace_id)?;
+        let git = Git::for_client(env);
+        let common_dir = branches::common_dir(&git, &workspace).await?;
+        branches::move_branch(&git, &common_dir, branch, to, expected, force, |checkout| {
+            self.refuse_busy(checkout)
+        })
+        .await?;
+        self.recompare(&common_dir);
+        Ok(())
+    }
+
+    /// Refuses when a session whose directory is in `checkout` has an agent
+    /// that is starting, in a turn, or waiting for an answer.
+    fn refuse_busy(&self, checkout: &Path) -> Result<(), ErrorBody> {
+        let checkout = resolved(checkout);
+        let sessions: Vec<Arc<Session>> = self.lock().sessions.values().cloned().collect();
+        for session in sessions {
+            let state = session.state();
+            if matches!(state, SessionState::Idle | SessionState::Exited) {
+                continue;
+            }
+            if resolved(session.cwd()).starts_with(&checkout) {
+                return Err(ErrorBody {
+                    code: code::INVALID_STATE,
+                    message: format!(
+                        "session {} is {} in {}",
+                        session.id,
+                        state.as_str(),
+                        checkout.display()
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Asks every session whose worktree is in the repository with common
+    /// Git directory `common_dir` to compare its branch again.
+    fn recompare(&self, common_dir: &Path) {
+        for session in self.lock().sessions.values() {
+            if session
+                .worktree()
+                .is_some_and(|worktree| worktree.common_dir == common_dir)
+            {
+                session.recompare();
+            }
+        }
+    }
+
+    /// Sets or clears the session's comparison ref, which must name a
+    /// commit, and returns the session with its comparison recomputed.
+    async fn set_compare(
+        &self,
+        id: &str,
+        compare: Option<String>,
+    ) -> Result<SessionInfo, ErrorBody> {
+        let session = self.session(id)?;
+        let _lifecycle = self.lifecycle(&session).await?;
+        let worktree = session
+            .worktree()
+            .ok_or_else(|| invalid_request("the session has no worktree".into()))?;
+        if let Some(compare) = &compare
+            && worktree::Repository::new(&Git::own(), &worktree.common_dir)
+                .commit(compare)
+                .await
+                .is_none()
+        {
+            return Err(invalid_request(format!("{compare} is not a commit")));
+        }
+        self.store
+            .set_compare(id, compare.as_deref())
+            .map_err(|error| storage(&error))?;
+        session.set_compare(compare).await;
+        Ok(session.info())
+    }
+
     /// Deletes the session's rows and removes it from the registry.
     fn forget(&self, id: &str) -> Result<(), ErrorBody> {
         self.update(|registry| {
@@ -642,6 +767,11 @@ async fn remove_unstarted(worktree: &SavedWorktree) -> Result<(), ErrorBody> {
     worktree::remove_worktree(&git, worktree, false).await?;
     worktree::apply_branch_rule(&git, worktree).await?;
     Ok(())
+}
+
+/// `path` with symbolic links resolved, or as it is when it cannot be.
+fn resolved(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_owned())
 }
 
 /// The workspace as clients see it.

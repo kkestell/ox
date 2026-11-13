@@ -1,5 +1,7 @@
-//! A workspace's branches, which a client offers when naming the branch of a
-//! new worktree, and the fetch that brings its remote branches up to date.
+//! A workspace's branches: listing them for a client naming the branch of a
+//! new worktree, the fetch that brings its remote branches up to date,
+//! comparing a session's branch with its comparison ref, and moving a branch
+//! along with the checkout that has it.
 
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
@@ -7,10 +9,12 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use ox_protocol::{ErrorBody, LocalBranch};
+use ox_protocol::{Comparison, ErrorBody, LocalBranch, code};
 use tokio::io::AsyncReadExt;
 
-use crate::worktree::{Git, not_a_working_tree};
+use crate::daemon::invalid_request;
+use crate::store::SavedWorktree;
+use crate::worktree::{Git, Repository, checked_out_at, not_a_working_tree};
 
 /// How long a fetch may run before it is stopped.
 const FETCH_TIMEOUT: Duration = Duration::from_mins(1);
@@ -129,4 +133,159 @@ pub async fn fetch(git: &Git, workspace: &Path) -> Result<(), String> {
             ))
         }
     }
+}
+
+/// How the worktree's branch compares with its comparison ref, in its
+/// repository: the commits on each, and how many commits each has that the
+/// other lacks. Unset when the worktree has no comparison ref.
+pub async fn compare(git: &Git, worktree: &SavedWorktree) -> Option<Comparison> {
+    let compare = worktree.info.compare.as_deref()?;
+    let branch = &worktree.info.branch;
+    let repository = Repository::new(git, &worktree.common_dir);
+    let failed = |error: String| Some(Comparison::Failed { error });
+    let Some(tip) = repository.commit(&format!("refs/heads/{branch}")).await else {
+        return failed(format!("branch {branch} is not a commit"));
+    };
+    let Some(compare_tip) = repository.commit(compare).await else {
+        return failed(format!("{compare} is not a commit"));
+    };
+    let range = format!("{compare_tip}...{tip}");
+    let counts = match repository
+        .text(&[&"rev-list", &"--left-right", &"--count", &range])
+        .await
+    {
+        Ok(counts) => counts,
+        Err(error) => return failed(error.to_string()),
+    };
+    let mut counts = counts.split_whitespace().map(str::parse::<u64>);
+    let (Some(Ok(behind)), Some(Ok(ahead))) = (counts.next(), counts.next()) else {
+        return failed(format!("git rev-list printed no counts for {range}"));
+    };
+    Some(Comparison::Compared {
+        tip,
+        compare_tip,
+        ahead,
+        behind,
+    })
+}
+
+/// Sets local branch `branch` of the repository whose common Git directory
+/// is `common_dir` to commit `to`, when it is at commit `expected` and,
+/// unless `force` is set, `to` descends from `expected`. When a checkout
+/// has the branch, `busy` is asked whether the checkout's agents allow the
+/// move, tracked files there must have no uncommitted changes, and the
+/// checkout's index and files move with the branch. A move git cannot make
+/// in the checkout, such as one that would overwrite an untracked file, puts
+/// the branch back.
+pub async fn move_branch(
+    git: &Git,
+    common_dir: &Path,
+    branch: &str,
+    to: &str,
+    expected: &str,
+    force: bool,
+    busy: impl FnOnce(&Path) -> Result<(), ErrorBody>,
+) -> Result<(), ErrorBody> {
+    let repository = Repository::new(git, common_dir);
+    let reference = format!("refs/heads/{branch}");
+    if repository
+        .run(&[&"check-ref-format", &reference])
+        .await
+        .is_err()
+    {
+        return Err(invalid_request(format!(
+            "{branch} is not a valid branch name"
+        )));
+    }
+    let not_a_commit = |rev: &str| invalid_request(format!("{rev} is not a commit"));
+    let target = repository
+        .commit(to)
+        .await
+        .ok_or_else(|| not_a_commit(to))?;
+    let expected = repository
+        .commit(expected)
+        .await
+        .ok_or_else(|| not_a_commit(expected))?;
+    let current = repository
+        .commit(&reference)
+        .await
+        .ok_or_else(|| invalid_request(format!("no branch {branch}")))?;
+    if current != expected {
+        return Err(ErrorBody {
+            code: code::INVALID_STATE,
+            message: format!("{branch} is at {current}, not {expected}"),
+        });
+    }
+    if !force
+        && repository
+            .run(&[&"merge-base", &"--is-ancestor", &expected, &target])
+            .await
+            .is_err()
+    {
+        return Err(invalid_request(format!(
+            "{to} is not a fast-forward of {branch}"
+        )));
+    }
+    let checkout = checked_out_at(&repository, branch)
+        .await?
+        .map(PathBuf::from);
+    if let Some(checkout) = &checkout {
+        busy(checkout)?;
+        let status = git
+            .run(
+                checkout,
+                &[
+                    &"--no-optional-locks",
+                    &"status",
+                    &"--porcelain",
+                    &"--untracked-files=no",
+                    &"--ignore-submodules=none",
+                ],
+            )
+            .await?;
+        if !status.is_empty() {
+            return Err(ErrorBody {
+                code: code::UNSAVED_WORK,
+                message: format!("{} has uncommitted changes", checkout.display()),
+            });
+        }
+        git.run(checkout, &[&"update-index", &"-q", &"--refresh"])
+            .await?;
+    }
+    let message = format!("ox: move {branch}");
+    repository
+        .run(&[
+            &"update-ref",
+            &"-m",
+            &message,
+            &reference,
+            &target,
+            &expected,
+        ])
+        .await?;
+    if let Some(checkout) = &checkout
+        && let Err(error) = git
+            .run(checkout, &[&"read-tree", &"-u", &"-m", &expected, &target])
+            .await
+    {
+        let mut error = ErrorBody::from(error);
+        if let Err(failure) = repository
+            .run(&[
+                &"update-ref",
+                &"-m",
+                &message,
+                &reference,
+                &expected,
+                &target,
+            ])
+            .await
+        {
+            error.message = format!(
+                "{}; putting {branch} back at {expected} failed: {failure}",
+                error.message
+            );
+        }
+        return Err(error);
+    }
+    Ok(())
 }

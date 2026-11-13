@@ -56,6 +56,42 @@ Ox refuses to start a worktree session, and creates nothing, when:
 - the workspace's subdirectory does not exist at the commit the worktree
   starts at.
 
+## Comparing a session's branch
+
+A worktree session can compare its branch with a ref, such as `main` or
+`origin/main`. Ox shows the branch's commit, the ref's commit, and how many
+commits the branch is ahead of the ref and behind it. It compares again when
+the session's agent ends a turn, after a branch move, a session delete or a
+fetch in the repository, and when you ask.
+
+```sh
+oxctl new --workspace <id> --worktree --compare main
+oxctl compare <session>               # compare again and print
+oxctl compare <session> origin/main   # compare with another ref
+oxctl compare <session> --clear       # stop comparing
+```
+
+`oxctl compare` prints `<ref>`, `<branch commit>`, `<ref commit>`, `<ahead>`
+and `<behind>`, separated by tabs, and prints nothing for a session with no
+comparison ref. The ref must name a commit when it is set. A ref or branch
+that later names no commit makes `oxctl compare` fail with the reason.
+
+## Moving a branch
+
+`oxctl move-branch` sets a branch to a commit, when the branch is at the
+commit `--expected` names. It moves only by fast-forward unless `--force` is
+given.
+
+```sh
+oxctl move-branch --workspace <id> main <session branch tip> --expected <main's commit>
+```
+
+When the workspace's checkout or a worktree has the branch, its files and
+index move with it. Ox refuses the move while tracked files there have
+uncommitted changes, while a session's agent there is starting, in a turn, or
+waiting for an answer, and when the move would overwrite an untracked file.
+Untracked files the move leaves alone, and idle agents, don't stop it.
+
 ## Deleting and archiving
 
 | Action | Worktree | Branch Ox created | Branch that existed before the session |

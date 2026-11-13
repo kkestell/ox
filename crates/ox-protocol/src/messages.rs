@@ -181,6 +181,36 @@ pub enum Method {
         #[serde(default)]
         env: BTreeMap<String, String>,
     },
+    /// Sets local branch `branch` of the workspace's repository to commit
+    /// `to`. Refused, changing nothing, when the branch is not at
+    /// `expected`, or when `to` does not descend from `expected` unless
+    /// `force` is set. When a checkout has the branch, its files and index
+    /// move with it; the move is refused with `UNSAVED_WORK` while tracked
+    /// files there have uncommitted changes, and refused while a session's
+    /// agent there is starting, in a turn, or waiting for an answer. Git
+    /// runs with `env` over the daemon's environment.
+    #[serde(rename = "branch.move")]
+    BranchMove {
+        workspace_id: String,
+        branch: String,
+        to: String,
+        expected: String,
+        #[serde(default)]
+        force: bool,
+        #[serde(default)]
+        env: BTreeMap<String, String>,
+    },
+    /// Sets or clears a worktree session's comparison ref and answers the
+    /// session with its comparison recomputed. Refused for a session with
+    /// no worktree and for a ref that names no commit.
+    #[serde(rename = "session.set_compare")]
+    SessionSetCompare {
+        session_id: String,
+        compare: Option<String>,
+    },
+    /// Recomputes the session's comparison and answers the session.
+    #[serde(rename = "session.refresh")]
+    SessionRefresh { session_id: String },
 }
 
 /// Where a new session runs.
@@ -193,10 +223,14 @@ pub enum Checkout {
     /// A new worktree of the workspace's repository, in the same
     /// subdirectory the workspace is of its checkout, on `branch`. With no
     /// `branch`, the worktree is on a new branch `ox/<first 8 digits of the
-    /// session ID>` that starts at `HEAD`.
+    /// session ID>` that starts at `HEAD`. With `compare`, a ref such as
+    /// `main` that must name a commit, the session publishes how its branch
+    /// compares with the ref.
     Worktree {
         #[serde(default)]
         branch: Option<WorktreeBranch>,
+        #[serde(default)]
+        compare: Option<String>,
     },
 }
 
@@ -229,6 +263,26 @@ pub struct WorktreeInfo {
     pub base: String,
     /// Whether the daemon created the branch for the session.
     pub created_branch: bool,
+    /// The ref the branch is compared with, as the client gave it.
+    pub compare: Option<String>,
+}
+
+/// How a session's branch compares with its comparison ref.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Comparison {
+    /// `tip` is the branch's commit, `compare_tip` the ref's. `ahead`
+    /// counts the branch's commits the ref lacks, `behind` the ref's
+    /// commits the branch lacks.
+    Compared {
+        tip: String,
+        compare_tip: String,
+        ahead: u64,
+        behind: u64,
+    },
+    /// Git could not compare them, such as when the ref or the branch is
+    /// gone.
+    Failed { error: String },
 }
 
 /// The result of `session.delete`.
@@ -347,6 +401,12 @@ pub struct SessionInfo {
     /// Whether the session is archived: it is `exited`, its worktree is
     /// removed, and only its history can be read.
     pub archived: bool,
+    /// How the worktree's branch compares with its comparison ref. Unset
+    /// when the session has no worktree or no comparison ref. The daemon
+    /// recomputes it when the session's agent ends a turn, after a branch
+    /// move, a session delete or a fetch in the repository, and on
+    /// `session.refresh`.
+    pub comparison: Option<Comparison>,
 }
 
 /// One entry in a session's history. `seq` starts at 1 and increases by one
@@ -548,34 +608,43 @@ mod tests {
         assert!(matches!(
             request.method,
             Method::SessionNew {
-                checkout: Checkout::Worktree { branch: None },
+                checkout: Checkout::Worktree {
+                    branch: None,
+                    compare: None
+                },
                 ..
             }
         ));
         for (branch, wire) in [
-            (None, json!({"type": "worktree", "branch": null})),
+            (
+                None,
+                json!({"type": "worktree", "branch": null, "compare": null}),
+            ),
             (
                 Some(WorktreeBranch::Existing {
                     name: "feature".into(),
                 }),
-                json!({"type": "worktree", "branch": {"type": "existing", "name": "feature"}}),
+                json!({"type": "worktree", "branch": {"type": "existing", "name": "feature"}, "compare": null}),
             ),
             (
                 Some(WorktreeBranch::New {
                     name: "topic".into(),
                     start: None,
                 }),
-                json!({"type": "worktree", "branch": {"type": "new", "name": "topic", "start": null}}),
+                json!({"type": "worktree", "branch": {"type": "new", "name": "topic", "start": null}, "compare": null}),
             ),
             (
                 Some(WorktreeBranch::New {
                     name: "topic".into(),
                     start: Some("main".into()),
                 }),
-                json!({"type": "worktree", "branch": {"type": "new", "name": "topic", "start": "main"}}),
+                json!({"type": "worktree", "branch": {"type": "new", "name": "topic", "start": "main"}, "compare": null}),
             ),
         ] {
-            let checkout = Checkout::Worktree { branch };
+            let checkout = Checkout::Worktree {
+                branch,
+                compare: None,
+            };
             let method = Method::SessionNew {
                 workspace_id: "w".into(),
                 command: vec!["agent".into()],
@@ -599,9 +668,92 @@ mod tests {
                 branch: Some(WorktreeBranch::New {
                     name: "topic".into(),
                     start: None
-                })
+                }),
+                compare: None,
             }
         );
+        let checkout = Checkout::Worktree {
+            branch: None,
+            compare: Some("main".into()),
+        };
+        let value = serde_json::to_value(&checkout).unwrap();
+        assert_eq!(
+            value,
+            json!({"type": "worktree", "branch": null, "compare": "main"})
+        );
+        assert_eq!(serde_json::from_value::<Checkout>(value).unwrap(), checkout);
+        let method = Method::BranchMove {
+            workspace_id: "w".into(),
+            branch: "main".into(),
+            to: "abc".into(),
+            expected: "def".into(),
+            force: true,
+            env: BTreeMap::from([("PATH".into(), "/bin".into())]),
+        };
+        let value = serde_json::to_value(Request { id: 21, method }).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "id": 21,
+                "method": "branch.move",
+                "params": {
+                    "workspace_id": "w",
+                    "branch": "main",
+                    "to": "abc",
+                    "expected": "def",
+                    "force": true,
+                    "env": {"PATH": "/bin"}
+                }
+            })
+        );
+        let request: Request = serde_json::from_value(json!({
+            "id": 22,
+            "method": "branch.move",
+            "params": {"workspace_id": "w", "branch": "main", "to": "abc", "expected": "def"}
+        }))
+        .unwrap();
+        assert!(matches!(
+            request.method,
+            Method::BranchMove { ref branch, ref to, ref expected, force: false, ref env, .. }
+                if branch == "main" && to == "abc" && expected == "def" && env.is_empty()
+        ));
+        for compare in [Some("origin/main".to_owned()), None] {
+            let method = Method::SessionSetCompare {
+                session_id: "s".into(),
+                compare: compare.clone(),
+            };
+            let value = serde_json::to_value(Request { id: 23, method }).unwrap();
+            assert_eq!(
+                value,
+                json!({
+                    "id": 23,
+                    "method": "session.set_compare",
+                    "params": {"session_id": "s", "compare": compare}
+                })
+            );
+            let request: Request = serde_json::from_value(value).unwrap();
+            assert!(matches!(
+                request.method,
+                Method::SessionSetCompare { ref session_id, compare: ref decoded }
+                    if session_id == "s" && *decoded == compare
+            ));
+        }
+        let value = serde_json::to_value(Request {
+            id: 24,
+            method: Method::SessionRefresh {
+                session_id: "s".into(),
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            value,
+            json!({"id": 24, "method": "session.refresh", "params": {"session_id": "s"}})
+        );
+        let request: Request = serde_json::from_value(value).unwrap();
+        assert!(matches!(
+            request.method,
+            Method::SessionRefresh { ref session_id } if session_id == "s"
+        ));
         let request: Request = serde_json::from_value(json!({
             "id": 16,
             "method": "session.delete",
@@ -870,9 +1022,17 @@ mod tests {
                     "path": "/worktrees/tmp-01234567",
                     "branch": "ox/01234567",
                     "base": "abc",
-                    "created_branch": true
+                    "created_branch": true,
+                    "compare": "main"
                 },
-                "archived": false
+                "archived": false,
+                "comparison": {
+                    "type": "compared",
+                    "tip": "abc",
+                    "compare_tip": "def",
+                    "ahead": 1,
+                    "behind": 2
+                }
             }]
         }))
         .unwrap();
@@ -884,8 +1044,25 @@ mod tests {
                     && sessions[0].workspace_id == "w"
                     && sessions[0].title.as_deref() == Some("Fix the build")
                     && sessions[0].worktree.as_ref().is_some_and(|worktree| {
-                        worktree.branch == "ox/01234567" && worktree.created_branch
+                        worktree.branch == "ox/01234567"
+                            && worktree.created_branch
+                            && worktree.compare.as_deref() == Some("main")
+                    })
+                    && sessions[0].comparison == Some(Comparison::Compared {
+                        tip: "abc".into(),
+                        compare_tip: "def".into(),
+                        ahead: 1,
+                        behind: 2,
                     })
         ));
+        let failed = Comparison::Failed {
+            error: "main is not a commit".into(),
+        };
+        let value = serde_json::to_value(&failed).unwrap();
+        assert_eq!(
+            value,
+            json!({"type": "failed", "error": "main is not a commit"})
+        );
+        assert_eq!(serde_json::from_value::<Comparison>(value).unwrap(), failed);
     }
 }

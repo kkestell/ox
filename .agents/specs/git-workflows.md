@@ -77,10 +77,8 @@ See [What belongs in oxd](../../docs/architecture.md#what-belongs-in-oxd).
 - A worktree session has a comparison ref, such as `main` or `origin/main`.
   The client sets it when it creates the session, and can change it later.
 - `oxd` publishes the comparison with the session, to every watching client:
-  - the branch's tip;
-  - commits ahead of the ref and commits behind it;
-  - whether the branch is an ancestor of the ref.
-- "Merged" means ancestry only.
+  - the branch's tip, and the commit the ref points at;
+  - commits ahead of the ref and commits behind it.
 - `oxd` recomputes the comparison:
   - when the session's agent finishes a turn;
   - after any move of a branch, delete or fetch in the repository, for every
@@ -94,8 +92,13 @@ See [What belongs in oxd](../../docs/architecture.md#what-belongs-in-oxd).
   if the branch has moved since.
 - When the branch is checked out in a worktree or in the workspace's checkout,
   the move updates that checkout and its index along with the branch. It
-  refuses unsaved work there, and refuses while a session's agent is running
-  in that checkout.
+  refuses:
+  - uncommitted changes to tracked files there;
+  - an untracked file the move would overwrite;
+  - a session's agent in that checkout that is starting, in a turn, or
+    waiting for the user's answer.
+
+  Untracked files the move leaves alone, and an idle agent, don't stop it.
 - Local merge uses it to fast-forward `main`. Review uses it to reset the
   review branch to the PR's new head.
 
@@ -202,10 +205,9 @@ These are parameters that a workflow passes to the primitives:
 
 | State | Icon | Tooltip |
 |---|---|---|
-| No commits | None | — |
+| No commits | None | "No commits ahead of main" |
 | One commit, not behind | `GitBranch` | "1 commit ahead of main" |
 | Behind, or more than one commit | `GitBranch`, attention colour | "3 commits ahead, 2 behind main" |
-| Merged | `GitMerge` | "Merged into main" |
 
 **Pull request:** `GitPullRequest`, coloured by the linked PR's state, with
 its number, state and checks in the tooltip.
@@ -217,13 +219,13 @@ its number, state and checks in the tooltip.
   - It is enabled only when the branch is one commit ahead of the workspace's
     branch and not behind it.
   - Otherwise it is disabled, and its tooltip gives the reason: "No commits",
-    "Behind main: ask the agent to rebase", "2 commits: ask the agent to
-    squash", or "Already merged".
+    "Behind main: ask the agent to rebase", or "2 commits: ask the agent to
+    squash".
   - Clicking it fast-forwards the workspace's branch with Move a branch, then
     offers to delete the session.
-  - When the move is refused, for example by unsaved work in the workspace's
-    checkout or a session's agent running there, Ox shows the reason and
-    nothing changes.
+  - When the move is refused, for example by uncommitted changes in the
+    workspace's checkout or a session's agent working there, Ox shows the
+    reason and nothing changes.
 - For pull requests it reads **Open Pull Request**, and asks the agent to push
   and open the PR. Once `gh` reports the PR merged, the session offers Delete,
   which deletes the branch.

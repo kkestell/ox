@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use ox_protocol::schema::{ContentBlock, TextContent};
 use ox_protocol::{
-    Branches, Checkout, Client, Deleted, Error, ErrorBody, EventKind, SessionInfo, SessionState,
-    WorktreeBranch, WorktreeInfo, code,
+    Branches, Checkout, Client, Comparison, Deleted, Error, ErrorBody, EventKind, SessionInfo,
+    SessionState, WorktreeBranch, WorktreeInfo, code,
 };
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -442,13 +442,17 @@ async fn branches(
 
 /// A new worktree on the session's `ox/<id8>` branch.
 fn on_ox_branch() -> Checkout {
-    Checkout::Worktree { branch: None }
+    Checkout::Worktree {
+        branch: None,
+        compare: None,
+    }
 }
 
 /// A new worktree on the existing branch `name`.
 fn on_existing(name: &str) -> Checkout {
     Checkout::Worktree {
         branch: Some(WorktreeBranch::Existing { name: name.into() }),
+        compare: None,
     }
 }
 
@@ -459,6 +463,7 @@ fn on_new(name: &str, start: Option<&str>) -> Checkout {
             name: name.into(),
             start: start.map(String::from),
         }),
+        compare: None,
     }
 }
 
@@ -699,6 +704,7 @@ async fn a_session_runs_in_a_new_worktree_on_a_new_branch() {
             branch: format!("ox/{id8}"),
             base: head.clone(),
             created_branch: true,
+            compare: None,
         })
     );
     assert_eq!(answered, *session_worktree(&session));
@@ -2316,4 +2322,462 @@ async fn deleting_an_archived_session_removes_it_and_applies_the_branch_rule() {
     assert!(info(&client, &session.id).await.is_none());
     assert!(!branch_exists(repo.path(), &worktree.branch));
     assert_removed(repo.path(), &worktree);
+}
+
+/// A new worktree on the session's `ox/<id8>` branch, compared with
+/// `reference`.
+fn compared_with(reference: &str) -> Checkout {
+    Checkout::Worktree {
+        branch: None,
+        compare: Some(reference.into()),
+    }
+}
+
+/// Moves `branch` of the workspace for `path` from `expected` to `to`, with
+/// git run with the daemon's environment.
+async fn move_branch(
+    client: &Client,
+    path: &Path,
+    branch: &str,
+    to: &str,
+    expected: &str,
+    force: bool,
+) -> Result<(), Error> {
+    let workspace = workspace_id(client, path).await;
+    timeout(
+        TIMEOUT,
+        client.move_branch(&workspace, branch, to, expected, force, BTreeMap::new()),
+    )
+    .await
+    .expect("timed out moving the branch")
+}
+
+/// The commit `rev` names in the repository at `dir`.
+fn commit_of(dir: &Path, rev: &str) -> String {
+    git(dir, &["rev-parse", &format!("{rev}^{{commit}}")])
+}
+
+/// A commit with the tree of `parent` and the file `name` added, on no
+/// branch, made without touching the checkout at `dir`.
+fn commit_beside(dir: &Path, parent: &str, name: &str) -> String {
+    let blob = {
+        let mut child = git_command(dir, &["hash-object", "-w", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        std::io::Write::write_all(
+            child.stdin.as_mut().unwrap(),
+            format!("{name}\n").as_bytes(),
+        )
+        .unwrap();
+        let output = child.wait_with_output().unwrap();
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    let index = tempfile::NamedTempFile::new().unwrap();
+    let index = index.path().to_str().unwrap();
+    let with_index = |args: &[&str]| {
+        let output = git_command(dir, args)
+            .env("GIT_INDEX_FILE", index)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?} failed");
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    with_index(&["read-tree", parent]);
+    with_index(&[
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        &format!("100644,{blob},{name}"),
+    ]);
+    let tree = with_index(&["write-tree"]);
+    git(dir, &["commit-tree", &tree, "-p", parent, "-m", name])
+}
+
+/// Waits until a watch delivers the session with a comparison `done`
+/// accepts, and returns the session.
+async fn until_compared(
+    client: &Client,
+    session_id: &str,
+    done: impl Fn(&Comparison) -> bool,
+) -> SessionInfo {
+    let mut watch = client.watch().await.unwrap();
+    loop {
+        let listing = timeout(TIMEOUT, watch.next())
+            .await
+            .expect("timed out waiting for the comparison")
+            .unwrap();
+        let session = listing
+            .sessions
+            .into_iter()
+            .find(|session| session.id == session_id)
+            .expect("the session is listed");
+        if session.comparison.as_ref().is_some_and(&done) {
+            return session;
+        }
+    }
+}
+
+/// Whether the comparison counts `ahead` and `behind`.
+fn counts(ahead: u64, behind: u64) -> impl Fn(&Comparison) -> bool {
+    move |comparison| {
+        matches!(comparison, Comparison::Compared { ahead: a, behind: b, .. }
+            if *a == ahead && *b == behind)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_branch_no_checkout_has_moves_only_from_where_it_is_expected() {
+    let repo = repo();
+    let daemon = Daemon::start().await;
+    let client = daemon.client().await;
+    let first = commit_of(repo.path(), "HEAD");
+    git(repo.path(), &["branch", "topic"]);
+    commit_file(repo.path(), "second");
+    let second = commit_of(repo.path(), "HEAD");
+
+    let refused = refusal(move_branch(&client, repo.path(), "topic", "main", &second, false).await);
+    assert_eq!(refused.code, code::INVALID_STATE, "{refused:?}");
+    assert_eq!(commit_of(repo.path(), "topic"), first);
+
+    move_branch(&client, repo.path(), "topic", "main", &first, false)
+        .await
+        .unwrap();
+    assert_eq!(commit_of(repo.path(), "topic"), second);
+
+    let side = commit_beside(repo.path(), &first, "side");
+    let refused = refusal(move_branch(&client, repo.path(), "topic", &side, &second, false).await);
+    assert_eq!(refused.code, code::INVALID_REQUEST, "{refused:?}");
+    assert_eq!(commit_of(repo.path(), "topic"), second);
+
+    move_branch(&client, repo.path(), "topic", &side, &second, true)
+        .await
+        .unwrap();
+    assert_eq!(commit_of(repo.path(), "topic"), side);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn moving_a_checked_out_branch_moves_its_checkout() {
+    let repo = repo();
+    let daemon = Daemon::start().await;
+    let client = daemon.client().await;
+    let first = commit_of(repo.path(), "HEAD");
+    let topic = commit_beside(repo.path(), &first, "added");
+
+    move_branch(&client, repo.path(), "main", &topic, &first, false)
+        .await
+        .unwrap();
+    assert_eq!(commit_of(repo.path(), "HEAD"), topic);
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("added")).unwrap(),
+        "added\n"
+    );
+    assert_eq!(git(repo.path(), &["status", "--porcelain"]), "");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_move_keeps_uncommitted_and_untracked_work() {
+    let repo = repo();
+    let daemon = Daemon::start().await;
+    let client = daemon.client().await;
+    let first = commit_of(repo.path(), "HEAD");
+    let topic = commit_beside(repo.path(), &first, "added");
+
+    std::fs::write(repo.path().join("README"), "changed\n").unwrap();
+    let refused = refusal(move_branch(&client, repo.path(), "main", &topic, &first, false).await);
+    assert_eq!(refused.code, code::UNSAVED_WORK, "{refused:?}");
+    assert_eq!(commit_of(repo.path(), "main"), first);
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("README")).unwrap(),
+        "changed\n"
+    );
+    git(repo.path(), &["checkout", "README"]);
+
+    // An untracked file where the move adds one fails it in git, and the
+    // branch goes back.
+    std::fs::write(repo.path().join("added"), "mine\n").unwrap();
+    let refused = refusal(move_branch(&client, repo.path(), "main", &topic, &first, false).await);
+    assert_eq!(refused.code, code::GIT, "{refused:?}");
+    assert_eq!(commit_of(repo.path(), "main"), first);
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("added")).unwrap(),
+        "mine\n"
+    );
+    std::fs::remove_file(repo.path().join("added")).unwrap();
+    assert_eq!(git(repo.path(), &["status", "--porcelain"]), "");
+
+    // An untracked file the move leaves alone does not stop it.
+    std::fs::write(repo.path().join("notes"), "notes\n").unwrap();
+    move_branch(&client, repo.path(), "main", &topic, &first, false)
+        .await
+        .unwrap();
+    assert_eq!(commit_of(repo.path(), "HEAD"), topic);
+    assert!(repo.path().join("added").exists());
+    assert_eq!(git(repo.path(), &["status", "--porcelain"]), "?? notes");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_move_waits_for_an_agent_in_the_checkout_to_end_its_turn() {
+    let repo = repo();
+    let daemon = Daemon::start().await;
+    let client = daemon.client().await;
+    let first = commit_of(repo.path(), "HEAD");
+    let topic = commit_beside(repo.path(), &first, "added");
+    let session = new_session(&client, repo.path(), Checkout::Workspace)
+        .await
+        .unwrap();
+    let session = started(&client, &session).await;
+    let mut events = client.subscribe(&session.id, 0).await.unwrap();
+    client.prompt(&session.id, text("wait")).await.unwrap();
+    until_state(&client, &session.id, SessionState::Running).await;
+
+    let refused = refusal(move_branch(&client, repo.path(), "main", &topic, &first, false).await);
+    assert_eq!(refused.code, code::INVALID_STATE, "{refused:?}");
+    assert!(refused.message.contains(&session.id), "{refused:?}");
+    assert_eq!(commit_of(repo.path(), "main"), first);
+
+    client.cancel(&session.id).await.unwrap();
+    loop {
+        let event = timeout(TIMEOUT, events.next())
+            .await
+            .expect("the turn did not end")
+            .unwrap();
+        if matches!(event.kind, EventKind::TurnEnded { .. }) {
+            break;
+        }
+    }
+    move_branch(&client, repo.path(), "main", &topic, &first, false)
+        .await
+        .unwrap();
+    assert_eq!(commit_of(repo.path(), "HEAD"), topic);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_forced_move_of_a_sessions_branch_moves_its_worktree() {
+    let repo = repo();
+    let daemon = Daemon::start().await;
+    let client = daemon.client().await;
+    let first = commit_of(repo.path(), "HEAD");
+    let other = commit_beside(repo.path(), &first, "other");
+    let session = new_session(&client, repo.path(), on_ox_branch())
+        .await
+        .unwrap();
+    let session = started(&client, &session).await;
+    let worktree = session_worktree(&session).clone();
+    commit_file(&worktree.path, "mine");
+    let mine = commit_of(&worktree.path, "HEAD");
+
+    move_branch(&client, repo.path(), &worktree.branch, &other, &mine, true)
+        .await
+        .unwrap();
+    assert_eq!(commit_of(&worktree.path, "HEAD"), other);
+    assert!(worktree.path.join("other").exists());
+    assert!(!worktree.path.join("mine").exists());
+    assert_eq!(git(&worktree.path, &["status", "--porcelain"]), "");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_session_publishes_its_comparison() {
+    let repo = repo();
+    let daemon = Daemon::start().await;
+    let client = daemon.client().await;
+    let head = commit_of(repo.path(), "HEAD");
+
+    let refused = refusal(new_session(&client, repo.path(), compared_with("nothing")).await);
+    assert_eq!(refused.code, code::INVALID_REQUEST, "{refused:?}");
+    assert!(client.list().await.unwrap().is_empty());
+    assert_eq!(
+        git(repo.path(), &["branch", "--format=%(refname:short)"]),
+        "main"
+    );
+
+    let session = new_session(&client, repo.path(), compared_with("main"))
+        .await
+        .unwrap();
+    assert_eq!(session_worktree(&session).compare.as_deref(), Some("main"));
+    let session = until_compared(&client, &session.id, counts(0, 0)).await;
+    assert_eq!(
+        session.comparison,
+        Some(Comparison::Compared {
+            tip: head.clone(),
+            compare_tip: head,
+            ahead: 0,
+            behind: 0,
+        })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_end_compares_again() {
+    let repo = repo();
+    let daemon = Daemon::start().await;
+    let client = daemon.client().await;
+    let session = new_session(&client, repo.path(), compared_with("main"))
+        .await
+        .unwrap();
+    let session = started(&client, &session).await;
+    until_compared(&client, &session.id, counts(0, 0)).await;
+    commit_file(&session_worktree(&session).path, "work");
+
+    answers(&client, &session.id).await;
+    let session = until_compared(&client, &session.id, counts(1, 0)).await;
+    let Some(Comparison::Compared { tip, .. }) = &session.comparison else {
+        unreachable!("until_compared returns a compared session");
+    };
+    assert_eq!(*tip, commit_of(&session_worktree(&session).path, "HEAD"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_move_compares_the_repositorys_sessions_again() {
+    let repo = repo();
+    let daemon = Daemon::start().await;
+    let client = daemon.client().await;
+    let first = commit_of(repo.path(), "HEAD");
+    let topic = commit_beside(repo.path(), &first, "added");
+    let session = new_session(&client, repo.path(), compared_with("main"))
+        .await
+        .unwrap();
+    until_compared(&client, &session.id, counts(0, 0)).await;
+
+    move_branch(&client, repo.path(), "main", &topic, &first, false)
+        .await
+        .unwrap();
+    until_compared(&client, &session.id, counts(0, 1)).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fetch_compares_the_repositorys_sessions_again() {
+    let dir = clone_with_remote();
+    let clone = clone_of(&dir);
+    let daemon = Daemon::start().await;
+    let client = daemon.client().await;
+    let session = new_session(&client, &clone, compared_with("origin/main"))
+        .await
+        .unwrap();
+    until_compared(&client, &session.id, counts(0, 0)).await;
+
+    let pusher = dir.path().join("pusher");
+    git(
+        dir.path(),
+        &[
+            "clone",
+            "--quiet",
+            dir.path().join("remote.git").to_str().unwrap(),
+            pusher.to_str().unwrap(),
+        ],
+    );
+    identify(&pusher);
+    commit_file(&pusher, "pushed");
+    git(&pusher, &["push", "--quiet", "origin", "main"]);
+
+    let listed = branches(&client, &clone, true, BTreeMap::new())
+        .await
+        .unwrap();
+    assert_eq!(listed.fetch_error, None);
+    until_compared(&client, &session.id, counts(0, 1)).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_delete_compares_the_repositorys_sessions_again() {
+    let repo = repo();
+    let daemon = Daemon::start().await;
+    let client = daemon.client().await;
+    let first = new_session(&client, repo.path(), on_ox_branch())
+        .await
+        .unwrap();
+    let first = started(&client, &first).await;
+    let branch = session_worktree(&first).branch.clone();
+    let second = new_session(&client, repo.path(), compared_with(&branch))
+        .await
+        .unwrap();
+    until_compared(&client, &second.id, counts(0, 0)).await;
+
+    let deleted = delete(&client, &first.id, false).await.unwrap();
+    assert_eq!(deleted, Deleted { kept_branch: None });
+    let second = until_compared(&client, &second.id, |comparison| {
+        matches!(comparison, Comparison::Failed { .. })
+    })
+    .await;
+    assert_eq!(
+        second.comparison,
+        Some(Comparison::Failed {
+            error: format!("{branch} is not a commit")
+        })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_comparison_is_refreshed_set_and_cleared_on_request() {
+    let repo = repo();
+    let daemon = Daemon::start().await;
+    let client = daemon.client().await;
+    let first = commit_of(repo.path(), "HEAD");
+    let session = new_session(&client, repo.path(), compared_with("main"))
+        .await
+        .unwrap();
+    until_compared(&client, &session.id, counts(0, 0)).await;
+
+    commit_file(repo.path(), "outside");
+    let refreshed = client.refresh(&session.id).await.unwrap();
+    assert!(
+        refreshed.comparison.as_ref().is_some_and(counts(0, 1)),
+        "{:?}",
+        refreshed.comparison
+    );
+
+    let set = client
+        .set_compare(&session.id, Some(first.clone()))
+        .await
+        .unwrap();
+    assert_eq!(
+        session_worktree(&set).compare.as_deref(),
+        Some(first.as_str())
+    );
+    assert!(
+        set.comparison.as_ref().is_some_and(counts(0, 0)),
+        "{:?}",
+        set.comparison
+    );
+    let refused = refusal(
+        client
+            .set_compare(&session.id, Some("nothing".into()))
+            .await,
+    );
+    assert_eq!(refused.code, code::INVALID_REQUEST, "{refused:?}");
+    assert_eq!(
+        session_worktree(&info(&client, &session.id).await.unwrap())
+            .compare
+            .as_deref(),
+        Some(first.as_str())
+    );
+
+    let cleared = client.set_compare(&session.id, None).await.unwrap();
+    assert_eq!(session_worktree(&cleared).compare, None);
+    assert_eq!(cleared.comparison, None);
+
+    let plain = new_session(&client, repo.path(), Checkout::Workspace)
+        .await
+        .unwrap();
+    let refused = refusal(client.set_compare(&plain.id, Some("main".into())).await);
+    assert_eq!(refused.code, code::INVALID_REQUEST, "{refused:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_comparison_ref_survives_a_restart_and_is_compared_unasked() {
+    let repo = repo();
+    let daemon = Daemon::start().await;
+    let client = daemon.client().await;
+    let session = new_session(&client, repo.path(), compared_with("main"))
+        .await
+        .unwrap();
+    started(&client, &session).await;
+    until_compared(&client, &session.id, counts(0, 0)).await;
+    drop(client);
+    commit_file(repo.path(), "meanwhile");
+
+    let daemon = daemon.restart().await;
+    let client = daemon.client().await;
+    let restored = until_compared(&client, &session.id, counts(0, 1)).await;
+    assert_eq!(session_worktree(&restored).compare.as_deref(), Some("main"));
 }
