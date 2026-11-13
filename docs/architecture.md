@@ -23,6 +23,20 @@ flowchart TB
 Solid arrows point from a parent to the processes it owns. Dotted arrows
 start `oxd` detached, so it outlives the client that started it.
 
+## What belongs in oxd
+
+`oxd` owns shared state and shared work:
+
+- everything persisted;
+- everything that every client must see kept up to date;
+- anything long-running, or anything that has to complete or be undone even
+  if the client goes away;
+- every write to a repository.
+
+Clients hold presentation and choose the parameters. `oxd`'s operations are
+generic: it never decides which ref, which branch name, or which order of
+steps. Those choices make up a workflow, and workflows belong to the clients.
+
 ## Processes
 
 **ox.** The Tauri 2 desktop app. The React UI in the webview calls Tauri commands
