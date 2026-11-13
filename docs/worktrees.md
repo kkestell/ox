@@ -7,27 +7,18 @@ name.
 
 ## Choosing a checkout
 
-| Where the session runs | Branch | Branch starts at | App (New Session menu) | `oxctl new` |
+| Where the session runs | Branch | Branch starts at | App (**+** menu) | `oxctl new` |
 |---|---|---|---|---|
-| The workspace's checkout | Whatever the checkout has | — | Existing Checkout | (no flag) |
-| New worktree | New `ox/<first 8 digits of the session ID>` | `HEAD` | New Worktree | `--worktree` |
-| New worktree | An existing local branch | Its tip | New Worktree on Existing Branch… | `--branch <name>` |
-| New worktree | A new local branch that tracks a remote branch, named `<branch>` or `<remote>/<branch>` | The remote branch's tip | New Worktree on Existing Branch… | `--branch <name>` |
-| New worktree | A new branch you name | `HEAD` | New Worktree on New Branch…, with Start From empty | `--new-branch <name>` |
-| New worktree | A new branch you name | The commit you give | New Worktree on New Branch…, with Start From filled in | `--new-branch <name> --start <commit>` |
+| The workspace's checkout | Whatever the checkout has | — | Session in Checkout | (no flag) |
+| New worktree | New `ox/<first 8 digits of the session ID>` | `HEAD` | New Task, compared with the checkout's branch | `--worktree` |
+| New worktree | An existing local branch | Its tip | — | `--branch <name>` |
+| New worktree | A new local branch that tracks a remote branch, named `<branch>` or `<remote>/<branch>` | The remote branch's tip | — | `--branch <name>` |
+| New worktree | A new branch you name | `HEAD` | — | `--new-branch <name>` |
+| New worktree | A new branch you name | The commit you give | — | `--new-branch <name> --start <commit>` |
 
 The worktree options appear only for a workspace in a Git working tree. In
 `oxctl`, `--worktree`, `--branch` and `--new-branch` exclude each other, and
 `--start` needs `--new-branch`.
-
-The New Worktree on Existing Branch dialog lists local branches and remote
-branches. A local branch that a worktree has checked out is shown with that
-worktree and cannot be picked. A remote branch is listed only when no local
-branch has its name. The New Worktree on New Branch dialog notes a name that a
-branch already has and disables Create.
-
-Both dialogs list the branches as they stand, then again after fetching every
-remote. A failed fetch is noted in the dialog, and the lists stay as they were.
 
 ## Worktrees
 

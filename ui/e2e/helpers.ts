@@ -34,29 +34,6 @@ export async function gitWorkspace(): Promise<{ cwd: string; workspace: string }
   return { cwd, workspace: await addWorkspace(cwd) };
 }
 
-/**
- * Adds a clone of a new bare repository with branches `main` and `feature` as
- * a workspace, and returns its path and workspace ID, and the path of
- * another clone, `pusher`, which updates the remote without the workspace
- * learning of it.
- */
-export async function gitWorkspaceWithRemote(): Promise<{
-  cwd: string;
-  workspace: string;
-  pusher: string;
-}> {
-  const remote = await tempDir("remote-");
-  await git(remote, "init", "--bare", "-b", "main");
-  const pusher = await tempDir("pusher-");
-  await git(pusher, "init", "-b", "main");
-  await git(pusher, "remote", "add", "origin", remote);
-  await commit(pusher);
-  await git(pusher, "push", "origin", "main", "main:feature");
-  const cwd = await tempDir("repo-");
-  await git(cwd, "clone", remote, ".");
-  return { cwd, workspace: await addWorkspace(cwd), pusher };
-}
-
 /** Starts a session of the fake agent in a new worktree of `workspace`. */
 export async function startWorktreeSession(workspace: string) {
   await oxctl("new", "--workspace", workspace, "--worktree", "--", binary("oxd-fake-agent"));
@@ -68,15 +45,20 @@ export async function git(cwd: string, ...args: string[]): Promise<string> {
   return stdout;
 }
 
-/** Commits a change to a new file in `cwd`, with an identity of its own. */
-export async function commit(cwd: string) {
-  await writeFile(join(cwd, `${Date.now()}-${Math.random()}.txt`), "change\n");
+/**
+ * Commits a change to a new file in `cwd`, with an identity of its own, and
+ * returns the file's name.
+ */
+export async function commit(cwd: string): Promise<string> {
+  const name = `${Date.now()}-${Math.random()}.txt`;
+  await writeFile(join(cwd, name), "change\n");
   await git(cwd, "add", ".");
   await git(
     cwd,
     ...["-c", "user.name=Ox", "-c", "user.email=ox@example.com", "-c", "commit.gpgsign=false"],
     ...["commit", "-m", "change"],
   );
+  return name;
 }
 
 async function tempDir(prefix: string): Promise<string> {
@@ -94,6 +76,17 @@ export async function deleteSessions(cwd: string) {
     const [id, sessionWorkspace] = line.split("\t");
     if (sessionWorkspace === workspace) await oxctl("delete", "--discard", id!);
   }
+}
+
+/**
+ * Compares the one session of `workspace` again with `oxctl compare`, and
+ * returns what it prints: the ref, the branch's commit, the ref's commit, and
+ * the commits ahead and behind, separated by tabs.
+ */
+export async function compareSession(workspace: string): Promise<string> {
+  const sessions = lines(await oxctl("ls")).filter((line) => line.split("\t")[1] === workspace);
+  if (sessions.length !== 1) throw new Error(`${workspace} has ${sessions.length} sessions`);
+  return oxctl("compare", sessions[0]!.split("\t")[0]!);
 }
 
 /** Removes the workspace in `cwd` with `oxctl`. */
@@ -151,6 +144,22 @@ export function sessionEntry(cwd: string) {
 export function worktreeEntry() {
   const worktrees = join(process.env.OX_E2E_DIR!, "worktrees/");
   return $(`//li[@class="session"][button[@class="select"][starts-with(@title, "${worktrees}")]]`);
+}
+
+/** Opens the New Task menu of the workspace in `cwd`. */
+export async function openMenu(cwd: string) {
+  await workspaceGroup(cwd).$('button[aria-label="New Task"]').click();
+  const menu = workspaceGroup(cwd).$('[role="menu"]');
+  await expect(menu).toBeDisplayed();
+  return menu;
+}
+
+/** Starts a New Task in the workspace in `cwd`, and returns its worktree's path. */
+export async function newTask(cwd: string): Promise<string> {
+  await (await openMenu(cwd)).$("button=New Task").click();
+  const select = worktreeEntry().$("button.select");
+  await expect(select).toHaveAttribute("aria-current", "true");
+  return (await select.getAttribute("title"))!.replace(/\/$/, "");
 }
 
 /** Views the session in `cwd`. */

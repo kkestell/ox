@@ -44,17 +44,24 @@ in the Rust core, which forwards them to `oxd` through one
 `ox_protocol::Client` and streams the workspaces and sessions lists and the
 open session's conversation back over Tauri channels. The sidebar groups
 sessions under their workspaces; a workspace is added by choosing a directory.
-A workspace's New Session menu opens beside its button with an agent select
-above **Existing Checkout**,
-which runs the session in the workspace's directory, and, in a Git working
-tree, **New Worktree**, on a new branch, **New Worktree on Existing
-Branch…**, and **New Worktree on New Branch…**. The existing-branch dialog
-picks from the local branches, showing each one a worktree has checked out
-with that worktree and not offering it, and the remote branches with no local
-branch of the same name. The new-branch dialog asks for a name, noting one a
-local or remote branch has, and the commit it starts from. Both dialogs list
-the workspace's branches at once, then again once a fetch of its remotes
-answers, and note a failed fetch. Selecting a saved session whose
+A workspace's **+** menu opens beside its button with an agent select above
+**New Task**, offered in a Git working tree, and **Session in Checkout**,
+which runs the session in the workspace's directory. New Task follows the
+local merge workflow: it reads the branch the workspace's checkout is on from
+`workspace.branches` and starts a session in a new worktree on its own
+`ox/<id8>` branch from `HEAD`, compared with that branch; when the checkout
+is on no branch it shows "<workspace> is not on a branch" and creates
+nothing. A session that is not archived and has a comparison ref follows
+local merge. Its row shows its git status as a `GitBranch` icon at the row's
+end, which fades out as the row actions fade in over it: none with no
+commits ahead, plain at one commit ahead and none behind, and in the
+attention colour otherwise or when git could not compare them, with the
+detail in its tooltip. The conversation header holds its **Merge into
+<ref>** button, enabled only at one commit ahead and none behind, with the
+reason in its tooltip otherwise. It fast-forwards the ref's branch to the
+session's branch with `branch.move`, from the ref's commit in the comparison,
+then offers to delete the session, which removes the merged branch.
+Selecting a saved session whose
 agent is not running loads it. A new session runs `claude-code-acp` from
 beside the app's executable. The app passes its environment to the session
 and to every request that runs git. **Delete Session** asks before discarding
@@ -228,7 +235,9 @@ entry. A `git init` therefore shows in the next lists `oxd` sends, on the
 next session change or client connection. `workspace.branches` answers the
 local and remote-tracking branches of a workspace's repository, each most
 recently committed first, without symbolic refs such as `origin/HEAD`, with
-the worktree that has each local branch checked out.
+the worktree that has each local branch checked out, and `head`, the branch
+the workspace's checkout is on, unset when its `HEAD` is detached or unborn.
+The same `for-each-ref` reports it, through `%(HEAD)`.
 `workspace.branches` and `session.new` with a worktree refuse a workspace
 git finds in no working tree, including one whose `.git` git rejects, with
 git's reason in the message. With `fetch`, `oxd` first runs `git

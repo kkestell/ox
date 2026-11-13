@@ -172,16 +172,29 @@ async fn remove_workspace(app: State<'_, App>, workspace_id: String) -> Result<(
         .map_err(message)
 }
 
-/// The workspace's branches, after fetching its remotes when `fetch` is set.
+/// The workspace's branches, as they stand without a fetch.
 #[tauri::command]
-async fn workspace_branches(
-    app: State<'_, App>,
-    workspace_id: String,
-    fetch: bool,
-) -> Result<Branches, String> {
+async fn workspace_branches(app: State<'_, App>, workspace_id: String) -> Result<Branches, String> {
     app.client()
         .await?
-        .branches(&workspace_id, fetch, utf8_env())
+        .branches(&workspace_id, false, utf8_env())
+        .await
+        .map_err(message)
+}
+
+/// Fast-forwards the workspace's branch `branch` from commit `expected` to
+/// commit `to`, with the checkout that has it.
+#[tauri::command]
+async fn move_branch(
+    app: State<'_, App>,
+    workspace_id: String,
+    branch: String,
+    to: String,
+    expected: String,
+) -> Result<(), String> {
+    app.client()
+        .await?
+        .move_branch(&workspace_id, &branch, &to, &expected, false, utf8_env())
         .await
         .map_err(message)
 }
@@ -415,6 +428,7 @@ pub fn run() {
             add_workspace,
             remove_workspace,
             workspace_branches,
+            move_branch,
             new_session,
             load_session,
             prompt,

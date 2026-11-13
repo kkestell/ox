@@ -1270,13 +1270,21 @@ async fn branches_are_listed_most_recently_committed_first() {
     remote.sort();
     assert_eq!(remote, ["origin/feature", "origin/main"]);
     assert_eq!(listed.fetch_error, None);
+    assert_eq!(listed.head.as_deref(), Some("main"));
 
-    // A subdirectory of the checkout lists the same branches.
+    // A subdirectory of the checkout lists the same branches and head.
     std::fs::create_dir(clone.join("sub")).unwrap();
     let from_subdirectory = branches(&client, &clone.join("sub"), false, BTreeMap::new())
         .await
         .unwrap();
     assert_eq!(from_subdirectory, listed);
+
+    // A detached checkout is on no branch.
+    git(&clone, &["switch", "--quiet", "--detach"]);
+    let detached = branches(&client, &clone, false, BTreeMap::new())
+        .await
+        .unwrap();
+    assert_eq!(detached.head, None);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1302,6 +1310,8 @@ async fn branches_name_the_worktree_that_has_them_checked_out() {
         other.worktree,
         Some(canonical(&session_worktree(&session).path))
     );
+    // The session's worktree being on `other` leaves the workspace's head.
+    assert_eq!(listed.head.as_deref(), Some("main"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

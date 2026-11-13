@@ -44,11 +44,11 @@ pub enum Method {
     WorkspaceList,
     /// The workspace's local and remote-tracking branches, for naming the
     /// branch of a new worktree, with the worktree that has each local
-    /// branch checked out. Refused outside a Git working tree. With
-    /// `fetch`, the daemon first runs `git fetch --all`, shared with any
-    /// fetch of the same repository already running and stopped after 60
-    /// seconds; a fetch that fails sets `fetch_error` and the lists are
-    /// answered as they stand. Git runs with `env` over the daemon's
+    /// branch checked out, and the branch the workspace's checkout is on.
+    /// Refused outside a Git working tree. With `fetch`, the daemon first
+    /// runs `git fetch --all`, shared with any fetch of the same repository
+    /// already running and stopped after 60 seconds; a fetch that fails sets
+    /// `fetch_error` and the lists are answered as they stand. Git runs with `env` over the daemon's
     /// environment, as for `session.new`.
     #[serde(rename = "workspace.branches")]
     WorkspaceBranches {
@@ -349,6 +349,9 @@ pub struct WorkspaceInfo {
 /// A workspace's branches, each list most recently committed first.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Branches {
+    /// The local branch the workspace's checkout is on, unset when its
+    /// `HEAD` is detached or unborn.
+    pub head: Option<String>,
     /// Local branches, such as `main`.
     pub local: Vec<LocalBranch>,
     /// Remote-tracking branch names with their remote, such as
@@ -813,6 +816,7 @@ mod tests {
             })
         );
         let branches = Branches {
+            head: Some("main".into()),
             local: vec![
                 LocalBranch {
                     name: "main".into(),
@@ -830,6 +834,7 @@ mod tests {
         assert_eq!(
             value,
             json!({
+                "head": "main",
                 "local": [
                     {"name": "main", "worktree": "/work"},
                     {"name": "topic", "worktree": null}
@@ -839,6 +844,18 @@ mod tests {
             })
         );
         assert_eq!(serde_json::from_value::<Branches>(value).unwrap(), branches);
+        let detached = Branches {
+            head: None,
+            local: Vec::new(),
+            remote: Vec::new(),
+            fetch_error: None,
+        };
+        let value = serde_json::to_value(&detached).unwrap();
+        assert_eq!(
+            value,
+            json!({"head": null, "local": [], "remote": [], "fetch_error": null})
+        );
+        assert_eq!(serde_json::from_value::<Branches>(value).unwrap(), detached);
         let request: Request = serde_json::from_value(json!({
             "id": 12,
             "method": "session.load",

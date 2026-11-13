@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use ox_protocol::{Comparison, ErrorBody, LocalBranch, code};
+use ox_protocol::{Branches, Comparison, ErrorBody, LocalBranch, code};
 use tokio::io::AsyncReadExt;
 
 use crate::daemon::invalid_request;
@@ -55,34 +55,37 @@ pub async fn common_dir(git: &Git, workspace: &Path) -> Result<PathBuf, ErrorBod
 
 /// The local and remote-tracking branches of the repository `workspace` is
 /// in, most recently committed first, without symbolic refs such as
-/// `origin/HEAD`. Each local branch names the worktree that has it checked
-/// out; remote branches keep their remote's name.
-pub async fn list(
-    git: &Git,
-    workspace: &Path,
-) -> Result<(Vec<LocalBranch>, Vec<String>), ErrorBody> {
+/// `origin/HEAD`, and the branch the checkout at `workspace` is on. Each
+/// local branch names the worktree that has it checked out; remote branches
+/// keep their remote's name. The result reports no fetch.
+pub async fn list(git: &Git, workspace: &Path) -> Result<Branches, ErrorBody> {
     let output = git
         .run(
             workspace,
             &[
                 &"for-each-ref",
                 &"--sort=-committerdate",
-                &"--format=%(refname)%00%(symref)%00%(worktreepath)",
+                &"--format=%(refname)%00%(symref)%00%(worktreepath)%00%(HEAD)",
                 &"refs/heads",
                 &"refs/remotes",
             ],
         )
         .await?;
+    let mut head = None;
     let mut local = Vec::new();
     let mut remote = Vec::new();
     for line in output.split(|&byte| byte == b'\n') {
         let mut fields = line.split(|&byte| byte == 0);
-        let (Some(name), Some(b""), Some(worktree)) = (fields.next(), fields.next(), fields.next())
+        let (Some(name), Some(b""), Some(worktree), Some(current)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
         else {
             continue;
         };
         let name = String::from_utf8_lossy(name);
         if let Some(branch) = name.strip_prefix("refs/heads/") {
+            if current == b"*" {
+                head = Some(branch.to_owned());
+            }
             local.push(LocalBranch {
                 name: branch.to_owned(),
                 worktree: (!worktree.is_empty())
@@ -92,7 +95,12 @@ pub async fn list(
             remote.push(branch.to_owned());
         }
     }
-    Ok((local, remote))
+    Ok(Branches {
+        head,
+        local,
+        remote,
+        fetch_error: None,
+    })
 }
 
 /// Runs `git fetch --all` for the repository `workspace` is in, as the

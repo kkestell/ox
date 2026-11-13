@@ -181,14 +181,17 @@ These are parameters that a workflow passes to the primitives:
 
 ### Starting a session
 
-- A workspace's **+** button starts a **New Task** in the workspace's default
-  workflow.
-  - **Local merge:** one click. A new worktree from `HEAD` on an auto-named
-    branch.
+- A workspace's **+** button opens the workspace's menu: the agent picker,
+  **New Task**, and **Session in Checkout**.
+- **New Task** starts a session in the workspace's default workflow.
+  - **Local merge:** no further input. A new worktree from `HEAD` on an
+    auto-named branch, compared with the branch the workspace's checkout is
+    on. When the checkout is not on a branch, New Task shows "<workspace> is
+    not on a branch" and creates nothing.
   - **Pull request:** New Task first asks for the branch name.
-- The workspace's menu keeps the agent picker and **Session in Checkout**,
-  which runs a session in the workspace's own directory. That is the only
-  choice for a workspace outside Git.
+- **Session in Checkout** runs a session in the workspace's own directory.
+  For a workspace outside Git it is the only choice, and the menu has no New
+  Task.
 - A workspace's default workflow is set from its context menu: local merge or
   pull request. Local merge is the default.
 - Choosing an existing branch or a new branch at a start point stays available
@@ -198,6 +201,9 @@ These are parameters that a workflow passes to the primitives:
 
 - A worktree session's row shows its git status as an icon at the row's right
   end. The row actions take the same place on hover, fading in over the icon.
+- A worktree session with a comparison ref and no linked PR follows local
+  merge, and its labels name the ref, shown here as `main`. A worktree
+  session with neither shows no status icon and no Finish button.
 - The icon's tooltip gives the detail.
 - Status colours follow the app's design tokens.
 
@@ -205,9 +211,10 @@ These are parameters that a workflow passes to the primitives:
 
 | State | Icon | Tooltip |
 |---|---|---|
-| No commits | None | "No commits ahead of main" |
+| No commits | None | — |
 | One commit, not behind | `GitBranch` | "1 commit ahead of main" |
 | Behind, or more than one commit | `GitBranch`, attention colour | "3 commits ahead, 2 behind main" |
+| Git could not compare them | `GitBranch`, attention colour | Git's error |
 
 **Pull request:** `GitPullRequest`, coloured by the linked PR's state, with
 its number, state and checks in the tooltip.
@@ -219,8 +226,8 @@ its number, state and checks in the tooltip.
   - It is enabled only when the branch is one commit ahead of the workspace's
     branch and not behind it.
   - Otherwise it is disabled, and its tooltip gives the reason: "No commits",
-    "Behind main: ask the agent to rebase", or "2 commits: ask the agent to
-    squash".
+    "Behind main: ask the agent to rebase", "2 commits: ask the agent to
+    squash", or Git's error when it could not compare them.
   - Clicking it fast-forwards the workspace's branch with Move a branch, then
     offers to delete the session.
   - When the move is refused, for example by uncommitted changes in the

@@ -12,7 +12,7 @@ Spec: [git-workflows](specs/git-workflows.md). Two `/kplan` → `/kwork` →
   - Compare: a comparison ref on worktree sessions, published with the
     session, recomputed on turn end, on moves, deletes and fetches in the
     repository, and on a refresh request.
-- [ ] **App** (~1,000, about 260 of them deletions).
+- [x] **App** (~1,000, about 260 of them deletions).
   - The New Task menu: New Task starts a local merge session; Session in
     Checkout stays.
   - The right-aligned status icon on session rows.

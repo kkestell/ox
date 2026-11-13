@@ -505,11 +505,9 @@ impl Daemon {
         } else {
             None
         };
-        let (local, remote) = branches::list(&git, &workspace).await?;
         Ok(Branches {
-            local,
-            remote,
             fetch_error,
+            ..branches::list(&git, &workspace).await?
         })
     }
 

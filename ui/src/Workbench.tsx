@@ -28,7 +28,16 @@ interface Drag {
   startSize: number;
 }
 
-export function Workbench({ left, children }: { left: ReactNode; children: ReactNode }) {
+export function Workbench({
+  left,
+  actions,
+  children,
+}: {
+  left: ReactNode;
+  /** Controls for the content, at the start of its header. */
+  actions?: ReactNode;
+  children: ReactNode;
+}) {
   const workbench = useRef<HTMLDivElement>(null);
   const center = useRef<HTMLDivElement>(null);
   const drag = useRef<Drag | null>(null);
@@ -115,6 +124,7 @@ export function Workbench({ left, children }: { left: ReactNode; children: React
       <div className="center" ref={center}>
         <main className="content">
           <header className="pane-header content-header">
+            {actions}
             <div className="toggles">
               {panels.map((panel) => {
                 const { icon: Icon, title } = toggles[panel];

@@ -44,36 +44,33 @@ export interface WorkspaceInfo {
   git_working_tree: boolean;
 }
 
-/** Where a new session runs. */
-export type Checkout = { type: "workspace" } | { type: "worktree"; branch: WorktreeBranch | null };
-
 /**
- * The branch of a new worktree: an existing local branch, or a remote branch
- * to track; or a new branch that starts at `start`, `HEAD` when unset.
+ * Where a new session runs: the workspace's directory, or a new worktree on
+ * an `ox/<id8>` branch from `HEAD`, compared with the ref `compare`.
  */
-export type WorktreeBranch =
-  | { type: "existing"; name: string }
-  | { type: "new"; name: string; start: string | null };
+export type Checkout = { type: "workspace" } | { type: "worktree"; compare: string };
 
 export interface WorktreeInfo {
   path: string;
   branch: string;
   base: string;
   created_branch: boolean;
+  /** The ref the branch is compared with. */
+  compare: string | null;
 }
 
-/** A workspace's branches, each list most recently committed first. */
+/**
+ * How a session's branch compares with its comparison ref: the two tips and
+ * the commits each has that the other lacks, or git's error.
+ */
+export type Comparison =
+  | { type: "compared"; tip: string; compare_tip: string; ahead: number; behind: number }
+  | { type: "failed"; error: string };
+
+/** A workspace's branches, as the UI reads them. */
 export interface Branches {
-  local: LocalBranch[];
-  /** Remote-tracking branches with their remote, such as `origin/main`. */
-  remote: string[];
-  fetch_error: string | null;
-}
-
-export interface LocalBranch {
-  name: string;
-  /** The worktree that has the branch checked out. */
-  worktree: string | null;
+  /** The branch the workspace's checkout is on. */
+  head: string | null;
 }
 
 /** The outcome of deleting a session. */
@@ -93,6 +90,7 @@ export interface SessionInfo {
   config_options: ConfigOption[];
   available_commands: Command[];
   worktree: WorktreeInfo | null;
+  comparison: Comparison | null;
   archived: boolean;
 }
 
