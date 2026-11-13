@@ -12,7 +12,8 @@ Code ACP bridge.
 | `crates/oxctl/`           | Command-line client for oxd                                                       |
 | `ui/`                     | Ox frontend (TypeScript, Vite)                                                    |
 
-See [architecture](docs/architecture.md), [ACP v2 support](docs/acp-v2.md), and
+See [architecture](docs/architecture.md), [where sessions run](docs/worktrees.md),
+[ACP v2 support](docs/acp-v2.md), and
 [research inherited from Hypercube](docs/research/README.md).
 
 ## Features
