@@ -24,6 +24,7 @@ const stateLabels: Record<SessionState, string> = {
   idle: "Idle",
   running: "Running",
   awaiting_permission: "Awaiting permission",
+  awaiting_input: "Awaiting input",
   exited: "Exited",
 };
 

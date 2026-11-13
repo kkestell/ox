@@ -10,9 +10,10 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use clap::{Parser, Subcommand};
 use ox_protocol::schema::{
-    ContentBlock, EmbeddedResourceResource, ImageContent, RequestPermissionOutcome,
-    SessionConfigKind, SessionConfigOption, SessionConfigSelectOptions, SessionUpdate, StateUpdate,
-    StopReason, TextContent, ToolCallStatus,
+    ContentBlock, ElicitationAcceptAction, ElicitationAction, ElicitationPropertySchema,
+    ElicitationSchema, EmbeddedResourceResource, ImageContent, MultiSelectItems,
+    RequestPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigSelectOptions,
+    SessionUpdate, StateUpdate, StopReason, TextContent, ToolCallStatus,
 };
 use ox_protocol::{Checkout, Client, ConfigValue, End, Event, EventKind, SessionState, content};
 
@@ -96,6 +97,20 @@ enum Command {
         session: String,
         request_id: String,
         option_id: String,
+    },
+    /// Answer an elicitation
+    Answer {
+        session: String,
+        request_id: String,
+        /// The form's content as a JSON object, such as '{"color": "blue"}'
+        #[arg(required_unless_present_any = ["decline", "cancel"])]
+        content: Option<String>,
+        /// Decline the elicitation
+        #[arg(long, conflicts_with_all = ["content", "cancel"])]
+        decline: bool,
+        /// Cancel the elicitation
+        #[arg(long, conflicts_with = "content")]
+        cancel: bool,
     },
     /// Cancel the running turn
     Cancel { session: String },
@@ -273,6 +288,29 @@ async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             request_id,
             option_id,
         } => client.permit(&session, &request_id, &option_id).await?,
+        Command::Answer {
+            session,
+            request_id,
+            content,
+            decline,
+            cancel,
+        } => {
+            let action = match content {
+                _ if decline => ElicitationAction::Decline,
+                _ if cancel => ElicitationAction::Cancel,
+                Some(content) => {
+                    ElicitationAction::Accept(ElicitationAcceptAction::new().content(
+                        serde_json::from_str::<BTreeMap<_, _>>(&content).map_err(|error| {
+                            format!("the content is not a JSON object: {error}")
+                        })?,
+                    ))
+                }
+                None => unreachable!("clap requires content without --decline or --cancel"),
+            };
+            client
+                .respond_elicitation(&session, &request_id, action)
+                .await?;
+        }
         Command::Cancel { session } => client.cancel(&session).await?,
         Command::Delete { session, discard } => {
             let deleted = client.delete(&session, discard, utf8_env()).await?;
@@ -460,6 +498,24 @@ fn describe(kind: &EventKind) -> String {
             }
             _ => format!("permission {request_id}: cancelled"),
         },
+        EventKind::ElicitationRequested {
+            request_id,
+            message,
+            requested_schema,
+            ..
+        } => format!(
+            "elicitation {request_id}: {message}; fields: {}",
+            describe_fields(requested_schema)
+        ),
+        EventKind::ElicitationResolved { request_id, action } => match action {
+            ElicitationAction::Accept(accepted) => format!(
+                "elicitation {request_id}: accepted {}",
+                serde_json::to_string(&accepted.content.clone().unwrap_or_default())
+                    .expect("content serializes")
+            ),
+            ElicitationAction::Decline => format!("elicitation {request_id}: declined"),
+            _ => format!("elicitation {request_id}: cancelled"),
+        },
         EventKind::TurnEnded { stop_reason, error } => match (stop_reason, error) {
             (_, Some(error)) => format!("turn ended: {error}"),
             (Some(reason), None) => format!("turn ended: {}", stop_reason_name(reason)),
@@ -470,6 +526,53 @@ fn describe(kind: &EventKind) -> String {
         EventKind::AgentParked => "agent parked".into(),
         EventKind::SessionClosed => "session closed".into(),
     }
+}
+
+/// A form's fields, in the schema's order: `name (title: kind)`.
+fn describe_fields(schema: &ElicitationSchema) -> String {
+    let fields: Vec<String> = schema
+        .properties
+        .iter()
+        .map(|(name, property)| {
+            let (title, kind) = match property {
+                ElicitationPropertySchema::String(string) => {
+                    let choices = string
+                        .enum_values
+                        .clone()
+                        .or_else(|| {
+                            string
+                                .one_of
+                                .as_ref()
+                                .map(|options| options.iter().map(|o| o.value.clone()).collect())
+                        })
+                        .map(|choices| format!("one of {}", choices.join(", ")));
+                    (&string.title, choices.unwrap_or_else(|| "text".into()))
+                }
+                ElicitationPropertySchema::Number(number) => (&number.title, "number".into()),
+                ElicitationPropertySchema::Integer(integer) => (&integer.title, "integer".into()),
+                ElicitationPropertySchema::Boolean(boolean) => (&boolean.title, "boolean".into()),
+                ElicitationPropertySchema::Array(array) => {
+                    let choices: Vec<&str> = match &array.items {
+                        MultiSelectItems::String(items) => {
+                            items.values.iter().map(String::as_str).collect()
+                        }
+                        MultiSelectItems::Titled(items) => {
+                            items.options.iter().map(|o| o.value.as_str()).collect()
+                        }
+                        _ => Vec::new(),
+                    };
+                    (&array.title, format!("any of {}", choices.join(", ")))
+                }
+                ElicitationPropertySchema::Other(other) => (&None, other.type_.clone()),
+                _ => (&None, "unknown".into()),
+            };
+            match title {
+                Some(title) => format!("{name} ({title}: {kind})"),
+                None => format!("{name} ({kind})"),
+            }
+        })
+        .collect();
+    fields.join(", ")
 }
 
 fn describe_block(block: &ContentBlock) -> String {
@@ -616,5 +719,71 @@ fn status_name(status: &ToolCallStatus) -> &'static str {
         ToolCallStatus::Completed => "completed",
         ToolCallStatus::Failed => "failed",
         _ => "other",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn elicitations_are_described() {
+        let requested: EventKind = serde_json::from_value(json!({
+            "type": "elicitation_requested",
+            "data": {
+                "request_id": "3",
+                "message": "Order",
+                "tool_call_id": null,
+                "requested_schema": {
+                    "type": "object",
+                    "properties": {
+                        "color": {
+                            "type": "string",
+                            "title": "Color",
+                            "oneOf": [{"const": "red", "title": "Red"}, {"const": "blue", "title": "Blue"}]
+                        },
+                        "count": {"type": "integer", "title": "Count"},
+                        "extras": {
+                            "type": "array",
+                            "title": "Extras",
+                            "items": {"anyOf": [{"const": "nuts", "title": "Nuts"}]}
+                        },
+                        "location": {"type": "_point"},
+                        "note": {"type": "string"},
+                        "ratio": {"type": "number", "title": "Ratio"},
+                        "rush": {"type": "boolean", "title": "Rush"}
+                    },
+                    "required": ["color"]
+                }
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            describe(&requested),
+            "elicitation 3: Order; fields: color (Color: one of red, blue), \
+             count (Count: integer), extras (Extras: any of nuts), location (_point), \
+             note (text), ratio (Ratio: number), rush (Rush: boolean)"
+        );
+        let resolved = |action: serde_json::Value| {
+            let kind: EventKind = serde_json::from_value(json!({
+                "type": "elicitation_resolved",
+                "data": {"request_id": "3", "action": action}
+            }))
+            .unwrap();
+            describe(&kind)
+        };
+        assert_eq!(
+            resolved(json!({"action": "accept", "content": {"color": "blue", "count": 2}})),
+            r#"elicitation 3: accepted {"color":"blue","count":2}"#
+        );
+        assert_eq!(
+            resolved(json!({"action": "decline"})),
+            "elicitation 3: declined"
+        );
+        assert_eq!(
+            resolved(json!({"action": "cancel"})),
+            "elicitation 3: cancelled"
+        );
     }
 }

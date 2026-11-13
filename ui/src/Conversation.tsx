@@ -59,8 +59,10 @@ function ItemView({ item }: { item: Item }) {
       );
     case "tool_call":
       return <ToolCall item={item} />;
-    // Permission requests show in the composer while they await an answer.
+    // Permission requests and forms show in the composer while they await
+    // an answer.
     case "permission":
+    case "elicitation":
       return null;
     case "turn_error":
       return <p className="turn-error">{item.message}</p>;

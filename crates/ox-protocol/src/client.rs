@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use agent_client_protocol::v2::schema::{ContentBlock, SessionConfigOption};
+use agent_client_protocol::v2::schema::{ContentBlock, ElicitationAction, SessionConfigOption};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -426,6 +426,21 @@ impl Client {
             session_id: session_id.into(),
             request_id: request_id.into(),
             option_id: option_id.into(),
+        })
+        .await
+    }
+
+    /// Answers an open elicitation with `action`.
+    pub async fn respond_elicitation(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        action: ElicitationAction,
+    ) -> Result<(), Error> {
+        self.ack(Method::ElicitationRespond {
+            session_id: session_id.into(),
+            request_id: request_id.into(),
+            action,
         })
         .await
     }

@@ -25,11 +25,13 @@ export function Permission({
   };
 
   return (
-    <div className="permission">
-      <p className="title">
-        <CodeSpans text={item.title} />
-      </p>
-      <div className="options">
+    <div className="request-panel">
+      <div className="scroll">
+        <p className="title">
+          <CodeSpans text={item.title} />
+        </p>
+      </div>
+      <div className="actions">
         {item.options.map((option) => (
           <button
             key={option.optionId}

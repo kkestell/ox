@@ -5,7 +5,7 @@ use std::fmt::Display;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use ox_protocol::schema::{ContentBlock, TextContent};
+use ox_protocol::schema::{ContentBlock, ElicitationAction, TextContent};
 use ox_protocol::{
     Branches, Checkout, Client, ConfigValue, Deleted, Error, SessionInfo, WorkspaceInfo, code,
     content, default_socket_path,
@@ -264,6 +264,20 @@ async fn permit(
 }
 
 #[tauri::command]
+async fn respond_elicitation(
+    app: State<'_, App>,
+    session_id: String,
+    request_id: String,
+    action: ElicitationAction,
+) -> Result<(), String> {
+    app.client()
+        .await?
+        .respond_elicitation(&session_id, &request_id, action)
+        .await
+        .map_err(message)
+}
+
+#[tauri::command]
 async fn set_config_option(
     app: State<'_, App>,
     session_id: String,
@@ -404,6 +418,7 @@ pub fn run() {
             prompt,
             cancel,
             permit,
+            respond_elicitation,
             set_config_option,
             delete_session,
             archive_session,

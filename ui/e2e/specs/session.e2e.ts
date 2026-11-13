@@ -33,7 +33,7 @@ describe("A session", () => {
     await send();
     await expect(agentText()[0]).toHaveText("chunk-1");
     await expect(sessionEntry(cwd).$('[aria-label="Running"]')).toBeDisplayed();
-    await $('form.composer button[aria-label="Stop"]').click();
+    await $('.composer button[aria-label="Stop"]').click();
     await expect(sessionEntry(cwd).$('[aria-label="Running"]')).not.toBeExisting();
   });
 
@@ -54,13 +54,99 @@ describe("A session", () => {
 
   it("asks for permission above the composer until it is answered", async () => {
     await send("permission");
-    const permission = $("form.composer .permission");
+    const permission = $(".composer .request-panel");
     await expect(sessionEntry(cwd).$('[aria-label="Awaiting permission"]')).toBeDisplayed();
     await permission.$("button=Allow").click();
     await expect(agentText()[0]).toHaveText("allowed");
     await expect(permission).not.toBeExisting();
-    await expect($(".conversation .permission")).not.toBeExisting();
+    await expect($(".conversation .request-panel")).not.toBeExisting();
     await expect(sessionEntry(cwd).$('[aria-label="Awaiting permission"]')).not.toBeExisting();
+  });
+
+  it("asks the agent's questions above the composer", async () => {
+    await send("elicit");
+    const form = $(".composer .request-panel");
+    const awaiting = sessionEntry(cwd).$('[aria-label="Awaiting input"]');
+    await expect(form.$(".title")).toHaveText("Order");
+    await expect(form.$("legend=Color")).toBeDisplayed();
+    await expect(form.$("p=Pick a color")).toBeDisplayed();
+    await expect(form.$("label*=Blue").$(".description")).toHaveText("Cool");
+    await expect(awaiting).toBeDisplayed();
+    // The colour is required, so the form stays up and sends nothing.
+    await form.$("button=Submit").click();
+    await expect(form).toBeDisplayed();
+    await expect(awaiting).toBeDisplayed();
+    await form.$("label*=Blue").click();
+    await form.$("label*=Nuts").click();
+    await form.$('input[aria-label="Note"]').setValue("hi");
+    await form.$('input[aria-label="Count"]').setValue("2");
+    // The date and time's default shows in local time and goes back as the
+    // same instant.
+    await expect(form.$('input[aria-label="When"]')).toHaveValue(/^2026-11-1[123]T\d\d:\d\d$/);
+    await form.$("button=Submit").click();
+    // Had the first Submit gone out, the agent would have answered it alone.
+    await expect(agentText()[0]).toHaveText(
+      'accepted {"color":"blue","count":2,"extras":["nuts"],"note":"hi","rush":false,' +
+        '"when":"2026-11-12T08:30:00.000Z"}',
+    );
+    await expect(form).not.toBeExisting();
+    await expect(awaiting).not.toBeExisting();
+  });
+
+  it("checks the agent's constraints before sending the answers", async () => {
+    await send("elicit");
+    const form = $(".composer .request-panel");
+    const invalid = (selector: string) => form.$(`${selector}:invalid`);
+    await form.$("label*=Blue").click();
+    await form.$('input[aria-label="Weight"]').setValue("0.25");
+    await form.$('input[aria-label="Email"]').setValue("nope");
+    await form.$('input[aria-label="Code"]').setValue("ab12");
+    await form.$("label*=Sprinkles").click();
+    await form.$("label*=Nuts").click();
+    await form.$("label*=Cherries").click();
+    await form.$("label*=ketchup").click();
+    await expect(invalid('input[aria-label="Weight"]')).toBeExisting();
+    await expect(invalid('input[aria-label="Email"]')).toBeExisting();
+    await expect(invalid('input[aria-label="Code"]')).toBeExisting();
+    // At most two extras and at least two sauces.
+    await expect(invalid('input[name="extras"]')).toBeExisting();
+    await expect(invalid('input[name="sauces"]')).toBeExisting();
+    await form.$("button=Submit").click();
+    await expect(form).toBeDisplayed();
+
+    await form.$('input[aria-label="Weight"]').setValue("1.5");
+    await form.$('input[aria-label="Email"]').setValue("a@b.co");
+    // A schema pattern matches anywhere in the value.
+    await form.$('input[aria-label="Code"]').setValue("x123y");
+    await expect(invalid('input[aria-label="Code"]')).not.toBeExisting();
+    await form.$("label*=Sprinkles").click();
+    await form.$("label*=mustard").click();
+    await form.$("label*=large").click();
+    await expect(form.$(":invalid")).not.toBeExisting();
+    await form.$("button=Submit").click();
+    await expect(agentText()[0]).toHaveText(
+      'accepted {"code":"x123y","color":"blue","email":"a@b.co","extras":["nuts","cherries"],' +
+        '"rush":false,"sauces":["ketchup","mustard"],"size":"large","weight":1.5,' +
+        '"when":"2026-11-12T08:30:00.000Z"}',
+    );
+    await expect(form).not.toBeExisting();
+  });
+
+  it("declines the agent's questions", async () => {
+    await send("elicit");
+    const form = $(".composer .request-panel");
+    await form.$("button=Decline").click();
+    await expect(agentText()[0]).toHaveText("declined");
+    await expect(form).not.toBeExisting();
+  });
+
+  it("withdraws the questions when the turn stops", async () => {
+    await send("elicit");
+    const form = $(".composer .request-panel");
+    await expect(form.$(".title")).toHaveText("Order");
+    await $('.composer button[aria-label="Stop"]').click();
+    await expect(agentText()[0]).toHaveText("withdrawn");
+    await expect(form).not.toBeExisting();
   });
 
   it("shows a tool call's output", async () => {
@@ -79,7 +165,7 @@ describe("A session", () => {
     await send("own-turn");
     await expect(agentText()[0]).toHaveText("own-turn");
     await expect(sessionEntry(cwd).$('[aria-label="Running"]')).toBeDisplayed();
-    await $('form.composer button[aria-label="Stop"]').click();
+    await $('.composer button[aria-label="Stop"]').click();
     await expect(sessionEntry(cwd).$('[aria-label="Running"]')).not.toBeExisting();
     await expect(sendButton()).toBeDisplayed();
   });
@@ -87,13 +173,13 @@ describe("A session", () => {
   it("stops a running turn", async () => {
     await send("wait");
     await expect(sessionEntry(cwd).$('[aria-label="Running"]')).toBeDisplayed();
-    await $('form.composer button[aria-label="Stop"]').click();
+    await $('.composer button[aria-label="Stop"]').click();
     await expect(sessionEntry(cwd).$('[aria-label="Running"]')).not.toBeExisting();
     await expect(sendButton()).toBeDisplayed();
   });
 
   it("sets a config option on the agent", async () => {
-    const mode = 'form.composer select[aria-label="Mode"]';
+    const mode = '.composer select[aria-label="Mode"]';
     await expect($(mode)).toHaveValue("ask");
     await choose(mode, "code");
     await expect($(mode)).toHaveValue("code");

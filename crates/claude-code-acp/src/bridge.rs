@@ -2,7 +2,10 @@ use std::{
     collections::{HashMap, HashSet},
     future::Future,
     io,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use agent_client_protocol::v2::schema::{
@@ -48,6 +51,9 @@ pub struct Bridge {
     active: Mutex<HashSet<String>>,
     /// The claude of each session that has taken a prompt.
     claudes: Mutex<HashMap<String, Claude>>,
+    /// The client advertised form elicitation, so Claude's `AskUserQuestion`
+    /// questions can be asked as forms.
+    forms: AtomicBool,
 }
 
 impl Bridge {
@@ -57,10 +63,19 @@ impl Bridge {
             store: Store::new(config.store_dir),
             active: Mutex::new(HashSet::new()),
             claudes: Mutex::new(HashMap::new()),
+            forms: AtomicBool::new(false),
         })
     }
 
-    pub fn initialize(request: &acp::InitializeRequest) -> acp::InitializeResponse {
+    /// Answers `initialize`, noting whether the client takes form
+    /// elicitations.
+    pub fn initialize(&self, request: &acp::InitializeRequest) -> acp::InitializeResponse {
+        let forms = request
+            .capabilities
+            .elicitation
+            .as_ref()
+            .is_some_and(acp::ElicitationCapabilities::supports_form);
+        self.forms.store(forms, Ordering::Relaxed);
         acp::InitializeResponse::new(
             request.protocol_version,
             acp::Implementation::new("claude-code-acp", env!("CARGO_PKG_VERSION"))
@@ -110,7 +125,7 @@ impl Bridge {
         let id = request.session_id.to_string();
         let session = self.open(&id, &request.cwd.0, request.mcp_servers)?;
         if replay && let Some(claude_id) = &session.claude_session_id {
-            Updates::new(connection.clone(), &id).replay(
+            Updates::new(connection.clone(), &id, self.forms()).replay(
                 self.history.messages(claude_id, &session.cwd),
                 self.history.subagents(claude_id, &session.cwd),
             );
@@ -376,13 +391,14 @@ impl Bridge {
                     effort: session_effort(&session),
                     mode: session_mode(&session),
                     mcp_servers: &session.mcp_servers,
+                    ask_user_question: self.forms(),
                     transcript: &session
                         .claude_session_id
                         .as_deref()
                         .map(|claude_id| self.history.entries(claude_id, &session.cwd))
                         .unwrap_or_default(),
                 },
-                Updates::new(connection.clone(), &id),
+                Updates::new(connection.clone(), &id, self.forms()),
                 self.turn_recorder(&id, &session.cwd, connection),
             );
             match claude {
@@ -463,6 +479,11 @@ impl Bridge {
                 Err(error) => eprintln!("failed to read session {id}: {error}"),
             }
         })
+    }
+
+    /// Whether the client takes form elicitations.
+    fn forms(&self) -> bool {
+        self.forms.load(Ordering::Relaxed)
     }
 
     /// A session opened on this connection.

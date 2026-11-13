@@ -11,6 +11,20 @@
 //! - `permission`: `requires_action` and a `session/request_permission` with
 //!   allow and reject options, then `running` and a chunk `allowed`,
 //!   `rejected` or `cancelled`
+//! - `elicit`: `requires_action` and a form `elicitation/create` with the
+//!   message `Order` and the fields `color` (required, one of `red` "Red"
+//!   and `blue` "Blue"), `size` (one of `small` and `large`), `extras` (at
+//!   most two of `sprinkles`, `nuts` and `cherries`), `sauces` (at least two
+//!   of `ketchup`, `mustard` and `mayo`), `note` (text), `code` (text
+//!   containing three digits), `email` (an email address), `when` (a date
+//!   and time, by default `2026-11-12T08:30:00Z`), `count` (an integer from
+//!   1 to 9), `weight` (a number from 0.5 to 10), and `rush` (a boolean). Then
+//!   `running` and a chunk `accepted <content as compact JSON>`, `declined`,
+//!   or `cancelled`. When the turn is cancelled first, the agent withdraws
+//!   the elicitation with `$/cancel_request`, waits for its answer, sends
+//!   the chunk `withdrawn`, and ends the turn `cancelled`. A client that did
+//!   not advertise `elicitation.form` gets the chunk `no form elicitation`
+//!   instead.
 //! - `late-permission`: after the turn ends, a `session/request_permission`
 //!   outside any turn
 //! - `own-turn`: after the turn ends, a turn the agent starts: it says it is
@@ -73,7 +87,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -127,6 +141,8 @@ struct State {
     /// The number of tool calls made, which numbers the next.
     tools: AtomicU64,
     deferred_rejection: Mutex<Option<Responder<acp::PromptResponse>>>,
+    /// Whether the client advertised form elicitation.
+    form_elicitation: AtomicBool,
 }
 
 impl State {
@@ -305,37 +321,52 @@ async fn main() -> agent_client_protocol::Result<()> {
         logs: Mutex::default(),
         tools: AtomicU64::new(0),
         deferred_rejection: Mutex::new(None),
+        form_elicitation: AtomicBool::new(false),
     });
     agent_client_protocol::Agent
         .v2()
         .name("oxd-fake-agent")
         .on_receive_request(
-            async move |_request: acp::InitializeRequest,
-                        responder: Responder<acp::InitializeResponse>,
-                        connection: ConnectionTo<Client>| {
-                let info = acp::Implementation::new("oxd-fake-agent", env!("CARGO_PKG_VERSION"));
-                if flag("--hang-initialize") {
-                    return connection.spawn(async move {
-                        std::future::pending::<()>().await;
-                        responder.respond(acp::InitializeResponse::new(ProtocolVersion::V2, info))
-                    });
-                }
-                let mut capabilities = acp::AgentCapabilities::new();
-                if !flag("--no-sessions") {
-                    let mut session = acp::SessionCapabilities::new();
-                    if !flag("--text-only") {
-                        session = session.prompt(
-                            acp::PromptCapabilities::new()
-                                .image(acp::PromptImageCapabilities::new())
-                                .embedded_context(acp::PromptEmbeddedContextCapabilities::new()),
-                        );
+            {
+                let state = state.clone();
+                async move |request: acp::InitializeRequest,
+                            responder: Responder<acp::InitializeResponse>,
+                            connection: ConnectionTo<Client>| {
+                    let form = request
+                        .capabilities
+                        .elicitation
+                        .as_ref()
+                        .is_some_and(acp::ElicitationCapabilities::supports_form);
+                    state.form_elicitation.store(form, Ordering::Relaxed);
+                    let info =
+                        acp::Implementation::new("oxd-fake-agent", env!("CARGO_PKG_VERSION"));
+                    if flag("--hang-initialize") {
+                        return connection.spawn(async move {
+                            std::future::pending::<()>().await;
+                            responder
+                                .respond(acp::InitializeResponse::new(ProtocolVersion::V2, info))
+                        });
                     }
-                    capabilities = capabilities.session(session);
+                    let mut capabilities = acp::AgentCapabilities::new();
+                    if !flag("--no-sessions") {
+                        let mut session = acp::SessionCapabilities::new();
+                        if !flag("--text-only") {
+                            session =
+                                session.prompt(
+                                    acp::PromptCapabilities::new()
+                                        .image(acp::PromptImageCapabilities::new())
+                                        .embedded_context(
+                                            acp::PromptEmbeddedContextCapabilities::new(),
+                                        ),
+                                );
+                        }
+                        capabilities = capabilities.session(session);
+                    }
+                    responder.respond(
+                        acp::InitializeResponse::new(ProtocolVersion::V2, info)
+                            .capabilities(capabilities),
+                    )
                 }
-                responder.respond(
-                    acp::InitializeResponse::new(ProtocolVersion::V2, info)
-                        .capabilities(capabilities),
-                )
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -566,6 +597,7 @@ enum Directive {
     Say { count: u64, delay: Duration },
     Pid,
     Permission,
+    Elicit,
     LatePermission,
     OwnTurn,
     Describe,
@@ -596,6 +628,7 @@ fn parse(script: &str) -> Result<Vec<Directive>, Error> {
             },
             ["pid"] => Directive::Pid,
             ["permission"] => Directive::Permission,
+            ["elicit"] => Directive::Elicit,
             ["late-permission"] => Directive::LatePermission,
             ["own-turn"] => Directive::OwnTurn,
             ["describe"] => Directive::Describe,
@@ -710,6 +743,41 @@ async fn run(
                         say("cancelled".into())?;
                         return Ok(acp::StopReason::Cancelled);
                     }
+                }
+            }
+            Directive::Elicit if !state.form_elicitation.load(Ordering::Relaxed) => {
+                say("no form elicitation".into())?;
+            }
+            Directive::Elicit => {
+                state_update(
+                    connection,
+                    &session_id,
+                    acp::StateUpdate::RequiresAction(acp::RequiresActionStateUpdate::new()),
+                )?;
+                let sent = connection.send_request(order(session_id.clone()));
+                let withdraw = sent.cancellation_handle();
+                let response = sent.block_task();
+                tokio::pin!(response);
+                let (response, withdrawn) = tokio::select! {
+                    response = &mut response => (response?, false),
+                    () = state.until_cancelled() => {
+                        withdraw.cancel()?;
+                        (response.await?, true)
+                    }
+                };
+                if withdrawn {
+                    say("withdrawn".into())?;
+                    return Ok(acp::StopReason::Cancelled);
+                }
+                state_update(connection, &session_id, running())?;
+                match response.action {
+                    acp::ElicitationAction::Accept(accepted) => {
+                        let content = serde_json::to_string(&accepted.content.unwrap_or_default())
+                            .expect("content serializes");
+                        say(format!("accepted {content}"))?;
+                    }
+                    acp::ElicitationAction::Decline => say("declined".into())?,
+                    _ => say("cancelled".into())?,
                 }
             }
             Directive::LatePermission | Directive::OwnTurn => {}
@@ -851,6 +919,101 @@ fn permission_request(session_id: acp::SessionId) -> acp::RequestPermissionReque
             acp::ToolCallUpdate::new("fake-tool").title("Fake tool"),
         ),
     ))
+}
+
+/// The `elicit` directive's form.
+fn order(session_id: acp::SessionId) -> acp::CreateElicitationRequest {
+    let option = |value: &str, title: &str| acp::EnumOption::new(value, title);
+    let schema = acp::ElicitationSchema::new()
+        .property(
+            "color",
+            acp::StringPropertySchema::new()
+                .title("Color")
+                .description("Pick a color")
+                .one_of(vec![
+                    option("red", "Red").description("Warm"),
+                    option("blue", "Blue").description("Cool"),
+                ]),
+            true,
+        )
+        .property(
+            "extras",
+            acp::MultiSelectPropertySchema::titled(vec![
+                option("sprinkles", "Sprinkles"),
+                option("nuts", "Nuts"),
+                option("cherries", "Cherries"),
+            ])
+            .title("Extras")
+            .max_items(2),
+            false,
+        )
+        .property(
+            "size",
+            acp::StringPropertySchema::new()
+                .title("Size")
+                .enum_values(vec!["small".into(), "large".into()]),
+            false,
+        )
+        .property(
+            "sauces",
+            acp::MultiSelectPropertySchema::new(vec![
+                "ketchup".into(),
+                "mustard".into(),
+                "mayo".into(),
+            ])
+            .title("Sauces")
+            .min_items(2),
+            false,
+        )
+        .property(
+            "code",
+            acp::StringPropertySchema::new()
+                .title("Code")
+                .pattern(r"\d{3}"),
+            false,
+        )
+        .property(
+            "email",
+            acp::StringPropertySchema::email().title("Email"),
+            false,
+        )
+        .property(
+            "when",
+            acp::StringPropertySchema::date_time()
+                .title("When")
+                .default_value("2026-11-12T08:30:00Z"),
+            false,
+        )
+        .property(
+            "weight",
+            acp::NumberPropertySchema::new()
+                .title("Weight")
+                .minimum(0.5)
+                .maximum(10.0),
+            false,
+        )
+        .property(
+            "note",
+            acp::StringPropertySchema::new().title("Note"),
+            false,
+        )
+        .property(
+            "count",
+            acp::IntegerPropertySchema::new()
+                .title("Count")
+                .minimum(1)
+                .maximum(9),
+            false,
+        )
+        .property(
+            "rush",
+            acp::BooleanPropertySchema::new().title("Rush"),
+            false,
+        );
+    acp::CreateElicitationRequest::new(
+        acp::ElicitationFormMode::new(acp::ElicitationSessionScope::new(session_id), schema),
+        "Order",
+    )
 }
 
 fn parse_number<T: std::str::FromStr>(word: &str) -> Result<T, Error> {

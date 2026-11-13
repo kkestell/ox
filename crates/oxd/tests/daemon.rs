@@ -8,9 +8,10 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ox_protocol::schema::{
-    AudioContent, ContentBlock, EmbeddedResource, EmbeddedResourceResource, ImageContent,
-    PromptCapabilities, RequestPermissionOutcome, ResourceLink, SessionConfigKind,
-    SessionConfigOption, SessionUpdate, StateUpdate, StopReason, TextContent, TextResourceContents,
+    AudioContent, ContentBlock, ElicitationAcceptAction, ElicitationAction, EmbeddedResource,
+    EmbeddedResourceResource, ImageContent, PromptCapabilities, RequestPermissionOutcome,
+    ResourceLink, SessionConfigKind, SessionConfigOption, SessionUpdate, StateUpdate, StopReason,
+    TextContent, TextResourceContents,
 };
 use ox_protocol::{
     Checkout, Client, ConfigValue, End, Error, Event, EventKind, Listing, PROTOCOL_VERSION,
@@ -636,6 +637,138 @@ async fn cancel_with_pending_permission() {
             ..
         }
     ));
+}
+
+/// Prompts the fake agent's `elicit` and returns the request ID of the
+/// elicitation it opens, once the session awaits input.
+async fn elicit(client: &Client, session_id: &str, events: &mut Subscription) -> String {
+    client.prompt(session_id, text("elicit")).await.unwrap();
+    let requested = until(events, |kind| {
+        matches!(kind, EventKind::ElicitationRequested { .. })
+    })
+    .await;
+    let EventKind::ElicitationRequested {
+        request_id,
+        message,
+        requested_schema,
+        ..
+    } = &requested.last().unwrap().kind
+    else {
+        unreachable!()
+    };
+    assert_eq!(message, "Order");
+    assert_eq!(requested_schema.required, Some(vec!["color".into()]));
+    assert_eq!(
+        info(client, session_id).await.state,
+        SessionState::AwaitingInput
+    );
+    request_id.clone()
+}
+
+fn accept(content: Value) -> ElicitationAction {
+    ElicitationAction::Accept(
+        ElicitationAcceptAction::new()
+            .content(serde_json::from_value::<BTreeMap<_, _>>(content).unwrap()),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn elicitation_round_trip() {
+    let daemon = Daemon::start(1000).await;
+    let client = daemon.client().await;
+    let (session, started) = daemon.new_session(&client).await;
+    let mut events = client.subscribe(&session.id, started).await.unwrap();
+    let request_id = elicit(&client, &session.id, &mut events).await;
+
+    let error = client
+        .respond_elicitation(
+            &session.id,
+            &request_id,
+            accept(json!({"extras": ["nuts"]})),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(remote_code(error), code::INVALID_REQUEST);
+    assert_eq!(
+        info(&client, &session.id).await.state,
+        SessionState::AwaitingInput
+    );
+
+    let answer = json!({"color": "blue", "extras": ["nuts"]});
+    client
+        .respond_elicitation(&session.id, &request_id, accept(answer.clone()))
+        .await
+        .unwrap();
+    let rest = until(&mut events, turn_ended).await;
+    assert_eq!(
+        rest[0].kind,
+        EventKind::ElicitationResolved {
+            request_id: request_id.clone(),
+            action: accept(answer),
+        }
+    );
+    assert_eq!(
+        chunks(&rest),
+        [r#"accepted {"color":"blue","extras":["nuts"]}"#]
+    );
+
+    let error = client
+        .respond_elicitation(&session.id, &request_id, ElicitationAction::Decline)
+        .await
+        .unwrap_err();
+    assert_eq!(remote_code(error), code::INVALID_STATE);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn decline_reaches_the_agent() {
+    let daemon = Daemon::start(1000).await;
+    let client = daemon.client().await;
+    let (session, started) = daemon.new_session(&client).await;
+    let mut events = client.subscribe(&session.id, started).await.unwrap();
+    let request_id = elicit(&client, &session.id, &mut events).await;
+    client
+        .respond_elicitation(&session.id, &request_id, ElicitationAction::Decline)
+        .await
+        .unwrap();
+    let rest = until(&mut events, turn_ended).await;
+    assert_eq!(
+        rest[0].kind,
+        EventKind::ElicitationResolved {
+            request_id,
+            action: ElicitationAction::Decline,
+        }
+    );
+    assert_eq!(chunks(&rest), ["declined"]);
+}
+
+/// `session/cancel` leaves the elicitation to the agent, which withdraws it
+/// with `$/cancel_request`.
+#[tokio::test(flavor = "multi_thread")]
+async fn cancel_withdraws_an_elicitation() {
+    let daemon = Daemon::start(1000).await;
+    let client = daemon.client().await;
+    let (session, started) = daemon.new_session(&client).await;
+    let mut events = client.subscribe(&session.id, started).await.unwrap();
+    let request_id = elicit(&client, &session.id, &mut events).await;
+    client.cancel(&session.id).await.unwrap();
+
+    let rest = until(&mut events, turn_ended).await;
+    assert_eq!(
+        rest[0].kind,
+        EventKind::ElicitationResolved {
+            request_id,
+            action: ElicitationAction::Cancel,
+        }
+    );
+    assert_eq!(chunks(&rest), ["withdrawn"]);
+    assert!(matches!(
+        rest.last().unwrap().kind,
+        EventKind::TurnEnded {
+            stop_reason: Some(StopReason::Cancelled),
+            ..
+        }
+    ));
+    assert_eq!(info(&client, &session.id).await.state, SessionState::Idle);
 }
 
 /// A client that vanishes mid-stream, leaving events unread in its socket,
@@ -1630,7 +1763,7 @@ async fn a_history_that_a_crash_left_open_ends_its_turn() {
     drop(client);
     first.stop().await;
     // What a daemon killed mid-turn leaves in the database: a turn that
-    // started and a permission request nobody answered.
+    // started, and a permission request and an elicitation nobody answered.
     let database = rusqlite::Connection::open(first.dir.path().join("oxd.sock.db")).unwrap();
     for (seq, kind) in [
         (started + 1, EventKind::TurnStarted),
@@ -1643,6 +1776,19 @@ async fn a_history_that_a_crash_left_open_ends_its_turn() {
                 subject: None,
                 options: Vec::new(),
             },
+        ),
+        (
+            started + 3,
+            serde_json::from_value(json!({
+                "type": "elicitation_requested",
+                "data": {
+                    "request_id": "2",
+                    "message": "Order",
+                    "tool_call_id": null,
+                    "requested_schema": {"type": "object", "properties": {}}
+                }
+            }))
+            .unwrap(),
         ),
     ] {
         database
@@ -1665,12 +1811,19 @@ async fn a_history_that_a_crash_left_open_ends_its_turn() {
     assert_contiguous(&rest, started + 1);
     assert!(matches!(&rest[0].kind, EventKind::TurnStarted));
     assert!(matches!(
-        &rest[2].kind,
+        &rest[3].kind,
         EventKind::PermissionResolved {
             outcome: RequestPermissionOutcome::Cancelled(_),
             ..
         }
     ));
+    assert_eq!(
+        rest[4].kind,
+        EventKind::ElicitationResolved {
+            request_id: "2".into(),
+            action: ElicitationAction::Cancel,
+        }
+    );
     assert!(matches!(
         &rest.last().unwrap().kind,
         EventKind::TurnEnded { error: Some(error), .. } if error == "oxd stopped during the turn"

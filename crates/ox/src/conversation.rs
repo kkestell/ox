@@ -4,8 +4,9 @@
 use std::collections::HashMap;
 
 use ox_protocol::schema::{
-    ContentBlock, EmbeddedResourceResource, MessageId, PermissionOption, RequestPermissionSubject,
-    SessionUpdate, StopReason, ToolCallContent, ToolCallId, ToolCallStatus, ToolCallUpdate,
+    ContentBlock, ElicitationPropertySchema, ElicitationSchema, EmbeddedResourceResource,
+    MessageId, PermissionOption, RequestPermissionSubject, SessionUpdate, StopReason,
+    ToolCallContent, ToolCallId, ToolCallStatus, ToolCallUpdate,
 };
 use ox_protocol::{Event, EventKind, MaybeUndefined};
 use serde::Serialize;
@@ -52,6 +53,15 @@ pub enum Item {
         options: Vec<PermissionOption>,
         answered: bool,
     },
+    /// A form the agent asks the user to fill in, with its message and
+    /// fields. `answered` is set once it is resolved.
+    Elicitation {
+        key: String,
+        request_id: String,
+        message: String,
+        fields: Vec<Field>,
+        answered: bool,
+    },
     /// A turn that ended with an error, or stopped short of its end.
     TurnError {
         key: String,
@@ -74,10 +84,61 @@ pub enum ToolContent {
     Image { mime_type: String, data: String },
 }
 
-/// A permission request awaiting its outcome.
-struct Request {
-    title: String,
-    options: Vec<PermissionOption>,
+/// One property of a form: its name, whether it is required, and its
+/// schema, whose fields sit beside these.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Field {
+    pub name: String,
+    pub required: bool,
+    #[serde(flatten)]
+    pub schema: ElicitationPropertySchema,
+}
+
+/// An open request awaiting its outcome.
+enum Request {
+    Permission {
+        title: String,
+        options: Vec<PermissionOption>,
+    },
+    Elicitation {
+        message: String,
+        fields: Vec<Field>,
+    },
+}
+
+impl Request {
+    fn item(&self, request_id: &str, answered: bool) -> Item {
+        match self {
+            Self::Permission { title, options } => Item::Permission {
+                key: format!("permission:{request_id}"),
+                request_id: request_id.into(),
+                title: title.clone(),
+                options: options.clone(),
+                answered,
+            },
+            Self::Elicitation { message, fields } => Item::Elicitation {
+                key: format!("elicitation:{request_id}"),
+                request_id: request_id.into(),
+                message: message.clone(),
+                fields: fields.clone(),
+                answered,
+            },
+        }
+    }
+}
+
+/// A form's properties, in the order of the schema's property map.
+fn fields(schema: &ElicitationSchema) -> Vec<Field> {
+    let required = schema.required.as_deref().unwrap_or_default();
+    schema
+        .properties
+        .iter()
+        .map(|(name, schema)| Field {
+            name: name.clone(),
+            required: required.contains(name),
+            schema: schema.clone(),
+        })
+        .collect()
 }
 
 /// A tool call as its updates have built it.
@@ -193,19 +254,34 @@ impl Conversation {
                     }
                     _ => Vec::new(),
                 };
-                let request = Request {
+                let request = Request::Permission {
                     title: title.clone(),
                     options: options.clone(),
                 };
-                items.push(permission(request_id, &request, false));
+                items.push(request.item(request_id, false));
                 self.requests.insert(request_id.clone(), request);
                 items
             }
-            EventKind::PermissionResolved { request_id, .. } => {
+            EventKind::ElicitationRequested {
+                request_id,
+                message,
+                requested_schema,
+                ..
+            } => {
+                let request = Request::Elicitation {
+                    message: message.clone(),
+                    fields: fields(requested_schema),
+                };
+                let item = request.item(request_id, false);
+                self.requests.insert(request_id.clone(), request);
+                vec![item]
+            }
+            EventKind::PermissionResolved { request_id, .. }
+            | EventKind::ElicitationResolved { request_id, .. } => {
                 let Some(request) = self.requests.remove(request_id) else {
                     return Vec::new();
                 };
-                vec![permission(request_id, &request, true)]
+                vec![request.item(request_id, true)]
             }
             EventKind::TurnEnded { stop_reason, error } => {
                 self.in_turn = false;
@@ -364,16 +440,6 @@ fn user_item(id: &MessageId, message: &UserMessage) -> Item {
     }
 }
 
-fn permission(request_id: &str, request: &Request, answered: bool) -> Item {
-    Item::Permission {
-        key: format!("permission:{request_id}"),
-        request_id: request_id.into(),
-        title: request.title.clone(),
-        options: request.options.clone(),
-        answered,
-    }
-}
-
 /// Adds a content block's text to `text`, or its name to `attachments`.
 fn add_content(block: &ContentBlock, text: &mut Vec<String>, attachments: &mut Vec<String>) {
     match block {
@@ -397,9 +463,9 @@ fn add_content(block: &ContentBlock, text: &mut Vec<String>, attachments: &mut V
 #[cfg(test)]
 mod tests {
     use ox_protocol::schema::{
-        AgentMessage, CancelledPermissionOutcome, ContentChunk, ErrorStopReason, ImageContent,
-        PermissionOptionKind, RequestPermissionOutcome, ResourceLink, SelectedPermissionOutcome,
-        TextContent, ToolCallContentChunk, ToolCallPermissionSubject,
+        AgentMessage, CancelledPermissionOutcome, ContentChunk, ElicitationAction, ErrorStopReason,
+        ImageContent, PermissionOptionKind, RequestPermissionOutcome, ResourceLink,
+        SelectedPermissionOutcome, TextContent, ToolCallContentChunk, ToolCallPermissionSubject,
         UserMessage as UserMessageUpdate,
     };
 
@@ -725,6 +791,71 @@ mod tests {
                 ("permission:1".into(), true),
             ]
         );
+    }
+
+    #[test]
+    fn an_elicitation_opens_with_its_fields_and_closes_by_request_id() {
+        let schema = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "note": {"type": "string", "title": "Note", "maxLength": 20},
+                "color": {
+                    "type": "string",
+                    "title": "Color",
+                    "oneOf": [{"const": "red", "title": "Red", "description": "Warm"}]
+                },
+                "count": {"type": "integer", "minimum": 1}
+            },
+            "required": ["color"]
+        }))
+        .unwrap();
+        let items = fold(vec![
+            EventKind::ElicitationRequested {
+                request_id: "1".into(),
+                message: "Order".into(),
+                tool_call_id: None,
+                requested_schema: schema,
+            },
+            EventKind::ElicitationResolved {
+                request_id: "2".into(),
+                action: ElicitationAction::Cancel,
+            },
+            EventKind::ElicitationResolved {
+                request_id: "1".into(),
+                action: ElicitationAction::Decline,
+            },
+        ]);
+        let item = |answered: bool| {
+            json!({
+                "type": "elicitation",
+                "key": "elicitation:1",
+                "request_id": "1",
+                "message": "Order",
+                "fields": [
+                    {
+                        "name": "color",
+                        "required": true,
+                        "type": "string",
+                        "title": "Color",
+                        "oneOf": [{"const": "red", "title": "Red", "description": "Warm"}]
+                    },
+                    {"name": "count", "required": false, "type": "integer", "minimum": 1},
+                    {
+                        "name": "note",
+                        "required": false,
+                        "type": "string",
+                        "title": "Note",
+                        "maxLength": 20
+                    }
+                ],
+                "answered": answered
+            })
+        };
+        let items: Vec<serde_json::Value> = items
+            .iter()
+            .map(|item| serde_json::to_value(item).unwrap())
+            .collect();
+        assert_eq!(items, [item(false), item(true)]);
     }
 
     #[test]

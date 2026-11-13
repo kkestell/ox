@@ -1,6 +1,12 @@
 // The messages the backend sends, and the fields of oxd's types the UI reads.
 
-export type SessionState = "starting" | "idle" | "running" | "awaiting_permission" | "exited";
+export type SessionState =
+  | "starting"
+  | "idle"
+  | "running"
+  | "awaiting_permission"
+  | "awaiting_input"
+  | "exited";
 
 export interface SelectOption {
   value: string;
@@ -75,6 +81,41 @@ export interface PermissionOption {
   kind: "allow_once" | "allow_always" | "reject_once" | "reject_always";
 }
 
+/** A choice in a form field: the value it sends and its label. */
+export interface EnumOption {
+  const: string;
+  title: string;
+  description?: string;
+}
+
+/** One property of an agent's form, with its JSON Schema keywords. */
+export type Field = {
+  name: string;
+  required: boolean;
+  title?: string;
+  description?: string;
+} & (
+  | {
+      type: "string";
+      minLength?: number;
+      maxLength?: number;
+      pattern?: string;
+      format?: string;
+      default?: string;
+      enum?: string[];
+      oneOf?: EnumOption[];
+    }
+  | { type: "number" | "integer"; minimum?: number; maximum?: number; default?: number }
+  | { type: "boolean"; default?: boolean }
+  | {
+      type: "array";
+      minItems?: number;
+      maxItems?: number;
+      items: { enum?: string[]; anyOf?: EnumOption[] };
+      default?: string[];
+    }
+);
+
 export type ToolCallStatus = "pending" | "in_progress" | "completed" | "failed";
 
 export type ToolContent =
@@ -100,6 +141,14 @@ export type Item =
       request_id: string;
       title: string;
       options: PermissionOption[];
+      answered: boolean;
+    }
+  | {
+      type: "elicitation";
+      key: string;
+      request_id: string;
+      message: string;
+      fields: Field[];
       answered: boolean;
     }
   | { type: "turn_error"; key: string; message: string }

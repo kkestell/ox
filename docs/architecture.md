@@ -50,7 +50,9 @@ branch `--branch` names, started at `--start`. `oxctl delete` deletes a
 session, and with `--discard` gives up its worktree's unsaved work; it prints
 the branch it kept, if any. `oxctl archive` archives a session, with
 `--discard` as for delete, and `oxctl unarchive` undoes it; `oxctl ls` shows
-`archived` in place of an archived session's state.
+`archived` in place of an archived session's state. `oxctl attach` prints an
+elicitation's fields, and `oxctl answer` accepts it with its content as a JSON
+object, or declines or cancels it with `--decline` or `--cancel`.
 
 **oxd.** A per-user daemon on `$OX_SOCKET`, or `oxd.sock` in Ox's data
 directory: `$XDG_DATA_HOME/ox` when `XDG_DATA_HOME` is an absolute path, else
@@ -79,6 +81,15 @@ prompt; an error answer means it did not, and ends the turn with that error
 unless the agent already reported work for the prompt. `oxd` opens a session
 only with an agent that advertises `sessionCapabilities`.
 
+`oxd` records an agent's permission requests and form elicitations as
+session events and relays clients' answers. A session with an open
+permission request is `awaiting_permission`; one with only an open
+elicitation is `awaiting_input`. Both kinds of request take their IDs from one
+sequence per session. Cancelling the turn cancels open permission requests;
+an elicitation stays open until a client answers it or the agent withdraws it
+with `$/cancel_request`. When the agent exits or the session is parked or
+closed, every open request ends cancelled.
+
 **Workspaces and saved sessions.** A workspace is a directory the user
 added. A session belongs to a workspace by ID and runs in the workspace's
 directory or in a worktree of it, a directory the session stores
@@ -101,8 +112,8 @@ are lost. The database runs in WAL mode with `synchronous = NORMAL`. A restored
 session knows its last `seq` from the table and reads its events the first
 time a client subscribes to it or loads it. Reading closes what a stop left
 open: a turn without a `turn_ended` ends with the error "oxd stopped during
-the turn", and a permission request without a resolution is cancelled.
-Permission request IDs continue after the largest in the log. So every
+the turn", and a permission request or elicitation without a resolution is
+cancelled. Request IDs continue after the largest in the log. So every
 session's history, with its original `seq`s, survives `oxd` restarts and does
 not need an agent or Claude's transcript. Deleting a session deletes its
 events.
@@ -215,7 +226,7 @@ not wait for it; sessions it has not reached are cleaned up at the next
 start.
 **Parking.** `oxd` stops the agent of a session that has stayed parkable for
 the park delay, `--park-after-ms` (default 15 minutes), without a break. A
-session is parkable when its agent is idle, no permission request is pending,
+session is parkable when its agent is idle, no request is pending,
 the agent last reported no background work (`background` is `[]`; an agent
 that reports none never parks), and no client subscribes to the session; a
 watch is not a subscription. Any change that ends one of these restarts the
@@ -226,7 +237,7 @@ so a load, delete, or startup in progress finishes first.
 
 **Archiving.** `session.archive` waits for the session's startup to finish,
 refuses with `UNSAVED_WORK` as `session.delete` does unless `discard` is set,
-stops the agent (ending an open turn and pending permission requests with the
+stops the agent (ending an open turn and pending requests with the
 error "the agent was stopped", and recording `agent_parked`), removes the
 worktree, and marks the session archived in the `archived` table. The branch is
 always kept and the branch rule is not applied. The session is `exited` with

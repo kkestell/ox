@@ -161,11 +161,11 @@ export async function openSession(cwd: string) {
 }
 
 export function composer() {
-  return $("form.composer textarea");
+  return $(".composer textarea");
 }
 
 export function sendButton() {
-  return $('form.composer button[aria-label="Send"]');
+  return $('.composer button[aria-label="Send"]');
 }
 
 /** Sends `text`, or what the composer holds, once the session can take a prompt. */

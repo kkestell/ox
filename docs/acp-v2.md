@@ -21,7 +21,7 @@ a client; a caveat says where `oxd` only records it.
 
 | Feature | oxd | claude-code-acp | Caveats |
 | --- | --- | --- | --- |
-| `initialize` | supported | supported | claude-code-acp: The agent answers with the protocol version the client sent. oxd: Sends protocol version 2, no client capabilities. A session whose agent selects a lower version, or advertises no `session` capability, exits with an error. |
+| `initialize` | supported | supported | claude-code-acp: The agent answers with the protocol version the client sent, and notes whether the client advertises `elicitation.form`. oxd: Sends protocol version 2 and the client capability `elicitation.form`. A session whose agent selects a lower version, or advertises no `session` capability, exits with an error. |
 | `auth/login` | unsupported | unsupported | The agent advertises no auth methods. |
 | `auth/logout` | unsupported | unsupported | |
 | `auth/status` (unstable) | unsupported | unsupported | |
@@ -50,7 +50,7 @@ a client; a caveat says where `oxd` only records it.
 
 | Feature | oxd | claude-code-acp | Caveats |
 | --- | --- | --- | --- |
-| `session/cancel` | supported | supported | claude-code-acp: Interrupts the turn and drops prompts `claude` has not taken. Open permission requests are withdrawn. oxd: Withdraws every open permission request as cancelled. |
+| `session/cancel` | supported | supported | claude-code-acp: Interrupts the turn and drops prompts `claude` has not taken. Open permission requests and elicitations are withdrawn. oxd: Withdraws every open permission request as cancelled. Open elicitations stay open until the agent withdraws them with `$/cancel_request`. |
 | `$/cancel_request` | unsupported | unsupported | |
 | `mcp/message` (unstable) | unsupported | unsupported | |
 | Extension notifications (`_`-prefixed) | unsupported | unsupported | |
@@ -59,8 +59,8 @@ a client; a caveat says where `oxd` only records it.
 
 | Feature | oxd | claude-code-acp | Caveats |
 | --- | --- | --- | --- |
-| `session/request_permission` | supported | supported | claude-code-acp: Sent for each tool `claude` asks to use. The subject is the tool call. Options are allow once, allow always when `claude` supplies a rule, and reject once. oxd: Recorded with its title, description, subject, and options, and answered when a client picks an option or the turn is cancelled. The session is awaiting permission meanwhile. |
-| `elicitation/create` | unsupported | unsupported | |
+| `session/request_permission` | supported | supported | claude-code-acp: Sent for each tool `claude` asks to use, except AskUserQuestion; see `elicitation/create`. The subject is the tool call. Options are allow once, allow always when `claude` supplies a rule, and reject once. oxd: Recorded with its title, description, subject, and options, and answered when a client picks an option or the turn is cancelled. The session is awaiting permission meanwhile. |
+| `elicitation/create` | supported | supported | claude-code-acp: Asks Claude's AskUserQuestion questions as a form, scoped to the session and the tool call. Question *i* becomes `q`*i*, a `oneOf` choice of its options or an `anyOf` multi-select when `multiSelect` is set, titled with its header and described by its text, and `q`*i*`-other`, a text field titled `Other`. No field is required. The message is `Claude has a question` or `Claude has questions`. Accepting allows the tool with the answers: a single-select question's `Other` text, or else its choice, and a multi-select question's choices in option order followed by its `Other` text, joined with `, `. Declining or cancelling denies the tool. A client without `elicitation.form` gets no elicitations: `claude` starts with AskUserQuestion disallowed and asks in plain text. oxd: Form mode, scoped to the session. Recorded with its message, tool call, and schema, and answered when a client accepts, declines, or cancels it. Accepted content is checked against the schema, except `pattern` and `format`. The session is awaiting input meanwhile, or awaiting permission while a permission request is also open. The elicitation ends as `cancel` when the agent withdraws it, exits, or the session is parked or closed. URL mode, request scope, a required property of unknown type or with no schema, and a property with both `enum` and `oneOf` are refused with `-32602`. |
 | `mcp/message` (unstable) | unsupported | unsupported | |
 | Extension requests (`_`-prefixed) | unsupported | unsupported | |
 
@@ -71,7 +71,7 @@ a client; a caveat says where `oxd` only records it.
 | `session/update` | supported | supported | claude-code-acp: See the session updates below. oxd: See the session updates below. |
 | `elicitation/complete` | unsupported | unsupported | |
 | `auth/status_update` (unstable) | unsupported | unsupported | |
-| `$/cancel_request` | unsupported | unsupported | |
+| `$/cancel_request` | partial | supported | claude-code-acp: Withdraws an open permission request or elicitation when Claude withdraws it, the turn ends, or `claude` exits. oxd: Withdraws an open elicitation, which ends as `cancel`. A withdrawn permission request stays pending until a client answers it or the turn is cancelled. |
 | Extension notifications (`_`-prefixed) | unsupported | unsupported | |
 
 ## Session updates
@@ -122,7 +122,7 @@ shows nothing for the other updates, which `oxd` still records.
 | `idle` | supported | supported | claude-code-acp: Sent when a turn ends, with its `stopReason`. A `claude` that exits during a turn ends it with `error`, or `cancelled` when the session is closing. oxd: Ends the running turn, recorded as `turn_ended` with the stop reason. After a prompt, an `idle` before the agent reports work for it is a repeated snapshot and ends nothing. In a resume snapshot it sets the session idle. |
 | `requires_action` | supported | supported | claude-code-acp: Sent while a permission request is open. oxd: Counts as work, like `running`. |
 | `unknown` (unstable) | unsupported | unsupported | |
-| `background` work lists | supported | supported | claude-code-acp: Every state update carries the list, `[]` when nothing runs, including the `idle` it sends after `session/new` and in a resume snapshot. It holds `claude`'s live background tasks and the scheduled prompts it infers from `CronCreate`, `CronDelete` and `ScheduleWakeup`; each is a `tool_call` item when the client has the tool call, otherwise a custom `_claude_task` or `_claude_schedule` item. A listed tool call stays `in_progress`, or `pending` for a schedule, until its work ends. Schedules last until their fire time has passed and a turn that started after it has ended, until `CronDelete`, or after seven days for a recurring job; a call the bridge cannot read lasts until `claude` exits. Durable jobs saved by another session in the same folder are not listed. oxd: Kept per session; a session whose agent last reported `[]`, with no turn and no pending permission request, can be parked. An agent that reports no list is never parked. |
+| `background` work lists | supported | supported | claude-code-acp: Every state update carries the list, `[]` when nothing runs, including the `idle` it sends after `session/new` and in a resume snapshot. It holds `claude`'s live background tasks and the scheduled prompts it infers from `CronCreate`, `CronDelete` and `ScheduleWakeup`; each is a `tool_call` item when the client has the tool call, otherwise a custom `_claude_task` or `_claude_schedule` item. A listed tool call stays `in_progress`, or `pending` for a schedule, until its work ends. Schedules last until their fire time has passed and a turn that started after it has ended, until `CronDelete`, or after seven days for a recurring job; a call the bridge cannot read lasts until `claude` exits. Durable jobs saved by another session in the same folder are not listed. oxd: Kept per session; a session whose agent last reported `[]`, with no turn and no pending request, can be parked. An agent that reports no list is never parked. |
 | Other states | supported | unsupported | Count as work, never as idle. |
 
 ## Stop reasons
@@ -175,5 +175,5 @@ shows nothing for the other updates, which `oxd` still records.
 | Capability | oxd | claude-code-acp | Caveats |
 | --- | --- | --- | --- |
 | `auth.terminal` | unsupported | unsupported | |
-| `elicitation.form` | unsupported | unsupported | |
+| `elicitation.form` | supported | supported | claude-code-acp: Decides whether Claude can call AskUserQuestion; see `elicitation/create`. oxd: Advertised in `initialize`; see `elicitation/create`. |
 | `elicitation.url` | unsupported | unsupported | |

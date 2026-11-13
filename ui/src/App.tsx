@@ -17,9 +17,9 @@ export function App() {
   }, [viewed]);
   const session = sessions.find((session) => session.id === viewed);
   const items = useConversation(viewed, connection);
-  const permission = items.find(
-    (item): item is Extract<Item, { type: "permission" }> =>
-      item.type === "permission" && !item.answered,
+  const request = items.find(
+    (item): item is Extract<Item, { type: "permission" | "elicitation" }> =>
+      (item.type === "permission" || item.type === "elicitation") && !item.answered,
   );
 
   return (
@@ -34,7 +34,7 @@ export function App() {
       }
     >
       <Conversation sessionId={viewed} items={items} />
-      {session && <Composer key={session.id} session={session} permission={permission} />}
+      {session && <Composer key={session.id} session={session} request={request} />}
     </Workbench>
   );
 }

@@ -340,6 +340,7 @@ class SmokeRun:
         self.check_reconnect()
         self.check_effort()
         self.check_permission()
+        self.check_question()
         self.check_background_wake()
         self.check_cancellation()
         self.verify_model()
@@ -512,6 +513,45 @@ class SmokeRun:
         self.report(
             "permission_survives_disconnect_and_allow_once",
             request_id=permission["request_id"],
+        )
+
+    def check_question(self):
+        """Claude's AskUserQuestion call becomes a form that `oxctl answer`
+        answers, and the answer reaches Claude."""
+        self.ctl(
+            "prompt",
+            self.session,
+            "Use the AskUserQuestion tool to ask me one question with header Color, "
+            "question 'Which color?', and options Red and Blue. After I answer, "
+            "reply with only the color I chose.",
+        )
+        requested = self.until(lambda e: kind(e) == "elicitation_requested")[-1]
+        elicitation = requested["kind"]["data"]
+        check(
+            "\tawaiting_input\t" in self.ctl("ls"),
+            "The session is not awaiting input",
+        )
+        self.disconnect()
+        self.attach(self.seq - 1)
+        replay = self.attachment.read(time.monotonic() + self.args.timeout)
+        check(replay == requested, "Replayed elicitation differs from the original")
+        choices = [
+            option["const"]
+            for option in elicitation["requested_schema"]["properties"]["q1"]["oneOf"]
+        ]
+        check("Blue" in choices, f"The form does not offer Blue: {choices}")
+        self.ctl("answer", self.session, elicitation["request_id"], '{"q1": "Blue"}')
+        events = self.finish()
+        check(
+            any(kind(e) == "elicitation_resolved" for e in events),
+            "The answer was not recorded",
+        )
+        response = text(events).strip()
+        check("Blue" in response, f"Claude did not get the answer: {response}")
+        self.report(
+            "ask_user_question_answered_as_a_form",
+            request_id=elicitation["request_id"],
+            response=response,
         )
 
     def check_background_wake(self):

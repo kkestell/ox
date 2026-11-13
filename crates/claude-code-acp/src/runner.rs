@@ -87,6 +87,8 @@ pub struct StartRequest<'a> {
     pub effort: &'a str,
     pub mode: &'a str,
     pub mcp_servers: &'a [McpServer],
+    /// Claude may call `AskUserQuestion`, which the client is asked as a form.
+    pub ask_user_question: bool,
     /// The resumed conversation's transcript entries, from which the bridge
     /// finds the scheduled prompts Claude restores.
     pub transcript: &'a [Value],
@@ -132,8 +134,8 @@ struct State {
     prompts: HashMap<String, Prompt>,
     /// Control requests waiting for claude's response, by request ID.
     controls: HashMap<String, oneshot::Sender<Result<(), String>>>,
-    /// The tasks asking the client about claude's permission requests, by
-    /// request ID.
+    /// The tasks asking the client about claude's permission requests and
+    /// questions, by request ID.
     permissions: HashMap<String, AbortHandle>,
     control_counter: u64,
     session_id: Option<String>,
@@ -179,13 +181,17 @@ impl Claude {
                 "--replay-user-messages",
             ])
             .args(["--model", request.model])
-            .args(["--effort", request.effort])
-            .args([
-                "--permission-mode",
-                request.mode,
-                "--permission-prompt-tool",
-                "stdio",
-            ]);
+            .args(["--effort", request.effort]);
+        // The tool list is variadic, so another flag follows it.
+        if !request.ask_user_question {
+            command.args(["--disallowedTools", "AskUserQuestion"]);
+        }
+        command.args([
+            "--permission-mode",
+            request.mode,
+            "--permission-prompt-tool",
+            "stdio",
+        ]);
         if let Some(id) = request.resume {
             command.arg("--resume").arg(id);
         }
@@ -619,8 +625,8 @@ impl Output {
         }
     }
 
-    /// Asks the client about a tool permission while output keeps flowing,
-    /// and refuses any other request.
+    /// Asks the client about a tool permission, or `AskUserQuestion`'s
+    /// questions, while output keeps flowing, and refuses any other request.
     fn control_request(&self, event: &Value) {
         let Some(request_id) = event["request_id"].as_str() else {
             return;
@@ -653,7 +659,11 @@ impl Output {
         let input = self.input.clone();
         let id = request_id.to_owned();
         let task = tokio::spawn(async move {
-            let answer = updates.permission(permission).await;
+            let answer = if permission.name == "AskUserQuestion" {
+                updates.ask_user(permission).await
+            } else {
+                updates.permission(permission).await
+            };
             if let Some(input) = input.upgrade() {
                 let _ = input.send(json!({
                     "type": "control_response",

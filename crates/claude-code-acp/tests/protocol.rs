@@ -178,11 +178,33 @@ async fn until_permission(reader: &mut BufReader<ChildStdout>) -> (Value, Vec<Va
     }
 }
 
+/// Reads until the client gets a request or notification of `method`.
+/// Returns it and what was read before it.
+async fn until_method(reader: &mut BufReader<ChildStdout>, method: &str) -> (Value, Vec<Value>) {
+    let mut seen = Vec::new();
+    loop {
+        let value = receive(reader).await;
+        if value["method"] == method {
+            return (value, seen);
+        }
+        seen.push(value);
+    }
+}
+
 async fn initialize(child: &mut Child, reader: &mut BufReader<ChildStdout>) {
+    initialize_with(child, reader, json!({})).await;
+}
+
+/// Initializes the bridge as a client with `capabilities`.
+async fn initialize_with(
+    child: &mut Child,
+    reader: &mut BufReader<ChildStdout>,
+    capabilities: Value,
+) {
     send(
         child,
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
-            "protocolVersion":2,"capabilities":{},"info":{"name":"test","version":"1"}
+            "protocolVersion":2,"capabilities":capabilities,"info":{"name":"test","version":"1"}
         }}),
     )
     .await;
@@ -690,6 +712,207 @@ next_message
         "{updates:?}"
     );
     child.kill().await.unwrap();
+}
+
+/// A fake claude's turn that calls `AskUserQuestion` with two questions as
+/// `tool-1`, reads the answer into `$answer`, and ends the turn once the
+/// answer holds each of `parts`, or else exits with 13.
+fn asking_claude(parts: &[&str]) -> String {
+    let checks: Vec<String> = parts
+        .iter()
+        .map(|part| format!("case \"$answer\" in *'{part}'*) ;; *) exit 13;; esac"))
+        .collect();
+    format!(
+        r#"
+next_prompt
+printf '%s\n' '{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"tool-1","name":"AskUserQuestion","input":{QUESTIONS}}}]}}}}'
+printf '%s\n' '{{"type":"control_request","request_id":"ask-1","request":{{"subtype":"can_use_tool","tool_name":"AskUserQuestion","tool_use_id":"tool-1","input":{QUESTIONS}}}}}'
+IFS= read -r answer || exit 12
+{}
+printf '%s\n' '{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"tool-1","content":"answered"}}]}}}}'
+printf '%s\n' '{{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43a2","result":"done"}}'
+next_message
+"#,
+        checks.join("\n")
+    )
+}
+
+/// The input of the `AskUserQuestion` call in `asking_claude`.
+const QUESTIONS: &str = r#"{"questions":[{"question":"How should I format the output?","header":"Format","options":[{"label":"Summary","description":"Brief overview"},{"label":"Detailed","description":"Full explanation"}],"multiSelect":false},{"question":"Which sections should I include?","header":"Sections","options":[{"label":"Introduction","description":"Opening context"},{"label":"Conclusion","description":"Final summary"}],"multiSelect":true}]}"#;
+
+/// The capabilities of a client that takes form elicitations.
+fn forms() -> Value {
+    json!({"elicitation":{"form":{}}})
+}
+
+/// Starts a bridge on the fake claude `script` as a client that takes forms,
+/// prompts a new session, and reads until the client is asked to elicit.
+/// Returns the bridge, the elicitation request, and what was read before it;
+/// the prompt has ID 3.
+async fn asked(
+    temp: &Path,
+    script: &str,
+) -> (Child, BufReader<ChildStdout>, Value, Value, Vec<Value>) {
+    let (bin, project) = dirs(temp);
+    fake_claude(&bin, script);
+    let (mut child, mut reader) = start(&bin, &temp.join("store"));
+    initialize_with(&mut child, &mut reader, forms()).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    send(&mut child, json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session,"prompt":[{"type":"text","text":"ask me"}]}})).await;
+    let (elicitation, before) = until_method(&mut reader, "elicitation/create").await;
+    (child, reader, session, elicitation, before)
+}
+
+#[tokio::test]
+async fn ask_user_question_becomes_a_form() {
+    let temp = tempfile::tempdir().unwrap();
+    let script = asking_claude(&[
+        r#""request_id":"ask-1""#,
+        r#""behavior":"allow""#,
+        r#""toolUseID":"tool-1""#,
+        r#""answers":{"How should I format the output?":"Summary","Which sections should I include?":"Introduction, Appendix"}"#,
+        r#""questions":[{"#,
+    ]);
+    let (mut child, mut reader, session, elicitation, before) = asked(temp.path(), &script).await;
+    let params = &elicitation["params"];
+    assert_eq!(params["mode"], "form", "{elicitation}");
+    assert_eq!(params["sessionId"], session, "{elicitation}");
+    assert_eq!(params["toolCallId"], "tool-1", "{elicitation}");
+    assert_eq!(params["message"], "Claude has questions", "{elicitation}");
+    let schema = &params["requestedSchema"];
+    assert_eq!(
+        schema["properties"]["q1"],
+        json!({
+            "type": "string",
+            "title": "Format",
+            "description": "How should I format the output?",
+            "oneOf": [
+                {"const": "Summary", "title": "Summary", "description": "Brief overview"},
+                {"const": "Detailed", "title": "Detailed", "description": "Full explanation"}
+            ]
+        }),
+        "{elicitation}"
+    );
+    assert_eq!(schema["properties"]["q2"]["type"], "array", "{elicitation}");
+    assert_eq!(
+        schema["properties"]["q2-other"],
+        json!({"type": "string", "title": "Other"}),
+        "{elicitation}"
+    );
+    assert!(schema["required"].is_null(), "{elicitation}");
+    // The turn requires action while the questions are open.
+    let states: Vec<&str> = before
+        .iter()
+        .filter(|v| update(v)["sessionUpdate"] == "state_update")
+        .map(|v| update(v)["state"].as_str().unwrap())
+        .collect();
+    assert_eq!(states, ["running", "requires_action"], "{before:?}");
+    send(
+        &mut child,
+        json!({"jsonrpc":"2.0","id":elicitation["id"],"result":{
+            "action":"accept",
+            "content":{"q1":"Summary","q2":["Introduction"],"q2-other":"Appendix"}
+        }}),
+    )
+    .await;
+    let (idle, updates) = finish(&mut reader, 3, before).await;
+    assert_eq!(idle["stopReason"], "end_turn", "{idle}");
+    let statuses: Vec<&Value> = updates
+        .iter()
+        .filter(|v| update(v)["toolCallId"] == "tool-1")
+        .map(|v| &update(v)["status"])
+        .filter(|status| !status.is_null())
+        .collect();
+    assert_eq!(statuses, ["pending", "pending", "in_progress", "completed"]);
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn declined_questions_deny_the_tool() {
+    let temp = tempfile::tempdir().unwrap();
+    let script = asking_claude(&[
+        r#""behavior":"deny""#,
+        r#""message":"The user declined to answer.""#,
+        r#""toolUseID":"tool-1""#,
+    ]);
+    let (mut child, mut reader, _, elicitation, before) = asked(temp.path(), &script).await;
+    send(
+        &mut child,
+        json!({"jsonrpc":"2.0","id":elicitation["id"],"result":{"action":"decline"}}),
+    )
+    .await;
+    let (idle, updates) = finish(&mut reader, 3, before).await;
+    assert_eq!(idle["stopReason"], "end_turn", "{idle}");
+    assert!(
+        updates
+            .iter()
+            .any(|v| update(v)["toolCallId"] == "tool-1" && update(v)["status"] == "failed"),
+        "{updates:?}"
+    );
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn withdrawn_questions_cancel_the_elicitation() {
+    let temp = tempfile::tempdir().unwrap();
+    // Claude withdraws the questions when it is interrupted.
+    let script = format!(
+        r#"
+next_prompt
+printf '%s\n' '{{"type":"control_request","request_id":"ask-1","request":{{"subtype":"can_use_tool","tool_name":"AskUserQuestion","tool_use_id":"tool-1","input":{QUESTIONS}}}}}'
+next_message
+case "$message" in *'"subtype":"interrupt"'*) ;; *) exit 21;; esac
+printf '%s\n' '{{"type":"control_cancel_request","request_id":"ask-1"}}'
+printf '%s\n' '{{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_tools"}}'
+next_message
+"#
+    );
+    let (mut child, mut reader, session, elicitation, mut seen) = asked(temp.path(), &script).await;
+    send(
+        &mut child,
+        json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session}}),
+    )
+    .await;
+    let (cancel, more) = until_method(&mut reader, "$/cancel_request").await;
+    assert_eq!(cancel["params"]["requestId"], elicitation["id"], "{cancel}");
+    seen.extend(more);
+    let (idle, _) = finish(&mut reader, 3, seen).await;
+    assert_eq!(idle["stopReason"], "cancelled", "{idle}");
+    child.kill().await.unwrap();
+}
+
+/// The arguments of the claude a bridge starts for a client with
+/// `capabilities`.
+async fn claude_arguments(capabilities: Value) -> String {
+    let temp = tempfile::tempdir().unwrap();
+    let (bin, project) = dirs(temp.path());
+    fake_claude(
+        &bin,
+        r#"
+printf '%s\n' "$*" >> calls
+next_prompt
+printf '%s\n' '{"type":"result","session_id":"79ed6f89-b693-4192-8169-4554404b43a2"}'
+next_message
+"#,
+    );
+    let (mut child, mut reader) = start(&bin, &temp.path().join("store"));
+    initialize_with(&mut child, &mut reader, capabilities).await;
+    let session = new_session(&mut child, &mut reader, 2, &project).await;
+    prompt(&mut child, &mut reader, 3, &session).await;
+    child.kill().await.unwrap();
+    calls(&project).remove(0)
+}
+
+#[tokio::test]
+async fn clients_without_forms_disallow_ask_user_question() {
+    let arguments = claude_arguments(json!({})).await;
+    // The tool list is variadic, so a flag follows it.
+    assert!(
+        arguments.contains("--disallowedTools AskUserQuestion --"),
+        "{arguments}"
+    );
+    let arguments = claude_arguments(forms()).await;
+    assert!(!arguments.contains("--disallowedTools"), "{arguments}");
 }
 
 #[tokio::test]

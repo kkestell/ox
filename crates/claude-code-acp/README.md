@@ -64,7 +64,9 @@ intended subscription authentication path.
 The bridge advertises the baseline v2 session methods, `session/new`,
 `session/list`, `session/resume`, `session/close`, `session/prompt`,
 `session/cancel`, and `session/update`, with `session/set_config_option`, the
-`image` and `embeddedContext` prompt capabilities, and stdio MCP servers.
+`image` and `embeddedContext` prompt capabilities, and stdio MCP servers. It
+asks Claude's questions with form-mode `elicitation/create` when the client
+supports it.
 [`docs/acp-v2.md`](../../docs/acp-v2.md) charts every ACP v2 feature and the
 bridge's support of it.
 
@@ -189,9 +191,9 @@ Schedules last as long as they may fire, so a session with one stays listed:
 Clients can stop a turn with `session/cancel`, including immediately after
 sending a prompt or while a tool permission request is open. The bridge
 interrupts Claude, which stops the turn and the tools it is running, withdraws
-an open permission request, drops the prompts it has not taken, which are
-answered with `-32800`, and waits for the next prompt. Tool calls that started
-without a result are reported as failed when a turn ends.
+an open permission request or question form, drops the prompts it has not
+taken, which are answered with `-32800`, and waits for the next prompt. Tool
+calls that started without a result are reported as failed when a turn ends.
 
 Claude runs in the bridge's process group, so a client that stops the bridge
 by killing its process group also stops Claude and the processes Claude
@@ -221,6 +223,32 @@ When Claude asks for tool permission, the bridge sends an ACP permission request
 to the client and forwards the decision to the running Claude process. The
 request's tool call carries the tool's title and input. The client can offer
 `Allow always` when Claude supplies a rule to save.
+
+### AskUserQuestion
+
+When Claude calls AskUserQuestion and the client advertised form elicitation in
+`initialize`, the bridge asks the questions with `elicitation/create`, scoped to
+the session and the tool call, instead of a permission request. Each question
+becomes two fields: `q1` and `q1-other` for the first, `q2` and `q2-other` for
+the second, and so on.
+
+| Field      | Kind                                                          | Title                 | Description         |
+| ---------- | ------------------------------------------------------------- | --------------------- | ------------------- |
+| `q1`       | A choice of the options, or several when `multiSelect` is set | The question's header | The question's text |
+| `q1-other` | Text                                                          | `Other`               |                     |
+
+No field is required. The message is `Claude has a question`, or `Claude has
+questions` for several. When the user accepts, Claude gets the answers, keyed
+by question text: a single-select question's `Other` text, or else its choice,
+and a multi-select question's choices in option order followed by its `Other`
+text, joined with `, `. A question left blank has no answer. Declining or
+cancelling the form denies the tool, and Claude is told the user declined or did
+not answer. Claude withdrawing the questions, the turn ending, and `claude`
+exiting withdraw the elicitation with `$/cancel_request`.
+
+When the client lacks form elicitation, `claude` starts with
+`--disallowedTools AskUserQuestion`, and Claude asks its questions in plain
+text.
 
 ## Development
 

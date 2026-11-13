@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use agent_client_protocol::v2::schema::{
-    ContentBlock, PermissionOption, PromptCapabilities, RequestPermissionOutcome,
-    RequestPermissionSubject, SessionConfigOption, SessionUpdate, StopReason,
+    ContentBlock, ElicitationAction, ElicitationSchema, PermissionOption, PromptCapabilities,
+    RequestPermissionOutcome, RequestPermissionSubject, SessionConfigOption, SessionUpdate,
+    StopReason, ToolCallId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -115,6 +116,19 @@ pub enum Method {
         session_id: String,
         request_id: String,
         option_id: String,
+    },
+    /// Answers an open elicitation: `{"action": "accept", "content": {...}}`,
+    /// `{"action": "decline"}`, or `{"action": "cancel"}` beside the IDs.
+    /// Accepted content must match the request's schema: every key names a
+    /// property, each value has its property's type and lies within its
+    /// choices and limits, and every required property is present. `pattern`
+    /// and `format` are not checked.
+    #[serde(rename = "elicitation.respond")]
+    ElicitationRespond {
+        session_id: String,
+        request_id: String,
+        #[serde(flatten)]
+        action: ElicitationAction,
     },
     #[serde(rename = "session.set_config_option")]
     SessionSetConfigOption {
@@ -233,6 +247,8 @@ pub enum SessionState {
     Idle,
     Running,
     AwaitingPermission,
+    /// An elicitation is open and no permission request is.
+    AwaitingInput,
     Exited,
 }
 
@@ -244,6 +260,7 @@ impl SessionState {
             Self::Idle => "idle",
             Self::Running => "running",
             Self::AwaitingPermission => "awaiting_permission",
+            Self::AwaitingInput => "awaiting_input",
             Self::Exited => "exited",
         }
     }
@@ -353,6 +370,20 @@ pub enum EventKind {
         request_id: String,
         outcome: RequestPermissionOutcome,
     },
+    /// A form-mode `elicitation/create` request, scoped to the session.
+    /// Request IDs are shared with permission requests.
+    ElicitationRequested {
+        request_id: String,
+        message: String,
+        tool_call_id: Option<ToolCallId>,
+        requested_schema: ElicitationSchema,
+    },
+    /// The elicitation was answered, or ended `cancel` because the agent
+    /// withdrew it, exited, or the session was parked or closed.
+    ElicitationResolved {
+        request_id: String,
+        action: ElicitationAction,
+    },
     /// A turn finished. `stop_reason` is the one the agent reported with its
     /// `idle` state, if any. `error` is set when the agent rejected the
     /// prompt, exited, or the session was closed during the turn.
@@ -421,6 +452,7 @@ pub enum ServerMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_client_protocol::v2::schema::ElicitationContentValue;
     use serde_json::json;
 
     #[test]
@@ -622,6 +654,50 @@ mod tests {
             }
         ));
 
+        let accept = json!({
+            "id": 19,
+            "method": "elicitation.respond",
+            "params": {
+                "session_id": "s",
+                "request_id": "2",
+                "action": "accept",
+                "content": {"color": "blue", "count": 3, "extras": ["nuts"], "rush": true}
+            }
+        });
+        let request: Request = serde_json::from_value(accept.clone()).unwrap();
+        let Method::ElicitationRespond {
+            ref session_id,
+            ref request_id,
+            action: ElicitationAction::Accept(ref accepted),
+        } = request.method
+        else {
+            panic!("{:?}", request.method);
+        };
+        assert_eq!((session_id.as_str(), request_id.as_str()), ("s", "2"));
+        let content = accepted.content.as_ref().unwrap();
+        assert_eq!(content["count"], ElicitationContentValue::Integer(3));
+        assert_eq!(
+            content["extras"],
+            ElicitationContentValue::StringArray(vec!["nuts".into()])
+        );
+        assert_eq!(serde_json::to_value(&request).unwrap(), accept);
+        for action in ["decline", "cancel"] {
+            let value = json!({
+                "id": 20,
+                "method": "elicitation.respond",
+                "params": {"session_id": "s", "request_id": "2", "action": action}
+            });
+            let request: Request = serde_json::from_value(value.clone()).unwrap();
+            assert!(matches!(
+                request.method,
+                Method::ElicitationRespond {
+                    action: ElicitationAction::Decline | ElicitationAction::Cancel,
+                    ..
+                }
+            ));
+            assert_eq!(serde_json::to_value(&request).unwrap(), value);
+        }
+
         let value = serde_json::to_value(Request {
             id: 1,
             method: Method::Hello {
@@ -633,6 +709,41 @@ mod tests {
             value,
             json!({"id": 1, "method": "hello", "params": {"protocol_version": 1}})
         );
+    }
+
+    /// An elicitation's events, delivered to subscription 6.
+    fn elicitation_events() -> Vec<ServerMessage> {
+        let requested: EventKind = serde_json::from_value(json!({
+            "type": "elicitation_requested",
+            "data": {
+                "request_id": "1",
+                "message": "Order",
+                "tool_call_id": "tool-1",
+                "requested_schema": {
+                    "type": "object",
+                    "properties": {"note": {"type": "string", "title": "Note"}},
+                    "required": ["note"]
+                }
+            }
+        }))
+        .unwrap();
+        let resolved: EventKind = serde_json::from_value(json!({
+            "type": "elicitation_resolved",
+            "data": {"request_id": "1", "action": {"action": "accept", "content": {"note": "hi"}}}
+        }))
+        .unwrap();
+        [requested, resolved]
+            .into_iter()
+            .zip(1..)
+            .map(|(kind, seq)| ServerMessage::Event {
+                subscription: 6,
+                event: Box::new(Event {
+                    session_id: "s".into(),
+                    seq,
+                    kind,
+                }),
+            })
+            .collect()
     }
 
     #[test]
@@ -667,7 +778,7 @@ mod tests {
                 sessions: Vec::new(),
             },
         ];
-        for message in messages {
+        for message in messages.into_iter().chain(elicitation_events()) {
             let line = serde_json::to_string(&message).unwrap();
             let parsed: ServerMessage = serde_json::from_str(&line).unwrap();
             assert_eq!(serde_json::to_string(&parsed).unwrap(), line);

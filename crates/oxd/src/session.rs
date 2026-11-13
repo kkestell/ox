@@ -5,10 +5,12 @@ use std::time::Duration;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v2::schema::{
-    CancelSessionNotification, CancelledPermissionOutcome, ContentBlock, Implementation,
-    InitializeRequest, NewSessionRequest, PromptRequest, ReplayFrom, ReplayFromStart,
-    RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest, SessionConfigOption,
-    SessionConfigOptionValue, SessionId, SetSessionConfigOptionRequest, UpdateSessionNotification,
+    CancelSessionNotification, CancelledPermissionOutcome, ClientCapabilities, ContentBlock,
+    CreateElicitationRequest, CreateElicitationResponse, ElicitationAction,
+    ElicitationCapabilities, ElicitationFormCapabilities, Implementation, InitializeRequest,
+    NewSessionRequest, PromptRequest, ReplayFrom, ReplayFromStart, RequestPermissionRequest,
+    RequestPermissionResponse, ResumeSessionRequest, SessionConfigOption, SessionConfigOptionValue,
+    SessionId, SetSessionConfigOptionRequest, UpdateSessionNotification,
 };
 use agent_client_protocol::v2::{ConnectionTo, InitializeOutcome, Responder};
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, Client};
@@ -451,6 +453,36 @@ impl Session {
         })
     }
 
+    pub fn respond_elicitation(
+        &self,
+        request_id: &str,
+        action: ElicitationAction,
+    ) -> Result<(), ErrorBody> {
+        self.update(|state| {
+            state.request(Request::Respond {
+                request_id: request_id.into(),
+                action,
+            })
+        })
+    }
+
+    /// The agent withdrew the elicitation whose answer `answer` receives.
+    /// Closing the receiver under the state lock settles a race with a
+    /// client's answer: an answer already sent wins and is returned, and
+    /// otherwise the elicitation ends as `cancel`.
+    fn withdraw_elicitation(
+        &self,
+        mut answer: oneshot::Receiver<ElicitationAction>,
+    ) -> ElicitationAction {
+        self.update(|state| {
+            answer.close();
+            answer.try_recv().unwrap_or_else(|_| {
+                state.record(Change::ElicitationWithdrawn);
+                ElicitationAction::Cancel
+            })
+        })
+    }
+
     /// Stops the agent, killing its process group, and returns once the
     /// agent's task has ended. The session is `exited`, and keeps its
     /// subscriptions. `change` is what the session records: `Exited(None)`,
@@ -587,14 +619,59 @@ impl Session {
                     },
                     agent_client_protocol::on_receive_request!(),
                 )
+                .on_receive_request(
+                    {
+                        let session = self.clone();
+                        async move |request: CreateElicitationRequest,
+                                    responder: Responder<CreateElicitationResponse>,
+                                    connection: ConnectionTo<Agent>| {
+                            let (message, tool_call_id, schema) = match state::check_form(request) {
+                                Ok(form) => form,
+                                Err(error) => return responder.respond_with_error(error),
+                            };
+                            let (answer, mut action) = oneshot::channel();
+                            session.record(Change::ElicitationRequested {
+                                message,
+                                tool_call_id,
+                                schema,
+                                answer,
+                            });
+                            // `session/cancel` leaves an elicitation open; the
+                            // agent withdraws it with `$/cancel_request`.
+                            let withdrawn = responder.cancellation();
+                            let session = session.clone();
+                            connection.spawn(async move {
+                                let action = tokio::select! {
+                                    biased;
+                                    action = &mut action => {
+                                        action.unwrap_or(ElicitationAction::Cancel)
+                                    }
+                                    () = withdrawn.cancelled() => {
+                                        session.withdraw_elicitation(action)
+                                    }
+                                };
+                                responder.respond(CreateElicitationResponse::new(action))
+                            })
+                        }
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
                 .connect_with(
                     AcpAgent::new(config),
                     async move |connection: ConnectionTo<Agent>| {
                         let InitializeOutcome::Initialized(initialized) = connection
-                            .send_initialize(InitializeRequest::new(
-                                ProtocolVersion::V2,
-                                Implementation::new("oxd", env!("CARGO_PKG_VERSION")),
-                            ))
+                            .send_initialize(
+                                InitializeRequest::new(
+                                    ProtocolVersion::V2,
+                                    Implementation::new("oxd", env!("CARGO_PKG_VERSION")),
+                                )
+                                .capabilities(
+                                    ClientCapabilities::new().elicitation(
+                                        ElicitationCapabilities::new()
+                                            .form(ElicitationFormCapabilities::new()),
+                                    ),
+                                ),
+                            )
                             .block_task()
                             .await?
                         else {

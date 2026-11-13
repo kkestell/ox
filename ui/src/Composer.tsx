@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ArrowUp, Paperclip, Square, X } from "lucide-react";
 import { useState } from "react";
+import { Elicitation } from "./Elicitation";
 import { ModelPicker, type SelectConfig } from "./ModelPicker";
 import { Permission } from "./Permission";
 import type { ConfigOption, Item, SelectOption, SessionInfo } from "./protocol";
@@ -9,16 +10,19 @@ import { showError } from "./showError";
 
 export function Composer({
   session,
-  permission,
+  request,
 }: {
   session: SessionInfo;
-  /** The session's oldest unanswered permission request. */
-  permission: Extract<Item, { type: "permission" }> | undefined;
+  /** The session's oldest unanswered permission request or form. */
+  request: Extract<Item, { type: "permission" | "elicitation" }> | undefined;
 }) {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<string[]>([]);
 
-  const running = session.state === "running" || session.state === "awaiting_permission";
+  const running =
+    session.state === "running" ||
+    session.state === "awaiting_permission" ||
+    session.state === "awaiting_input";
   const canSend = session.state === "idle" && (text.trim() !== "" || attachments.length > 0);
   const disabled = session.state === "exited";
 
@@ -62,19 +66,22 @@ export function Composer({
   };
 
   return (
-    <form
-      className="composer"
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (running) stop();
-        else if (canSend) send();
-      }}
-    >
+    <div className="composer">
       <div className="stack">
-        {permission && (
-          <Permission key={permission.request_id} item={permission} sessionId={session.id} />
+        {request?.type === "permission" && (
+          <Permission key={request.request_id} item={request} sessionId={session.id} />
         )}
-        <div className="box">
+        {request?.type === "elicitation" && (
+          <Elicitation key={request.request_id} item={request} sessionId={session.id} />
+        )}
+        <form
+          className="box"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (running) stop();
+            else if (canSend) send();
+          }}
+        >
           {attachments.length > 0 && (
             <ul className="attachments">
               {attachments.map((path) => (
@@ -125,7 +132,7 @@ export function Composer({
               {running ? <Square /> : <ArrowUp />}
             </button>
           </div>
-        </div>
+        </form>
       </div>
       {session.config_options.length > 0 && (
         <div className="settings">
@@ -139,7 +146,7 @@ export function Composer({
           ))}
         </div>
       )}
-    </form>
+    </div>
   );
 }
 
@@ -152,7 +159,7 @@ function ConfigPicker({
 }) {
   if (option.type === "boolean") {
     return (
-      <label>
+      <label className="choice">
         <input
           type="checkbox"
           checked={option.currentValue}

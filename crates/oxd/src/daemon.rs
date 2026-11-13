@@ -253,6 +253,15 @@ impl Daemon {
                 self.session(&session_id)?.permit(&request_id, &option_id)?;
                 Ok(Value::Null)
             }
+            Method::ElicitationRespond {
+                session_id,
+                request_id,
+                action,
+            } => {
+                self.session(&session_id)?
+                    .respond_elicitation(&request_id, action)?;
+                Ok(Value::Null)
+            }
             Method::SessionDelete {
                 session_id,
                 discard,

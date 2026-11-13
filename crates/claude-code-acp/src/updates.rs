@@ -6,7 +6,8 @@ use std::{
 use agent_client_protocol::Client;
 use agent_client_protocol::v2::ConnectionTo;
 use agent_client_protocol::v2::schema::{
-    self as acp, BackgroundWork, ContentBlock, ContentChunk, MessageId, PermissionOption,
+    self as acp, BackgroundWork, ContentBlock, ContentChunk, CreateElicitationRequest,
+    ElicitationAction, ElicitationFormMode, ElicitationSessionScope, MessageId, PermissionOption,
     PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest, SessionUpdate,
     StateUpdate, StopReason, TextContent, ToolCallContent, ToolCallStatus, ToolKind,
     UpdateSessionNotification,
@@ -15,6 +16,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::background::{Background, HeldStatus, now_ms};
+use crate::questions;
 use crate::runner::{Event, PermissionRequest, ToolOutput, message_events};
 
 #[derive(Default)]
@@ -36,7 +38,7 @@ struct Tools {
 struct Work {
     /// Claude is working on a turn.
     working: bool,
-    /// Permission requests waiting for the client.
+    /// Permission requests and questions waiting for the client.
     asking: usize,
     /// The last state sent to the client; a new session is idle.
     sent: Sent,
@@ -56,19 +58,24 @@ enum Sent {
     RequiresAction,
 }
 
-/// Translates a session's Claude events and permission requests into ACP updates.
+/// Translates a session's Claude events, permission requests, and questions
+/// into ACP updates.
 pub struct Updates {
     connection: ConnectionTo<Client>,
     session_id: String,
+    /// The client takes form elicitations, so `AskUserQuestion`'s questions
+    /// can be asked.
+    forms: bool,
     tools: Mutex<Tools>,
     work: Mutex<Work>,
 }
 
 impl Updates {
-    pub fn new(connection: ConnectionTo<Client>, session_id: &str) -> Self {
+    pub fn new(connection: ConnectionTo<Client>, session_id: &str, forms: bool) -> Self {
         Self {
             connection,
             session_id: session_id.to_owned(),
+            forms,
             tools: Mutex::new(Tools::default()),
             work: Mutex::new(Work::default()),
         }
@@ -454,25 +461,33 @@ impl Updates {
         self.publish(&mut work, None);
     }
 
-    pub async fn permission(&self, permission: PermissionRequest) -> Value {
+    /// Sends the pending tool call a request asks about, which is then open,
+    /// and returns it.
+    fn ask_about(&self, permission: &PermissionRequest, kind: ToolKind) -> acp::ToolCallUpdate {
         let tool_id = if permission.tool_use_id.is_empty() {
             format!("permission_{}", Uuid::new_v4())
         } else {
             permission.tool_use_id.clone()
         };
-        let title = tool_title(&permission.name, &permission.input);
         let update = acp::ToolCallUpdate::new(tool_id.clone())
-            .title(title.clone())
+            .title(tool_title(&permission.name, &permission.input))
             .name(permission.name.clone())
-            .kind(ToolKind::Execute)
+            .kind(kind)
             .status(ToolCallStatus::Pending)
             .raw_input(permission.input.clone());
         {
             let mut tools = self.tools.lock().unwrap();
             tools.open.insert(tool_id.clone());
-            tools.seen.insert(tool_id.clone());
+            tools.seen.insert(tool_id);
         }
         self.send(SessionUpdate::ToolCallUpdate(update.clone()));
+        update
+    }
+
+    pub async fn permission(&self, permission: PermissionRequest) -> Value {
+        let update = self.ask_about(&permission, ToolKind::Execute);
+        let tool_id = update.tool_call_id.to_string();
+        let title = tool_title(&permission.name, &permission.input);
         // The turn waits for the client until the guard drops.
         let _asking = Asking::new(self);
 
@@ -538,18 +553,74 @@ impl Updates {
             }
             decision
         } else {
-            json!({
-                "behavior": "deny",
-                "message": "Permission denied by client",
-                "toolUseID": permission.tool_use_id,
-                "decisionClassification": "user_reject"
-            })
+            deny(&permission, "Permission denied by client")
         }
+    }
+
+    /// Asks the client `AskUserQuestion`'s questions as a form and returns the
+    /// tool's decision: allowed with the answers, or denied when the user
+    /// does not answer or the questions cannot be asked.
+    pub async fn ask_user(&self, permission: PermissionRequest) -> Value {
+        // Claude starts without the tool when the client takes no forms.
+        if !self.forms {
+            return deny(&permission, "The questions could not be shown.");
+        }
+        let Some((message, schema)) = questions::form(&permission.input) else {
+            return deny(&permission, "The questions could not be shown.");
+        };
+        let update = self.ask_about(&permission, ToolKind::Other);
+        let tool_id = update.tool_call_id;
+        // The turn waits for the client until the guard drops.
+        let _asking = Asking::new(self);
+        let response = self
+            .connection
+            .send_request(CreateElicitationRequest::new(
+                ElicitationFormMode::new(
+                    ElicitationSessionScope::new(self.session_id.clone())
+                        .tool_call_id(tool_id.clone()),
+                    schema,
+                ),
+                message,
+            ))
+            .block_task()
+            .await;
+        let decision = match response.map(|response| response.action) {
+            Ok(ElicitationAction::Accept(accepted)) => json!({
+                "behavior": "allow",
+                "updatedInput": questions::answers(
+                    &permission.input,
+                    &accepted.content.unwrap_or_default(),
+                ),
+                "toolUseID": permission.tool_use_id,
+                "decisionClassification": "user_temporary"
+            }),
+            Ok(ElicitationAction::Decline) => deny(&permission, "The user declined to answer."),
+            _ => deny(&permission, "The user did not answer."),
+        };
+        self.send(tool_status(
+            tool_id.to_string(),
+            if decision["behavior"] == "allow" {
+                ToolCallStatus::InProgress
+            } else {
+                ToolCallStatus::Failed
+            },
+        ));
+        decision
     }
 }
 
-/// Holds a permission request open: the session requires action until the
-/// guard drops, whether the client answered or the turn ended first.
+/// Claude's decision to deny the tool call a request asks about.
+fn deny(permission: &PermissionRequest, message: &str) -> Value {
+    json!({
+        "behavior": "deny",
+        "message": message,
+        "toolUseID": permission.tool_use_id,
+        "decisionClassification": "user_reject"
+    })
+}
+
+/// Holds a permission request or questions open: the session requires action
+/// until the guard drops, whether the client answered or the turn ended first.
 struct Asking<'a>(&'a Updates);
 
 impl<'a> Asking<'a> {
