@@ -72,7 +72,7 @@ therefore changes nothing and reports no error.
 `session/configure` on a running session sends Claude one control request for
 each changed setting, in the order model, effort, permission mode. It stores
 and broadcasts the settings only once Claude has acknowledged them all and the
-database write succeeds. If a later request fails after an earlier one
+database write succeeds. If Claude refuses a later request after an earlier one
 succeeded, or the database write fails after every acknowledgement, the
 process keeps what it applied while the stored settings, and every page, show
 the old ones. The request returns an error.

@@ -1,7 +1,6 @@
 package claude
 
 import (
-	"errors"
 	"fmt"
 	"time"
 
@@ -9,7 +8,8 @@ import (
 )
 
 // configuration owns the agent in the configuring phase. Its first request is
-// in flight under requestID.
+// in flight under requestID, which is empty once the request has timed out and
+// the process is stopping.
 type configuration struct {
 	requests  []control
 	requestID string
@@ -90,9 +90,17 @@ func (a *Agent) controlResponse(response ControlResponse) {
 	a.sendControl()
 }
 
+// controlTimedOut stops the process when a control request goes unanswered:
+// Claude may still apply it, so only a new process, started with the
+// requested settings, is known to match them. The process's exit ends the
+// configuration.
 func (a *Agent) controlTimedOut(requestID string) {
-	if a.phase == configuring && requestID == a.config.requestID {
-		a.endConfiguration(a.config.fail(errors.New("no control response within one minute")))
+	if a.phase != configuring || requestID != a.config.requestID {
+		return
+	}
+	a.config.requestID = ""
+	if err := a.Stop(); err != nil {
+		a.endConfiguration(a.config.fail(err))
 	}
 }
 

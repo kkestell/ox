@@ -30,7 +30,7 @@ claude -p \
 - `--mcp-config` accepts inline JSON; a temp file is unnecessary. Shape: `{"mcpServers":{"<name>":{"command":"/abs/path","args":[],"env":{}}}}`. MCP tools are named `mcp__<server>__<tool>`.
 - `--allowedTools mcp__<server>` pre-approves every tool of that server so it never prompts. `--allowedTools` auto-approves; it does not restrict the tool catalog (`--tools` does that, and `--tools` does not cover MCP tools).
 - `--allowedTools` and `--disallowedTools` are variadic and consume every following argument that is not a flag. Put another `--flag` right after their values.
-- Per-process flags (`--mcp-config`, `--settings`, `--plugin-dir`, `--add-dir`, `--fallback-model`, `--append-system-prompt`, model, effort) must be passed again on every resume. The permission mode is restored from the transcript.
+- Per-process flags (`--mcp-config`, `--settings`, `--plugin-dir`, `--add-dir`, `--fallback-model`, `--append-system-prompt`, model, effort, permission mode) must be passed again on every resume. A resumed process runs the `--permission-mode` it is given, or `default` without one, whatever mode the transcript was written in (2.1.327; the `system` `init` line's `permissionMode` and its approval requests both follow the flag).
 - `--session-id` must be a UUID. Hypercube derives fork destination IDs deterministically (first 32 hex chars of sha256 of its own ID, formatted `%s-%s-4%s-8%s-%s`) so a restart before the first turn reuses the same ID.
 - Ox-rs makes its own session ID the Claude session ID, and chooses `--resume <id>` only when a transcript for that ID exists in that cwd; otherwise `--session-id <id>`.
 - Set the process's working directory to the session's directory.

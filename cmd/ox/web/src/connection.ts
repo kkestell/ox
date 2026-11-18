@@ -17,10 +17,13 @@ export type Connection = {
 // connect opens the page's oxd connection through ox: the event stream
 // carries every response and notification, and requests are posted to /rpc.
 // onConnect runs each time the stream (re)connects, with a new oxd
-// connection that has seen no earlier notifications.
+// connection that has seen no earlier notifications. onError runs each time
+// the stream fails; once ox refuses it, as while oxd is down, the browser
+// stops reconnecting.
 export function connect(handlers: {
   onConnect(): void;
   onNotification(notification: Notification): void;
+  onError(error: Error): void;
 }): Connection {
   const source = new EventSource("/events");
   const pending = new Map<number, { resolve(result: any): void; reject(error: Error): void }>();
@@ -38,7 +41,13 @@ export function connect(handlers: {
   });
   source.onerror = () => {
     connection = undefined;
-    failPending(new Error("Lost the connection to ox"));
+    const error = new Error(
+      source.readyState === EventSource.CLOSED
+        ? "Lost the connection to ox. Reload the page to reconnect."
+        : "Lost the connection to ox. Reconnecting.",
+    );
+    failPending(error);
+    handlers.onError(error);
   };
   source.onmessage = (event) => {
     const message = JSON.parse(event.data);

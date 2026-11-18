@@ -176,9 +176,8 @@ function SettingsForm(props: { session: Session; attempt(request: Promise<unknow
       {(harness) => (
         <form
           onChange={(event) => {
-            const settings = settingsFrom(harness(), new FormData(event.currentTarget));
-            const changes = changedSettings(shown(), settings);
-            if (Object.keys(changes).length) props.attempt(configure(settings, changes));
+            const changes = changedSettings(harness(), shown(), new FormData(event.currentTarget));
+            if (Object.keys(changes).length) props.attempt(configure({ ...shown(), ...changes }, changes));
           }}
         >
           <SettingsFields harness={harness()} value={shown()} disabled={!configurable()} />

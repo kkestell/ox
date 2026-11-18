@@ -180,7 +180,7 @@ function createOx() {
   const fail = (e: Error) => setError(e.message);
 
   onSettled(() => {
-    connection = connect({ onConnect: () => void reload().catch(fail), onNotification: receive });
+    connection = connect({ onConnect: () => void reload().catch(fail), onNotification: receive, onError: fail });
     return () => connection.close();
   });
 

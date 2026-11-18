@@ -230,10 +230,11 @@ that time return `-32002`. Any connected client can configure an idle session.
 For a running session, success means Claude acknowledged each setting that
 differs from its process's, and only then are they stored. Model, effort, and permission
 mode are applied in that order. If a change fails, earlier changes remain
-applied to the process and later changes are skipped. Claude refusals, write
-failures, and missing responses after one minute return an operation error.
-If the process exits first, the settings are stored for the next process and
-the request succeeds. As at creation, model identifiers are interpreted by
+applied to the process and later changes are skipped. Claude refusals and
+write failures return an operation error. A change Claude has not acknowledged
+after one minute stops the process. If the process exits first, including by
+that stop, the settings are stored for the next process and the request
+succeeds. As at creation, model identifiers are interpreted by
 Claude; acknowledgement does not guarantee the model will work on a prompt.
 
 ### `session/approve`

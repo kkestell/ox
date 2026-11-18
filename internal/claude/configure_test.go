@@ -3,6 +3,7 @@ package claude
 import (
 	"encoding/json"
 	"errors"
+	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
@@ -96,7 +97,7 @@ func TestConfigureSendsOnlyChangedSettings(t *testing.T) {
 }
 
 func TestConfigureFailure(t *testing.T) {
-	for _, outcome := range []string{"rejected", "timeout", "exited"} {
+	for _, outcome := range []string{"rejected", "exited"} {
 		t.Run(outcome, func(t *testing.T) {
 			a, input, _ := testAgent()
 			result := make(chan error, 1)
@@ -110,18 +111,12 @@ func TestConfigureFailure(t *testing.T) {
 			switch outcome {
 			case "rejected":
 				a.handleOutput(Message{Type: "control_response", Response: ControlResponse{RequestID: wire.RequestID, Subtype: "error", Error: "Unsupported model"}})
-			case "timeout":
-				a.Handle(controlTimeout{"stale"})
-				a.Handle(controlTimeout{wire.RequestID})
 			case "exited":
 				a.exit(nil)
 			}
 			err := <-result
 			if outcome == "rejected" && (err == nil || !strings.Contains(err.Error(), "Unsupported model")) {
 				t.Fatalf("Claude's refusal was lost: %v", err)
-			}
-			if outcome == "timeout" && (err == nil || !strings.Contains(err.Error(), "no control response")) {
-				t.Fatalf("missing acknowledgement did not fail configuration: %v", err)
 			}
 			if outcome == "exited" && !errors.Is(err, agent.ErrExited) {
 				t.Fatalf("process exit did not fail configuration: %v", err)
@@ -130,6 +125,45 @@ func TestConfigureFailure(t *testing.T) {
 				t.Fatal("failed configuration kept its reservation")
 			}
 		})
+	}
+}
+
+// A timed-out control request may still be applied, so the process stops and
+// its exit ends the configuration; a late acknowledgement changes nothing.
+func TestConfigureTimeoutStopsProcess(t *testing.T) {
+	a, input, _ := testAgent()
+	cmd := exec.Command("sleep", "60")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	a.proc = &Process{Input: a.input, cmd: cmd}
+	a.settings = agent.Settings{Model: "haiku", Effort: "low", PermissionMode: "manual"}
+	result := make(chan error, 1)
+	a.Configure(agent.Settings{Model: "haiku", Effort: "low", PermissionMode: "plan"}, replyTo(result))
+	var wire struct {
+		RequestID string `json:"request_id"`
+	}
+	if err := json.NewDecoder(input).Decode(&wire); err != nil {
+		t.Fatal(err)
+	}
+
+	a.Handle(controlTimeout{"stale"})
+	a.Handle(controlTimeout{wire.RequestID})
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("the process was not stopped")
+	}
+	a.handleOutput(Message{Type: "control_response", Response: ControlResponse{RequestID: wire.RequestID, Subtype: "success"}})
+	select {
+	case err := <-result:
+		t.Fatalf("configuration ended before the process exited: %v", err)
+	default:
+	}
+	if a.idle() || a.settings.PermissionMode != "manual" {
+		t.Fatalf("stopping process was released or changed: %v, %+v", a.phase, a.settings)
+	}
+	a.Handle(processExit{})
+	if err := <-result; !errors.Is(err, agent.ErrExited) {
+		t.Fatalf("process exit did not end configuration: %v", err)
 	}
 }
 

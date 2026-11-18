@@ -99,7 +99,7 @@ The agent's phase records what owns its Claude process:
 | `available` | Nothing owns the process. | A prompt or configuration starts. |
 | `queued` | A prompt was written; Claude has not taken it yet. | `command_lifecycle started` for the prompt. |
 | `prompting` | Claude is working on the prompt. | Claude reports `idle`. |
-| `configuring` | Control requests are in flight, one at a time, for each setting that differs from the process's. | The last acknowledgement, a refusal, a write failure, a timeout, or the process exiting. |
+| `configuring` | Control requests are in flight, one at a time, for each setting that differs from the process's. | The last acknowledgement, a refusal, a write failure, or the process exiting, which a timeout causes by stopping it. |
 | `exited` | The Claude process has exited. | — |
 
 Claude's reported session state (`running`, `requires_action`, `idle`) is kept
@@ -137,8 +137,10 @@ The store changes only through notifications and `session/get` responses, so
 every page shows the same state. Requests write nothing to it: `oxd` sends the
 resulting notification to every connection, including the one that asked.
 Each new connection clears the store and loads it again, since it has missed
-the notifications sent while the page was disconnected. A session's settings
-come from `session/get` and `session/configured`. The settings form sends only
-the settings the user changed, and shows the change while `session/configure`
-is in flight with an optimistic value, which reverts to the stored settings if
-the request fails.
+the notifications sent while the page was disconnected. A failed stream shows
+an error until the stream reconnects. When `ox` refuses the stream, as it does
+while `oxd` is down, the browser stops reconnecting and the error asks for a
+reload. A session's settings come from `session/get` and `session/configured`.
+The settings form sends only the settings the user changed, and shows the
+change while `session/configure` is in flight with an optimistic value, which
+reverts to the stored settings if the request fails.
