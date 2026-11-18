@@ -22,28 +22,15 @@ func (a *Agent) controlRequest(requestID string, request json.RawMessage) {
 		}
 		return
 	}
-	if a.prompt == nil {
-		// Claude started this turn itself, so no client is following it.
-		err := a.input.Respond(requestID, map[string]any{
-			"behavior": "deny", "message": "No prompt owns this approval", "interrupt": true,
-		})
-		if err != nil {
-			log.Printf("deny unowned approval: %v", err)
-		}
-		return
-	}
-	a.prompt.approvals[requestID] = request
+	a.approvals[requestID] = request
 	a.publish(Update{Type: "approval", RequestID: requestID, Request: request})
 }
 
 func (a *Agent) answer(requestID string, response json.RawMessage) error {
-	if a.prompt == nil {
+	if _, pending := a.approvals[requestID]; !pending {
 		return ErrApprovalNotFound
 	}
-	if _, pending := a.prompt.approvals[requestID]; !pending {
-		return ErrApprovalNotFound
-	}
-	delete(a.prompt.approvals, requestID)
+	delete(a.approvals, requestID)
 	if err := a.input.Respond(requestID, response); err != nil {
 		return err
 	}
@@ -52,11 +39,17 @@ func (a *Agent) answer(requestID string, response json.RawMessage) error {
 }
 
 func (a *Agent) cancelApproval(requestID string) {
-	if a.prompt == nil {
-		return
-	}
-	if _, pending := a.prompt.approvals[requestID]; pending {
-		delete(a.prompt.approvals, requestID)
+	if _, pending := a.approvals[requestID]; pending {
+		delete(a.approvals, requestID)
 		a.publish(Update{Type: "approval_cancelled", RequestID: requestID})
 	}
+}
+
+// withdrawApprovals cancels every unanswered approval, once Claude is idle or
+// has exited.
+func (a *Agent) withdrawApprovals() {
+	for id := range a.approvals {
+		a.publish(Update{Type: "approval_cancelled", RequestID: id})
+	}
+	clear(a.approvals)
 }

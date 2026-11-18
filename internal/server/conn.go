@@ -23,19 +23,17 @@ func newConn(c net.Conn) *conn {
 }
 
 // queue sends a message without blocking. A client too far behind to take it
-// is disconnected. It reports false once the connection is closed.
-func (c *conn) queue(message any) bool {
+// is disconnected.
+func (c *conn) queue(message any) {
 	select {
 	case <-c.done:
-		return false
+		return
 	default:
 	}
 	select {
 	case c.out <- message:
-		return true
 	default:
 		c.close()
-		return false
 	}
 }
 

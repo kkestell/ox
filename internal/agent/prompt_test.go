@@ -27,7 +27,7 @@ func promptingAgent() (*Agent, *bytes.Buffer, *recorder) {
 	a, input := testAgent()
 	updates := new(recorder)
 	a.phase, a.claudeState = prompting, "running"
-	a.prompt = &submission{id: "prompt", approvals: make(map[string]json.RawMessage)}
+	a.prompt = &submission{id: "prompt"}
 	a.subscribers[updates] = struct{}{}
 	return a, input, updates
 }
@@ -70,8 +70,8 @@ func TestInspectReturnsRunningPrompt(t *testing.T) {
 	var snapshot Snapshot
 	a.handle(inspectRequest{func(s Snapshot) { snapshot = s }, make(chan struct{}, 1)})
 	if snapshot.State != "running" || snapshot.Prompt == nil || snapshot.Prompt.MessageID != "prompt" ||
-		len(snapshot.Prompt.Approvals) != 1 || snapshot.Prompt.Approvals[0].RequestID != "pending" ||
-		!bytes.Equal(snapshot.Prompt.Approvals[0].Request, request) {
+		len(snapshot.Approvals) != 1 || snapshot.Approvals[0].RequestID != "pending" ||
+		!bytes.Equal(snapshot.Approvals[0].Request, request) {
 		t.Fatalf("snapshot missing the running prompt: %+v", snapshot)
 	}
 }

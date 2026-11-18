@@ -256,7 +256,7 @@ func (s *Server) getSession(c *conn, id, params json.RawMessage) *jsonrpc.Respon
 		}{snapshot, history})
 	}
 	// A parked session has no process, so no update is in flight.
-	parked := agent.Snapshot{State: "parked"}
+	parked := agent.Snapshot{State: "parked", Approvals: []agent.Approval{}}
 	a := sess.live()
 	if a == nil {
 		return result(parked)

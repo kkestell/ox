@@ -89,7 +89,7 @@ function createOx() {
     const result = await connection.rpc("session/get", { session_id: id });
     const session: Session = { id, workspaceId, state: result.state, settings, entries: [], approvals: [] };
     for (const u of result.history) apply(session, u);
-    for (const a of result.prompt?.approvals ?? []) session.approvals.push({ id: a.request_id, request: a.request });
+    for (const a of result.approvals) session.approvals.push({ id: a.request_id, request: a.request });
     setState((s) => {
       s.sessions[id] = session;
     });

@@ -29,8 +29,7 @@ type Result struct {
 // submission is the prompt that owns the agent in the queued and prompting
 // phases.
 type submission struct {
-	id        string
-	approvals map[string]json.RawMessage // pending, by Claude's request ID
+	id string
 }
 
 func (a *Agent) submit(text string) (string, error) {
@@ -40,7 +39,7 @@ func (a *Agent) submit(text string) (string, error) {
 	if !a.idle() {
 		return "", ErrBusy
 	}
-	prompt := &submission{id: claude.NewUUID(), approvals: make(map[string]json.RawMessage)}
+	prompt := &submission{id: claude.NewUUID()}
 	if err := a.input.Prompt(prompt.id, text); err != nil {
 		return "", fmt.Errorf("send prompt to Claude: %w", err)
 	}
@@ -58,22 +57,26 @@ func (a *Agent) commandStarted(id string) {
 
 func (a *Agent) sessionState(state string) {
 	a.claudeState = state
-	switch {
-	case a.prompt == nil, state != "idle":
-		a.publish(Update{Type: "state", State: state})
-	case a.phase == queued:
+	update := Update{Type: "state", State: state}
+	if state != "idle" {
+		a.publish(update)
+		return
+	}
+	a.withdrawApprovals()
+	switch a.phase {
+	case queued:
 		// Claude can report idle before it takes the prompt; keep waiting.
-	case a.phase == prompting:
-		a.endPrompt(Update{Type: "state", State: state})
+	case prompting:
+		a.endPrompt(update)
+	default:
+		a.publish(update)
 	}
 }
 
-// endPrompt withdraws the prompt's unanswered approvals, publishes its final
+// endPrompt withdraws unanswered approvals, publishes the prompt's final
 // update, and releases the agent.
 func (a *Agent) endPrompt(final Update) {
-	for id := range a.prompt.approvals {
-		a.publish(Update{Type: "approval_cancelled", RequestID: id})
-	}
+	a.withdrawApprovals()
 	a.publish(final)
 	a.prompt = nil
 	a.phase = available

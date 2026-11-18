@@ -11,6 +11,8 @@ Each layer of `oxd` depends only on the layers below it.
 
 ```
 cmd/oxd            socket and state paths, signals
+   │         │
+   │   internal/socket    the default socket path, shared with cmd/ox
    │
 internal/server    connections, sessions, JSON-RPC methods
    │         │    │
@@ -26,6 +28,7 @@ internal/claude    Claude Code subprocess and its stream-json wire format
 | Package | Owns |
 | --- | --- |
 | `cmd/oxd` | Choosing the socket and state file, starting the server, and stopping it on a signal. |
+| `socket` | The default socket path, which `cmd/oxd` serves and `cmd/ox` connects to. |
 | `server` | Client connections, the sessions and the process running each, and the mapping from each method to a session operation and its error codes. Each connection writes through its own queue, so agents never wait on a client. |
 | `store` | Loading and saving the state file. |
 | `jsonrpc` | Request validation and the response and notification types. |
@@ -46,9 +49,10 @@ prompt refused by a parking process waits for that process to exit and goes to
 a new one. A session parks when its process exits; the server notices the exit
 the next time it looks at the session.
 
-Each process a session starts has two subscribers, fixed when it starts: the
-session's history and a broadcaster that sends each update to every open
-connection. The history appends the conversation's updates to
+Each process a session starts has two subscribers: the session's history and
+a broadcaster that sends each update to every open connection. A session that
+is not yet resumable also gets a resume marker, which marks the session
+resumable at the first result and then unsubscribes. The history appends the conversation's updates to
 `sessions/<session_id>.jsonl` beside the state file, holding the current
 reply's text in memory until the next update ends it. `session/get` reads the
 history and the agent's state through `Inspect`, whose callback runs on the
@@ -71,7 +75,7 @@ The agent's phase records what owns its Claude process:
 | `available` | Nothing owns the process. | A prompt or configuration starts. |
 | `queued` | A prompt was written; Claude has not taken it yet. | `command_lifecycle started` for the prompt. |
 | `prompting` | Claude is working on the prompt. | Claude reports `idle`. |
-| `configuring` | Control requests are in flight, one at a time. | The last acknowledgement, a refusal, or a timeout. |
+| `configuring` | Control requests are in flight, one at a time. | The last acknowledgement, a refusal, a write failure, a timeout, or the process exiting. |
 | `parking` | The agent has terminated an unused process; prompts and configuration are refused as if it had exited. | The process exits. |
 | `exited` | The Claude process has exited. | — |
 
@@ -85,8 +89,8 @@ hook Claude calls at the end of each completed turn. A turn that ends by
 interrupt or error calls no Stop hook, so a `CronCreate`, `CronDelete`, or
 `ScheduleWakeup` call counts as a pending schedule until the next Stop hook.
 The agent arms a park timer whenever it is `available`, Claude is `idle`, no
-background task runs, and nothing is scheduled, and disarms it when any of
-those stops holding. If the timer fires while still armed, the
+approval is pending, no background task runs, and nothing is scheduled, and
+disarms it when any of those stops holding. If the timer fires while still armed, the
 agent enters `parking` and sends Claude SIGTERM.
 
 Subscribers receive every update: those of a client's prompt carry its ID, and

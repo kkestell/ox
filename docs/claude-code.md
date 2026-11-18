@@ -1,6 +1,6 @@
 # Driving Claude Code with `claude -p` and stream-json
 
-Collected from Ox (`crates/claude-code-acp`, Rust, baseline `c0c3f0f`) and Hypercube (`plugins/claude`, Go, baseline `60b62ab`), including their git history, plans, reviews, work logs, research notes and recorded fixtures. Observations were made against Claude Code 2.1.312 through 2.1.326 (October–November 2026); fixtures used `claude-haiku-5-5`. Treat field names and behaviors as version-specific and re-probe when upgrading.
+Collected from the Rust implementation that preceded this repository, called Ox-rs here (`crates/claude-code-acp`, baseline `c0c3f0f`), and Hypercube (`plugins/claude`, Go, baseline `60b62ab`), including their git history, plans, reviews, work logs, research notes and recorded fixtures. Observations were made against Claude Code 2.1.312 through 2.1.326 (October–November 2026); fixtures used `claude-haiku-5-5`. Treat field names and behaviors as version-specific and re-probe when upgrading.
 
 ## 1. Launch
 
@@ -32,7 +32,7 @@ claude -p \
 - `--allowedTools` and `--disallowedTools` are variadic and consume every following argument that is not a flag. Put another `--flag` right after their values.
 - Per-process flags (`--mcp-config`, `--settings`, `--plugin-dir`, `--add-dir`, `--fallback-model`, `--append-system-prompt`, model, effort) must be passed again on every resume. The permission mode is restored from the transcript.
 - `--session-id` must be a UUID. Hypercube derives fork destination IDs deterministically (first 32 hex chars of sha256 of its own ID, formatted `%s-%s-4%s-8%s-%s`) so a restart before the first turn reuses the same ID.
-- Ox makes its own session ID the Claude session ID, and chooses `--resume <id>` only when a transcript for that ID exists in that cwd; otherwise `--session-id <id>`.
+- Ox-rs makes its own session ID the Claude session ID, and chooses `--resume <id>` only when a transcript for that ID exists in that cwd; otherwise `--session-id <id>`.
 - Set the process's working directory to the session's directory.
 
 ### Environment
@@ -171,7 +171,7 @@ Lines of type `stream_event` wrap an SSE event in `.event`; unwrap before dispat
 
 ### `control_request` from Claude
 
-Only `can_use_tool` matters. Answer every other subtype (hook callbacks, MCP messages) with an error so Claude does not wait:
+Answer `can_use_tool`, and answer a `hook_callback` for a hook declared in `initialize` (such as the Stop hook in section 8) with success. Answer every other subtype (undeclared hook callbacks, MCP messages) with an error so Claude does not wait:
 
 ```json
 {"type":"control_response","response":{"subtype":"error","request_id":"<id>","error":"Unsupported control request"}}
@@ -421,5 +421,5 @@ Live smoke tests against a real model (Haiku) are flaky when the test depends on
 
 ## Sources
 
-- Ox: `crates/claude-code-acp/src/{runner,updates,background,questions,content,commands,history,sessions}.rs`, `crates/acp-bridge/src/pipes.rs`, `tests/protocol.rs`, `spec/claude.md`, `docs/research/harnesses/claude-code.md`, `docs/research/utility-model.md`; commits `03bfdcc` (persistent process), `fc13def` (background tasks), `d00463b` (`priority: next`), `1647c4f` (turn ends, preemption), `d421e4b` (output lost at exit), `c977427` (initialize at spawn), `a542b25` (AskUserQuestion).
+- Ox-rs: `crates/claude-code-acp/src/{runner,updates,background,questions,content,commands,history,sessions}.rs`, `crates/acp-bridge/src/pipes.rs`, `tests/protocol.rs`, `spec/claude.md`, `docs/research/harnesses/claude-code.md`, `docs/research/utility-model.md`; commits `03bfdcc` (persistent process), `fc13def` (background tasks), `d00463b` (`priority: next`), `1647c4f` (turn ends, preemption), `d421e4b` (output lost at exit), `c977427` (initialize at spawn), `a542b25` (AskUserQuestion).
 - Hypercube: `plugins/claude/{main,events,requests,configure,discovery,generate}.go`, `plugins/claude/testdata/*.jsonl`, `plugins/internal/plugin/process.go`, `.agents/research/harnesses/claude-code.md`, `.agents/research/utility-model.md`, `docs/harness-support.md`; commits `d535ef4` (stream-json switch), `444f60a` (model discovery), `11a3bd3` (`apply_flag_settings`), `4dd12a0` (state across results), `4d85b1d` (EPIPE on resume), `c06825e` (self-started turns), `ff4f5c0` (rate limits), `08f0d1a` (TUI and hooks era).

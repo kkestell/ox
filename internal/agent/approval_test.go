@@ -87,3 +87,22 @@ func TestApprovalSurvivesResult(t *testing.T) {
 		t.Fatalf("background approval was not forwarded: %s", input)
 	}
 }
+
+func TestApprovalWithoutPrompt(t *testing.T) {
+	a, input := testAgent()
+	updates := new(recorder)
+	a.subscribers[updates] = struct{}{}
+	a.controlRequest("scheduled", json.RawMessage(`{"subtype":"can_use_tool"}`))
+	if len(*updates) != 1 || (*updates)[0].Type != "approval" || (*updates)[0].MessageID != "" {
+		t.Fatalf("approval in a turn Claude started was not published: %+v", *updates)
+	}
+	if a.parkable() {
+		t.Fatal("a pending approval left the agent parkable")
+	}
+	if err := a.answer("scheduled", json.RawMessage(`{"behavior":"allow"}`)); err != nil {
+		t.Fatalf("approval in a turn Claude started could not be answered: %v", err)
+	}
+	if !bytes.Contains(input.Bytes(), []byte(`"request_id":"scheduled"`)) {
+		t.Fatalf("answer was not forwarded: %s", input)
+	}
+}

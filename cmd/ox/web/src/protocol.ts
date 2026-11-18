@@ -48,7 +48,8 @@ export type Methods = {
     { session_id: string },
     {
       state: SessionState;
-      prompt: { approvals: { request_id: string; request: ApprovalRequest }[] } | null;
+      prompt: { message_id: string } | null;
+      approvals: { request_id: string; request: ApprovalRequest }[];
       history: Update[];
     },
   ];

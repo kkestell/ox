@@ -49,6 +49,7 @@ type Agent struct {
 	phase       phase
 	claudeState string
 	prompt      *submission
+	approvals   map[string]json.RawMessage // pending, by Claude's request ID
 	config      *configuration
 	subscribers map[Subscriber]struct{}
 	parkAfter   time.Duration // zero never parks
@@ -61,13 +62,13 @@ type Agent struct {
 
 // Snapshot is an agent's current state, returned by Inspect.
 type Snapshot struct {
-	State  string          `json:"state"`
-	Prompt *PromptSnapshot `json:"prompt"`
+	State     string          `json:"state"`
+	Prompt    *PromptSnapshot `json:"prompt"`
+	Approvals []Approval      `json:"approvals"`
 }
 
 type PromptSnapshot struct {
-	MessageID string     `json:"message_id"`
-	Approvals []Approval `json:"approvals"`
+	MessageID string `json:"message_id"`
 }
 
 type Approval struct {
@@ -124,7 +125,8 @@ func Start(options claude.Options, parkAfter time.Duration, subscribers ...Subsc
 func newAgent(input *claude.Input) *Agent {
 	return &Agent{
 		input: input, events: make(chan any), done: make(chan struct{}),
-		phase: available, claudeState: "idle", subscribers: make(map[Subscriber]struct{}),
+		phase: available, claudeState: "idle", approvals: make(map[string]json.RawMessage),
+		subscribers: make(map[Subscriber]struct{}),
 	}
 }
 
@@ -229,13 +231,12 @@ func (a *Agent) idle() bool {
 }
 
 func (a *Agent) snapshot() Snapshot {
-	snapshot := Snapshot{State: a.claudeState}
+	snapshot := Snapshot{State: a.claudeState, Approvals: []Approval{}}
 	if a.prompt != nil {
-		prompt := &PromptSnapshot{MessageID: a.prompt.id, Approvals: []Approval{}}
-		for id, request := range a.prompt.approvals {
-			prompt.Approvals = append(prompt.Approvals, Approval{id, request})
-		}
-		snapshot.Prompt = prompt
+		snapshot.Prompt = &PromptSnapshot{MessageID: a.prompt.id}
+	}
+	for id, request := range a.approvals {
+		snapshot.Approvals = append(snapshot.Approvals, Approval{id, request})
 	}
 	return snapshot
 }
@@ -251,6 +252,7 @@ func (a *Agent) exit(err error) {
 	case configuring:
 		a.endConfiguration(a.config.fail(ErrExited))
 	}
+	a.withdrawApprovals()
 	a.publish(Update{Type: "parked"})
 	a.phase = exited
 }

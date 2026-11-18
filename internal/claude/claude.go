@@ -45,15 +45,8 @@ func Start(options Options) (*Process, error) {
 	} else {
 		args = append(args, "--session-id="+options.SessionID)
 	}
-	if options.Model != "" {
-		args = append(args, "--model="+options.Model)
-	}
-	if options.Effort != "" {
-		args = append(args, "--effort="+options.Effort)
-	}
-	if options.PermissionMode != "" {
-		args = append(args, "--permission-mode="+options.PermissionMode)
-	}
+	args = append(args,
+		"--model="+options.Model, "--effort="+options.Effort, "--permission-mode="+options.PermissionMode)
 
 	cmd := exec.Command("claude", args...)
 	cmd.Dir = options.Workspace

@@ -7,9 +7,10 @@ import (
 )
 
 // parkable reports whether nothing is using the process: no prompt or
-// configuration, Claude idle, no background task, and nothing scheduled.
+// configuration, Claude idle, no approval pending, no background task, and
+// nothing scheduled.
 func (a *Agent) parkable() bool {
-	return a.idle() && a.background == 0 && a.schedules == 0 && !a.scheduling
+	return a.idle() && len(a.approvals) == 0 && a.background == 0 && a.schedules == 0 && !a.scheduling
 }
 
 // stopHook records the schedules Claude reports at the end of a completed

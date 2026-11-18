@@ -46,9 +46,9 @@ parks when its process exits for any reason, including daemon shutdown.
 
 The daemon parks a session whose process has gone unused for five minutes
 (`-park-after` changes the period): no prompt or configuration in progress,
-Claude idle, no background task running, and no scheduled prompt pending
-(`CronCreate`, `ScheduleWakeup`, or `/loop`), so scheduled prompts keep firing.
-Connected clients do not keep a session running.
+Claude idle, no approval pending, no background task running, and no scheduled
+prompt pending (`CronCreate`, `ScheduleWakeup`, or `/loop`), so scheduled
+prompts keep firing. Connected clients do not keep a session running.
 
 ## Workspace methods
 
@@ -76,7 +76,7 @@ process is running.
 ```
 
 ```json
-{"jsonrpc":"2.0","id":2,"result":{"workspaces":[{"workspace_id":"workspace-id","path":"/Users/kyle/src/ox","sessions":[{"session_id":"session-id","model":"haiku","effort":"low","permission_mode":"","parked":true}]}]}}
+{"jsonrpc":"2.0","id":2,"result":{"workspaces":[{"workspace_id":"workspace-id","path":"/Users/kyle/src/ox","sessions":[{"session_id":"session-id","model":"haiku","effort":"low","permission_mode":"manual","parked":true}]}]}}
 ```
 
 ## Session methods
@@ -140,7 +140,7 @@ response arrives.
 ```
 
 ```json
-{"jsonrpc":"2.0","id":5,"result":{"state":"requires_action","prompt":{"message_id":"prompt-id","approvals":[{"request_id":"claude-request-id","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch notes.txt"}}}]},"history":[{"message_id":"prompt-id","type":"prompt","text":"Create notes.txt."},{"message_id":"prompt-id","type":"text_delta","text":"I'll create the file."}]}}
+{"jsonrpc":"2.0","id":5,"result":{"state":"requires_action","prompt":{"message_id":"prompt-id"},"approvals":[{"request_id":"claude-request-id","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch notes.txt"}}}],"history":[{"message_id":"prompt-id","type":"prompt","text":"Create notes.txt."},{"message_id":"prompt-id","type":"text_delta","text":"I'll create the file."}]}}
 ```
 
 | Field | Meaning |
@@ -148,7 +148,7 @@ response arrives.
 | `state` | `parked`, or Claude's execution state: `running`, `requires_action`, or `idle`. |
 | `prompt` | The active prompt, or `null`. |
 | `prompt.message_id` | The prompt's identifier, matching its updates. |
-| `prompt.approvals` | Pending approvals, each with `request_id` and Claude's `request`. |
+| `approvals` | Pending approvals, each with `request_id` and Claude's `request`, whether or not a prompt is active. |
 | `history` | The session's recorded updates, oldest first, in the form of `session/update` params without `session_id`. |
 
 The daemon records every session's `prompt`, `text_delta`, `tool_use`,
@@ -180,9 +180,10 @@ For a running session, success means Claude acknowledged all three settings,
 and only then are they stored. Model, effort, and permission
 mode are applied in that order. If a change fails, earlier changes remain
 applied to the process and later changes are skipped. Claude refusals, write
-failures, process exit, and missing responses after one minute return an
-operation error. As at creation, model identifiers are interpreted by Claude;
-acknowledgement does not guarantee the model will work on a prompt.
+failures, and missing responses after one minute return an operation error.
+If the process exits first, the settings are stored for the next process and
+the request succeeds. As at creation, model identifiers are interpreted by
+Claude; acknowledgement does not guarantee the model will work on a prompt.
 
 ### `session/approve`
 
@@ -285,6 +286,10 @@ The client chooses how to obtain the decision and replies using
 `session/approve`. Reading output continues while approvals are pending.
 Multiple approvals can be pending; identify each by its `request_id`.
 
+Turns Claude starts itself request approval the same way, without
+`message_id`. An approval waits until a client answers it, however long that
+takes; while it is pending, the session's process keeps running.
+
 When Claude cancels a request, becomes idle, or exits, Ox withdraws unanswered
 approvals. A `result` alone does not withdraw approvals: background subagents
 can still be waiting for a decision. For idle or exit, the cancellation
@@ -306,7 +311,7 @@ Every connection is told when workspaces and sessions come and go:
 | `session/destroyed` | `session_id` | A session was destroyed, after its last update. |
 
 ```json
-{"jsonrpc":"2.0","method":"session/created","params":{"session_id":"session-id","workspace_id":"workspace-id","model":"haiku","effort":"","permission_mode":""}}
+{"jsonrpc":"2.0","method":"session/created","params":{"session_id":"session-id","workspace_id":"workspace-id","model":"haiku","effort":"low","permission_mode":"manual"}}
 ```
 
 ## Connections
