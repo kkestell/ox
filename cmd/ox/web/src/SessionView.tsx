@@ -17,11 +17,6 @@ export function SessionView(props: { session: Session }) {
   };
   const workspace = () => ox.state.workspaces.find((w) => w.id === props.session.workspaceId)?.path;
 
-  // The destroyed event removes the session from every page.
-  const destroy = () => {
-    if (confirm(`Delete session ${props.session.id} and its history?`)) attempt(ox.destroy(props.session.id));
-  };
-
   const send = (event: SubmitEvent & { currentTarget: HTMLFormElement }) => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -32,7 +27,7 @@ export function SessionView(props: { session: Session }) {
   return (
     <>
       <p>
-        {workspace()} · {props.session.id} · {props.session.state} <button onClick={destroy}>Delete</button>
+        {workspace()} · {props.session.id}
       </p>
       <div class="log">
         <Transcript entries={props.session.entries} />

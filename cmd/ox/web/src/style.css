@@ -9,6 +9,7 @@ p, h1, h2, h3, h4, h5, h6 { overflow-wrap: break-word; }
 ul, ol { list-style: none; }
 
 :root {
+  color-scheme: light dark;
   --font-sans: sans-serif;
   --font-mono: monospace;
   --line-height: 1.4;
@@ -16,31 +17,34 @@ ul, ol { list-style: none; }
   --space-m: 0.5em;
   --space-l: 1em;
   --sidebar-width: 22em;
-  --border: 1px solid #ccc;
-  --color-surface: #f4f4f4;
-  --color-highlight: #eef;
-  --color-error: #b00;
+  --color-text: light-dark(#111, #ddd);
+  --color-background: light-dark(#fff, #1b1b1b);
+  --border: 1px solid light-dark(#ccc, #444);
+  --color-surface: light-dark(#f4f4f4, #262626);
+  --color-highlight: light-dark(#eef, #2a2d3e);
+  --color-error: light-dark(#b00, #f66);
   --status-size: 0.6em;
-  --color-parked: #aaa;
+  --color-parked: light-dark(#aaa, #777);
   --color-idle: #2a2;
   --color-running: #27d;
   --color-requires-action: #e80;
 }
 
-body { font-family: var(--font-sans); line-height: var(--line-height); }
+body { font-family: var(--font-sans); line-height: var(--line-height); color: var(--color-text); background: var(--color-background); }
 #root { display: flex; }
 nav { flex: none; width: var(--sidebar-width); padding: var(--space-m); display: flex; flex-direction: column; gap: var(--space-m); border-right: var(--border); min-height: 100vh; }
 main { flex: 1; padding: var(--space-m); height: 100vh; display: flex; flex-direction: column; gap: var(--space-m); }
 .log { flex: 1; overflow-y: auto; }
 .composer { display: flex; flex-direction: column; gap: var(--space-s); }
-.composer textarea { width: 100%; padding: var(--space-s); }
+.composer textarea { display: block; width: 100%; padding: var(--space-s); }
 .composer .row, .composer .row form { display: flex; gap: var(--space-s); align-items: center; }
 .composer .row > button { margin-left: auto; }
 nav > button { align-self: flex-start; }
 button, select { padding: 0 var(--space-m); }
-nav li { cursor: pointer; }
-nav li.selected { font-weight: bold; }
-.status { display: inline-block; width: var(--status-size); height: var(--status-size); border-radius: 50%; }
+nav li { cursor: pointer; display: flex; align-items: center; gap: var(--space-s); }
+nav li .title { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+nav li.selected .title { font-weight: bold; }
+.status { flex: none; width: var(--status-size); height: var(--status-size); border-radius: 50%; }
 .status.parked { background: var(--color-parked); }
 .status.idle { background: var(--color-idle); }
 .status.running { background: var(--color-running); }

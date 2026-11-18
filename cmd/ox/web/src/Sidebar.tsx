@@ -1,10 +1,11 @@
 import { createSignal, For, Show } from "solid-js";
-import { useOx } from "./ox";
+import { useOx, type Session } from "./ox";
 import type { Selection } from "./App";
 
 export function Sidebar(props: { selected?: Selection; onSelect(selection: Selection): void }) {
   const ox = useOx();
   const [error, setError] = createSignal<string>();
+  const [deleteError, setDeleteError] = createSignal<string>();
   let dialog!: HTMLDialogElement;
 
   const open = () => {
@@ -25,6 +26,18 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
     }
   };
 
+  // The destroyed event removes the session from every page.
+  const destroy = async (event: MouseEvent, id: string) => {
+    event.stopPropagation();
+    if (!confirm(`Delete session ${id} and its history?`)) return;
+    setDeleteError(undefined);
+    try {
+      await ox.destroy(id);
+    } catch (e) {
+      setDeleteError((e as Error).message);
+    }
+  };
+
   return (
     <nav>
       <button onClick={open}>Add workspace</button>
@@ -38,6 +51,7 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
         </form>
         <Show when={error()}>{(error) => <p role="alert">{error()}</p>}</Show>
       </dialog>
+      <Show when={deleteError()}>{(error) => <p role="alert">{error()}</p>}</Show>
       <For each={ox.state.workspaces}>
         {(workspace) => (
           <>
@@ -52,9 +66,10 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
                     class={{ selected: props.selected?.kind === "session" && props.selected.id === session.id }}
                     onClick={() => props.onSelect({ kind: "session", id: session.id })}
                   >
-                    <span class={["status", session.state]} role="img" title={session.state} aria-label={session.state} />{" "}
-                    {session.id.slice(0, 8)}
+                    <span class={["status", session.state]} role="img" title={session.state} aria-label={session.state} />
+                    <span class="title">{title(session)}</span>
                     {session.approvals.length ? " (approval)" : ""}
+                    <button onClick={(event) => destroy(event, session.id)}>Delete</button>
                   </li>
                 )}
               </For>
@@ -64,4 +79,11 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
       </For>
     </nav>
   );
+}
+
+// title is the first line of a session's first prompt, or the start of its ID
+// before it has one.
+function title(session: Session) {
+  const prompt = session.entries.find((e) => e.kind === "prompt");
+  return prompt?.kind === "prompt" ? prompt.text.trim().split("\n")[0] : session.id.slice(0, 8);
 }
