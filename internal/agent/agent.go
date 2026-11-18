@@ -53,7 +53,8 @@ type Agent struct {
 	subscribers map[Subscriber]struct{}
 	parkAfter   time.Duration // zero never parks
 	background  int           // Claude's live background tasks
-	scheduled   bool          // Claude has scheduled a prompt of its own
+	schedules   int           // Claude's pending schedules, from the last Stop hook
+	scheduling  bool          // a scheduling tool ran since the last Stop hook
 	parkTimer   int           // generation of the armed park timer; zero when unarmed
 	timers      int           // timer generations issued
 }
@@ -188,8 +189,9 @@ func (a *Agent) handleOutput(message claude.Message) {
 		}
 	case "assistant":
 		for _, name := range message.ToolNames() {
-			if name == "CronCreate" || name == "ScheduleWakeup" {
-				a.scheduled = true
+			switch name {
+			case "CronCreate", "CronDelete", "ScheduleWakeup":
+				a.scheduling = true
 			}
 		}
 	case "stream_event":

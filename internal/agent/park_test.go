@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,13 +44,28 @@ func TestParkTimerFollowsActivity(t *testing.T) {
 	}
 }
 
-func TestScheduledAgentNeverParks(t *testing.T) {
-	a, _ := testAgent()
+func TestSchedulesBlockParking(t *testing.T) {
+	a, input := testAgent()
 	a.parkAfter = time.Hour
+	stop := func(crons string) {
+		output(t, a, `{"type":"control_request","request_id":"hook","request":{"subtype":"hook_callback","callback_id":"stop","input":{"hook_event_name":"Stop","session_crons":`+crons+`}}}`)
+	}
+
 	output(t, a, `{"type":"assistant","parent_tool_use_id":"toolu_agent","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"ScheduleWakeup","input":{"delaySeconds":60}}]}}`)
 	output(t, a, `{"type":"user","message":{"content":"hello"}}`)
-	if !a.scheduled || a.parkTimer != 0 {
-		t.Fatalf("scheduling agent can park: scheduled %v, timer %d", a.scheduled, a.parkTimer)
+	if a.parkTimer != 0 {
+		t.Fatal("a scheduling tool call left the park timer armed before the Stop hook")
+	}
+	stop(`[{"id":"b2286d1a","schedule":"45 9 * * *","recurring":false,"prompt":"tick"}]`)
+	if a.parkTimer != 0 {
+		t.Fatal("a pending schedule left the park timer armed")
+	}
+	if !strings.Contains(input.String(), `"request_id":"hook"`) {
+		t.Fatalf("Stop hook was not answered: %s", input)
+	}
+	stop(`[]`)
+	if a.parkTimer == 0 {
+		t.Fatal("an empty schedule list did not arm the park timer")
 	}
 }
 

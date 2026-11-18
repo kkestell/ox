@@ -45,9 +45,9 @@ parks when its process exits for any reason, including daemon shutdown.
 
 The daemon parks a session whose process has gone unused for five minutes
 (`-park-after` changes the period): no prompt or configuration in progress,
-Claude idle, and no background task running. Attached connections do not keep
-a session running. A process in which Claude has called `CronCreate` or
-`ScheduleWakeup` is never parked, so its scheduled prompts keep firing.
+Claude idle, no background task running, and no scheduled prompt pending
+(`CronCreate`, `ScheduleWakeup`, or `/loop`), so scheduled prompts keep firing.
+Attached connections do not keep a session running.
 
 ## Workspace methods
 

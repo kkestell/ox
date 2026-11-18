@@ -71,10 +71,13 @@ alongside the phase. The agent accepts a prompt or configuration only when it
 is `available` and Claude is `idle`.
 
 The agent also tracks the size of Claude's background-task set from
-`background_tasks_changed`, and whether Claude has called `CronCreate` or
-`ScheduleWakeup`. It arms a park timer whenever it is `available`, Claude is
-`idle`, no background task runs, and nothing was scheduled, and disarms it
-when any of those stops holding. If the timer fires while still armed, the
+`background_tasks_changed`, and the number of pending schedules from the Stop
+hook Claude calls at the end of each completed turn. A turn that ends by
+interrupt or error calls no Stop hook, so a `CronCreate`, `CronDelete`, or
+`ScheduleWakeup` call counts as a pending schedule until the next Stop hook.
+The agent arms a park timer whenever it is `available`, Claude is `idle`, no
+background task runs, and nothing is scheduled, and disarms it when any of
+those stops holding. If the timer fires while still armed, the
 agent enters `parking` and sends Claude SIGTERM.
 
 Subscribers receive updates about the current prompt. The server attaches a

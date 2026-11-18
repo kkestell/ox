@@ -90,7 +90,8 @@ func Start(options Options) (*Process, error) {
 }
 
 func initialize(input io.Writer, output *bufio.Reader) error {
-	const request = `{"type":"control_request","request_id":"initialize","request":{"subtype":"initialize"}}`
+	// The Stop hook reports Claude's pending schedules at the end of each turn.
+	const request = `{"type":"control_request","request_id":"initialize","request":{"subtype":"initialize","hooks":{"Stop":[{"hookCallbackIds":["stop"]}]}}}`
 	if _, err := io.WriteString(input, request+"\n"); err != nil {
 		return err
 	}

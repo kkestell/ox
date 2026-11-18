@@ -1,16 +1,29 @@
 package agent
 
 import (
+	"encoding/json"
 	"log"
 	"time"
 )
 
 // parkable reports whether nothing is using the process: no prompt or
 // configuration, Claude idle, no background task, and nothing scheduled.
-// Claude does not report when a schedule ends, so a process that has
-// scheduled a prompt is never parked.
 func (a *Agent) parkable() bool {
-	return a.idle() && a.background == 0 && !a.scheduled
+	return a.idle() && a.background == 0 && a.schedules == 0 && !a.scheduling
+}
+
+// stopHook records the schedules Claude reports at the end of a completed
+// turn and lets the turn finish. A turn that ends by interrupt or error sends
+// no Stop hook, so a scheduling tool call keeps the agent from parking until
+// the next one.
+func (a *Agent) stopHook(requestID string, crons *[]json.RawMessage) {
+	if crons != nil {
+		a.schedules = len(*crons)
+		a.scheduling = false
+	}
+	if err := a.input.Respond(requestID, map[string]any{}); err != nil {
+		log.Printf("answer Stop hook: %v", err)
+	}
 }
 
 // armPark starts the park timer when the agent becomes parkable and disarms

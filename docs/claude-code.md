@@ -338,13 +338,20 @@ Answer by allowing with the original input plus `answers`, keyed by question tex
 - Background Bash, Monitor and background subagents appear in `background_tasks_changed`. A task's tool call stays running after its `tool_result` until its `task_notification`; a turn's `result` should not mark it failed.
 - On ending, the order is `task_updated`, `task_notification`, `background_tasks_changed` without the task, then a turn Claude starts itself with no user prompt.
 - `background_tasks_changed` can arrive before the `task_started` that maps `task_id` to `tool_use_id`. Resolve the mapping lazily.
-- Scheduled prompts are not listed anywhere; infer them from tool calls and their structured results:
+- The Stop hook reports pending schedules. Declare it in `initialize` with `"hooks":{"Stop":[{"hookCallbackIds":["stop"]}]}`. At the end of each completed turn, before `result` and `idle`, Claude sends `{"type":"control_request","request_id":"<id>","request":{"subtype":"hook_callback","callback_id":"stop","input":{"hook_event_name":"Stop","background_tasks":[],"session_crons":[{"id":"4dc9d149","schedule":"*/30 * * * *","recurring":true,"prompt":"say hi"}]}}}` and waits for `{"type":"control_response","response":{"subtype":"success","request_id":"<id>","response":{}}}`.
+  - `session_crons` is the complete list of `CronCreate` jobs, `ScheduleWakeup` wakeups and `/loop` jobs, including those a foreground subagent created; `[]` means none. A wakeup appears as a one-shot entry whose cron string encodes its fire minute. Each `prompt` is capped at 1000 characters.
+  - `SubagentStop` (same declaration shape) carries the same field when a subagent finishes.
+  - A turn that ends by interrupt or error sends no Stop callback (an API error fires `StopFailure`, which has no `session_crons`), and a resumed process reports its restored jobs only when its first turn ends.
+  - A fired one-shot job or wakeup is gone from the list at the end of its fire turn.
+- The tool calls and their structured results describe each schedule:
   - `CronCreate` input `{cron, prompt, recurring?, durable?}`, result `{id, humanSchedule, recurring, durable?, nextFireAt}` (epoch ms).
   - `CronDelete` input `{id}`.
   - `ScheduleWakeup` input `{delaySeconds?, reason?, prompt?, stop?}`, result `{scheduledFor, clampedDelaySeconds, wasClamped, stopped?, cancelledWakeups?}`.
   - Times may be floats.
-- Rules: recurring jobs expire 7 days after creation; a one-shot job is done once a turn starting at or after its fire time ends; a `/loop` wakeup turn that schedules nothing gets one fallback wakeup ~20 minutes later, and the loop ends if that turn schedules nothing either; `ScheduleWakeup{stop:true}` clears wakeups only once its result is successful.
-- `claude --resume` restores unexpired recurring jobs and future one-shot jobs, not wakeups. Durable jobs of other sessions in `.claude/scheduled_tasks.json` are not visible.
+- Rules: recurring jobs expire 7 days after creation, deleted after their final fire; a one-shot job is done once a turn starting at or after its fire time ends; in `-p` mode a dynamic `/loop` ends when a wakeup turn schedules nothing (2.1.327); `ScheduleWakeup{stop:true}` clears wakeups only once its result is successful.
+- A turn Claude starts for a schedule carries `wakeup_source` on its `command_lifecycle` `started` line: `schedule_wakeup` for a cron job, or `loop_wakeup` with `scheduled_for` (epoch ms) for a dynamic `/loop` wakeup.
+- `CronCreate` with `durable:true` returns `durable:false` in 2.1.327; durable persistence is unavailable.
+- `claude --resume` restores unexpired main-thread recurring jobs and future one-shot jobs, not wakeups or jobs created by subagents. Durable jobs of other sessions in `.claude/scheduled_tasks.json` are not visible.
 
 ## 9. Usage and cost
 
