@@ -1,19 +1,28 @@
 package server
 
 import (
-	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/kkestell/ox/internal/agent"
+	"github.com/kkestell/ox/internal/store"
 )
 
 func TestHistoryMergesTextAndKeepsConversation(t *testing.T) {
-	h := &history{path: filepath.Join(t.TempDir(), "sessions", "s.jsonl")}
+	st := openStore(t)
+	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: "/w", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSession("w", &store.Session{ID: "s", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	h := &history{store: st, sessionID: "s"}
+	replyStarted := time.Date(2026, 11, 18, 12, 0, 1, 0, time.UTC)
 	for _, u := range []agent.Update{
 		{MessageID: "p", Type: "prompt", Text: "hi"},
 		{MessageID: "p", Type: "state", State: "running"},
-		{MessageID: "p", Type: "text_delta", Text: "hel"},
-		{MessageID: "p", Type: "text_delta", Text: "lo"},
+		{MessageID: "p", Type: "text_delta", Text: "hel", Time: replyStarted},
+		{MessageID: "p", Type: "text_delta", Text: "lo", Time: replyStarted.Add(time.Second)},
 	} {
 		h.Publish(u)
 	}
@@ -38,5 +47,8 @@ func TestHistoryMergesTextAndKeepsConversation(t *testing.T) {
 	}
 	if len(got) != 4 || got[0] != "prompt:hi" || got[1] != "text_delta:hello" || got[2] != "result:" || got[3] != "text_delta:tick" {
 		t.Fatalf("unexpected history: %v", got)
+	}
+	if !entries[1].Time.Equal(replyStarted) {
+		t.Fatalf("merged text is not timed by its first fragment: %v", entries[1].Time)
 	}
 }

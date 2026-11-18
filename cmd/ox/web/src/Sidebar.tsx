@@ -26,6 +26,12 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
     }
   };
 
+  // A workspace's sessions, oldest first.
+  const sessionsOf = (workspaceId: string) =>
+    Object.values(ox.state.sessions)
+      .filter((s) => s.workspaceId === workspaceId)
+      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+
   // The destroyed event removes the session from every page.
   const destroy = async (event: MouseEvent, id: string) => {
     event.stopPropagation();
@@ -60,7 +66,7 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
               <button onClick={() => props.onSelect({ kind: "draft", workspaceId: workspace.id })}>New session</button>
             </p>
             <ul>
-              <For each={Object.values(ox.state.sessions).filter((s) => s.workspaceId === workspace.id)}>
+              <For each={sessionsOf(workspace.id)}>
                 {(session) => (
                   <li
                     class={{ selected: props.selected?.kind === "session" && props.selected.id === session.id }}

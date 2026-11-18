@@ -16,7 +16,9 @@ export type ApprovalResponse =
   | { behavior: "allow"; updatedInput: Record<string, unknown> }
   | { behavior: "deny"; message: string };
 
-export type Update =
+// time is when the daemon published the update; created_at fields are when
+// the record was created. Both are RFC 3339 timestamps.
+export type Update = { time: string } & (
   | { type: "prompt"; text: string }
   | { type: "text_delta"; text: string }
   | { type: "tool_use"; tool_use_id: string; tool_name: string; input: Record<string, unknown> }
@@ -27,12 +29,13 @@ export type Update =
   | { type: "approval"; request_id: string; request: ApprovalRequest }
   | { type: "approval_answered"; request_id: string }
   | { type: "approval_cancelled"; request_id: string }
-  | { type: "exited"; error: string };
+  | { type: "exited"; error: string }
+);
 
 export type Notification =
   | { method: "session/update"; params: Update & { session_id: string } }
-  | { method: "workspace/created"; params: { workspace_id: string; path: string } }
-  | { method: "session/created"; params: Settings & { session_id: string; workspace_id: string } }
+  | { method: "workspace/created"; params: { workspace_id: string; path: string; created_at: string } }
+  | { method: "session/created"; params: Settings & { session_id: string; workspace_id: string; created_at: string } }
   | { method: "session/configured"; params: Settings & { session_id: string } }
   | { method: "session/destroyed"; params: { session_id: string } };
 
@@ -41,7 +44,14 @@ export type Methods = {
   "workspace/create": [{ path: string }, { workspace_id: string }];
   "workspace/list": [
     {},
-    { workspaces: { workspace_id: string; path: string; sessions: (Settings & { session_id: string })[] }[] },
+    {
+      workspaces: {
+        workspace_id: string;
+        path: string;
+        created_at: string;
+        sessions: (Settings & { session_id: string; created_at: string })[];
+      }[];
+    },
   ];
   "session/create": [Settings & { workspace_id: string }, { session_id: string }];
   "session/get": [

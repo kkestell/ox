@@ -10,13 +10,13 @@ JSON-RPC requests to `/rpc`. The page speaks the `oxd` protocol directly.
 Each layer of `oxd` depends only on the layers below it.
 
 ```
-cmd/oxd            socket and state paths, signals
+cmd/oxd            socket and database paths, signals
    │         │
    │   internal/socket    the default socket path, shared with cmd/ox
    │
 internal/server    connections, sessions, JSON-RPC methods
    │         │    │
-   │         │   internal/store     workspace and session records in a JSON file
+   │         │   internal/store     workspaces, sessions, and events in SQLite
    │         │
    │   internal/jsonrpc   message framing and envelopes
    │
@@ -27,10 +27,10 @@ internal/claude    Claude Code subprocess and its stream-json wire format
 
 | Package | Owns |
 | --- | --- |
-| `cmd/oxd` | Choosing the socket and state file, starting the server, and stopping it on a signal. |
+| `cmd/oxd` | Choosing the socket and database, starting the server, and stopping it on a signal. |
 | `socket` | The default socket path, which `cmd/oxd` serves and `cmd/ox` connects to. |
 | `server` | Client connections, the sessions and the process running each, and the mapping from each method to a session operation and its error codes. Each connection writes through its own queue, so agents never wait on a client. |
-| `store` | Loading and saving the state file. |
+| `store` | The SQLite database of workspaces, sessions, and session events. |
 | `jsonrpc` | Request validation and the response and notification types. |
 | `agent` | Prompts, approvals, and configuration for one Claude process, and publishing progress to its subscribers. |
 | `claude` | Starting and initializing Claude, parsing its output into messages, and writing its input messages. |
@@ -38,7 +38,7 @@ internal/claude    Claude Code subprocess and its stream-json wire format
 ## Sessions
 
 The server loads the stored workspaces and sessions at startup, all parked,
-and saves the state file whenever a record changes. A session's ID is the
+and writes each change to the database before applying it in memory. A session's ID is the
 Claude session ID, so each process it starts names the same conversation: the
 first with `--session-id`, and later ones with `--resume` once the first
 prompt's result shows Claude has written the transcript. Each process receives
@@ -52,9 +52,9 @@ the next time it looks at the session.
 Each process a session starts has two subscribers: the session's history and
 a broadcaster that sends each update to every open connection. A session that
 is not yet resumable also gets a resume marker, which marks the session
-resumable at the first result and then unsubscribes. The history appends the conversation's updates to
-`sessions/<session_id>.jsonl` beside the state file, holding the current
-reply's text in memory until the next update ends it. `session/get` reads the
+resumable at the first result and then unsubscribes. The history stores the
+conversation's updates as events in the database, holding the current reply's
+text in memory until the next update ends it. `session/get` reads the
 history and the agent's state through `Inspect`, whose callback runs on the
 agent's goroutine between updates and queues the response there. The response
 therefore lands in the connection's queue after every update it reflects and

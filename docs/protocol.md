@@ -34,10 +34,12 @@ connection.
 ## Workspaces and sessions
 
 A workspace is a directory. A session is a Claude Code conversation in a
-workspace, and its ID is Claude's session ID. The daemon stores workspaces and
-sessions in `ox/state.json` beneath `$XDG_STATE_HOME`, or beneath
-`~/.local/state` when that is unset; `-state /absolute/path/to/state.json`
-chooses a different file. They outlive the daemon.
+workspace, and its ID is Claude's session ID. The daemon stores workspaces,
+sessions, and session history in the SQLite database `ox/ox.db` beneath
+`$XDG_STATE_HOME`, or beneath `~/.local/state` when that is unset;
+`-db /absolute/path/to/ox.db` chooses a different file. They outlive the
+daemon. Each workspace and session records when it was created, as
+`created_at`, an RFC 3339 timestamp.
 
 A session runs a Claude process only while it is in use. A session without
 one is parked. A new session starts parked; `session/send` to a parked session
@@ -68,15 +70,15 @@ the existing workspace.
 
 ### `workspace/list`
 
-Returns every workspace with its sessions. `parked` is false while a session's
-process is running.
+Returns every workspace with its sessions, each oldest first. `parked` is
+false while a session's process is running.
 
 ```json
 {"jsonrpc":"2.0","id":2,"method":"workspace/list","params":{}}
 ```
 
 ```json
-{"jsonrpc":"2.0","id":2,"result":{"workspaces":[{"workspace_id":"workspace-id","path":"/Users/kyle/src/ox","sessions":[{"session_id":"session-id","model":"haiku","effort":"low","permission_mode":"manual","parked":true}]}]}}
+{"jsonrpc":"2.0","id":2,"result":{"workspaces":[{"workspace_id":"workspace-id","path":"/Users/kyle/src/ox","created_at":"2026-11-18T19:53:47.102Z","sessions":[{"session_id":"session-id","model":"haiku","effort":"low","permission_mode":"manual","created_at":"2026-11-18T19:53:48.416Z","parked":true}]}]}}
 ```
 
 ## Session methods
@@ -232,13 +234,15 @@ stays on disk. Any connected client can destroy a session.
 ## Session updates
 
 Updates go to every connection. Every notification uses method
-`session/update` and includes `session_id` and `type` inside
+`session/update` and includes `session_id`, `type`, and `time` inside
 `params`, and `message_id` when the update belongs to a client's prompt.
+`time` is when the daemon published the update, as an RFC 3339 timestamp; a
+recorded reply's `text_delta` carries the time of its first fragment.
 Turns Claude starts itself, such as a scheduled prompt firing or a background
 task finishing, produce the same updates without `message_id`:
 
 ```json
-{"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"text_delta","text":"This repository "}}
+{"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"text_delta","text":"This repository ","time":"2026-11-18T19:53:50.674Z"}}
 ```
 
 | `type` | Additional fields | Meaning |
@@ -305,13 +309,13 @@ Every connection is told when workspaces and sessions come and go:
 
 | Method | `params` | Meaning |
 | --- | --- | --- |
-| `workspace/created` | `workspace_id`, `path` | A workspace was registered. |
-| `session/created` | `session_id`, `workspace_id`, `model`, `effort`, `permission_mode` | A session was created, parked. |
+| `workspace/created` | `workspace_id`, `path`, `created_at` | A workspace was registered. |
+| `session/created` | `session_id`, `workspace_id`, `model`, `effort`, `permission_mode`, `created_at` | A session was created, parked. |
 | `session/configured` | `session_id`, `model`, `effort`, `permission_mode` | A session's settings changed; the fields are its stored settings. |
 | `session/destroyed` | `session_id` | A session was destroyed, after its last update. |
 
 ```json
-{"jsonrpc":"2.0","method":"session/created","params":{"session_id":"session-id","workspace_id":"workspace-id","model":"haiku","effort":"low","permission_mode":"manual"}}
+{"jsonrpc":"2.0","method":"session/created","params":{"session_id":"session-id","workspace_id":"workspace-id","model":"haiku","effort":"low","permission_mode":"manual","created_at":"2026-11-18T19:53:48.416Z"}}
 ```
 
 ## Connections
@@ -340,7 +344,7 @@ underlying process or I/O errors.
 | `-32600` | Invalid request envelope, field types, JSON-RPC version, or batch request. |
 | `-32601` | Unknown method. |
 | `-32602` | Missing or invalid method parameters. |
-| `-32000` | Operation failed, such as Claude startup, a process write failure, or a state file write failure. |
+| `-32000` | Operation failed, such as Claude startup, a process write failure, or a database write failure. |
 | `-32001` | Workspace or session not found. |
 | `-32002` | Session is busy; a prompt or configuration cannot start yet. |
 | `-32003` | Approval request is no longer pending, including duplicate or cancelled answers. |

@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/kkestell/ox/internal/claude"
 )
@@ -19,6 +20,7 @@ type Update struct {
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	ToolName  string          `json:"tool_name,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
+	Time      time.Time       `json:"time,omitzero"` // when the agent published it
 }
 
 type Result struct {
@@ -85,6 +87,7 @@ func (a *Agent) endPrompt(final Update) {
 // publish sends an update to every subscriber, tagged with the current
 // prompt's ID when a client's prompt owns the turn.
 func (a *Agent) publish(update Update) {
+	update.Time = time.Now()
 	if a.prompt != nil {
 		update.MessageID = a.prompt.id
 	}

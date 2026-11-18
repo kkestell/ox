@@ -4,10 +4,10 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/kkestell/ox/internal/agent"
 	"github.com/kkestell/ox/internal/claude"
@@ -109,35 +109,37 @@ func (s *Server) createWorkspace(id, params json.RawMessage) *jsonrpc.Response {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, w := range s.state.Workspaces {
+	for _, w := range s.workspaces {
 		if w.Path == path {
 			return jsonrpc.Success(id, result{w.ID})
 		}
 	}
-	w := &store.Workspace{ID: rand.Text(), Path: path, Sessions: []*store.Session{}}
-	s.state.Workspaces = append(s.state.Workspaces, w)
-	if err := s.save(); err != nil {
-		s.state.Workspaces = s.state.Workspaces[:len(s.state.Workspaces)-1]
+	w := &store.Workspace{ID: rand.Text(), Path: path, CreatedAt: time.Now(), Sessions: []*store.Session{}}
+	if err := s.store.AddWorkspace(w); err != nil {
 		return failure(id, err)
 	}
+	s.workspaces = append(s.workspaces, w)
 	s.broadcast("workspace/created", struct {
-		WorkspaceID string `json:"workspace_id"`
-		Path        string `json:"path"`
-	}{w.ID, w.Path})
+		WorkspaceID string    `json:"workspace_id"`
+		Path        string    `json:"path"`
+		CreatedAt   time.Time `json:"created_at"`
+	}{w.ID, w.Path, w.CreatedAt})
 	return jsonrpc.Success(id, result{w.ID})
 }
 
 func (s *Server) listWorkspaces(id json.RawMessage) *jsonrpc.Response {
 	type sessionInfo struct {
-		SessionID      string `json:"session_id"`
-		Model          string `json:"model"`
-		Effort         string `json:"effort"`
-		PermissionMode string `json:"permission_mode"`
-		Parked         bool   `json:"parked"`
+		SessionID      string    `json:"session_id"`
+		Model          string    `json:"model"`
+		Effort         string    `json:"effort"`
+		PermissionMode string    `json:"permission_mode"`
+		CreatedAt      time.Time `json:"created_at"`
+		Parked         bool      `json:"parked"`
 	}
 	type workspaceInfo struct {
 		WorkspaceID string        `json:"workspace_id"`
 		Path        string        `json:"path"`
+		CreatedAt   time.Time     `json:"created_at"`
 		Sessions    []sessionInfo `json:"sessions"`
 	}
 
@@ -147,11 +149,11 @@ func (s *Server) listWorkspaces(id json.RawMessage) *jsonrpc.Response {
 	}
 	var entries []entry
 	s.mu.Lock()
-	workspaces := make([]workspaceInfo, len(s.state.Workspaces))
-	for i, w := range s.state.Workspaces {
-		workspaces[i] = workspaceInfo{WorkspaceID: w.ID, Path: w.Path, Sessions: make([]sessionInfo, len(w.Sessions))}
+	workspaces := make([]workspaceInfo, len(s.workspaces))
+	for i, w := range s.workspaces {
+		workspaces[i] = workspaceInfo{WorkspaceID: w.ID, Path: w.Path, CreatedAt: w.CreatedAt, Sessions: make([]sessionInfo, len(w.Sessions))}
 		for j, r := range w.Sessions {
-			workspaces[i].Sessions[j] = sessionInfo{r.ID, r.Model, r.Effort, r.PermissionMode, true}
+			workspaces[i].Sessions[j] = sessionInfo{r.ID, r.Model, r.Effort, r.PermissionMode, r.CreatedAt, true}
 			entries = append(entries, entry{&workspaces[i].Sessions[j], s.sessions[r.ID]})
 		}
 	}
@@ -211,20 +213,21 @@ func (s *Server) createSession(id, params json.RawMessage) *jsonrpc.Response {
 	}
 	record := &store.Session{
 		ID: claude.NewUUID(), Model: input.Model, Effort: input.Effort, PermissionMode: input.PermissionMode,
+		CreatedAt: time.Now(),
 	}
-	w.Sessions = append(w.Sessions, record)
-	if err := s.save(); err != nil {
-		w.Sessions = w.Sessions[:len(w.Sessions)-1]
+	if err := s.store.AddSession(w.ID, record); err != nil {
 		return failure(id, err)
 	}
+	w.Sessions = append(w.Sessions, record)
 	s.sessions[record.ID] = s.newSession(record, w.Path)
 	s.broadcast("session/created", struct {
-		SessionID      string `json:"session_id"`
-		WorkspaceID    string `json:"workspace_id"`
-		Model          string `json:"model"`
-		Effort         string `json:"effort"`
-		PermissionMode string `json:"permission_mode"`
-	}{record.ID, w.ID, record.Model, record.Effort, record.PermissionMode})
+		SessionID      string    `json:"session_id"`
+		WorkspaceID    string    `json:"workspace_id"`
+		Model          string    `json:"model"`
+		Effort         string    `json:"effort"`
+		PermissionMode string    `json:"permission_mode"`
+		CreatedAt      time.Time `json:"created_at"`
+	}{record.ID, w.ID, record.Model, record.Effort, record.PermissionMode, record.CreatedAt})
 	return jsonrpc.Success(id, struct {
 		SessionID string `json:"session_id"`
 	}{record.ID})
@@ -380,11 +383,12 @@ func (s *Server) configureSession(id, params json.RawMessage) *jsonrpc.Response 
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	record := sess.record
+	record := *sess.record
 	record.Model, record.Effort, record.PermissionMode = input.Model, input.Effort, input.PermissionMode
-	if err := s.save(); err != nil {
+	if err := s.store.SaveSession(&record); err != nil {
 		return failure(id, err)
 	}
+	*sess.record = record
 	s.broadcast("session/configured", struct {
 		SessionID      string `json:"session_id"`
 		Model          string `json:"model"`
@@ -394,8 +398,8 @@ func (s *Server) configureSession(id, params json.RawMessage) *jsonrpc.Response 
 	return jsonrpc.Success(id, struct{}{})
 }
 
-// destroySession forgets the session and stops its process. Claude's
-// transcript stays on disk.
+// destroySession stops the session's process and deletes the session and its
+// events. Claude's transcript stays on disk.
 func (s *Server) destroySession(id, params json.RawMessage) *jsonrpc.Response {
 	var input struct {
 		SessionID string `json:"session_id"`
@@ -409,28 +413,27 @@ func (s *Server) destroySession(id, params json.RawMessage) *jsonrpc.Response {
 	}
 	defer sess.mu.Unlock()
 
-	s.mu.Lock()
-	for _, w := range s.state.Workspaces {
-		for i, r := range w.Sessions {
-			if r == sess.record {
-				w.Sessions = append(w.Sessions[:i], w.Sessions[i+1:]...)
-			}
-		}
-	}
-	delete(s.sessions, input.SessionID)
-	err := s.save()
-	s.mu.Unlock()
-	if err != nil {
-		return failure(id, err)
-	}
-
-	sess.destroyed = true
+	// The process stops first, so it records nothing after the events are gone.
 	if a := sess.live(); a != nil {
 		if err := a.Stop(); err != nil {
 			return failure(id, err)
 		}
 	}
-	if err := os.Remove(sess.history.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	s.mu.Lock()
+	err := s.store.DeleteSession(input.SessionID)
+	if err == nil {
+		for _, w := range s.workspaces {
+			for i, r := range w.Sessions {
+				if r == sess.record {
+					w.Sessions = append(w.Sessions[:i], w.Sessions[i+1:]...)
+				}
+			}
+		}
+		delete(s.sessions, input.SessionID)
+		sess.destroyed = true
+	}
+	s.mu.Unlock()
+	if err != nil {
 		return failure(id, err)
 	}
 	s.broadcast("session/destroyed", struct {

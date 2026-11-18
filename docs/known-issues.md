@@ -11,7 +11,6 @@ not reproduced.
 | [One request at a time per connection](#one-request-at-a-time-per-connection) | Ordinary use | Live |
 | [Startup failures lose Claude's reason](#startup-failures-lose-claudes-reason) | Missing transcript | Live |
 | [RPC bodies over 1 MiB never settle](#rpc-bodies-over-1-mib-never-settle) | Very large prompts | Live |
-| [A failed save leaves memory changed](#a-failed-save-leaves-memory-changed) | State file unwritable | Live |
 | [Page load can keep stale settings](#page-load-can-keep-stale-settings) | Two pages, millisecond window | Source |
 | [Configuration races start and destroy](#configuration-races-start-and-destroy) | Two pages, millisecond window | Source |
 | [Settings form replaces values not in its menus](#settings-form-replaces-values-not-in-its-menus) | Settings set outside the UI | Source |
@@ -62,30 +61,6 @@ text stays in the box. The rest of the page keeps working.
 Confirmed live: a 1,048,685-byte `session/send` returned `204`, and the event
 stream received `{"id":null,"error":{"code":-32700,"message":"Parse error"}}`.
 
-## A failed save leaves memory changed
-
-`destroySession` removes the session from memory and from the stored state,
-then saves. If the save fails, it returns before stopping the Claude process.
-`configureSession` changes the stored record, then saves, and does not undo
-the change if the save fails.
-
-A save fails when the state directory is not writable, the disk is full, or
-the filesystem is read-only. After a failed destroy:
-
-- The session disappears from listings.
-- Its Claude process keeps running and using tokens, but no request can
-  reach it.
-- `Server.Close` does not stop it.
-
-After a failed configure, the request reports an error while memory holds the
-new settings. The next successful save writes those settings to disk.
-
-Confirmed live with a read-only state directory. A configure returned
-`permission denied`, yet `workspace/list` showed the new effort. A destroy then
-returned the same error, and the session was gone from `session/get` and
-`workspace/list`. The surviving Claude process is traced in the source; that
-run destroyed a parked session.
-
 ## Page load can keep stale settings
 
 On load, the page takes each session's settings from `workspace/list`, and
@@ -124,7 +99,7 @@ full model ID, or the `default` permission mode. The settings form offers only
 the fixed lists in `protocol.ts` and selects an option by exact match.
 
 The web UI cannot create such values; they come only from other API clients
-or a hand-edited state file. The form then displays the first option in the
+or a hand-edited database. The form then displays the first option in the
 menu. Since it submits all three fields on any change, changing effort alone
 silently replaces the model or permission mode with that first option.
 

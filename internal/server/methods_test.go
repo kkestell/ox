@@ -3,10 +3,21 @@ package server
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/kkestell/ox/internal/store"
 )
 
+func openStore(t *testing.T) *store.Store {
+	st, err := store.Open(filepath.Join(t.TempDir(), "ox.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	return st
+}
+
 func TestSettingsValidation(t *testing.T) {
-	s, err := New(filepath.Join(t.TempDir(), "state.json"), 0)
+	s, err := New(openStore(t), 0)
 	if err != nil {
 		t.Fatal(err)
 	}

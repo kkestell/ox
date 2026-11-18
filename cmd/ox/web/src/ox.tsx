@@ -19,6 +19,7 @@ export type Approval = { id: string; request: ApprovalRequest };
 export type Session = {
   id: string;
   workspaceId: string;
+  createdAt: string;
   state: SessionState;
   settings: Settings;
   entries: Entry[];
@@ -85,9 +86,9 @@ function createOx() {
 
   // load adds a session. Its updates apply from the session/get response
   // onward; earlier ones are in the history it returns.
-  async function load(id: string, workspaceId: string, settings: Settings) {
+  async function load(id: string, workspaceId: string, createdAt: string, settings: Settings) {
     const result = await connection.rpc("session/get", { session_id: id });
-    const session: Session = { id, workspaceId, state: result.state, settings, entries: [], approvals: [] };
+    const session: Session = { id, workspaceId, createdAt, state: result.state, settings, entries: [], approvals: [] };
     for (const u of result.history) apply(session, u);
     for (const a of result.approvals) session.approvals.push({ id: a.request_id, request: a.request });
     setState((s) => {
@@ -108,7 +109,7 @@ function createOx() {
       s.workspaces = workspaces.map((w) => ({ id: w.workspace_id, path: w.path }));
     });
     await Promise.all(
-      workspaces.flatMap((w) => w.sessions.map((s) => load(s.session_id, w.workspace_id, settingsOf(s)))),
+      workspaces.flatMap((w) => w.sessions.map((s) => load(s.session_id, w.workspace_id, s.created_at, settingsOf(s)))),
     );
   }
 
@@ -125,7 +126,7 @@ function createOx() {
           s.workspaces.push({ id: params.workspace_id, path: params.path });
         });
       case "session/created":
-        return void load(params.session_id, params.workspace_id, settingsOf(params)).catch(fail);
+        return void load(params.session_id, params.workspace_id, params.created_at, settingsOf(params)).catch(fail);
       case "session/configured":
         return setState((s) => {
           const session = s.sessions[params.session_id];

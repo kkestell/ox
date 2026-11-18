@@ -1,6 +1,7 @@
 // Command oxd is the Ox daemon. It serves the protocol in docs/protocol.md on
-// a Unix socket until interrupted, then stops every Claude process. Workspaces
-// and sessions are stored in a state file and outlive the daemon.
+// a Unix socket until interrupted, then stops every Claude process. Workspaces,
+// sessions, and session events are stored in a SQLite database and outlive the
+// daemon.
 package main
 
 import (
@@ -20,7 +21,7 @@ import (
 
 func main() {
 	socketPath := flag.String("socket", "", "override the socket in the user cache directory")
-	statePath := flag.String("state", "", "override the state file in the user state directory")
+	dbPath := flag.String("db", "", "override the database in the user state directory")
 	parkAfter := flag.Duration("park-after", 5*time.Minute, "stop a session's Claude process after it has been unused this long")
 	flag.Parse()
 	path := *socketPath
@@ -30,15 +31,20 @@ func main() {
 			log.Fatal(err)
 		}
 	}
-	if *statePath == "" {
+	if *dbPath == "" {
 		var err error
-		if *statePath, err = store.Path(); err != nil {
+		if *dbPath, err = store.Path(); err != nil {
 			log.Fatal(err)
 		}
 	}
-	s, err := server.New(*statePath, *parkAfter)
+	st, err := store.Open(*dbPath)
 	if err != nil {
-		log.Fatalf("load state: %v", err)
+		log.Fatalf("open database: %v", err)
+	}
+	defer st.Close()
+	s, err := server.New(st, *parkAfter)
+	if err != nil {
+		log.Fatalf("load database: %v", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

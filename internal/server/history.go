@@ -1,25 +1,24 @@
 package server
 
 import (
-	"bufio"
 	"encoding/json"
-	"errors"
-	"io/fs"
 	"log"
-	"os"
-	"path/filepath"
+	"time"
 
 	"github.com/kkestell/ox/internal/agent"
+	"github.com/kkestell/ox/internal/store"
 )
 
-// history records a session's conversation as updates in a JSON Lines file,
-// returned to clients by session/get. It keeps prompts, assistant text, tool
-// calls and their results, turn results, and exits, merging consecutive text fragments into one entry. It
-// subscribes to each of the session's processes, so the running agent's
-// goroutine uses it; while the session is parked, its lock holder does.
+// history records a session's conversation as events in the store, returned
+// to clients by session/get. It keeps prompts, assistant text, tool calls and
+// their results, turn results, and exits, merging consecutive text fragments
+// into one event timed by the first. It subscribes to each of the session's
+// processes, so the running agent's goroutine uses it; while the session is
+// parked, its lock holder does.
 type history struct {
-	path    string
-	pending *agent.Update // text not yet written
+	store     *store.Store
+	sessionID string
+	pending   *agent.Update // text not yet written
 }
 
 func (h *history) Publish(update agent.Update) bool {
@@ -47,16 +46,13 @@ func (h *history) flush() {
 	}
 }
 
+// append stores the update, its time in the event's own column.
 func (h *history) append(update agent.Update) {
-	err := os.MkdirAll(filepath.Dir(h.path), 0o700)
+	at := update.Time
+	update.Time = time.Time{}
+	data, err := json.Marshal(update)
 	if err == nil {
-		var f *os.File
-		if f, err = os.OpenFile(h.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
-			err = json.NewEncoder(f).Encode(update)
-			if closeErr := f.Close(); err == nil {
-				err = closeErr
-			}
-		}
+		err = h.store.AddEvent(h.sessionID, store.Event{CreatedAt: at, Data: data})
 	}
 	if err != nil {
 		log.Printf("record session history: %v", err)
@@ -65,33 +61,21 @@ func (h *history) append(update agent.Update) {
 
 // entries returns the recorded updates, including text not yet written.
 func (h *history) entries() ([]agent.Update, error) {
-	updates := []agent.Update{}
-	f, err := os.Open(h.path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return h.withPending(updates), nil
-	}
+	events, err := h.store.Events(h.sessionID)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	lines := bufio.NewScanner(f)
-	lines.Buffer(nil, 64<<20)
-	for lines.Scan() {
+	updates := make([]agent.Update, 0, len(events)+1)
+	for _, e := range events {
 		var update agent.Update
-		if err := json.Unmarshal(lines.Bytes(), &update); err != nil {
+		if err := json.Unmarshal(e.Data, &update); err != nil {
 			return nil, err
 		}
+		update.Time = e.CreatedAt
 		updates = append(updates, update)
 	}
-	if err := lines.Err(); err != nil {
-		return nil, err
-	}
-	return h.withPending(updates), nil
-}
-
-func (h *history) withPending(updates []agent.Update) []agent.Update {
 	if h.pending != nil {
 		updates = append(updates, *h.pending)
 	}
-	return updates
+	return updates, nil
 }

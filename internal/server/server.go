@@ -12,7 +12,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -23,13 +22,13 @@ import (
 )
 
 type Server struct {
-	statePath string
+	store     *store.Store
 	parkAfter time.Duration
 
-	mu       sync.Mutex // guards state, every stored record, sessions, and closed
-	state    *store.State
-	sessions map[string]*session
-	closed   bool
+	mu         sync.Mutex // guards workspaces, every stored record, sessions, and closed
+	workspaces []*store.Workspace
+	sessions   map[string]*session
+	closed     bool
 
 	connsMu sync.Mutex // guards conns; taken after any other lock
 	conns   map[*conn]struct{}
@@ -48,18 +47,18 @@ type session struct {
 	destroyed bool
 }
 
-// New loads the stored state. Every session starts parked, and a running
-// session parks once its process has been unused for parkAfter.
-func New(statePath string, parkAfter time.Duration) (*Server, error) {
-	state, err := store.Load(statePath)
+// New loads the stored workspaces and sessions. Every session starts parked,
+// and a running session parks once its process has been unused for parkAfter.
+func New(st *store.Store, parkAfter time.Duration) (*Server, error) {
+	workspaces, err := st.Workspaces()
 	if err != nil {
 		return nil, err
 	}
 	s := &Server{
-		statePath: statePath, parkAfter: parkAfter, state: state,
+		store: st, parkAfter: parkAfter, workspaces: workspaces,
 		sessions: make(map[string]*session), conns: make(map[*conn]struct{}),
 	}
-	for _, w := range state.Workspaces {
+	for _, w := range workspaces {
 		for _, record := range w.Sessions {
 			s.sessions[record.ID] = s.newSession(record, w.Path)
 		}
@@ -68,8 +67,7 @@ func New(statePath string, parkAfter time.Duration) (*Server, error) {
 }
 
 func (s *Server) newSession(record *store.Session, workspace string) *session {
-	path := filepath.Join(filepath.Dir(s.statePath), "sessions", record.ID+".jsonl")
-	return &session{record: record, workspace: workspace, history: &history{path: path}}
+	return &session{record: record, workspace: workspace, history: &history{store: s.store, sessionID: record.ID}}
 }
 
 // Serve accepts connections until the listener is closed.
@@ -136,11 +134,6 @@ func (s *Server) Close() {
 	}
 }
 
-// save writes the stored state. The caller holds s.mu.
-func (s *Server) save() error {
-	return s.state.Save(s.statePath)
-}
-
 func (s *Server) session(id string) *session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -148,7 +141,7 @@ func (s *Server) session(id string) *session {
 }
 
 func (s *Server) workspace(id string) *store.Workspace {
-	for _, w := range s.state.Workspaces {
+	for _, w := range s.workspaces {
 		if w.ID == id {
 			return w
 		}
@@ -235,9 +228,12 @@ func (m resumeMarker) Publish(update agent.Update) bool {
 	}
 	m.s.mu.Lock()
 	defer m.s.mu.Unlock()
-	m.sess.record.Resumable = true
-	if err := m.s.save(); err != nil {
-		log.Printf("save state: %v", err)
+	record := *m.sess.record
+	record.Resumable = true
+	if err := m.s.store.SaveSession(&record); err != nil {
+		log.Printf("mark session resumable: %v", err)
+		return false
 	}
+	*m.sess.record = record
 	return false
 }
