@@ -1,7 +1,7 @@
 // Package agent is the contract between the server and a harness: an Agent
 // runs one harness process for one session, accepts prompts, approvals, and
-// settings, and publishes the session's progress to its subscribers. Each
-// harness package implements it and provides a Start function.
+// settings, and reports the session's progress as updates. Each harness
+// package implements it and provides a Start function.
 package agent
 
 import (
@@ -16,26 +16,39 @@ var (
 	ErrApprovalNotFound = errors.New("approval request is no longer pending")
 )
 
-// Agent is one running harness process for one session.
+// Agent is one running harness process for one session. It has no goroutine
+// of its own: the session's goroutine makes every call, and passes it each
+// event from Events. Updates and the resume token arrive through the Options
+// callbacks during those calls.
 type Agent interface {
-	// Inspect calls inspect on the agent's goroutine, between updates: the
-	// snapshot reflects every update published before the call and none after.
-	Inspect(inspect func(Snapshot)) error
+	// Events delivers the harness's own input, such as its process's output
+	// and its timers, until the agent has exited.
+	Events() <-chan Event
+	// Handle acts on one event from Events.
+	Handle(Event)
+	Snapshot() Snapshot
 	// Send writes a prompt to an idle agent and returns its message ID. It
 	// returns ErrBusy unless the agent is idle with no prompt or
 	// configuration in progress.
 	Send(text string) (string, error)
 	// Approve answers a pending approval, or returns ErrApprovalNotFound.
 	Approve(requestID string, response json.RawMessage) error
-	// Configure applies settings to the running process. ErrExited means the
-	// process is gone; the caller stores them for the next start.
-	Configure(Settings) error
-	// Stop terminates the process and waits for the agent to settle.
+	// Configure applies settings to the running process and calls done with
+	// the outcome, now or from a later Handle. It returns ErrBusy unless the
+	// agent is idle, and ErrExited if the process exits first.
+	Configure(settings Settings, done func(error))
+	// Parkable reports that nothing is using the process, so stopping it
+	// loses no work.
+	Parkable() bool
+	// Stop asks the process to exit. The exit arrives through Events.
 	Stop() error
-	// Done is closed once the process has exited and the agent has published
-	// its last update, parked.
-	Done() <-chan struct{}
+	// Exited reports that the process has exited and the agent has
+	// published its last update, parked.
+	Exited() bool
 }
+
+// Event is a harness's own input, opaque to the server.
+type Event any
 
 // Start starts a harness process and returns its agent.
 type Start func(Options) (Agent, error)
@@ -44,29 +57,20 @@ type Options struct {
 	Workspace string
 	// Resume is the harness's token for the conversation to continue; empty
 	// starts a new one.
-	Resume    string
-	Settings  Settings
-	ParkAfter time.Duration // terminate the process once unused this long; zero never parks
-	// Subscribers receive every update, on the agent's goroutine.
-	Subscribers []Subscriber
+	Resume   string
+	Settings Settings
+	// OnUpdate receives every update.
+	OnUpdate func(Update)
 	// OnResumable receives the token that resumes a new conversation, once
-	// the harness has saved enough to resume it. It is called at most once,
-	// on the agent's goroutine.
+	// the harness has saved enough to resume it. It is called at most once.
 	OnResumable func(token string)
 }
 
 // Settings are a session's model, effort, and permission mode.
 type Settings struct {
-	Model          string
-	Effort         string
-	PermissionMode string
-}
-
-// Subscriber receives an agent's updates.
-type Subscriber interface {
-	// Publish delivers an update without blocking. Returning false detaches
-	// the subscriber.
-	Publish(Update) bool
+	Model          string `json:"model"`
+	Effort         string `json:"effort"`
+	PermissionMode string `json:"permission_mode"`
 }
 
 type Update struct {
@@ -89,8 +93,8 @@ type Result struct {
 	IsError bool   `json:"is_error"`
 }
 
-// Snapshot is an agent's current state, returned by Inspect. State is
-// running, requires_action, or idle.
+// Snapshot is an agent's current state. State is running, requires_action,
+// or idle.
 type Snapshot struct {
 	State     string          `json:"state"`
 	Prompt    *PromptSnapshot `json:"prompt"`

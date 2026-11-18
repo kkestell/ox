@@ -1,5 +1,14 @@
 import type { Methods, Notification } from "./protocol";
 
+// RpcError is an error response from oxd, with its code.
+export class RpcError extends Error {
+  code: number;
+  constructor(message: string, code: number) {
+    super(message);
+    this.code = code;
+  }
+}
+
 export type Connection = {
   rpc<M extends keyof Methods>(method: M, params: Methods[M][0]): Promise<Methods[M][1]>;
   close(): void;
@@ -37,7 +46,7 @@ export function connect(handlers: {
     const call = pending.get(message.id);
     if (!call) return;
     pending.delete(message.id);
-    if (message.error) call.reject(new Error(message.error.message));
+    if (message.error) call.reject(new RpcError(message.error.message, message.error.code));
     else call.resolve(message.result);
   };
 

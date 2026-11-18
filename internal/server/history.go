@@ -12,31 +12,28 @@ import (
 // history records a session's conversation as events in the store, returned
 // to clients by session/get. It keeps prompts, assistant text, tool calls and
 // their results, turn results, and exits, merging consecutive text fragments
-// into one event timed by the first. It subscribes to each of the session's
-// processes, so the running agent's goroutine uses it; while the session is
-// parked, its lock holder does.
+// into one event timed by the first. The session's goroutine owns it.
 type history struct {
 	store     *store.Store
 	sessionID string
 	pending   *agent.Update // text not yet written
 }
 
-func (h *history) Publish(update agent.Update) bool {
+func (h *history) record(update agent.Update) {
 	if update.Type == "text_delta" {
 		if h.pending != nil && h.pending.MessageID == update.MessageID {
 			h.pending.Text += update.Text
-			return true
+			return
 		}
 		h.flush()
 		h.pending = &update
-		return true
+		return
 	}
 	h.flush()
 	switch update.Type {
 	case "prompt", "tool_use", "tool_result", "result", "exited":
 		h.append(update)
 	}
-	return true
 }
 
 func (h *history) flush() {

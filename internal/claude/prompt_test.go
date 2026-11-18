@@ -12,31 +12,37 @@ import (
 
 type recorder []agent.Update
 
-func (r *recorder) Publish(update agent.Update) bool {
+func (r *recorder) record(update agent.Update) {
 	*r = append(*r, update)
-	return true
 }
 
-func testAgent() (*Agent, *bytes.Buffer) {
+// testAgent returns an idle agent that records its updates.
+func testAgent() (*Agent, *bytes.Buffer, *recorder) {
 	input := new(bytes.Buffer)
-	return newAgent(NewInput(input)), input
+	updates := new(recorder)
+	return newAgent(NewInput(input), updates.record), input, updates
 }
 
-// promptingAgent returns an agent running prompt "prompt" with one subscriber.
+// promptingAgent returns an agent running prompt "prompt".
 func promptingAgent() (*Agent, *bytes.Buffer, *recorder) {
-	a, input := testAgent()
-	updates := new(recorder)
+	a, input, updates := testAgent()
 	a.phase, a.claudeState = prompting, "running"
 	a.prompt = &submission{id: "prompt"}
-	a.subscribers[updates] = struct{}{}
 	return a, input, updates
 }
 
+func output(t *testing.T, a *Agent, line string) {
+	t.Helper()
+	var message Message
+	if err := json.Unmarshal([]byte(line), &message); err != nil {
+		t.Fatal(err)
+	}
+	a.Handle(message)
+}
+
 func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
-	a, _ := testAgent()
-	updates := new(recorder)
-	a.subscribers[updates] = struct{}{}
-	id, err := a.submit("hello")
+	a, _, updates := testAgent()
+	id, err := a.Send("hello")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +53,7 @@ func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
 	*updates = nil
 
 	a.sessionState("idle")
-	if _, err := a.submit("again"); !errors.Is(err, agent.ErrBusy) || len(*updates) != 0 {
+	if _, err := a.Send("again"); !errors.Is(err, agent.ErrBusy) || len(*updates) != 0 {
 		t.Fatalf("idle before Claude took the prompt released it: %v, %+v", err, *updates)
 	}
 
@@ -62,13 +68,12 @@ func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
 	}
 }
 
-func TestInspectReturnsRunningPrompt(t *testing.T) {
+func TestSnapshotReturnsRunningPrompt(t *testing.T) {
 	a, _, _ := promptingAgent()
 	request := json.RawMessage(`{"subtype":"can_use_tool","tool_name":"Bash"}`)
 	a.controlRequest("pending", request)
 
-	var snapshot agent.Snapshot
-	a.handle(inspectRequest{func(s agent.Snapshot) { snapshot = s }, make(chan struct{}, 1)})
+	snapshot := a.Snapshot()
 	if snapshot.State != "running" || snapshot.Prompt == nil || snapshot.Prompt.MessageID != "prompt" ||
 		len(snapshot.Approvals) != 1 || snapshot.Approvals[0].RequestID != "pending" ||
 		!bytes.Equal(snapshot.Approvals[0].Request, request) {
@@ -77,9 +82,7 @@ func TestInspectReturnsRunningPrompt(t *testing.T) {
 }
 
 func TestTurnsClaudeStartsArePublished(t *testing.T) {
-	a, _ := testAgent()
-	updates := new(recorder)
-	a.subscribers[updates] = struct{}{}
+	a, _, updates := testAgent()
 	a.sessionState("running")
 	output(t, a, `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"tick"}}}`)
 	output(t, a, `{"type":"result","subtype":"success","result":"tick"}`)

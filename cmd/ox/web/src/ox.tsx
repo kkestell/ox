@@ -1,6 +1,17 @@
 import { createContext, createSignal, createStore, onSettled, useContext, type ParentProps } from "solid-js";
-import { connect, type Connection } from "./connection";
-import type { ApprovalRequest, ApprovalResponse, Defaults, Harness, Notification, SessionState, Settings, ToolResult, Update } from "./protocol";
+import { connect, RpcError, type Connection } from "./connection";
+import {
+  notFound,
+  type ApprovalRequest,
+  type ApprovalResponse,
+  type Defaults,
+  type Harness,
+  type Notification,
+  type SessionState,
+  type Settings,
+  type ToolResult,
+  type Update,
+} from "./protocol";
 
 export type Workspace = { id: string; path: string };
 
@@ -91,11 +102,28 @@ function createOx() {
   const [error, setError] = createSignal<string>();
   let connection!: Connection;
 
-  // load adds a session. Its updates apply from the session/get response
-  // onward; earlier ones are in the history it returns.
-  async function load(id: string, workspaceId: string, harness: string, createdAt: string, settings: Settings) {
-    const result = await connection.rpc("session/get", { session_id: id });
-    const session: Session = { id, workspaceId, harness, createdAt, state: result.state, settings, entries: [], approvals: [] };
+  // load adds a session. Its settings and earlier updates come in the
+  // session/get response, and its updates apply from the response onward. A
+  // session destroyed before the response is not added; its destroyed event
+  // has already arrived.
+  async function load(id: string, workspaceId: string, harness: string, createdAt: string) {
+    let result;
+    try {
+      result = await connection.rpc("session/get", { session_id: id });
+    } catch (e) {
+      if (e instanceof RpcError && e.code === notFound) return;
+      throw e;
+    }
+    const session: Session = {
+      id,
+      workspaceId,
+      harness,
+      createdAt,
+      state: result.state,
+      settings: settingsOf(result),
+      entries: [],
+      approvals: [],
+    };
     for (const u of result.history) apply(session, u);
     for (const a of result.approvals) session.approvals.push({ id: a.request_id, request: a.request });
     setState((s) => {
@@ -119,7 +147,7 @@ function createOx() {
       s.workspaces = workspaces.map((w) => ({ id: w.workspace_id, path: w.path }));
     });
     await Promise.all(
-      workspaces.flatMap((w) => w.sessions.map((s) => load(s.session_id, w.workspace_id, s.harness, s.created_at, settingsOf(s)))),
+      workspaces.flatMap((w) => w.sessions.map((s) => load(s.session_id, w.workspace_id, s.harness, s.created_at))),
     );
   }
 
@@ -136,7 +164,7 @@ function createOx() {
           s.workspaces.push({ id: params.workspace_id, path: params.path });
         });
       case "session/created":
-        return void load(params.session_id, params.workspace_id, params.harness, params.created_at, settingsOf(params)).catch(fail);
+        return void load(params.session_id, params.workspace_id, params.harness, params.created_at).catch(fail);
       case "session/configured":
         return setState((s) => {
           const session = s.sessions[params.session_id];
@@ -169,7 +197,8 @@ function createOx() {
       return session_id;
     },
     send: (id: string, text: string) => connection.rpc("session/send", { session_id: id, text }),
-    configure: (id: string, settings: Settings) => connection.rpc("session/configure", { session_id: id, ...settings }),
+    // configure changes only the settings given.
+    configure: (id: string, changes: Partial<Settings>) => connection.rpc("session/configure", { session_id: id, ...changes }),
     approve: (id: string, requestId: string, response: ApprovalResponse) =>
       connection.rpc("session/approve", { session_id: id, request_id: requestId, response }),
     destroy: (id: string) => connection.rpc("session/destroy", { session_id: id }),

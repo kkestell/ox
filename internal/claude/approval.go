@@ -2,6 +2,7 @@ package claude
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 
 	"github.com/kkestell/ox/internal/agent"
@@ -28,7 +29,12 @@ func (a *Agent) controlRequest(requestID string, request json.RawMessage) {
 	a.publish(agent.Update{Type: "approval", RequestID: requestID, Request: request})
 }
 
-func (a *Agent) answer(requestID string, response json.RawMessage) error {
+// Approve answers a pending approval with Claude's permission response,
+// keeping its fields as they are.
+func (a *Agent) Approve(requestID string, response json.RawMessage) error {
+	if !validApprovalResponse(response) {
+		return errors.New("response must be an allow or deny permission response")
+	}
 	if _, pending := a.approvals[requestID]; !pending {
 		return agent.ErrApprovalNotFound
 	}
@@ -54,4 +60,22 @@ func (a *Agent) withdrawApprovals() {
 		a.publish(agent.Update{Type: "approval_cancelled", RequestID: id})
 	}
 	clear(a.approvals)
+}
+
+// validApprovalResponse checks the response shape while keeping Claude's
+// fields as raw JSON.
+func validApprovalResponse(raw json.RawMessage) bool {
+	var response struct {
+		Behavior           string          `json:"behavior"`
+		UpdatedInput       json.RawMessage `json:"updatedInput"`
+		UpdatedPermissions json.RawMessage `json:"updatedPermissions"`
+		Message            string          `json:"message"`
+		Interrupt          bool            `json:"interrupt"`
+		ToolUseID          string          `json:"toolUseID"`
+	}
+	if json.Unmarshal(raw, &response) != nil || (response.Behavior != "allow" && response.Behavior != "deny") {
+		return false
+	}
+	return (len(response.UpdatedInput) == 0 || response.UpdatedInput[0] == '{') &&
+		(len(response.UpdatedPermissions) == 0 || response.UpdatedPermissions[0] == '[')
 }

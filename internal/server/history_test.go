@@ -24,7 +24,7 @@ func TestHistoryMergesTextAndKeepsConversation(t *testing.T) {
 		{MessageID: "p", Type: "text_delta", Text: "hel", Time: replyStarted},
 		{MessageID: "p", Type: "text_delta", Text: "lo", Time: replyStarted.Add(time.Second)},
 	} {
-		h.Publish(u)
+		h.record(u)
 	}
 	entries, err := h.entries()
 	if err != nil {
@@ -34,10 +34,10 @@ func TestHistoryMergesTextAndKeepsConversation(t *testing.T) {
 		t.Fatalf("history mid-reply lacks the pending text: %+v", entries)
 	}
 
-	h.Publish(agent.Update{MessageID: "p", Type: "result", Result: &agent.Result{Text: "hello"}})
-	h.Publish(agent.Update{MessageID: "p", Type: "state", State: "idle"})
-	h.Publish(agent.Update{Type: "text_delta", Text: "tick"})
-	h.Publish(agent.Update{Type: "parked"})
+	h.record(agent.Update{MessageID: "p", Type: "result", Result: &agent.Result{Text: "hello"}})
+	h.record(agent.Update{MessageID: "p", Type: "state", State: "idle"})
+	h.record(agent.Update{Type: "text_delta", Text: "tick"})
+	h.record(agent.Update{Type: "parked"})
 	if entries, err = h.entries(); err != nil {
 		t.Fatal(err)
 	}

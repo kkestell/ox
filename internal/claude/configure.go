@@ -11,30 +11,53 @@ import (
 // configuration owns the agent in the configuring phase. Its first request is
 // in flight under requestID.
 type configuration struct {
-	requests  []map[string]any
+	requests  []control
 	requestID string
-	reply     chan error
+	done      func(error)
+}
+
+// control is one control request and the setting it changes once Claude
+// acknowledges it.
+type control struct {
+	request map[string]any
+	apply   func(*agent.Settings)
 }
 
 func (c *configuration) fail(err error) error {
-	return fmt.Errorf("configure Claude (%s): %w", c.requests[0]["subtype"], err)
+	return fmt.Errorf("configure Claude (%s): %w", c.requests[0].request["subtype"], err)
 }
 
-func (a *Agent) reconfigure(config agent.Settings, reply chan error) {
-	if a.phase == parking {
-		reply <- agent.ErrExited
-		return
-	}
+// Configure sends Claude a control request for each setting that differs
+// from the process's, one at a time.
+func (a *Agent) Configure(settings agent.Settings, done func(error)) {
 	if !a.idle() {
-		reply <- agent.ErrBusy
+		done(agent.ErrBusy)
 		return
 	}
-	requests := []map[string]any{
-		{"subtype": "set_model", "model": config.Model},
-		{"subtype": "apply_flag_settings", "settings": map[string]any{"effortLevel": effortLevel(config.Effort)}},
-		{"subtype": "set_permission_mode", "mode": config.PermissionMode},
+	var requests []control
+	if settings.Model != a.settings.Model {
+		requests = append(requests, control{
+			map[string]any{"subtype": "set_model", "model": settings.Model},
+			func(s *agent.Settings) { s.Model = settings.Model },
+		})
 	}
-	a.config = &configuration{requests: requests, reply: reply}
+	if settings.Effort != a.settings.Effort {
+		requests = append(requests, control{
+			map[string]any{"subtype": "apply_flag_settings", "settings": map[string]any{"effortLevel": effortLevel(settings.Effort)}},
+			func(s *agent.Settings) { s.Effort = settings.Effort },
+		})
+	}
+	if settings.PermissionMode != a.settings.PermissionMode {
+		requests = append(requests, control{
+			map[string]any{"subtype": "set_permission_mode", "mode": settings.PermissionMode},
+			func(s *agent.Settings) { s.PermissionMode = settings.PermissionMode },
+		})
+	}
+	if len(requests) == 0 {
+		done(nil)
+		return
+	}
+	a.config = &configuration{requests: requests, done: done}
 	a.phase = configuring
 	a.sendControl()
 }
@@ -42,12 +65,11 @@ func (a *Agent) reconfigure(config agent.Settings, reply chan error) {
 func (a *Agent) sendControl() {
 	c := a.config
 	c.requestID = NewUUID()
-	if err := a.input.Control(c.requestID, c.requests[0]); err != nil {
+	if err := a.input.Control(c.requestID, c.requests[0].request); err != nil {
 		a.endConfiguration(c.fail(err))
 		return
 	}
-	requestID := c.requestID
-	time.AfterFunc(time.Minute, func() { a.post(controlTimeout{requestID}) })
+	a.after(time.Minute, controlTimeout{c.requestID})
 }
 
 func (a *Agent) controlResponse(response ControlResponse) {
@@ -59,6 +81,7 @@ func (a *Agent) controlResponse(response ControlResponse) {
 		a.endConfiguration(a.config.fail(err))
 		return
 	}
+	a.config.requests[0].apply(&a.settings)
 	a.config.requests = a.config.requests[1:]
 	if len(a.config.requests) == 0 {
 		a.endConfiguration(nil)
@@ -74,9 +97,10 @@ func (a *Agent) controlTimedOut(requestID string) {
 }
 
 func (a *Agent) endConfiguration(err error) {
-	a.config.reply <- err
+	done := a.config.done
 	a.config = nil
 	a.phase = available
+	done(err)
 }
 
 // effortLevel is the effortLevel flag setting for effort: null clears it for

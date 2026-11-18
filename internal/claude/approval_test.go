@@ -17,7 +17,7 @@ func TestApprovalRouting(t *testing.T) {
 		t.Fatalf("approval did not reach the prompt client intact: %+v", *updates)
 	}
 	response := json.RawMessage(`{"behavior":"allow","updatedInput":{"number":9007199254740993},"extra":"preserved"}`)
-	if err := a.answer("request", response); err != nil {
+	if err := a.Approve("request", response); err != nil {
 		t.Fatal(err)
 	}
 	if len(*updates) != 2 || (*updates)[1].Type != "approval_answered" || (*updates)[1].RequestID != "request" {
@@ -37,7 +37,7 @@ func TestApprovalRouting(t *testing.T) {
 	if wire.Type != "control_response" || wire.Response.Subtype != "success" || wire.Response.RequestID != "request" || !bytes.Equal(wire.Response.Response, response) {
 		t.Fatalf("answer changed in transit: %s", input)
 	}
-	if err := a.answer("request", response); !errors.Is(err, agent.ErrApprovalNotFound) {
+	if err := a.Approve("request", response); !errors.Is(err, agent.ErrApprovalNotFound) {
 		t.Fatalf("duplicate answer accepted: %v", err)
 	}
 }
@@ -58,7 +58,7 @@ func TestApprovalCancellation(t *testing.T) {
 			if len(*updates) < 2 || (*updates)[1].Type != "approval_cancelled" || (*updates)[1].RequestID != "request" {
 				t.Fatalf("approval not withdrawn before the terminal update: %+v", *updates)
 			}
-			if err := a.answer("request", json.RawMessage(`{"behavior":"allow"}`)); !errors.Is(err, agent.ErrApprovalNotFound) || input.Len() != 0 {
+			if err := a.Approve("request", json.RawMessage(`{"behavior":"allow"}`)); !errors.Is(err, agent.ErrApprovalNotFound) || input.Len() != 0 {
 				t.Fatalf("late answer accepted: %v, %s", err, input)
 			}
 		})
@@ -72,7 +72,7 @@ func TestApprovalSurvivesResult(t *testing.T) {
 	if len(*updates) != 2 || (*updates)[1].Type != "result" {
 		t.Fatalf("result withdrew a background approval: %+v", *updates)
 	}
-	if err := a.answer("background", json.RawMessage(`{"behavior":"allow"}`)); err != nil {
+	if err := a.Approve("background", json.RawMessage(`{"behavior":"allow"}`)); err != nil {
 		t.Fatalf("background approval could not be answered after a result: %v", err)
 	}
 	var wire struct {
@@ -89,17 +89,15 @@ func TestApprovalSurvivesResult(t *testing.T) {
 }
 
 func TestApprovalWithoutPrompt(t *testing.T) {
-	a, input := testAgent()
-	updates := new(recorder)
-	a.subscribers[updates] = struct{}{}
+	a, input, updates := testAgent()
 	a.controlRequest("scheduled", json.RawMessage(`{"subtype":"can_use_tool"}`))
 	if len(*updates) != 1 || (*updates)[0].Type != "approval" || (*updates)[0].MessageID != "" {
 		t.Fatalf("approval in a turn Claude started was not published: %+v", *updates)
 	}
-	if a.parkable() {
+	if a.Parkable() {
 		t.Fatal("a pending approval left the agent parkable")
 	}
-	if err := a.answer("scheduled", json.RawMessage(`{"behavior":"allow"}`)); err != nil {
+	if err := a.Approve("scheduled", json.RawMessage(`{"behavior":"allow"}`)); err != nil {
 		t.Fatalf("approval in a turn Claude started could not be answered: %v", err)
 	}
 	if !bytes.Contains(input.Bytes(), []byte(`"request_id":"scheduled"`)) {

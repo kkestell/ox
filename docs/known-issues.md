@@ -8,29 +8,11 @@ not reproduced.
 
 | Issue | Occurs | Confirmed |
 | --- | --- | --- |
-| [One request at a time per connection](#one-request-at-a-time-per-connection) | Ordinary use | Live |
 | [Startup failures lose Claude's reason](#startup-failures-lose-claudes-reason) | Missing transcript | Live |
 | [RPC bodies over 1 MiB never settle](#rpc-bodies-over-1-mib-never-settle) | Very large prompts | Live |
-| [Page load can keep stale settings](#page-load-can-keep-stale-settings) | Two pages, millisecond window | Source |
-| [Configuration races start and destroy](#configuration-races-start-and-destroy) | Two pages, millisecond window | Source |
 | [Process exit is detected at stdout EOF](#process-exit-is-detected-at-stdout-eof) | Fault injection only | Live, injected |
 | [An unknown effort level is ignored](#an-unknown-effort-level-is-ignored) | Misspelled configuration | Live |
-
-## One request at a time per connection
-
-`Server.serveConn` handles each request inline on the connection's read loop.
-`session/send` holds the session lock while it starts a parked session's
-Claude process. `workspace/list` takes every session's lock.
-
-The web UI uses one `oxd` connection per page. So whenever a page sends to a
-parked session, every other request from that page waits until Claude has
-started, including approvals and requests for other sessions. A page that
-loads during that time waits in `workspace/list`.
-
-In a live run, `session/get` for an unrelated session and `workspace/list`
-both waited 489 ms behind a send that started Haiku. The baseline was 0.07 ms.
-If Claude stalls during startup, the wait lasts up to the one-minute startup
-timeout in `claude.Start`.
+| [A failed configuration can leave settings the page does not show](#a-failed-configuration-can-leave-settings-the-page-does-not-show) | Refused effort after a model change, or a failed database write | Source |
 
 ## Startup failures lose Claude's reason
 
@@ -61,52 +43,22 @@ text stays in the box. The rest of the page keeps working.
 Confirmed live: a 1,048,685-byte `session/send` returned `204`, and the event
 stream received `{"id":null,"error":{"code":-32700,"message":"Parse error"}}`.
 
-## Page load can keep stale settings
-
-On load, the page takes each session's settings from `workspace/list`, and
-installs the session only once `session/get` returns. `session/get` does not
-return settings. A `session/configured` that arrives before the session is
-installed is dropped.
-
-This happens when one page changes a session's settings while another page
-is loading or reconnecting. The window is milliseconds on a healthy local
-instance, and longer when `workspace/list` waits on session locks (see
-[One request at a time per connection](#one-request-at-a-time-per-connection)).
-The loading page shows the old settings until it reloads. Its settings form
-submits all three fields, so a change to effort alone can write back the old
-model or a more permissive permission mode.
-
-## Configuration races start and destroy
-
-`configureSession` releases the session lock before it waits for Claude's
-acknowledgements and before it stores the new settings.
-
-- **Configure versus send on a parked session.** A send can start Claude with
-  the old settings, and configure then stores and broadcasts the new ones.
-  The UI then shows settings the process is not using, possibly including the
-  permission mode. The gap is microseconds, so a person cannot hit it.
-- **Configure versus destroy on a running session.** A destroy during the
-  acknowledgement round-trip stops the process. Configure treats the exit as
-  success and broadcasts `session/configured` after `session/destroyed`. The
-  window is about 10–14 ms on an idle Haiku process. The web UI ignores
-  `session/configured` for sessions it no longer has, so the destroyed
-  session does not reappear.
-
 ## Process exit is detected at stdout EOF
 
-`Process.read` in `internal/claude` calls `cmd.Wait` and closes `Output` only
-after stdout reaches EOF. The agent finishes only when `Output` closes, and
-destroy, sends to a parking session, and daemon shutdown all wait for that.
+`Process.read` in `internal/claude` calls `cmd.Wait` and reports the exit only
+after stdout reaches EOF. Destroy, parking, and daemon shutdown all wait for
+that exit on the session's goroutine.
 
 If any process outlived Claude while holding its stdout open, these would
-hang until that process exited, and `workspace/list` would hang behind the
-session lock.
+hang until that process exited, and every later request for that session
+would wait behind them.
 
 Ordinary background work does not cause this. A background Bash `sleep`
 started by Haiku ran in its own process group and wrote to a task output
 file, not to Claude's stdout. Claude stopped it on exit, and `session/destroy`
 returned in 0.8 s. With an injected child that inherited Claude's stdout,
-`Output` closed only when that child exited, 13 s after Claude terminated.
+the exit was reported only when that child exited, 13 s after Claude
+terminated.
 MCP servers and abnormal Claude exits have not been tested.
 
 ## An unknown effort level is ignored
@@ -114,3 +66,25 @@ MCP servers and abnormal Claude exits have not been tested.
 Claude accepts an effort level it does not know with a warning on stderr and
 uses its default effort. A misspelled effort `id` in the configuration
 therefore changes nothing and reports no error.
+
+## A failed configuration can leave settings the page does not show
+
+`session/configure` on a running session sends Claude one control request for
+each changed setting, in the order model, effort, permission mode. It stores
+and broadcasts the settings only once Claude has acknowledged them all and the
+database write succeeds. If a later request fails after an earlier one
+succeeded, or the database write fails after every acknowledgement, the
+process keeps what it applied while the stored settings, and every page, show
+the old ones. The request returns an error.
+
+The web UI sends more than one setting only when a model change also changes
+effort, because the new model does not offer the current effort. Every model
+in the built-in configuration offers the same efforts, so through the web UI
+this needs a configuration whose models differ in effort levels, and Claude
+refusing the effort right after accepting the model. Which effort levels
+Claude refuses through a control request has not been tested. The database
+case needs a failed local SQLite write.
+
+Until the session's next configuration or process start, prompts run on a
+model other than the one shown, possibly a costlier one. In the database case
+the permission mode can differ too.

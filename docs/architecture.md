@@ -30,7 +30,7 @@ cmd/oxd            socket, database, and configuration paths, signals, the harne
 | `cmd/oxd` | Choosing the socket, database, and configuration, checking the configured harnesses, starting the server, and stopping it on a signal. |
 | `socket` | The default socket path, which `cmd/oxd` serves and `cmd/ox` connects to. |
 | `config` | Reading the configuration file, or the built-in default, into each harness's models, efforts, and modes and the new-session defaults, and checking the defaults against them. |
-| `server` | Client connections, the sessions and the agent running each, and the mapping from each method to a session operation and its error codes. Each connection writes through its own queue, so agents never wait on a client. |
+| `server` | Client connections, each session's goroutine and the agent it runs, and the mapping from each method to a session operation and its error codes. Each connection writes through its own queue, so sessions never wait on a client. |
 | `store` | The SQLite database of workspaces, sessions, and session events. |
 | `jsonrpc` | Request validation and the response and notification types. |
 | `agent` | The `Agent` interface a harness implements, its `Start` function and options, and the updates, snapshots, settings, and errors they share. |
@@ -39,34 +39,47 @@ cmd/oxd            socket, database, and configuration paths, signals, the harne
 
 ## Sessions
 
-The server loads the stored workspaces and sessions at startup, all parked,
-and writes each change to the database before applying it in memory. A
-session's ID is Ox's own, and its harness is fixed at creation. Its resume token is the harness's name for the
-conversation: empty until the harness reports it through `OnResumable`, and
-then passed to every later process so it continues the same conversation. Each
-process receives the session's stored model, effort, and permission mode.
+The server loads the stored workspaces and sessions at startup, all parked. A
+session's ID is Ox's own, and its harness is fixed at creation. Its resume
+token is the harness's name for the conversation: empty until the harness
+reports it through `OnResumable`, and then passed to every later process so it
+continues the same conversation. Each process receives the session's stored
+model, effort, and permission mode.
 
-A session's lock is held while its process starts, so it runs at most one. A
-prompt refused by a parking process waits for that process to exit and goes to
-a new one. A session parks when its process exits; the server notices the exit
-the next time it looks at the session.
+Each session runs on its own goroutine, which owns its settings, resume token,
+history, agent, and park timer. Every request for a session is an operation
+posted to that goroutine, and the agent's events and the park timer are
+handled there between operations. An operation queues its own response there:
+at once, or, for a configuration Claude must acknowledge, from the event that
+finishes it. Nothing else touches a session's state, and a response lands in a
+connection's queue after every update it reflects and before every update it
+does not. A connection handles each request on its own
+goroutine, so a slow operation, such as starting Claude, holds up only the
+requests for that session. Changes are written to the database before they
+are applied in memory.
 
-Each process a session starts has two subscribers: the session's history and
-a broadcaster that sends each update to every open connection. The history stores the
-conversation's updates as events in the database, holding the current reply's
-text in memory until the next update ends it. `session/get` reads the
-history and the agent's state through `Inspect`, whose callback runs on the
-agent's goroutine between updates and queues the response there. The response
-therefore lands in the connection's queue after every update it reflects and
-before every update it does not. A parked session has no process, so its lock
-holder reads the history.
+`Server.mu` guards only which workspaces and sessions exist. Creating or
+destroying one broadcasts the change while holding it, and `workspace/list`
+queues its response while holding it, so every connection sees them in one
+order. Nothing posts to a session while holding it.
+
+A session's updates go to its history and to every open connection. The
+history stores the conversation's updates as events in the database, holding
+the current reply's text in memory until the next update ends it.
+
+The session arms a park timer whenever its agent is `Parkable` and stops it
+when the agent stops being parkable, so the full period restarts each time. If
+the timer fires, the session stops the process and handles the agent's events
+until it has exited. A session parks when its process exits for any reason.
 
 ## Agents
 
-An `Agent` runs one harness process. Every agent publishes its updates to its
-subscribers on one goroutine, runs `Inspect` callbacks on that goroutine between
-updates, refuses a prompt or configuration with `ErrBusy` unless it is idle, and
-publishes `parked` as its last update.
+An `Agent` runs one harness process and has no goroutine of its own. The
+session's goroutine makes every call: it passes each event from `Events` to
+`Handle`, and calls `Send`, `Approve`, `Configure`, `Snapshot`, `Parkable`, and
+`Stop`. Updates and the resume token arrive through the `Options` callbacks
+during those calls. An agent refuses a prompt or configuration with `ErrBusy`
+unless it is idle, and publishes `parked` as its last update.
 
 ### The Claude agent
 
@@ -74,10 +87,10 @@ The Claude agent names a new conversation with a fresh UUID passed to
 `--session-id`, reports it as the resume token at the first result, once Claude
 has written the transcript, and resumes a conversation with `--resume`.
 
-The Claude agent is a state machine run by one goroutine, which owns all of its state.
-Client operations (`Inspect`, `Send`, `Approve`, `Configure`) and Claude's
-output arrive as events and are handled one at a time, so updates go out in the
-order their causes occurred.
+The Claude agent is a state machine driven by the session's goroutine. Its
+events are Claude's output, the process's exit, and control-request timeouts:
+a goroutine reads Claude's stdout, and timers fire, and both deliver through
+`Events`. Updates therefore go out in the order their causes occurred.
 
 The agent's phase records what owns its Claude process:
 
@@ -86,8 +99,7 @@ The agent's phase records what owns its Claude process:
 | `available` | Nothing owns the process. | A prompt or configuration starts. |
 | `queued` | A prompt was written; Claude has not taken it yet. | `command_lifecycle started` for the prompt. |
 | `prompting` | Claude is working on the prompt. | Claude reports `idle`. |
-| `configuring` | Control requests are in flight, one at a time. | The last acknowledgement, a refusal, a write failure, a timeout, or the process exiting. |
-| `parking` | The agent has terminated an unused process; prompts and configuration are refused as if it had exited. | The process exits. |
+| `configuring` | Control requests are in flight, one at a time, for each setting that differs from the process's. | The last acknowledgement, a refusal, a write failure, a timeout, or the process exiting. |
 | `exited` | The Claude process has exited. | — |
 
 Claude's reported session state (`running`, `requires_action`, `idle`) is kept
@@ -97,14 +109,13 @@ is `available` and Claude is `idle`.
 The agent also tracks the size of Claude's background-task set from
 `background_tasks_changed`, and the number of pending schedules from the Stop
 hook Claude calls at the end of each completed turn. A turn that ends by
-interrupt or error calls no Stop hook, so a `CronCreate`, `CronDelete`, or
-`ScheduleWakeup` call counts as a pending schedule until the next Stop hook.
-The agent arms a park timer whenever it is `available`, Claude is `idle`, no
-approval is pending, no background task runs, and nothing is scheduled, and
-disarms it when any of those stops holding. If the timer fires while still armed, the
-agent enters `parking` and sends Claude SIGTERM.
+interrupt or error calls no Stop hook, so the count from the last completed
+turn stands, and a `CronCreate`, `CronDelete`, or `ScheduleWakeup` call counts
+as a pending schedule until the next Stop hook. The agent is `Parkable` when
+it is `available`, Claude is `idle`, and no approval, background task, or
+schedule is pending.
 
-Subscribers receive every update: those of a client's prompt carry its ID, and
+Every update goes to `OnUpdate`: those of a client's prompt carry its ID, and
 those of turns Claude starts itself carry none. The agent publishes `parked`
 as its last update when the process exits.
 
@@ -126,6 +137,8 @@ The store changes only through notifications and `session/get` responses, so
 every page shows the same state. Requests write nothing to it: `oxd` sends the
 resulting notification to every connection, including the one that asked.
 Each new connection clears the store and loads it again, since it has missed
-the notifications sent while the page was disconnected. The settings form
-shows a change while `session/configure` is in flight with an optimistic
-value, which reverts to the stored settings if the request fails.
+the notifications sent while the page was disconnected. A session's settings
+come from `session/get` and `session/configured`. The settings form sends only
+the settings the user changed, and shows the change while `session/configure`
+is in flight with an optimistic value, which reverts to the stored settings if
+the request fails.

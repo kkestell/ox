@@ -1,7 +1,7 @@
 import { action, createOptimistic, createSignal, For, Match, Show, snapshot, Switch } from "solid-js";
 import { useOx, type Approval, type Entry, type Session } from "./ox";
 import type { ApprovalResponse, Settings } from "./protocol";
-import { defaultSettings, SettingsFields, settingsFrom } from "./SettingsFields";
+import { changedSettings, defaultSettings, SettingsFields, settingsFrom } from "./SettingsFields";
 
 type Tool = Extract<Entry, { kind: "tool" }>;
 
@@ -154,17 +154,18 @@ function ApprovalRequest(props: { approval: Approval; onAnswer(response: Approva
   );
 }
 
-// SettingsForm shows a change to the session's settings while it is being
-// applied, until the session/configured event confirms it or the request
-// fails and the fields return to the stored settings.
+// SettingsForm sends only the settings the user changed, with the effort a
+// model change requires. It shows the change while it is being applied,
+// until the session/configured event confirms it or the request fails and
+// the fields return to the stored settings.
 function SettingsForm(props: { session: Session; attempt(request: Promise<unknown>): void }) {
   const ox = useOx();
   const [shown, setShown] = createOptimistic(() => props.session.settings);
   const [configuring, setConfiguring] = createOptimistic(false);
-  const configure = action(function* (settings: Settings) {
+  const configure = action(function* (settings: Settings, changes: Partial<Settings>) {
     setShown(settings);
     setConfiguring(true);
-    yield ox.configure(props.session.id, settings);
+    yield ox.configure(props.session.id, changes);
   });
   // A running session takes configuration only while idle; a parked session
   // stores it.
@@ -173,7 +174,13 @@ function SettingsForm(props: { session: Session; attempt(request: Promise<unknow
   return (
     <Show when={ox.state.harnesses[props.session.harness]}>
       {(harness) => (
-        <form onChange={(event) => props.attempt(configure(settingsFrom(harness(), new FormData(event.currentTarget))))}>
+        <form
+          onChange={(event) => {
+            const settings = settingsFrom(harness(), new FormData(event.currentTarget));
+            const changes = changedSettings(shown(), settings);
+            if (Object.keys(changes).length) props.attempt(configure(settings, changes));
+          }}
+        >
           <SettingsFields harness={harness()} value={shown()} disabled={!configurable()} />
         </form>
       )}

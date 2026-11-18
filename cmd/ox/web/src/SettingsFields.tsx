@@ -68,6 +68,11 @@ export function settingsFrom(harness: Harness, form: FormData): Settings {
   };
 }
 
+// changedSettings returns the settings in to that differ from those in from.
+export function changedSettings(from: Settings, to: Settings): Partial<Settings> {
+  return Object.fromEntries(Object.entries(to).filter(([key, value]) => from[key as keyof Settings] !== value));
+}
+
 // defaultSettings are a new session's settings: the configured defaults for
 // the default harness, and the first choices for any other.
 export function defaultSettings(name: string, harness: Harness, defaults?: Defaults): Settings {

@@ -13,10 +13,8 @@ type submission struct {
 	id string
 }
 
-func (a *Agent) submit(text string) (string, error) {
-	if a.phase == parking {
-		return "", agent.ErrExited
-	}
+// Send writes a prompt to an idle agent.
+func (a *Agent) Send(text string) (string, error) {
 	if !a.idle() {
 		return "", agent.ErrBusy
 	}
@@ -63,16 +61,12 @@ func (a *Agent) endPrompt(final agent.Update) {
 	a.phase = available
 }
 
-// publish sends an update to every subscriber, tagged with the current
-// prompt's ID when a client's prompt owns the turn.
+// publish reports an update, tagged with the current prompt's ID when a
+// client's prompt owns the turn.
 func (a *Agent) publish(update agent.Update) {
 	update.Time = time.Now()
 	if a.prompt != nil {
 		update.MessageID = a.prompt.id
 	}
-	for s := range a.subscribers {
-		if !s.Publish(update) {
-			delete(a.subscribers, s)
-		}
-	}
+	a.onUpdate(update)
 }

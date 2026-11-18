@@ -21,16 +21,14 @@ import (
 
 type Process struct {
 	*Input
-	cmd    *exec.Cmd
-	output chan Message
-	err    error
+	cmd *exec.Cmd
 }
 
 // startProcess starts Claude in workspace on the conversation named by
 // sessionID, a UUID, and waits up to one minute for it to accept
 // initialization. resume continues the conversation's transcript instead of
-// starting it.
-func startProcess(workspace, sessionID string, resume bool, settings agent.Settings) (*Process, error) {
+// starting it. Claude's output then goes to events, followed by its exit.
+func startProcess(workspace, sessionID string, resume bool, settings agent.Settings, events chan<- agent.Event) (*Process, error) {
 	args := []string{
 		"-p", "--input-format=stream-json", "--output-format=stream-json", "--verbose",
 		"--include-partial-messages", "--permission-prompt-tool=stdio",
@@ -74,8 +72,8 @@ func startProcess(workspace, sessionID string, resume bool, settings agent.Setti
 		return nil, fmt.Errorf("initialize Claude: %w", err)
 	}
 
-	p := &Process{Input: NewInput(stdin), cmd: cmd, output: make(chan Message)}
-	go p.read(output)
+	p := &Process{Input: NewInput(stdin), cmd: cmd}
+	go p.read(output, events)
 	return p, nil
 }
 
@@ -101,7 +99,9 @@ func initialize(input io.Writer, output *bufio.Reader) error {
 	}
 }
 
-func (p *Process) read(output *bufio.Reader) {
+// read sends each of Claude's messages to events, then how the process
+// exited.
+func (p *Process) read(output *bufio.Reader, events chan<- agent.Event) {
 	for {
 		line, err := output.ReadBytes('\n')
 		if err != nil {
@@ -109,21 +109,10 @@ func (p *Process) read(output *bufio.Reader) {
 		}
 		var message Message
 		if json.Unmarshal(line, &message) == nil {
-			p.output <- message
+			events <- message
 		}
 	}
-	p.err = p.cmd.Wait()
-	close(p.output)
-}
-
-// Output delivers Claude's messages and is closed when the process exits.
-func (p *Process) Output() <-chan Message {
-	return p.output
-}
-
-// Err reports how the process exited. It is valid once Output is closed.
-func (p *Process) Err() error {
-	return p.err
+	events <- processExit{p.cmd.Wait()}
 }
 
 // Terminate asks Claude to exit so it can clean up its tool processes.

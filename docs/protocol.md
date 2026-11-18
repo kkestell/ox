@@ -19,7 +19,10 @@ message. Batch requests are unsupported. No connection handshake is required.
 Clients must continuously read the socket: responses and notifications share
 the stream. Every connection receives every notification, for every session,
 from the moment it connects. Notifications can arrive before the response to
-the request that caused them. The daemon gives each socket write five seconds to complete
+the request that caused them. Each session handles its requests one at a time.
+The daemon handles each request separately, so a slow request, such as a send
+that starts Claude, holds up only the requests for that session, and requests
+sent without waiting for earlier responses can run in any order. The daemon gives each socket write five seconds to complete
 and buffers a limited backlog; a client that stops reading loses its
 connection.
 
@@ -52,7 +55,12 @@ The daemon parks a session whose process has gone unused for five minutes
 (`-park-after` changes the period): no prompt or configuration in progress,
 Claude idle, no approval pending, no background task running, and no scheduled
 prompt pending (`CronCreate`, `ScheduleWakeup`, or `/loop`), so scheduled
-prompts keep firing. Connected clients do not keep a session running.
+prompts keep firing. Claude reports its pending schedules at the end of each
+completed turn. After a turn that ends by error or interrupt, the daemon keeps
+the schedules from the last completed turn, and if the failed turn called a
+scheduling tool, it keeps the session running until a later turn completes.
+A session can therefore stay running with nothing scheduled.
+Connected clients do not keep a session running.
 
 ## Configuration
 
@@ -108,15 +116,15 @@ the existing workspace.
 
 ### `workspace/list`
 
-Returns every workspace with its sessions, each oldest first. `parked` is
-false while a session's process is running.
+Returns every workspace with its sessions, each oldest first. A session's
+settings and state come from `session/get`.
 
 ```json
 {"jsonrpc":"2.0","id":2,"method":"workspace/list","params":{}}
 ```
 
 ```json
-{"jsonrpc":"2.0","id":2,"result":{"workspaces":[{"workspace_id":"workspace-id","path":"/Users/kyle/src/ox","created_at":"2026-11-18T19:53:47.102Z","sessions":[{"session_id":"session-id","harness":"claude","model":"haiku","effort":"low","permission_mode":"manual","created_at":"2026-11-18T19:53:48.416Z","parked":true}]}]}}
+{"jsonrpc":"2.0","id":2,"result":{"workspaces":[{"workspace_id":"workspace-id","path":"/Users/kyle/src/ox","created_at":"2026-11-18T19:53:47.102Z","sessions":[{"session_id":"session-id","harness":"claude","created_at":"2026-11-18T19:53:48.416Z"}]}]}}
 ```
 
 ## Session methods
@@ -170,8 +178,8 @@ A `result` update alone does not release the session for another prompt.
 
 ### `session/get`
 
-Requires `session_id`. Returns the session's conversation so far and its
-current state. The connection already receives the session's updates: those
+Requires `session_id`. Returns the session's settings, its conversation so
+far, and its current state. The connection already receives the session's updates: those
 that arrive before the response are included in it, and those after it apply
 on top of it. A client loading a session ignores its updates until the
 response arrives.
@@ -181,11 +189,12 @@ response arrives.
 ```
 
 ```json
-{"jsonrpc":"2.0","id":5,"result":{"state":"requires_action","prompt":{"message_id":"prompt-id"},"approvals":[{"request_id":"claude-request-id","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch notes.txt"}}}],"history":[{"message_id":"prompt-id","type":"prompt","text":"Create notes.txt."},{"message_id":"prompt-id","type":"text_delta","text":"I'll create the file."}]}}
+{"jsonrpc":"2.0","id":5,"result":{"model":"haiku","effort":"low","permission_mode":"manual","state":"requires_action","prompt":{"message_id":"prompt-id"},"approvals":[{"request_id":"claude-request-id","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch notes.txt"}}}],"history":[{"message_id":"prompt-id","type":"prompt","text":"Create notes.txt."},{"message_id":"prompt-id","type":"text_delta","text":"I'll create the file."}]}}
 ```
 
 | Field | Meaning |
 | --- | --- |
+| `model`, `effort`, `permission_mode` | The session's stored settings. |
 | `state` | `parked`, or Claude's execution state: `running`, `requires_action`, or `idle`. |
 | `prompt` | The active prompt, or `null`. |
 | `prompt.message_id` | The prompt's identifier, matching its updates. |
@@ -200,12 +209,13 @@ reproduces the conversation. Deleting the session deletes its history.
 
 ### `session/configure`
 
-Requires `session_id`, `model`, `effort`, and `permission_mode`, validated as
-at creation. Replaces the session's settings, preserving the conversation, and
-stores them for its later processes.
+Requires `session_id` and at least one of `model`, `effort`, and
+`permission_mode`, validated as at creation. Changes the settings given and
+keeps the others, preserving the conversation, and stores them for the
+session's later processes.
 
 ```json
-{"jsonrpc":"2.0","id":6,"method":"session/configure","params":{"session_id":"session-id","model":"haiku","effort":"low","permission_mode":"acceptEdits"}}
+{"jsonrpc":"2.0","id":6,"method":"session/configure","params":{"session_id":"session-id","effort":"high"}}
 ```
 
 ```json
@@ -217,8 +227,8 @@ starts. A running session must be idle with no pending prompt. Configuration
 reserves it until completion; sends and other configuration requests during
 that time return `-32002`. Any connected client can configure an idle session.
 
-For a running session, success means Claude acknowledged all three settings,
-and only then are they stored. Model, effort, and permission
+For a running session, success means Claude acknowledged each setting that
+differs from its process's, and only then are they stored. Model, effort, and permission
 mode are applied in that order. If a change fails, earlier changes remain
 applied to the process and later changes are skipped. Claude refusals, write
 failures, and missing responses after one minute return an operation error.
@@ -243,8 +253,9 @@ response payload is forwarded to Claude.
 For rejection, use `{"behavior":"deny","message":"Reason for rejection"}`
 as `response`. Set `interrupt: true` in that response to stop the turn as well.
 
-Ox checks the response shape and preserves its fields. If supplied,
-`updatedInput` must be an object and `updatedPermissions` must be an array.
+The Claude harness checks the response shape and preserves its fields. If
+supplied, `updatedInput` must be an object and `updatedPermissions` must be an
+array; a running session refuses a response of another shape with `-32000`.
 Clients can echo the original input, supply changed input (including
 `AskUserQuestion` answers), or return `updatedPermissions` chosen from
 Claude's suggestions. Claude applies those permission changes; Ox stores no
@@ -349,12 +360,12 @@ Every connection is told when workspaces and sessions come and go:
 | Method | `params` | Meaning |
 | --- | --- | --- |
 | `workspace/created` | `workspace_id`, `path`, `created_at` | A workspace was registered. |
-| `session/created` | `session_id`, `workspace_id`, `harness`, `model`, `effort`, `permission_mode`, `created_at` | A session was created, parked. |
+| `session/created` | `session_id`, `workspace_id`, `harness`, `created_at` | A session was created, parked. |
 | `session/configured` | `session_id`, `model`, `effort`, `permission_mode` | A session's settings changed; the fields are its stored settings. |
 | `session/destroyed` | `session_id` | A session was destroyed, after its last update. |
 
 ```json
-{"jsonrpc":"2.0","method":"session/created","params":{"session_id":"session-id","workspace_id":"workspace-id","harness":"claude","model":"haiku","effort":"low","permission_mode":"manual","created_at":"2026-11-18T19:53:48.416Z"}}
+{"jsonrpc":"2.0","method":"session/created","params":{"session_id":"session-id","workspace_id":"workspace-id","harness":"claude","created_at":"2026-11-18T19:53:48.416Z"}}
 ```
 
 ## Connections
@@ -383,7 +394,7 @@ underlying process or I/O errors.
 | `-32600` | Invalid request envelope, field types, JSON-RPC version, or batch request. |
 | `-32601` | Unknown method. |
 | `-32602` | Missing or invalid method parameters. |
-| `-32000` | Operation failed, such as Claude startup, a process write failure, or a database write failure. |
+| `-32000` | Operation failed, such as Claude startup, a process write failure, a database write failure, or an approval response Claude cannot take. |
 | `-32001` | Workspace or session not found. |
 | `-32002` | Session is busy; a prompt or configuration cannot start yet. |
 | `-32003` | Approval request is no longer pending, including duplicate or cancelled answers. |

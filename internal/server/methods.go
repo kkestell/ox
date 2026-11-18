@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,39 +23,43 @@ const (
 	approvalNotPending = -32003
 )
 
-// handle runs one request line and returns the response to queue, or nil when
-// there is none to send.
-func (s *Server) handle(c *conn, line []byte) *jsonrpc.Response {
+// replyFunc queues a response on the requesting connection.
+type replyFunc func(*jsonrpc.Response)
+
+// handle runs one request line. Each method queues its own response through
+// reply, from wherever it holds the state the response reports.
+func (s *Server) handle(reply replyFunc, line []byte) {
 	request, invalid := jsonrpc.Parse(line)
 	if invalid != nil {
-		return invalid
+		reply(invalid)
+		return
 	}
 	// Operations require a request ID so the client receives the outcome.
 	if len(request.ID) == 0 {
-		return nil
+		return
 	}
 	id, params := request.ID, request.Params
 	switch request.Method {
 	case "workspace/create":
-		return s.createWorkspace(id, params)
+		s.createWorkspace(reply, id, params)
 	case "workspace/list":
-		return s.listWorkspaces(id)
+		s.listWorkspaces(reply, id)
 	case "harness/list":
-		return jsonrpc.Success(id, s.config)
+		reply(jsonrpc.Success(id, s.config))
 	case "session/create":
-		return s.createSession(id, params)
+		s.createSession(reply, id, params)
 	case "session/get":
-		return s.getSession(c, id, params)
+		s.getSession(reply, id, params)
 	case "session/send":
-		return s.sendSession(id, params)
+		s.sendSession(reply, id, params)
 	case "session/approve":
-		return s.approveSession(id, params)
+		s.approveSession(reply, id, params)
 	case "session/configure":
-		return s.configureSession(id, params)
+		s.configureSession(reply, id, params)
 	case "session/destroy":
-		return s.destroySession(id, params)
+		s.destroySession(reply, id, params)
 	default:
-		return jsonrpc.Failure(id, jsonrpc.MethodNotFound, "Method not found")
+		reply(jsonrpc.Failure(id, jsonrpc.MethodNotFound, "Method not found"))
 	}
 }
 
@@ -78,31 +83,32 @@ func sessionNotFound(id json.RawMessage) *jsonrpc.Response {
 	return jsonrpc.Failure(id, notFound, "Session not found")
 }
 
-// lookup finds and locks the session named by sessionID, or returns the
-// response to send. The caller unlocks sess.mu.
-func (s *Server) lookup(id json.RawMessage, sessionID string) (*session, *jsonrpc.Response) {
-	sess := s.session(sessionID)
-	if sess == nil {
-		return nil, sessionNotFound(id)
+// onSession runs op on the goroutine of the session named by sessionID, or
+// answers that there is no such session.
+func (s *Server) onSession(reply replyFunc, id json.RawMessage, sessionID string, op func(*session)) {
+	s.mu.Lock()
+	closed, sess := s.closed, s.sessions[sessionID]
+	s.mu.Unlock()
+	switch {
+	case closed:
+		reply(jsonrpc.Failure(id, operationFailed, "daemon is shutting down"))
+	case sess == nil || !sess.post(func() { op(sess) }):
+		reply(sessionNotFound(id))
 	}
-	sess.mu.Lock()
-	if sess.destroyed {
-		sess.mu.Unlock()
-		return nil, sessionNotFound(id)
-	}
-	return sess, nil
 }
 
-func (s *Server) createWorkspace(id, params json.RawMessage) *jsonrpc.Response {
+func (s *Server) createWorkspace(reply replyFunc, id, params json.RawMessage) {
 	var input struct {
 		Path string `json:"path"`
 	}
 	if err := json.Unmarshal(params, &input); err != nil || !filepath.IsAbs(input.Path) {
-		return invalidParams(id, "path must be an absolute directory path")
+		reply(invalidParams(id, "path must be an absolute directory path"))
+		return
 	}
 	path := filepath.Clean(input.Path)
 	if info, err := os.Stat(path); err != nil || !info.IsDir() {
-		return invalidParams(id, "path must be an existing directory")
+		reply(invalidParams(id, "path must be an existing directory"))
+		return
 	}
 	type result struct {
 		WorkspaceID string `json:"workspace_id"`
@@ -111,32 +117,32 @@ func (s *Server) createWorkspace(id, params json.RawMessage) *jsonrpc.Response {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, w := range s.workspaces {
-		if w.Path == path {
-			return jsonrpc.Success(id, result{w.ID})
+		if w.path == path {
+			reply(jsonrpc.Success(id, result{w.id}))
+			return
 		}
 	}
-	w := &store.Workspace{ID: rand.Text(), Path: path, CreatedAt: time.Now(), Sessions: []*store.Session{}}
-	if err := s.store.AddWorkspace(w); err != nil {
-		return failure(id, err)
+	w := &workspace{id: rand.Text(), path: path, createdAt: time.Now()}
+	if err := s.store.AddWorkspace(&store.Workspace{ID: w.id, Path: w.path, CreatedAt: w.createdAt}); err != nil {
+		reply(failure(id, err))
+		return
 	}
 	s.workspaces = append(s.workspaces, w)
 	s.broadcast("workspace/created", struct {
 		WorkspaceID string    `json:"workspace_id"`
 		Path        string    `json:"path"`
 		CreatedAt   time.Time `json:"created_at"`
-	}{w.ID, w.Path, w.CreatedAt})
-	return jsonrpc.Success(id, result{w.ID})
+	}{w.id, w.path, w.createdAt})
+	reply(jsonrpc.Success(id, result{w.id}))
 }
 
-func (s *Server) listWorkspaces(id json.RawMessage) *jsonrpc.Response {
+// listWorkspaces returns the workspaces and their sessions. A session's
+// settings and state come from session/get.
+func (s *Server) listWorkspaces(reply replyFunc, id json.RawMessage) {
 	type sessionInfo struct {
-		SessionID      string    `json:"session_id"`
-		Harness        string    `json:"harness"`
-		Model          string    `json:"model"`
-		Effort         string    `json:"effort"`
-		PermissionMode string    `json:"permission_mode"`
-		CreatedAt      time.Time `json:"created_at"`
-		Parked         bool      `json:"parked"`
+		SessionID string    `json:"session_id"`
+		Harness   string    `json:"harness"`
+		CreatedAt time.Time `json:"created_at"`
 	}
 	type workspaceInfo struct {
 		WorkspaceID string        `json:"workspace_id"`
@@ -145,301 +151,255 @@ func (s *Server) listWorkspaces(id json.RawMessage) *jsonrpc.Response {
 		Sessions    []sessionInfo `json:"sessions"`
 	}
 
-	type entry struct {
-		info *sessionInfo
-		sess *session
-	}
-	var entries []entry
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	workspaces := make([]workspaceInfo, len(s.workspaces))
 	for i, w := range s.workspaces {
-		workspaces[i] = workspaceInfo{WorkspaceID: w.ID, Path: w.Path, CreatedAt: w.CreatedAt, Sessions: make([]sessionInfo, len(w.Sessions))}
-		for j, r := range w.Sessions {
-			workspaces[i].Sessions[j] = sessionInfo{r.ID, r.Harness, r.Model, r.Effort, r.PermissionMode, r.CreatedAt, true}
-			entries = append(entries, entry{&workspaces[i].Sessions[j], s.sessions[r.ID]})
+		workspaces[i] = workspaceInfo{WorkspaceID: w.id, Path: w.path, CreatedAt: w.createdAt, Sessions: make([]sessionInfo, len(w.sessions))}
+		for j, sess := range w.sessions {
+			workspaces[i].Sessions[j] = sessionInfo{sess.id, sess.harness, sess.createdAt}
 		}
 	}
-	s.mu.Unlock()
-
-	for _, e := range entries {
-		e.sess.mu.Lock()
-		e.info.Parked = e.sess.live() == nil
-		e.sess.mu.Unlock()
-	}
-	return jsonrpc.Success(id, struct {
+	reply(jsonrpc.Success(id, struct {
 		Workspaces []workspaceInfo `json:"workspaces"`
-	}{workspaces})
+	}{workspaces}))
 }
 
-// settings are a session's model, effort, and permission mode, passed to the
-// harness as they are. A model without effort levels takes an empty effort.
-type settings struct {
-	Model          string `json:"model"`
-	Effort         string `json:"effort"`
-	PermissionMode string `json:"permission_mode"`
-}
-
-// invalid describes what is wrong with the settings, or returns "".
-func (s settings) invalid() string {
+// invalidSettings describes what is wrong with a session's settings, or
+// returns "". They are passed to the harness as they are; a model without
+// effort levels takes an empty effort.
+func invalidSettings(settings agent.Settings) string {
 	switch {
-	case strings.TrimSpace(s.Model) == "":
+	case strings.TrimSpace(settings.Model) == "":
 		return "model is required"
-	case strings.TrimSpace(s.PermissionMode) == "":
+	case strings.TrimSpace(settings.PermissionMode) == "":
 		return "permission_mode is required"
 	}
 	return ""
 }
 
-func (s *Server) createSession(id, params json.RawMessage) *jsonrpc.Response {
+func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 	var input struct {
 		WorkspaceID string `json:"workspace_id"`
 		Harness     string `json:"harness"`
-		settings
+		agent.Settings
 	}
 	if err := json.Unmarshal(params, &input); err != nil || input.WorkspaceID == "" || input.Harness == "" {
-		return invalidParams(id, "workspace_id, harness, model, effort, and permission_mode are required")
+		reply(invalidParams(id, "workspace_id, harness, model, effort, and permission_mode are required"))
+		return
 	}
-	if problem := input.invalid(); problem != "" {
-		return invalidParams(id, problem)
+	if problem := invalidSettings(input.Settings); problem != "" {
+		reply(invalidParams(id, problem))
+		return
 	}
 	if _, offered := s.config.Harnesses[input.Harness]; !offered {
-		return invalidParams(id, "harness is not configured")
+		reply(invalidParams(id, "harness is not configured"))
+		return
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Close ends the goroutine of every session that exists when it starts.
+	if s.closed {
+		reply(jsonrpc.Failure(id, operationFailed, "daemon is shutting down"))
+		return
+	}
 	w := s.workspace(input.WorkspaceID)
 	if w == nil {
-		return jsonrpc.Failure(id, notFound, "Workspace not found")
+		reply(jsonrpc.Failure(id, notFound, "Workspace not found"))
+		return
 	}
 	record := &store.Session{
 		ID: rand.Text(), Harness: input.Harness, Model: input.Model, Effort: input.Effort, PermissionMode: input.PermissionMode,
 		CreatedAt: time.Now(),
 	}
-	if err := s.store.AddSession(w.ID, record); err != nil {
-		return failure(id, err)
+	if err := s.store.AddSession(w.id, record); err != nil {
+		reply(failure(id, err))
+		return
 	}
-	w.Sessions = append(w.Sessions, record)
-	s.sessions[record.ID] = s.newSession(record, w.Path)
+	sess := s.newSession(record, w.path)
+	w.sessions = append(w.sessions, sess)
+	s.sessions[sess.id] = sess
 	s.broadcast("session/created", struct {
-		SessionID      string    `json:"session_id"`
-		WorkspaceID    string    `json:"workspace_id"`
-		Harness        string    `json:"harness"`
-		Model          string    `json:"model"`
-		Effort         string    `json:"effort"`
-		PermissionMode string    `json:"permission_mode"`
-		CreatedAt      time.Time `json:"created_at"`
-	}{record.ID, w.ID, record.Harness, record.Model, record.Effort, record.PermissionMode, record.CreatedAt})
-	return jsonrpc.Success(id, struct {
+		SessionID   string    `json:"session_id"`
+		WorkspaceID string    `json:"workspace_id"`
+		Harness     string    `json:"harness"`
+		CreatedAt   time.Time `json:"created_at"`
+	}{sess.id, w.id, sess.harness, sess.createdAt})
+	reply(jsonrpc.Success(id, struct {
 		SessionID string `json:"session_id"`
-	}{record.ID})
+	}{sess.id}))
 }
 
-// getSession returns a session's history and current state. Every connection
-// already receives the session's updates; those queued before the response
-// are in the history, and those after it are not.
-func (s *Server) getSession(c *conn, id, params json.RawMessage) *jsonrpc.Response {
+// getSession returns a session's settings, history, and current state. Every
+// connection already receives the session's updates; those queued before the
+// response are in the history, and those after it are not.
+func (s *Server) getSession(reply replyFunc, id, params json.RawMessage) {
 	var input struct {
 		SessionID string `json:"session_id"`
 	}
 	if err := json.Unmarshal(params, &input); err != nil || input.SessionID == "" {
-		return invalidParams(id, "session_id is required")
+		reply(invalidParams(id, "session_id is required"))
+		return
 	}
-	sess, missing := s.lookup(id, input.SessionID)
-	if missing != nil {
-		return missing
-	}
-	defer sess.mu.Unlock()
-	result := func(snapshot agent.Snapshot) *jsonrpc.Response {
+	s.onSession(reply, id, input.SessionID, func(sess *session) {
+		snapshot := agent.Snapshot{State: "parked", Approvals: []agent.Approval{}}
+		if sess.agent != nil {
+			snapshot = sess.agent.Snapshot()
+		}
 		history, err := sess.history.entries()
 		if err != nil {
-			return failure(id, err)
+			reply(failure(id, err))
+			return
 		}
-		return jsonrpc.Success(id, struct {
+		reply(jsonrpc.Success(id, struct {
 			agent.Snapshot
+			agent.Settings
 			History []agent.Update `json:"history"`
-		}{snapshot, history})
-	}
-	// A parked session has no process, so no update is in flight.
-	parked := agent.Snapshot{State: "parked", Approvals: []agent.Approval{}}
-	a := sess.live()
-	if a == nil {
-		return result(parked)
-	}
-	// The agent publishes updates on the goroutine that runs this callback, so
-	// the response takes its place among them in the connection's queue.
-	err := a.Inspect(func(snapshot agent.Snapshot) {
-		c.queue(result(snapshot))
+		}{snapshot, sess.settings, history}))
 	})
-	if errors.Is(err, agent.ErrExited) {
-		return result(parked)
-	}
-	return nil
 }
 
-func (s *Server) sendSession(id, params json.RawMessage) *jsonrpc.Response {
+func (s *Server) sendSession(reply replyFunc, id, params json.RawMessage) {
 	var input struct {
 		SessionID string `json:"session_id"`
 		Text      string `json:"text"`
 	}
 	if err := json.Unmarshal(params, &input); err != nil || input.SessionID == "" || strings.TrimSpace(input.Text) == "" {
-		return invalidParams(id, "session_id and text are required")
+		reply(invalidParams(id, "session_id and text are required"))
+		return
 	}
-	sess, missing := s.lookup(id, input.SessionID)
-	if missing != nil {
-		return missing
-	}
-	defer sess.mu.Unlock()
-	a, err := s.running(sess)
-	if err != nil {
-		return failure(id, err)
-	}
-	messageID, err := a.Send(input.Text)
-	if errors.Is(err, agent.ErrExited) {
-		// The process is parking or has exited; start the next one.
-		<-a.Done()
-		if a, err = s.running(sess); err != nil {
-			return failure(id, err)
+	s.onSession(reply, id, input.SessionID, func(sess *session) {
+		if sess.agent == nil {
+			if err := sess.start(); err != nil {
+				reply(failure(id, err))
+				return
+			}
 		}
-		messageID, err = a.Send(input.Text)
-	}
-	if err != nil {
-		return failure(id, err)
-	}
-	return jsonrpc.Success(id, struct {
-		MessageID string `json:"message_id"`
-	}{messageID})
+		messageID, err := sess.agent.Send(input.Text)
+		if err != nil {
+			reply(failure(id, err))
+			return
+		}
+		reply(jsonrpc.Success(id, struct {
+			MessageID string `json:"message_id"`
+		}{messageID}))
+	})
 }
 
-func (s *Server) approveSession(id, params json.RawMessage) *jsonrpc.Response {
+// approveSession passes the response to the harness, which checks its shape.
+func (s *Server) approveSession(reply replyFunc, id, params json.RawMessage) {
 	var input struct {
 		SessionID string          `json:"session_id"`
 		RequestID string          `json:"request_id"`
 		Response  json.RawMessage `json:"response"`
 	}
-	if err := json.Unmarshal(params, &input); err != nil || input.SessionID == "" || input.RequestID == "" || !validApprovalResponse(input.Response) {
-		return invalidParams(id, "session_id, request_id and an allow or deny response are required")
+	if err := json.Unmarshal(params, &input); err != nil || input.SessionID == "" || input.RequestID == "" || len(input.Response) == 0 {
+		reply(invalidParams(id, "session_id, request_id, and response are required"))
+		return
 	}
-	sess, missing := s.lookup(id, input.SessionID)
-	if missing != nil {
-		return missing
-	}
-	a := sess.live()
-	sess.mu.Unlock()
-	if a == nil {
-		return failure(id, agent.ErrApprovalNotFound)
-	}
-	err := a.Approve(input.RequestID, input.Response)
-	if errors.Is(err, agent.ErrExited) {
-		err = agent.ErrApprovalNotFound
-	}
-	if err != nil {
-		return failure(id, err)
-	}
-	return jsonrpc.Success(id, struct{}{})
-}
-
-// validApprovalResponse checks the response shape while keeping Claude's
-// fields as raw JSON.
-func validApprovalResponse(raw json.RawMessage) bool {
-	var response struct {
-		Behavior           string          `json:"behavior"`
-		UpdatedInput       json.RawMessage `json:"updatedInput"`
-		UpdatedPermissions json.RawMessage `json:"updatedPermissions"`
-		Message            string          `json:"message"`
-		Interrupt          bool            `json:"interrupt"`
-		ToolUseID          string          `json:"toolUseID"`
-	}
-	if json.Unmarshal(raw, &response) != nil || (response.Behavior != "allow" && response.Behavior != "deny") {
-		return false
-	}
-	return (len(response.UpdatedInput) == 0 || response.UpdatedInput[0] == '{') &&
-		(len(response.UpdatedPermissions) == 0 || response.UpdatedPermissions[0] == '[')
-}
-
-func (s *Server) configureSession(id, params json.RawMessage) *jsonrpc.Response {
-	var input struct {
-		SessionID string `json:"session_id"`
-		settings
-	}
-	if err := json.Unmarshal(params, &input); err != nil || input.SessionID == "" {
-		return invalidParams(id, "session_id, model, effort, and permission_mode are required")
-	}
-	if problem := input.invalid(); problem != "" {
-		return invalidParams(id, problem)
-	}
-	sess, missing := s.lookup(id, input.SessionID)
-	if missing != nil {
-		return missing
-	}
-	a := sess.live()
-	sess.mu.Unlock()
-	// A parked session, or one whose process exits first, takes the settings
-	// when its next process starts.
-	if a != nil {
-		err := a.Configure(agent.Settings{Model: input.Model, Effort: input.Effort, PermissionMode: input.PermissionMode})
-		if err != nil && !errors.Is(err, agent.ErrExited) {
-			return failure(id, err)
+	s.onSession(reply, id, input.SessionID, func(sess *session) {
+		if sess.agent == nil {
+			reply(failure(id, agent.ErrApprovalNotFound))
+			return
 		}
-	}
+		if err := sess.agent.Approve(input.RequestID, input.Response); err != nil {
+			reply(failure(id, err))
+			return
+		}
+		reply(jsonrpc.Success(id, struct{}{}))
+	})
+}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	record := *sess.record
-	record.Model, record.Effort, record.PermissionMode = input.Model, input.Effort, input.PermissionMode
-	if err := s.store.SaveSession(&record); err != nil {
-		return failure(id, err)
+// configureSession changes the settings it is given and keeps the others.
+func (s *Server) configureSession(reply replyFunc, id, params json.RawMessage) {
+	var input struct {
+		SessionID      string  `json:"session_id"`
+		Model          *string `json:"model"`
+		Effort         *string `json:"effort"`
+		PermissionMode *string `json:"permission_mode"`
 	}
-	*sess.record = record
-	s.broadcast("session/configured", struct {
-		SessionID      string `json:"session_id"`
-		Model          string `json:"model"`
-		Effort         string `json:"effort"`
-		PermissionMode string `json:"permission_mode"`
-	}{record.ID, record.Model, record.Effort, record.PermissionMode})
-	return jsonrpc.Success(id, struct{}{})
+	if err := json.Unmarshal(params, &input); err != nil || input.SessionID == "" ||
+		(input.Model == nil && input.Effort == nil && input.PermissionMode == nil) {
+		reply(invalidParams(id, "session_id and at least one of model, effort, and permission_mode are required"))
+		return
+	}
+	if (input.Model != nil && strings.TrimSpace(*input.Model) == "") ||
+		(input.PermissionMode != nil && strings.TrimSpace(*input.PermissionMode) == "") {
+		reply(invalidParams(id, "model and permission_mode cannot be blank"))
+		return
+	}
+	s.onSession(reply, id, input.SessionID, func(sess *session) {
+		settings := sess.settings
+		if input.Model != nil {
+			settings.Model = *input.Model
+		}
+		if input.Effort != nil {
+			settings.Effort = *input.Effort
+		}
+		if input.PermissionMode != nil {
+			settings.PermissionMode = *input.PermissionMode
+		}
+		finish := func() {
+			if err := sess.save(settings, sess.resumeToken); err != nil {
+				reply(failure(id, err))
+				return
+			}
+			sess.settings = settings
+			s.broadcast("session/configured", struct {
+				SessionID string `json:"session_id"`
+				agent.Settings
+			}{sess.id, settings})
+			reply(jsonrpc.Success(id, struct{}{}))
+		}
+		// A parked session, or one whose process exits first, takes the
+		// settings when its next process starts.
+		if sess.agent == nil {
+			finish()
+			return
+		}
+		sess.agent.Configure(settings, func(err error) {
+			if err != nil && !errors.Is(err, agent.ErrExited) {
+				reply(failure(id, err))
+				return
+			}
+			finish()
+		})
+	})
 }
 
 // destroySession stops the session's process and deletes the session and its
 // events. The harness's own record of the conversation stays on disk.
-func (s *Server) destroySession(id, params json.RawMessage) *jsonrpc.Response {
+func (s *Server) destroySession(reply replyFunc, id, params json.RawMessage) {
 	var input struct {
 		SessionID string `json:"session_id"`
 	}
 	if err := json.Unmarshal(params, &input); err != nil || input.SessionID == "" {
-		return invalidParams(id, "session_id is required")
+		reply(invalidParams(id, "session_id is required"))
+		return
 	}
-	sess, missing := s.lookup(id, input.SessionID)
-	if missing != nil {
-		return missing
-	}
-	defer sess.mu.Unlock()
-
-	// The process stops first, so it records nothing after the events are gone.
-	if a := sess.live(); a != nil {
-		if err := a.Stop(); err != nil {
-			return failure(id, err)
-		}
-	}
-	s.mu.Lock()
-	err := s.store.DeleteSession(input.SessionID)
-	if err == nil {
-		for _, w := range s.workspaces {
-			for i, r := range w.Sessions {
-				if r == sess.record {
-					w.Sessions = append(w.Sessions[:i], w.Sessions[i+1:]...)
-				}
+	s.onSession(reply, id, input.SessionID, func(sess *session) {
+		// The process stops first, so it records nothing after the events are gone.
+		if sess.agent != nil {
+			if err := sess.stop(); err != nil {
+				reply(failure(id, err))
+				return
 			}
 		}
-		delete(s.sessions, input.SessionID)
-		sess.destroyed = true
-	}
-	s.mu.Unlock()
-	if err != nil {
-		return failure(id, err)
-	}
-	s.broadcast("session/destroyed", struct {
-		SessionID string `json:"session_id"`
-	}{input.SessionID})
-	return jsonrpc.Success(id, struct{}{})
+		if err := s.store.DeleteSession(sess.id); err != nil {
+			reply(failure(id, err))
+			return
+		}
+		s.mu.Lock()
+		delete(s.sessions, sess.id)
+		for _, w := range s.workspaces {
+			w.sessions = slices.DeleteFunc(w.sessions, func(other *session) bool { return other == sess })
+		}
+		s.broadcast("session/destroyed", struct {
+			SessionID string `json:"session_id"`
+		}{sess.id})
+		s.mu.Unlock()
+		sess.ended = true
+		reply(jsonrpc.Success(id, struct{}{}))
+	})
 }

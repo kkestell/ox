@@ -10,6 +10,9 @@ export type Defaults = { harness: string; model: string; effort: string; mode: s
 
 export type Settings = { model: string; effort: string; permission_mode: string };
 
+// notFound is oxd's error code for a workspace or session that does not exist.
+export const notFound = -32001;
+
 export type SessionState = "parked" | "running" | "requires_action" | "idle";
 
 export type ToolResult = { text: string; is_error: boolean };
@@ -39,10 +42,7 @@ export type Update = { time: string } & (
 export type Notification =
   | { method: "session/update"; params: Update & { session_id: string } }
   | { method: "workspace/created"; params: { workspace_id: string; path: string; created_at: string } }
-  | {
-      method: "session/created";
-      params: Settings & { session_id: string; workspace_id: string; harness: string; created_at: string };
-    }
+  | { method: "session/created"; params: { session_id: string; workspace_id: string; harness: string; created_at: string } }
   | { method: "session/configured"; params: Settings & { session_id: string } }
   | { method: "session/destroyed"; params: { session_id: string } };
 
@@ -57,14 +57,14 @@ export type Methods = {
         workspace_id: string;
         path: string;
         created_at: string;
-        sessions: (Settings & { session_id: string; harness: string; created_at: string })[];
+        sessions: { session_id: string; harness: string; created_at: string }[];
       }[];
     },
   ];
   "session/create": [Settings & { workspace_id: string; harness: string }, { session_id: string }];
   "session/get": [
     { session_id: string },
-    {
+    Settings & {
       state: SessionState;
       prompt: { message_id: string } | null;
       approvals: { request_id: string; request: ApprovalRequest }[];
@@ -72,7 +72,8 @@ export type Methods = {
     },
   ];
   "session/send": [{ session_id: string; text: string }, { message_id: string }];
-  "session/configure": [Settings & { session_id: string }, {}];
+  // Only the settings given change.
+  "session/configure": [Partial<Settings> & { session_id: string }, {}];
   "session/approve": [{ session_id: string; request_id: string; response: ApprovalResponse }, {}];
   "session/destroy": [{ session_id: string }, {}];
 };
