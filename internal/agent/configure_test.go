@@ -1,25 +1,21 @@
-package agents
+package agent
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/kkestell/ox/internal/claude"
 )
 
-func configurationProcess() (*process, *bytes.Buffer) {
-	input := new(bytes.Buffer)
-	return &process{stdin: input, phase: available, claudeState: "idle"}, input
-}
-
 func TestConfigureWaitsForAcknowledgements(t *testing.T) {
-	p, input := configurationProcess()
+	a, input := testAgent()
 	decoder := json.NewDecoder(input)
 	model, effort, mode := "haiku", "low", "plan"
 	result := make(chan error, 1)
-	p.reconfigure(Configuration{Model: &model, Effort: &effort, PermissionMode: &mode}, result)
+	a.reconfigure(Configuration{Model: &model, Effort: &effort, PermissionMode: &mode}, result)
 
 	for _, expected := range []map[string]any{
 		{"subtype": "set_model", "model": "haiku"},
@@ -37,20 +33,20 @@ func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 		if wire.Type != "control_request" || wire.RequestID == "" || !reflect.DeepEqual(wire.Request, expected) {
 			t.Fatalf("unexpected configuration request: %+v", wire)
 		}
-		if _, err := p.submit("client", "hello", nil); !errors.Is(err, ErrBusy) {
+		if _, err := a.submit(new(recorder), "hello"); !errors.Is(err, ErrBusy) {
 			t.Fatalf("prompt accepted during configuration: %v", err)
 		}
 		overlapping := make(chan error, 1)
-		if p.reconfigure(Configuration{Model: &model}, overlapping); !errors.Is(<-overlapping, ErrBusy) {
+		if a.reconfigure(Configuration{Model: &model}, overlapping); !errors.Is(<-overlapping, ErrBusy) {
 			t.Fatal("overlapping configuration accepted")
 		}
-		p.handleOutput(claudeOutput{Type: "control_response", Response: controlResponse{RequestID: "unrelated", Subtype: "success"}})
+		a.handleOutput(claude.Message{Type: "control_response", Response: claude.ControlResponse{RequestID: "unrelated", Subtype: "success"}})
 		select {
 		case err := <-result:
 			t.Fatalf("configuration finished before its acknowledgement: %v", err)
 		default:
 		}
-		p.handleOutput(claudeOutput{Type: "control_response", Response: controlResponse{RequestID: wire.RequestID, Subtype: "success"}})
+		a.handleOutput(claude.Message{Type: "control_response", Response: claude.ControlResponse{RequestID: wire.RequestID, Subtype: "success"}})
 	}
 	select {
 	case err := <-result:
@@ -60,7 +56,7 @@ func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 	default:
 		t.Fatal("configuration did not finish")
 	}
-	if !p.idle() {
+	if !a.idle() {
 		t.Fatal("configuration kept its reservation")
 	}
 }
@@ -68,10 +64,10 @@ func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 func TestConfigureFailureAndEffortReset(t *testing.T) {
 	for _, outcome := range []string{"rejected", "timeout", "exited"} {
 		t.Run(outcome, func(t *testing.T) {
-			p, input := configurationProcess()
+			a, input := testAgent()
 			effort, mode := "", "plan"
 			result := make(chan error, 1)
-			p.reconfigure(Configuration{Effort: &effort, PermissionMode: &mode}, result)
+			a.reconfigure(Configuration{Effort: &effort, PermissionMode: &mode}, result)
 			var wire struct {
 				RequestID string `json:"request_id"`
 				Request   struct {
@@ -86,12 +82,12 @@ func TestConfigureFailureAndEffortReset(t *testing.T) {
 			}
 			switch outcome {
 			case "rejected":
-				p.handleOutput(claudeOutput{Type: "control_response", Response: controlResponse{RequestID: wire.RequestID, Subtype: "error", Error: "Unsupported effort"}})
+				a.handleOutput(claude.Message{Type: "control_response", Response: claude.ControlResponse{RequestID: wire.RequestID, Subtype: "error", Error: "Unsupported effort"}})
 			case "timeout":
-				p.handle(controlTimeout{"stale"})
-				p.handle(controlTimeout{wire.RequestID})
+				a.handle(controlTimeout{"stale"})
+				a.handle(controlTimeout{wire.RequestID})
 			case "exited":
-				p.exit(nil)
+				a.exit(nil)
 			}
 			err := <-result
 			if outcome == "rejected" && (err == nil || !strings.Contains(err.Error(), "Unsupported effort")) {
@@ -100,10 +96,10 @@ func TestConfigureFailureAndEffortReset(t *testing.T) {
 			if outcome == "timeout" && (err == nil || !strings.Contains(err.Error(), "no control response")) {
 				t.Fatalf("missing acknowledgement did not fail configuration: %v", err)
 			}
-			if outcome == "exited" && !errors.Is(err, ErrNotFound) {
+			if outcome == "exited" && !errors.Is(err, ErrExited) {
 				t.Fatalf("process exit did not fail configuration: %v", err)
 			}
-			if p.config != nil || p.phase == configuring {
+			if a.config != nil || a.phase == configuring {
 				t.Fatal("failed configuration kept its reservation")
 			}
 		})
@@ -113,22 +109,24 @@ func TestConfigureFailureAndEffortReset(t *testing.T) {
 func TestConfigureRequiresIdle(t *testing.T) {
 	for _, state := range []string{"running", "requires_action", "queued", "prompting"} {
 		t.Run(state, func(t *testing.T) {
-			p := &process{phase: available, claudeState: state}
+			a, _ := testAgent()
 			switch state {
 			case "queued":
-				p.phase, p.claudeState = queued, "idle"
+				a.phase = queued
 			case "prompting":
-				p.phase, p.claudeState = prompting, "idle"
+				a.phase = prompting
+			default:
+				a.claudeState = state
 			}
 			result := make(chan error, 1)
-			if p.reconfigure(Configuration{}, result); !errors.Is(<-result, ErrBusy) {
+			if a.reconfigure(Configuration{}, result); !errors.Is(<-result, ErrBusy) {
 				t.Fatalf("configuration accepted in %s", state)
 			}
 		})
 	}
-	exited := &process{done: make(chan struct{})}
+	exited, _ := testAgent()
 	close(exited.done)
-	if err := exited.configure(Configuration{}); !errors.Is(err, ErrNotFound) {
+	if err := exited.Configure(Configuration{}); !errors.Is(err, ErrExited) {
 		t.Fatalf("configuration of an exited process: %v", err)
 	}
 }

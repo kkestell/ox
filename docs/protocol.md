@@ -1,7 +1,7 @@
 # Ox daemon protocol
 
-This reference describes the interface implemented in [internal/protocol](internal/protocol)
-and [internal/agents](internal/agents).
+This reference describes the interface served by `oxd`. See
+[architecture.md](architecture.md) for how the daemon is built.
 
 ## Connection and messages
 
@@ -18,8 +18,9 @@ message. Batch requests are unsupported. No connection handshake is required.
 
 Clients must continuously read the socket: responses and `agent/update`
 notifications share the stream. Notifications can arrive before the response
-to `agent/send`. The daemon gives each socket write five seconds to complete;
-a client that stops reading can lose its connection.
+to `agent/send`. The daemon gives each socket write five seconds to complete
+and buffers a limited backlog; a client that stops reading loses its
+connection.
 
 | Identifier | Meaning |
 | --- | --- |
@@ -82,10 +83,34 @@ and missing responses after one minute return an operation error. A process
 exit returns `-32001`. As at creation, model identifiers are interpreted by
 Claude; acknowledgement does not guarantee the model will work on a prompt.
 
+### `agent/attach`
+
+Requires `agent_id`. Subscribes the connection to the agent's updates and
+returns the agent's current state. Use it to follow an agent after
+reconnecting. The response precedes every update delivered through the
+attachment, so updates after it apply on top of the returned state.
+
+```json
+{"jsonrpc":"2.0","id":6,"method":"agent/attach","params":{"agent_id":"agent-id"}}
+```
+
+```json
+{"jsonrpc":"2.0","id":6,"result":{"state":"requires_action","prompt":{"message_id":"prompt-id","approvals":[{"request_id":"claude-request-id","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch notes.txt"}}}]}}}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `state` | Claude's execution state: `running`, `requires_action`, or `idle`. |
+| `prompt` | The active prompt, or `null`. |
+| `prompt.message_id` | The prompt's identifier, matching its updates. |
+| `prompt.approvals` | Pending approvals, each with `request_id` and Claude's `request`. |
+
+Attaching again from the same connection has no further effect on delivery.
+
 ### `agent/send`
 
-Requires `agent_id` and nonblank `text`. Sends a prompt to an idle agent and
-returns its `message_id`. Success means the prompt was written to Claude;
+Requires `agent_id` and nonblank `text`. Sends a prompt to an idle agent,
+attaches the connection to the agent, and returns the prompt's `message_id`. Success means the prompt was written to Claude;
 its output and eventual result arrive through `agent/update` notifications.
 
 ```json
@@ -104,8 +129,8 @@ A `result` update alone does not release the agent for another prompt.
 ### `agent/approve`
 
 Requires `agent_id`, `request_id`, and a `response` object whose `behavior` is
-`"allow"` or `"deny"`. Only the connection that sent the prompt can answer its
-pending approvals. The response payload is forwarded to Claude.
+`"allow"` or `"deny"`. Any connection can answer a pending approval. The
+response payload is forwarded to Claude.
 
 ```json
 {"jsonrpc":"2.0","id":3,"method":"agent/approve","params":{"agent_id":"agent-id","request_id":"claude-request-id","response":{"behavior":"allow","updatedInput":{"command":"echo hello"},"toolUseID":"toolu_example"}}}
@@ -146,7 +171,7 @@ update before the destroy response. Any connected client can destroy an agent.
 
 ## Prompt updates
 
-Updates go only to the connection that called `agent/send`. Every notification
+Updates go to every connection attached to the agent. Every notification
 uses method `agent/update` and includes `agent_id`, `message_id`, and `type`
 inside `params`:
 
@@ -202,16 +227,15 @@ notifications precede the corresponding `idle` or `exited` update:
 
 ## Connection and agent lifetimes
 
-Agents belong to the daemon and remain available across prompts. Any connected
-client with an agent's ID can send a prompt when it is idle. Approval ownership
-belongs to the connection that sent the current prompt.
+Agents belong to the daemon and remain available across prompts. Clients have
+no identity: any connection with an agent's ID can attach to it, send it a
+prompt when it is idle, and answer its approvals.
 
-Closing a client connection leaves its agents running. A prompt continues
-after its connection closes, its pending approvals stay pending, and its
-updates are dropped. The agent stays busy until the prompt ends.
-
-Updates have no replay or reconnect subscription, and pending approvals cannot
-be transferred between connections. Agent IDs and processes last only for the
+Closing a connection detaches it and leaves its agents running. A prompt
+continues, and its pending approvals stay pending until a client answers them.
+A client that reconnects calls `agent/attach` to recover the prompt and its
+approvals, then follows its updates. Updates published while no connection is
+attached are not replayed. Agent IDs and processes last only for the
 current daemon lifetime. Destruction, process exit, or daemon shutdown removes
 the agent; daemon shutdown stops all its Claude processes.
 
@@ -235,4 +259,3 @@ underlying process or I/O errors.
 | `-32001` | Agent not found or no longer available. |
 | `-32002` | Agent is busy; a prompt or configuration cannot start yet. |
 | `-32003` | Approval request is no longer pending, including duplicate or cancelled answers. |
-| `-32004` | Pending approval belongs to another client connection. |

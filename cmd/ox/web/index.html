@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ox</title>
+</head>
+<body>
+  <form id="create">
+    <input name="workspace" value="{{.Workspace}}" placeholder="Workspace" size="60" required>
+    <input name="model" value="haiku" placeholder="Model">
+    <button>Create agent</button>
+  </form>
+  <p id="agent"></p>
+  <form id="send">
+    <textarea name="text" rows="3" cols="60" placeholder="Prompt" required></textarea>
+    <button>Send</button>
+  </form>
+  <p id="state"></p>
+  <div id="approvals"></div>
+  <pre id="output"></pre>
+  <p id="error"></p>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let session;
+    let agentId;
+    let nextId = 1;
+    const pending = new Map();
+
+    const events = new EventSource("/events");
+    events.addEventListener("session", (e) => { session = e.data; });
+    events.onmessage = (e) => {
+      const message = JSON.parse(e.data);
+      if (message.method === "agent/update") {
+        update(message.params);
+        return;
+      }
+      const call = pending.get(message.id);
+      if (!call) return;
+      pending.delete(message.id);
+      if (message.error) call.reject(new Error(message.error.message));
+      else call.resolve(message.result);
+    };
+
+    function rpc(method, params) {
+      const id = nextId++;
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        const fail = (error) => { pending.delete(id); reject(error); };
+        fetch(`/rpc?session=${session}`, {
+          method: "POST",
+          body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+        }).then(
+          (response) => { if (!response.ok) response.text().then((text) => fail(new Error(text))); },
+          fail,
+        );
+      });
+    }
+
+    function showError(error) {
+      $("error").textContent = error ? String(error.message ?? error) : "";
+    }
+
+    function update(u) {
+      switch (u.type) {
+        case "text_delta":
+          $("output").textContent += u.text;
+          break;
+        case "state":
+          $("state").textContent = u.state;
+          break;
+        case "result":
+          $("output").textContent += "\n\n";
+          if (u.result.is_error) showError(u.result.text);
+          break;
+        case "approval":
+          addApproval(u.request_id, u.request);
+          break;
+        case "approval_cancelled":
+          $(`approval-${u.request_id}`)?.remove();
+          break;
+        case "exited":
+          $("state").textContent = "exited";
+          showError(u.error);
+          break;
+      }
+    }
+
+    function addApproval(requestId, request) {
+      const box = document.createElement("fieldset");
+      box.id = `approval-${requestId}`;
+      const legend = document.createElement("legend");
+      legend.textContent = request.tool_name;
+      const input = document.createElement("pre");
+      input.textContent = JSON.stringify(request.input, null, 2);
+      const answer = (response) => {
+        showError();
+        rpc("agent/approve", { agent_id: agentId, request_id: requestId, response })
+          .then(() => box.remove(), showError);
+      };
+      const allow = document.createElement("button");
+      allow.textContent = "Allow";
+      allow.onclick = () => answer({ behavior: "allow", updatedInput: request.input });
+      const deny = document.createElement("button");
+      deny.textContent = "Deny";
+      deny.onclick = () => answer({ behavior: "deny", message: "Denied by user" });
+      box.append(legend, input, allow, deny);
+      $("approvals").append(box);
+    }
+
+    $("create").onsubmit = (e) => {
+      e.preventDefault();
+      showError();
+      const form = new FormData(e.target);
+      $("agent").textContent = "Starting…";
+      rpc("agent/create", { workspace: form.get("workspace"), model: form.get("model") }).then(
+        (result) => {
+          agentId = result.agent_id;
+          $("agent").textContent = agentId;
+        },
+        (error) => {
+          $("agent").textContent = "";
+          showError(error);
+        },
+      );
+    };
+
+    $("send").onsubmit = (e) => {
+      e.preventDefault();
+      showError();
+      const text = new FormData(e.target).get("text");
+      // Updates can arrive before the response, so show the prompt first.
+      $("output").textContent += `> ${text}\n\n`;
+      rpc("agent/send", { agent_id: agentId, text }).then(() => e.target.reset(), showError);
+    };
+  </script>
+</body>
+</html>
