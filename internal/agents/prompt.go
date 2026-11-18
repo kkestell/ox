@@ -22,102 +22,74 @@ type Result struct {
 	IsError bool   `json:"is_error"`
 }
 
+// submission is the prompt that owns the process in the queued and
+// prompting phases.
 type submission struct {
-	id           string
-	notify       func(Update)
-	started      bool // Claude took this prompt into its conversation.
-	clientID     string
-	disconnected bool
-	approvals    map[string]struct{}
+	id        string
+	notify    func(Update)
+	clientID  string
+	approvals map[string]struct{}
 }
 
 func (s *submission) publish(update Update) {
-	if s != nil {
-		update.MessageID = s.id
-		s.notify(update)
-	}
+	update.MessageID = s.id
+	s.notify(update)
 }
 
-func (p *process) send(clientID, text string, notify func(Update)) (string, error) {
-	p.mu.Lock()
-	if p.state == "exited" {
-		p.mu.Unlock()
-		return "", ErrNotFound
-	}
-	if p.state != "idle" || p.prompt != nil || p.configuring {
-		p.mu.Unlock()
+func (p *process) submit(clientID, text string, notify func(Update)) (string, error) {
+	if !p.idle() {
 		return "", ErrBusy
 	}
 	prompt := &submission{
 		id: promptID(), notify: notify, clientID: clientID,
 		approvals: make(map[string]struct{}),
 	}
-	p.prompt = prompt
-	p.mu.Unlock()
-
 	input := map[string]any{
 		"type": "user", "uuid": prompt.id, "session_id": "",
 		"message": map[string]string{"role": "user", "content": text},
 	}
 	if err := p.write(input); err != nil {
-		p.mu.Lock()
-		if p.prompt == prompt {
-			p.prompt = nil
-		}
-		p.mu.Unlock()
 		return "", fmt.Errorf("send prompt to Claude: %w", err)
 	}
+	p.prompt = prompt
+	p.phase = queued
 	return prompt.id, nil
 }
 
-func (p *process) noteStart(id string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.prompt != nil && p.prompt.id == id {
-		p.prompt.started = true
+func (p *process) commandStarted(id string) {
+	if p.phase == queued && p.prompt.id == id {
+		p.phase = prompting
 	}
 }
 
-func (p *process) setState(state string) {
-	p.mu.Lock()
-	p.state = state
-	prompt := p.prompt
-	var cancelled []string
-	if state == "idle" && prompt != nil {
-		if !prompt.started {
-			// Only release this submission after Claude has taken the prompt.
-			p.mu.Unlock()
-			return
-		}
-		p.prompt = nil
-		cancelled = prompt.takeApprovals()
+func (p *process) sessionState(state string) {
+	p.claudeState = state
+	switch {
+	case p.prompt == nil:
+	case state != "idle":
+		p.prompt.publish(Update{Type: "state", State: state})
+	case p.phase == queued:
+		// Claude can report idle before it takes the prompt; keep waiting.
+	case p.phase == prompting:
+		p.endPrompt(Update{Type: "state", State: state})
 	}
-	p.mu.Unlock()
-	prompt.publishCancellations(cancelled)
-	prompt.publish(Update{Type: "state", State: state})
+}
+
+// endPrompt withdraws the prompt's unanswered approvals, sends its final
+// update, and releases the process.
+func (p *process) endPrompt(final Update) {
+	for _, id := range p.prompt.takeApprovals() {
+		p.prompt.publish(Update{Type: "approval_cancelled", RequestID: id})
+	}
+	p.prompt.publish(final)
+	p.prompt = nil
+	p.phase = available
 }
 
 func (p *process) publish(update Update) {
-	p.mu.Lock()
-	prompt := p.prompt
-	p.mu.Unlock()
-	prompt.publish(update)
-}
-
-func (p *process) finish(err error) {
-	p.mu.Lock()
-	p.state = "exited"
-	prompt := p.prompt
-	cancelled := prompt.takeApprovals()
-	p.prompt = nil
-	p.mu.Unlock()
-
-	reason := "Claude exited"
-	if err != nil {
-		reason += ": " + err.Error()
+	if p.prompt != nil {
+		p.prompt.publish(update)
 	}
-	prompt.publishCancellations(cancelled)
-	prompt.publish(Update{Type: "exited", Error: reason})
 }
 
 func promptID() string {

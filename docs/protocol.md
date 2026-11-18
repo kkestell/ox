@@ -206,11 +206,9 @@ Agents belong to the daemon and remain available across prompts. Any connected
 client with an agent's ID can send a prompt when it is idle. Approval ownership
 belongs to the connection that sent the current prompt.
 
-Closing a client connection does not destroy its agents. Running work can
-continue, but if an approval is pending, Ox denies it with `interrupt: true`
-and the message `Approval client disconnected`. Further approval requests for
-that disconnected prompt receive the same answer. Once the agent is idle,
-another connection can send it a new prompt.
+Closing a client connection leaves its agents running. A prompt continues
+after its connection closes, its pending approvals stay pending, and its
+updates are dropped. The agent stays busy until the prompt ends.
 
 Updates have no replay or reconnect subscription, and pending approvals cannot
 be transferred between connections. Agent IDs and processes last only for the

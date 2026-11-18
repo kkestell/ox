@@ -52,7 +52,6 @@ type notification struct {
 func Serve(conn net.Conn, registry *agents.Registry) error {
 	reader := bufio.NewReader(conn)
 	c := &client{id: rand.Text(), conn: conn, encoder: json.NewEncoder(conn)}
-	defer registry.Disconnect(c.id)
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err == io.EOF {

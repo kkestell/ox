@@ -1,7 +1,6 @@
 package agents
 
 import (
-	"bufio"
 	"encoding/json"
 	"strings"
 )
@@ -27,36 +26,23 @@ type claudeOutput struct {
 	} `json:"event"`
 }
 
-func (p *process) readOutput(output *bufio.Reader) {
-	for {
-		line, err := output.ReadBytes('\n')
-		if err != nil {
-			return
-		}
-		var message claudeOutput
-		if json.Unmarshal(line, &message) == nil {
-			p.handleOutput(message)
-		}
-	}
-}
-
 func (p *process) handleOutput(message claudeOutput) {
 	switch message.Type {
 	case "control_response":
-		p.receiveControl(message.Response)
+		p.controlResponse(message.Response)
 	case "control_request":
-		p.requestApproval(message.RequestID, message.Request)
+		p.controlRequest(message.RequestID, message.Request)
 	case "control_cancel_request":
 		p.cancelApproval(message.RequestID)
 	case "command_lifecycle":
 		if message.State == "started" {
-			p.noteStart(message.CommandUUID)
+			p.commandStarted(message.CommandUUID)
 		}
 	case "system":
 		if message.Subtype == "session_state_changed" {
 			switch message.State {
 			case "running", "requires_action", "idle":
-				p.setState(message.State)
+				p.sessionState(message.State)
 			}
 		}
 	case "stream_event":

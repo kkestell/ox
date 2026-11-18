@@ -11,7 +11,7 @@ var (
 	ErrApprovalOwner    = errors.New("approval request belongs to another client")
 )
 
-func (p *process) requestApproval(requestID string, request json.RawMessage) {
+func (p *process) controlRequest(requestID string, request json.RawMessage) {
 	var control struct {
 		Subtype string `json:"subtype"`
 	}
@@ -28,36 +28,25 @@ func (p *process) requestApproval(requestID string, request json.RawMessage) {
 		}
 		return
 	}
-
-	p.mu.Lock()
-	prompt := p.prompt
-	if prompt == nil || prompt.disconnected {
-		p.mu.Unlock()
-		p.denyDisconnected(requestID)
+	if p.prompt == nil {
+		p.denyUnowned(requestID)
 		return
 	}
-	prompt.approvals[requestID] = struct{}{}
-	p.mu.Unlock()
-	prompt.publish(Update{Type: "approval", RequestID: requestID, Request: request})
+	p.prompt.approvals[requestID] = struct{}{}
+	p.prompt.publish(Update{Type: "approval", RequestID: requestID, Request: request})
 }
 
-func (p *process) approve(clientID, requestID string, response json.RawMessage) error {
-	p.mu.Lock()
-	prompt := p.prompt
-	if prompt == nil || prompt.disconnected {
-		p.mu.Unlock()
+func (p *process) answer(clientID, requestID string, response json.RawMessage) error {
+	if p.prompt == nil {
 		return ErrApprovalNotFound
 	}
-	if _, pending := prompt.approvals[requestID]; !pending {
-		p.mu.Unlock()
+	if _, pending := p.prompt.approvals[requestID]; !pending {
 		return ErrApprovalNotFound
 	}
-	if prompt.clientID != clientID {
-		p.mu.Unlock()
+	if p.prompt.clientID != clientID {
 		return ErrApprovalOwner
 	}
-	delete(prompt.approvals, requestID)
-	p.mu.Unlock()
+	delete(p.prompt.approvals, requestID)
 	return p.respond(requestID, response)
 }
 
@@ -70,60 +59,31 @@ func (p *process) respond(requestID string, response any) error {
 	})
 }
 
-func (p *process) denyDisconnected(requestID string) {
+// denyUnowned answers an approval from a turn Claude started without a prompt.
+func (p *process) denyUnowned(requestID string) {
 	err := p.respond(requestID, map[string]any{
-		"behavior": "deny", "message": "Approval client disconnected", "interrupt": true,
+		"behavior": "deny", "message": "No prompt owns this approval", "interrupt": true,
 	})
 	if err != nil {
-		log.Printf("deny disconnected client's approval: %v", err)
-	}
-}
-
-func (p *process) disconnect(clientID string) {
-	p.mu.Lock()
-	prompt := p.prompt
-	if prompt == nil || prompt.clientID != clientID {
-		p.mu.Unlock()
-		return
-	}
-	prompt.disconnected = true
-	ids := prompt.takeApprovals()
-	p.mu.Unlock()
-	for _, requestID := range ids {
-		p.denyDisconnected(requestID)
+		log.Printf("deny unowned approval: %v", err)
 	}
 }
 
 func (p *process) cancelApproval(requestID string) {
-	p.mu.Lock()
-	prompt := p.prompt
-	if prompt == nil {
-		p.mu.Unlock()
+	if p.prompt == nil {
 		return
 	}
-	_, pending := prompt.approvals[requestID]
-	delete(prompt.approvals, requestID)
-	p.mu.Unlock()
-	if pending {
-		prompt.publish(Update{Type: "approval_cancelled", RequestID: requestID})
+	if _, pending := p.prompt.approvals[requestID]; pending {
+		delete(p.prompt.approvals, requestID)
+		p.prompt.publish(Update{Type: "approval_cancelled", RequestID: requestID})
 	}
 }
 
-// takeApprovals is called with the process mutex held.
 func (s *submission) takeApprovals() []string {
-	if s == nil {
-		return nil
-	}
 	ids := make([]string, 0, len(s.approvals))
 	for id := range s.approvals {
 		ids = append(ids, id)
 	}
 	clear(s.approvals)
 	return ids
-}
-
-func (s *submission) publishCancellations(ids []string) {
-	for _, id := range ids {
-		s.publish(Update{Type: "approval_cancelled", RequestID: id})
-	}
 }

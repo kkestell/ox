@@ -26,12 +26,13 @@ func NewRegistry() *Registry {
 }
 
 func (r *Registry) Create(options Options) (string, error) {
-	p, id, err := r.start(options)
+	ready := make(chan error, 1)
+	p, id, err := r.start(options, ready)
 	if err != nil {
 		return "", err
 	}
 	select {
-	case err = <-p.ready:
+	case err = <-ready:
 		if err == nil {
 			return id, nil
 		}
@@ -41,13 +42,13 @@ func (r *Registry) Create(options Options) (string, error) {
 	return "", fmt.Errorf("initialize Claude: %w", errors.Join(err, p.stop()))
 }
 
-func (r *Registry) start(options Options) (*process, string, error) {
+func (r *Registry) start(options Options, ready chan error) (*process, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
 		return nil, "", errors.New("daemon is shutting down")
 	}
-	p, err := startClaude(options)
+	p, err := startClaude(options, ready)
 	if err != nil {
 		return nil, "", fmt.Errorf("start Claude: %w", err)
 	}
@@ -57,7 +58,6 @@ func (r *Registry) start(options Options) (*process, string, error) {
 		p.run()
 		r.mu.Lock()
 		delete(r.processes, id)
-		close(p.done)
 		r.mu.Unlock()
 	}()
 	return p, id, nil
@@ -93,18 +93,6 @@ func (r *Registry) Configure(id string, config Configuration) error {
 		return ErrNotFound
 	}
 	return p.configure(config)
-}
-
-func (r *Registry) Disconnect(clientID string) {
-	r.mu.Lock()
-	processes := make([]*process, 0, len(r.processes))
-	for _, p := range r.processes {
-		processes = append(processes, p)
-	}
-	r.mu.Unlock()
-	for _, p := range processes {
-		p.disconnect(clientID)
-	}
 }
 
 func (r *Registry) lookup(id string) *process {

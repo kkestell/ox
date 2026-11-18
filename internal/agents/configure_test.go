@@ -1,38 +1,25 @@
 package agents
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
-	"io"
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 )
 
-func configurationProcess(t *testing.T) (*process, *json.Decoder) {
-	t.Helper()
-	reader, writer := io.Pipe()
-	t.Cleanup(func() { reader.Close(); writer.Close() })
-	return &process{stdin: writer, state: "idle", done: make(chan struct{})}, json.NewDecoder(reader)
-}
-
-func configurationResult(t *testing.T, result <-chan error) error {
-	t.Helper()
-	select {
-	case err := <-result:
-		return err
-	case <-time.After(5 * time.Second):
-		t.Fatal("configuration did not finish")
-		return nil
-	}
+func configurationProcess() (*process, *bytes.Buffer) {
+	input := new(bytes.Buffer)
+	return &process{stdin: input, phase: available, claudeState: "idle"}, input
 }
 
 func TestConfigureWaitsForAcknowledgements(t *testing.T) {
-	p, decoder := configurationProcess(t)
+	p, input := configurationProcess()
+	decoder := json.NewDecoder(input)
 	model, effort, mode := "haiku", "low", "plan"
 	result := make(chan error, 1)
-	go func() { result <- p.configure(Configuration{Model: &model, Effort: &effort, PermissionMode: &mode}) }()
+	p.reconfigure(Configuration{Model: &model, Effort: &effort, PermissionMode: &mode}, result)
 
 	for _, expected := range []map[string]any{
 		{"subtype": "set_model", "model": "haiku"},
@@ -50,11 +37,12 @@ func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 		if wire.Type != "control_request" || wire.RequestID == "" || !reflect.DeepEqual(wire.Request, expected) {
 			t.Fatalf("unexpected configuration request: %+v", wire)
 		}
-		if _, err := p.send("client", "hello", nil); !errors.Is(err, ErrBusy) {
+		if _, err := p.submit("client", "hello", nil); !errors.Is(err, ErrBusy) {
 			t.Fatalf("prompt accepted during configuration: %v", err)
 		}
-		if err := p.configure(Configuration{Model: &model}); !errors.Is(err, ErrBusy) {
-			t.Fatalf("overlapping configuration accepted: %v", err)
+		overlapping := make(chan error, 1)
+		if p.reconfigure(Configuration{Model: &model}, overlapping); !errors.Is(<-overlapping, ErrBusy) {
+			t.Fatal("overlapping configuration accepted")
 		}
 		p.handleOutput(claudeOutput{Type: "control_response", Response: controlResponse{RequestID: "unrelated", Subtype: "success"}})
 		select {
@@ -64,46 +52,58 @@ func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 		}
 		p.handleOutput(claudeOutput{Type: "control_response", Response: controlResponse{RequestID: wire.RequestID, Subtype: "success"}})
 	}
-	if err := configurationResult(t, result); err != nil {
-		t.Fatal(err)
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	default:
+		t.Fatal("configuration did not finish")
+	}
+	if !p.idle() {
+		t.Fatal("configuration kept its reservation")
 	}
 }
 
 func TestConfigureFailureAndEffortReset(t *testing.T) {
-	for _, outcome := range []string{"rejected", "exited"} {
+	for _, outcome := range []string{"rejected", "timeout", "exited"} {
 		t.Run(outcome, func(t *testing.T) {
-			p, decoder := configurationProcess(t)
+			p, input := configurationProcess()
 			effort, mode := "", "plan"
 			result := make(chan error, 1)
-			go func() { result <- p.configure(Configuration{Effort: &effort, PermissionMode: &mode}) }()
+			p.reconfigure(Configuration{Effort: &effort, PermissionMode: &mode}, result)
 			var wire struct {
 				RequestID string `json:"request_id"`
 				Request   struct {
 					Settings map[string]any `json:"settings"`
 				} `json:"request"`
 			}
-			if err := decoder.Decode(&wire); err != nil {
+			if err := json.NewDecoder(input).Decode(&wire); err != nil {
 				t.Fatal(err)
 			}
 			if value, present := wire.Request.Settings["effortLevel"]; !present || value != nil {
 				t.Fatalf("empty effort did not reset the override: %+v", wire)
 			}
-			if outcome == "rejected" {
+			switch outcome {
+			case "rejected":
 				p.handleOutput(claudeOutput{Type: "control_response", Response: controlResponse{RequestID: wire.RequestID, Subtype: "error", Error: "Unsupported effort"}})
-			} else {
-				p.finish(nil)
-				close(p.done)
+			case "timeout":
+				p.handle(controlTimeout{"stale"})
+				p.handle(controlTimeout{wire.RequestID})
+			case "exited":
+				p.exit(nil)
 			}
-			err := configurationResult(t, result)
+			err := <-result
 			if outcome == "rejected" && (err == nil || !strings.Contains(err.Error(), "Unsupported effort")) {
 				t.Fatalf("Claude's refusal was lost: %v", err)
+			}
+			if outcome == "timeout" && (err == nil || !strings.Contains(err.Error(), "no control response")) {
+				t.Fatalf("missing acknowledgement did not fail configuration: %v", err)
 			}
 			if outcome == "exited" && !errors.Is(err, ErrNotFound) {
 				t.Fatalf("process exit did not fail configuration: %v", err)
 			}
-			p.mu.Lock()
-			defer p.mu.Unlock()
-			if p.configuring || p.control != nil {
+			if p.config != nil || p.phase == configuring {
 				t.Fatal("failed configuration kept its reservation")
 			}
 		})
@@ -111,19 +111,24 @@ func TestConfigureFailureAndEffortReset(t *testing.T) {
 }
 
 func TestConfigureRequiresIdle(t *testing.T) {
-	for _, state := range []string{"running", "requires_action", "idle", "exited"} {
+	for _, state := range []string{"running", "requires_action", "queued", "prompting"} {
 		t.Run(state, func(t *testing.T) {
-			p := &process{state: state}
-			if state == "idle" {
-				p.prompt = &submission{}
+			p := &process{phase: available, claudeState: state}
+			switch state {
+			case "queued":
+				p.phase, p.claudeState = queued, "idle"
+			case "prompting":
+				p.phase, p.claudeState = prompting, "idle"
 			}
-			want := ErrBusy
-			if state == "exited" {
-				want = ErrNotFound
-			}
-			if err := p.configure(Configuration{}); !errors.Is(err, want) {
-				t.Fatalf("unexpected configuration result with state %s: %v", state, err)
+			result := make(chan error, 1)
+			if p.reconfigure(Configuration{}, result); !errors.Is(<-result, ErrBusy) {
+				t.Fatalf("configuration accepted in %s", state)
 			}
 		})
+	}
+	exited := &process{done: make(chan struct{})}
+	close(exited.done)
+	if err := exited.configure(Configuration{}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("configuration of an exited process: %v", err)
 	}
 }
