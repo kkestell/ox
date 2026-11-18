@@ -148,10 +148,13 @@ function createOx() {
   return {
     state,
     error,
-    // The created events add the workspace and session to the view.
-    async createSession(path: string, settings: Settings) {
-      const { workspace_id } = await connection.rpc("workspace/create", { path });
-      const { session_id } = await connection.rpc("session/create", { workspace_id, ...settings });
+    // The created events add the workspace and session to the view. Adding a
+    // workspace oxd already has changes nothing.
+    addWorkspace: (path: string) => connection.rpc("workspace/create", { path }),
+    // startSession creates a session and sends its first prompt.
+    async startSession(workspaceId: string, settings: Settings, text: string) {
+      const { session_id } = await connection.rpc("session/create", { workspace_id: workspaceId, ...settings });
+      await connection.rpc("session/send", { session_id, text });
       return session_id;
     },
     send: (id: string, text: string) => connection.rpc("session/send", { session_id: id, text }),

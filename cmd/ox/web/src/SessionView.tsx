@@ -34,21 +34,62 @@ export function SessionView(props: { session: Session }) {
       <p>
         {workspace()} · {props.session.id} · {props.session.state} <button onClick={destroy}>Delete</button>
       </p>
-      <Transcript entries={props.session.entries} />
-      <For each={props.session.approvals}>
-        {(approval) => (
-          <ApprovalRequest
-            approval={approval}
-            onAnswer={(response) => attempt(ox.approve(props.session.id, approval.id, response))}
-          />
-        )}
-      </For>
-      <form onSubmit={send}>
-        <textarea name="text" rows="3" cols="60" placeholder="Prompt" required />
-        <button>Send</button>
-      </form>
-      <SettingsForm session={props.session} attempt={attempt} />
+      <div class="log">
+        <Transcript entries={props.session.entries} />
+        <For each={props.session.approvals}>
+          {(approval) => (
+            <ApprovalRequest
+              approval={approval}
+              onAnswer={(response) => attempt(ox.approve(props.session.id, approval.id, response))}
+            />
+          )}
+        </For>
+      </div>
       <Show when={error()}>{(error) => <p role="alert">{error()}</p>}</Show>
+      {/* The settings are their own form, so Send joins the prompt's form by id. */}
+      <div class="composer">
+        <form id={`prompt-${props.session.id}`} onSubmit={send}>
+          <textarea name="text" rows="3" placeholder="Prompt" required />
+        </form>
+        <div class="row">
+          <SettingsForm session={props.session} attempt={attempt} />
+          <button form={`prompt-${props.session.id}`}>Send</button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// NewSessionView writes a workspace's next session: its first prompt and
+// settings. Sending creates the session and starts it on the prompt.
+export function NewSessionView(props: { workspaceId: string; onStarted(id: string): void }) {
+  const ox = useOx();
+  const [error, setError] = createSignal<string>();
+  const workspace = () => ox.state.workspaces.find((w) => w.id === props.workspaceId)?.path;
+
+  const send = async (event: SubmitEvent & { currentTarget: HTMLFormElement }) => {
+    event.preventDefault();
+    setError(undefined);
+    const form = new FormData(event.currentTarget);
+    try {
+      props.onStarted(await ox.startSession(props.workspaceId, settingsFrom(form), String(form.get("text"))));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  return (
+    <>
+      <p>{workspace()} · new session</p>
+      <div class="log" />
+      <Show when={error()}>{(error) => <p role="alert">{error()}</p>}</Show>
+      <form class="composer" onSubmit={send}>
+        <textarea name="text" rows="3" placeholder="Prompt" required autofocus />
+        <div class="row">
+          <SettingsFields value={{ model: "haiku", effort: "medium", permission_mode: "manual" }} />
+          <button>Send</button>
+        </div>
+      </form>
     </>
   );
 }

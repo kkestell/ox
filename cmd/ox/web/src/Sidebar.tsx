@@ -1,17 +1,25 @@
 import { createSignal, For, Show } from "solid-js";
 import { useOx } from "./ox";
-import { SettingsFields, settingsFrom } from "./SettingsFields";
+import type { Selection } from "./App";
 
-export function Sidebar(props: { selected?: string; onSelect(id: string): void }) {
+export function Sidebar(props: { selected?: Selection; onSelect(selection: Selection): void }) {
   const ox = useOx();
   const [error, setError] = createSignal<string>();
+  let dialog!: HTMLDialogElement;
 
-  const create = async (event: SubmitEvent & { currentTarget: HTMLFormElement }) => {
-    event.preventDefault();
+  const open = () => {
     setError(undefined);
-    const form = new FormData(event.currentTarget);
+    dialog.showModal();
+  };
+
+  const add = async (event: SubmitEvent & { currentTarget: HTMLFormElement }) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    setError(undefined);
     try {
-      props.onSelect(await ox.createSession(String(form.get("workspace")), settingsFrom(form)));
+      await ox.addWorkspace(String(new FormData(form).get("path")));
+      form.reset();
+      dialog.close();
     } catch (e) {
       setError((e as Error).message);
     }
@@ -19,21 +27,33 @@ export function Sidebar(props: { selected?: string; onSelect(id: string): void }
 
   return (
     <nav>
-      <form onSubmit={create}>
-        <input name="workspace" defaultValue="/Users/kyle/projects/hypercube-pr-lab" placeholder="Workspace" size="30" required />
-        <SettingsFields value={{ model: "haiku", effort: "medium", permission_mode: "manual" }} />
-        <button>New session</button>
-      </form>
-      <Show when={error()}>{(error) => <p role="alert">{error()}</p>}</Show>
+      <button onClick={open}>Add workspace</button>
+      <dialog ref={dialog}>
+        <form onSubmit={add}>
+          <input name="path" placeholder="/absolute/path/to/directory" size="40" required autofocus />
+          <button>Add</button>
+          <button type="button" onClick={() => dialog.close()}>
+            Cancel
+          </button>
+        </form>
+        <Show when={error()}>{(error) => <p role="alert">{error()}</p>}</Show>
+      </dialog>
       <For each={ox.state.workspaces}>
         {(workspace) => (
           <>
-            <p>{workspace.path}</p>
+            <p>
+              {workspace.path}{" "}
+              <button onClick={() => props.onSelect({ kind: "draft", workspaceId: workspace.id })}>New session</button>
+            </p>
             <ul>
               <For each={Object.values(ox.state.sessions).filter((s) => s.workspaceId === workspace.id)}>
                 {(session) => (
-                  <li class={{ selected: session.id === props.selected }} onClick={() => props.onSelect(session.id)}>
-                    {session.id.slice(0, 8)} {session.state}
+                  <li
+                    class={{ selected: props.selected?.kind === "session" && props.selected.id === session.id }}
+                    onClick={() => props.onSelect({ kind: "session", id: session.id })}
+                  >
+                    <span class={["status", session.state]} role="img" title={session.state} aria-label={session.state} />{" "}
+                    {session.id.slice(0, 8)}
                     {session.approvals.length ? " (approval)" : ""}
                   </li>
                 )}
