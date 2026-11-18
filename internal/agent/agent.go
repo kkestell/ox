@@ -188,10 +188,19 @@ func (a *Agent) handleOutput(message claude.Message) {
 			a.background = len(message.Tasks)
 		}
 	case "assistant":
-		for _, name := range message.ToolNames() {
-			switch name {
+		for _, use := range message.ToolUses() {
+			switch use.Name {
 			case "CronCreate", "CronDelete", "ScheduleWakeup":
 				a.scheduling = true
+			}
+			if message.ParentToolUseID == "" {
+				a.publish(Update{Type: "tool_use", ToolUseID: use.ID, ToolName: use.Name, Input: use.Input})
+			}
+		}
+	case "user":
+		if message.ParentToolUseID == "" {
+			for _, r := range message.ToolResults() {
+				a.publish(Update{Type: "tool_result", ToolUseID: r.ToolUseID, Result: &Result{Text: r.Text, IsError: r.IsError}})
 			}
 		}
 	case "stream_event":

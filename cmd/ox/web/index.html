@@ -12,24 +12,35 @@
     nav li { cursor: pointer; font-family: monospace; }
     nav li.selected { font-weight: bold; }
     pre { white-space: pre-wrap; }
+    #output pre { margin: 0; }
+    #output details { margin: 0.25em 0; font-family: monospace; }
+    #output details pre { margin: 0.25em 0 0.25em 1.5em; padding: 0.25em; background: #f4f4f4; }
+    #output details.error summary { color: #b00; }
   </style>
 </head>
 <body>
   <nav>
     <form id="create">
       <input name="workspace" value="{{.Workspace}}" placeholder="Workspace" size="30" required>
-      <input name="model" value="haiku" placeholder="Model" size="8">
+      <select name="model"></select>
+      <select name="effort"></select>
+      <select name="permission_mode"></select>
       <button>New session</button>
     </form>
     <div id="workspaces"></div>
   </nav>
   <main>
-    <p id="title"></p>
-    <pre id="output"></pre>
+    <p><span id="title"></span> <button id="delete" hidden>Delete</button></p>
+    <div id="output"></div>
     <div id="approvals"></div>
     <form id="send">
       <textarea name="text" rows="3" cols="60" placeholder="Prompt" required></textarea>
       <button>Send</button>
+    </form>
+    <form id="settings">
+      <select name="model"></select>
+      <select name="effort"></select>
+      <select name="permission_mode"></select>
     </form>
     <p id="error"></p>
   </main>
@@ -41,8 +52,20 @@
     const pending = new Map();
     // The page receives every session's updates; selected is the one shown.
     const workspaces = new Map(); // workspace_id -> path
-    const sessions = new Map(); // session_id -> { workspaceId, state, output, approvals }
+    const sessions = new Map(); // session_id -> { workspaceId, state, settings, configuring, entries, tools, approvals }
     let selected;
+
+    // Both forms choose model, effort, and permission mode.
+    const models = ["haiku", "sonnet", "opus", "fable"];
+    const efforts = ["low", "medium", "high", "xhigh", "max", "ultracode"];
+    const modes = ["manual", "acceptEdits", "auto", "bypassPermissions", "dontAsk", "plan"];
+    for (const form of [$("create"), $("settings")]) {
+      for (const m of models) form.elements.model.add(new Option(m, m));
+      for (const e of efforts) form.elements.effort.add(new Option(e, e));
+      for (const m of modes) form.elements.permission_mode.add(new Option(m, m));
+    }
+    $("create").elements.effort.value = "medium";
+    const settingsOf = (p) => ({ model: p.model, effort: p.effort, permission_mode: p.permission_mode });
 
     const events = new EventSource("/events");
     events.addEventListener("connection", (e) => {
@@ -67,8 +90,16 @@
           render();
           return;
         case "session/created":
-          get(params.session_id, params.workspace_id).then(render, showError);
+          get(params.session_id, params.workspace_id, settingsOf(params)).then(render, showError);
           return;
+        case "session/configured": {
+          const session = sessions.get(params.session_id);
+          if (session) {
+            session.settings = settingsOf(params);
+            render();
+          }
+          return;
+        }
         case "session/destroyed":
           sessions.delete(params.session_id);
           if (selected === params.session_id) selected = undefined;
@@ -105,31 +136,51 @@
       const { workspaces: list } = await rpc("workspace/list", {});
       for (const w of list) {
         workspaces.set(w.workspace_id, w.path);
-        for (const s of w.sessions) await get(s.session_id, w.workspace_id);
+        for (const s of w.sessions) await get(s.session_id, w.workspace_id, settingsOf(s));
       }
       render();
     }
 
     // get loads a session. Its live updates apply from the response onward.
-    async function get(id, workspaceId) {
+    async function get(id, workspaceId, settings) {
       const result = await rpc("session/get", { session_id: id });
-      const session = { workspaceId, state: result.state, output: "", approvals: new Map() };
+      const session = {
+        workspaceId, state: result.state, settings, configuring: false,
+        entries: [], tools: new Map(), approvals: new Map(),
+      };
       for (const u of result.history) apply(session, u);
       for (const a of result.prompt?.approvals ?? []) session.approvals.set(a.request_id, a.request);
       sessions.set(id, session);
     }
 
-    // apply adds one update, live or from history, to a session.
+    // apply adds one update, live or from history, to a session. Its entries
+    // are runs of text and tool calls, in order.
     function apply(session, u) {
+      const write = (text) => {
+        const last = session.entries.at(-1);
+        if (last?.text !== undefined) last.text += text;
+        else session.entries.push({ text });
+      };
       switch (u.type) {
         case "prompt":
-          session.output += `> ${u.text}\n\n`;
+          write(`> ${u.text}\n\n`);
           break;
         case "text_delta":
-          session.output += u.text;
+          write(u.text);
           break;
+        case "tool_use": {
+          const tool = { name: u.tool_name, input: u.input, open: false };
+          session.entries.push(tool);
+          session.tools.set(u.tool_use_id, tool);
+          break;
+        }
+        case "tool_result": {
+          const tool = session.tools.get(u.tool_use_id);
+          if (tool) tool.result = u.result;
+          break;
+        }
         case "result":
-          session.output += u.result.is_error ? `\n[error] ${u.result.text}\n\n` : "\n\n";
+          write(u.result.is_error ? `\n[error] ${u.result.text}\n\n` : "\n\n");
           break;
         case "state":
           session.state = u.state;
@@ -145,7 +196,7 @@
           session.approvals.delete(u.request_id);
           break;
         case "exited":
-          session.output += `\n[exited] ${u.error}\n\n`;
+          write(`\n[exited] ${u.error}\n\n`);
           break;
       }
     }
@@ -170,9 +221,41 @@
 
       const session = sessions.get(selected);
       $("title").textContent = session ? `${workspaces.get(session.workspaceId)} · ${selected} · ${session.state}` : "";
-      $("output").textContent = session?.output ?? "";
+      $("delete").hidden = !session;
+      $("output").replaceChildren(...(session?.entries ?? []).map(renderEntry));
+      // Claude takes configuration only while idle; a parked session stores it.
+      const configurable = session && !session.configuring && (session.state === "idle" || session.state === "parked");
+      for (const field of ["model", "effort", "permission_mode"]) {
+        const element = $("settings").elements[field];
+        if (element !== document.activeElement) element.value = session?.settings[field] ?? "";
+        element.disabled = !configurable;
+      }
       $("approvals").replaceChildren();
       for (const [requestId, request] of session?.approvals ?? []) addApproval(selected, requestId, request);
+    }
+
+    // renderEntry shows text as is and a tool call as its name and first
+    // input value, expanding to its full input and result.
+    function renderEntry(entry) {
+      if (entry.text !== undefined) {
+        const text = document.createElement("pre");
+        text.textContent = entry.text;
+        return text;
+      }
+      const details = document.createElement("details");
+      details.open = entry.open;
+      details.ontoggle = () => { entry.open = details.open; };
+      if (entry.result?.is_error) details.className = "error";
+      const summary = document.createElement("summary");
+      const first = Object.values(entry.input ?? {}).find((v) => typeof v === "string") ?? "";
+      const status = entry.result ? (entry.result.is_error ? " (error)" : "") : " …";
+      summary.textContent = `${entry.name} ${first.split("\n")[0].slice(0, 120)}${status}`;
+      const input = document.createElement("pre");
+      input.textContent = JSON.stringify(entry.input, null, 2);
+      const result = document.createElement("pre");
+      result.textContent = entry.result?.text ?? "";
+      details.append(summary, input, result);
+      return details;
     }
 
     function addApproval(sessionId, requestId, request) {
@@ -202,12 +285,34 @@
       try {
         // The created events add the workspace and session to the sidebar.
         const { workspace_id } = await rpc("workspace/create", { path: form.get("workspace") });
-        const { session_id } = await rpc("session/create", { workspace_id, model: form.get("model") });
+        const { session_id } = await rpc("session/create", {
+          workspace_id, model: form.get("model"), effort: form.get("effort"), permission_mode: form.get("permission_mode"),
+        });
         selected = session_id;
         render();
       } catch (error) {
         showError(error);
       }
+    };
+
+    // Changing any setting sends all three.
+    $("settings").onchange = () => {
+      const session = sessions.get(selected);
+      const f = $("settings").elements;
+      const settings = { model: f.model.value, effort: f.effort.value, permission_mode: f.permission_mode.value };
+      showError();
+      session.configuring = true;
+      render();
+      rpc("session/configure", { session_id: selected, ...settings })
+        .then(() => { session.settings = settings; }, showError)
+        .finally(() => { session.configuring = false; render(); });
+    };
+
+    // The destroyed event removes the session from every page.
+    $("delete").onclick = () => {
+      if (!confirm(`Delete session ${selected} and its history?`)) return;
+      showError();
+      rpc("session/destroy", { session_id: selected }).catch(showError);
     };
 
     $("send").onsubmit = (e) => {

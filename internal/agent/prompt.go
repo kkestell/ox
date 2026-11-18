@@ -16,6 +16,9 @@ type Update struct {
 	Error     string          `json:"error,omitempty"`
 	RequestID string          `json:"request_id,omitempty"`
 	Request   json.RawMessage `json:"request,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	ToolName  string          `json:"tool_name,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
 }
 
 type Result struct {

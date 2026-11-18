@@ -83,24 +83,23 @@ process is running.
 
 ### `session/create`
 
-Requires `workspace_id`. Records a parked session in the workspace and returns
-its ID. No process starts, so startup errors such as an unknown model surface
+Requires `workspace_id`, `model`, `effort`, and `permission_mode`. Records a
+parked session in the workspace and returns its ID. No process starts, so startup errors such as an unknown model surface
 on the first `session/send`.
 
 | Parameter | Required | Meaning |
 | --- | --- | --- |
 | `workspace_id` | Yes | The workspace whose directory Claude runs in. |
-| `model` | No | Passed to Claude's `--model` flag when nonempty. |
-| `effort` | No | One of `low`, `medium`, `high`, `xhigh`, `max`, or `ultracode`; an empty value leaves Claude's default. |
-| `permission_mode` | No | Passed to Claude's `--permission-mode` flag when nonempty. |
+| `model` | Yes | Nonblank; passed to Claude's `--model` flag. |
+| `effort` | Yes | One of `low`, `medium`, `high`, `xhigh`, `max`, or `ultracode`; passed to Claude's `--effort` flag. |
+| `permission_mode` | Yes | Nonblank; passed to Claude's `--permission-mode` flag. |
 
-Omitted or empty optional settings leave Claude's defaults in effect. Ox
-validates the effort values above; model names and permission modes are
+Ox validates the effort values above; model names and permission modes are
 interpreted by the installed Claude version. Each process the session starts
 receives the stored settings.
 
 ```json
-{"jsonrpc":"2.0","id":3,"method":"session/create","params":{"workspace_id":"workspace-id","model":"haiku","effort":"low","permission_mode":"default"}}
+{"jsonrpc":"2.0","id":3,"method":"session/create","params":{"workspace_id":"workspace-id","model":"haiku","effort":"low","permission_mode":"manual"}}
 ```
 
 ```json
@@ -152,20 +151,17 @@ response arrives.
 | `prompt.approvals` | Pending approvals, each with `request_id` and Claude's `request`. |
 | `history` | The session's recorded updates, oldest first, in the form of `session/update` params without `session_id`. |
 
-The daemon records every session's `prompt`, `text_delta`, `result`, and
-`exited` updates, including those of turns Claude starts itself, and keeps
+The daemon records every session's `prompt`, `text_delta`, `tool_use`,
+`tool_result`, `result`, and `exited` updates, including those of turns Claude starts itself, and keeps
 them across parking and daemon restarts. Consecutive `text_delta` fragments
 are recorded as one. Applying the history the same way as live updates
 reproduces the conversation. Deleting the session deletes its history.
 
 ### `session/configure`
 
-Requires `session_id` and at least one of `model`, `effort`, or
-`permission_mode`. Changes the session's settings, preserving the
-conversation, and stores them for its later processes. Omitted or null fields
-are unchanged. `model` and `permission_mode` must be nonblank strings.
-`effort` accepts the same levels as creation; `""` resets it to Claude's
-default. Changing the model leaves effort unchanged.
+Requires `session_id`, `model`, `effort`, and `permission_mode`, validated as
+at creation. Replaces the session's settings, preserving the conversation, and
+stores them for its later processes.
 
 ```json
 {"jsonrpc":"2.0","id":6,"method":"session/configure","params":{"session_id":"session-id","model":"haiku","effort":"low","permission_mode":"acceptEdits"}}
@@ -180,8 +176,8 @@ starts. A running session must be idle with no pending prompt. Configuration
 reserves it until completion; sends and other configuration requests during
 that time return `-32002`. Any connected client can configure an idle session.
 
-For a running session, success means Claude acknowledged every requested
-change, and only then are the settings stored. Model, effort, and permission
+For a running session, success means Claude acknowledged all three settings,
+and only then are they stored. Model, effort, and permission
 mode are applied in that order. If a change fails, earlier changes remain
 applied to the process and later changes are skipped. Claude refusals, write
 failures, process exit, and missing responses after one minute return an
@@ -248,6 +244,8 @@ task finishing, produce the same updates without `message_id`:
 | --- | --- | --- |
 | `prompt` | `text`: string | A client sent this prompt. |
 | `text_delta` | `text`: string | Append this fragment of top-level assistant text. |
+| `tool_use` | `tool_use_id`: string; `tool_name`: string; `input`: object | Claude called a tool at the top level. |
+| `tool_result` | `tool_use_id`: string; `result`: object with `text` and `is_error` | The outcome of the top-level tool call with this `tool_use_id`. `text` joins the result's text blocks. |
 | `state` | `state`: `running`, `requires_action`, or `idle` | Claude's current execution state. |
 | `result` | `result`: object with `text` and `is_error` | Claude's final response or turn error. The text is a complete result, not another delta to append. |
 | `approval` | `request_id`: string; `request`: object | A pending Claude request needing a client decision. |
@@ -261,13 +259,17 @@ user action; read the approval notifications to obtain the requests. `idle`
 means the turn is over and, for a prompt, that another can be sent.
 
 ```json
+{"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"tool_use","tool_use_id":"toolu_example","tool_name":"Bash","input":{"command":"ls","description":"List files"}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"tool_result","tool_use_id":"toolu_example","result":{"text":"go.mod\ncmd","is_error":false}}}
 {"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"result","result":{"text":"The repository contains a Go daemon.","is_error":false}}}
 ```
 
 Claude's errors are delivered as `result.is_error: true`; an unexpected process
 exit is delivered as `exited`. JSON-RPC errors describe failures of the client
-operation itself. The stream exposes assistant text, states, results, and
-approval lifecycle events; it does not forward the full Claude tool transcript.
+operation itself. The stream exposes the top-level assistant text, tool calls
+and their results, states, results, and approval lifecycle events. Subagents'
+text and tool calls are not forwarded; a subagent appears as its top-level
+`Agent` tool call and result.
 
 ### Approval lifecycle
 
@@ -300,6 +302,7 @@ Every connection is told when workspaces and sessions come and go:
 | --- | --- | --- |
 | `workspace/created` | `workspace_id`, `path` | A workspace was registered. |
 | `session/created` | `session_id`, `workspace_id`, `model`, `effort`, `permission_mode` | A session was created, parked. |
+| `session/configured` | `session_id`, `model`, `effort`, `permission_mode` | A session's settings changed; the fields are its stored settings. |
 | `session/destroyed` | `session_id` | A session was destroyed, after its last update. |
 
 ```json

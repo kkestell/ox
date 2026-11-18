@@ -13,8 +13,8 @@ import (
 )
 
 // history records a session's conversation as updates in a JSON Lines file,
-// returned to clients by session/get. It keeps prompts, assistant text,
-// results, and exits, merging consecutive text fragments into one entry. It
+// returned to clients by session/get. It keeps prompts, assistant text, tool
+// calls and their results, turn results, and exits, merging consecutive text fragments into one entry. It
 // subscribes to each of the session's processes, so the running agent's
 // goroutine uses it; while the session is parked, its lock holder does.
 type history struct {
@@ -34,7 +34,7 @@ func (h *history) Publish(update agent.Update) bool {
 	}
 	h.flush()
 	switch update.Type {
-	case "prompt", "result", "exited":
+	case "prompt", "tool_use", "tool_result", "result", "exited":
 		h.append(update)
 	}
 	return true

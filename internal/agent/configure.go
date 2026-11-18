@@ -8,12 +8,11 @@ import (
 	"github.com/kkestell/ox/internal/claude"
 )
 
-// Configuration changes settings of a running agent. Nil fields are unchanged;
-// an empty Effort restores Claude's default.
+// Configuration is the full set of a running agent's settings.
 type Configuration struct {
-	Model          *string
-	Effort         *string
-	PermissionMode *string
+	Model          string
+	Effort         string
+	PermissionMode string
 }
 
 // configuration owns the agent in the configuring phase. Its first request is
@@ -37,25 +36,10 @@ func (a *Agent) reconfigure(config Configuration, reply chan error) {
 		reply <- ErrBusy
 		return
 	}
-	var requests []map[string]any
-	if config.Model != nil {
-		requests = append(requests, map[string]any{"subtype": "set_model", "model": *config.Model})
-	}
-	if config.Effort != nil {
-		var effort any
-		if *config.Effort != "" {
-			effort = *config.Effort
-		}
-		requests = append(requests, map[string]any{
-			"subtype": "apply_flag_settings", "settings": map[string]any{"effortLevel": effort},
-		})
-	}
-	if config.PermissionMode != nil {
-		requests = append(requests, map[string]any{"subtype": "set_permission_mode", "mode": *config.PermissionMode})
-	}
-	if len(requests) == 0 {
-		reply <- nil
-		return
+	requests := []map[string]any{
+		{"subtype": "set_model", "model": config.Model},
+		{"subtype": "apply_flag_settings", "settings": map[string]any{"effortLevel": config.Effort}},
+		{"subtype": "set_permission_mode", "mode": config.PermissionMode},
 	}
 	a.config = &configuration{requests: requests, reply: reply}
 	a.phase = configuring

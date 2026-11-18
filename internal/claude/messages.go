@@ -1,6 +1,9 @@
 package claude
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // Message is one line of Claude's output, reduced to the fields Ox reads.
 type Message struct {
@@ -34,18 +37,64 @@ type ControlResponse struct {
 	Error     string `json:"error"`
 }
 
-// ToolNames returns the names of the tool_use blocks in an assistant message.
-func (m Message) ToolNames() []string {
+type ToolUse struct {
+	ID    string          `json:"id"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
+}
+
+type ToolResult struct {
+	ToolUseID string
+	Text      string // the result's text blocks, joined
+	IsError   bool
+}
+
+// ToolUses returns the tool_use blocks in an assistant message.
+func (m Message) ToolUses() []ToolUse {
 	var blocks []struct {
 		Type string `json:"type"`
-		Name string `json:"name"`
+		ToolUse
 	}
 	json.Unmarshal(m.Message.Content, &blocks)
-	var names []string
+	var uses []ToolUse
 	for _, b := range blocks {
 		if b.Type == "tool_use" {
-			names = append(names, b.Name)
+			uses = append(uses, b.ToolUse)
 		}
 	}
-	return names
+	return uses
+}
+
+// ToolResults returns the tool_result blocks in a user message.
+func (m Message) ToolResults() []ToolResult {
+	var blocks []struct {
+		Type      string          `json:"type"`
+		ToolUseID string          `json:"tool_use_id"`
+		Content   json.RawMessage `json:"content"` // a string or an array of blocks
+		IsError   bool            `json:"is_error"`
+	}
+	json.Unmarshal(m.Message.Content, &blocks)
+	var results []ToolResult
+	for _, b := range blocks {
+		if b.Type != "tool_result" {
+			continue
+		}
+		result := ToolResult{ToolUseID: b.ToolUseID, IsError: b.IsError}
+		if json.Unmarshal(b.Content, &result.Text) != nil {
+			var content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}
+			json.Unmarshal(b.Content, &content)
+			var texts []string
+			for _, c := range content {
+				if c.Type == "text" {
+					texts = append(texts, c.Text)
+				}
+			}
+			result.Text = strings.Join(texts, "\n")
+		}
+		results = append(results, result)
+	}
+	return results
 }

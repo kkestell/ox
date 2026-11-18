@@ -13,9 +13,9 @@ import (
 func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 	a, input := testAgent()
 	decoder := json.NewDecoder(input)
-	model, effort, mode := "haiku", "low", "plan"
+	config := Configuration{Model: "haiku", Effort: "low", PermissionMode: "plan"}
 	result := make(chan error, 1)
-	a.reconfigure(Configuration{Model: &model, Effort: &effort, PermissionMode: &mode}, result)
+	a.reconfigure(config, result)
 
 	for _, expected := range []map[string]any{
 		{"subtype": "set_model", "model": "haiku"},
@@ -37,7 +37,7 @@ func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 			t.Fatalf("prompt accepted during configuration: %v", err)
 		}
 		overlapping := make(chan error, 1)
-		if a.reconfigure(Configuration{Model: &model}, overlapping); !errors.Is(<-overlapping, ErrBusy) {
+		if a.reconfigure(config, overlapping); !errors.Is(<-overlapping, ErrBusy) {
 			t.Fatal("overlapping configuration accepted")
 		}
 		a.handleOutput(claude.Message{Type: "control_response", Response: claude.ControlResponse{RequestID: "unrelated", Subtype: "success"}})
@@ -61,28 +61,21 @@ func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 	}
 }
 
-func TestConfigureFailureAndEffortReset(t *testing.T) {
+func TestConfigureFailure(t *testing.T) {
 	for _, outcome := range []string{"rejected", "timeout", "exited"} {
 		t.Run(outcome, func(t *testing.T) {
 			a, input := testAgent()
-			effort, mode := "", "plan"
 			result := make(chan error, 1)
-			a.reconfigure(Configuration{Effort: &effort, PermissionMode: &mode}, result)
+			a.reconfigure(Configuration{Model: "haiku", Effort: "low", PermissionMode: "plan"}, result)
 			var wire struct {
 				RequestID string `json:"request_id"`
-				Request   struct {
-					Settings map[string]any `json:"settings"`
-				} `json:"request"`
 			}
 			if err := json.NewDecoder(input).Decode(&wire); err != nil {
 				t.Fatal(err)
 			}
-			if value, present := wire.Request.Settings["effortLevel"]; !present || value != nil {
-				t.Fatalf("empty effort did not reset the override: %+v", wire)
-			}
 			switch outcome {
 			case "rejected":
-				a.handleOutput(claude.Message{Type: "control_response", Response: claude.ControlResponse{RequestID: wire.RequestID, Subtype: "error", Error: "Unsupported effort"}})
+				a.handleOutput(claude.Message{Type: "control_response", Response: claude.ControlResponse{RequestID: wire.RequestID, Subtype: "error", Error: "Unsupported model"}})
 			case "timeout":
 				a.handle(controlTimeout{"stale"})
 				a.handle(controlTimeout{wire.RequestID})
@@ -90,7 +83,7 @@ func TestConfigureFailureAndEffortReset(t *testing.T) {
 				a.exit(nil)
 			}
 			err := <-result
-			if outcome == "rejected" && (err == nil || !strings.Contains(err.Error(), "Unsupported effort")) {
+			if outcome == "rejected" && (err == nil || !strings.Contains(err.Error(), "Unsupported model")) {
 				t.Fatalf("Claude's refusal was lost: %v", err)
 			}
 			if outcome == "timeout" && (err == nil || !strings.Contains(err.Error(), "no control response")) {

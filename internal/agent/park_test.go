@@ -76,8 +76,7 @@ func TestParkingRefusesPrompts(t *testing.T) {
 		t.Fatalf("parking agent took a prompt: %v", err)
 	}
 	reply := make(chan error, 1)
-	model := "haiku"
-	a.reconfigure(Configuration{Model: &model}, reply)
+	a.reconfigure(Configuration{Model: "haiku", Effort: "low", PermissionMode: "plan"}, reply)
 	if err := <-reply; !errors.Is(err, ErrExited) {
 		t.Fatalf("parking agent took configuration: %v", err)
 	}

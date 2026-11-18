@@ -97,3 +97,21 @@ func TestTurnsClaudeStartsArePublished(t *testing.T) {
 		t.Fatalf("unexpected updates: %v", types)
 	}
 }
+
+func TestTopLevelToolCallsArePublished(t *testing.T) {
+	a, _, updates := promptingAgent()
+	output(t, a, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}`)
+	output(t, a, `{"type":"assistant","parent_tool_use_id":"t0","message":{"content":[{"type":"tool_use","id":"t2","name":"Read","input":{}}]}}`)
+	output(t, a, `{"type":"user","parent_tool_use_id":"t0","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"sub"}]}}`)
+	output(t, a, `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":[{"type":"text","text":"a"},{"type":"image"},{"type":"text","text":"b"}]}]}}`)
+	if len(*updates) != 2 {
+		t.Fatalf("expected the top-level call and result only: %+v", *updates)
+	}
+	use, result := (*updates)[0], (*updates)[1]
+	if use.Type != "tool_use" || use.ToolUseID != "t1" || use.ToolName != "Bash" || string(use.Input) != `{"command":"ls"}` || use.MessageID != "prompt" {
+		t.Fatalf("unexpected tool_use: %+v", use)
+	}
+	if result.Type != "tool_result" || result.ToolUseID != "t1" || result.Result.Text != "a\nb" || !result.Result.IsError {
+		t.Fatalf("unexpected tool_result: %+v", result)
+	}
+}

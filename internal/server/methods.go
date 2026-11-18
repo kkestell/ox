@@ -167,19 +167,40 @@ func (s *Server) listWorkspaces(id json.RawMessage) *jsonrpc.Response {
 	}{workspaces})
 }
 
-func (s *Server) createSession(id, params json.RawMessage) *jsonrpc.Response {
-	var input struct {
-		WorkspaceID    string `json:"workspace_id"`
-		Model          string `json:"model"`
-		Effort         string `json:"effort"`
-		PermissionMode string `json:"permission_mode"`
-	}
-	if err := json.Unmarshal(params, &input); err != nil || input.WorkspaceID == "" {
-		return invalidParams(id, "workspace_id is required")
+// settings are a session's model, effort, and permission mode, all required
+// by session/create and session/configure.
+type settings struct {
+	Model          string `json:"model"`
+	Effort         string `json:"effort"`
+	PermissionMode string `json:"permission_mode"`
+}
+
+// invalid describes what is wrong with the settings, or returns "".
+func (s settings) invalid() string {
+	switch {
+	case strings.TrimSpace(s.Model) == "":
+		return "model is required"
+	case strings.TrimSpace(s.PermissionMode) == "":
+		return "permission_mode is required"
 	}
 	// Claude silently falls back to its default for unrecognized effort values.
-	if !validEffort(input.Effort) {
-		return invalidParams(id, "Unknown effort level")
+	switch s.Effort {
+	case "low", "medium", "high", "xhigh", "max", "ultracode":
+		return ""
+	}
+	return "effort must be one of low, medium, high, xhigh, max, or ultracode"
+}
+
+func (s *Server) createSession(id, params json.RawMessage) *jsonrpc.Response {
+	var input struct {
+		WorkspaceID string `json:"workspace_id"`
+		settings
+	}
+	if err := json.Unmarshal(params, &input); err != nil || input.WorkspaceID == "" {
+		return invalidParams(id, "workspace_id, model, effort, and permission_mode are required")
+	}
+	if problem := input.invalid(); problem != "" {
+		return invalidParams(id, problem)
 	}
 
 	s.mu.Lock()
@@ -333,25 +354,14 @@ func validApprovalResponse(raw json.RawMessage) bool {
 
 func (s *Server) configureSession(id, params json.RawMessage) *jsonrpc.Response {
 	var input struct {
-		SessionID      string  `json:"session_id"`
-		Model          *string `json:"model"`
-		Effort         *string `json:"effort"`
-		PermissionMode *string `json:"permission_mode"`
+		SessionID string `json:"session_id"`
+		settings
 	}
 	if err := json.Unmarshal(params, &input); err != nil || input.SessionID == "" {
-		return invalidParams(id, "session_id and configuration fields are required")
+		return invalidParams(id, "session_id, model, effort, and permission_mode are required")
 	}
-	if input.Model == nil && input.Effort == nil && input.PermissionMode == nil {
-		return invalidParams(id, "At least one of model, effort, or permission_mode is required")
-	}
-	if input.Model != nil && strings.TrimSpace(*input.Model) == "" {
-		return invalidParams(id, "model must be nonblank")
-	}
-	if input.Effort != nil && !validEffort(*input.Effort) {
-		return invalidParams(id, "Unknown effort level")
-	}
-	if input.PermissionMode != nil && strings.TrimSpace(*input.PermissionMode) == "" {
-		return invalidParams(id, "permission_mode must be nonblank")
+	if problem := input.invalid(); problem != "" {
+		return invalidParams(id, problem)
 	}
 	sess, missing := s.lookup(id, input.SessionID)
 	if missing != nil {
@@ -371,28 +381,17 @@ func (s *Server) configureSession(id, params json.RawMessage) *jsonrpc.Response 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	record := sess.record
-	if input.Model != nil {
-		record.Model = *input.Model
-	}
-	if input.Effort != nil {
-		record.Effort = *input.Effort
-	}
-	if input.PermissionMode != nil {
-		record.PermissionMode = *input.PermissionMode
-	}
+	record.Model, record.Effort, record.PermissionMode = input.Model, input.Effort, input.PermissionMode
 	if err := s.save(); err != nil {
 		return failure(id, err)
 	}
+	s.broadcast("session/configured", struct {
+		SessionID      string `json:"session_id"`
+		Model          string `json:"model"`
+		Effort         string `json:"effort"`
+		PermissionMode string `json:"permission_mode"`
+	}{record.ID, record.Model, record.Effort, record.PermissionMode})
 	return jsonrpc.Success(id, struct{}{})
-}
-
-func validEffort(effort string) bool {
-	switch effort {
-	case "", "low", "medium", "high", "xhigh", "max", "ultracode":
-		return true
-	default:
-		return false
-	}
 }
 
 // destroySession forgets the session and stops its process. Claude's
