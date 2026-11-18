@@ -3,6 +3,11 @@
 This is an experiment. Optimize for learning and code that is cheap to change,
 not production reliability.
 
+## Status
+
+Not in production use: just testing using `make dev`. There is no data or state
+that cannot be deleted if necessary.
+
 ## Implementation
 
 - Keep the code direct, readable, and simple. Implement the requested behavior
