@@ -16,9 +16,10 @@ numeric `id`, a `method`, and an object in `params`. Responses echo the request
 omitting `id` does not execute an operation or produce a response for a valid
 message. Batch requests are unsupported. No connection handshake is required.
 
-Clients must continuously read the socket: responses and `session/update`
-notifications share the stream. Notifications can arrive before the response
-to `session/send`. The daemon gives each socket write five seconds to complete
+Clients must continuously read the socket: responses and notifications share
+the stream. Every connection receives every notification, for every session,
+from the moment it connects. Notifications can arrive before the response to
+the request that caused them. The daemon gives each socket write five seconds to complete
 and buffers a limited backlog; a client that stops reading loses its
 connection.
 
@@ -27,7 +28,7 @@ connection.
 | `id` | Client-chosen JSON-RPC request identifier, echoed in its response. |
 | `workspace_id` | Opaque identifier returned by `workspace/create`. |
 | `session_id` | Claude's session UUID, returned by `session/create`. |
-| `message_id` | Prompt identifier returned by `session/send` and attached to its updates. Updates from turns Claude starts itself have none. |
+| `message_id` | Prompt identifier returned by `session/send` and included in its updates. Updates from turns Claude starts itself have none. |
 | `request_id` | Claude's identifier for an approval, used to answer or withdraw it. |
 
 ## Workspaces and sessions
@@ -47,7 +48,7 @@ The daemon parks a session whose process has gone unused for five minutes
 (`-park-after` changes the period): no prompt or configuration in progress,
 Claude idle, no background task running, and no scheduled prompt pending
 (`CronCreate`, `ScheduleWakeup`, or `/loop`), so scheduled prompts keep firing.
-Attached connections do not keep a session running.
+Connected clients do not keep a session running.
 
 ## Workspace methods
 
@@ -108,9 +109,8 @@ receives the stored settings.
 
 ### `session/send`
 
-Requires `session_id` and nonblank `text`. Sends a prompt to an idle session,
-attaches the connection to the session, and returns the prompt's
-`message_id`. A parked session first starts a process, which has a one-minute
+Requires `session_id` and nonblank `text`. Sends a prompt to an idle session
+and returns the prompt's `message_id`. A parked session first starts a process, which has a one-minute
 initialization timeout; startup failure returns an operation error. Success
 means the prompt was written to Claude; its output and eventual result arrive
 through `session/update` notifications.
@@ -128,17 +128,16 @@ the session is running or waiting for action returns `-32002`; prompts are not
 queued. Wait for the prompt's `state: "idle"` update before sending another.
 A `result` update alone does not release the session for another prompt.
 
-### `session/attach`
+### `session/get`
 
-Requires `session_id`. Subscribes the connection to the session's updates and
-returns the session's conversation so far and its current state. The response
-precedes every update delivered through the attachment, so updates after it
-apply on top of the returned history and state. The attachment lasts across
-parking: updates from the session's next process reach the connection too. A
-connection can attach to any number of sessions.
+Requires `session_id`. Returns the session's conversation so far and its
+current state. The connection already receives the session's updates: those
+that arrive before the response are included in it, and those after it apply
+on top of it. A client loading a session ignores its updates until the
+response arrives.
 
 ```json
-{"jsonrpc":"2.0","id":5,"method":"session/attach","params":{"session_id":"session-id"}}
+{"jsonrpc":"2.0","id":5,"method":"session/get","params":{"session_id":"session-id"}}
 ```
 
 ```json
@@ -158,8 +157,6 @@ The daemon records every session's `prompt`, `text_delta`, `result`, and
 them across parking and daemon restarts. Consecutive `text_delta` fragments
 are recorded as one. Applying the history the same way as live updates
 reproduces the conversation. Deleting the session deletes its history.
-
-Attaching again from the same connection has no further effect on delivery.
 
 ### `session/configure`
 
@@ -237,8 +234,8 @@ stays on disk. Any connected client can destroy a session.
 
 ## Session updates
 
-Updates go to every connection attached to the session. Every notification
-uses method `session/update` and includes `session_id` and `type` inside
+Updates go to every connection. Every notification uses method
+`session/update` and includes `session_id` and `type` inside
 `params`, and `message_id` when the update belongs to a client's prompt.
 Turns Claude starts itself, such as a scheduled prompt firing or a background
 task finishing, produce the same updates without `message_id`:
@@ -254,6 +251,7 @@ task finishing, produce the same updates without `message_id`:
 | `state` | `state`: `running`, `requires_action`, or `idle` | Claude's current execution state. |
 | `result` | `result`: object with `text` and `is_error` | Claude's final response or turn error. The text is a complete result, not another delta to append. |
 | `approval` | `request_id`: string; `request`: object | A pending Claude request needing a client decision. |
+| `approval_answered` | `request_id`: string | A client answered the approval. |
 | `approval_cancelled` | `request_id`: string | Withdraw an unanswered approval. Discard any later answer. |
 | `exited` | `error`: string | The process exited during an active prompt; the prompt has ended. |
 | `parked` | — | The session's process has exited, for any reason. The last update from that process. |
@@ -294,15 +292,29 @@ notifications precede the corresponding `idle` or `exited` update:
 {"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"approval_cancelled","request_id":"claude-request-id"}}
 ```
 
+## Workspace and session events
+
+Every connection is told when workspaces and sessions come and go:
+
+| Method | `params` | Meaning |
+| --- | --- | --- |
+| `workspace/created` | `workspace_id`, `path` | A workspace was registered. |
+| `session/created` | `session_id`, `workspace_id`, `model`, `effort`, `permission_mode` | A session was created, parked. |
+| `session/destroyed` | `session_id` | A session was destroyed, after its last update. |
+
+```json
+{"jsonrpc":"2.0","method":"session/created","params":{"session_id":"session-id","workspace_id":"workspace-id","model":"haiku","effort":"","permission_mode":""}}
+```
+
 ## Connections
 
-Clients have no identity: any connection with a session's ID can attach to
-it, send it a prompt when it is idle, and answer its approvals.
+Clients have no identity: any connection can send a session a prompt when it
+is idle, answer its approvals, configure it, and destroy it.
 
-Closing a connection detaches it and leaves its sessions running. A prompt
-continues, and its pending approvals stay pending until a client answers them.
-A client that reconnects calls `session/attach` to recover the conversation,
-the prompt, and its approvals, then follows its updates.
+Closing a connection leaves its sessions running. A prompt continues, and its
+pending approvals stay pending until a client answers them. A client that
+connects calls `workspace/list` and `session/get` to load the sessions, then
+follows the notifications.
 
 ## Errors
 

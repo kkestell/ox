@@ -5,9 +5,6 @@ import (
 	"net"
 	"sync"
 	"time"
-
-	"github.com/kkestell/ox/internal/agent"
-	"github.com/kkestell/ox/internal/jsonrpc"
 )
 
 // conn is one client connection. Responses and notifications go through a
@@ -57,31 +54,9 @@ func (c *conn) write() {
 	}
 }
 
-func (c *conn) isClosed() bool {
-	select {
-	case <-c.done:
-		return true
-	default:
-		return false
-	}
-}
-
 func (c *conn) close() {
 	c.closeOnce.Do(func() {
 		close(c.done)
 		c.net.Close()
 	})
-}
-
-// subscription delivers one session's updates to a connection.
-type subscription struct {
-	conn      *conn
-	sessionID string
-}
-
-func (s subscription) Publish(update agent.Update) bool {
-	return s.conn.queue(jsonrpc.Notify("session/update", struct {
-		SessionID string `json:"session_id"`
-		agent.Update
-	}{s.sessionID, update}))
 }

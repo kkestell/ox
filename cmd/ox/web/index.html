@@ -39,9 +39,9 @@
     let connection;
     let nextId = 1;
     const pending = new Map();
-    // Every session is attached; selected is the one shown.
-    const workspaces = new Map(); // path -> workspace_id
-    const sessions = new Map(); // session_id -> { path, state, output, approvals }
+    // The page receives every session's updates; selected is the one shown.
+    const workspaces = new Map(); // workspace_id -> path
+    const sessions = new Map(); // session_id -> { workspaceId, state, output, approvals }
     let selected;
 
     const events = new EventSource("/events");
@@ -51,13 +51,29 @@
     });
     events.onmessage = (e) => {
       const message = JSON.parse(e.data);
-      if (message.method === "session/update") {
-        const session = sessions.get(message.params.session_id);
-        if (session) {
-          apply(session, message.params);
-          render();
+      const params = message.params;
+      switch (message.method) {
+        case "session/update": {
+          // Updates for a session not loaded yet are in the history it loads with.
+          const session = sessions.get(params.session_id);
+          if (session) {
+            apply(session, params);
+            render();
+          }
+          return;
         }
-        return;
+        case "workspace/created":
+          workspaces.set(params.workspace_id, params.path);
+          render();
+          return;
+        case "session/created":
+          get(params.session_id, params.workspace_id).then(render, showError);
+          return;
+        case "session/destroyed":
+          sessions.delete(params.session_id);
+          if (selected === params.session_id) selected = undefined;
+          render();
+          return;
       }
       const call = pending.get(message.id);
       if (!call) return;
@@ -88,19 +104,19 @@
     async function load() {
       const { workspaces: list } = await rpc("workspace/list", {});
       for (const w of list) {
-        workspaces.set(w.path, w.workspace_id);
-        for (const s of w.sessions) await attach(s.session_id, w.path);
+        workspaces.set(w.workspace_id, w.path);
+        for (const s of w.sessions) await get(s.session_id, w.workspace_id);
       }
       render();
     }
 
-    async function attach(id, path) {
-      const session = { path, state: "", output: "", approvals: new Map() };
-      sessions.set(id, session);
-      const result = await rpc("session/attach", { session_id: id });
-      session.state = result.state;
+    // get loads a session. Its live updates apply from the response onward.
+    async function get(id, workspaceId) {
+      const result = await rpc("session/get", { session_id: id });
+      const session = { workspaceId, state: result.state, output: "", approvals: new Map() };
       for (const u of result.history) apply(session, u);
       for (const a of result.prompt?.approvals ?? []) session.approvals.set(a.request_id, a.request);
+      sessions.set(id, session);
     }
 
     // apply adds one update, live or from history, to a session.
@@ -124,6 +140,7 @@
         case "approval":
           session.approvals.set(u.request_id, u.request);
           break;
+        case "approval_answered":
         case "approval_cancelled":
           session.approvals.delete(u.request_id);
           break;
@@ -136,12 +153,12 @@
     function render() {
       const nav = $("workspaces");
       nav.replaceChildren();
-      for (const path of workspaces.keys()) {
+      for (const [workspaceId, path] of workspaces) {
         const heading = document.createElement("p");
         heading.textContent = path;
         const list = document.createElement("ul");
         for (const [id, session] of sessions) {
-          if (session.path !== path) continue;
+          if (session.workspaceId !== workspaceId) continue;
           const item = document.createElement("li");
           item.textContent = `${id.slice(0, 8)} ${session.state}${session.approvals.size ? " (approval)" : ""}`;
           item.className = id === selected ? "selected" : "";
@@ -152,7 +169,7 @@
       }
 
       const session = sessions.get(selected);
-      $("title").textContent = session ? `${session.path} · ${selected} · ${session.state}` : "";
+      $("title").textContent = session ? `${workspaces.get(session.workspaceId)} · ${selected} · ${session.state}` : "";
       $("output").textContent = session?.output ?? "";
       $("approvals").replaceChildren();
       for (const [requestId, request] of session?.approvals ?? []) addApproval(selected, requestId, request);
@@ -166,10 +183,7 @@
       input.textContent = JSON.stringify(request.input, null, 2);
       const answer = (response) => {
         showError();
-        rpc("session/approve", { session_id: sessionId, request_id: requestId, response }).then(() => {
-          sessions.get(sessionId).approvals.delete(requestId);
-          render();
-        }, showError);
+        rpc("session/approve", { session_id: sessionId, request_id: requestId, response }).catch(showError);
       };
       const allow = document.createElement("button");
       allow.textContent = "Allow";
@@ -186,14 +200,9 @@
       showError();
       const form = new FormData(e.target);
       try {
-        const path = form.get("workspace");
-        const { workspace_id } = await rpc("workspace/create", { path });
+        // The created events add the workspace and session to the sidebar.
+        const { workspace_id } = await rpc("workspace/create", { path: form.get("workspace") });
         const { session_id } = await rpc("session/create", { workspace_id, model: form.get("model") });
-        // The daemon cleans the path, so take it from the list.
-        const { workspaces: list } = await rpc("workspace/list", {});
-        const workspace = list.find((w) => w.workspace_id === workspace_id);
-        workspaces.set(workspace.path, workspace_id);
-        await attach(session_id, workspace.path);
         selected = session_id;
         render();
       } catch (error) {

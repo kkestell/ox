@@ -72,7 +72,7 @@ func TestSchedulesBlockParking(t *testing.T) {
 func TestParkingRefusesPrompts(t *testing.T) {
 	a, _ := testAgent()
 	a.phase = parking
-	if _, err := a.submit(new(recorder), "hello"); !errors.Is(err, ErrExited) {
+	if _, err := a.submit("hello"); !errors.Is(err, ErrExited) {
 		t.Fatalf("parking agent took a prompt: %v", err)
 	}
 	reply := make(chan error, 1)

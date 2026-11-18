@@ -20,6 +20,9 @@ func TestApprovalRouting(t *testing.T) {
 	if err := a.answer("request", response); err != nil {
 		t.Fatal(err)
 	}
+	if len(*updates) != 2 || (*updates)[1].Type != "approval_answered" || (*updates)[1].RequestID != "request" {
+		t.Fatalf("answer was not announced: %+v", *updates)
+	}
 	var wire struct {
 		Type     string `json:"type"`
 		Response struct {

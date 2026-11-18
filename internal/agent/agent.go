@@ -1,6 +1,6 @@
 // Package agent runs one Claude Code process as an agent: a state machine that
 // accepts prompts, approvals, and configuration, and publishes the prompt's
-// progress to attached subscribers. One goroutine owns all of an agent's state
+// progress to its subscribers. One goroutine owns all of an agent's state
 // and handles client requests and Claude's output as events in order.
 package agent
 
@@ -59,7 +59,7 @@ type Agent struct {
 	timers      int           // timer generations issued
 }
 
-// Snapshot is an agent's current state, returned on attach.
+// Snapshot is an agent's current state, returned by Inspect.
 type Snapshot struct {
 	State  string          `json:"state"`
 	Prompt *PromptSnapshot `json:"prompt"`
@@ -78,15 +78,13 @@ type Approval struct {
 // Events from clients. Each carries a reply that the run goroutine always
 // answers.
 type (
-	attachRequest struct {
-		subscriber Subscriber
-		attached   func(Snapshot)
-		reply      chan struct{}
+	inspectRequest struct {
+		inspect func(Snapshot)
+		reply   chan struct{}
 	}
 	sendRequest struct {
-		subscriber Subscriber
-		text       string
-		reply      chan sendReply
+		text  string
+		reply chan sendReply
 	}
 	sendReply struct {
 		id  string
@@ -105,10 +103,10 @@ type (
 	parkTimeout    struct{ timer int }
 )
 
-// Start starts and initializes a Claude process for a new agent. The agent
-// terminates the process once it has been parkable for parkAfter; zero never
-// parks.
-func Start(options claude.Options, parkAfter time.Duration) (*Agent, error) {
+// Start starts and initializes a Claude process for a new agent, which
+// publishes every update to subscribers. The agent terminates the process
+// once it has been parkable for parkAfter; zero never parks.
+func Start(options claude.Options, parkAfter time.Duration, subscribers ...Subscriber) (*Agent, error) {
 	proc, err := claude.Start(options)
 	if err != nil {
 		return nil, err
@@ -116,6 +114,9 @@ func Start(options claude.Options, parkAfter time.Duration) (*Agent, error) {
 	a := newAgent(proc.Input)
 	a.proc = proc
 	a.parkAfter = parkAfter
+	for _, s := range subscribers {
+		a.subscribers[s] = struct{}{}
+	}
 	go a.run()
 	return a, nil
 }
@@ -147,12 +148,11 @@ func (a *Agent) run() {
 
 func (a *Agent) handle(event any) {
 	switch e := event.(type) {
-	case attachRequest:
-		e.attached(a.snapshot())
-		a.subscribers[e.subscriber] = struct{}{}
+	case inspectRequest:
+		e.inspect(a.snapshot())
 		e.reply <- struct{}{}
 	case sendRequest:
-		id, err := a.submit(e.subscriber, e.text)
+		id, err := a.submit(e.text)
 		e.reply <- sendReply{id, err}
 	case approveRequest:
 		e.reply <- a.answer(e.requestID, e.response)
@@ -257,21 +257,22 @@ func (a *Agent) post(event any) bool {
 	}
 }
 
-// Attach subscribes s to the agent's updates. attached receives the agent's
-// current state before s receives any update.
-func (a *Agent) Attach(s Subscriber, attached func(Snapshot)) error {
+// Inspect calls inspect with the agent's current state on the agent's
+// goroutine, between updates: every update published before the call is
+// reflected in the state, and none after it.
+func (a *Agent) Inspect(inspect func(Snapshot)) error {
 	reply := make(chan struct{}, 1)
-	if !a.post(attachRequest{s, attached, reply}) {
+	if !a.post(inspectRequest{inspect, reply}) {
 		return ErrExited
 	}
 	<-reply
 	return nil
 }
 
-// Send writes a prompt to an idle agent and attaches s to its updates.
-func (a *Agent) Send(s Subscriber, text string) (string, error) {
+// Send writes a prompt to an idle agent.
+func (a *Agent) Send(text string) (string, error) {
 	reply := make(chan sendReply, 1)
-	if !a.post(sendRequest{s, text, reply}) {
+	if !a.post(sendRequest{text, reply}) {
 		return "", ErrExited
 	}
 	r := <-reply

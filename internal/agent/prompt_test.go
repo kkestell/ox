@@ -35,7 +35,8 @@ func promptingAgent() (*Agent, *bytes.Buffer, *recorder) {
 func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
 	a, _ := testAgent()
 	updates := new(recorder)
-	id, err := a.submit(updates, "hello")
+	a.subscribers[updates] = struct{}{}
+	id, err := a.submit("hello")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +47,7 @@ func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
 	*updates = nil
 
 	a.sessionState("idle")
-	if _, err := a.submit(updates, "again"); !errors.Is(err, ErrBusy) || len(*updates) != 0 {
+	if _, err := a.submit("again"); !errors.Is(err, ErrBusy) || len(*updates) != 0 {
 		t.Fatalf("idle before Claude took the prompt released it: %v, %+v", err, *updates)
 	}
 
@@ -61,28 +62,17 @@ func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
 	}
 }
 
-func TestAttachReturnsStateBeforeUpdates(t *testing.T) {
+func TestInspectReturnsRunningPrompt(t *testing.T) {
 	a, _, _ := promptingAgent()
 	request := json.RawMessage(`{"subtype":"can_use_tool","tool_name":"Bash"}`)
 	a.controlRequest("pending", request)
 
-	late := new(recorder)
 	var snapshot Snapshot
-	a.handle(attachRequest{late, func(s Snapshot) {
-		snapshot = s
-		if len(*late) != 0 {
-			t.Fatal("update delivered before the snapshot")
-		}
-	}, make(chan struct{}, 1)})
+	a.handle(inspectRequest{func(s Snapshot) { snapshot = s }, make(chan struct{}, 1)})
 	if snapshot.State != "running" || snapshot.Prompt == nil || snapshot.Prompt.MessageID != "prompt" ||
 		len(snapshot.Prompt.Approvals) != 1 || snapshot.Prompt.Approvals[0].RequestID != "pending" ||
 		!bytes.Equal(snapshot.Prompt.Approvals[0].Request, request) {
 		t.Fatalf("snapshot missing the running prompt: %+v", snapshot)
-	}
-
-	a.sessionState("idle")
-	if len(*late) != 2 || (*late)[0].Type != "approval_cancelled" || (*late)[1].State != "idle" {
-		t.Fatalf("attached subscriber missed updates: %+v", *late)
 	}
 }
 

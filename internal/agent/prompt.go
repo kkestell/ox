@@ -30,7 +30,7 @@ type submission struct {
 	approvals map[string]json.RawMessage // pending, by Claude's request ID
 }
 
-func (a *Agent) submit(s Subscriber, text string) (string, error) {
+func (a *Agent) submit(text string) (string, error) {
 	if a.phase == parking {
 		return "", ErrExited
 	}
@@ -43,7 +43,6 @@ func (a *Agent) submit(s Subscriber, text string) (string, error) {
 	}
 	a.prompt = prompt
 	a.phase = queued
-	a.subscribers[s] = struct{}{}
 	a.publish(Update{Type: "prompt", Text: text})
 	return prompt.id, nil
 }

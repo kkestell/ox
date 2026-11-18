@@ -33,7 +33,7 @@ func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 		if wire.Type != "control_request" || wire.RequestID == "" || !reflect.DeepEqual(wire.Request, expected) {
 			t.Fatalf("unexpected configuration request: %+v", wire)
 		}
-		if _, err := a.submit(new(recorder), "hello"); !errors.Is(err, ErrBusy) {
+		if _, err := a.submit("hello"); !errors.Is(err, ErrBusy) {
 			t.Fatalf("prompt accepted during configuration: %v", err)
 		}
 		overlapping := make(chan error, 1)

@@ -42,10 +42,10 @@ func (s *Server) handle(c *conn, line []byte) *jsonrpc.Response {
 		return s.listWorkspaces(id)
 	case "session/create":
 		return s.createSession(id, params)
-	case "session/attach":
-		return s.attachSession(c, id, params)
+	case "session/get":
+		return s.getSession(c, id, params)
 	case "session/send":
-		return s.sendSession(c, id, params)
+		return s.sendSession(id, params)
 	case "session/approve":
 		return s.approveSession(id, params)
 	case "session/configure":
@@ -120,6 +120,10 @@ func (s *Server) createWorkspace(id, params json.RawMessage) *jsonrpc.Response {
 		s.state.Workspaces = s.state.Workspaces[:len(s.state.Workspaces)-1]
 		return failure(id, err)
 	}
+	s.broadcast("workspace/created", struct {
+		WorkspaceID string `json:"workspace_id"`
+		Path        string `json:"path"`
+	}{w.ID, w.Path})
 	return jsonrpc.Success(id, result{w.ID})
 }
 
@@ -193,12 +197,22 @@ func (s *Server) createSession(id, params json.RawMessage) *jsonrpc.Response {
 		return failure(id, err)
 	}
 	s.sessions[record.ID] = s.newSession(record, w.Path)
+	s.broadcast("session/created", struct {
+		SessionID      string `json:"session_id"`
+		WorkspaceID    string `json:"workspace_id"`
+		Model          string `json:"model"`
+		Effort         string `json:"effort"`
+		PermissionMode string `json:"permission_mode"`
+	}{record.ID, w.ID, record.Model, record.Effort, record.PermissionMode})
 	return jsonrpc.Success(id, struct {
 		SessionID string `json:"session_id"`
 	}{record.ID})
 }
 
-func (s *Server) attachSession(c *conn, id, params json.RawMessage) *jsonrpc.Response {
+// getSession returns a session's history and current state. Every connection
+// already receives the session's updates; those queued before the response
+// are in the history, and those after it are not.
+func (s *Server) getSession(c *conn, id, params json.RawMessage) *jsonrpc.Response {
 	var input struct {
 		SessionID string `json:"session_id"`
 	}
@@ -210,9 +224,7 @@ func (s *Server) attachSession(c *conn, id, params json.RawMessage) *jsonrpc.Res
 		return missing
 	}
 	defer sess.mu.Unlock()
-	sub := subscription{c, input.SessionID}
-	sess.subscribers[sub] = struct{}{}
-	attached := func(snapshot agent.Snapshot) *jsonrpc.Response {
+	result := func(snapshot agent.Snapshot) *jsonrpc.Response {
 		history, err := sess.history.entries()
 		if err != nil {
 			return failure(id, err)
@@ -222,24 +234,24 @@ func (s *Server) attachSession(c *conn, id, params json.RawMessage) *jsonrpc.Res
 			History []agent.Update `json:"history"`
 		}{snapshot, history})
 	}
+	// A parked session has no process, so no update is in flight.
 	parked := agent.Snapshot{State: "parked"}
 	a := sess.live()
 	if a == nil {
-		return attached(parked)
+		return result(parked)
 	}
-	// The agent calls back on its own goroutine before publishing any update,
-	// so the history is complete and the response is queued ahead of the
-	// updates that follow it.
-	err := a.Attach(sub, func(snapshot agent.Snapshot) {
-		c.queue(attached(snapshot))
+	// The agent publishes updates on the goroutine that runs this callback, so
+	// the response takes its place among them in the connection's queue.
+	err := a.Inspect(func(snapshot agent.Snapshot) {
+		c.queue(result(snapshot))
 	})
 	if errors.Is(err, agent.ErrExited) {
-		return attached(parked)
+		return result(parked)
 	}
 	return nil
 }
 
-func (s *Server) sendSession(c *conn, id, params json.RawMessage) *jsonrpc.Response {
+func (s *Server) sendSession(id, params json.RawMessage) *jsonrpc.Response {
 	var input struct {
 		SessionID string `json:"session_id"`
 		Text      string `json:"text"`
@@ -252,20 +264,18 @@ func (s *Server) sendSession(c *conn, id, params json.RawMessage) *jsonrpc.Respo
 		return missing
 	}
 	defer sess.mu.Unlock()
-	sub := subscription{c, input.SessionID}
-	sess.subscribers[sub] = struct{}{}
 	a, err := s.running(sess)
 	if err != nil {
 		return failure(id, err)
 	}
-	messageID, err := a.Send(sub, input.Text)
+	messageID, err := a.Send(input.Text)
 	if errors.Is(err, agent.ErrExited) {
 		// The process is parking or has exited; start the next one.
 		<-a.Done()
 		if a, err = s.running(sess); err != nil {
 			return failure(id, err)
 		}
-		messageID, err = a.Send(sub, input.Text)
+		messageID, err = a.Send(input.Text)
 	}
 	if err != nil {
 		return failure(id, err)
@@ -424,5 +434,8 @@ func (s *Server) destroySession(id, params json.RawMessage) *jsonrpc.Response {
 	if err := os.Remove(sess.history.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return failure(id, err)
 	}
+	s.broadcast("session/destroyed", struct {
+		SessionID string `json:"session_id"`
+	}{input.SessionID})
 	return jsonrpc.Success(id, struct{}{})
 }

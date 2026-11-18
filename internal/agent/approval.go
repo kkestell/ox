@@ -44,7 +44,11 @@ func (a *Agent) answer(requestID string, response json.RawMessage) error {
 		return ErrApprovalNotFound
 	}
 	delete(a.prompt.approvals, requestID)
-	return a.input.Respond(requestID, response)
+	if err := a.input.Respond(requestID, response); err != nil {
+		return err
+	}
+	a.publish(Update{Type: "approval_answered", RequestID: requestID})
+	return nil
 }
 
 func (a *Agent) cancelApproval(requestID string) {

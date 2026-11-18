@@ -2,8 +2,8 @@
 // stored workspaces and sessions, and turns each JSON-RPC request into a
 // session operation. A session runs a Claude process only while it is in use:
 // a parked session has none, and the next prompt resumes its conversation.
-// Clients have no identity: any connection can use any session, and a
-// connection attaches to a session to receive its updates.
+// Clients have no identity: any connection can use any session, and every
+// connection receives every session's updates.
 package server
 
 import (
@@ -18,6 +18,7 @@ import (
 
 	"github.com/kkestell/ox/internal/agent"
 	"github.com/kkestell/ox/internal/claude"
+	"github.com/kkestell/ox/internal/jsonrpc"
 	"github.com/kkestell/ox/internal/store"
 )
 
@@ -29,6 +30,9 @@ type Server struct {
 	state    *store.State
 	sessions map[string]*session
 	closed   bool
+
+	connsMu sync.Mutex // guards conns; taken after any other lock
+	conns   map[*conn]struct{}
 }
 
 // session is a stored session and the Claude process running it, if any.
@@ -39,10 +43,9 @@ type session struct {
 
 	// mu guards the fields below and is held while a process starts, so a
 	// session runs at most one process. Lock it before Server.mu, never after.
-	mu          sync.Mutex
-	agent       *agent.Agent
-	subscribers map[subscription]struct{} // carried to each new process
-	destroyed   bool
+	mu        sync.Mutex
+	agent     *agent.Agent
+	destroyed bool
 }
 
 // New loads the stored state. Every session starts parked, and a running
@@ -52,7 +55,10 @@ func New(statePath string, parkAfter time.Duration) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{statePath: statePath, parkAfter: parkAfter, state: state, sessions: make(map[string]*session)}
+	s := &Server{
+		statePath: statePath, parkAfter: parkAfter, state: state,
+		sessions: make(map[string]*session), conns: make(map[*conn]struct{}),
+	}
 	for _, w := range state.Workspaces {
 		for _, record := range w.Sessions {
 			s.sessions[record.ID] = s.newSession(record, w.Path)
@@ -63,10 +69,7 @@ func New(statePath string, parkAfter time.Duration) (*Server, error) {
 
 func (s *Server) newSession(record *store.Session, workspace string) *session {
 	path := filepath.Join(filepath.Dir(s.statePath), "sessions", record.ID+".jsonl")
-	return &session{
-		record: record, workspace: workspace, history: &history{path: path},
-		subscribers: make(map[subscription]struct{}),
-	}
+	return &session{record: record, workspace: workspace, history: &history{path: path}}
 }
 
 // Serve accepts connections until the listener is closed.
@@ -85,7 +88,15 @@ func (s *Server) Serve(listener net.Listener) error {
 
 func (s *Server) serveConn(netConn net.Conn) {
 	c := newConn(netConn)
-	defer c.close()
+	s.connsMu.Lock()
+	s.conns[c] = struct{}{}
+	s.connsMu.Unlock()
+	defer func() {
+		s.connsMu.Lock()
+		delete(s.conns, c)
+		s.connsMu.Unlock()
+		c.close()
+	}()
 	reader := bufio.NewReader(netConn)
 	for {
 		line, err := reader.ReadBytes('\n')
@@ -172,27 +183,43 @@ func (s *Server) running(sess *session) (*agent.Agent, error) {
 		return nil, errors.New("daemon is shutting down")
 	}
 
+	subscribers := []agent.Subscriber{sess.history, sessionUpdates{s, record.ID}}
+	if !record.Resumable {
+		subscribers = append(subscribers, resumeMarker{s, sess})
+	}
 	a, err := agent.Start(claude.Options{
 		Workspace: sess.workspace, SessionID: record.ID, Resume: record.Resumable,
 		Model: record.Model, Effort: record.Effort, PermissionMode: record.PermissionMode,
-	}, s.parkAfter)
+	}, s.parkAfter, subscribers...)
 	if err != nil {
 		return nil, err
 	}
 	sess.agent = a
-	// No turn is running yet, so these subscribers miss no update.
-	a.Attach(sess.history, func(agent.Snapshot) {})
-	for sub := range sess.subscribers {
-		if sub.conn.isClosed() {
-			delete(sess.subscribers, sub)
-			continue
-		}
-		a.Attach(sub, func(agent.Snapshot) {})
-	}
-	if !record.Resumable {
-		a.Attach(resumeMarker{s, sess}, func(agent.Snapshot) {})
-	}
 	return a, nil
+}
+
+// broadcast sends a notification to every connection.
+func (s *Server) broadcast(method string, params any) {
+	notification := jsonrpc.Notify(method, params)
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+	for c := range s.conns {
+		c.queue(notification)
+	}
+}
+
+// sessionUpdates broadcasts a session's updates.
+type sessionUpdates struct {
+	s         *Server
+	sessionID string
+}
+
+func (u sessionUpdates) Publish(update agent.Update) bool {
+	u.s.broadcast("session/update", struct {
+		SessionID string `json:"session_id"`
+		agent.Update
+	}{u.sessionID, update})
+	return true
 }
 
 // resumeMarker marks its session resumable at the first result, once Claude

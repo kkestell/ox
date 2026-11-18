@@ -13,10 +13,10 @@ import (
 )
 
 // history records a session's conversation as updates in a JSON Lines file,
-// replayed to clients on attach. It keeps prompts, assistant text, results,
-// and exits, merging consecutive text fragments into one entry. It subscribes
-// to each of the session's processes, so the running agent's goroutine uses
-// it; while the session is parked, its lock holder does.
+// returned to clients by session/get. It keeps prompts, assistant text,
+// results, and exits, merging consecutive text fragments into one entry. It
+// subscribes to each of the session's processes, so the running agent's
+// goroutine uses it; while the session is parked, its lock holder does.
 type history struct {
 	path    string
 	pending *agent.Update // text not yet written
