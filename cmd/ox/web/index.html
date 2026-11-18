@@ -4,36 +4,59 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Ox</title>
+  <style>
+    body { display: flex; gap: 1em; margin: 0; font-family: sans-serif; }
+    nav { width: 22em; padding: 0.5em; border-right: 1px solid #ccc; min-height: 100vh; }
+    main { flex: 1; padding: 0.5em; }
+    nav ul { list-style: none; padding-left: 0.5em; }
+    nav li { cursor: pointer; font-family: monospace; }
+    nav li.selected { font-weight: bold; }
+    pre { white-space: pre-wrap; }
+  </style>
 </head>
 <body>
-  <form id="create">
-    <input name="workspace" value="{{.Workspace}}" placeholder="Workspace" size="60" required>
-    <input name="model" value="haiku" placeholder="Model">
-    <button>Create session</button>
-  </form>
-  <p id="session"></p>
-  <form id="send">
-    <textarea name="text" rows="3" cols="60" placeholder="Prompt" required></textarea>
-    <button>Send</button>
-  </form>
-  <p id="state"></p>
-  <div id="approvals"></div>
-  <pre id="output"></pre>
-  <p id="error"></p>
+  <nav>
+    <form id="create">
+      <input name="workspace" value="{{.Workspace}}" placeholder="Workspace" size="30" required>
+      <input name="model" value="haiku" placeholder="Model" size="8">
+      <button>New session</button>
+    </form>
+    <div id="workspaces"></div>
+  </nav>
+  <main>
+    <p id="title"></p>
+    <pre id="output"></pre>
+    <div id="approvals"></div>
+    <form id="send">
+      <textarea name="text" rows="3" cols="60" placeholder="Prompt" required></textarea>
+      <button>Send</button>
+    </form>
+    <p id="error"></p>
+  </main>
 
   <script>
     const $ = (id) => document.getElementById(id);
     let connection;
-    let sessionId;
     let nextId = 1;
     const pending = new Map();
+    // Every session is attached; selected is the one shown.
+    const workspaces = new Map(); // path -> workspace_id
+    const sessions = new Map(); // session_id -> { path, state, output, approvals }
+    let selected;
 
     const events = new EventSource("/events");
-    events.addEventListener("connection", (e) => { connection = e.data; });
+    events.addEventListener("connection", (e) => {
+      connection = e.data;
+      load().catch(showError);
+    });
     events.onmessage = (e) => {
       const message = JSON.parse(e.data);
       if (message.method === "session/update") {
-        update(message.params);
+        const session = sessions.get(message.params.session_id);
+        if (session) {
+          apply(session, message.params);
+          render();
+        }
         return;
       }
       const call = pending.get(message.id);
@@ -62,42 +85,91 @@
       $("error").textContent = error ? String(error.message ?? error) : "";
     }
 
-    function update(u) {
+    async function load() {
+      const { workspaces: list } = await rpc("workspace/list", {});
+      for (const w of list) {
+        workspaces.set(w.path, w.workspace_id);
+        for (const s of w.sessions) await attach(s.session_id, w.path);
+      }
+      render();
+    }
+
+    async function attach(id, path) {
+      const session = { path, state: "", output: "", approvals: new Map() };
+      sessions.set(id, session);
+      const result = await rpc("session/attach", { session_id: id });
+      session.state = result.state;
+      for (const u of result.history) apply(session, u);
+      for (const a of result.prompt?.approvals ?? []) session.approvals.set(a.request_id, a.request);
+    }
+
+    // apply adds one update, live or from history, to a session.
+    function apply(session, u) {
       switch (u.type) {
-        case "text_delta":
-          $("output").textContent += u.text;
+        case "prompt":
+          session.output += `> ${u.text}\n\n`;
           break;
-        case "state":
-          $("state").textContent = u.state;
+        case "text_delta":
+          session.output += u.text;
           break;
         case "result":
-          $("output").textContent += "\n\n";
-          if (u.result.is_error) showError(u.result.text);
+          session.output += u.result.is_error ? `\n[error] ${u.result.text}\n\n` : "\n\n";
+          break;
+        case "state":
+          session.state = u.state;
+          break;
+        case "parked":
+          session.state = "parked";
           break;
         case "approval":
-          addApproval(u.request_id, u.request);
+          session.approvals.set(u.request_id, u.request);
           break;
         case "approval_cancelled":
-          $(`approval-${u.request_id}`)?.remove();
+          session.approvals.delete(u.request_id);
           break;
         case "exited":
-          $("state").textContent = "exited";
-          showError(u.error);
+          session.output += `\n[exited] ${u.error}\n\n`;
           break;
       }
     }
 
-    function addApproval(requestId, request) {
+    function render() {
+      const nav = $("workspaces");
+      nav.replaceChildren();
+      for (const path of workspaces.keys()) {
+        const heading = document.createElement("p");
+        heading.textContent = path;
+        const list = document.createElement("ul");
+        for (const [id, session] of sessions) {
+          if (session.path !== path) continue;
+          const item = document.createElement("li");
+          item.textContent = `${id.slice(0, 8)} ${session.state}${session.approvals.size ? " (approval)" : ""}`;
+          item.className = id === selected ? "selected" : "";
+          item.onclick = () => { selected = id; showError(); render(); };
+          list.append(item);
+        }
+        nav.append(heading, list);
+      }
+
+      const session = sessions.get(selected);
+      $("title").textContent = session ? `${session.path} · ${selected} · ${session.state}` : "";
+      $("output").textContent = session?.output ?? "";
+      $("approvals").replaceChildren();
+      for (const [requestId, request] of session?.approvals ?? []) addApproval(selected, requestId, request);
+    }
+
+    function addApproval(sessionId, requestId, request) {
       const box = document.createElement("fieldset");
-      box.id = `approval-${requestId}`;
       const legend = document.createElement("legend");
       legend.textContent = request.tool_name;
       const input = document.createElement("pre");
       input.textContent = JSON.stringify(request.input, null, 2);
       const answer = (response) => {
         showError();
-        rpc("session/approve", { session_id: sessionId, request_id: requestId, response })
-          .then(() => box.remove(), showError);
+        rpc("session/approve", { session_id: sessionId, request_id: requestId, response }).then(() => {
+          sessions.get(sessionId).approvals.delete(requestId);
+          render();
+        }, showError);
       };
       const allow = document.createElement("button");
       allow.textContent = "Allow";
@@ -109,28 +181,32 @@
       $("approvals").append(box);
     }
 
-    $("create").onsubmit = (e) => {
+    $("create").onsubmit = async (e) => {
       e.preventDefault();
       showError();
       const form = new FormData(e.target);
-      rpc("workspace/create", { path: form.get("workspace") })
-        .then((result) => rpc("session/create", { workspace_id: result.workspace_id, model: form.get("model") }))
-        .then(
-          (result) => {
-            sessionId = result.session_id;
-            $("session").textContent = sessionId;
-          },
-          showError,
-        );
+      try {
+        const path = form.get("workspace");
+        const { workspace_id } = await rpc("workspace/create", { path });
+        const { session_id } = await rpc("session/create", { workspace_id, model: form.get("model") });
+        // The daemon cleans the path, so take it from the list.
+        const { workspaces: list } = await rpc("workspace/list", {});
+        const workspace = list.find((w) => w.workspace_id === workspace_id);
+        workspaces.set(workspace.path, workspace_id);
+        await attach(session_id, workspace.path);
+        selected = session_id;
+        render();
+      } catch (error) {
+        showError(error);
+      }
     };
 
     $("send").onsubmit = (e) => {
       e.preventDefault();
       showError();
+      if (!selected) return showError("Select a session");
       const text = new FormData(e.target).get("text");
-      // Updates can arrive before the response, so show the prompt first.
-      $("output").textContent += `> ${text}\n\n`;
-      rpc("session/send", { session_id: sessionId, text }).then(() => e.target.reset(), showError);
+      rpc("session/send", { session_id: selected, text }).then(() => e.target.reset(), showError);
     };
   </script>
 </body>

@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -34,6 +35,7 @@ type Server struct {
 type session struct {
 	record    *store.Session
 	workspace string
+	history   *history
 
 	// mu guards the fields below and is held while a process starts, so a
 	// session runs at most one process. Lock it before Server.mu, never after.
@@ -53,14 +55,18 @@ func New(statePath string, parkAfter time.Duration) (*Server, error) {
 	s := &Server{statePath: statePath, parkAfter: parkAfter, state: state, sessions: make(map[string]*session)}
 	for _, w := range state.Workspaces {
 		for _, record := range w.Sessions {
-			s.sessions[record.ID] = newSession(record, w.Path)
+			s.sessions[record.ID] = s.newSession(record, w.Path)
 		}
 	}
 	return s, nil
 }
 
-func newSession(record *store.Session, workspace string) *session {
-	return &session{record: record, workspace: workspace, subscribers: make(map[subscription]struct{})}
+func (s *Server) newSession(record *store.Session, workspace string) *session {
+	path := filepath.Join(filepath.Dir(s.statePath), "sessions", record.ID+".jsonl")
+	return &session{
+		record: record, workspace: workspace, history: &history{path: path},
+		subscribers: make(map[subscription]struct{}),
+	}
 }
 
 // Serve accepts connections until the listener is closed.
@@ -174,7 +180,8 @@ func (s *Server) running(sess *session) (*agent.Agent, error) {
 		return nil, err
 	}
 	sess.agent = a
-	// No prompt is running yet, so these subscribers miss no update.
+	// No turn is running yet, so these subscribers miss no update.
+	a.Attach(sess.history, func(agent.Snapshot) {})
 	for sub := range sess.subscribers {
 		if sub.conn.isClosed() {
 			delete(sess.subscribers, sub)

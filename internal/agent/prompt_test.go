@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/kkestell/ox/internal/claude"
@@ -38,6 +39,11 @@ func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	if len(*updates) != 1 || (*updates)[0].Type != "prompt" || (*updates)[0].Text != "hello" || (*updates)[0].MessageID != id {
+		t.Fatalf("prompt was not published: %+v", *updates)
+	}
+	*updates = nil
 
 	a.sessionState("idle")
 	if _, err := a.submit(updates, "again"); !errors.Is(err, ErrBusy) || len(*updates) != 0 {
@@ -77,5 +83,27 @@ func TestAttachReturnsStateBeforeUpdates(t *testing.T) {
 	a.sessionState("idle")
 	if len(*late) != 2 || (*late)[0].Type != "approval_cancelled" || (*late)[1].State != "idle" {
 		t.Fatalf("attached subscriber missed updates: %+v", *late)
+	}
+}
+
+func TestTurnsClaudeStartsArePublished(t *testing.T) {
+	a, _ := testAgent()
+	updates := new(recorder)
+	a.subscribers[updates] = struct{}{}
+	a.sessionState("running")
+	output(t, a, `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"tick"}}}`)
+	output(t, a, `{"type":"result","subtype":"success","result":"tick"}`)
+	output(t, a, `{"type":"result","subtype":"success","result":""}`)
+	a.sessionState("idle")
+	a.exit(nil)
+	types := []string{}
+	for _, u := range *updates {
+		if u.MessageID != "" {
+			t.Fatalf("self-started turn update has a message ID: %+v", u)
+		}
+		types = append(types, u.Type)
+	}
+	if strings.Join(types, ",") != "state,text_delta,result,state,parked" {
+		t.Fatalf("unexpected updates: %v", types)
 	}
 }

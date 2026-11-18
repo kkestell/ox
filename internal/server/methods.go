@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -191,7 +192,7 @@ func (s *Server) createSession(id, params json.RawMessage) *jsonrpc.Response {
 		w.Sessions = w.Sessions[:len(w.Sessions)-1]
 		return failure(id, err)
 	}
-	s.sessions[record.ID] = newSession(record, w.Path)
+	s.sessions[record.ID] = s.newSession(record, w.Path)
 	return jsonrpc.Success(id, struct {
 		SessionID string `json:"session_id"`
 	}{record.ID})
@@ -211,18 +212,29 @@ func (s *Server) attachSession(c *conn, id, params json.RawMessage) *jsonrpc.Res
 	defer sess.mu.Unlock()
 	sub := subscription{c, input.SessionID}
 	sess.subscribers[sub] = struct{}{}
-	parked := jsonrpc.Success(id, agent.Snapshot{State: "parked"})
+	attached := func(snapshot agent.Snapshot) *jsonrpc.Response {
+		history, err := sess.history.entries()
+		if err != nil {
+			return failure(id, err)
+		}
+		return jsonrpc.Success(id, struct {
+			agent.Snapshot
+			History []agent.Update `json:"history"`
+		}{snapshot, history})
+	}
+	parked := agent.Snapshot{State: "parked"}
 	a := sess.live()
 	if a == nil {
-		return parked
+		return attached(parked)
 	}
-	// The agent calls back with its state before publishing any update, so the
-	// response is queued ahead of the updates that follow it.
+	// The agent calls back on its own goroutine before publishing any update,
+	// so the history is complete and the response is queued ahead of the
+	// updates that follow it.
 	err := a.Attach(sub, func(snapshot agent.Snapshot) {
-		c.queue(jsonrpc.Success(id, snapshot))
+		c.queue(attached(snapshot))
 	})
 	if errors.Is(err, agent.ErrExited) {
-		return parked
+		return attached(parked)
 	}
 	return nil
 }
@@ -408,6 +420,9 @@ func (s *Server) destroySession(id, params json.RawMessage) *jsonrpc.Response {
 		if err := a.Stop(); err != nil {
 			return failure(id, err)
 		}
+	}
+	if err := os.Remove(sess.history.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return failure(id, err)
 	}
 	return jsonrpc.Success(id, struct{}{})
 }

@@ -27,7 +27,7 @@ connection.
 | `id` | Client-chosen JSON-RPC request identifier, echoed in its response. |
 | `workspace_id` | Opaque identifier returned by `workspace/create`. |
 | `session_id` | Claude's session UUID, returned by `session/create`. |
-| `message_id` | Prompt identifier returned by `session/send` and attached to its updates. |
+| `message_id` | Prompt identifier returned by `session/send` and attached to its updates. Updates from turns Claude starts itself have none. |
 | `request_id` | Claude's identifier for an approval, used to answer or withdraw it. |
 
 ## Workspaces and sessions
@@ -131,18 +131,18 @@ A `result` update alone does not release the session for another prompt.
 ### `session/attach`
 
 Requires `session_id`. Subscribes the connection to the session's updates and
-returns the session's current state. Use it to follow a session after
-reconnecting. The response precedes every update delivered through the
-attachment, so updates after it apply on top of the returned state. The
-attachment lasts across parking: updates from the session's next process
-reach the connection too.
+returns the session's conversation so far and its current state. The response
+precedes every update delivered through the attachment, so updates after it
+apply on top of the returned history and state. The attachment lasts across
+parking: updates from the session's next process reach the connection too. A
+connection can attach to any number of sessions.
 
 ```json
 {"jsonrpc":"2.0","id":5,"method":"session/attach","params":{"session_id":"session-id"}}
 ```
 
 ```json
-{"jsonrpc":"2.0","id":5,"result":{"state":"requires_action","prompt":{"message_id":"prompt-id","approvals":[{"request_id":"claude-request-id","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch notes.txt"}}}]}}}
+{"jsonrpc":"2.0","id":5,"result":{"state":"requires_action","prompt":{"message_id":"prompt-id","approvals":[{"request_id":"claude-request-id","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch notes.txt"}}}]},"history":[{"message_id":"prompt-id","type":"prompt","text":"Create notes.txt."},{"message_id":"prompt-id","type":"text_delta","text":"I'll create the file."}]}}
 ```
 
 | Field | Meaning |
@@ -151,6 +151,13 @@ reach the connection too.
 | `prompt` | The active prompt, or `null`. |
 | `prompt.message_id` | The prompt's identifier, matching its updates. |
 | `prompt.approvals` | Pending approvals, each with `request_id` and Claude's `request`. |
+| `history` | The session's recorded updates, oldest first, in the form of `session/update` params without `session_id`. |
+
+The daemon records every session's `prompt`, `text_delta`, `result`, and
+`exited` updates, including those of turns Claude starts itself, and keeps
+them across parking and daemon restarts. Consecutive `text_delta` fragments
+are recorded as one. Applying the history the same way as live updates
+reproduces the conversation. Deleting the session deletes its history.
 
 Attaching again from the same connection has no further effect on delivery.
 
@@ -228,11 +235,13 @@ stays on disk. Any connected client can destroy a session.
 {"jsonrpc":"2.0","id":8,"result":{}}
 ```
 
-## Prompt updates
+## Session updates
 
 Updates go to every connection attached to the session. Every notification
-uses method `session/update` and includes `session_id`, `message_id`, and
-`type` inside `params`:
+uses method `session/update` and includes `session_id` and `type` inside
+`params`, and `message_id` when the update belongs to a client's prompt.
+Turns Claude starts itself, such as a scheduled prompt firing or a background
+task finishing, produce the same updates without `message_id`:
 
 ```json
 {"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"text_delta","text":"This repository "}}
@@ -240,17 +249,18 @@ uses method `session/update` and includes `session_id`, `message_id`, and
 
 | `type` | Additional fields | Meaning |
 | --- | --- | --- |
+| `prompt` | `text`: string | A client sent this prompt. |
 | `text_delta` | `text`: string | Append this fragment of top-level assistant text. |
-| `state` | `state`: `running`, `requires_action`, or `idle` | Claude's current execution state for the active prompt. |
+| `state` | `state`: `running`, `requires_action`, or `idle` | Claude's current execution state. |
 | `result` | `result`: object with `text` and `is_error` | Claude's final response or turn error. The text is a complete result, not another delta to append. |
 | `approval` | `request_id`: string; `request`: object | A pending Claude request needing a client decision. |
 | `approval_cancelled` | `request_id`: string | Withdraw an unanswered approval. Discard any later answer. |
-| `exited` | `error`: string | The process exited during an active prompt; the prompt has ended and the session is parked. |
+| `exited` | `error`: string | The process exited during an active prompt; the prompt has ended. |
+| `parked` | — | The session's process has exited, for any reason. The last update from that process. |
 
 `running` means Claude is working. `requires_action` means it is waiting for
 user action; read the approval notifications to obtain the requests. `idle`
-means the prompt is released and another can be sent. An idle process exit
-has no active prompt to notify.
+means the turn is over and, for a prompt, that another can be sent.
 
 ```json
 {"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"result","result":{"text":"The repository contains a Go daemon.","is_error":false}}}
@@ -291,9 +301,8 @@ it, send it a prompt when it is idle, and answer its approvals.
 
 Closing a connection detaches it and leaves its sessions running. A prompt
 continues, and its pending approvals stay pending until a client answers them.
-A client that reconnects calls `session/attach` to recover the prompt and its
-approvals, then follows its updates. Updates published while no connection is
-attached are not replayed.
+A client that reconnects calls `session/attach` to recover the conversation,
+the prompt, and its approvals, then follows its updates.
 
 ## Errors
 

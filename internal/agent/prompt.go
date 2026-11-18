@@ -8,7 +8,7 @@ import (
 )
 
 type Update struct {
-	MessageID string          `json:"message_id"`
+	MessageID string          `json:"message_id,omitempty"` // empty for turns Claude started itself
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
 	State     string          `json:"state,omitempty"`
@@ -44,6 +44,7 @@ func (a *Agent) submit(s Subscriber, text string) (string, error) {
 	a.prompt = prompt
 	a.phase = queued
 	a.subscribers[s] = struct{}{}
+	a.publish(Update{Type: "prompt", Text: text})
 	return prompt.id, nil
 }
 
@@ -56,8 +57,7 @@ func (a *Agent) commandStarted(id string) {
 func (a *Agent) sessionState(state string) {
 	a.claudeState = state
 	switch {
-	case a.prompt == nil:
-	case state != "idle":
+	case a.prompt == nil, state != "idle":
 		a.publish(Update{Type: "state", State: state})
 	case a.phase == queued:
 		// Claude can report idle before it takes the prompt; keep waiting.
@@ -77,12 +77,12 @@ func (a *Agent) endPrompt(final Update) {
 	a.phase = available
 }
 
-// publish sends an update about the current prompt to every subscriber.
+// publish sends an update to every subscriber, tagged with the current
+// prompt's ID when a client's prompt owns the turn.
 func (a *Agent) publish(update Update) {
-	if a.prompt == nil {
-		return
+	if a.prompt != nil {
+		update.MessageID = a.prompt.id
 	}
-	update.MessageID = a.prompt.id
 	for s := range a.subscribers {
 		if !s.Publish(update) {
 			delete(a.subscribers, s)

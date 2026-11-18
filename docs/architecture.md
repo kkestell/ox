@@ -48,6 +48,14 @@ The session keeps the connections attached to it and attaches them to each
 new process before any prompt runs. A session parks when its process exits;
 the server notices the exit the next time it looks at the session.
 
+Each session's history is a subscriber to every process it starts. It appends
+the conversation's updates to `sessions/<session_id>.jsonl` beside the state
+file, holding the current reply's text in memory until the next update ends
+it. `session/attach` reads the history from the agent's attach callback,
+which runs on the agent's goroutine, so the history includes every update
+published before the attachment and none after it. A parked session has no
+process, so its lock holder reads the history.
+
 ## Agents
 
 An agent is a state machine run by one goroutine, which owns all of its state.
@@ -80,6 +88,8 @@ background task runs, and nothing is scheduled, and disarms it when any of
 those stops holding. If the timer fires while still armed, the
 agent enters `parking` and sends Claude SIGTERM.
 
-Subscribers receive updates about the current prompt. The server attaches a
-connection when it sends a prompt or calls `session/attach`, and a connection
-is detached once it has closed.
+Subscribers receive every update: those of a client's prompt carry its ID, and
+those of turns Claude starts itself carry none. The agent publishes `parked`
+as its last update when the process exits. The server attaches a connection
+when it sends a prompt or calls `session/attach`, and a connection is detached
+once it has closed.

@@ -207,7 +207,10 @@ func (a *Agent) handleOutput(message claude.Message) {
 				result.Text = message.Subtype
 			}
 		}
-		a.publish(Update{Type: "result", Result: &result})
+		// Claude follows an automatic turn with an empty bookkeeping result.
+		if result.Text != "" || result.IsError {
+			a.publish(Update{Type: "result", Result: &result})
+		}
 	}
 }
 
@@ -239,6 +242,7 @@ func (a *Agent) exit(err error) {
 	case configuring:
 		a.endConfiguration(a.config.fail(ErrExited))
 	}
+	a.publish(Update{Type: "parked"})
 	a.phase = exited
 }
 
