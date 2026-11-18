@@ -17,7 +17,7 @@ func openStore(t *testing.T) *store.Store {
 }
 
 func TestSettingsValidation(t *testing.T) {
-	s, err := New(openStore(t), 0)
+	s, err := New(openStore(t), nil, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,8 +26,6 @@ func TestSettingsValidation(t *testing.T) {
 		`{"session_id":"missing"}`,
 		`{"session_id":"missing","model":"haiku","effort":"low"}`,
 		`{"session_id":"missing","model":" ","effort":"low","permission_mode":"plan"}`,
-		`{"session_id":"missing","model":"haiku","effort":"","permission_mode":"plan"}`,
-		`{"session_id":"missing","model":"haiku","effort":"minimal","permission_mode":"plan"}`,
 		`{"session_id":"missing","model":"haiku","effort":"low","permission_mode":""}`,
 		`{"session_id":"missing","model":42,"effort":"low","permission_mode":"plan"}`,
 	} {
@@ -37,7 +35,7 @@ func TestSettingsValidation(t *testing.T) {
 	}
 	for _, params := range []string{
 		`{"workspace_id":"missing"}`,
-		`{"workspace_id":"missing","model":"haiku","effort":"","permission_mode":"plan"}`,
+		`{"workspace_id":"missing","harness":"claude","model":"haiku","effort":"low","permission_mode":""}`,
 	} {
 		if response := s.createSession(nil, []byte(params)); response.Error == nil || response.Error.Code != -32602 {
 			t.Errorf("invalid creation %s: %+v", params, response.Error)

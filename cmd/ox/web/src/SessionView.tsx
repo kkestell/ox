@@ -1,7 +1,7 @@
 import { action, createOptimistic, createSignal, For, Match, Show, snapshot, Switch } from "solid-js";
 import { useOx, type Approval, type Entry, type Session } from "./ox";
 import type { ApprovalResponse, Settings } from "./protocol";
-import { SettingsFields, settingsFrom } from "./SettingsFields";
+import { defaultSettings, SettingsFields, settingsFrom } from "./SettingsFields";
 
 type Tool = Extract<Entry, { kind: "tool" }>;
 
@@ -27,7 +27,7 @@ export function SessionView(props: { session: Session }) {
   return (
     <>
       <p>
-        {workspace()} · {props.session.id}
+        {workspace()} · {props.session.harness} · {props.session.id}
       </p>
       <div class="log">
         <Transcript entries={props.session.entries} />
@@ -61,13 +61,17 @@ export function NewSessionView(props: { workspaceId: string; onStarted(id: strin
   const ox = useOx();
   const [error, setError] = createSignal<string>();
   const workspace = () => ox.state.workspaces.find((w) => w.id === props.workspaceId)?.path;
+  // The harness chosen in the form; its choices fill the settings fields.
+  const [harness, setHarness] = createSignal(() => ox.state.defaults?.harness ?? "");
+  const catalog = () => ox.state.harnesses[harness()];
 
   const send = async (event: SubmitEvent & { currentTarget: HTMLFormElement }) => {
     event.preventDefault();
     setError(undefined);
     const form = new FormData(event.currentTarget);
     try {
-      props.onStarted(await ox.startSession(props.workspaceId, settingsFrom(form), String(form.get("text"))));
+      const settings = settingsFrom(catalog(), form);
+      props.onStarted(await ox.startSession(props.workspaceId, harness(), settings, String(form.get("text"))));
     } catch (e) {
       setError((e as Error).message);
     }
@@ -81,7 +85,17 @@ export function NewSessionView(props: { workspaceId: string; onStarted(id: strin
       <form class="composer" onSubmit={send}>
         <textarea name="text" rows="3" placeholder="Prompt" required autofocus />
         <div class="row">
-          <SettingsFields value={{ model: "haiku", effort: "medium", permission_mode: "manual" }} />
+          <select name="harness" onChange={(event) => setHarness(event.currentTarget.value)}>
+            <For each={Object.keys(ox.state.harnesses)}>
+              {(name) => <option selected={name === harness()}>{name}</option>}
+            </For>
+          </select>
+          {/* Keyed, so choosing another harness starts from its defaults. */}
+          <Show when={catalog()} keyed>
+            {(catalog) => (
+              <SettingsFields harness={catalog} value={defaultSettings(harness(), catalog, ox.state.defaults)} />
+            )}
+          </Show>
           <button>Send</button>
         </div>
       </form>
@@ -152,12 +166,17 @@ function SettingsForm(props: { session: Session; attempt(request: Promise<unknow
     setConfiguring(true);
     yield ox.configure(props.session.id, settings);
   });
-  // Claude takes configuration only while idle; a parked session stores it.
+  // A running session takes configuration only while idle; a parked session
+  // stores it.
   const configurable = () => !configuring() && (props.session.state === "idle" || props.session.state === "parked");
 
   return (
-    <form onChange={(event) => props.attempt(configure(settingsFrom(new FormData(event.currentTarget))))}>
-      <SettingsFields value={shown()} disabled={!configurable()} />
-    </form>
+    <Show when={ox.state.harnesses[props.session.harness]}>
+      {(harness) => (
+        <form onChange={(event) => props.attempt(configure(settingsFrom(harness(), new FormData(event.currentTarget))))}>
+          <SettingsFields harness={harness()} value={shown()} disabled={!configurable()} />
+        </form>
+      )}
+    </Show>
   );
 }

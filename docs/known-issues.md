@@ -13,8 +13,8 @@ not reproduced.
 | [RPC bodies over 1 MiB never settle](#rpc-bodies-over-1-mib-never-settle) | Very large prompts | Live |
 | [Page load can keep stale settings](#page-load-can-keep-stale-settings) | Two pages, millisecond window | Source |
 | [Configuration races start and destroy](#configuration-races-start-and-destroy) | Two pages, millisecond window | Source |
-| [Settings form replaces values not in its menus](#settings-form-replaces-values-not-in-its-menus) | Settings set outside the UI | Source |
 | [Process exit is detected at stdout EOF](#process-exit-is-detected-at-stdout-eof) | Fault injection only | Live, injected |
+| [An unknown effort level is ignored](#an-unknown-effort-level-is-ignored) | Misspelled configuration | Live |
 
 ## One request at a time per connection
 
@@ -38,7 +38,7 @@ timeout in `claude.Start`.
 response and discards everything else. Claude's stderr goes only to the
 daemon's stderr, and the exit status is dropped.
 
-Startup fails, for example, when a session marked resumable has lost its
+Startup fails, for example, when a session with a resume token has lost its
 transcript. Claude then prints an error `result` with
 `"errors":["No conversation found with session ID: …"]` to stdout, and the
 same text to stderr, and exits with status 1. `session/send` reports only
@@ -92,17 +92,6 @@ acknowledgements and before it stores the new settings.
   `session/configured` for sessions it no longer has, so the destroyed
   session does not reappear.
 
-## Settings form replaces values not in its menus
-
-The server accepts any non-blank model and permission mode. Examples are a
-full model ID, or the `default` permission mode. The settings form offers only
-the fixed lists in `protocol.ts` and selects an option by exact match.
-
-The web UI cannot create such values; they come only from other API clients
-or a hand-edited database. The form then displays the first option in the
-menu. Since it submits all three fields on any change, changing effort alone
-silently replaces the model or permission mode with that first option.
-
 ## Process exit is detected at stdout EOF
 
 `Process.read` in `internal/claude` calls `cmd.Wait` and closes `Output` only
@@ -119,3 +108,9 @@ file, not to Claude's stdout. Claude stopped it on exit, and `session/destroy`
 returned in 0.8 s. With an injected child that inherited Claude's stdout,
 `Output` closed only when that child exited, 13 s after Claude terminated.
 MCP servers and abnormal Claude exits have not been tested.
+
+## An unknown effort level is ignored
+
+Claude accepts an effort level it does not know with a warning on stderr and
+uses its default effort. A misspelled effort `id` in the configuration
+therefore changes nothing and reports no error.

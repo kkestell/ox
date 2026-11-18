@@ -27,14 +27,16 @@ connection.
 | --- | --- |
 | `id` | Client-chosen JSON-RPC request identifier, echoed in its response. |
 | `workspace_id` | Opaque identifier returned by `workspace/create`. |
-| `session_id` | Claude's session UUID, returned by `session/create`. |
+| `session_id` | Opaque identifier returned by `session/create`. |
 | `message_id` | Prompt identifier returned by `session/send` and included in its updates. Updates from turns Claude starts itself have none. |
 | `request_id` | Claude's identifier for an approval, used to answer or withdraw it. |
 
 ## Workspaces and sessions
 
-A workspace is a directory. A session is a Claude Code conversation in a
-workspace, and its ID is Claude's session ID. The daemon stores workspaces,
+A workspace is a directory. A session is a conversation with a harness in a
+workspace. Its harness is chosen at creation and never changes. The daemon
+knows two harnesses: `claude`, which runs Claude Code, and `fake`, which runs
+no process and echoes each prompt back. The daemon stores workspaces,
 sessions, and session history in the SQLite database `ox/ox.db` beneath
 `$XDG_STATE_HOME`, or beneath `~/.local/state` when that is unset;
 `-db /absolute/path/to/ox.db` chooses a different file. They outlive the
@@ -51,6 +53,42 @@ The daemon parks a session whose process has gone unused for five minutes
 Claude idle, no approval pending, no background task running, and no scheduled
 prompt pending (`CronCreate`, `ScheduleWakeup`, or `/loop`), so scheduled
 prompts keep firing. Connected clients do not keep a session running.
+
+## Configuration
+
+The daemon reads the harnesses it offers from `ox/config.json` beneath
+`$XDG_CONFIG_HOME`, or beneath `~/.config` when that is unset; `-config
+/absolute/path/to/config.json` chooses a different file. Without a file, it
+uses a built-in configuration offering Claude's current models and no
+`fake`. The daemon
+reads the file at startup and refuses to start on a harness it does not know.
+
+Each harness lists its models, each with the effort levels it takes, and its
+permission modes. Every choice has an `id`, passed to the harness, and a
+`name` to show. A model with no effort levels takes an empty `effort`. The
+required `defaults` name the harness, model, effort, and mode a new session
+starts with, each one of the configured choices; the daemon refuses to start
+otherwise.
+
+```json
+{"harnesses":{"claude":{"models":[{"id":"claude-haiku-5-5","name":"Haiku 5.5","efforts":[{"id":"low","name":"Low"},{"id":"high","name":"High"}]}],"modes":[{"id":"manual","name":"Manual"},{"id":"plan","name":"Plan"}]}},"defaults":{"harness":"claude","model":"claude-haiku-5-5","effort":"low","mode":"plan"}}
+```
+
+Clients offer these choices. The daemon passes settings to the harness as they
+are, so a value the harness does not accept surfaces as its error, usually on
+the next `session/send`.
+
+### `harness/list`
+
+Returns the configuration's harnesses and new-session defaults.
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"harness/list","params":{}}
+```
+
+```json
+{"jsonrpc":"2.0","id":1,"result":{"harnesses":{"claude":{"models":[{"id":"claude-haiku-5-5","name":"Haiku 5.5","efforts":[{"id":"low","name":"Low"}]}],"modes":[{"id":"manual","name":"Manual"}]}},"defaults":{"harness":"claude","model":"claude-haiku-5-5","effort":"low","mode":"manual"}}}
+```
 
 ## Workspace methods
 
@@ -78,30 +116,31 @@ false while a session's process is running.
 ```
 
 ```json
-{"jsonrpc":"2.0","id":2,"result":{"workspaces":[{"workspace_id":"workspace-id","path":"/Users/kyle/src/ox","created_at":"2026-11-18T19:53:47.102Z","sessions":[{"session_id":"session-id","model":"haiku","effort":"low","permission_mode":"manual","created_at":"2026-11-18T19:53:48.416Z","parked":true}]}]}}
+{"jsonrpc":"2.0","id":2,"result":{"workspaces":[{"workspace_id":"workspace-id","path":"/Users/kyle/src/ox","created_at":"2026-11-18T19:53:47.102Z","sessions":[{"session_id":"session-id","harness":"claude","model":"haiku","effort":"low","permission_mode":"manual","created_at":"2026-11-18T19:53:48.416Z","parked":true}]}]}}
 ```
 
 ## Session methods
 
 ### `session/create`
 
-Requires `workspace_id`, `model`, `effort`, and `permission_mode`. Records a
+Requires `workspace_id`, `harness`, `model`, `effort`, and `permission_mode`. Records a
 parked session in the workspace and returns its ID. No process starts, so startup errors such as an unknown model surface
 on the first `session/send`.
 
 | Parameter | Required | Meaning |
 | --- | --- | --- |
-| `workspace_id` | Yes | The workspace whose directory Claude runs in. |
+| `workspace_id` | Yes | The workspace whose directory the harness runs in. |
+| `harness` | Yes | A harness in the configuration. |
 | `model` | Yes | Nonblank; passed to Claude's `--model` flag. |
-| `effort` | Yes | One of `low`, `medium`, `high`, `xhigh`, `max`, or `ultracode`; passed to Claude's `--effort` flag. |
+| `effort` | Yes | Passed to Claude's `--effort` flag; empty passes none. |
 | `permission_mode` | Yes | Nonblank; passed to Claude's `--permission-mode` flag. |
 
-Ox validates the effort values above; model names and permission modes are
-interpreted by the installed Claude version. Each process the session starts
-receives the stored settings.
+Model names, effort levels, and permission modes are interpreted by the
+installed Claude version. Each process the session starts receives the stored
+settings.
 
 ```json
-{"jsonrpc":"2.0","id":3,"method":"session/create","params":{"workspace_id":"workspace-id","model":"haiku","effort":"low","permission_mode":"manual"}}
+{"jsonrpc":"2.0","id":3,"method":"session/create","params":{"workspace_id":"workspace-id","harness":"claude","model":"haiku","effort":"low","permission_mode":"manual"}}
 ```
 
 ```json
@@ -310,12 +349,12 @@ Every connection is told when workspaces and sessions come and go:
 | Method | `params` | Meaning |
 | --- | --- | --- |
 | `workspace/created` | `workspace_id`, `path`, `created_at` | A workspace was registered. |
-| `session/created` | `session_id`, `workspace_id`, `model`, `effort`, `permission_mode`, `created_at` | A session was created, parked. |
+| `session/created` | `session_id`, `workspace_id`, `harness`, `model`, `effort`, `permission_mode`, `created_at` | A session was created, parked. |
 | `session/configured` | `session_id`, `model`, `effort`, `permission_mode` | A session's settings changed; the fields are its stored settings. |
 | `session/destroyed` | `session_id` | A session was destroyed, after its last update. |
 
 ```json
-{"jsonrpc":"2.0","method":"session/created","params":{"session_id":"session-id","workspace_id":"workspace-id","model":"haiku","effort":"low","permission_mode":"manual","created_at":"2026-11-18T19:53:48.416Z"}}
+{"jsonrpc":"2.0","method":"session/created","params":{"session_id":"session-id","workspace_id":"workspace-id","harness":"claude","model":"haiku","effort":"low","permission_mode":"manual","created_at":"2026-11-18T19:53:48.416Z"}}
 ```
 
 ## Connections

@@ -1,7 +1,8 @@
 // Package server is the Ox daemon. It accepts client connections, keeps the
 // stored workspaces and sessions, and turns each JSON-RPC request into a
-// session operation. A session runs a Claude process only while it is in use:
-// a parked session has none, and the next prompt resumes its conversation.
+// session operation. A session runs a harness process only while it is in
+// use: a parked session has none, and the next prompt resumes its
+// conversation.
 // Clients have no identity: any connection can use any session, and every
 // connection receives every session's updates.
 package server
@@ -9,6 +10,7 @@ package server
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -16,13 +18,15 @@ import (
 	"time"
 
 	"github.com/kkestell/ox/internal/agent"
-	"github.com/kkestell/ox/internal/claude"
+	"github.com/kkestell/ox/internal/config"
 	"github.com/kkestell/ox/internal/jsonrpc"
 	"github.com/kkestell/ox/internal/store"
 )
 
 type Server struct {
 	store     *store.Store
+	config    *config.Config
+	harnesses map[string]agent.Start
 	parkAfter time.Duration
 
 	mu         sync.Mutex // guards workspaces, every stored record, sessions, and closed
@@ -34,7 +38,7 @@ type Server struct {
 	conns   map[*conn]struct{}
 }
 
-// session is a stored session and the Claude process running it, if any.
+// session is a stored session and the harness process running it, if any.
 type session struct {
 	record    *store.Session
 	workspace string
@@ -43,19 +47,21 @@ type session struct {
 	// mu guards the fields below and is held while a process starts, so a
 	// session runs at most one process. Lock it before Server.mu, never after.
 	mu        sync.Mutex
-	agent     *agent.Agent
+	agent     agent.Agent
 	destroyed bool
 }
 
-// New loads the stored workspaces and sessions. Every session starts parked,
-// and a running session parks once its process has been unused for parkAfter.
-func New(st *store.Store, parkAfter time.Duration) (*Server, error) {
+// New loads the stored workspaces and sessions. Every session starts parked;
+// harnesses start a session's process by its harness name, and a process
+// parks once it has been unused for parkAfter. The configuration's harnesses
+// are offered to clients.
+func New(st *store.Store, cfg *config.Config, parkAfter time.Duration, harnesses map[string]agent.Start) (*Server, error) {
 	workspaces, err := st.Workspaces()
 	if err != nil {
 		return nil, err
 	}
 	s := &Server{
-		store: st, parkAfter: parkAfter, workspaces: workspaces,
+		store: st, config: cfg, harnesses: harnesses, parkAfter: parkAfter, workspaces: workspaces,
 		sessions: make(map[string]*session), conns: make(map[*conn]struct{}),
 	}
 	for _, w := range workspaces {
@@ -151,7 +157,7 @@ func (s *Server) workspace(id string) *store.Workspace {
 
 // live returns the session's process, or nil when it is parked. The caller
 // holds sess.mu.
-func (sess *session) live() *agent.Agent {
+func (sess *session) live() agent.Agent {
 	if sess.agent != nil {
 		select {
 		case <-sess.agent.Done():
@@ -164,7 +170,7 @@ func (sess *session) live() *agent.Agent {
 
 // running returns the session's process, starting one if it is parked. The
 // caller holds sess.mu.
-func (s *Server) running(sess *session) (*agent.Agent, error) {
+func (s *Server) running(sess *session) (agent.Agent, error) {
 	if a := sess.live(); a != nil {
 		return a, nil
 	}
@@ -176,14 +182,18 @@ func (s *Server) running(sess *session) (*agent.Agent, error) {
 		return nil, errors.New("daemon is shutting down")
 	}
 
-	subscribers := []agent.Subscriber{sess.history, sessionUpdates{s, record.ID}}
-	if !record.Resumable {
-		subscribers = append(subscribers, resumeMarker{s, sess})
+	start := s.harnesses[record.Harness]
+	if start == nil {
+		return nil, fmt.Errorf("unknown harness %q", record.Harness)
 	}
-	a, err := agent.Start(claude.Options{
-		Workspace: sess.workspace, SessionID: record.ID, Resume: record.Resumable,
-		Model: record.Model, Effort: record.Effort, PermissionMode: record.PermissionMode,
-	}, s.parkAfter, subscribers...)
+	a, err := start(agent.Options{
+		Workspace:   sess.workspace,
+		Resume:      record.ResumeToken,
+		Settings:    agent.Settings{Model: record.Model, Effort: record.Effort, PermissionMode: record.PermissionMode},
+		ParkAfter:   s.parkAfter,
+		Subscribers: []agent.Subscriber{sess.history, sessionUpdates{s, record.ID}},
+		OnResumable: func(token string) { s.markResumable(sess, token) },
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -215,25 +225,15 @@ func (u sessionUpdates) Publish(update agent.Update) bool {
 	return true
 }
 
-// resumeMarker marks its session resumable at the first result, once Claude
-// has written the transcript.
-type resumeMarker struct {
-	s    *Server
-	sess *session
-}
-
-func (m resumeMarker) Publish(update agent.Update) bool {
-	if update.Type != "result" {
-		return true
-	}
-	m.s.mu.Lock()
-	defer m.s.mu.Unlock()
-	record := *m.sess.record
-	record.Resumable = true
-	if err := m.s.store.SaveSession(&record); err != nil {
+// markResumable stores the token that resumes the session's conversation.
+func (s *Server) markResumable(sess *session, token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record := *sess.record
+	record.ResumeToken = token
+	if err := s.store.SaveSession(&record); err != nil {
 		log.Printf("mark session resumable: %v", err)
-		return false
+		return
 	}
-	*m.sess.record = record
-	return false
+	*sess.record = record
 }

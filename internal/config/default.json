@@ -1,0 +1,53 @@
+{
+  "harnesses": {
+    "claude": {
+      "models": [
+        {
+          "id": "claude-opus-5-5",
+          "name": "Opus 5.5",
+          "efforts": [
+            { "id": "low", "name": "Low" },
+            { "id": "medium", "name": "Medium" },
+            { "id": "high", "name": "High" },
+            { "id": "xhigh", "name": "XHigh" },
+            { "id": "max", "name": "Max" }
+          ]
+        },
+        {
+          "id": "claude-sonnet-5-5",
+          "name": "Sonnet 5.5",
+          "efforts": [
+            { "id": "low", "name": "Low" },
+            { "id": "medium", "name": "Medium" },
+            { "id": "high", "name": "High" },
+            { "id": "xhigh", "name": "XHigh" },
+            { "id": "max", "name": "Max" }
+          ]
+        },
+        {
+          "id": "claude-haiku-5-5",
+          "name": "Haiku 5.5",
+          "efforts": [
+            { "id": "low", "name": "Low" },
+            { "id": "medium", "name": "Medium" },
+            { "id": "high", "name": "High" },
+            { "id": "xhigh", "name": "XHigh" },
+            { "id": "max", "name": "Max" }
+          ]
+        }
+      ],
+      "modes": [
+        { "id": "manual", "name": "Manual" },
+        { "id": "auto", "name": "Auto" },
+        { "id": "acceptEdits", "name": "Accept edits" },
+        { "id": "plan", "name": "Plan" }
+      ]
+    }
+  },
+  "defaults": {
+    "harness": "claude",
+    "model": "claude-haiku-5-5",
+    "effort": "low",
+    "mode": "acceptEdits"
+  }
+}

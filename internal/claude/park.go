@@ -1,4 +1,4 @@
-package agent
+package claude
 
 import (
 	"encoding/json"

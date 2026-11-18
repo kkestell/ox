@@ -1,8 +1,12 @@
 // Types for the oxd protocol described in docs/protocol.md.
 
-export const models = ["haiku", "sonnet", "opus", "fable"];
-export const efforts = ["low", "medium", "high", "xhigh", "max", "ultracode"];
-export const permissionModes = ["manual", "acceptEdits", "auto", "bypassPermissions", "dontAsk", "plan"];
+// A harness's choices, from oxd's configuration: its models, each with the
+// effort levels it takes, and its permission modes.
+export type Option = { id: string; name: string };
+export type Model = Option & { efforts: Option[] };
+export type Harness = { models: Model[]; modes: Option[] };
+// Defaults are the choices a new session starts with.
+export type Defaults = { harness: string; model: string; effort: string; mode: string };
 
 export type Settings = { model: string; effort: string; permission_mode: string };
 
@@ -35,12 +39,16 @@ export type Update = { time: string } & (
 export type Notification =
   | { method: "session/update"; params: Update & { session_id: string } }
   | { method: "workspace/created"; params: { workspace_id: string; path: string; created_at: string } }
-  | { method: "session/created"; params: Settings & { session_id: string; workspace_id: string; created_at: string } }
+  | {
+      method: "session/created";
+      params: Settings & { session_id: string; workspace_id: string; harness: string; created_at: string };
+    }
   | { method: "session/configured"; params: Settings & { session_id: string } }
   | { method: "session/destroyed"; params: { session_id: string } };
 
 // Methods maps each method to its params and result.
 export type Methods = {
+  "harness/list": [{}, { harnesses: Record<string, Harness>; defaults: Defaults }];
   "workspace/create": [{ path: string }, { workspace_id: string }];
   "workspace/list": [
     {},
@@ -49,11 +57,11 @@ export type Methods = {
         workspace_id: string;
         path: string;
         created_at: string;
-        sessions: (Settings & { session_id: string; created_at: string })[];
+        sessions: (Settings & { session_id: string; harness: string; created_at: string })[];
       }[];
     },
   ];
-  "session/create": [Settings & { workspace_id: string }, { session_id: string }];
+  "session/create": [Settings & { workspace_id: string; harness: string }, { session_id: string }];
   "session/get": [
     { session_id: string },
     {

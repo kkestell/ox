@@ -1,7 +1,7 @@
-// Package claude runs a Claude Code process in stream-json mode. It owns the
-// subprocess and Claude's wire format: Process starts and initializes Claude
-// and delivers its output as Messages, and Input writes Claude's input
-// messages. It knows nothing about agents or clients.
+// Package claude is the Claude Code harness. Start runs a Claude Code process
+// in stream-json mode as an agent.Agent: Process owns the subprocess, Message
+// and Input are Claude's wire format, and Agent is the state machine that
+// turns them into prompts, approvals, configuration, and updates.
 package claude
 
 import (
@@ -15,16 +15,9 @@ import (
 	"os/exec"
 	"syscall"
 	"time"
-)
 
-type Options struct {
-	Workspace      string
-	SessionID      string // a UUID naming Claude's conversation
-	Resume         bool   // continue the conversation's transcript instead of starting it
-	Model          string
-	Effort         string
-	PermissionMode string
-}
+	"github.com/kkestell/ox/internal/agent"
+)
 
 type Process struct {
 	*Input
@@ -33,23 +26,27 @@ type Process struct {
 	err    error
 }
 
-// Start starts Claude and waits up to one minute for it to accept
-// initialization.
-func Start(options Options) (*Process, error) {
+// startProcess starts Claude in workspace on the conversation named by
+// sessionID, a UUID, and waits up to one minute for it to accept
+// initialization. resume continues the conversation's transcript instead of
+// starting it.
+func startProcess(workspace, sessionID string, resume bool, settings agent.Settings) (*Process, error) {
 	args := []string{
 		"-p", "--input-format=stream-json", "--output-format=stream-json", "--verbose",
 		"--include-partial-messages", "--permission-prompt-tool=stdio",
 	}
-	if options.Resume {
-		args = append(args, "--resume="+options.SessionID)
+	if resume {
+		args = append(args, "--resume="+sessionID)
 	} else {
-		args = append(args, "--session-id="+options.SessionID)
+		args = append(args, "--session-id="+sessionID)
 	}
-	args = append(args,
-		"--model="+options.Model, "--effort="+options.Effort, "--permission-mode="+options.PermissionMode)
+	args = append(args, "--model="+settings.Model, "--permission-mode="+settings.PermissionMode)
+	if settings.Effort != "" {
+		args = append(args, "--effort="+settings.Effort)
+	}
 
 	cmd := exec.Command("claude", args...)
-	cmd.Dir = options.Workspace
+	cmd.Dir = workspace
 	cmd.Env = append(cmd.Environ(), "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1")
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()

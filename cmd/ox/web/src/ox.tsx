@@ -1,6 +1,6 @@
 import { createContext, createSignal, createStore, onSettled, useContext, type ParentProps } from "solid-js";
 import { connect, type Connection } from "./connection";
-import type { ApprovalRequest, ApprovalResponse, Notification, SessionState, Settings, ToolResult, Update } from "./protocol";
+import type { ApprovalRequest, ApprovalResponse, Defaults, Harness, Notification, SessionState, Settings, ToolResult, Update } from "./protocol";
 
 export type Workspace = { id: string; path: string };
 
@@ -19,6 +19,7 @@ export type Approval = { id: string; request: ApprovalRequest };
 export type Session = {
   id: string;
   workspaceId: string;
+  harness: string;
   createdAt: string;
   state: SessionState;
   settings: Settings;
@@ -77,7 +78,13 @@ function apply(session: Session, u: Update) {
 // them. Changes reach the view through the notifications oxd sends every
 // connection, so the requests write nothing themselves.
 function createOx() {
-  const [state, setState] = createStore<{ workspaces: Workspace[]; sessions: Record<string, Session> }>({
+  const [state, setState] = createStore<{
+    harnesses: Record<string, Harness>;
+    defaults?: Defaults;
+    workspaces: Workspace[];
+    sessions: Record<string, Session>;
+  }>({
+    harnesses: {},
     workspaces: [],
     sessions: {},
   });
@@ -86,9 +93,9 @@ function createOx() {
 
   // load adds a session. Its updates apply from the session/get response
   // onward; earlier ones are in the history it returns.
-  async function load(id: string, workspaceId: string, createdAt: string, settings: Settings) {
+  async function load(id: string, workspaceId: string, harness: string, createdAt: string, settings: Settings) {
     const result = await connection.rpc("session/get", { session_id: id });
-    const session: Session = { id, workspaceId, createdAt, state: result.state, settings, entries: [], approvals: [] };
+    const session: Session = { id, workspaceId, harness, createdAt, state: result.state, settings, entries: [], approvals: [] };
     for (const u of result.history) apply(session, u);
     for (const a of result.approvals) session.approvals.push({ id: a.request_id, request: a.request });
     setState((s) => {
@@ -104,12 +111,15 @@ function createOx() {
       s.sessions = {};
     });
     setError(undefined);
+    const { harnesses, defaults } = await connection.rpc("harness/list", {});
     const { workspaces } = await connection.rpc("workspace/list", {});
     setState((s) => {
+      s.harnesses = harnesses;
+      s.defaults = defaults;
       s.workspaces = workspaces.map((w) => ({ id: w.workspace_id, path: w.path }));
     });
     await Promise.all(
-      workspaces.flatMap((w) => w.sessions.map((s) => load(s.session_id, w.workspace_id, s.created_at, settingsOf(s)))),
+      workspaces.flatMap((w) => w.sessions.map((s) => load(s.session_id, w.workspace_id, s.harness, s.created_at, settingsOf(s)))),
     );
   }
 
@@ -126,7 +136,7 @@ function createOx() {
           s.workspaces.push({ id: params.workspace_id, path: params.path });
         });
       case "session/created":
-        return void load(params.session_id, params.workspace_id, params.created_at, settingsOf(params)).catch(fail);
+        return void load(params.session_id, params.workspace_id, params.harness, params.created_at, settingsOf(params)).catch(fail);
       case "session/configured":
         return setState((s) => {
           const session = s.sessions[params.session_id];
@@ -153,8 +163,8 @@ function createOx() {
     // workspace oxd already has changes nothing.
     addWorkspace: (path: string) => connection.rpc("workspace/create", { path }),
     // startSession creates a session and sends its first prompt.
-    async startSession(workspaceId: string, settings: Settings, text: string) {
-      const { session_id } = await connection.rpc("session/create", { workspace_id: workspaceId, ...settings });
+    async startSession(workspaceId: string, harness: string, settings: Settings, text: string) {
+      const { session_id } = await connection.rpc("session/create", { workspace_id: workspaceId, harness, ...settings });
       await connection.rpc("session/send", { session_id, text });
       return session_id;
     },

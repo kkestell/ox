@@ -1,8 +1,10 @@
-package agent
+package claude
 
 import (
 	"encoding/json"
 	"log"
+
+	"github.com/kkestell/ox/internal/agent"
 )
 
 func (a *Agent) controlRequest(requestID string, request json.RawMessage) {
@@ -23,25 +25,25 @@ func (a *Agent) controlRequest(requestID string, request json.RawMessage) {
 		return
 	}
 	a.approvals[requestID] = request
-	a.publish(Update{Type: "approval", RequestID: requestID, Request: request})
+	a.publish(agent.Update{Type: "approval", RequestID: requestID, Request: request})
 }
 
 func (a *Agent) answer(requestID string, response json.RawMessage) error {
 	if _, pending := a.approvals[requestID]; !pending {
-		return ErrApprovalNotFound
+		return agent.ErrApprovalNotFound
 	}
 	delete(a.approvals, requestID)
 	if err := a.input.Respond(requestID, response); err != nil {
 		return err
 	}
-	a.publish(Update{Type: "approval_answered", RequestID: requestID})
+	a.publish(agent.Update{Type: "approval_answered", RequestID: requestID})
 	return nil
 }
 
 func (a *Agent) cancelApproval(requestID string) {
 	if _, pending := a.approvals[requestID]; pending {
 		delete(a.approvals, requestID)
-		a.publish(Update{Type: "approval_cancelled", RequestID: requestID})
+		a.publish(agent.Update{Type: "approval_cancelled", RequestID: requestID})
 	}
 }
 
@@ -49,7 +51,7 @@ func (a *Agent) cancelApproval(requestID string) {
 // has exited.
 func (a *Agent) withdrawApprovals() {
 	for id := range a.approvals {
-		a.publish(Update{Type: "approval_cancelled", RequestID: id})
+		a.publish(agent.Update{Type: "approval_cancelled", RequestID: id})
 	}
 	clear(a.approvals)
 }

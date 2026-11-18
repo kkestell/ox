@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/kkestell/ox/internal/agent"
-	"github.com/kkestell/ox/internal/claude"
 	"github.com/kkestell/ox/internal/jsonrpc"
 	"github.com/kkestell/ox/internal/store"
 )
@@ -40,6 +39,8 @@ func (s *Server) handle(c *conn, line []byte) *jsonrpc.Response {
 		return s.createWorkspace(id, params)
 	case "workspace/list":
 		return s.listWorkspaces(id)
+	case "harness/list":
+		return jsonrpc.Success(id, s.config)
 	case "session/create":
 		return s.createSession(id, params)
 	case "session/get":
@@ -130,6 +131,7 @@ func (s *Server) createWorkspace(id, params json.RawMessage) *jsonrpc.Response {
 func (s *Server) listWorkspaces(id json.RawMessage) *jsonrpc.Response {
 	type sessionInfo struct {
 		SessionID      string    `json:"session_id"`
+		Harness        string    `json:"harness"`
 		Model          string    `json:"model"`
 		Effort         string    `json:"effort"`
 		PermissionMode string    `json:"permission_mode"`
@@ -153,7 +155,7 @@ func (s *Server) listWorkspaces(id json.RawMessage) *jsonrpc.Response {
 	for i, w := range s.workspaces {
 		workspaces[i] = workspaceInfo{WorkspaceID: w.ID, Path: w.Path, CreatedAt: w.CreatedAt, Sessions: make([]sessionInfo, len(w.Sessions))}
 		for j, r := range w.Sessions {
-			workspaces[i].Sessions[j] = sessionInfo{r.ID, r.Model, r.Effort, r.PermissionMode, r.CreatedAt, true}
+			workspaces[i].Sessions[j] = sessionInfo{r.ID, r.Harness, r.Model, r.Effort, r.PermissionMode, r.CreatedAt, true}
 			entries = append(entries, entry{&workspaces[i].Sessions[j], s.sessions[r.ID]})
 		}
 	}
@@ -169,8 +171,8 @@ func (s *Server) listWorkspaces(id json.RawMessage) *jsonrpc.Response {
 	}{workspaces})
 }
 
-// settings are a session's model, effort, and permission mode, all required
-// by session/create and session/configure.
+// settings are a session's model, effort, and permission mode, passed to the
+// harness as they are. A model without effort levels takes an empty effort.
 type settings struct {
 	Model          string `json:"model"`
 	Effort         string `json:"effort"`
@@ -185,24 +187,23 @@ func (s settings) invalid() string {
 	case strings.TrimSpace(s.PermissionMode) == "":
 		return "permission_mode is required"
 	}
-	// Claude silently falls back to its default for unrecognized effort values.
-	switch s.Effort {
-	case "low", "medium", "high", "xhigh", "max", "ultracode":
-		return ""
-	}
-	return "effort must be one of low, medium, high, xhigh, max, or ultracode"
+	return ""
 }
 
 func (s *Server) createSession(id, params json.RawMessage) *jsonrpc.Response {
 	var input struct {
 		WorkspaceID string `json:"workspace_id"`
+		Harness     string `json:"harness"`
 		settings
 	}
-	if err := json.Unmarshal(params, &input); err != nil || input.WorkspaceID == "" {
-		return invalidParams(id, "workspace_id, model, effort, and permission_mode are required")
+	if err := json.Unmarshal(params, &input); err != nil || input.WorkspaceID == "" || input.Harness == "" {
+		return invalidParams(id, "workspace_id, harness, model, effort, and permission_mode are required")
 	}
 	if problem := input.invalid(); problem != "" {
 		return invalidParams(id, problem)
+	}
+	if _, offered := s.config.Harnesses[input.Harness]; !offered {
+		return invalidParams(id, "harness is not configured")
 	}
 
 	s.mu.Lock()
@@ -212,7 +213,7 @@ func (s *Server) createSession(id, params json.RawMessage) *jsonrpc.Response {
 		return jsonrpc.Failure(id, notFound, "Workspace not found")
 	}
 	record := &store.Session{
-		ID: claude.NewUUID(), Model: input.Model, Effort: input.Effort, PermissionMode: input.PermissionMode,
+		ID: rand.Text(), Harness: input.Harness, Model: input.Model, Effort: input.Effort, PermissionMode: input.PermissionMode,
 		CreatedAt: time.Now(),
 	}
 	if err := s.store.AddSession(w.ID, record); err != nil {
@@ -223,11 +224,12 @@ func (s *Server) createSession(id, params json.RawMessage) *jsonrpc.Response {
 	s.broadcast("session/created", struct {
 		SessionID      string    `json:"session_id"`
 		WorkspaceID    string    `json:"workspace_id"`
+		Harness        string    `json:"harness"`
 		Model          string    `json:"model"`
 		Effort         string    `json:"effort"`
 		PermissionMode string    `json:"permission_mode"`
 		CreatedAt      time.Time `json:"created_at"`
-	}{record.ID, w.ID, record.Model, record.Effort, record.PermissionMode, record.CreatedAt})
+	}{record.ID, w.ID, record.Harness, record.Model, record.Effort, record.PermissionMode, record.CreatedAt})
 	return jsonrpc.Success(id, struct {
 		SessionID string `json:"session_id"`
 	}{record.ID})
@@ -375,7 +377,7 @@ func (s *Server) configureSession(id, params json.RawMessage) *jsonrpc.Response 
 	// A parked session, or one whose process exits first, takes the settings
 	// when its next process starts.
 	if a != nil {
-		err := a.Configure(agent.Configuration{Model: input.Model, Effort: input.Effort, PermissionMode: input.PermissionMode})
+		err := a.Configure(agent.Settings{Model: input.Model, Effort: input.Effort, PermissionMode: input.PermissionMode})
 		if err != nil && !errors.Is(err, agent.ErrExited) {
 			return failure(id, err)
 		}
@@ -399,7 +401,7 @@ func (s *Server) configureSession(id, params json.RawMessage) *jsonrpc.Response 
 }
 
 // destroySession stops the session's process and deletes the session and its
-// events. Claude's transcript stays on disk.
+// events. The harness's own record of the conversation stays on disk.
 func (s *Server) destroySession(id, params json.RawMessage) *jsonrpc.Response {
 	var input struct {
 		SessionID string `json:"session_id"`

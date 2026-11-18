@@ -1,4 +1,4 @@
-package agent
+package claude
 
 import (
 	"bytes"
@@ -7,19 +7,19 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kkestell/ox/internal/claude"
+	"github.com/kkestell/ox/internal/agent"
 )
 
-type recorder []Update
+type recorder []agent.Update
 
-func (r *recorder) Publish(update Update) bool {
+func (r *recorder) Publish(update agent.Update) bool {
 	*r = append(*r, update)
 	return true
 }
 
 func testAgent() (*Agent, *bytes.Buffer) {
 	input := new(bytes.Buffer)
-	return newAgent(claude.NewInput(input)), input
+	return newAgent(NewInput(input)), input
 }
 
 // promptingAgent returns an agent running prompt "prompt" with one subscriber.
@@ -47,7 +47,7 @@ func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
 	*updates = nil
 
 	a.sessionState("idle")
-	if _, err := a.submit("again"); !errors.Is(err, ErrBusy) || len(*updates) != 0 {
+	if _, err := a.submit("again"); !errors.Is(err, agent.ErrBusy) || len(*updates) != 0 {
 		t.Fatalf("idle before Claude took the prompt released it: %v, %+v", err, *updates)
 	}
 
@@ -67,8 +67,8 @@ func TestInspectReturnsRunningPrompt(t *testing.T) {
 	request := json.RawMessage(`{"subtype":"can_use_tool","tool_name":"Bash"}`)
 	a.controlRequest("pending", request)
 
-	var snapshot Snapshot
-	a.handle(inspectRequest{func(s Snapshot) { snapshot = s }, make(chan struct{}, 1)})
+	var snapshot agent.Snapshot
+	a.handle(inspectRequest{func(s agent.Snapshot) { snapshot = s }, make(chan struct{}, 1)})
 	if snapshot.State != "running" || snapshot.Prompt == nil || snapshot.Prompt.MessageID != "prompt" ||
 		len(snapshot.Approvals) != 1 || snapshot.Approvals[0].RequestID != "pending" ||
 		!bytes.Equal(snapshot.Approvals[0].Request, request) {

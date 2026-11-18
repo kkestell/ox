@@ -1,16 +1,13 @@
-// Package agent runs one Claude Code process as an agent: a state machine that
-// accepts prompts, approvals, and configuration, and publishes the prompt's
-// progress to its subscribers. One goroutine owns all of an agent's state
-// and handles client requests and Claude's output as events in order.
+// Package agent is the contract between the server and a harness: an Agent
+// runs one harness process for one session, accepts prompts, approvals, and
+// settings, and publishes the session's progress to its subscribers. Each
+// harness package implements it and provides a Start function.
 package agent
 
 import (
 	"encoding/json"
 	"errors"
-	"strings"
 	"time"
-
-	"github.com/kkestell/ox/internal/claude"
 )
 
 var (
@@ -19,18 +16,51 @@ var (
 	ErrApprovalNotFound = errors.New("approval request is no longer pending")
 )
 
-// phase is the agent's ownership of its Claude process. Claude's reported
-// session state is tracked separately in Agent.claudeState.
-type phase int
+// Agent is one running harness process for one session.
+type Agent interface {
+	// Inspect calls inspect on the agent's goroutine, between updates: the
+	// snapshot reflects every update published before the call and none after.
+	Inspect(inspect func(Snapshot)) error
+	// Send writes a prompt to an idle agent and returns its message ID. It
+	// returns ErrBusy unless the agent is idle with no prompt or
+	// configuration in progress.
+	Send(text string) (string, error)
+	// Approve answers a pending approval, or returns ErrApprovalNotFound.
+	Approve(requestID string, response json.RawMessage) error
+	// Configure applies settings to the running process. ErrExited means the
+	// process is gone; the caller stores them for the next start.
+	Configure(Settings) error
+	// Stop terminates the process and waits for the agent to settle.
+	Stop() error
+	// Done is closed once the process has exited and the agent has published
+	// its last update, parked.
+	Done() <-chan struct{}
+}
 
-const (
-	available   phase = iota // nothing owns the process
-	queued                   // prompt written; Claude has not taken it yet
-	prompting                // Claude took the prompt; its next idle state releases it
-	configuring              // control requests in flight, one at a time
-	parking                  // idle too long; the process is being terminated
-	exited
-)
+// Start starts a harness process and returns its agent.
+type Start func(Options) (Agent, error)
+
+type Options struct {
+	Workspace string
+	// Resume is the harness's token for the conversation to continue; empty
+	// starts a new one.
+	Resume    string
+	Settings  Settings
+	ParkAfter time.Duration // terminate the process once unused this long; zero never parks
+	// Subscribers receive every update, on the agent's goroutine.
+	Subscribers []Subscriber
+	// OnResumable receives the token that resumes a new conversation, once
+	// the harness has saved enough to resume it. It is called at most once,
+	// on the agent's goroutine.
+	OnResumable func(token string)
+}
+
+// Settings are a session's model, effort, and permission mode.
+type Settings struct {
+	Model          string
+	Effort         string
+	PermissionMode string
+}
 
 // Subscriber receives an agent's updates.
 type Subscriber interface {
@@ -39,28 +69,28 @@ type Subscriber interface {
 	Publish(Update) bool
 }
 
-type Agent struct {
-	proc   *claude.Process
-	input  *claude.Input
-	events chan any
-	done   chan struct{} // closed once the process has exited and its state is settled
-
-	// Owned by the run goroutine.
-	phase       phase
-	claudeState string
-	prompt      *submission
-	approvals   map[string]json.RawMessage // pending, by Claude's request ID
-	config      *configuration
-	subscribers map[Subscriber]struct{}
-	parkAfter   time.Duration // zero never parks
-	background  int           // Claude's live background tasks
-	schedules   int           // Claude's pending schedules, from the last Stop hook
-	scheduling  bool          // a scheduling tool ran since the last Stop hook
-	parkTimer   int           // generation of the armed park timer; zero when unarmed
-	timers      int           // timer generations issued
+type Update struct {
+	MessageID string          `json:"message_id,omitempty"` // empty for turns the harness started itself
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	State     string          `json:"state,omitempty"`
+	Result    *Result         `json:"result,omitempty"`
+	Error     string          `json:"error,omitempty"`
+	RequestID string          `json:"request_id,omitempty"`
+	Request   json.RawMessage `json:"request,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	ToolName  string          `json:"tool_name,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
+	Time      time.Time       `json:"time,omitzero"` // when the agent published it
 }
 
-// Snapshot is an agent's current state, returned by Inspect.
+type Result struct {
+	Text    string `json:"text"`
+	IsError bool   `json:"is_error"`
+}
+
+// Snapshot is an agent's current state, returned by Inspect. State is
+// running, requires_action, or idle.
 type Snapshot struct {
 	State     string          `json:"state"`
 	Prompt    *PromptSnapshot `json:"prompt"`
@@ -74,248 +104,4 @@ type PromptSnapshot struct {
 type Approval struct {
 	RequestID string          `json:"request_id"`
 	Request   json.RawMessage `json:"request"`
-}
-
-// Events from clients. Each carries a reply that the run goroutine always
-// answers.
-type (
-	inspectRequest struct {
-		inspect func(Snapshot)
-		reply   chan struct{}
-	}
-	sendRequest struct {
-		text  string
-		reply chan sendReply
-	}
-	sendReply struct {
-		id  string
-		err error
-	}
-	approveRequest struct {
-		requestID string
-		response  json.RawMessage
-		reply     chan error
-	}
-	configureRequest struct {
-		config Configuration
-		reply  chan error
-	}
-	controlTimeout struct{ requestID string }
-	parkTimeout    struct{ timer int }
-)
-
-// Start starts and initializes a Claude process for a new agent, which
-// publishes every update to subscribers. The agent terminates the process
-// once it has been parkable for parkAfter; zero never parks.
-func Start(options claude.Options, parkAfter time.Duration, subscribers ...Subscriber) (*Agent, error) {
-	proc, err := claude.Start(options)
-	if err != nil {
-		return nil, err
-	}
-	a := newAgent(proc.Input)
-	a.proc = proc
-	a.parkAfter = parkAfter
-	for _, s := range subscribers {
-		a.subscribers[s] = struct{}{}
-	}
-	go a.run()
-	return a, nil
-}
-
-func newAgent(input *claude.Input) *Agent {
-	return &Agent{
-		input: input, events: make(chan any), done: make(chan struct{}),
-		phase: available, claudeState: "idle", approvals: make(map[string]json.RawMessage),
-		subscribers: make(map[Subscriber]struct{}),
-	}
-}
-
-func (a *Agent) run() {
-	defer close(a.done)
-	output := a.proc.Output()
-	for a.phase != exited {
-		select {
-		case message, ok := <-output:
-			if !ok {
-				a.exit(a.proc.Err())
-				continue
-			}
-			a.handleOutput(message)
-		case event := <-a.events:
-			a.handle(event)
-		}
-		a.armPark()
-	}
-}
-
-func (a *Agent) handle(event any) {
-	switch e := event.(type) {
-	case inspectRequest:
-		e.inspect(a.snapshot())
-		e.reply <- struct{}{}
-	case sendRequest:
-		id, err := a.submit(e.text)
-		e.reply <- sendReply{id, err}
-	case approveRequest:
-		e.reply <- a.answer(e.requestID, e.response)
-	case configureRequest:
-		a.reconfigure(e.config, e.reply)
-	case controlTimeout:
-		a.controlTimedOut(e.requestID)
-	case parkTimeout:
-		a.parkTimedOut(e.timer)
-	}
-}
-
-func (a *Agent) handleOutput(message claude.Message) {
-	switch message.Type {
-	case "control_response":
-		a.controlResponse(message.Response)
-	case "control_request":
-		a.controlRequest(message.RequestID, message.Request)
-	case "control_cancel_request":
-		a.cancelApproval(message.RequestID)
-	case "command_lifecycle":
-		if message.State == "started" {
-			a.commandStarted(message.CommandUUID)
-		}
-	case "system":
-		switch message.Subtype {
-		case "session_state_changed":
-			switch message.State {
-			case "running", "requires_action", "idle":
-				a.sessionState(message.State)
-			}
-		case "background_tasks_changed":
-			a.background = len(message.Tasks)
-		}
-	case "assistant":
-		for _, use := range message.ToolUses() {
-			switch use.Name {
-			case "CronCreate", "CronDelete", "ScheduleWakeup":
-				a.scheduling = true
-			}
-			if message.ParentToolUseID == "" {
-				a.publish(Update{Type: "tool_use", ToolUseID: use.ID, ToolName: use.Name, Input: use.Input})
-			}
-		}
-	case "user":
-		if message.ParentToolUseID == "" {
-			for _, r := range message.ToolResults() {
-				a.publish(Update{Type: "tool_result", ToolUseID: r.ToolUseID, Result: &Result{Text: r.Text, IsError: r.IsError}})
-			}
-		}
-	case "stream_event":
-		delta := message.Event.Delta
-		if message.ParentToolUseID == "" && message.Event.Type == "content_block_delta" && delta.Type == "text_delta" && delta.Text != "" {
-			a.publish(Update{Type: "text_delta", Text: delta.Text})
-		}
-	case "result":
-		result := Result{Text: message.Result, IsError: message.IsError || message.Subtype != "success"}
-		if result.IsError && result.Text == "" {
-			result.Text = strings.Join(message.Errors, "\n")
-			if result.Text == "" {
-				result.Text = message.Subtype
-			}
-		}
-		// Claude follows an automatic turn with an empty bookkeeping result.
-		if result.Text != "" || result.IsError {
-			a.publish(Update{Type: "result", Result: &result})
-		}
-	}
-}
-
-// idle reports whether the agent can take a prompt or configuration.
-func (a *Agent) idle() bool {
-	return a.phase == available && a.claudeState == "idle"
-}
-
-func (a *Agent) snapshot() Snapshot {
-	snapshot := Snapshot{State: a.claudeState, Approvals: []Approval{}}
-	if a.prompt != nil {
-		snapshot.Prompt = &PromptSnapshot{MessageID: a.prompt.id}
-	}
-	for id, request := range a.approvals {
-		snapshot.Approvals = append(snapshot.Approvals, Approval{id, request})
-	}
-	return snapshot
-}
-
-func (a *Agent) exit(err error) {
-	reason := "Claude exited"
-	if err != nil {
-		reason += ": " + err.Error()
-	}
-	switch a.phase {
-	case queued, prompting:
-		a.endPrompt(Update{Type: "exited", Error: reason})
-	case configuring:
-		a.endConfiguration(a.config.fail(ErrExited))
-	}
-	a.withdrawApprovals()
-	a.publish(Update{Type: "parked"})
-	a.phase = exited
-}
-
-// post delivers an event to the run goroutine. It reports false once the
-// agent has exited.
-func (a *Agent) post(event any) bool {
-	select {
-	case a.events <- event:
-		return true
-	case <-a.done:
-		return false
-	}
-}
-
-// Inspect calls inspect with the agent's current state on the agent's
-// goroutine, between updates: every update published before the call is
-// reflected in the state, and none after it.
-func (a *Agent) Inspect(inspect func(Snapshot)) error {
-	reply := make(chan struct{}, 1)
-	if !a.post(inspectRequest{inspect, reply}) {
-		return ErrExited
-	}
-	<-reply
-	return nil
-}
-
-// Send writes a prompt to an idle agent.
-func (a *Agent) Send(text string) (string, error) {
-	reply := make(chan sendReply, 1)
-	if !a.post(sendRequest{text, reply}) {
-		return "", ErrExited
-	}
-	r := <-reply
-	return r.id, r.err
-}
-
-func (a *Agent) Approve(requestID string, response json.RawMessage) error {
-	reply := make(chan error, 1)
-	if !a.post(approveRequest{requestID, response, reply}) {
-		return ErrExited
-	}
-	return <-reply
-}
-
-func (a *Agent) Configure(config Configuration) error {
-	reply := make(chan error, 1)
-	if !a.post(configureRequest{config, reply}) {
-		return ErrExited
-	}
-	return <-reply
-}
-
-// Stop terminates Claude and waits for the agent to settle.
-func (a *Agent) Stop() error {
-	if err := a.proc.Terminate(); err != nil {
-		return err
-	}
-	<-a.done
-	return nil
-}
-
-// Done is closed once the agent has exited.
-func (a *Agent) Done() <-chan struct{} {
-	return a.done
 }

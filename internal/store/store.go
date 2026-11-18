@@ -18,16 +18,17 @@ type Workspace struct {
 	Sessions  []*Session
 }
 
-// Session is a Claude conversation. Its ID is Claude's session ID.
+// Session is a conversation with a harness.
 type Session struct {
 	ID             string
+	Harness        string
 	Model          string
 	Effort         string
 	PermissionMode string
-	// Resumable records that Claude has written the session's transcript, so
-	// the next process resumes it rather than starting it.
-	Resumable bool
-	CreatedAt time.Time
+	// ResumeToken is the harness's token for resuming the conversation,
+	// empty until the harness has saved enough to resume it.
+	ResumeToken string
+	CreatedAt   time.Time
 }
 
 // Event is one recorded session update, as JSON.
@@ -45,10 +46,11 @@ CREATE TABLE IF NOT EXISTS workspaces (
 CREATE TABLE IF NOT EXISTS sessions (
 	id              TEXT PRIMARY KEY,
 	workspace_id    TEXT NOT NULL REFERENCES workspaces ON DELETE CASCADE,
+	harness         TEXT NOT NULL,
 	model           TEXT NOT NULL,
 	effort          TEXT NOT NULL,
 	permission_mode TEXT NOT NULL,
-	resumable       INTEGER NOT NULL,
+	resume_token    TEXT NOT NULL,
 	created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS events (
@@ -127,7 +129,7 @@ func (s *Store) Workspaces() ([]*Workspace, error) {
 		return nil, err
 	}
 
-	rows, err = s.db.Query(`SELECT id, workspace_id, model, effort, permission_mode, resumable, created_at
+	rows, err = s.db.Query(`SELECT id, workspace_id, harness, model, effort, permission_mode, resume_token, created_at
 		FROM sessions ORDER BY created_at, rowid`)
 	if err != nil {
 		return nil, err
@@ -136,7 +138,7 @@ func (s *Store) Workspaces() ([]*Workspace, error) {
 	for rows.Next() {
 		r := &Session{}
 		var workspaceID, created string
-		if err := rows.Scan(&r.ID, &workspaceID, &r.Model, &r.Effort, &r.PermissionMode, &r.Resumable, &created); err != nil {
+		if err := rows.Scan(&r.ID, &workspaceID, &r.Harness, &r.Model, &r.Effort, &r.PermissionMode, &r.ResumeToken, &created); err != nil {
 			return nil, err
 		}
 		if r.CreatedAt, err = parseTime(created); err != nil {
@@ -155,16 +157,17 @@ func (s *Store) AddWorkspace(w *Workspace) error {
 }
 
 func (s *Store) AddSession(workspaceID string, r *Session) error {
-	_, err := s.db.Exec(`INSERT INTO sessions (id, workspace_id, model, effort, permission_mode, resumable, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, workspaceID, r.Model, r.Effort, r.PermissionMode, r.Resumable, formatTime(r.CreatedAt))
+	_, err := s.db.Exec(`INSERT INTO sessions (id, workspace_id, harness, model, effort, permission_mode, resume_token, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, workspaceID, r.Harness, r.Model, r.Effort, r.PermissionMode, r.ResumeToken, formatTime(r.CreatedAt))
 	return err
 }
 
-// SaveSession stores a session's settings and whether it is resumable.
+// SaveSession stores a session's settings and resume token. Its harness never
+// changes.
 func (s *Store) SaveSession(r *Session) error {
-	_, err := s.db.Exec(`UPDATE sessions SET model = ?, effort = ?, permission_mode = ?, resumable = ? WHERE id = ?`,
-		r.Model, r.Effort, r.PermissionMode, r.Resumable, r.ID)
+	_, err := s.db.Exec(`UPDATE sessions SET model = ?, effort = ?, permission_mode = ?, resume_token = ? WHERE id = ?`,
+		r.Model, r.Effort, r.PermissionMode, r.ResumeToken, r.ID)
 	return err
 }
 

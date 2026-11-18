@@ -1,4 +1,4 @@
-package agent
+package claude
 
 import (
 	"encoding/json"
@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kkestell/ox/internal/claude"
+	"github.com/kkestell/ox/internal/agent"
 )
 
 func output(t *testing.T, a *Agent, line string) {
 	t.Helper()
-	var message claude.Message
+	var message Message
 	if err := json.Unmarshal([]byte(line), &message); err != nil {
 		t.Fatal(err)
 	}
@@ -72,12 +72,12 @@ func TestSchedulesBlockParking(t *testing.T) {
 func TestParkingRefusesPrompts(t *testing.T) {
 	a, _ := testAgent()
 	a.phase = parking
-	if _, err := a.submit("hello"); !errors.Is(err, ErrExited) {
+	if _, err := a.submit("hello"); !errors.Is(err, agent.ErrExited) {
 		t.Fatalf("parking agent took a prompt: %v", err)
 	}
 	reply := make(chan error, 1)
-	a.reconfigure(Configuration{Model: "haiku", Effort: "low", PermissionMode: "plan"}, reply)
-	if err := <-reply; !errors.Is(err, ErrExited) {
+	a.reconfigure(agent.Settings{Model: "haiku", Effort: "low", PermissionMode: "plan"}, reply)
+	if err := <-reply; !errors.Is(err, agent.ErrExited) {
 		t.Fatalf("parking agent took configuration: %v", err)
 	}
 }

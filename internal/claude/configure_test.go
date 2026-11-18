@@ -1,4 +1,4 @@
-package agent
+package claude
 
 import (
 	"encoding/json"
@@ -7,13 +7,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kkestell/ox/internal/claude"
+	"github.com/kkestell/ox/internal/agent"
 )
 
 func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 	a, input := testAgent()
 	decoder := json.NewDecoder(input)
-	config := Configuration{Model: "haiku", Effort: "low", PermissionMode: "plan"}
+	config := agent.Settings{Model: "haiku", Effort: "low", PermissionMode: "plan"}
 	result := make(chan error, 1)
 	a.reconfigure(config, result)
 
@@ -33,20 +33,20 @@ func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 		if wire.Type != "control_request" || wire.RequestID == "" || !reflect.DeepEqual(wire.Request, expected) {
 			t.Fatalf("unexpected configuration request: %+v", wire)
 		}
-		if _, err := a.submit("hello"); !errors.Is(err, ErrBusy) {
+		if _, err := a.submit("hello"); !errors.Is(err, agent.ErrBusy) {
 			t.Fatalf("prompt accepted during configuration: %v", err)
 		}
 		overlapping := make(chan error, 1)
-		if a.reconfigure(config, overlapping); !errors.Is(<-overlapping, ErrBusy) {
+		if a.reconfigure(config, overlapping); !errors.Is(<-overlapping, agent.ErrBusy) {
 			t.Fatal("overlapping configuration accepted")
 		}
-		a.handleOutput(claude.Message{Type: "control_response", Response: claude.ControlResponse{RequestID: "unrelated", Subtype: "success"}})
+		a.handleOutput(Message{Type: "control_response", Response: ControlResponse{RequestID: "unrelated", Subtype: "success"}})
 		select {
 		case err := <-result:
 			t.Fatalf("configuration finished before its acknowledgement: %v", err)
 		default:
 		}
-		a.handleOutput(claude.Message{Type: "control_response", Response: claude.ControlResponse{RequestID: wire.RequestID, Subtype: "success"}})
+		a.handleOutput(Message{Type: "control_response", Response: ControlResponse{RequestID: wire.RequestID, Subtype: "success"}})
 	}
 	select {
 	case err := <-result:
@@ -66,7 +66,7 @@ func TestConfigureFailure(t *testing.T) {
 		t.Run(outcome, func(t *testing.T) {
 			a, input := testAgent()
 			result := make(chan error, 1)
-			a.reconfigure(Configuration{Model: "haiku", Effort: "low", PermissionMode: "plan"}, result)
+			a.reconfigure(agent.Settings{Model: "haiku", Effort: "low", PermissionMode: "plan"}, result)
 			var wire struct {
 				RequestID string `json:"request_id"`
 			}
@@ -75,7 +75,7 @@ func TestConfigureFailure(t *testing.T) {
 			}
 			switch outcome {
 			case "rejected":
-				a.handleOutput(claude.Message{Type: "control_response", Response: claude.ControlResponse{RequestID: wire.RequestID, Subtype: "error", Error: "Unsupported model"}})
+				a.handleOutput(Message{Type: "control_response", Response: ControlResponse{RequestID: wire.RequestID, Subtype: "error", Error: "Unsupported model"}})
 			case "timeout":
 				a.handle(controlTimeout{"stale"})
 				a.handle(controlTimeout{wire.RequestID})
@@ -89,7 +89,7 @@ func TestConfigureFailure(t *testing.T) {
 			if outcome == "timeout" && (err == nil || !strings.Contains(err.Error(), "no control response")) {
 				t.Fatalf("missing acknowledgement did not fail configuration: %v", err)
 			}
-			if outcome == "exited" && !errors.Is(err, ErrExited) {
+			if outcome == "exited" && !errors.Is(err, agent.ErrExited) {
 				t.Fatalf("process exit did not fail configuration: %v", err)
 			}
 			if a.config != nil || a.phase == configuring {
@@ -112,14 +112,14 @@ func TestConfigureRequiresIdle(t *testing.T) {
 				a.claudeState = state
 			}
 			result := make(chan error, 1)
-			if a.reconfigure(Configuration{}, result); !errors.Is(<-result, ErrBusy) {
+			if a.reconfigure(agent.Settings{}, result); !errors.Is(<-result, agent.ErrBusy) {
 				t.Fatalf("configuration accepted in %s", state)
 			}
 		})
 	}
 	exited, _ := testAgent()
 	close(exited.done)
-	if err := exited.Configure(Configuration{}); !errors.Is(err, ErrExited) {
+	if err := exited.Configure(agent.Settings{}); !errors.Is(err, agent.ErrExited) {
 		t.Fatalf("configuration of an exited process: %v", err)
 	}
 }
