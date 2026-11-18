@@ -31,6 +31,9 @@ type submission struct {
 }
 
 func (a *Agent) submit(s Subscriber, text string) (string, error) {
+	if a.phase == parking {
+		return "", ErrExited
+	}
 	if !a.idle() {
 		return "", ErrBusy
 	}

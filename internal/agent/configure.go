@@ -29,6 +29,10 @@ func (c *configuration) fail(err error) error {
 }
 
 func (a *Agent) reconfigure(config Configuration, reply chan error) {
+	if a.phase == parking {
+		reply <- ErrExited
+		return
+	}
 	if !a.idle() {
 		reply <- ErrBusy
 		return

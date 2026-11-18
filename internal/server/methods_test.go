@@ -6,7 +6,7 @@ import (
 )
 
 func TestConfigureValidation(t *testing.T) {
-	s, err := New(filepath.Join(t.TempDir(), "state.json"))
+	s, err := New(filepath.Join(t.TempDir(), "state.json"), 0)
 	if err != nil {
 		t.Fatal(err)
 	}

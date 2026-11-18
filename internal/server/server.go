@@ -13,6 +13,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/kkestell/ox/internal/agent"
 	"github.com/kkestell/ox/internal/claude"
@@ -21,6 +22,7 @@ import (
 
 type Server struct {
 	statePath string
+	parkAfter time.Duration
 
 	mu       sync.Mutex // guards state, every stored record, sessions, and closed
 	state    *store.State
@@ -41,13 +43,14 @@ type session struct {
 	destroyed   bool
 }
 
-// New loads the stored state. Every session starts parked.
-func New(statePath string) (*Server, error) {
+// New loads the stored state. Every session starts parked, and a running
+// session parks once its process has been unused for parkAfter.
+func New(statePath string, parkAfter time.Duration) (*Server, error) {
 	state, err := store.Load(statePath)
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{statePath: statePath, state: state, sessions: make(map[string]*session)}
+	s := &Server{statePath: statePath, parkAfter: parkAfter, state: state, sessions: make(map[string]*session)}
 	for _, w := range state.Workspaces {
 		for _, record := range w.Sessions {
 			s.sessions[record.ID] = newSession(record, w.Path)
@@ -166,7 +169,7 @@ func (s *Server) running(sess *session) (*agent.Agent, error) {
 	a, err := agent.Start(claude.Options{
 		Workspace: sess.workspace, SessionID: record.ID, Resume: record.Resumable,
 		Model: record.Model, Effort: record.Effort, PermissionMode: record.PermissionMode,
-	})
+	}, s.parkAfter)
 	if err != nil {
 		return nil, err
 	}

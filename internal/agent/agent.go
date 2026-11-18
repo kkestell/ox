@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/kkestell/ox/internal/claude"
 )
@@ -27,6 +28,7 @@ const (
 	queued                   // prompt written; Claude has not taken it yet
 	prompting                // Claude took the prompt; its next idle state releases it
 	configuring              // control requests in flight, one at a time
+	parking                  // idle too long; the process is being terminated
 	exited
 )
 
@@ -49,6 +51,11 @@ type Agent struct {
 	prompt      *submission
 	config      *configuration
 	subscribers map[Subscriber]struct{}
+	parkAfter   time.Duration // zero never parks
+	background  int           // Claude's live background tasks
+	scheduled   bool          // Claude has scheduled a prompt of its own
+	parkTimer   int           // generation of the armed park timer; zero when unarmed
+	timers      int           // timer generations issued
 }
 
 // Snapshot is an agent's current state, returned on attach.
@@ -94,16 +101,20 @@ type (
 		reply  chan error
 	}
 	controlTimeout struct{ requestID string }
+	parkTimeout    struct{ timer int }
 )
 
-// Start starts and initializes a Claude process for a new agent.
-func Start(options claude.Options) (*Agent, error) {
+// Start starts and initializes a Claude process for a new agent. The agent
+// terminates the process once it has been parkable for parkAfter; zero never
+// parks.
+func Start(options claude.Options, parkAfter time.Duration) (*Agent, error) {
 	proc, err := claude.Start(options)
 	if err != nil {
 		return nil, err
 	}
 	a := newAgent(proc.Input)
 	a.proc = proc
+	a.parkAfter = parkAfter
 	go a.run()
 	return a, nil
 }
@@ -129,6 +140,7 @@ func (a *Agent) run() {
 		case event := <-a.events:
 			a.handle(event)
 		}
+		a.armPark()
 	}
 }
 
@@ -147,6 +159,8 @@ func (a *Agent) handle(event any) {
 		a.reconfigure(e.config, e.reply)
 	case controlTimeout:
 		a.controlTimedOut(e.requestID)
+	case parkTimeout:
+		a.parkTimedOut(e.timer)
 	}
 }
 
@@ -163,10 +177,19 @@ func (a *Agent) handleOutput(message claude.Message) {
 			a.commandStarted(message.CommandUUID)
 		}
 	case "system":
-		if message.Subtype == "session_state_changed" {
+		switch message.Subtype {
+		case "session_state_changed":
 			switch message.State {
 			case "running", "requires_action", "idle":
 				a.sessionState(message.State)
+			}
+		case "background_tasks_changed":
+			a.background = len(message.Tasks)
+		}
+	case "assistant":
+		for _, name := range message.ToolNames() {
+			if name == "CronCreate" || name == "ScheduleWakeup" {
+				a.scheduled = true
 			}
 		}
 	case "stream_event":

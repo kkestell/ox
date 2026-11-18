@@ -41,7 +41,9 @@ first with `--session-id`, and later ones with `--resume` once the first
 prompt's result shows Claude has written the transcript. Each process receives
 the session's stored model, effort, and permission mode.
 
-A session's lock is held while its process starts, so it runs at most one.
+A session's lock is held while its process starts, so it runs at most one. A
+prompt refused by a parking process waits for that process to exit and goes to
+a new one.
 The session keeps the connections attached to it and attaches them to each
 new process before any prompt runs. A session parks when its process exits;
 the server notices the exit the next time it looks at the session.
@@ -61,11 +63,19 @@ The agent's phase records what owns its Claude process:
 | `queued` | A prompt was written; Claude has not taken it yet. | `command_lifecycle started` for the prompt. |
 | `prompting` | Claude is working on the prompt. | Claude reports `idle`. |
 | `configuring` | Control requests are in flight, one at a time. | The last acknowledgement, a refusal, or a timeout. |
+| `parking` | The agent has terminated an unused process; prompts and configuration are refused as if it had exited. | The process exits. |
 | `exited` | The Claude process has exited. | — |
 
 Claude's reported session state (`running`, `requires_action`, `idle`) is kept
 alongside the phase. The agent accepts a prompt or configuration only when it
 is `available` and Claude is `idle`.
+
+The agent also tracks the size of Claude's background-task set from
+`background_tasks_changed`, and whether Claude has called `CronCreate` or
+`ScheduleWakeup`. It arms a park timer whenever it is `available`, Claude is
+`idle`, no background task runs, and nothing was scheduled, and disarms it
+when any of those stops holding. If the timer fires while still armed, the
+agent enters `parking` and sends Claude SIGTERM.
 
 Subscribers receive updates about the current prompt. The server attaches a
 connection when it sends a prompt or calls `session/attach`, and a connection

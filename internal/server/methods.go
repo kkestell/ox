@@ -240,13 +240,21 @@ func (s *Server) sendSession(c *conn, id, params json.RawMessage) *jsonrpc.Respo
 		return missing
 	}
 	defer sess.mu.Unlock()
+	sub := subscription{c, input.SessionID}
+	sess.subscribers[sub] = struct{}{}
 	a, err := s.running(sess)
 	if err != nil {
 		return failure(id, err)
 	}
-	sub := subscription{c, input.SessionID}
-	sess.subscribers[sub] = struct{}{}
 	messageID, err := a.Send(sub, input.Text)
+	if errors.Is(err, agent.ErrExited) {
+		// The process is parking or has exited; start the next one.
+		<-a.Done()
+		if a, err = s.running(sess); err != nil {
+			return failure(id, err)
+		}
+		messageID, err = a.Send(sub, input.Text)
+	}
 	if err != nil {
 		return failure(id, err)
 	}
@@ -329,13 +337,11 @@ func (s *Server) configureSession(id, params json.RawMessage) *jsonrpc.Response 
 	}
 	a := sess.live()
 	sess.mu.Unlock()
-	// A parked session takes the settings when its next process starts.
+	// A parked session, or one whose process exits first, takes the settings
+	// when its next process starts.
 	if a != nil {
 		err := a.Configure(agent.Configuration{Model: input.Model, Effort: input.Effort, PermissionMode: input.PermissionMode})
-		if errors.Is(err, agent.ErrExited) {
-			err = errors.New("Claude exited")
-		}
-		if err != nil {
+		if err != nil && !errors.Is(err, agent.ErrExited) {
 			return failure(id, err)
 		}
 	}

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/kkestell/ox/internal/server"
 	"github.com/kkestell/ox/internal/socket"
@@ -20,6 +21,7 @@ import (
 func main() {
 	socketPath := flag.String("socket", "", "override the socket in the user cache directory")
 	statePath := flag.String("state", "", "override the state file in the user state directory")
+	parkAfter := flag.Duration("park-after", 5*time.Minute, "stop a session's Claude process after it has been unused this long")
 	flag.Parse()
 	path := *socketPath
 	if path == "" {
@@ -34,7 +36,7 @@ func main() {
 			log.Fatal(err)
 		}
 	}
-	s, err := server.New(*statePath)
+	s, err := server.New(*statePath, *parkAfter)
 	if err != nil {
 		log.Fatalf("load state: %v", err)
 	}
