@@ -2,7 +2,7 @@
 
 dev: web
 	go build -o bin/ ./cmd/ox ./cmd/oxd
-	bin/oxd & trap 'kill $$!' EXIT; bin/ox
+	bin/oxd & oxd=$$!; bin/ox & ox=$$!; trap 'kill $$oxd $$ox' EXIT; npm --prefix cmd/ox/web run dev
 
 web: cmd/ox/web/node_modules
 	npm --prefix cmd/ox/web run build

@@ -2,9 +2,6 @@ import { createSignal, For, Show } from "solid-js";
 import { useOx } from "./ox";
 import { SettingsFields, settingsFrom } from "./SettingsFields";
 
-// ox serves the page with the directory it runs in.
-const workspace = document.querySelector<HTMLMetaElement>('meta[name="workspace"]')!.content;
-
 export function Sidebar(props: { selected?: string; onSelect(id: string): void }) {
   const ox = useOx();
   const [error, setError] = createSignal<string>();
@@ -23,7 +20,7 @@ export function Sidebar(props: { selected?: string; onSelect(id: string): void }
   return (
     <nav>
       <form onSubmit={create}>
-        <input name="workspace" defaultValue={workspace} placeholder="Workspace" size="30" required />
+        <input name="workspace" defaultValue="/Users/kyle/projects/hypercube-pr-lab" placeholder="Workspace" size="30" required />
         <SettingsFields value={{ model: "haiku", effort: "medium", permission_mode: "manual" }} />
         <button>New session</button>
       </form>
