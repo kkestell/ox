@@ -7,11 +7,12 @@ package main
 import (
 	"bufio"
 	"crypto/rand"
-	_ "embed"
+	"embed"
 	"flag"
 	"fmt"
 	"html/template"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -21,10 +22,10 @@ import (
 	"github.com/kkestell/ox/internal/socket"
 )
 
-//go:embed web/index.html
-var index string
-
-var page = template.Must(template.New("index").Parse(index))
+// web/dist is the web UI's build; see web/package.json.
+//
+//go:embed web/dist
+var dist embed.FS
 
 func main() {
 	addr := flag.String("addr", "localhost:8080", "address to serve the web UI on")
@@ -42,10 +43,17 @@ func main() {
 		log.Fatal(err)
 	}
 
+	web, err := fs.Sub(dist, "web/dist")
+	if err != nil {
+		log.Fatal(err)
+	}
+	page := template.Must(template.ParseFS(web, "index.html"))
+
 	r := &relay{socket: path, conns: make(map[string]net.Conn)}
 	http.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
 		page.Execute(w, struct{ Workspace string }{workspace})
 	})
+	http.Handle("GET /assets/", http.FileServerFS(web))
 	http.HandleFunc("GET /events", r.events)
 	http.HandleFunc("POST /rpc", r.rpc)
 	log.Printf("serving http://%s", *addr)

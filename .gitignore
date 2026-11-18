@@ -1,1 +1,3 @@
 /bin/
+/cmd/ox/web/node_modules/
+/cmd/ox/web/dist/

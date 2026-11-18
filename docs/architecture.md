@@ -2,8 +2,8 @@
 
 `oxd` is a daemon that keeps workspaces and Claude Code sessions, runs a
 Claude process for each session in use, and serves them to clients over a
-Unix socket. `ox` (`cmd/ox`) serves the web UI, embedded from
-`cmd/ox/web`. It gives each open page its own `oxd` connection: lines from
+Unix socket. `ox` (`cmd/ox`) serves the web UI, embedded from its build in
+`cmd/ox/web/dist`. It gives each open page its own `oxd` connection: lines from
 `oxd` reach the page as Server-Sent Events on `/events`, and the page posts
 JSON-RPC requests to `/rpc`. The page speaks the `oxd` protocol directly.
 
@@ -92,3 +92,25 @@ agent enters `parking` and sends Claude SIGTERM.
 Subscribers receive every update: those of a client's prompt carry its ID, and
 those of turns Claude starts itself carry none. The agent publishes `parked`
 as its last update when the process exits.
+
+## Web UI
+
+The web UI in `cmd/ox/web` is a Solid 2.0 app written in TypeScript and built
+by Vite into `cmd/ox/web/dist`, which `ox` embeds; `make web` builds it, and
+`make dev` builds it before `ox`. `ox` serves the built `index.html` as a Go
+template that fills in the directory `ox` runs in as the default workspace.
+
+| File | Owns |
+| --- | --- |
+| `protocol.ts` | Types for the `oxd` methods, updates, and notifications. |
+| `connection.ts` | The event stream and the requests posted on it, with no Solid state. |
+| `ox.tsx` | The page's view of every workspace and session: a store created in a provider, loaded when the stream connects and kept current by notifications, and the requests that change it. |
+| `App.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `SettingsFields.tsx` | The components. |
+
+The store changes only through notifications and `session/get` responses, so
+every page shows the same state. Requests write nothing to it: `oxd` sends the
+resulting notification to every connection, including the one that asked.
+Each new connection clears the store and loads it again, since it has missed
+the notifications sent while the page was disconnected. The settings form
+shows a change while `session/configure` is in flight with an optimistic
+value, which reverts to the stored settings if the request fails.

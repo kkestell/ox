@@ -1,0 +1,12 @@
+body { margin: 0; font-family: sans-serif; }
+#root { display: flex; gap: 1em; }
+nav { width: 22em; padding: 0.5em; border-right: 1px solid #ccc; min-height: 100vh; }
+main { flex: 1; padding: 0.5em; }
+nav ul { list-style: none; padding-left: 0.5em; }
+nav li { cursor: pointer; font-family: monospace; }
+nav li.selected { font-weight: bold; }
+.prompt, .reply, .error { white-space: pre-wrap; margin: 0.5em 0; }
+.prompt { padding: 0.25em; background: #eef; }
+.error, details.error summary, [role="alert"] { color: #b00; }
+details { margin: 0.25em 0; font-family: monospace; }
+details pre { white-space: pre-wrap; margin: 0.25em 0 0.25em 1.5em; padding: 0.25em; background: #f4f4f4; }
