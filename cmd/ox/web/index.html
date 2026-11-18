@@ -9,9 +9,9 @@
   <form id="create">
     <input name="workspace" value="{{.Workspace}}" placeholder="Workspace" size="60" required>
     <input name="model" value="haiku" placeholder="Model">
-    <button>Create agent</button>
+    <button>Create session</button>
   </form>
-  <p id="agent"></p>
+  <p id="session"></p>
   <form id="send">
     <textarea name="text" rows="3" cols="60" placeholder="Prompt" required></textarea>
     <button>Send</button>
@@ -23,16 +23,16 @@
 
   <script>
     const $ = (id) => document.getElementById(id);
-    let session;
-    let agentId;
+    let connection;
+    let sessionId;
     let nextId = 1;
     const pending = new Map();
 
     const events = new EventSource("/events");
-    events.addEventListener("session", (e) => { session = e.data; });
+    events.addEventListener("connection", (e) => { connection = e.data; });
     events.onmessage = (e) => {
       const message = JSON.parse(e.data);
-      if (message.method === "agent/update") {
+      if (message.method === "session/update") {
         update(message.params);
         return;
       }
@@ -48,7 +48,7 @@
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject });
         const fail = (error) => { pending.delete(id); reject(error); };
-        fetch(`/rpc?session=${session}`, {
+        fetch(`/rpc?connection=${connection}`, {
           method: "POST",
           body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
         }).then(
@@ -96,7 +96,7 @@
       input.textContent = JSON.stringify(request.input, null, 2);
       const answer = (response) => {
         showError();
-        rpc("agent/approve", { agent_id: agentId, request_id: requestId, response })
+        rpc("session/approve", { session_id: sessionId, request_id: requestId, response })
           .then(() => box.remove(), showError);
       };
       const allow = document.createElement("button");
@@ -113,17 +113,15 @@
       e.preventDefault();
       showError();
       const form = new FormData(e.target);
-      $("agent").textContent = "Starting…";
-      rpc("agent/create", { workspace: form.get("workspace"), model: form.get("model") }).then(
-        (result) => {
-          agentId = result.agent_id;
-          $("agent").textContent = agentId;
-        },
-        (error) => {
-          $("agent").textContent = "";
-          showError(error);
-        },
-      );
+      rpc("workspace/create", { path: form.get("workspace") })
+        .then((result) => rpc("session/create", { workspace_id: result.workspace_id, model: form.get("model") }))
+        .then(
+          (result) => {
+            sessionId = result.session_id;
+            $("session").textContent = sessionId;
+          },
+          showError,
+        );
     };
 
     $("send").onsubmit = (e) => {
@@ -132,7 +130,7 @@
       const text = new FormData(e.target).get("text");
       // Updates can arrive before the response, so show the prompt first.
       $("output").textContent += `> ${text}\n\n`;
-      rpc("agent/send", { agent_id: agentId, text }).then(() => e.target.reset(), showError);
+      rpc("session/send", { session_id: sessionId, text }).then(() => e.target.reset(), showError);
     };
   </script>
 </body>

@@ -1,9 +1,10 @@
 package agent
 
 import (
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
+
+	"github.com/kkestell/ox/internal/claude"
 )
 
 type Update struct {
@@ -33,7 +34,7 @@ func (a *Agent) submit(s Subscriber, text string) (string, error) {
 	if !a.idle() {
 		return "", ErrBusy
 	}
-	prompt := &submission{id: newID(), approvals: make(map[string]json.RawMessage)}
+	prompt := &submission{id: claude.NewUUID(), approvals: make(map[string]json.RawMessage)}
 	if err := a.input.Prompt(prompt.id, text); err != nil {
 		return "", fmt.Errorf("send prompt to Claude: %w", err)
 	}
@@ -84,12 +85,4 @@ func (a *Agent) publish(update Update) {
 			delete(a.subscribers, s)
 		}
 	}
-}
-
-func newID() string {
-	var id [16]byte
-	rand.Read(id[:])
-	id[6] = id[6]&0x0f | 0x40
-	id[8] = id[8]&0x3f | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:])
 }

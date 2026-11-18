@@ -60,7 +60,7 @@ func (a *Agent) reconfigure(config Configuration, reply chan error) {
 
 func (a *Agent) sendControl() {
 	c := a.config
-	c.requestID = newID()
+	c.requestID = claude.NewUUID()
 	if err := a.input.Control(c.requestID, c.requests[0]); err != nil {
 		a.endConfiguration(c.fail(err))
 		return

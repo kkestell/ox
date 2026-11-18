@@ -42,7 +42,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	r := &relay{socket: path, sessions: make(map[string]net.Conn)}
+	r := &relay{socket: path, conns: make(map[string]net.Conn)}
 	http.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
 		page.Execute(w, struct{ Workspace string }{workspace})
 	})
@@ -52,16 +52,16 @@ func main() {
 	log.Fatal(http.ListenAndServe(*addr, nil))
 }
 
-// relay holds one oxd connection per open page, keyed by session ID.
+// relay holds one oxd connection per open page, keyed by connection ID.
 type relay struct {
-	socket   string
-	mu       sync.Mutex
-	sessions map[string]net.Conn
+	socket string
+	mu     sync.Mutex
+	conns  map[string]net.Conn
 }
 
-// events opens a session: it connects to oxd, sends the session ID as a
-// "session" event, then forwards every line from oxd as a message until the
-// page or oxd closes.
+// events opens a connection to oxd, sends its ID as a "connection" event,
+// then forwards every line from oxd as a message until the page or oxd
+// closes.
 func (r *relay) events(w http.ResponseWriter, req *http.Request) {
 	conn, err := net.Dial("unix", r.socket)
 	if err != nil {
@@ -71,11 +71,11 @@ func (r *relay) events(w http.ResponseWriter, req *http.Request) {
 	defer conn.Close()
 	id := rand.Text()
 	r.mu.Lock()
-	r.sessions[id] = conn
+	r.conns[id] = conn
 	r.mu.Unlock()
 	defer func() {
 		r.mu.Lock()
-		delete(r.sessions, id)
+		delete(r.conns, id)
 		r.mu.Unlock()
 	}()
 	go func() {
@@ -85,7 +85,7 @@ func (r *relay) events(w http.ResponseWriter, req *http.Request) {
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	flusher := w.(http.Flusher)
-	fmt.Fprintf(w, "event: session\ndata: %s\n\n", id)
+	fmt.Fprintf(w, "event: connection\ndata: %s\n\n", id)
 	flusher.Flush()
 	lines := bufio.NewReader(conn)
 	for {
@@ -98,14 +98,14 @@ func (r *relay) events(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-// rpc writes one JSON-RPC request from the page to its session's connection.
-// The response arrives on the session's event stream.
+// rpc writes one JSON-RPC request from the page to its oxd connection. The
+// response arrives on the connection's event stream.
 func (r *relay) rpc(w http.ResponseWriter, req *http.Request) {
 	r.mu.Lock()
-	conn := r.sessions[req.URL.Query().Get("session")]
+	conn := r.conns[req.URL.Query().Get("connection")]
 	r.mu.Unlock()
 	if conn == nil {
-		http.Error(w, "unknown session", http.StatusNotFound)
+		http.Error(w, "unknown connection", http.StatusNotFound)
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(req.Body, 1<<20))

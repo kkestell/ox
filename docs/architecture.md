@@ -1,7 +1,8 @@
 # Ox architecture
 
-`oxd` is a daemon that runs Claude Code processes as agents and serves them to
-clients over a Unix socket. `ox` (`cmd/ox`) serves the web UI, embedded from
+`oxd` is a daemon that keeps workspaces and Claude Code sessions, runs a
+Claude process for each session in use, and serves them to clients over a
+Unix socket. `ox` (`cmd/ox`) serves the web UI, embedded from
 `cmd/ox/web`. It gives each open page its own `oxd` connection: lines from
 `oxd` reach the page as Server-Sent Events on `/events`, and the page posts
 JSON-RPC requests to `/rpc`. The page speaks the `oxd` protocol directly.
@@ -9,9 +10,11 @@ JSON-RPC requests to `/rpc`. The page speaks the `oxd` protocol directly.
 Each layer of `oxd` depends only on the layers below it.
 
 ```
-cmd/oxd            socket path, signals
+cmd/oxd            socket and state paths, signals
    │
-internal/server    connections, agent table, JSON-RPC methods
+internal/server    connections, sessions, JSON-RPC methods
+   │         │    │
+   │         │   internal/store     workspace and session records in a JSON file
    │         │
    │   internal/jsonrpc   message framing and envelopes
    │
@@ -22,11 +25,26 @@ internal/claude    Claude Code subprocess and its stream-json wire format
 
 | Package | Owns |
 | --- | --- |
-| `cmd/oxd` | Choosing the socket, starting the server, and stopping it on a signal. |
-| `server` | Client connections, the table of agents by ID, and the mapping from each method to an agent operation and its error codes. Each connection writes through its own queue, so agents never wait on a client. |
+| `cmd/oxd` | Choosing the socket and state file, starting the server, and stopping it on a signal. |
+| `server` | Client connections, the sessions and the process running each, and the mapping from each method to a session operation and its error codes. Each connection writes through its own queue, so agents never wait on a client. |
+| `store` | Loading and saving the state file. |
 | `jsonrpc` | Request validation and the response and notification types. |
 | `agent` | Prompts, approvals, and configuration for one Claude process, and publishing progress to attached subscribers. |
 | `claude` | Starting and initializing Claude, parsing its output into messages, and writing its input messages. |
+
+## Sessions
+
+The server loads the stored workspaces and sessions at startup, all parked,
+and saves the state file whenever a record changes. A session's ID is the
+Claude session ID, so each process it starts names the same conversation: the
+first with `--session-id`, and later ones with `--resume` once the first
+prompt's result shows Claude has written the transcript. Each process receives
+the session's stored model, effort, and permission mode.
+
+A session's lock is held while its process starts, so it runs at most one.
+The session keeps the connections attached to it and attaches them to each
+new process before any prompt runs. A session parks when its process exits;
+the server notices the exit the next time it looks at the session.
 
 ## Agents
 
@@ -50,5 +68,5 @@ alongside the phase. The agent accepts a prompt or configuration only when it
 is `available` and Claude is `idle`.
 
 Subscribers receive updates about the current prompt. The server attaches a
-connection when it sends a prompt or calls `agent/attach`, and a connection is
-detached once it has closed.
+connection when it sends a prompt or calls `session/attach`, and a connection
+is detached once it has closed.
