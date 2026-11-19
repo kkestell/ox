@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/kkestell/ox/internal/paths"
@@ -35,17 +36,46 @@ func main() {
 		log.Fatal(err)
 	}
 
-	r := &relay{socket: *socketPath, conns: make(map[string]net.Conn)}
-	http.Handle("GET /", http.FileServerFS(web))
-	http.HandleFunc("GET /events", r.events)
-	http.HandleFunc("POST /rpc", r.rpc)
-	log.Fatal(http.ListenAndServe(*addr, nil))
+	host, _, err := net.SplitHostPort(*addr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	r := &relay{socket: *socketPath, host: host, conns: make(map[string]net.Conn)}
+	log.Fatal(http.ListenAndServe(*addr, r.handler(web)))
 }
 
 type relay struct {
 	socket string
+	host   string // the host given to -addr
 	mu     sync.Mutex
 	conns  map[string]net.Conn
+}
+
+// handler serves the web UI, /events, and /rpc.
+func (r *relay) handler(web fs.FS) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("GET /", http.FileServerFS(web))
+	mux.Handle("GET /events", r.checkHost(http.HandlerFunc(r.events)))
+	mux.Handle("POST /rpc", r.checkHost(http.NewCrossOriginProtection().Handler(http.HandlerFunc(r.rpc))))
+	return mux
+}
+
+// checkHost refuses a request not addressed to a loopback name or the host
+// given to -addr. A page whose domain rebinds to this address is same-origin
+// to the browser, but its requests still name that domain in Host.
+func (r *relay) checkHost(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		host, _, err := net.SplitHostPort(req.Host)
+		if err != nil {
+			host = req.Host
+		}
+		switch strings.Trim(host, "[]") {
+		case "localhost", "127.0.0.1", "::1", r.host:
+			next.ServeHTTP(w, req)
+		default:
+			http.Error(w, "unknown host", http.StatusForbidden)
+		}
+	})
 }
 
 func (r *relay) events(w http.ResponseWriter, req *http.Request) {

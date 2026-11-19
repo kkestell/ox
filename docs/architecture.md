@@ -119,6 +119,9 @@ and `/rpc` to `ox`.
 
 Each page gets an `oxd` connection through `ox`: `/events` relays socket lines
 as Server-Sent Events, and `/rpc` posts the page's JSON-RPC requests to the socket.
+`ox` answers both only when the request's `Host` names `localhost`, `127.0.0.1`,
+`[::1]`, or the host given to `-addr`, and refuses an `/rpc` post from another
+origin, so a page whose domain rebinds to the relay's address cannot reach `oxd`.
 
 | File | Owns |
 | --- | --- |
