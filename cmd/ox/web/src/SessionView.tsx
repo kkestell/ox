@@ -26,7 +26,7 @@ export function SessionView(props: { session: Session }) {
 
   return (
     <>
-      <p>
+      <p class="context">
         {workspace()} · {props.session.harness} · {props.session.id}
       </p>
       <div class="log">
@@ -41,17 +41,12 @@ export function SessionView(props: { session: Session }) {
         </For>
       </div>
       <Show when={error()}>{(error) => <p role="alert">{error()}</p>}</Show>
-      {/* The settings are their own form, so Send joins the prompt's form by id. */}
       <div class="composer">
-        <form id={`prompt-${props.session.id}`} onSubmit={send}>
-          <textarea name="text" rows="3" placeholder="Prompt" required />
+        <form class="box" onSubmit={send}>
+          <textarea name="text" rows="1" placeholder="Prompt" required />
+          <button type="submit" class="icon send" aria-label="Send" title="Send" />
         </form>
-        <div class="row">
-          <SettingsForm session={props.session} attempt={attempt} />
-          <button type="submit" form={`prompt-${props.session.id}`}>
-            Send
-          </button>
-        </div>
+        <SettingsForm session={props.session} attempt={attempt} />
       </div>
     </>
   );
@@ -81,12 +76,15 @@ export function NewSessionView(props: { workspaceId: string; onStarted(id: strin
 
   return (
     <>
-      <p>{workspace()} · new session</p>
+      <p class="context">{workspace()} · new session</p>
       <div class="log" />
       <Show when={error()}>{(error) => <p role="alert">{error()}</p>}</Show>
       <form class="composer" onSubmit={send}>
-        <textarea name="text" rows="3" placeholder="Prompt" required autofocus />
-        <div class="row">
+        <div class="box">
+          <textarea name="text" rows="1" placeholder="Prompt" required autofocus />
+          <button type="submit" class="icon send" aria-label="Send" title="Send" />
+        </div>
+        <div class="settings">
           <select name="harness" onChange={(event) => setHarness(event.currentTarget.value)}>
             <For each={Object.keys(ox.state.harnesses)}>
               {(name) => <option selected={name === harness()}>{name}</option>}
@@ -98,7 +96,6 @@ export function NewSessionView(props: { workspaceId: string; onStarted(id: strin
               <SettingsFields harness={catalog} value={defaultSettings(harness(), catalog, ox.state.defaults)} />
             )}
           </Show>
-          <button type="submit">Send</button>
         </div>
       </form>
     </>
@@ -126,19 +123,24 @@ function Transcript(props: { entries: Entry[] }) {
   );
 }
 
-// ToolCall shows a tool call as its name and first string input, expanding
-// to its full input and result.
+// ToolCall shows a tool call as its status, name, and first string input,
+// expanding to its full input and result.
 function ToolCall(props: { tool: Tool }) {
-  const summary = () => {
+  const detail = () => {
     const first = Object.values(props.tool.input).find((v) => typeof v === "string") ?? "";
-    const status = props.tool.result ? (props.tool.result.is_error ? " (error)" : "") : " …";
-    return `${props.tool.name} ${first.split("\n")[0].slice(0, 120)}${status}`;
+    return first.split("\n")[0].slice(0, 120);
   };
+  const status = () => (props.tool.result ? (props.tool.result.is_error ? "failed" : "done") : "running");
   return (
-    <details class={{ error: !!props.tool.result?.is_error }}>
-      <summary>{summary()}</summary>
-      <pre>{JSON.stringify(props.tool.input, null, 2)}</pre>
-      <pre>{props.tool.result?.text}</pre>
+    <details class="tool">
+      <summary>
+        <span class={["marker", status()]} role="img" title={status()} aria-label={status()} />
+        <span class="name">{props.tool.name}</span> <span class="detail">{detail()}</span>
+      </summary>
+      <div class="card">
+        <pre>{JSON.stringify(props.tool.input, null, 2)}</pre>
+        <Show when={props.tool.result}>{(result) => <pre>{result().text}</pre>}</Show>
+      </div>
     </details>
   );
 }
@@ -150,6 +152,7 @@ function ApprovalRequest(props: { approval: Approval; onAnswer(response: Approva
       <pre>{JSON.stringify(props.approval.request.input, null, 2)}</pre>
       <button
         type="button"
+        class="primary"
         onClick={() => props.onAnswer({ behavior: "allow", updatedInput: snapshot(props.approval.request.input) })}
       >
         Allow
@@ -182,6 +185,7 @@ function SettingsForm(props: { session: Session; attempt(request: Promise<unknow
     <Show when={ox.state.harnesses[props.session.harness]}>
       {(harness) => (
         <form
+          class="settings"
           onChange={(event) => {
             const changes = changedSettings(harness(), shown(), new FormData(event.currentTarget));
             if (Object.keys(changes).length) props.attempt(configure({ ...shown(), ...changes }, changes));

@@ -46,16 +46,14 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
 
   return (
     <nav>
-      <button type="button" onClick={open}>
-        Add workspace
-      </button>
+      <button type="button" class="icon folder-plus" aria-label="Add workspace" title="Add workspace" onClick={open} />
       <dialog ref={dialog}>
         <form onSubmit={add}>
           <input name="path" placeholder="/absolute/path/to/directory" size="40" required autofocus />
-          <button type="submit">Add</button>
           <button type="button" onClick={() => dialog.close()}>
             Cancel
           </button>
+          <button type="submit">Add</button>
         </form>
         <Show when={error()}>{(error) => <p role="alert">{error()}</p>}</Show>
       </dialog>
@@ -63,11 +61,15 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
       <For each={ox.state.workspaces}>
         {(workspace) => (
           <>
-            <p>
-              {workspace.path}{" "}
-              <button type="button" onClick={() => props.onSelect({ kind: "draft", workspaceId: workspace.id })}>
-                New session
-              </button>
+            <p title={workspace.path}>
+              <span class="name">{workspace.path.split("/").at(-1)}</span>
+              <button
+                type="button"
+                class="icon plus"
+                aria-label="New session"
+                title="New session"
+                onClick={() => props.onSelect({ kind: "draft", workspaceId: workspace.id })}
+              />
             </p>
             <ul>
               <For each={sessionsOf(workspace.id)}>
@@ -83,10 +85,13 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
                       aria-label={session.state}
                     />
                     <span class="title">{title(session)}</span>
-                    {session.approvals.length ? " (approval)" : ""}
-                    <button type="button" onClick={(event) => destroy(event, session.id)}>
-                      Delete
-                    </button>
+                    <button
+                      type="button"
+                      class="icon trash"
+                      aria-label="Delete session"
+                      title="Delete session"
+                      onClick={(event) => destroy(event, session.id)}
+                    />
                   </li>
                 )}
               </For>
