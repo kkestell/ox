@@ -74,3 +74,5 @@ that cannot be deleted if necessary.
 - `make test` and `make dev` build with the race detector. A data race fails
   the test, or stops `oxd` with the race's report.
 - Report what was verified and any live checks that could not be run.
+- The user checks UI changes by eye. Report the views a change touches. Open
+  a browser only when the user asks, and drive it with Playwright.
