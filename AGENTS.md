@@ -74,5 +74,27 @@ that cannot be deleted if necessary.
 - `make test` and `make dev` build with the race detector. A data race fails
   the test, or stops `oxd` with the race's report.
 - Report what was verified and any live checks that could not be run.
-- The user checks UI changes by eye. Report the views a change touches. Open
-  a browser only when the user asks, and drive it with Playwright.
+
+## Documentation
+
+The code describes the implementation, and Git history records changes.
+Comments explain non-obvious reasons or external rules. Each document owns the
+facts listed for it:
+
+- `AGENTS.md`: instructions for agents working anywhere in the repository.
+- `cmd/ox/web/AGENTS.md`: instructions for agents working on the web client,
+  and the Solid 2.0 reference.
+- `docs/architecture.md`: how `oxd` and `ox` are built: their components, the
+  boundaries between them, and what each owns.
+- `docs/protocol.md`: the interface `oxd` serves: messages, methods, updates,
+  events, and errors.
+- `docs/claude-code.md`: how Claude Code behaves when driven with `claude -p`
+  and stream-json, as observed.
+- `docs/known-issues.md`: confirmed defects that are not fixed yet, kept as
+  the Defects section describes.
+- `.agents/reviews/`: reviews and audits of the repository.
+
+Every fact lives in one place. A document that needs a fact owned by another
+links to it instead of restating it. Most changes need no doc edits: edit a
+document only when the change alters a fact it owns. Correct or delete a wrong
+passage without expanding it. Add a document or a section only when asked.
