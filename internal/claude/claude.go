@@ -113,7 +113,21 @@ func initialize(input io.Writer, output *bufio.Reader) error {
 	_, writeErr := io.WriteString(input, request+"\n")
 	var reason string
 	for {
+		// A line that ends at EOF is still a line.
 		line, err := output.ReadBytes('\n')
+		var m message
+		switch {
+		case strings.TrimSpace(string(line)) == "":
+		case json.Unmarshal(line, &m) != nil:
+			reason = strings.TrimSpace(string(line))
+		case m.Type == "result" && m.failed():
+			reason = m.errorText()
+		case m.Type == "control_response" && m.Response.RequestID == "initialize":
+			if m.Response.Subtype != "success" {
+				return fmt.Errorf("Claude refused initialization (%s): %s", m.Response.Subtype, m.Response.Error)
+			}
+			return nil
+		}
 		if err != nil {
 			switch {
 			case reason != "":
@@ -123,24 +137,6 @@ func initialize(input io.Writer, output *bufio.Reader) error {
 			}
 			return fmt.Errorf("read startup response: %w", err)
 		}
-		var m message
-		if json.Unmarshal(line, &m) != nil {
-			if text := strings.TrimSpace(string(line)); text != "" {
-				reason = text
-			}
-			continue
-		}
-		if m.Type == "result" && m.failed() {
-			reason = m.errorText()
-			continue
-		}
-		if m.Type != "control_response" || m.Response.RequestID != "initialize" {
-			continue
-		}
-		if m.Response.Subtype != "success" {
-			return fmt.Errorf("Claude refused initialization (%s): %s", m.Response.Subtype, m.Response.Error)
-		}
-		return nil
 	}
 }
 
@@ -155,13 +151,14 @@ func (p *process) read(output *bufio.Reader, events chan<- agent.Event) {
 		exited <- err
 	}()
 	for {
+		// A line that ends at EOF is still a line.
 		line, err := output.ReadBytes('\n')
-		if err != nil {
-			break
-		}
 		var m message
 		if json.Unmarshal(line, &m) == nil {
 			events <- m
+		}
+		if err != nil {
+			break
 		}
 	}
 	p.output.Close()

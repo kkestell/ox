@@ -19,6 +19,7 @@ func TestStartupFailureKeepsClaudesReason(t *testing.T) {
 	for name, output := range map[string]string{
 		"error result": `{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["No conversation found with session ID: 1111"]}` + "\n",
 		"plain text":   "No conversation found with session ID: 1111\n",
+		"line at EOF":  "No conversation found with session ID: 1111",
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, input := range []io.Writer{io.Discard, closedPipe(t)} {
@@ -38,10 +39,10 @@ func closedPipe(t *testing.T) io.Writer {
 }
 
 // A child that inherits Claude's stdout keeps the pipe open after Claude
-// exits, as the injected fault in known-issues.md did.
+// exits. Claude's last line, here without a newline, still arrives first.
 func TestExitReportedWhileAChildHoldsStdout(t *testing.T) {
 	pid := filepath.Join(t.TempDir(), "pid")
-	standIn(t, "sleep 15 2>/dev/null &\necho $! > "+pid+"\nexit 3\n")
+	standIn(t, "sleep 15 2>/dev/null &\necho $! > "+pid+"\nprintf '{\"type\":\"result\"}'\nexit 3\n")
 	t.Cleanup(func() {
 		if data, err := os.ReadFile(pid); err == nil {
 			exec.Command("kill", strings.TrimSpace(string(data))).Run()
@@ -52,10 +53,17 @@ func TestExitReportedWhileAChildHoldsStdout(t *testing.T) {
 		t.Fatal(err)
 	}
 	timeout := time.After(5 * time.Second)
+	var result bool
 	for {
 		select {
 		case event := <-events:
+			if m, ok := event.(message); ok && m.Type == "result" {
+				result = true
+			}
 			if exit, ok := event.(processExit); ok {
+				if !result {
+					t.Fatal("Claude's last line was dropped")
+				}
 				if exit.err == nil || !strings.Contains(exit.err.Error(), "exit status 3") {
 					t.Fatalf("unexpected exit: %v", exit.err)
 				}
