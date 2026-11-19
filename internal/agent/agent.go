@@ -53,6 +53,7 @@ type Event any
 type Start func(Options) (Agent, error)
 
 type Options struct {
+	SessionID string // the session's ID, which the harness's own log lines name
 	Workspace string
 	// Resume is the harness's token for the conversation to continue; empty
 	// starts a new one.

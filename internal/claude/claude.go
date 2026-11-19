@@ -2,11 +2,13 @@ package claude
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"slices"
@@ -40,7 +42,9 @@ func CheckEffort(effort string) error {
 	return nil
 }
 
-func startProcess(workspace, sessionID string, resume bool, settings agent.Settings, events chan<- agent.Event) (*process, *writer, error) {
+// startProcess starts Claude for the conversation sessionID. Its stderr goes
+// to the log under logID, the Ox session's ID.
+func startProcess(workspace, logID, sessionID string, resume bool, settings agent.Settings, events chan<- agent.Event) (*process, *writer, error) {
 	if err := CheckEffort(settings.Effort); err != nil {
 		return nil, nil, err
 	}
@@ -97,7 +101,7 @@ func startProcess(workspace, sessionID string, resume bool, settings agent.Setti
 		return nil, nil, err
 	}
 	stderrTail := make(chan string, 1)
-	go logStderr(stderr, stderrTail)
+	go logStderr(stderr, logID, stderrTail)
 
 	output := bufio.NewReader(stdout)
 	// The deadline ends the read even when a child of Claude holds stdout.
@@ -171,15 +175,26 @@ func initialize(input io.Writer, output *bufio.Reader, diagnostic func() string)
 // stderrKept is how much of Claude's stderr a failed start reports.
 const stderrKept = 2048
 
-// logStderr copies Claude's stderr to the daemon's log until the pipe closes
-// or its read deadline passes, then closes it and sends the last of it.
-func logStderr(stderr *os.File, tail chan<- string) {
-	var last []byte
+// logStderr logs each line of Claude's stderr under logID until the pipe
+// closes or its read deadline passes, then closes it and sends the last of it.
+func logStderr(stderr *os.File, logID string, tail chan<- string) {
+	var last, line []byte
 	cut := false
 	buf := make([]byte, 4096)
 	for {
 		n, err := stderr.Read(buf)
-		os.Stderr.Write(buf[:n])
+		line = append(line, buf[:n]...)
+		for {
+			i := bytes.IndexByte(line, '\n')
+			if i < 0 {
+				break
+			}
+			log.Printf("session %s: claude: %s", logID, line[:i])
+			line = line[i+1:]
+		}
+		if err != nil && len(line) > 0 {
+			log.Printf("session %s: claude: %s", logID, line)
+		}
 		last = append(last, buf[:n]...)
 		if len(last) > stderrKept {
 			last, cut = last[len(last)-stderrKept:], true

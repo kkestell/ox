@@ -49,7 +49,7 @@ func TestExitReportedWhileAChildHoldsStdout(t *testing.T) {
 		}
 	})
 	events := make(chan agent.Event)
-	if _, _, err := startProcess(t.TempDir(), newUUID(), false, agent.Settings{}, events); err != nil {
+	if _, _, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, agent.Settings{}, events); err != nil {
 		t.Fatal(err)
 	}
 	timeout := time.After(5 * time.Second)
@@ -94,7 +94,7 @@ func TestStartupFailureOnStderr(t *testing.T) {
 			})
 			script(t, "#!/bin/sh\necho \"warning: a warning\" >&2\n"+before+"echo \""+refusal+"\" >&2\nexit 1\n")
 			start := time.Now()
-			_, _, err := startProcess(workspace, newUUID(), false, agent.Settings{}, make(chan agent.Event))
+			_, _, err := startProcess(workspace, "ox-session", newUUID(), false, agent.Settings{}, make(chan agent.Event))
 			if err == nil || !strings.Contains(err.Error(), refusal) {
 				t.Fatalf("startup failure lost Claude's stderr: %v", err)
 			}
@@ -126,7 +126,7 @@ func script(t *testing.T, script string) {
 func TestUnknownEffortFailsToStart(t *testing.T) {
 	standIn(t, "exec sleep 15\n")
 	for effort, known := range map[string]bool{"": true, "high": true, "hgih": false} {
-		p, input, err := startProcess(t.TempDir(), newUUID(), false, agent.Settings{Effort: effort}, make(chan agent.Event, 1))
+		p, input, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, agent.Settings{Effort: effort}, make(chan agent.Event, 1))
 		if p != nil {
 			input.w.(io.Closer).Close()
 			p.cmd.Process.Kill()

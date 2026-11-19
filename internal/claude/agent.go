@@ -52,7 +52,7 @@ func Start(options agent.Options) (agent.Agent, error) {
 		sessionID = newUUID()
 	}
 	events := make(chan agent.Event)
-	proc, input, err := startProcess(options.Workspace, sessionID, resume, options.Settings, events)
+	proc, input, err := startProcess(options.Workspace, options.SessionID, sessionID, resume, options.Settings, events)
 	if err != nil {
 		return nil, err
 	}

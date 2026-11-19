@@ -104,6 +104,7 @@ func (sess *session) start() error {
 		return fmt.Errorf("unknown harness %q", sess.harness)
 	}
 	a, err := start(agent.Options{
+		SessionID:   sess.id,
 		Workspace:   sess.workspace,
 		Resume:      sess.resumeToken,
 		Settings:    sess.settings,
