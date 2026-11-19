@@ -134,7 +134,7 @@ outlives the session's view, so leaving the view or reconnecting keeps the
 text and repeats no request. A send and a configuration exclude each other.
 The settings form sends a patch to
 [`session/configure`](protocol.md#sessionconfigure) and shows the requested
-values, with Send disabled, until the request settles; then it shows the
-stored settings. The new-session view creates the session and hands its text
+values, each changed one with a spinner, and Send disabled until the request
+settles; then it shows the stored settings. The new-session view creates the session and hands its text
 to the session's control, which sends the first prompt. The page then selects
 the session unless the user has selected something else.

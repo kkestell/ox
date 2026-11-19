@@ -7,11 +7,11 @@ contract that defines its details. Reviews check changes against them.
    starts with the session's settings, and
    [`session/configure`](protocol.md#sessionconfigure) reserves the session
    until Claude acknowledges a change. While a page's own change is in
-   flight, it shows the requested values and holds Send; once the change
-   settles, it shows the session's settings, which after a partial or
-   unstored change are the ones the process took. A change made from another page
-   appears when its `session/configured` event arrives. A mode change Claude
-   makes itself is [not yet tracked](todo.md#check-first).
+   flight, it shows the requested values marked pending and holds Send;
+   once the change settles, it shows the session's settings, which after a
+   partial or unstored change are the ones the process took. A change made
+   from another page appears when its `session/configured` event arrives. A
+   mode change Claude makes itself is [not yet tracked](todo.md#check-first).
 
 2. **Typed text stays until it is sent.** The composer clears only the text
    it sent, once `oxd` accepts it. Text typed while a send or a new

@@ -62,6 +62,9 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: 
 .chevron-down { --icon: url(lucide-static/icons/chevron-down.svg); }
 .search-icon { --icon: url(lucide-static/icons/search.svg); }
 .check { --icon: url(lucide-static/icons/check.svg); }
+.loader { --icon: url(lucide-static/icons/loader-circle.svg); }
+.loader::before { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .marker.done { --icon: url(lucide-static/icons/check.svg); }
 .marker.failed { --icon: url(lucide-static/icons/circle-alert.svg); color: var(--destructive); }
 .marker.stopped { --icon: url(lucide-static/icons/circle-stop.svg); color: var(--muted-foreground); }

@@ -7,11 +7,13 @@ export type ModelChoice = { harness: string; model: string; effort: string };
 type Entry = { harness: string; model: Model };
 
 // ModelPicker chooses a model from every harness in harnesses, and its effort.
-// A model keeps the current effort when it offers it.
+// A model keeps the current effort when it offers it. A pending value shows a
+// spinner until it is confirmed.
 export function ModelPicker(props: {
   harnesses: Record<string, Harness>;
   value: ModelChoice;
   disabled?: boolean;
+  pending?: boolean;
   onChange(value: ModelChoice): void;
 }) {
   const id = createUniqueId();
@@ -64,6 +66,7 @@ export function ModelPicker(props: {
         class="picker"
         popovertarget={id}
         disabled={props.disabled}
+        aria-busy={props.pending ? "true" : undefined}
         style={{ "anchor-name": `--${id}` }}
       >
         <HarnessIcon harness={props.value.harness} />
@@ -71,7 +74,7 @@ export function ModelPicker(props: {
         <Show when={effortName()}>
           <span class="effort-name">{effortName()}</span>
         </Show>
-        <span class="icon chevron-down" />
+        <span class={["icon", props.pending ? "loader" : "chevron-down"]} />
       </button>
       <div
         id={id}
@@ -172,12 +175,14 @@ function Effort(props: { efforts: Option[]; value: string; disabled?: boolean; o
   );
 }
 
-// A saved setting can outlive its entry in the harness catalog.
+// A saved setting can outlive its entry in the harness catalog. A pending
+// value shows a spinner until it is confirmed.
 export function Select(props: {
   name: string;
   options: Option[];
   value: string;
   disabled?: boolean;
+  pending?: boolean;
   onChange?(id: string): void;
 }) {
   const options = () =>
@@ -192,6 +197,7 @@ export function Select(props: {
       <select
         name={props.name}
         disabled={props.disabled}
+        aria-busy={props.pending ? "true" : undefined}
         onPointerDown={() => setPointer(true)}
         onBlur={() => setPointer(false)}
         onChange={(event) => props.onChange?.(event.currentTarget.value)}
@@ -204,7 +210,7 @@ export function Select(props: {
           )}
         </For>
       </select>
-      <span class="icon chevron-down" />
+      <span class={["icon", props.pending ? "loader" : "chevron-down"]} />
     </span>
   );
 }

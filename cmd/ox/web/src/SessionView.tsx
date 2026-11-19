@@ -228,12 +228,14 @@ function ToolCall(props: { tool: Tool }) {
 }
 
 // SettingsForm changes a session's settings through its control, which shows
-// a change while it is in flight and the stored settings once it settles.
+// a change as pending while it is in flight and the stored settings once it
+// settles.
 function SettingsForm(props: { session: Session; control: SessionControl }) {
   const ox = useOx();
   const configurable = () =>
     !props.control.busy() && (props.session.state === "idle" || props.session.state === "parked");
   const shown = () => props.control.requested() ?? props.session.settings;
+  const pending = (key: keyof Settings) => shown()[key] !== props.session.settings[key];
 
   // Once the session starts, the picker offers only its harness's models.
   return (
@@ -244,6 +246,7 @@ function SettingsForm(props: { session: Session; control: SessionControl }) {
             harnesses={{ [props.session.harness]: harness() }}
             value={{ harness: props.session.harness, model: shown().model, effort: shown().effort }}
             disabled={!configurable()}
+            pending={pending("model") || pending("effort")}
             onChange={(value) => props.control.configure({ model: value.model, effort: value.effort })}
           />
           <Select
@@ -251,6 +254,7 @@ function SettingsForm(props: { session: Session; control: SessionControl }) {
             options={harness().permission_modes}
             value={shown().permission_mode}
             disabled={!configurable()}
+            pending={pending("permission_mode")}
             onChange={(mode) => props.control.configure({ permission_mode: mode })}
           />
         </div>

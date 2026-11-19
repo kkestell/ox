@@ -76,28 +76,35 @@ test("a session created after the user moves on leaves the selection alone", asy
   await expect(page.locator(".reply")).toHaveText("You said: background start");
 });
 
-test("a pending configuration holds Send until it is confirmed", async ({ page }) => {
+test("a pending configuration shows as pending and holds Send until it is confirmed", async ({ page }) => {
   await open(page, services);
   await newSession(page, "configure me");
   const mode = page.locator("select[name=permission_mode]");
   const configure = await hold(page, "session/configure");
   await mode.selectOption("plan");
   await configure.arrived;
+  await expect(mode).toHaveAttribute("aria-busy", "true");
+  await expect(page.locator(".select .loader")).toBeVisible();
+  await expect(page.locator("button.picker")).not.toHaveAttribute("aria-busy");
   await prompt(page).fill("after configuring");
   await expect(send(page)).toBeDisabled();
   await prompt(page).press("Enter");
   configure.release();
   await expect(mode).toHaveValue("plan");
+  await expect(mode).not.toHaveAttribute("aria-busy");
+  await expect(page.locator(".select .chevron-down")).toBeVisible();
   await expect(send(page)).toBeEnabled();
   await expect(page.locator(".prompt")).toHaveText(["configure me"]);
 
   const failed = await hold(page, "session/configure");
   await mode.selectOption("manual");
   await failed.arrived;
+  await expect(mode).toHaveAttribute("aria-busy", "true");
   await expect(send(page)).toBeDisabled();
   failed.fail("configuration refused");
   await expect(page.getByRole("alert")).toHaveText("configuration refused");
   await expect(mode).toHaveValue("plan");
+  await expect(mode).not.toHaveAttribute("aria-busy");
   await send(page).click();
   await expect(page.locator(".reply").last()).toHaveText("You said: after configuring");
 });
