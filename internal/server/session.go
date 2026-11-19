@@ -174,12 +174,13 @@ func (sess *session) adopt(settings agent.Settings) {
 	sess.configured(settings)
 }
 
+// markResumable keeps the token even when storing it fails, as adopt keeps
+// settings: Claude has already started the conversation.
 func (sess *session) markResumable(token string) {
+	sess.resumeToken = token
 	if err := sess.save(sess.settings, token); err != nil {
 		log.Printf("mark session %s resumable: %v", sess.id, err)
-		return
 	}
-	sess.resumeToken = token
 }
 
 // lostConversation tells the user that the next prompt starts a new

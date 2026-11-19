@@ -383,6 +383,50 @@ func TestUnresumableConversationStartsAnew(t *testing.T) {
 	}
 }
 
+// A session keeps its conversation's resume token even when storing it fails,
+// so the next process resumes the conversation.
+func TestResumeTokenKeptWhenNotStored(t *testing.T) {
+	dir := t.TempDir()
+	args := filepath.Join(dir, "args")
+	// A stand-in for Claude that answers one prompt and exits.
+	script := "#!/bin/sh\necho \"$@\" >> " + args + "\n" +
+		"read line\n" +
+		`echo '{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}'` + "\n" +
+		"read prompt\n" +
+		`echo '{"type":"result","subtype":"success","is_error":false,"result":"done"}'` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	st := openStore(t)
+	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: dir, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Model: "m", PermissionMode: "plan", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(st, &config.Config{}, 0, map[string]agent.Start{"claude": claude.Start})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c := connect(t, s)
+
+	st.Close()
+	c.call("session/send", map[string]string{"session_id": "s", "text": "hi"})
+	c.update("s", "exited")
+	c.call("session/send", map[string]string{"session_id": "s", "text": "again"})
+	starts, err := os.ReadFile(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(starts)), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[1], "--resume=") {
+		t.Fatalf("the next process did not resume the conversation: %q", lines)
+	}
+}
+
 // A mode Claude changes itself, as it does when a plan is approved, reaches
 // every client and the store.
 func TestClaudeModeChangeIsAdopted(t *testing.T) {
