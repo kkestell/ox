@@ -1,6 +1,6 @@
 import { createSignal, For, Show } from "solid-js";
-import { useOx, type Session } from "./ox";
 import type { Selection } from "./App";
+import { type Session, useOx } from "./ox";
 
 export function Sidebar(props: { selected?: Selection; onSelect(selection: Selection): void }) {
   const ox = useOx();
@@ -46,11 +46,13 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
 
   return (
     <nav>
-      <button onClick={open}>Add workspace</button>
+      <button type="button" onClick={open}>
+        Add workspace
+      </button>
       <dialog ref={dialog}>
         <form onSubmit={add}>
           <input name="path" placeholder="/absolute/path/to/directory" size="40" required autofocus />
-          <button>Add</button>
+          <button type="submit">Add</button>
           <button type="button" onClick={() => dialog.close()}>
             Cancel
           </button>
@@ -63,7 +65,9 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
           <>
             <p>
               {workspace.path}{" "}
-              <button onClick={() => props.onSelect({ kind: "draft", workspaceId: workspace.id })}>New session</button>
+              <button type="button" onClick={() => props.onSelect({ kind: "draft", workspaceId: workspace.id })}>
+                New session
+              </button>
             </p>
             <ul>
               <For each={sessionsOf(workspace.id)}>
@@ -72,10 +76,17 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
                     class={{ selected: props.selected?.kind === "session" && props.selected.id === session.id }}
                     onClick={() => props.onSelect({ kind: "session", id: session.id })}
                   >
-                    <span class={["status", session.state]} role="img" title={session.state} aria-label={session.state} />
+                    <span
+                      class={["status", session.state]}
+                      role="img"
+                      title={session.state}
+                      aria-label={session.state}
+                    />
                     <span class="title">{title(session)}</span>
                     {session.approvals.length ? " (approval)" : ""}
-                    <button onClick={(event) => destroy(event, session.id)}>Delete</button>
+                    <button type="button" onClick={(event) => destroy(event, session.id)}>
+                      Delete
+                    </button>
                   </li>
                 )}
               </For>

@@ -34,13 +34,13 @@ body { font-family: var(--font-sans); line-height: var(--line-height); color: va
 #root { display: flex; }
 nav { flex: none; width: var(--sidebar-width); padding: var(--space-m); display: flex; flex-direction: column; gap: var(--space-m); border-right: var(--border); min-height: 100vh; }
 main { flex: 1; padding: var(--space-m); height: 100vh; display: flex; flex-direction: column; gap: var(--space-m); }
+button, select { padding: 0 var(--space-m); }
 .log { flex: 1; overflow-y: auto; }
 .composer { display: flex; flex-direction: column; gap: var(--space-s); }
 .composer textarea { display: block; width: 100%; padding: var(--space-s); }
 .composer .row, .composer .row form { display: flex; gap: var(--space-s); align-items: center; }
-.composer .row > button { margin-left: auto; }
 nav > button { align-self: flex-start; }
-button, select { padding: 0 var(--space-m); }
+.composer .row > button { margin-left: auto; }
 nav li { cursor: pointer; display: flex; align-items: center; gap: var(--space-s); }
 nav li .title { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 nav li.selected .title { font-weight: bold; }

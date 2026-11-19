@@ -20,7 +20,12 @@ export function SettingsFields(props: { harness: Harness; value: Settings; disab
       <Show when={efforts().length}>
         <Select name="effort" options={efforts()} value={props.value.effort} disabled={props.disabled} />
       </Show>
-      <Select name="permission_mode" options={props.harness.modes} value={props.value.permission_mode} disabled={props.disabled} />
+      <Select
+        name="permission_mode"
+        options={props.harness.modes}
+        value={props.value.permission_mode}
+        disabled={props.disabled}
+      />
     </>
   );
 }
@@ -39,7 +44,11 @@ function Select(props: {
       ? [...props.options, { id: props.value, name: props.value }]
       : props.options;
   return (
-    <select name={props.name} disabled={props.disabled} onChange={(event) => props.onChange?.(event.currentTarget.value)}>
+    <select
+      name={props.name}
+      disabled={props.disabled}
+      onChange={(event) => props.onChange?.(event.currentTarget.value)}
+    >
       <For each={options()}>
         {(option) => (
           <option value={option.id} selected={option.id === props.value}>

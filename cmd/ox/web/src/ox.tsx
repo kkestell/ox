@@ -1,12 +1,13 @@
-import { createContext, createSignal, createStore, onSettled, useContext, type ParentProps } from "solid-js";
-import { connect, RpcError, type Connection } from "./connection";
+import { createContext, createSignal, createStore, onSettled, type ParentProps, useContext } from "solid-js";
+import { type Connection, connect, RpcError } from "./connection";
 import {
-  notFound,
   type ApprovalRequest,
   type ApprovalResponse,
   type Defaults,
   type Harness,
+  type Methods,
   type Notification,
+  notFound,
   type SessionState,
   type Settings,
   type ToolResult,
@@ -38,7 +39,11 @@ export type Session = {
   approvals: Approval[];
 };
 
-const settingsOf = (p: Settings): Settings => ({ model: p.model, effort: p.effort, permission_mode: p.permission_mode });
+const settingsOf = (p: Settings): Settings => ({
+  model: p.model,
+  effort: p.effort,
+  permission_mode: p.permission_mode,
+});
 
 // apply adds one update, live or from history, to a session.
 function apply(session: Session, u: Update) {
@@ -107,7 +112,7 @@ function createOx() {
   // session destroyed before the response is not added; its destroyed event
   // has already arrived.
   async function load(id: string, workspaceId: string, harness: string, createdAt: string) {
-    let result;
+    let result: Methods["session/get"][1];
     try {
       result = await connection.rpc("session/get", { session_id: id });
     } catch (e) {
@@ -192,13 +197,18 @@ function createOx() {
     addWorkspace: (path: string) => connection.rpc("workspace/create", { path }),
     // startSession creates a session and sends its first prompt.
     async startSession(workspaceId: string, harness: string, settings: Settings, text: string) {
-      const { session_id } = await connection.rpc("session/create", { workspace_id: workspaceId, harness, ...settings });
+      const { session_id } = await connection.rpc("session/create", {
+        workspace_id: workspaceId,
+        harness,
+        ...settings,
+      });
       await connection.rpc("session/send", { session_id, text });
       return session_id;
     },
     send: (id: string, text: string) => connection.rpc("session/send", { session_id: id, text }),
     // configure changes only the settings given.
-    configure: (id: string, changes: Partial<Settings>) => connection.rpc("session/configure", { session_id: id, ...changes }),
+    configure: (id: string, changes: Partial<Settings>) =>
+      connection.rpc("session/configure", { session_id: id, ...changes }),
     approve: (id: string, requestId: string, response: ApprovalResponse) =>
       connection.rpc("session/approve", { session_id: id, request_id: requestId, response }),
     destroy: (id: string) => connection.rpc("session/destroy", { session_id: id }),

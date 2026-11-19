@@ -1,5 +1,5 @@
-import { action, createOptimistic, createSignal, For, Match, Show, snapshot, Switch } from "solid-js";
-import { useOx, type Approval, type Entry, type Session } from "./ox";
+import { action, createOptimistic, createSignal, For, Match, Show, Switch, snapshot } from "solid-js";
+import { type Approval, type Entry, type Session, useOx } from "./ox";
 import type { ApprovalResponse, Settings } from "./protocol";
 import { changedSettings, defaultSettings, SettingsFields, settingsFrom } from "./SettingsFields";
 
@@ -48,7 +48,9 @@ export function SessionView(props: { session: Session }) {
         </form>
         <div class="row">
           <SettingsForm session={props.session} attempt={attempt} />
-          <button form={`prompt-${props.session.id}`}>Send</button>
+          <button type="submit" form={`prompt-${props.session.id}`}>
+            Send
+          </button>
         </div>
       </div>
     </>
@@ -96,7 +98,7 @@ export function NewSessionView(props: { workspaceId: string; onStarted(id: strin
               <SettingsFields harness={catalog} value={defaultSettings(harness(), catalog, ox.state.defaults)} />
             )}
           </Show>
-          <button>Send</button>
+          <button type="submit">Send</button>
         </div>
       </form>
     </>
@@ -146,10 +148,15 @@ function ApprovalRequest(props: { approval: Approval; onAnswer(response: Approva
     <fieldset>
       <legend>{props.approval.request.tool_name}</legend>
       <pre>{JSON.stringify(props.approval.request.input, null, 2)}</pre>
-      <button onClick={() => props.onAnswer({ behavior: "allow", updatedInput: snapshot(props.approval.request.input) })}>
+      <button
+        type="button"
+        onClick={() => props.onAnswer({ behavior: "allow", updatedInput: snapshot(props.approval.request.input) })}
+      >
         Allow
       </button>
-      <button onClick={() => props.onAnswer({ behavior: "deny", message: "Denied by user" })}>Deny</button>
+      <button type="button" onClick={() => props.onAnswer({ behavior: "deny", message: "Denied by user" })}>
+        Deny
+      </button>
     </fieldset>
   );
 }

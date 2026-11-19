@@ -42,16 +42,22 @@ export type Update = { time: string } & (
 export type Notification =
   | { method: "session/update"; params: Update & { session_id: string } }
   | { method: "workspace/created"; params: { workspace_id: string; path: string; created_at: string } }
-  | { method: "session/created"; params: { session_id: string; workspace_id: string; harness: string; created_at: string } }
+  | {
+      method: "session/created";
+      params: { session_id: string; workspace_id: string; harness: string; created_at: string };
+    }
   | { method: "session/configured"; params: Settings & { session_id: string } }
   | { method: "session/destroyed"; params: { session_id: string } };
 
+// Empty is the params or result of a method that has none.
+type Empty = Record<string, never>;
+
 // Methods maps each method to its params and result.
 export type Methods = {
-  "harness/list": [{}, { harnesses: Record<string, Harness>; defaults: Defaults }];
+  "harness/list": [Empty, { harnesses: Record<string, Harness>; defaults: Defaults }];
   "workspace/create": [{ path: string }, { workspace_id: string }];
   "workspace/list": [
-    {},
+    Empty,
     {
       workspaces: {
         workspace_id: string;
@@ -73,7 +79,7 @@ export type Methods = {
   ];
   "session/send": [{ session_id: string; text: string }, { message_id: string }];
   // Only the settings given change.
-  "session/configure": [Partial<Settings> & { session_id: string }, {}];
-  "session/approve": [{ session_id: string; request_id: string; response: ApprovalResponse }, {}];
-  "session/destroy": [{ session_id: string }, {}];
+  "session/configure": [Partial<Settings> & { session_id: string }, Empty];
+  "session/approve": [{ session_id: string; request_id: string; response: ApprovalResponse }, Empty];
+  "session/destroy": [{ session_id: string }, Empty];
 };

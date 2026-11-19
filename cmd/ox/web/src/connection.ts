@@ -26,7 +26,7 @@ export function connect(handlers: {
   onError(error: Error): void;
 }): Connection {
   const source = new EventSource("/events");
-  const pending = new Map<number, { resolve(result: any): void; reject(error: Error): void }>();
+  const pending = new Map<number, { resolve(result: unknown): void; reject(error: Error): void }>();
   let connection: string | undefined;
   let nextId = 1;
 
