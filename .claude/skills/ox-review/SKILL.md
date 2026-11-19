@@ -1,6 +1,6 @@
 ---
 name: ox-review
-description: Review Ox code in uncommitted changes, a commit, a branch, named files, or the whole repository, against its plan, Ox's guarantees, and `AGENTS.md`, and write the review in `.agents/reviews/`, marking each confirmed finding to fix or to record, and each rejected one with its reason. Fixes nothing. Run again with an existing review to verify the fixes made for it. Do not use for plan critiques or standalone documentation reviews. Never use it unless the user, or an agent acting on the user's request, invokes it.
+description: Review Ox code in uncommitted changes, a commit, a branch, named files, or the whole repository, against its plan, Ox's functional requirements, and `AGENTS.md`, and write the review in `.agents/reviews/`, marking each confirmed finding to fix or to record, and each rejected one with its reason. Fixes nothing. Run again with an existing review to verify the fixes made for it. Do not use for plan critiques or standalone documentation reviews. Never use it unless the user, or an agent acting on the user's request, invokes it.
 argument-hint: "[review scope and the plan it implements, or verify <review path>]"
 ---
 
@@ -16,20 +16,20 @@ Review the code and write a review that tells whoever implemented it exactly wha
 
 Change no code, tests, or documentation, and stage or commit nothing. Edit only the review file. Do not start other agents.
 
-Correctness matters for what happens in normal use and for the promises in `docs/guarantees.md`. Handling every case that could occur does not.
+Correctness matters for what happens in normal use and for the requirements in `docs/functional-requirements.md`. Handling every case that could occur does not.
 
 ## Choose what to review
 
 1. Read `<review_scope> $ARGUMENTS </review_scope>`. If it asks to verify an existing review, go to [Verify fixes](#verify-fixes). Ask the user only when the answer would change what you review.
-2. For uncommitted changes, a commit, or a branch, review the changes and the code that calls or depends on them. For named files or the whole repository, review that full scope. Record the base revision and the state of the working tree you reviewed.
-3. Read `AGENTS.md`, `docs/guarantees.md`, and `docs/known-issues.md`; for web client code, also `cmd/ox/web/AGENTS.md`. Read the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/claude-code.md` that cover the code under review. If the scope names a plan in `.agents/plans/`, read it: its Goal, its Decisions, and its settled Check your assumptions entries are the requirements.
+2. For uncommitted changes, a commit, or a branch, review the changes and the code that calls or depends on them. For named files or the whole repository, review that full scope; for the whole repository, check every requirement in `docs/functional-requirements.md`. Record the base revision and the state of the working tree you reviewed.
+3. Read `AGENTS.md`, `docs/functional-requirements.md`, and `docs/known-issues.md`; for web client code, also `cmd/ox/web/AGENTS.md`. Read the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/claude-code.md` that cover the code under review. If the scope names a plan in `.agents/plans/`, read it: its Goal, its Decisions, its Requirement changes, and its settled Check your assumptions entries are the requirements.
 
 ## Review
 
 4. Trace behavior through callers, state owners, resource lifetimes, and tests. Judge implementation choices by their purpose and consequence. Do not treat a language feature or coding pattern as a defect on its own.
 5. Check the code for each of these categories the scope reaches:
-   - **Intent.** The change delivers the plan's Goal, keeps its Decisions and the user's answers, and stays within it.
-   - **Guarantees.** Each guarantee the code touches holds through the whole lifecycle of a page's request: in flight, its reply lost, a reconnect, navigation away and back, a second page acting on the same session, the process exiting or parking, and `oxd` running a page's independent requests in any order. Text the user typed is never lost or sent twice. The page shows an action as possible, or a value as applied, only once `oxd` has confirmed it.
+   - **Intent.** The change delivers the plan's Goal, keeps its Decisions and the user's answers, and stays within it. Behavior the user can observe changes only as the plan's Requirement changes say, and `docs/functional-requirements.md` carries exactly those changes, word for word. Observable behavior that changes without a requirement change, and a requirement edit the plan does not make, are findings.
+   - **Requirements.** Each functional requirement the code touches, cited by title, holds through the whole lifecycle of a page's request: in flight, its reply lost, a reconnect, navigation away and back, a second page acting on the same session, the process exiting or parking, and `oxd` running a page's independent requests in any order. Text the user typed is never lost or sent twice. The page shows an action as possible, or a value as applied, only once `oxd` has confirmed it.
    - **Settings.** The Claude process runs with the model, effort, permission mode, and account the page shows, including after a partial failure, a restart, or with an inherited environment. A setting Claude would silently ignore or default is refused.
    - **Settling.** Each wait on a reply, a pipe, a process, or a child of Claude ends, by what it waits on or by a bound. No path leaves a request, a stop, or a shutdown without a result, and each error is shown where its request was made.
    - **Process I/O.** Claude's output is read to its last line, including one that ends at EOF; Claude's exit is seen even while a child holds its pipes; a failure reason on stdout or stderr reaches the request that failed.
@@ -41,7 +41,7 @@ Correctness matters for what happens in normal use and for the promises in `docs
    - **Simplicity.** Code that adds no required behavior, including speculative fallbacks, retries, and recovery for failures that have not happened.
    - **Conventions.** The rules in `AGENTS.md` and `cmd/ox/web/AGENTS.md`, such as one name per field and log lines that name the session.
    - **Documentation.** Each changed fact is stated by the document `AGENTS.md` assigns it, and no document contradicts the code.
-6. Confirm each suspected finding by tracing the code, reproducing it, or running a focused check: a stand-in `claude` script, an injected `/rpc` delay or failure in an e2e spec, or a probe against built binaries on a temporary socket, database, and port. Report missing handling only when a guarantee or a reachable failure needs it. Do not ask for tests of hypothetical cases. Leave out what you cannot confirm. Revert every edit a check needs before you finish.
+6. Confirm each suspected finding by tracing the code, reproducing it, or running a focused check: a stand-in `claude` script, an injected `/rpc` delay or failure in an e2e spec, or a probe against built binaries on a temporary socket, database, and port. Report missing handling only when a requirement or a reachable failure needs it. Do not ask for tests of hypothetical cases. Leave out what you cannot confirm. Revert every edit a check needs before you finish.
 7. Skip a defect `docs/known-issues.md` records unless what its entry waits on has changed.
 8. Run each test the change adds against the base revision, in a detached worktree that you remove afterwards; a new test that passes there checks nothing the change did. Then remove each condition the change adds, one at a time, and confirm a test fails. Each test that survives either check, and each condition no test protects, is a `Testing` finding.
 9. Run the checks that cover the change: `make test` and `make e2e`; `make live` when the change alters how Ox drives Claude Code; and headless Chrome with Playwright through the `make dev` stack on spare ports when it changes how the page reaches `oxd`. Each failure is a finding. Report a check as blocked only when something you cannot change prevents it, and name the blocker.

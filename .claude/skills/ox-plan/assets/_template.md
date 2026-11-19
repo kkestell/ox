@@ -14,7 +14,7 @@ The problem, and what should happen when the change is done. Link the todo item 
 
 Choices that may not be clear from the tasks, and what each concern the change touches requires. Omit the concerns it does not touch.
 
-- **Guarantees:** each guarantee by number, and how it holds through the request lifecycle.
+- **Requirements:** each functional requirement by title, and how it holds through the request lifecycle.
 - **Settings:** how the process keeps running with what the page shows.
 - **Settling:** each new wait, and what ends it.
 - **Process I/O:** how output, exit, and failure reasons reach their reader.
@@ -38,6 +38,14 @@ Product questions only, most consequential first, or `None.`. Write them in the 
 
 - Task to complete, tied to its files, in the order it should be done.
 
+## Requirement changes
+
+- **Added:** the requirement's full text, title first, as it will appear in `docs/functional-requirements.md`.
+- **Changed:** the title, the old text, and the new text.
+- **Removed:** the title, and why the behavior goes.
+
+Write `None.` when the change adds, alters, and removes no behavior the user can observe.
+
 ## Documentation updates
 
-- The owning document for each fact the change alters. Omit this section if there is none.
+- The owning document for each other fact the change alters. Omit this section if there is none.

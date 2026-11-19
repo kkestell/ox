@@ -25,7 +25,7 @@ We test with `make dev`. Ox's test state is disposable.
 ├── docs
 │   ├── architecture.md        # how oxd and ox are built
 │   ├── claude-code.md         # observed Claude Code behavior
-│   ├── guarantees.md          # behavior Ox promises
+│   ├── functional-requirements.md # what users see and rely on
 │   ├── known-issues.md        # unfixed defects
 │   ├── protocol.md            # the interface oxd serves
 │   └── todo.md                # planned work
@@ -147,19 +147,28 @@ We test with `make dev`. Ox's test state is disposable.
 The user settles the direction and rough scope of a change with a top-level
 agent, which carries it through child sessions:
 
-1. A child session on Opus 5.5 at high effort runs `/ox-plan`.
+1. A child session on Opus 5.5 at high effort runs `/ox-plan`. The user
+   approves the plan's requirement changes with its other product questions.
 2. The top-level agent sanity-checks the plan with a quick look at the code it
    names, without redoing the planning.
 3. A child session on Sonnet or Opus, chosen by the change's complexity,
-   implements the plan.
+   implements the plan, applying its requirement changes word for word.
 4. A child session on Opus or Sol runs `/ox-review` on the uncommitted
    changes for the plan.
 5. The implementing session fixes the review's findings.
 6. The reviewing session runs `/ox-review verify` on its review. Open
    findings or new regressions go back to the implementing session, until
    the verdict is Ready to commit.
-7. The top-level agent sanity-checks the result and commits the change. The
-   plan and review stay in `.agents/`, which Git ignores.
+7. The top-level agent sanity-checks the result, including the requirements
+   diff, and commits the change. The plan and review stay in `.agents/`,
+   which Git ignores.
+
+The user owns `docs/functional-requirements.md`. It changes only when a change
+adds, alters, or removes behavior the user can observe, and only with the text
+the user approved in the plan. A bug fix leaves it alone unless the fix shows
+a requirement was wrong. No agent rewords a requirement to match the code.
+Plans and reviews cite requirements by title. A periodic `/ox-review` of the
+whole repository checks the code against every requirement.
 
 ## Verification
 
@@ -195,8 +204,8 @@ facts listed for it:
   events, and errors.
 - `docs/claude-code.md`: how Claude Code behaves when driven with `claude -p`
   and stream-json, as observed.
-- `docs/guarantees.md`: the behavior Ox promises the person using it, linked
-  to the contracts that define it.
+- `docs/functional-requirements.md`: the behavior the person using Ox can see
+  and rely on, each one a user would call a bug if it broke.
 - `docs/known-issues.md`: defects that cannot be fixed yet, kept as the
   Defects section describes.
 - `docs/todo.md`: planned work, by priority.

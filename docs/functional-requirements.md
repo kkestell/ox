@@ -1,0 +1,71 @@
+# Functional requirements
+
+What the person using Ox can see and rely on. Each requirement is cited by its title.
+
+- **Adding a workspace.** The user adds a workspace by giving the absolute path of an existing directory; adding the same directory again changes nothing.
+- **Removing a workspace.** A workspace can be removed only when it has no sessions. Removing it asks first, and leaves the directory on disk.
+- **Session order.** Each workspace lists its sessions oldest first.
+- **Session labels.** A session is labeled with the first line of its first prompt, or a short identifier before it has one.
+- **Session status.** Each session shows whether it is parked, idle, running, or waiting on the user.
+- **Session URL.** The URL names the selected session, so reloading the page reopens it.
+- **New-session defaults.** A new session starts with the configured default harness, model, effort, and permission mode.
+- **New-session choices.** Before sending, the user can pick any offered harness, model, effort, and permission mode for a new session.
+- **Built-in catalog.** Without a configuration file, Ox offers Claude Opus, Sonnet, and Haiku 5.5 with their effort levels and the manual, auto, acceptEdits, and plan modes.
+- **Configuration checks.** `oxd` refuses to start with a malformed configuration, defaults it does not offer, an unknown harness, or an effort level Claude does not take, and says why.
+- **File locations.** Ox reads its configuration and keeps its database and socket in the user's XDG directories, and the user can choose other paths.
+- **Creating a session.** Submitting a new session creates it and sends the prompt exactly once.
+- **Creation keeps the user's view.** A session whose creation finishes after the user has moved to another view does not take them away from it.
+- **Failed creation.** If creating a session fails, the draft keeps its text and settings and shows the error, with a way back to the draft from any other view, and the user can submit again.
+- **Lost creation reply.** If the page loses the reply to a creation but the session exists, the page opens the session with the prompt unsent and asks the user to review its settings and send.
+- **Only the user sends.** A prompt is sent only when the user submits it: showing a view, reconnecting, or reloading sends nothing, and a failed send is never retried automatically.
+- **Send cut off.** A send cut off by a lost connection shows an error even if Claude received the prompt; the transcript shows whether it did.
+- **Unsent text.** Unsent text, in a session or in a workspace's new-session draft, survives switching views and reconnecting. Reloading the page discards it, and removing a workspace discards its draft.
+- **Composer after a send.** After a successful send the composer clears, keeping anything typed since the send.
+- **Blank prompts.** A blank prompt is not sent.
+- **Enter to send.** Enter sends and Shift+Enter starts a new line; Enter while composing with an input method does not send.
+- **One prompt at a time.** A session takes one prompt at a time: Send is available only when the session can take one, and prompts are not queued.
+- **Stop.** While Claude works, Send becomes Stop. Stop ends the turn, the transcript shows it was interrupted, and the session takes prompts again.
+- **Prompts as sent.** Prompts show in the transcript as the plain text the user sent.
+- **Replies as Markdown.** Claude's replies stream in as Markdown. Raw HTML shows as text, images are not loaded, unsafe links are not links, and links open in a new tab.
+- **Tool calls.** Each tool call shows its name, a summary of its input, and whether it is running, done, failed, or stopped; expanding it shows the full input and the result's text, and a plan renders as Markdown.
+- **Main conversation only.** The transcript shows the main conversation only, not the inner messages of Claude's subagents.
+- **Failed turns.** A failed turn shows its error in the transcript.
+- **Unexpected exits.** A Claude process that exits without Ox stopping it leaves the reason in the transcript.
+- **Following output.** The transcript follows new output unless the user has scrolled up.
+- **Claude's own turns.** Turns Claude starts itself, from a schedule or a finished background task, run and appear in the transcript like any other turn.
+- **One transcript.** The transcript is the same on every page and after a reload.
+- **Surviving restarts.** Workspaces, sessions, their settings, and their transcripts survive parking and `oxd` restarts.
+- **Resuming the conversation.** A parked session resumes its Claude conversation on the next send.
+- **Database failures.** Saved state, including transcripts, persists only while Ox can write its database. `oxd` logs a failed write, and the page does not show it. A session whose conversation could not be saved still resumes it until `oxd` restarts.
+- **Lost conversation.** If Claude can no longer resume the conversation, the send fails with a notice in the transcript, and the next send starts a new conversation without the earlier context.
+- **Parking.** An idle session parks after five minutes; the period is configurable, and parking can be turned off. It does not park while a prompt, setting change, approval, background task, or schedule is pending.
+- **Parked schedules.** A parked session runs no schedules until the next prompt starts it.
+- **Settings shown are settings used.** The settings shown for a session are the ones Claude runs with.
+- **Pending setting changes.** A settings change reaches Claude before the next prompt. While it is pending, the page marks the changed setting as pending and holds Send. If it fails, the page shows the error and the settings Claude actually has.
+- **Setting changes keep the rest.** Changing a setting keeps the conversation and leaves the other settings alone.
+- **When settings can change.** Settings can change only while the session is idle or parked.
+- **Model within its harness.** An existing session can change its model only within its harness.
+- **Effort across models.** Choosing a model keeps the effort when the new model offers it.
+- **Retired settings.** A model or permission mode the configuration no longer offers still shows as the session's setting.
+- **Claude's own mode changes.** When Claude changes its own permission mode, as when leaving plan mode, the page shows the new mode and later processes use it.
+- **Every page in sync.** Changes made from another page, to workspaces, sessions, settings, or a conversation, appear on every page as they happen.
+- **Permission requests.** A tool permission request appears as a card above the composer on every page, including after a reload, until it is answered or withdrawn.
+- **Allow and Deny.** Allow sends the tool's input exactly as the card shows it; Deny, or a typed reply, denies with that message.
+- **Questions from Claude.** A question from Claude appears as a form with its options and an Other answer; the user submits answers to every question or declines.
+- **Approvals wait.** An approval waits for an answer, and the session does not park meanwhile. It is withdrawn on every page when Claude cancels it, goes idle, or exits.
+- **One answer per approval.** An approval already answered, from this page or another, refuses a second answer with an error.
+- **Every request settles.** Every request ends in its result or an error, shown in the view that made it. The error stays until that view's next request, even if a later request finishes first.
+- **Independent sessions.** One session starting, changing settings, or running never holds up another session.
+- **Lost connection.** When the connection drops, the page says so, fails its pending requests, and holds Send and settings until each session has reloaded. It reconnects by itself, unless `oxd` is still down when it tries, in which case it asks for a reload.
+- **Work outlives the page.** Closing every page leaves prompts, approvals, and Claude's own turns running.
+- **Deleting a session.** Deleting a session asks first, then stops Claude, deletes Ox's history of it, leaves Claude's transcript and the workspace on disk, and removes it from every page.
+- **Failed startup.** A failed Claude startup fails the send within a minute and shows why, in Claude's own words when it gives a reason.
+- **Working directory.** Claude works in the session's workspace directory.
+- **Subscription billing.** Claude's work is billed to the user's Claude subscription, never to an API key or token in Ox's environment.
+- **Style instructions.** Claude runs with Ox's appended style instructions.
+- **Local access only.** Only pages served from this machine (or from the host `ox` was told to serve) can reach `oxd`.
+- **Prompt size limit.** A prompt over 1 MiB is refused with an error and stays in the composer.
+- **Stopping oxd.** Stopping `oxd` stops every Claude process it runs; a second stop request ends it at once.
+- **Socket safety.** A socket left by an `oxd` that has exited does not block the next start; `oxd` will not replace a socket another `oxd` is serving, or a file that is not a socket.
+- **Ox's own files.** Ox's own bookkeeping writes only its database and socket.
+- **Claude's workspace access.** Claude changes the workspace only as its permission mode and the user's approvals allow.

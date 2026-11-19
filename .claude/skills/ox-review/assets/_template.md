@@ -4,13 +4,13 @@ Delete placeholder text and unused sections, including this guidance. Give every
 
 Severity describes the cost of leaving the finding as it is, and orders the work. The action is decided separately.
 
-- `High`: a broken guarantee, wrong results, lost work, a process running with settings other than those shown, or a security hole that normal use can trigger.
+- `High`: a broken requirement, wrong results, lost work, a process running with settings other than those shown, or a security hole that normal use can trigger.
 - `Medium`: wrong behavior that only an uncommon but realistic case triggers, or code that makes future changes materially riskier or more expensive.
 - `Low`: an unlikely case, or no effect on behavior and little effect on future changes.
 
 Actions: `Fix`, `Record`, `Rejected`, as the skill defines them. Status: `Open` or `Resolved` for `Fix` and `Record`; `—` for `Rejected`.
 
-Categories: `Intent`, `Guarantees`, `Settings`, `Settling`, `Process I/O`, `Ownership`, `Claude Code`, `Security`, `Correctness`, `Testing`, `Simplicity`, `Conventions`, `Documentation`, as the skill defines them.
+Categories: `Intent`, `Requirements`, `Settings`, `Settling`, `Process I/O`, `Ownership`, `Claude Code`, `Security`, `Correctness`, `Testing`, `Simplicity`, `Conventions`, `Documentation`, as the skill defines them.
 
 ## Scope and coverage
 
@@ -22,16 +22,16 @@ Gaps:
 
 ## Summary
 
-| ID | Severity | Category   | Action   | Status | Title                                  |
-| -- | -------- | ---------- | -------- | ------ | -------------------------------------- |
-| F1 | High     | Guarantees | Fix      | Open   | Reconnect sends the first prompt again |
-| F2 | Low      | Simplicity | Rejected | —      | Retry for a failure that cannot occur  |
+| ID | Severity | Category     | Action   | Status | Title                                  |
+| -- | -------- | ------------ | -------- | ------ | -------------------------------------- |
+| F1 | High     | Requirements | Fix      | Open   | Reconnect sends the first prompt again |
+| F2 | Low      | Simplicity   | Rejected | —      | Retry for a failure that cannot occur  |
 
 If there are no findings, replace the table with `No findings.` and omit the finding sections.
 
 ## F1. Reconnect sends the first prompt again
 
-High · Guarantees · Fix · `cmd/ox/web/src/ox.tsx:42`
+High · Requirements · Fix · `cmd/ox/web/src/ox.tsx:42`
 
 What happens, when, and what it affects, in short paragraphs. Use a list only for a real enumeration, such as several locations.
 
