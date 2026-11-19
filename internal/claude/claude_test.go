@@ -23,7 +23,7 @@ func TestStartupFailureKeepsClaudesReason(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, input := range []io.Writer{io.Discard, closedPipe(t)} {
-				err := initialize(input, bufio.NewReader(strings.NewReader(output)))
+				err := initialize(input, bufio.NewReader(strings.NewReader(output)), func() string { return "" })
 				if err == nil || !strings.Contains(err.Error(), "No conversation found with session ID: 1111") {
 					t.Fatalf("startup failure lost Claude's reason: %v", err)
 				}
@@ -75,12 +75,41 @@ func TestExitReportedWhileAChildHoldsStdout(t *testing.T) {
 	}
 }
 
+// Claude prints some refusals, such as an invalid option, only on stderr. A
+// child that inherits stderr delays the reason by at most a second.
+func TestStartupFailureOnStderr(t *testing.T) {
+	const refusal = "error: option '--permission-mode <mode>' argument '' is invalid."
+	for name, child := range map[string]string{"exits": "", "child holds stderr": "sleep 15 >/dev/null &\necho $! > pid\n"} {
+		t.Run(name, func(t *testing.T) {
+			workspace := t.TempDir()
+			t.Cleanup(func() {
+				if data, err := os.ReadFile(filepath.Join(workspace, "pid")); err == nil {
+					exec.Command("kill", strings.TrimSpace(string(data))).Run()
+				}
+			})
+			script(t, "#!/bin/sh\n"+child+"echo \"warning: a warning\" >&2\necho \""+refusal+"\" >&2\nexit 1\n")
+			start := time.Now()
+			_, _, err := startProcess(workspace, newUUID(), false, agent.Settings{}, make(chan agent.Event))
+			if err == nil || !strings.Contains(err.Error(), refusal) {
+				t.Fatalf("startup failure lost Claude's stderr: %v", err)
+			}
+			if elapsed := time.Since(start); elapsed > 3*time.Second {
+				t.Fatalf("startup failure took %v", elapsed)
+			}
+		})
+	}
+}
+
 // standIn puts a claude script on PATH that answers the handshake and then
 // runs rest.
 func standIn(t *testing.T, rest string) {
+	script(t, "#!/bin/sh\nread line\n"+
+		`echo '{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}'`+"\n"+rest)
+}
+
+// script puts a claude script on PATH.
+func script(t *testing.T, script string) {
 	dir := t.TempDir()
-	script := "#!/bin/sh\nread line\n" +
-		`echo '{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}'` + "\n" + rest
 	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -313,6 +313,7 @@ Answer by allowing with the original input plus `answers`, keyed by question tex
 - Claude can exit before reading `initialize`; the write can then fail with EPIPE while the error result is still readable.
 - Claude can emit an error `result` while a prompt is waiting to enter a turn.
 - Failures can appear as plain text on stdout: `Not logged in · Please run /login`, `API Error: Connection refused`, or an unknown-model message (exit 1).
+- An invalid option prints only on stderr, with empty stdout, and exits 1: `error: option '--permission-mode <mode>' argument 'acceptEdit' is invalid. Allowed choices are acceptEdits, auto, bypassPermissions, manual, dontAsk, plan.`
 - SIGINT can exit 0 with empty stdout; SIGTERM exits 143.
 
 ### Pipes

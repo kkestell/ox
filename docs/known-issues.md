@@ -2,22 +2,12 @@
 
 | Issue | Frequency in real use | Confirmed |
 | --- | --- | --- |
-| [Startup errors on stderr reach only the daemon's log](#startup-errors-on-stderr-reach-only-the-daemons-log) | No occurrence | Live |
 | [A resumed session can park with restored schedules](#a-resumed-session-can-park-with-restored-schedules) | Unknown | Source |
 | [Allow rounds large integers in a tool's input](#allow-rounds-large-integers-in-a-tools-input) | No occurrence | Source |
 | [A lost session/create response leaves an empty session](#a-lost-sessioncreate-response-leaves-an-empty-session) | No occurrence | Source |
 | [make dev can use a daemon that is already running](#make-dev-can-use-a-daemon-that-is-already-running) | Unknown | Source |
 | [An invalid escape in the URL fragment blanks the page](#an-invalid-escape-in-the-url-fragment-blanks-the-page) | No occurrence | Source |
 | [The root directory's workspace has a blank label](#the-root-directorys-workspace-has-a-blank-label) | No occurrence | Source |
-
-## Startup errors on stderr reach only the daemon's log
-
-Claude reports some startup failures only on stderr, which goes to `oxd`'s
-log. A permission mode Claude does not accept, such as a misspelled one in
-the configuration, makes Claude exit with its allowed choices on stderr, and
-`session/send` fails with `initialize Claude: read startup response: EOF`.
-The failure is visible; its reason is in the log. Confirmed live with an
-empty `--permission-mode` (Claude 2.1.328).
 
 ## A resumed session can park with restored schedules
 

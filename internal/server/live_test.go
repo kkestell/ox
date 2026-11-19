@@ -25,6 +25,10 @@ func TestLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A misspelled mode, which Claude refuses on stderr.
+	h := cfg.Harnesses["claude"]
+	h.PermissionModes = append(h.PermissionModes, config.Option{ID: "acceptEdit", Name: "Misspelled"})
+	cfg.Harnesses["claude"] = h
 	st := openStore(t)
 	dir := t.TempDir()
 	s, err := New(st, cfg, parkAfter, map[string]agent.Start{"claude": claude.Start})
@@ -109,6 +113,12 @@ func TestLive(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), missing) {
 		t.Errorf("resuming a missing conversation failed without Claude's reason: %v", err)
+	}
+	r := c.request("session/send", map[string]string{"session_id": create("acceptEdit"), "text": "Reply with just the word ok."})
+	if r.Error == nil || !strings.Contains(r.Error.Message, "'acceptEdit' is invalid") {
+		t.Errorf("a start Claude refused on stderr failed without its reason: %+v", r.Error)
+	} else {
+		t.Logf("session/send: %s", r.Error.Message)
 	}
 
 	t.Log("configuring one setting keeps the others")

@@ -2,6 +2,7 @@ package claude
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -20,6 +21,7 @@ import (
 type process struct {
 	cmd    *exec.Cmd
 	output *os.File // the read end of Claude's stdout
+	stderr *os.File // the read end of Claude's stderr
 }
 
 const systemInstructions = "Lead with the big idea up front. " +
@@ -61,26 +63,37 @@ func startProcess(workspace, sessionID string, resume bool, settings agent.Setti
 	cmd := exec.Command("claude", args...)
 	cmd.Dir = workspace
 	cmd.Env = append(cmd.Environ(), "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1")
-	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, nil, err
 	}
-	// Ox owns the stdout pipe, unlike StdoutPipe's, so Wait neither waits for
-	// it nor closes it: read stops once Claude has exited and its output has
-	// drained, even while a child that inherited the pipe holds it open.
+	// Ox owns the output pipes, unlike StdoutPipe's, so Wait neither waits for
+	// them nor closes them: reading stops once Claude has exited and its output
+	// has drained, even while a child that inherited a pipe holds it open.
 	stdout, childStdout, err := os.Pipe()
 	if err != nil {
 		stdin.Close()
 		return nil, nil, err
 	}
-	cmd.Stdout = childStdout
-	err = cmd.Start()
-	childStdout.Close()
+	stderr, childStderr, err := os.Pipe()
 	if err != nil {
+		stdin.Close()
 		stdout.Close()
+		childStdout.Close()
 		return nil, nil, err
 	}
+	cmd.Stdout = childStdout
+	cmd.Stderr = childStderr
+	err = cmd.Start()
+	childStdout.Close()
+	childStderr.Close()
+	if err != nil {
+		stdout.Close()
+		stderr.Close()
+		return nil, nil, err
+	}
+	stderrTail := make(chan string, 1)
+	go logStderr(stderr, stderrTail)
 
 	output := bufio.NewReader(stdout)
 	// The deadline ends the read even when a child of Claude holds stdout.
@@ -88,7 +101,13 @@ func startProcess(workspace, sessionID string, resume bool, settings agent.Setti
 		cmd.Process.Kill()
 		stdout.SetReadDeadline(time.Now())
 	})
-	err = initialize(stdin, output)
+	// Claude prints some refusals, such as an invalid option, only on stderr.
+	// Its stdout has closed, so it has exited or is exiting.
+	diagnostic := func() string {
+		stderr.SetReadDeadline(time.Now().Add(time.Second))
+		return <-stderrTail
+	}
+	err = initialize(stdin, output, diagnostic)
 	if !timeout.Stop() {
 		err = errors.New("no startup response within one minute")
 	}
@@ -96,18 +115,20 @@ func startProcess(workspace, sessionID string, resume bool, settings agent.Setti
 		cmd.Process.Kill()
 		cmd.Wait()
 		stdout.Close()
+		stderr.SetReadDeadline(time.Now().Add(time.Second))
 		return nil, nil, fmt.Errorf("initialize Claude: %w", err)
 	}
 
-	p := &process{cmd: cmd, output: stdout}
+	p := &process{cmd: cmd, output: stdout, stderr: stderr}
 	go p.read(output, events)
 	return p, newWriter(stdin), nil
 }
 
 // initialize sends Claude's handshake and waits for its answer. Claude can
 // fail at startup with an error result or plain text and exit, sometimes
-// before it reads the handshake; the last such output is the error.
-func initialize(input io.Writer, output *bufio.Reader) error {
+// before it reads the handshake; the last such output is the error. Without
+// one, the error is what diagnostic returns, Claude's stderr, if any.
+func initialize(input io.Writer, output *bufio.Reader, diagnostic func() string) error {
 	// Declare Stop to receive pending schedules at the end of each completed turn.
 	const request = `{"type":"control_request","request_id":"initialize","request":{"subtype":"initialize","hooks":{"Stop":[{"hookCallbackIds":["stop"]}]}}}`
 	_, writeErr := io.WriteString(input, request+"\n")
@@ -129,6 +150,9 @@ func initialize(input io.Writer, output *bufio.Reader) error {
 			return nil
 		}
 		if err != nil {
+			if reason == "" {
+				reason = diagnostic()
+			}
 			switch {
 			case reason != "":
 				return errors.New(reason)
@@ -140,14 +164,42 @@ func initialize(input io.Writer, output *bufio.Reader) error {
 	}
 }
 
+// stderrKept is how much of Claude's stderr a failed start reports.
+const stderrKept = 2048
+
+// logStderr copies Claude's stderr to the daemon's log until the pipe closes
+// or its read deadline passes, then closes it and sends the last of it.
+func logStderr(stderr *os.File, tail chan<- string) {
+	var last []byte
+	buf := make([]byte, 4096)
+	for {
+		n, err := stderr.Read(buf)
+		os.Stderr.Write(buf[:n])
+		last = append(last, buf[:n]...)
+		if len(last) > stderrKept {
+			last = last[len(last)-stderrKept:]
+			// Start at a line when the start was cut.
+			if i := bytes.IndexByte(last, '\n'); i >= 0 {
+				last = last[i+1:]
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+	stderr.Close()
+	tail <- strings.TrimSpace(string(last))
+}
+
 // read delivers Claude's output, then its exit. Output Claude wrote before
-// exiting is already in the pipe; a second after the exit, reading stops even
-// if a child still holds the pipe open.
+// exiting is already in the pipes; a second after the exit, reading them stops
+// even if a child still holds them open.
 func (p *process) read(output *bufio.Reader, events chan<- agent.Event) {
 	exited := make(chan error, 1)
 	go func() {
 		err := p.cmd.Wait()
 		p.output.SetReadDeadline(time.Now().Add(time.Second))
+		p.stderr.SetReadDeadline(time.Now().Add(time.Second))
 		exited <- err
 	}()
 	for {
