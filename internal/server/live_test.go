@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -113,6 +114,8 @@ func TestLive(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), missing) {
 		t.Errorf("resuming a missing conversation failed without Claude's reason: %v", err)
+	} else if !errors.Is(err, agent.ErrNoConversation) {
+		t.Errorf("resuming a missing conversation was not recognized as one: %v", err)
 	}
 	r := c.request("session/send", map[string]string{"session_id": create("acceptEdit"), "text": "Reply with just the word ok."})
 	if r.Error == nil || !strings.Contains(r.Error.Message, "'acceptEdit' is invalid") {

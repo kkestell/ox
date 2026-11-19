@@ -1,10 +1,16 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
+	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/kkestell/ox/internal/agent"
 	"github.com/kkestell/ox/internal/claude"
@@ -59,5 +65,93 @@ func TestConfigOffersOnlyClaudesEfforts(t *testing.T) {
 	}}}
 	if err := checkConfig(misspelled, harnesses); err == nil {
 		t.Error("a Claude effort level Claude does not take was accepted")
+	}
+}
+
+// TestMain runs oxd itself when a test starts this binary as oxd.
+func TestMain(m *testing.M) {
+	if os.Getenv("OXD_TEST_MAIN") == "1" {
+		main()
+		return
+	}
+	os.Exit(m.Run())
+}
+
+// Shutdown waits for each Claude to exit, which takes up to Ox's kill
+// timeout when Claude ignores SIGTERM. A second interrupt stops oxd at once.
+func TestSecondInterruptStopsShutdown(t *testing.T) {
+	// t.TempDir is too long for a socket path on macOS.
+	dir, err := os.MkdirTemp("", "oxd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	bin := filepath.Join(dir, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	standIn := "#!/bin/sh\ntrap '' TERM\nread line\n" +
+		`echo '{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}'` + "\nexec sleep 20\n"
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(standIn), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(dir, "oxd.sock")
+	oxd := exec.Command(os.Args[0], "-socket="+socket, "-db="+filepath.Join(dir, "ox.db"), "-config="+filepath.Join(dir, "none.json"))
+	oxd.Env = append(os.Environ(), "OXD_TEST_MAIN=1", "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := oxd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { oxd.Process.Kill() })
+	exited := make(chan struct{})
+	go func() { oxd.Wait(); close(exited) }()
+
+	var conn net.Conn
+	for deadline := time.Now().Add(10 * time.Second); conn == nil; {
+		if conn, err = net.Dial("unix", socket); err != nil {
+			if time.Now().After(deadline) {
+				t.Fatalf("oxd did not start: %v", err)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	defer conn.Close()
+	lines := bufio.NewScanner(conn)
+	call := func(id int, method string, params map[string]string) map[string]string {
+		request, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+		fmt.Fprintf(conn, "%s\n", request)
+		for lines.Scan() {
+			var r struct {
+				ID     *int              `json:"id"`
+				Result map[string]string `json:"result"`
+				Error  *struct{ Message string }
+			}
+			if json.Unmarshal(lines.Bytes(), &r) != nil || r.ID == nil || *r.ID != id {
+				continue
+			}
+			if r.Error != nil {
+				t.Fatalf("%s: %s", method, r.Error.Message)
+			}
+			return r.Result
+		}
+		t.Fatalf("%s: %v", method, lines.Err())
+		return nil
+	}
+	workspace := call(1, "workspace/create", map[string]string{"path": dir})["workspace_id"]
+	session := call(2, "session/create", map[string]string{
+		"workspace_id": workspace, "harness": "claude", "model": "claude-haiku-5-5", "effort": "low", "permission_mode": "manual",
+	})["session_id"]
+	call(3, "session/send", map[string]string{"session_id": session, "text": "hello"})
+
+	oxd.Process.Signal(syscall.SIGINT)
+	select {
+	case <-exited:
+		t.Fatal("shutdown finished without waiting for Claude")
+	case <-time.After(time.Second):
+	}
+	oxd.Process.Signal(syscall.SIGINT)
+	select {
+	case <-exited:
+	case <-time.After(3 * time.Second):
+		t.Fatal("a second interrupt did not stop oxd")
 	}
 }

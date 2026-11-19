@@ -37,6 +37,30 @@ func TestRelayRefusesForeignPages(t *testing.T) {
 	}
 }
 
+// The page reaches the relay directly, or under make dev through Vite's
+// proxy, which sends the relay's own address as Host with the page's Origin.
+func TestRelayAcceptsItsPage(t *testing.T) {
+	relayEnd, daemonEnd := net.Pipe()
+	defer relayEnd.Close()
+	go io.Copy(io.Discard, daemonEnd)
+	r := &relay{host: "localhost", conns: map[string]net.Conn{"page": relayEnd}}
+	h := r.handler(fstest.MapFS{})
+	for _, c := range []struct{ name, host, origin string }{
+		{"direct", "localhost:8080", "http://localhost:8080"},
+		{"through Vite", "localhost:8081", "http://localhost:8080"},
+	} {
+		req := httptest.NewRequest("POST", "/rpc?connection=page", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"harness/list"}`))
+		req.Host = c.host
+		req.Header.Set("Origin", c.origin)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		response := httptest.NewRecorder()
+		h.ServeHTTP(response, req)
+		if response.Code != http.StatusNoContent {
+			t.Errorf("%s returned %d: %s", c.name, response.Code, response.Body)
+		}
+	}
+}
+
 // An oversized request fails at once instead of reaching oxd truncated, where
 // its parse error carries no ID and the page's request would never settle.
 func TestRPCRefusesOversizedBody(t *testing.T) {

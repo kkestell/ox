@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kkestell/ox/internal/agent"
 )
@@ -39,6 +41,12 @@ func stoppableAgent(t *testing.T) (*Agent, *bytes.Buffer, *recorder) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	return agentRunning(t, cmd)
+}
+
+// agentRunning is a testAgent whose process is the started cmd, delivering
+// its exit as Claude's does.
+func agentRunning(t *testing.T, cmd *exec.Cmd) (*Agent, *bytes.Buffer, *recorder) {
 	t.Cleanup(func() { cmd.Process.Kill() })
 	events := make(chan agent.Event, 1)
 	go func() { events <- processExit{cmd.Wait()} }()
@@ -192,6 +200,35 @@ func TestUnexpectedExitIsReported(t *testing.T) {
 	}
 	if !a.Exited() || len(*updates) != 1 || (*updates)[0].Type != "parked" {
 		t.Fatalf("a requested stop was reported as a failure: %+v", *updates)
+	}
+}
+
+// Stop finishes even when Claude ignores SIGTERM: Ox kills it.
+func TestStopKillsClaudeIgnoringSIGTERM(t *testing.T) {
+	saved := killAfter
+	killAfter = 100 * time.Millisecond
+	t.Cleanup(func() { killAfter = saved })
+	cmd := exec.Command("sh", "-c", "trap '' TERM; echo ready; exec sleep 60")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bufio.NewReader(stdout).ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	a, _, _ := agentRunning(t, cmd)
+	stopped := make(chan error, 1)
+	go func() { stopped <- a.Stop() }()
+	select {
+	case err := <-stopped:
+		if err != nil || !a.Exited() {
+			t.Fatalf("stop failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop waited for a Claude that ignores SIGTERM")
 	}
 }
 

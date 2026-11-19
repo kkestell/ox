@@ -253,7 +253,7 @@ func (p *process) read(output *bufio.Reader, events chan<- agent.Event) {
 }
 
 // killAfter is how long Claude has to exit once asked before it is killed.
-const killAfter = 10 * time.Second
+var killAfter = 10 * time.Second
 
 // Terminate asks Claude to exit so it can clean up its tool processes, and
 // kills it if it is still running after killAfter.

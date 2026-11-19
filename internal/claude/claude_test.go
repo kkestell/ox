@@ -127,6 +127,32 @@ func script(t *testing.T, script string) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+// Claude bills an API key it inherits instead of the user's subscription,
+// so it starts without one.
+func TestClaudeStartsWithoutAnAPIKey(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "token-test")
+	t.Setenv("OX_TEST_KEPT", "kept")
+	env := filepath.Join(t.TempDir(), "env")
+	standIn(t, "env > "+env+"\n")
+	events := make(chan agent.Event, 1)
+	if _, _, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, agent.Settings{}, events); err != nil {
+		t.Fatal(err)
+	}
+	for e := range events {
+		if _, exited := e.(processExit); exited {
+			break
+		}
+	}
+	data, err := os.ReadFile(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "ANTHROPIC_") || !strings.Contains(string(data), "OX_TEST_KEPT=kept") {
+		t.Fatalf("Claude's environment:\n%s", data)
+	}
+}
+
 // Claude runs at its default effort, with only a warning, when given an
 // effort it does not know.
 func TestUnknownEffortFailsToStart(t *testing.T) {
