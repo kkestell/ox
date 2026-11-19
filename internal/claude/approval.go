@@ -34,12 +34,15 @@ func (a *Agent) Approve(requestID string, response json.RawMessage) error {
 	if !validApprovalResponse(response) {
 		return errors.New("response must be an allow or deny permission response")
 	}
-	if !a.removeApproval(requestID) {
+	if !slices.ContainsFunc(a.approvals, func(p agent.Approval) bool { return p.RequestID == requestID }) {
 		return agent.ErrApprovalNotFound
 	}
+	// A failed write leaves the approval pending; the process's exit, which
+	// a broken pipe means, withdraws it.
 	if err := a.input.Respond(requestID, response); err != nil {
-		return err
+		return fmt.Errorf("answer Claude: %w", err)
 	}
+	a.removeApproval(requestID)
 	a.publish(agent.Update{Type: "approval_answered", RequestID: requestID})
 	return nil
 }

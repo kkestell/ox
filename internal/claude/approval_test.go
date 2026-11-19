@@ -104,3 +104,26 @@ func TestApprovalWithoutPrompt(t *testing.T) {
 		t.Fatalf("answer was not forwarded: %s", input)
 	}
 }
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }
+
+// A failed answer leaves the approval pending, so the exit that follows a
+// broken pipe withdraws it from every client.
+func TestFailedAnswerLeavesApprovalPending(t *testing.T) {
+	a, _, updates := promptingAgent()
+	a.input = newWriter(failingWriter{})
+	a.controlRequest("request", json.RawMessage(`{"subtype":"can_use_tool"}`))
+	if err := a.Approve("request", json.RawMessage(`{"behavior":"allow"}`)); err == nil {
+		t.Fatal("a failed write was reported as answered")
+	}
+	if len(a.Snapshot().Approvals) != 1 {
+		t.Fatalf("a failed answer removed the approval: %+v", a.Snapshot())
+	}
+	*updates = nil
+	a.exit(errors.New("signal: broken pipe"))
+	if len(*updates) == 0 || (*updates)[0].Type != "approval_cancelled" || (*updates)[0].RequestID != "request" {
+		t.Fatalf("exit did not withdraw the approval: %+v", *updates)
+	}
+}

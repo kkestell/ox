@@ -5,7 +5,6 @@
 | [RPC bodies over 1 MiB never settle](#rpc-bodies-over-1-mib-never-settle) | Unknown | Live |
 | [An unknown effort level is ignored](#an-unknown-effort-level-is-ignored) | Unknown | Live |
 | [A failed configuration can leave settings the page does not show](#a-failed-configuration-can-leave-settings-the-page-does-not-show) | Unknown | Source |
-| [A failed approval answer leaves a stale approval](#a-failed-approval-answer-leaves-a-stale-approval) | No occurrence | Source |
 | [A configuration that omits a list breaks the web UI](#a-configuration-that-omits-a-list-breaks-the-web-ui) | No occurrence | Source |
 
 ## RPC bodies over 1 MiB never settle
@@ -36,14 +35,6 @@ efforts. Which efforts Claude refuses through a control request is untested.
 Until a successful configuration reconciles the settings or the process
 restarts, prompts can use a different effort, a costlier model, or (after a
 failed database write) a permission mode other than the one shown.
-
-## A failed approval answer leaves a stale approval
-
-`Agent.Approve` removes the approval before writing the answer to Claude. If
-the write fails, it returns the error without publishing `approval_answered`
-or `approval_cancelled`, and the process's exit cannot withdraw an approval
-that is no longer pending. Every page keeps the approval until it reloads;
-answering it again returns "approval request is no longer pending".
 
 ## A configuration that omits a list breaks the web UI
 
