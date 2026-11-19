@@ -123,11 +123,10 @@ func TestLive(t *testing.T) {
 	}
 	turn(a, "Reply with just the word again.", allow)
 
-	t.Log("an interrupt ends a running turn with an error result")
+	t.Log("an interrupt ends a generating turn with an error result")
 	c.forget(a)
 	c.call("session/send", map[string]string{"session_id": a, "text": "Write the numbers from 1 to 2000 in words, one per line."})
-	for c.update(a, "state").State != "running" {
-	}
+	c.update(a, "text_delta")
 	c.call("session/interrupt", map[string]string{"session_id": a})
 	if r := c.update(a, "result").Result; !r.IsError || r.Text != "Interrupted" {
 		t.Errorf("an interrupted turn ended with %+v", r)
