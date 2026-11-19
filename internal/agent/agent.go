@@ -61,6 +61,7 @@ type Options struct {
 	// no conversation for it.
 	Resume   string
 	Settings Settings
+	MCP      MCPServer
 	OnUpdate func(Update)
 	// OnResumable receives the token that resumes a new conversation, once
 	// the harness has saved enough to resume it. It is called at most once.
@@ -71,6 +72,14 @@ type Options struct {
 	OnConfigured func(Settings)
 	// OnError receives failures that no call returns, for the session's log.
 	OnError func(error)
+}
+
+// MCPServer is Ox's MCP server for one session: a stdio command the harness
+// registers for its agent.
+type MCPServer struct {
+	Command  string            // absolute path of the forwarder
+	Env      map[string]string // the forwarder's environment
+	Approved []string          // tools that only read, which run without an approval prompt
 }
 
 type Settings struct {

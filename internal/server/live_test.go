@@ -3,7 +3,9 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -32,11 +34,31 @@ func TestLive(t *testing.T) {
 	cfg.Harnesses["claude"] = h
 	st := openStore(t)
 	dir := t.TempDir()
-	s, err := New(st, cfg, parkAfter, map[string]agent.Start{"claude": claude.Start})
+	// t.TempDir is too long for a socket path on macOS.
+	bin, err := os.MkdirTemp("", "oxlive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(bin) })
+	mcp := MCP{Forwarder: filepath.Join(bin, "ox-mcp"), Socket: filepath.Join(bin, "oxd.sock")}
+	if out, err := exec.Command("go", "build", "-o", mcp.Forwarder, "../../cmd/ox-mcp").CombinedOutput(); err != nil {
+		t.Fatalf("build ox-mcp: %v\n%s", err, out)
+	}
+	s, err := New(st, cfg, parkAfter, map[string]agent.Start{"claude": claude.Start}, mcp)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(s.Close)
+	serve := func(s *Server) net.Listener {
+		listener, err := net.Listen("unix", mcp.Socket)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { listener.Close() })
+		go s.Serve(listener)
+		return listener
+	}
+	listener := serve(s)
 	c := connect(t, s)
 	c.timeout = 3 * time.Minute
 
@@ -110,6 +132,10 @@ func TestLive(t *testing.T) {
 	missing := "00000000-0000-4000-8000-000000000000"
 	_, err = claude.Start(agent.Options{
 		Workspace: dir, Resume: missing, Settings: agent.Settings{Model: haiku, Effort: "low", PermissionMode: "manual"},
+		MCP: agent.MCPServer{
+			Command: mcp.Forwarder, Env: map[string]string{"OX_SOCKET": mcp.Socket, "OX_SESSION_ID": missing},
+			Approved: approvedTools,
+		},
 		OnUpdate: func(agent.Update) {}, OnError: func(error) {},
 	})
 	if err == nil || !strings.Contains(err.Error(), missing) {
@@ -206,6 +232,30 @@ func TestLive(t *testing.T) {
 		t.Errorf("approving ExitPlanMode left the mode %q", movedTo.PermissionMode)
 	}
 
+	t.Log("Claude lists Ox's models without asking, in every mode")
+	refuse := func(r request) any {
+		t.Errorf("%s asked for approval", r.ToolName)
+		return map[string]any{"behavior": "deny", "message": "no", "interrupt": true}
+	}
+	listModels := func(id string) {
+		t.Helper()
+		tools := turn(id, "Call the mcp__ox__list_models tool now, then reply with just ok.", refuse)
+		if !slices.Contains(tools, "mcp__ox__list_models") {
+			t.Fatalf("Haiku did not call mcp__ox__list_models (%v); run again", tools)
+		}
+		for _, m := range c.received(id) {
+			var u agent.Update
+			json.Unmarshal(m.Params, &u)
+			if u.Type == "tool_result" && !u.Result.IsError && strings.Contains(u.Result.Text, haiku) {
+				return
+			}
+		}
+		t.Errorf("list_models returned no catalog: %v", c.received(id))
+	}
+	listed := create("manual")
+	listModels(listed)
+	listModels(create("plan"))
+
 	t.Log("pending schedules keep a session running, even after a failed turn")
 	deniedBash := false
 	denyBash := func(r request) any {
@@ -241,13 +291,21 @@ func TestLive(t *testing.T) {
 		t.Error("an idle session with nothing scheduled did not park")
 	}
 
+	t.Log("a resumed session lists Ox's models")
+	if !parked(listed) {
+		t.Fatal("the session that listed models did not park")
+	}
+	listModels(listed)
+
 	t.Log("a resumed session keeps restored schedules through an interrupted first turn")
 	s.Close()
-	restarted, err := New(st, cfg, 2*time.Second, map[string]agent.Start{"claude": claude.Start})
+	listener.Close()
+	restarted, err := New(st, cfg, 2*time.Second, map[string]agent.Start{"claude": claude.Start}, mcp)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(restarted.Close)
+	serve(restarted)
 	c = connect(t, restarted)
 	c.timeout = 3 * time.Minute
 	// Use the session whose completed turn created a recurring job. Deny

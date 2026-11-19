@@ -2,11 +2,14 @@ package claude
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -55,7 +58,7 @@ func TestExitReportedWhileAChildHoldsStdout(t *testing.T) {
 		}
 	})
 	events := make(chan agent.Event)
-	if _, _, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, agent.Settings{}, events); err != nil {
+	if _, _, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, agent.Settings{}, agent.MCPServer{}, events); err != nil {
 		t.Fatal(err)
 	}
 	timeout := time.After(5 * time.Second)
@@ -100,7 +103,7 @@ func TestStartupFailureOnStderr(t *testing.T) {
 			})
 			script(t, "#!/bin/sh\necho \"warning: a warning\" >&2\n"+before+"echo \""+refusal+"\" >&2\nexit 1\n")
 			start := time.Now()
-			_, _, err := startProcess(workspace, "ox-session", newUUID(), false, agent.Settings{}, make(chan agent.Event))
+			_, _, err := startProcess(workspace, "ox-session", newUUID(), false, agent.Settings{}, agent.MCPServer{}, make(chan agent.Event))
 			if err == nil || !strings.Contains(err.Error(), refusal) {
 				t.Fatalf("startup failure lost Claude's stderr: %v", err)
 			}
@@ -136,7 +139,7 @@ func TestClaudeStartsWithoutAnAPIKey(t *testing.T) {
 	env := filepath.Join(t.TempDir(), "env")
 	standIn(t, "env > "+env+"\n")
 	events := make(chan agent.Event, 1)
-	if _, _, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, agent.Settings{}, events); err != nil {
+	if _, _, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, agent.Settings{}, agent.MCPServer{}, events); err != nil {
 		t.Fatal(err)
 	}
 	for e := range events {
@@ -153,12 +156,58 @@ func TestClaudeStartsWithoutAnAPIKey(t *testing.T) {
 	}
 }
 
+// Every Claude process, resumed or new, has Ox's MCP server and runs its
+// read-only tools without asking.
+func TestClaudeRegistersOxMCP(t *testing.T) {
+	mcp := agent.MCPServer{
+		Command: "/x/ox-mcp", Env: map[string]string{"OX_SOCKET": "/s", "OX_SESSION_ID": "id"}, Approved: []string{"list_models"},
+	}
+	for _, resume := range []bool{false, true} {
+		argv := filepath.Join(t.TempDir(), "argv")
+		standIn(t, "for a in \"$@\"; do printf '%s\\n' \"$a\"; done > "+argv+"\n")
+		events := make(chan agent.Event, 1)
+		if _, _, err := startProcess(t.TempDir(), "ox-session", newUUID(), resume, agent.Settings{}, mcp, events); err != nil {
+			t.Fatal(err)
+		}
+		for e := range events {
+			if _, exited := e.(processExit); exited {
+				break
+			}
+		}
+		data, err := os.ReadFile(argv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		args := strings.Split(string(data), "\n")
+		i := slices.Index(args, "--mcp-config")
+		if i < 0 || i+1 >= len(args) {
+			t.Fatalf("resume %v: no --mcp-config in %q", resume, args)
+		}
+		var config struct {
+			MCPServers map[string]struct {
+				Command string            `json:"command"`
+				Env     map[string]string `json:"env"`
+			} `json:"mcpServers"`
+		}
+		if err := json.Unmarshal([]byte(args[i+1]), &config); err != nil {
+			t.Fatalf("resume %v: --mcp-config %q: %v", resume, args[i+1], err)
+		}
+		ox := config.MCPServers["ox"]
+		if ox.Command != mcp.Command || !maps.Equal(ox.Env, mcp.Env) {
+			t.Errorf("resume %v: --mcp-config %s", resume, args[i+1])
+		}
+		if !slices.Contains(args, "--allowedTools=mcp__ox__list_models") {
+			t.Errorf("resume %v: list_models is not pre-approved in %q", resume, args)
+		}
+	}
+}
+
 // Claude runs at its default effort, with only a warning, when given an
 // effort it does not know.
 func TestUnknownEffortFailsToStart(t *testing.T) {
 	standIn(t, "exec sleep 15\n")
 	for effort, known := range map[string]bool{"": true, "high": true, "hgih": false} {
-		p, input, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, agent.Settings{Effort: effort}, make(chan agent.Event, 1))
+		p, input, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, agent.Settings{Effort: effort}, agent.MCPServer{}, make(chan agent.Event, 1))
 		if p != nil {
 			input.w.(io.Closer).Close()
 			p.cmd.Process.Kill()

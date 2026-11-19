@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -32,6 +33,12 @@ func main() {
 	defaultPath(socketPath, paths.Socket)
 	defaultPath(dbPath, paths.Database)
 	defaultPath(configPath, paths.Config)
+	// The forwarder runs in a session's workspace, so it needs an absolute
+	// socket path.
+	socket, err := filepath.Abs(*socketPath)
+	if err != nil {
+		log.Fatal(err)
+	}
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		log.Fatal(err)
@@ -40,20 +47,24 @@ func main() {
 	if err := checkConfig(cfg, harnesses); err != nil {
 		log.Fatalf("%s: %v", *configPath, err)
 	}
+	forwarder, err := findForwarder()
+	if err != nil {
+		log.Fatalf("ox-mcp not found beside oxd: %v", err)
+	}
 
 	st, err := store.Open(*dbPath)
 	if err != nil {
 		log.Fatalf("open database: %v", err)
 	}
 	defer st.Close()
-	s, err := server.New(st, cfg, *parkAfter, harnesses)
+	s, err := server.New(st, cfg, *parkAfter, harnesses, server.MCP{Forwarder: forwarder, Socket: socket})
 	if err != nil {
 		log.Fatalf("load database: %v", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	listener, err := listen(*socketPath)
+	listener, err := listen(socket)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -68,6 +79,19 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+// findForwarder returns the ox-mcp executable beside oxd's own. Without it,
+// Claude would run with its ox server failed.
+func findForwarder() (string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	if self, err = filepath.EvalSymlinks(self); err != nil {
+		return "", err
+	}
+	return exec.LookPath(filepath.Join(filepath.Dir(self), "ox-mcp"))
 }
 
 // checkConfig refuses a configuration that offers a harness oxd does not

@@ -5,7 +5,9 @@ This reference describes the interface served by `oxd`. See
 
 ## Connection and messages
 
-Run `go run ./cmd/oxd` and connect to its Unix socket. The default path is
+Build `oxd` and `ox-mcp` into one directory, as `make dev` does into `bin/`;
+`oxd` refuses to start without `ox-mcp` beside it. Run `oxd` and connect to
+its Unix socket. The default path is
 `ox/oxd.sock` beneath `$XDG_RUNTIME_DIR`, or beside the default
 [database](#workspaces-and-sessions) when that is unset.
 Use `-socket /absolute/path/to/oxd.sock` to choose a different socket.
@@ -443,8 +445,9 @@ capability.
 
 ### Tools
 
-`list_models` takes no arguments and returns one text content item holding the
-JSON that [`harness/list`](#harnesslist) returns. A call to another tool
+`list_models` takes no arguments, is annotated `readOnlyHint`, and returns one
+text content item holding the JSON that [`harness/list`](#harnesslist)
+returns. A call to another tool
 returns `-32602`.
 
 ## Errors

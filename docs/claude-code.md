@@ -1,6 +1,6 @@
 # Driving Claude Code with `claude -p` and stream-json
 
-Observed with Claude Code 2.1.312 through 2.1.327 (October–November 2026).
+Observed with Claude Code 2.1.312 through 2.1.329 (October–November 2026).
 
 ## 1. Launch
 
@@ -17,7 +17,7 @@ claude -p \
   --system-prompt-snapshot off \
   --model <model> --effort <level> \
   [--append-system-prompt <text>] \
-  [--allowedTools mcp__<server> ...] \
+  [--allowedTools=mcp__<server>__<tool>,...] \
   [--mcp-config '{"mcpServers":{...}}'] \
   (--session-id <uuid> | --resume <uuid> | --resume <parent> --fork-session --session-id <uuid>)
 ```
@@ -27,8 +27,10 @@ claude -p \
 - `--replay-user-messages` echoes each prompt back as a `user` line with `isReplay: true` and the prompt's `uuid` once Claude takes it into a turn.
 - `--permission-prompt-tool stdio` routes permission prompts to the host as `can_use_tool` control requests on stdout. The alternative is `--permission-prompt-tool mcp__server__tool`.
 - `--system-prompt-snapshot off`: by default Claude records the fully composed system prompt on the first request and reuses it, including across `--resume`, until compaction. A host that passes `--append-system-prompt` on every launch needs the snapshot off for later launches to take effect.
-- `--mcp-config` accepts inline JSON. Shape: `{"mcpServers":{"<name>":{"command":"/abs/path","args":[],"env":{}}}}`. MCP tools are named `mcp__<server>__<tool>`.
-- `--allowedTools mcp__<server>` pre-approves every tool of that server. `--allowedTools` auto-approves without restricting the tool catalog; `--tools` restricts built-in tools and does not cover MCP tools.
+- `--mcp-config` accepts inline JSON. Shape: `{"mcpServers":{"<name>":{"command":"/abs/path","args":[],"env":{}}}}`. MCP tools are named `mcp__<server>__<tool>`. The servers it names are added to the user's, plugin and claude.ai servers, which keep loading without `--strict-mcp-config`; an added server reports `source: "dynamic"`.
+- `--allowedTools=mcp__<server>__<tool>` pre-approves one MCP tool; several go comma-separated in one flag. `--allowedTools` auto-approves without restricting the tool catalog; `--tools` restricts built-in tools and does not cover MCP tools.
+- `plan` mode ignores `--allowedTools` for an MCP tool and asks with `decision_reason_type: "mode"`, unless the tool's `tools/list` entry has `annotations: {"readOnlyHint": true}`. `readOnlyHint` alone does not skip the prompt in `default`, so a tool that runs without asking in every mode needs both.
+- MCP tools are deferred: the model loads one with `ToolSearch` `select:<name>`, which needs no approval, before calling it, unless the resumed conversation already loaded it.
 - `--allowedTools` and `--disallowedTools` are variadic and consume every following argument that is not a flag. Put another `--flag` right after their values.
 - Per-process flags (`--mcp-config`, `--settings`, `--plugin-dir`, `--add-dir`, `--fallback-model`, `--append-system-prompt`, model, effort, permission mode) must be passed again on every resume. A resumed process runs the `--permission-mode` it is given, or `default` without one, whatever mode the transcript was written in (2.1.327; the `system` `init` line's `permissionMode` and its approval requests both follow the flag).
 - `--session-id` must be a UUID.
@@ -77,6 +79,7 @@ The response carries the slash-command catalog and the model list. No model turn
 
 - `models[].value` is the identifier accepted by `--model` and runtime model changes. `resolvedModel` is the model an alias selects. `supportedEffortLevels` lists the effort choices for models with `supportsEffort`.
 - A refusal is `{"subtype":"error","request_id":"initialize","error":"..."}`.
+- The response does not wait for MCP servers to connect. The first turn waits for them.
 - Claude accepts any model in `--model` or a runtime change and fails only on the next prompt. An unknown `--effort` value produces a stderr warning, and Claude runs at its default effort.
 - Model discovery alone: run `claude -p --input-format stream-json --output-format stream-json --verbose` with no `--model` and no MCP config in the project directory, send `initialize`, read `models`, close stdin.
 
@@ -126,7 +129,7 @@ Stdout carries JSON lines and can carry plain text on [failure](#startup-failure
 
 ### `system`
 
-- `init`: `session_id`, `model` (resolved ID), `tools`, `mcp_servers`, `slash_commands`, `skills`, `permissionMode` (the mode the turn runs in, with `manual` reported as `default`). Emitted at the start of every turn, including turns Claude starts itself. [`initialize`](#initialize-first) supplies startup data.
+- `init`: `session_id`, `model` (resolved ID), `tools`, `mcp_servers`, `slash_commands`, `skills`, `permissionMode` (the mode the turn runs in, with `manual` reported as `default`). Emitted at the start of every turn, including turns Claude starts itself. [`initialize`](#initialize-first) supplies startup data. Each `mcp_servers` entry is `{name, status, source}`, with `status` `connected`, `failed`, or `needs-auth`; a server whose command is missing or whose `initialize` fails is `failed`, and Claude runs without its tools.
 - `status`: `status` and `permissionMode`, emitted after every permission mode change: a `set_permission_mode` (after its `control_response`), `EnterPlanMode` (which asks for no approval), and an approved `ExitPlanMode` (to `default` in a process started in `plan`).
 - `session_state_changed`: `state` is `running`, `requires_action` (just before a `can_use_tool` request) or `idle`; carries `"sdk_host_only":true`. `idle` arrives after the turn's `result` is flushed.
 - `commands_changed`: `commands` replaces the slash-command catalog (possibly with an empty list).
@@ -259,6 +262,8 @@ first turn has saved one.
                             "behavior":"allow","destination":"localSettings"}],
  "suppress_always_allow_rule":false,"decision_reason_type":"subcommandResults","tool_use_id":"toolu_..."}}
 ```
+
+An MCP tool's request also carries `mcp_server` `{name, source}` and `display_name`. A request the permission mode forces, such as an MCP tool in `plan`, carries `decision_reason_type: "mode"`.
 
 Order on stdout: the assistant `tool_use`, `session_state_changed requires_action`, the `control_request`, then `running` again after the answer.
 

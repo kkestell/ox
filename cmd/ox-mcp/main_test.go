@@ -131,7 +131,7 @@ func startOxd(t *testing.T) (s *server.Server, socket string, p *page, sessionID
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err = server.New(st, cfg, 0, nil)
+	s, err = server.New(st, cfg, 0, nil, server.MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,10 +259,14 @@ func TestForwarder(t *testing.T) {
 			InputSchema struct {
 				Type string `json:"type"`
 			} `json:"inputSchema"`
+			Annotations struct {
+				ReadOnlyHint bool `json:"readOnlyHint"`
+			} `json:"annotations"`
 		} `json:"tools"`
 	}
 	json.Unmarshal(r.Result, &list)
-	if len(list.Tools) != 1 || list.Tools[0].Name != "list_models" || list.Tools[0].InputSchema.Type != "object" {
+	if len(list.Tools) != 1 || list.Tools[0].Name != "list_models" || list.Tools[0].InputSchema.Type != "object" ||
+		!list.Tools[0].Annotations.ReadOnlyHint {
 		t.Fatalf("tools/list returned %s", r.Result)
 	}
 

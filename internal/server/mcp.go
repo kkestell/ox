@@ -102,4 +102,11 @@ var listModelsTool = map[string]any{
 	"name":        "list_models",
 	"description": "List the harnesses Ox offers, with their models, effort levels, and permission modes, and the defaults for a new session.",
 	"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+	// Claude's plan mode prompts for an MCP tool its --allowedTools names
+	// unless the tool is annotated read-only.
+	"annotations": map[string]any{"readOnlyHint": true},
 }
+
+// approvedTools are the tools that only read, which run without an approval
+// prompt.
+var approvedTools = []string{"list_models"}

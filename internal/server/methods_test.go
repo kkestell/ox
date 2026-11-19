@@ -36,7 +36,7 @@ func TestSettingsValidation(t *testing.T) {
 		Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}}}},
 		PermissionModes: []config.Option{{ID: "plan"}},
 	}}}
-	s, err := New(openStore(t), cfg, 0, nil)
+	s, err := New(openStore(t), cfg, 0, nil, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestRepeatSessionCreation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(openStore(t), cfg, 0, nil)
+	s, err := New(openStore(t), cfg, 0, nil, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestSessionLifecycle(t *testing.T) {
 		PermissionModes: []config.Option{{ID: "plan"}},
 	}}}
 	st := openStore(t)
-	s, err := New(st, cfg, 300*time.Millisecond, map[string]agent.Start{"fake": fake.Start})
+	s, err := New(st, cfg, 300*time.Millisecond, map[string]agent.Start{"fake": fake.Start}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +230,7 @@ func TestSessionLifecycle(t *testing.T) {
 	}
 
 	// The removal is stored: a daemon over the same store loads no workspace.
-	restarted, err := New(st, cfg, 0, map[string]agent.Start{"fake": fake.Start})
+	restarted, err := New(st, cfg, 0, map[string]agent.Start{"fake": fake.Start}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestConfigurationTakenButNotStored(t *testing.T) {
 		PermissionModes: []config.Option{{ID: "plan"}},
 	}}}
 	st := openStore(t)
-	s, err := New(st, cfg, 0, map[string]agent.Start{"fake": fake.Start})
+	s, err := New(st, cfg, 0, map[string]agent.Start{"fake": fake.Start}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ func TestConfigurationOutlivesItsProcess(t *testing.T) {
 		Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}}},
 		PermissionModes: []config.Option{{ID: "plan"}},
 	}}}
-	s, err := New(openStore(t), cfg, 0, map[string]agent.Start{"fake": fake.Start})
+	s, err := New(openStore(t), cfg, 0, map[string]agent.Start{"fake": fake.Start}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +346,7 @@ func TestUnresumableConversationStartsAnew(t *testing.T) {
 	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Model: "m", PermissionMode: "plan", ResumeToken: "gone", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(st, &config.Config{}, 0, map[string]agent.Start{"claude": claude.Start})
+	s, err := New(st, &config.Config{}, 0, map[string]agent.Start{"claude": claude.Start}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +406,7 @@ func TestResumeTokenKeptWhenNotStored(t *testing.T) {
 	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Model: "m", PermissionMode: "plan", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(st, &config.Config{}, 0, map[string]agent.Start{"claude": claude.Start})
+	s, err := New(st, &config.Config{}, 0, map[string]agent.Start{"claude": claude.Start}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -450,7 +450,7 @@ func TestClaudeModeChangeIsAdopted(t *testing.T) {
 	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Model: "m", Effort: "low", PermissionMode: "plan", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(st, &config.Config{}, 0, map[string]agent.Start{"claude": claude.Start})
+	s, err := New(st, &config.Config{}, 0, map[string]agent.Start{"claude": claude.Start}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -20,6 +20,7 @@ type Server struct {
 	config    *config.Config
 	harnesses map[string]agent.Start
 	parkAfter time.Duration
+	mcp       MCP
 
 	// mu guards which workspaces and sessions exist, and closed. A change to
 	// them is broadcast, and an answer listing them is queued, while it is
@@ -41,13 +42,17 @@ type workspace struct {
 	sessions  []*session
 }
 
-func New(st *store.Store, cfg *config.Config, parkAfter time.Duration, harnesses map[string]agent.Start) (*Server, error) {
+// MCP locates Ox's MCP server for harnesses: the forwarder they run and the
+// socket it reaches oxd on.
+type MCP struct{ Forwarder, Socket string }
+
+func New(st *store.Store, cfg *config.Config, parkAfter time.Duration, harnesses map[string]agent.Start, mcp MCP) (*Server, error) {
 	stored, err := st.Workspaces()
 	if err != nil {
 		return nil, err
 	}
 	s := &Server{
-		store: st, config: cfg, harnesses: harnesses, parkAfter: parkAfter,
+		store: st, config: cfg, harnesses: harnesses, parkAfter: parkAfter, mcp: mcp,
 		sessions: make(map[string]*session), conns: make(map[*conn]struct{}),
 	}
 	for _, w := range stored {

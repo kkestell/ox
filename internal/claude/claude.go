@@ -42,11 +42,22 @@ func CheckEffort(effort string) error {
 	return nil
 }
 
-// startProcess starts Claude for the conversation sessionID. Its stderr goes
-// to the log under logID, the Ox session's ID.
-func startProcess(workspace, logID, sessionID string, resume bool, settings agent.Settings, events chan<- agent.Event) (*process, *writer, error) {
+// startProcess starts Claude for the conversation sessionID, with Ox's MCP
+// server registered as ox. Its stderr goes to the log under logID, the Ox
+// session's ID.
+func startProcess(workspace, logID, sessionID string, resume bool, settings agent.Settings, mcp agent.MCPServer, events chan<- agent.Event) (*process, *writer, error) {
 	if err := CheckEffort(settings.Effort); err != nil {
 		return nil, nil, err
+	}
+	mcpConfig, err := json.Marshal(map[string]any{"mcpServers": map[string]any{
+		"ox": map[string]any{"command": mcp.Command, "args": []string{}, "env": mcp.Env},
+	}})
+	if err != nil {
+		return nil, nil, err
+	}
+	approved := make([]string, len(mcp.Approved))
+	for i, tool := range mcp.Approved {
+		approved[i] = "mcp__ox__" + tool
 	}
 	args := []string{
 		"-p", "--input-format=stream-json", "--output-format=stream-json", "--verbose",
@@ -62,6 +73,9 @@ func startProcess(workspace, logID, sessionID string, resume bool, settings agen
 	if settings.Effort != "" {
 		args = append(args, "--effort="+settings.Effort)
 	}
+	// Without --strict-mcp-config the user's own MCP servers still load. The
+	// = form keeps the variadic --allowedTools from taking later arguments.
+	args = append(args, "--mcp-config", string(mcpConfig), "--allowedTools="+strings.Join(approved, ","))
 
 	cmd := exec.Command("claude", args...)
 	cmd.Dir = workspace

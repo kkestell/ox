@@ -82,10 +82,16 @@ call returns, such as a failed write to its process, through `OnError`, which
 the session logs under its ID. See the
 [update contract](protocol.md#session-updates) for the wire format and ordering.
 
+Each harness receives Ox's MCP server for its session: the `ox-mcp` beside
+`oxd`, its environment naming the socket and the session, and the tools that
+run without approval.
+
 ### The Claude agent
 
 Ox assigns a fresh UUID to a new Claude conversation and reports it through
-`OnResumable` with the first published result. See Claude's
+`OnResumable` with the first published result. On every launch, resumes
+included, it registers Ox's MCP server as `ox` and pre-approves the tools that
+run without approval. See Claude's
 [launch flags](claude-code.md#persistent-session) and
 [transcript timing](claude-code.md#session-ids).
 

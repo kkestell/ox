@@ -105,10 +105,15 @@ func (sess *session) start() error {
 		return fmt.Errorf("unknown harness %q", sess.harness)
 	}
 	a, err := start(agent.Options{
-		SessionID:    sess.id,
-		Workspace:    sess.workspace,
-		Resume:       sess.resumeToken,
-		Settings:     sess.settings,
+		SessionID: sess.id,
+		Workspace: sess.workspace,
+		Resume:    sess.resumeToken,
+		Settings:  sess.settings,
+		MCP: agent.MCPServer{
+			Command:  sess.server.mcp.Forwarder,
+			Env:      map[string]string{"OX_SOCKET": sess.server.mcp.Socket, "OX_SESSION_ID": sess.id},
+			Approved: approvedTools,
+		},
 		OnUpdate:     sess.update,
 		OnResumable:  sess.markResumable,
 		OnConfigured: sess.adopt,

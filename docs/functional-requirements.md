@@ -52,6 +52,7 @@ What the person using Ox can see and rely on. Each requirement is cited by its t
 - **Permission requests.** A tool permission request appears as a card above the composer on every page, including after a reload, until it is answered or withdrawn.
 - **Allow and Deny.** Allow sends the tool's input exactly as the card shows it; Deny, or a typed reply, denies with that message.
 - **Questions from Claude.** A question from Claude appears as a form with its options and an Other answer; the user submits answers to every question or declines.
+- **Claude can list Ox's models.** Claude can look up the harnesses, models, effort levels, and permission modes Ox offers, in any permission mode, without asking for approval.
 - **Approvals wait.** An approval waits for an answer, and the session does not park meanwhile. It is withdrawn on every page when Claude cancels it, goes idle, or exits.
 - **One answer per approval.** An approval already answered, from this page or another, refuses a second answer with an error.
 - **Every request settles.** Every request ends in its result or an error, shown in the view that made it. The error stays until that view's next request, even if a later request finishes first.
