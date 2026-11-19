@@ -26,8 +26,9 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
       .filter((s) => s.workspaceId === workspaceId)
       .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
 
-  const confirmDelete = (event: MouseEvent, session: Session) => {
-    event.stopPropagation();
+  const isSelected = (session: Session) => props.selected?.kind === "session" && props.selected.id === session.id;
+
+  const confirmDelete = (session: Session) => {
     clearDeleteError();
     setDeleting(session);
     deleteDialog.showModal();
@@ -92,23 +93,27 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
             <ul>
               <For each={sessionsOf(workspace.id)}>
                 {(session) => (
-                  <li
-                    class={{ selected: props.selected?.kind === "session" && props.selected.id === session.id }}
-                    onClick={() => props.onSelect({ kind: "session", id: session.id })}
-                  >
-                    <span
-                      class={["status", session.state]}
-                      role="img"
-                      title={session.state}
-                      aria-label={session.state}
-                    />
-                    <span class="title">{title(session)}</span>
+                  <li class={{ selected: isSelected(session) }}>
+                    <button
+                      type="button"
+                      class="open"
+                      aria-current={isSelected(session) ? "page" : undefined}
+                      onClick={() => props.onSelect({ kind: "session", id: session.id })}
+                    >
+                      <span
+                        class={["status", session.state]}
+                        role="img"
+                        title={session.state}
+                        aria-label={session.state}
+                      />
+                      <span class="title">{title(session)}</span>
+                    </button>
                     <button
                       type="button"
                       class="icon trash"
                       aria-label="Delete session"
                       title="Delete session"
-                      onClick={(event) => confirmDelete(event, session)}
+                      onClick={() => confirmDelete(session)}
                     />
                   </li>
                 )}

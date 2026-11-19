@@ -38,7 +38,8 @@ func TestHistoryMergesTextAndKeepsConversation(t *testing.T) {
 	h.record(agent.Update{MessageID: "p", Type: "state", State: "idle"})
 	h.record(agent.Update{Type: "text_delta", Text: "tick"})
 	h.record(agent.Update{Type: "parked"})
-	if entries, err = h.entries(); err != nil {
+	// A fresh history reads only what reached the store, as after a restart.
+	if entries, err = (&history{store: st, sessionID: "s"}).entries(); err != nil {
 		t.Fatal(err)
 	}
 	var got []string

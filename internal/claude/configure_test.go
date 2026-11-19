@@ -45,13 +45,13 @@ func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 		if a.Configure(config, replyTo(overlapping)); !errors.Is(<-overlapping, agent.ErrBusy) {
 			t.Fatal("overlapping configuration accepted")
 		}
-		a.handleOutput(Message{Type: "control_response", Response: ControlResponse{RequestID: "unrelated", Subtype: "success"}})
+		a.handleOutput(message{Type: "control_response", Response: controlReply{RequestID: "unrelated", Subtype: "success"}})
 		select {
 		case err := <-result:
 			t.Fatalf("configuration finished before its acknowledgement: %v", err)
 		default:
 		}
-		a.handleOutput(Message{Type: "control_response", Response: ControlResponse{RequestID: wire.RequestID, Subtype: "success"}})
+		a.handleOutput(message{Type: "control_response", Response: controlReply{RequestID: wire.RequestID, Subtype: "success"}})
 	}
 	select {
 	case err := <-result:
@@ -84,7 +84,7 @@ func TestConfigureSendsOnlyChangedSettings(t *testing.T) {
 	if wire.Request["subtype"] != "apply_flag_settings" || input.Len() != 0 {
 		t.Fatalf("unchanged settings were sent: %+v, %s", wire, input)
 	}
-	a.handleOutput(Message{Type: "control_response", Response: ControlResponse{RequestID: wire.RequestID, Subtype: "success"}})
+	a.handleOutput(message{Type: "control_response", Response: controlReply{RequestID: wire.RequestID, Subtype: "success"}})
 	if err := <-result; err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestConfigureFailure(t *testing.T) {
 			}
 			switch outcome {
 			case "rejected":
-				a.handleOutput(Message{Type: "control_response", Response: ControlResponse{RequestID: wire.RequestID, Subtype: "error", Error: "Unsupported model"}})
+				a.handleOutput(message{Type: "control_response", Response: controlReply{RequestID: wire.RequestID, Subtype: "error", Error: "Unsupported model"}})
 			case "exited":
 				a.exit(nil)
 			}
@@ -135,7 +135,7 @@ func TestConfigureTimeoutStopsProcess(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	a.proc = &Process{Input: a.input, cmd: cmd}
+	a.proc = &process{cmd: cmd}
 	a.settings = agent.Settings{Model: "haiku", Effort: "low", PermissionMode: "manual"}
 	result := make(chan error, 1)
 	a.Configure(agent.Settings{Model: "haiku", Effort: "low", PermissionMode: "plan"}, replyTo(result))
@@ -151,7 +151,7 @@ func TestConfigureTimeoutStopsProcess(t *testing.T) {
 	if err := cmd.Wait(); err == nil {
 		t.Fatal("the process was not stopped")
 	}
-	a.handleOutput(Message{Type: "control_response", Response: ControlResponse{RequestID: wire.RequestID, Subtype: "success"}})
+	a.handleOutput(message{Type: "control_response", Response: controlReply{RequestID: wire.RequestID, Subtype: "success"}})
 	select {
 	case err := <-result:
 		t.Fatalf("configuration ended before the process exited: %v", err)
@@ -176,7 +176,7 @@ func TestConfigureRequiresIdle(t *testing.T) {
 			case "prompting":
 				a.phase = prompting
 			default:
-				a.claudeState = state
+				a.state = state
 			}
 			result := make(chan error, 1)
 			if a.Configure(agent.Settings{Model: "haiku"}, replyTo(result)); !errors.Is(<-result, agent.ErrBusy) {

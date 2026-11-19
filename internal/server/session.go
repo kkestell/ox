@@ -109,6 +109,7 @@ func (sess *session) start() error {
 		Settings:    sess.settings,
 		OnUpdate:    sess.update,
 		OnResumable: sess.markResumable,
+		OnError:     func(err error) { log.Printf("session %s: %v", sess.id, err) },
 	})
 	if err != nil {
 		return err

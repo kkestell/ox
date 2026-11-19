@@ -1,4 +1,4 @@
-import { createContext, createSignal, createStore, onSettled, type ParentProps, useContext } from "solid-js";
+import { createContext, createSignal, createStore, onSettled, type ParentProps, reconcile, useContext } from "solid-js";
 import { type Connection, connect, RpcError } from "./connection";
 import {
   type ApprovalRequest,
@@ -18,11 +18,11 @@ export type Workspace = { id: string; path: string };
 
 // A session's entries are its conversation, in order. A reply is Claude's
 // text up to its next tool call or the end of its turn; a result entry ends a
-// turn.
+// turn. A tool is stopped when its process exited before its result.
 export type Entry =
   | { kind: "prompt"; text: string }
   | { kind: "reply"; text: string }
-  | { kind: "tool"; id: string; name: string; input: Record<string, unknown>; result?: ToolResult }
+  | { kind: "tool"; id: string; name: string; input: Record<string, unknown>; result?: ToolResult; stopped?: boolean }
   | { kind: "result"; result: ToolResult }
   | { kind: "exited"; error: string };
 
@@ -49,6 +49,10 @@ const settingsOf = (p: Settings): Settings => ({
   effort: p.effort,
   permission_mode: p.permission_mode,
 });
+
+function stopTools(session: Session) {
+  for (const e of session.entries) if (e.kind === "tool" && !e.result) e.stopped = true;
+}
 
 function apply(session: Session, u: Update) {
   switch (u.type) {
@@ -77,6 +81,7 @@ function apply(session: Session, u: Update) {
       break;
     case "parked":
       session.state = "parked";
+      stopTools(session);
       break;
     case "approval":
       session.approvals.push({ id: u.request_id, request: u.request });
@@ -89,6 +94,7 @@ function apply(session: Session, u: Update) {
     }
     case "exited":
       session.entries.push({ kind: "exited", error: u.error });
+      stopTools(session);
       break;
   }
 }
@@ -98,12 +104,19 @@ function apply(session: Session, u: Update) {
 // request has.
 export function createAttempt() {
   const [error, setError] = createSignal<string>();
-  const clear = () => setError(undefined);
+  let latest = 0;
+  const clear = () => {
+    latest++;
+    setError(undefined);
+  };
   const attempt = (request: Promise<unknown>) => {
     clear();
+    const current = latest;
     return request.then(
       () => {},
-      (e: Error) => setError(e.message),
+      (e: Error) => {
+        if (current === latest) setError(e.message);
+      },
     );
   };
   return [error, attempt, clear] as const;
@@ -123,10 +136,11 @@ function createOx() {
   const [error, setError] = createSignal<string>();
   let connection!: Connection;
 
-  // load adds a session. Its settings and earlier updates come in the
-  // session/get response, and its updates apply from the response onward. A
-  // session destroyed before the response is not added; its destroyed event
-  // has already arrived.
+  // load adds a session, or brings a loaded one up to date in place, which
+  // keeps its view and the view's state. Its settings and earlier updates
+  // come in the session/get response, and its updates apply from the response
+  // onward. A session destroyed before the response is not added; its
+  // destroyed event has already arrived.
   async function load(id: string, workspaceId: string, harness: string, createdAt: string) {
     let result: Methods["session/get"][1];
     try {
@@ -147,25 +161,36 @@ function createOx() {
     };
     for (const u of result.history) apply(session, u);
     for (const a of result.approvals) session.approvals.push({ id: a.request_id, request: a.request });
+    // Stored history has no parked update.
+    if (session.state === "parked") stopTools(session);
     setState((s) => {
-      s.sessions[id] = session;
+      const loaded = s.sessions[id];
+      if (!loaded) {
+        s.sessions[id] = session;
+        return;
+      }
+      loaded.state = session.state;
+      loaded.settings = session.settings;
+      loaded.entries = session.entries;
+      reconcile(session.approvals, "id")(loaded.approvals);
     });
   }
 
-  // A new oxd connection starts from nothing: it has missed every
-  // notification sent while the page was disconnected.
+  // A new oxd connection has missed every notification sent while the page
+  // was disconnected, so it reloads everything.
   async function reload() {
-    setState((s) => {
-      s.workspaces = [];
-      s.sessions = {};
-    });
     setError(undefined);
     const { harnesses, defaults } = await connection.rpc("harness/list", {});
     const { workspaces } = await connection.rpc("workspace/list", {});
+    const listed = new Set(workspaces.flatMap((w) => w.sessions.map((s) => s.session_id)));
     setState((s) => {
       s.harnesses = harnesses;
       s.defaults = defaults;
-      s.workspaces = workspaces.map((w) => ({ id: w.workspace_id, path: w.path }));
+      reconcile(
+        workspaces.map((w) => ({ id: w.workspace_id, path: w.path })),
+        "id",
+      )(s.workspaces);
+      for (const id of Object.keys(s.sessions)) if (!listed.has(id)) delete s.sessions[id];
     });
     await Promise.all(
       workspaces.flatMap((w) => w.sessions.map((s) => load(s.session_id, w.workspace_id, s.harness, s.created_at))),

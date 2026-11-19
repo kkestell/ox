@@ -17,24 +17,26 @@ func (a *Agent) Send(text string) (string, error) {
 	if !a.idle() {
 		return "", agent.ErrBusy
 	}
-	prompt := &submission{id: NewUUID()}
+	prompt := &submission{id: newUUID()}
 	if err := a.input.Prompt(prompt.id, text); err != nil {
 		return "", fmt.Errorf("send prompt to Claude: %w", err)
 	}
 	a.prompt = prompt
 	a.phase = queued
 	a.publish(agent.Update{Type: "prompt", Text: text})
+	a.setState("running")
 	return prompt.id, nil
 }
 
 // Interrupt asks Claude to stop the running turn. Claude ends it with an
-// error result and an idle state, which end a prompt as usual. Its control
-// response carries nothing Ox uses.
+// error result and an idle state, which end a prompt as usual; a prompt it
+// has not taken yet starts and stops the same way. Its control response
+// carries nothing Ox uses.
 func (a *Agent) Interrupt() error {
-	if a.claudeState == "idle" {
+	if a.state == "idle" {
 		return nil
 	}
-	if err := a.input.Control(NewUUID(), map[string]any{"subtype": "interrupt"}); err != nil {
+	if err := a.input.Control(newUUID(), map[string]any{"subtype": "interrupt"}); err != nil {
 		return fmt.Errorf("interrupt Claude: %w", err)
 	}
 	return nil
@@ -47,10 +49,8 @@ func (a *Agent) commandStarted(id string) {
 }
 
 func (a *Agent) sessionState(state string) {
-	a.claudeState = state
-	update := agent.Update{Type: "state", State: state}
 	if state != "idle" {
-		a.publish(update)
+		a.setState(state)
 		return
 	}
 	a.withdrawApprovals()
@@ -58,9 +58,18 @@ func (a *Agent) sessionState(state string) {
 	case queued:
 		// Claude can report idle before it takes the prompt; keep waiting.
 	case prompting:
-		a.endPrompt(update)
+		a.state = state
+		a.endPrompt(agent.Update{Type: "state", State: state})
 	default:
-		a.publish(update)
+		a.setState(state)
+	}
+}
+
+// setState publishes a change to the state clients see.
+func (a *Agent) setState(state string) {
+	if state != a.state {
+		a.state = state
+		a.publish(agent.Update{Type: "state", State: state})
 	}
 }
 

@@ -15,8 +15,7 @@ import (
 	"github.com/kkestell/ox/internal/agent"
 )
 
-type Process struct {
-	*Input
+type process struct {
 	cmd *exec.Cmd
 }
 
@@ -24,7 +23,7 @@ const systemInstructions = "Lead with the big idea up front. " +
 	"Use crisp, deadpan, military-efficient delivery. " +
 	"Use dry wit with complete emotional neutrality."
 
-func startProcess(workspace, sessionID string, resume bool, settings agent.Settings, events chan<- agent.Event) (*Process, error) {
+func startProcess(workspace, sessionID string, resume bool, settings agent.Settings, events chan<- agent.Event) (*process, *writer, error) {
 	args := []string{
 		"-p", "--input-format=stream-json", "--output-format=stream-json", "--verbose",
 		"--include-partial-messages", "--permission-prompt-tool=stdio",
@@ -46,15 +45,15 @@ func startProcess(workspace, sessionID string, resume bool, settings agent.Setti
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		stdin.Close()
-		return nil, err
+		return nil, nil, err
 	}
 	if err := cmd.Start(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	output := bufio.NewReader(stdout)
@@ -66,12 +65,12 @@ func startProcess(workspace, sessionID string, resume bool, settings agent.Setti
 	if err != nil {
 		cmd.Process.Kill()
 		cmd.Wait()
-		return nil, fmt.Errorf("initialize Claude: %w", err)
+		return nil, nil, fmt.Errorf("initialize Claude: %w", err)
 	}
 
-	p := &Process{Input: NewInput(stdin), cmd: cmd}
+	p := &process{cmd: cmd}
 	go p.read(output, events)
-	return p, nil
+	return p, newWriter(stdin), nil
 }
 
 func initialize(input io.Writer, output *bufio.Reader) error {
@@ -85,55 +84,55 @@ func initialize(input io.Writer, output *bufio.Reader) error {
 		if err != nil {
 			return fmt.Errorf("read startup response: %w", err)
 		}
-		var message Message
-		if json.Unmarshal(line, &message) != nil || message.Type != "control_response" || message.Response.RequestID != "initialize" {
+		var m message
+		if json.Unmarshal(line, &m) != nil || m.Type != "control_response" || m.Response.RequestID != "initialize" {
 			continue
 		}
-		if message.Response.Subtype != "success" {
-			return fmt.Errorf("Claude refused initialization (%s): %s", message.Response.Subtype, message.Response.Error)
+		if m.Response.Subtype != "success" {
+			return fmt.Errorf("Claude refused initialization (%s): %s", m.Response.Subtype, m.Response.Error)
 		}
 		return nil
 	}
 }
 
-func (p *Process) read(output *bufio.Reader, events chan<- agent.Event) {
+func (p *process) read(output *bufio.Reader, events chan<- agent.Event) {
 	for {
 		line, err := output.ReadBytes('\n')
 		if err != nil {
 			break
 		}
-		var message Message
-		if json.Unmarshal(line, &message) == nil {
-			events <- message
+		var m message
+		if json.Unmarshal(line, &m) == nil {
+			events <- m
 		}
 	}
 	events <- processExit{p.cmd.Wait()}
 }
 
 // Terminate asks Claude to exit so it can clean up its tool processes.
-func (p *Process) Terminate() error {
+func (p *process) Terminate() error {
 	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return fmt.Errorf("stop Claude: %w", err)
 	}
 	return nil
 }
 
-// Input writes messages to Claude's stdin. It is not safe for concurrent use.
-type Input struct {
+// writer writes messages to Claude's stdin. It is not safe for concurrent use.
+type writer struct {
 	w io.Writer
 }
 
-func NewInput(w io.Writer) *Input {
-	return &Input{w: w}
+func newWriter(w io.Writer) *writer {
+	return &writer{w: w}
 }
 
-func (in *Input) write(message any) error {
+func (in *writer) write(message any) error {
 	return json.NewEncoder(in.w).Encode(message)
 }
 
 // Prompt sends a user message. Claude reports the uuid in command_lifecycle
 // messages once it takes the prompt into its conversation.
-func (in *Input) Prompt(uuid, text string) error {
+func (in *writer) Prompt(uuid, text string) error {
 	return in.write(map[string]any{
 		"type": "user", "uuid": uuid, "session_id": "",
 		"message": map[string]string{"role": "user", "content": text},
@@ -142,13 +141,13 @@ func (in *Input) Prompt(uuid, text string) error {
 
 // Control sends a control request. Claude answers with a control_response
 // carrying the same request ID.
-func (in *Input) Control(requestID string, request any) error {
+func (in *writer) Control(requestID string, request any) error {
 	return in.write(map[string]any{
 		"type": "control_request", "request_id": requestID, "request": request,
 	})
 }
 
-func (in *Input) Respond(requestID string, response any) error {
+func (in *writer) Respond(requestID string, response any) error {
 	return in.write(map[string]any{
 		"type": "control_response",
 		"response": map[string]any{
@@ -157,7 +156,7 @@ func (in *Input) Respond(requestID string, response any) error {
 	})
 }
 
-func (in *Input) Reject(requestID, message string) error {
+func (in *writer) Reject(requestID, message string) error {
 	return in.write(map[string]any{
 		"type": "control_response",
 		"response": map[string]string{
@@ -166,8 +165,8 @@ func (in *Input) Reject(requestID, message string) error {
 	})
 }
 
-// NewUUID returns a random UUID, the form Claude requires for session IDs.
-func NewUUID() string {
+// newUUID returns a random UUID, the form Claude requires for session IDs.
+func newUUID() string {
 	var id [16]byte
 	rand.Read(id[:])
 	id[6] = id[6]&0x0f | 0x40

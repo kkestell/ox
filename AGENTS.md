@@ -93,8 +93,8 @@ We test with `make dev`. Ox's test state is disposable.
   clears it, and has a live reproduction.
 - `internal/agent` changes only for what a real harness needs. Harness
   payloads pass through the server untouched.
-- Session updates have one type, `agent.Update`, sent to clients and stored as
-  history as is.
+- Session updates have one type, `agent.Update`, sent to clients and recorded
+  as history in that type.
 - The body of a commit that adds a state, timer, retry, lock, or stored field
   names the user-visible behavior that needs it and the races and cleanup it
   brings.

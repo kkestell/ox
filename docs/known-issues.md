@@ -9,7 +9,6 @@
 | [A failed configuration can leave settings the page does not show](#a-failed-configuration-can-leave-settings-the-page-does-not-show) | Unknown | Source |
 | [An unexpected exit can look like parking](#an-unexpected-exit-can-look-like-parking) | No occurrence | Source |
 | [A failed approval answer leaves a stale approval](#a-failed-approval-answer-leaves-a-stale-approval) | No occurrence | Source |
-| [`make test` fails without the web build](#make-test-fails-without-the-web-build) | Every fresh checkout | Source |
 | [A configuration that omits a list breaks the web UI](#a-configuration-that-omits-a-list-breaks-the-web-ui) | No occurrence | Source |
 
 ## Startup failures lose Claude's reason
@@ -18,7 +17,8 @@
 with a missing transcript, `session/send` reported only
 `initialize Claude: read startup response: EOF` instead of
 [Claude's startup diagnostic](claude-code.md#startup-failures). Each retry
-fails with the same EOF; the client cannot resume or tell why.
+fails with the same EOF; the client cannot resume or tell why. The same path
+hides unknown-model and not-logged-in errors, which a new user meets first.
 
 ## RPC bodies over 1 MiB never settle
 
@@ -74,18 +74,13 @@ or `approval_cancelled`, and the process's exit cannot withdraw an approval
 that is no longer pending. Every page keeps the approval until it reloads;
 answering it again returns "approval request is no longer pending".
 
-## `make test` fails without the web build
-
-`cmd/ox` embeds `web/dist`, which is gitignored, and the `test` target builds
-only `lint`. In a fresh checkout, including a child session's worktree,
-`make test` reports `cmd/ox` as a setup failure until `make web` runs.
-
 ## A configuration that omits a list breaks the web UI
 
 `config.Load` accepts a harness or model that omits `models`,
 `permission_modes`, or `efforts`, and `harness/list` sends `null` for it.
-`defaultSettings` and the `Select` in `SettingsFields.tsx` index those lists
-without a check, so the new-session form throws when such a harness is chosen,
-and a harness without `models` or `permission_modes` also breaks its sessions'
-views. The built-in
+`ModelPicker`, `defaultSettings`, and the `Select` in `SettingsFields.tsx`
+index those lists without a check. The new-session form lists every harness's
+models, so one harness without `models` breaks it for all of them; a harness
+without `permission_modes` breaks it when chosen. Either omission also breaks
+its sessions' views. The built-in
 configuration lists all three everywhere.

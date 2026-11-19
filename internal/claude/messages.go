@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-type Message struct {
+type message struct {
 	Type            string            `json:"type"`
 	Subtype         string            `json:"subtype"`
 	State           string            `json:"state"`
@@ -17,7 +17,7 @@ type Message struct {
 	Errors          []string          `json:"errors"`
 	RequestID       string            `json:"request_id"`
 	Request         json.RawMessage   `json:"request"`
-	Response        ControlResponse   `json:"response"`
+	Response        controlReply      `json:"response"`
 	Tasks           []json.RawMessage `json:"tasks"` // background_tasks_changed: the live set
 	Message         struct {
 		Content json.RawMessage `json:"content"` // a string or an array of blocks
@@ -31,40 +31,40 @@ type Message struct {
 	} `json:"event"`
 }
 
-type ControlResponse struct {
+type controlReply struct {
 	Subtype   string `json:"subtype"`
 	RequestID string `json:"request_id"`
 	Error     string `json:"error"`
 }
 
-type ToolUse struct {
+type toolUse struct {
 	ID    string          `json:"id"`
 	Name  string          `json:"name"`
 	Input json.RawMessage `json:"input"`
 }
 
-type ToolResult struct {
+type toolResult struct {
 	ToolUseID string
 	Text      string
 	IsError   bool
 }
 
-func (m Message) ToolUses() []ToolUse {
+func (m message) toolUses() []toolUse {
 	var blocks []struct {
 		Type string `json:"type"`
-		ToolUse
+		toolUse
 	}
 	json.Unmarshal(m.Message.Content, &blocks)
-	var uses []ToolUse
+	var uses []toolUse
 	for _, b := range blocks {
 		if b.Type == "tool_use" {
-			uses = append(uses, b.ToolUse)
+			uses = append(uses, b.toolUse)
 		}
 	}
 	return uses
 }
 
-func (m Message) ToolResults() []ToolResult {
+func (m message) toolResults() []toolResult {
 	var blocks []struct {
 		Type      string          `json:"type"`
 		ToolUseID string          `json:"tool_use_id"`
@@ -72,12 +72,12 @@ func (m Message) ToolResults() []ToolResult {
 		IsError   bool            `json:"is_error"`
 	}
 	json.Unmarshal(m.Message.Content, &blocks)
-	var results []ToolResult
+	var results []toolResult
 	for _, b := range blocks {
 		if b.Type != "tool_result" {
 			continue
 		}
-		result := ToolResult{ToolUseID: b.ToolUseID, IsError: b.IsError}
+		result := toolResult{ToolUseID: b.ToolUseID, IsError: b.IsError}
 		if json.Unmarshal(b.Content, &result.Text) != nil {
 			var content []struct {
 				Type string `json:"type"`

@@ -22,7 +22,8 @@ type Agent struct {
 	exited bool
 }
 
-type tick struct{}
+// tick streams the next word of prompt's reply.
+type tick struct{ prompt string }
 
 func Start(options agent.Options) (agent.Agent, error) {
 	a := &Agent{
@@ -46,17 +47,18 @@ func (a *Agent) publish(update agent.Update) {
 }
 
 func (a *Agent) tick() {
+	next := tick{a.prompt}
 	time.AfterFunc(50*time.Millisecond, func() {
 		select {
-		case a.events <- tick{}:
+		case a.events <- next:
 		case <-a.done:
 		}
 	})
 }
 
-func (a *Agent) Handle(agent.Event) {
-	if a.state == "idle" {
-		return // interrupted; a tick was still pending
+func (a *Agent) Handle(event agent.Event) {
+	if event.(tick).prompt != a.prompt {
+		return // its prompt was interrupted
 	}
 	if len(a.words) > 0 {
 		a.publish(agent.Update{Type: "text_delta", Text: a.words[0]})

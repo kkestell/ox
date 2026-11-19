@@ -33,4 +33,13 @@ func TestDefaultsMustBeConfiguredChoices(t *testing.T) {
 			t.Errorf("defaults %s: valid %v, got %v", defaults, valid, err)
 		}
 	}
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	data := `{` + harnesses + `,"defaults":{"harness":"h","model":"m","effort":"low","permission_mode":"auto"}}}`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Error("a configuration followed by more content loaded")
+	}
 }

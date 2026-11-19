@@ -3,9 +3,7 @@ import { OxProvider, useOx } from "./ox";
 import { NewSessionView, SessionView } from "./SessionView";
 import { Sidebar } from "./Sidebar";
 
-// A session selected from a draft carries the draft's prompt, which the
-// session view sends.
-export type Selection = { kind: "session"; id: string; prompt?: string } | { kind: "draft"; workspaceId: string };
+export type Selection = { kind: "session"; id: string } | { kind: "draft"; workspaceId: string };
 
 // The URL's hash holds the selected session, so a reload keeps it.
 function selectionFromHash(): Selection | undefined {
@@ -33,10 +31,6 @@ function Layout() {
     const s = selected();
     return s?.kind === "session" ? ox.state.sessions[s.id] : undefined;
   };
-  const prompt = () => {
-    const s = selected();
-    return s?.kind === "session" ? s.prompt : undefined;
-  };
   const draft = () => {
     const s = selected();
     return s?.kind === "draft" ? s.workspaceId : undefined;
@@ -50,14 +44,11 @@ function Layout() {
         {/* Keyed, so each session and draft gets its own view and view state. */}
         <Switch>
           <Match when={session()} keyed>
-            {(session) => <SessionView session={session} prompt={prompt()} />}
+            {(session) => <SessionView session={session} />}
           </Match>
           <Match when={draft()} keyed>
             {(workspaceId) => (
-              <NewSessionView
-                workspaceId={workspaceId}
-                onCreated={(id, prompt) => select({ kind: "session", id, prompt })}
-              />
+              <NewSessionView workspaceId={workspaceId} onSent={(id) => select({ kind: "session", id })} />
             )}
           </Match>
         </Switch>

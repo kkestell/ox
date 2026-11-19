@@ -6,7 +6,7 @@ This reference describes the interface served by `oxd`. See
 ## Connection and messages
 
 Run `go run ./cmd/oxd` and connect to its Unix socket. The default path is
-`ox/oxd.sock` beneath `$XDG_RUNTIME_DIR`, or beside the
+`ox/oxd.sock` beneath `$XDG_RUNTIME_DIR`, or beside the default
 [database](#workspaces-and-sessions) when that is unset.
 Use `-socket /absolute/path/to/oxd.sock` to choose a different socket.
 
@@ -140,7 +140,7 @@ there. A setting the [configuration](#configuration) does not offer returns
 Each process the session starts receives the stored settings.
 
 ```json
-{"jsonrpc":"2.0","id":3,"method":"session/create","params":{"workspace_id":"workspace-id","harness":"claude","model":"haiku","effort":"low","permission_mode":"manual"}}
+{"jsonrpc":"2.0","id":3,"method":"session/create","params":{"workspace_id":"workspace-id","harness":"claude","model":"claude-haiku-5-5","effort":"low","permission_mode":"manual"}}
 ```
 
 ```json
@@ -181,16 +181,16 @@ response arrives.
 ```
 
 ```json
-{"jsonrpc":"2.0","id":5,"result":{"model":"haiku","effort":"low","permission_mode":"manual","state":"requires_action","prompt":{"message_id":"prompt-id"},"approvals":[{"request_id":"claude-request-id","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch notes.txt"}}}],"history":[{"message_id":"prompt-id","type":"prompt","text":"Create notes.txt.","time":"2026-11-18T19:53:50Z"},{"message_id":"prompt-id","type":"text_delta","text":"I'll create the file.","time":"2026-11-18T19:53:51Z"}]}}
+{"jsonrpc":"2.0","id":5,"result":{"model":"claude-haiku-5-5","effort":"low","permission_mode":"manual","state":"requires_action","prompt":{"message_id":"prompt-id"},"approvals":[{"request_id":"claude-request-id","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch notes.txt"}}}],"history":[{"message_id":"prompt-id","type":"prompt","text":"Create notes.txt.","time":"2026-11-18T19:53:50Z"},{"message_id":"prompt-id","type":"text_delta","text":"I'll create the file.","time":"2026-11-18T19:53:51Z"}]}}
 ```
 
 | Field | Meaning |
 | --- | --- |
 | `model`, `effort`, `permission_mode` | The session's stored settings. |
-| `state` | `parked`, or Claude's execution state: `running`, `requires_action`, or `idle`. |
+| `state` | `parked`, or the execution state: `running`, `requires_action`, or `idle`. A prompt is `running` from the moment `session/send` writes it. |
 | `prompt` | The active prompt, or `null`. |
 | `prompt.message_id` | The prompt's identifier, matching its updates. |
-| `approvals` | Pending approvals, each with `request_id` and Claude's `request`, whether or not a prompt is active. |
+| `approvals` | Pending approvals in the order they arrived, each with `request_id` and Claude's `request`, whether or not a prompt is active. |
 | `history` | The session's recorded updates, oldest first, in the form of `session/update` params without `session_id`. |
 
 The daemon records every session's `prompt`, `text_delta`, `tool_use`,
@@ -308,7 +308,7 @@ task finishing, produce the same updates without `message_id`:
 | `text_delta` | `text`: string | Append this fragment of top-level assistant text. |
 | `tool_use` | `tool_use_id`: string; `tool_name`: string; `input`: object | Claude called a tool at the top level. |
 | `tool_result` | `tool_use_id`: string; `result`: object with `text` and `is_error` | The outcome of the top-level tool call with this `tool_use_id`. `text` joins the result's text blocks. |
-| `state` | `state`: `running`, `requires_action`, or `idle` | Claude's current execution state. |
+| `state` | `state`: `running`, `requires_action`, or `idle` | The session's execution state: Claude's report, or `running` for a prompt Claude has not taken yet. |
 | `result` | `result`: object with `text` and `is_error` | Claude's final response or turn error. The text is a complete result, not another delta to append. |
 | `approval` | `request_id`: string; `request`: object | A pending Claude request needing a client decision. |
 | `approval_answered` | `request_id`: string | A client answered the approval. |

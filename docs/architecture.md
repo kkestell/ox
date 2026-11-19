@@ -8,9 +8,10 @@ harness meet only at `internal/agent`; `cmd/oxd` gives the server each
 harness's `Start` function by name.
 
 ```
-cmd/oxd            socket, database, and configuration paths, signals, the harness
+cmd/oxd            socket, database, and configuration paths, signals, the harnesses by name
    ├── internal/paths     the default file locations, shared with cmd/ox
    ├── internal/config    the harnesses offered and their choices
+   ├── internal/store     the database it opens for the server
    ├── internal/claude    the Claude Code harness
    │      └── internal/agent
    ├── internal/fake      a harness that echoes prompts
@@ -68,7 +69,9 @@ until it has exited.
 
 An `Agent` runs one harness instance. The session goroutine drives it by
 calling its methods and passing each event from `Events` to `Handle`. The
-agent publishes through `OnUpdate` during those calls; see the
+agent publishes through `OnUpdate` during those calls, and reports failures no
+call returns, such as a failed write to its process, through `OnError`, which
+the session logs under its ID. See the
 [update contract](protocol.md#session-updates) for the wire format and ordering.
 
 ### The Claude agent
@@ -91,11 +94,13 @@ The phase identifies the current operation:
 | `configuring` | Control requests are in flight, one at a time. | The last acknowledgement, a refusal, or a write failure. |
 | `exited` | The Claude process has exited. | — |
 
-Process exit moves any live phase to `exited`. The agent stores Claude's
-reported state alongside the phase. Both `available` and `idle` are required
-to take a prompt or configuration.
+Process exit moves any live phase to `exited`. Alongside the phase, the agent
+keeps the execution state it publishes: Claude's reported state, except that a
+prompt is `running` from the moment it is written until Claude reports `idle`
+after taking it. Both `available` and `idle` are required to take a prompt or
+configuration, and an interrupt is sent whenever the state is not `idle`.
 
-The agent derives `Parkable` from its phase, Claude's state, pending approvals,
+The agent derives `Parkable` from its phase, its state, pending approvals,
 and counts from [Claude's task and schedule reports](claude-code.md#8-background-work-and-schedules).
 A scheduling tool call sets a flag that the next Stop report with a schedule
 list clears. See the [parking rule](protocol.md#workspaces-and-sessions).
@@ -115,8 +120,8 @@ as Server-Sent Events, and `/rpc` posts the page's JSON-RPC requests to the sock
 | --- | --- |
 | `protocol.ts` | Types for the `oxd` methods, updates, and notifications. |
 | `connection.ts` | Opening the event stream, sending requests, matching replies, and reporting stream errors. |
-| `ox.tsx` | A provider that reloads the catalog, workspaces, and sessions on each connection, applies notifications, and exposes RPC calls; `createAttempt`, which shows a request's error. |
-| `App.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `ApprovalRequest.tsx`, `SettingsFields.tsx` | The components. |
+| `ox.tsx` | A provider that reloads the catalog, workspaces, and sessions on each connection, updating loaded sessions in place so their views keep their state, applies notifications, and exposes RPC calls; `createAttempt`, which shows a request's error. |
+| `App.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `ApprovalRequest.tsx`, `SettingsFields.tsx`, `HarnessIcon.tsx` | The components. |
 
 The page shows stream errors while reconnecting and asks for a reload if the
 browser closes the stream after `ox` refuses it. The settings form sends a

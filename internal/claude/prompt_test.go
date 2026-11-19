@@ -19,46 +19,52 @@ func (r *recorder) record(update agent.Update) {
 func testAgent() (*Agent, *bytes.Buffer, *recorder) {
 	input := new(bytes.Buffer)
 	updates := new(recorder)
-	return newAgent(NewInput(input), updates.record), input, updates
+	options := agent.Options{OnUpdate: updates.record, OnError: func(err error) { panic(err) }}
+	return newAgent(newWriter(input), make(chan agent.Event), "claude-session", options), input, updates
 }
 
 func promptingAgent() (*Agent, *bytes.Buffer, *recorder) {
 	a, input, updates := testAgent()
-	a.phase, a.claudeState = prompting, "running"
+	a.phase, a.state = prompting, "running"
 	a.prompt = &submission{id: "prompt"}
 	return a, input, updates
 }
 
 func output(t *testing.T, a *Agent, line string) {
 	t.Helper()
-	var message Message
-	if err := json.Unmarshal([]byte(line), &message); err != nil {
+	var m message
+	if err := json.Unmarshal([]byte(line), &m); err != nil {
 		t.Fatal(err)
 	}
-	a.Handle(message)
+	a.Handle(m)
 }
 
 func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
-	a, _, updates := testAgent()
+	a, input, updates := testAgent()
 	id, err := a.Send("hello")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if len(*updates) != 1 || (*updates)[0].Type != "prompt" || (*updates)[0].Text != "hello" || (*updates)[0].MessageID != id {
-		t.Fatalf("prompt was not published: %+v", *updates)
+	if len(*updates) != 2 || (*updates)[0].Type != "prompt" || (*updates)[0].Text != "hello" || (*updates)[0].MessageID != id ||
+		(*updates)[1].State != "running" || (*updates)[1].MessageID != id || a.Snapshot().State != "running" {
+		t.Fatalf("a written prompt was not published as running: %+v", *updates)
 	}
 	*updates = nil
 
 	a.sessionState("idle")
-	if _, err := a.Send("again"); !errors.Is(err, agent.ErrBusy) || len(*updates) != 0 {
+	if _, err := a.Send("again"); !errors.Is(err, agent.ErrBusy) || len(*updates) != 0 || a.Snapshot().State != "running" {
 		t.Fatalf("idle before Claude took the prompt released it: %v, %+v", err, *updates)
+	}
+	input.Reset()
+	if err := a.Interrupt(); err != nil || !strings.Contains(input.String(), `"subtype":"interrupt"`) {
+		t.Fatalf("an interrupt before Claude took the prompt was not sent: %v, %q", err, input.String())
 	}
 
 	a.commandStarted(id)
 	a.sessionState("running")
 	a.sessionState("idle")
-	if len(*updates) != 2 || (*updates)[0].State != "running" || (*updates)[1].State != "idle" || (*updates)[1].MessageID != id {
+	if len(*updates) != 1 || (*updates)[0].State != "idle" || (*updates)[0].MessageID != id {
 		t.Fatalf("unexpected prompt updates: %+v", *updates)
 	}
 	if !a.idle() || a.prompt != nil {

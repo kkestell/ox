@@ -60,7 +60,7 @@ func (a *Agent) Configure(settings agent.Settings, done func(error)) {
 
 func (a *Agent) sendControl() {
 	c := a.config
-	c.requestID = NewUUID()
+	c.requestID = newUUID()
 	if err := a.input.Control(c.requestID, c.requests[0].request); err != nil {
 		a.endConfiguration(c.fail(err))
 		return
@@ -68,7 +68,7 @@ func (a *Agent) sendControl() {
 	a.after(time.Minute, controlTimeout{c.requestID})
 }
 
-func (a *Agent) controlResponse(response ControlResponse) {
+func (a *Agent) controlResponse(response controlReply) {
 	if a.phase != configuring || response.RequestID != a.config.requestID {
 		return
 	}

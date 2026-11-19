@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 )
@@ -53,6 +54,9 @@ func Load(path string) (*Config, error) {
 	var config Config
 	if err := decoder.Decode(&config); err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return nil, fmt.Errorf("read %s: content after the configuration", path)
 	}
 	if err := config.Defaults.check(config.Harnesses); err != nil {
 		return nil, fmt.Errorf("%s: defaults: %w", path, err)

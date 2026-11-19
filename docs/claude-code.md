@@ -206,13 +206,15 @@ Once per turn, after the assistant message and before the result; nothing before
 
 ### `command_lifecycle`
 
-`{"type":"command_lifecycle","command_uuid":"<your uuid>","state":"started"}` marks a prompt taken into a turn.
+`{"type":"command_lifecycle","command_uuid":"<your uuid>","state":"started"}` marks a prompt taken into a turn. The same line with `queued` marks a prompt received but not yet taken, and with `cancelled` a prompt an interrupt dropped or stopped (2.1.328).
 
 ## 4. Turns
 
 ### When a prompt is taken
 
 Either [`command_lifecycle`](#command_lifecycle) or the [prompt echo](#persistent-session) signals prompt uptake. Output and completion arrive separately.
+
+An idle process reports `session_state_changed` `running` within milliseconds of receiving a prompt, before taking it (2.1.328).
 
 ### When a turn ends
 
@@ -232,6 +234,11 @@ Send `interrupt` (with `cancel_queued: true` to drop untaken prompts). The seque
 5. `session_state_changed idle`.
 
 The stopped turn stays in the transcript.
+
+A prompt Claude has received but not taken (2.1.328):
+
+- `interrupt` answers `{"still_queued":["<uuid>"]}`, then Claude takes the prompt and stops it at once: `command_lifecycle started`, `user` text `[Request interrupted by user]`, a `result` with `terminal_reason:"aborted_streaming"` and no API call, `command_lifecycle cancelled`, and `idle`.
+- `interrupt` with `cancel_queued: true` answers `{"still_queued":[],"cancelled":["<uuid>"]}` after `command_lifecycle cancelled`, then `idle`, with no turn and no `result`.
 
 ### Session IDs
 

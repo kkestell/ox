@@ -123,6 +123,15 @@ func TestLive(t *testing.T) {
 	}
 	idle(a)
 
+	t.Log("an interrupt right after a send stops the prompt")
+	c.forget(a)
+	c.call("session/send", map[string]string{"session_id": a, "text": "Write the numbers from 1 to 2000 in words, one per line."})
+	c.call("session/interrupt", map[string]string{"session_id": a})
+	if r := c.update(a, "result").Result; !r.IsError || r.Text != "Interrupted" {
+		t.Errorf("a prompt interrupted on arrival ended with %+v", r)
+	}
+	idle(a)
+
 	t.Log("a session starting Claude holds up only its own requests")
 	b := create("acceptEdits")
 	start := time.Now()

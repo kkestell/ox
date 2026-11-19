@@ -3,7 +3,8 @@ package claude
 import (
 	"encoding/json"
 	"errors"
-	"log"
+	"fmt"
+	"slices"
 
 	"github.com/kkestell/ox/internal/agent"
 )
@@ -21,11 +22,11 @@ func (a *Agent) controlRequest(requestID string, request json.RawMessage) {
 	}
 	if control.Subtype != "can_use_tool" {
 		if err := a.input.Reject(requestID, "Unsupported control request"); err != nil {
-			log.Printf("reject control request in Claude session %s: %v", a.sessionID, err)
+			a.onError(fmt.Errorf("reject Claude control request: %w", err))
 		}
 		return
 	}
-	a.approvals[requestID] = request
+	a.approvals = append(a.approvals, agent.Approval{RequestID: requestID, Request: request})
 	a.publish(agent.Update{Type: "approval", RequestID: requestID, Request: request})
 }
 
@@ -33,10 +34,9 @@ func (a *Agent) Approve(requestID string, response json.RawMessage) error {
 	if !validApprovalResponse(response) {
 		return errors.New("response must be an allow or deny permission response")
 	}
-	if _, pending := a.approvals[requestID]; !pending {
+	if !a.removeApproval(requestID) {
 		return agent.ErrApprovalNotFound
 	}
-	delete(a.approvals, requestID)
 	if err := a.input.Respond(requestID, response); err != nil {
 		return err
 	}
@@ -45,17 +45,27 @@ func (a *Agent) Approve(requestID string, response json.RawMessage) error {
 }
 
 func (a *Agent) cancelApproval(requestID string) {
-	if _, pending := a.approvals[requestID]; pending {
-		delete(a.approvals, requestID)
+	if a.removeApproval(requestID) {
 		a.publish(agent.Update{Type: "approval_cancelled", RequestID: requestID})
 	}
 }
 
-func (a *Agent) withdrawApprovals() {
-	for id := range a.approvals {
-		a.publish(agent.Update{Type: "approval_cancelled", RequestID: id})
+// removeApproval reports whether requestID was pending.
+func (a *Agent) removeApproval(requestID string) bool {
+	i := slices.IndexFunc(a.approvals, func(p agent.Approval) bool { return p.RequestID == requestID })
+	if i < 0 {
+		return false
 	}
-	clear(a.approvals)
+	a.approvals = slices.Delete(a.approvals, i, i+1)
+	return true
+}
+
+func (a *Agent) withdrawApprovals() {
+	approvals := a.approvals
+	a.approvals = nil
+	for _, p := range approvals {
+		a.publish(agent.Update{Type: "approval_cancelled", RequestID: p.RequestID})
+	}
 }
 
 func validApprovalResponse(raw json.RawMessage) bool {

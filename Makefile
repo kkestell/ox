@@ -4,7 +4,7 @@ dev: web
 	go build -race -o bin/ ./cmd/ox ./cmd/oxd
 	export GORACE=halt_on_error=1; bin/oxd & oxd=$$!; bin/ox -addr localhost:8081 & ox=$$!; trap 'kill $$oxd $$ox' EXIT; npm --prefix cmd/ox/web run dev
 
-test: lint
+test: lint web
 	go test -race ./...
 
 lint: cmd/ox/web/node_modules
