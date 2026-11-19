@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -39,7 +40,13 @@ func closedPipe(t *testing.T) io.Writer {
 // A child that inherits Claude's stdout keeps the pipe open after Claude
 // exits, as the injected fault in known-issues.md did.
 func TestExitReportedWhileAChildHoldsStdout(t *testing.T) {
-	standIn(t, "sleep 15 2>/dev/null &\nexit 3\n")
+	pid := filepath.Join(t.TempDir(), "pid")
+	standIn(t, "sleep 15 2>/dev/null &\necho $! > "+pid+"\nexit 3\n")
+	t.Cleanup(func() {
+		if data, err := os.ReadFile(pid); err == nil {
+			exec.Command("kill", strings.TrimSpace(string(data))).Run()
+		}
+	})
 	events := make(chan agent.Event)
 	if _, _, err := startProcess(t.TempDir(), newUUID(), false, agent.Settings{}, events); err != nil {
 		t.Fatal(err)

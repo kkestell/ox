@@ -83,7 +83,11 @@ func startProcess(workspace, sessionID string, resume bool, settings agent.Setti
 	}
 
 	output := bufio.NewReader(stdout)
-	timeout := time.AfterFunc(time.Minute, func() { cmd.Process.Kill() })
+	// The deadline ends the read even when a child of Claude holds stdout.
+	timeout := time.AfterFunc(time.Minute, func() {
+		cmd.Process.Kill()
+		stdout.SetReadDeadline(time.Now())
+	})
 	err = initialize(stdin, output)
 	if !timeout.Stop() {
 		err = errors.New("no startup response within one minute")
