@@ -19,6 +19,7 @@ We test with `make dev`. Ox's test state is disposable.
 │   │   ├── main.go            # web UI and its relay to oxd
 │   │   └── web                # web client
 │   └── oxd                    # daemon
+│       ├── main_test.go       # socket tests
 │       └── main.go            # daemon startup
 ├── docs
 │   ├── architecture.md        # how oxd and ox are built

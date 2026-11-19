@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"os"
@@ -80,7 +81,8 @@ func defaultPath(flag *string, path func() (string, error)) {
 
 // listen serves the socket at path. A socket file that refuses connections
 // was left by an oxd that exited without closing its listener, as a race
-// report or a closed terminal does, and is replaced.
+// report or a closed terminal does, and is replaced. Any other file at path
+// is left alone: Linux also refuses connections to a regular file.
 func listen(path string) (net.Listener, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
@@ -88,6 +90,9 @@ func listen(path string) (net.Listener, error) {
 	listener, err := net.Listen("unix", path)
 	if !errors.Is(err, syscall.EADDRINUSE) {
 		return listener, err
+	}
+	if info, statErr := os.Lstat(path); statErr != nil || info.Mode().Type() != fs.ModeSocket {
+		return nil, fmt.Errorf("%s exists and is not a socket", path)
 	}
 	conn, dialErr := net.Dial("unix", path)
 	if dialErr == nil {
