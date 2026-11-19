@@ -136,7 +136,7 @@ func (a *Agent) Interrupt() error {
 
 func (a *Agent) Configure(settings agent.Settings, done func(agent.Settings, error)) {
 	if !a.idle() {
-		done(settings, agent.ErrBusy)
+		done(a.settings, agent.ErrBusy)
 		return
 	}
 	a.config = &configured{settings, done}

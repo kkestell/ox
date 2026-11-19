@@ -377,7 +377,7 @@ Every connection is told when workspaces and sessions come and go:
 | --- | --- | --- |
 | `workspace/created` | `workspace_id`, `path`, `created_at` | A workspace was registered. |
 | `session/created` | `session_id`, `workspace_id`, `harness`, `created_at` | A session was created, parked. |
-| `session/configured` | `session_id`, `model`, `effort`, `permission_mode` | A session's settings changed; the fields are its stored settings. |
+| `session/configured` | `session_id`, `model`, `effort`, `permission_mode` | A session's settings changed; the fields are the settings the session now uses. |
 | `session/destroyed` | `session_id` | A session was destroyed, after its last update. |
 
 ```json

@@ -134,7 +134,7 @@ func listen(path string) (net.Listener, error) {
 		return nil, fmt.Errorf("another oxd is serving %s", path)
 	}
 	if !errors.Is(dialErr, syscall.ECONNREFUSED) {
-		return nil, err
+		return nil, dialErr
 	}
 	if err := os.Remove(path); err != nil {
 		return nil, err
