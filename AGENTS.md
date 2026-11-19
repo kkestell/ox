@@ -80,7 +80,8 @@ We test with `make dev`. Ox's test state is disposable.
 ## Implementation
 
 - Keep the code direct, readable, and simple. Implement the requested behavior
-  completely, using the smallest coherent design.
+  completely, using the simplest coherent design, judged by the code that
+  results rather than by the size of the diff.
 - Handle normal use and concrete failures. Do not build machinery for unusual
   edge cases or hypothetical failures. Fail clearly when something unsupported
   happens.
@@ -108,6 +109,29 @@ We test with `make dev`. Ox's test state is disposable.
   names the user-visible behavior that needs it and the races and cleanup it
   brings.
 
+## Correct by construction
+
+Most of Ox's defects come from a few structures: a state the types allow but
+the design forbids, one fact kept in two places, and a rule each caller
+decides for itself. Build so those states cannot exist, and the defects that
+need them cannot happen.
+
+- Make illegal states unrepresentable. Fields that are valid only together,
+  or only in one state, live in one value that exists only while they are
+  valid, instead of beside a flag or as zero values every reader must check.
+  In TypeScript, a state with its own fields is a discriminated union.
+- Give each fact one source. Derive whatever can be derived from it instead of
+  storing a copy and keeping the copy in sync. Two places that must agree
+  become one place that the other reads.
+- Decide each rule in one place. When several callers handle the same case,
+  such as a parked session, the case belongs to the state's owner, and the
+  callers take its answer.
+- Check input once, at the boundary, into a type that holds only valid values.
+  Code past the boundary relies on the type.
+- A design that rules out a wrong state is a simplification: it replaces the
+  checks, guards, and recovery that would otherwise handle that state. Choose
+  it over a smaller diff that leaves the state possible.
+
 ## Conventions
 
 - Ox's files live in the XDG base directories, beneath an `ox` directory.
@@ -128,14 +152,22 @@ We test with `make dev`. Ox's test state is disposable.
 
 - Fix every confirmed defect. A defect is confirmed live, from the source, or
   by an injected fault.
-- Fix a defect at its cause. A race that can leave state the design says
-  cannot exist comes from who owns the state, however unlikely it is. Fix it
-  by changing who owns the state, not by handling the interleaving. A race
-  between independent requests in which every outcome is valid is not a
-  defect.
+- Fix a defect at its structural cause, so that its whole class cannot
+  recur. Find why the code could reach the wrong state at all: the
+  representation, duplicated fact, scattered rule, or owner that allowed it.
+  Change that structure so the state cannot be built, as
+  [Correct by construction](#correct-by-construction) describes, and fix every
+  other place with the same structure in the same change. A guard, special
+  case, or retry at the symptom is the fix only when the cause lies outside
+  Ox, such as Claude Code behavior, and the plan or review names that cause.
+- A race that can leave state the design says cannot exist comes from who
+  owns the state, however unlikely it is. Fix it by changing who owns the
+  state, not by handling the interleaving. A race between independent
+  requests in which every outcome is valid is not a defect.
 - A review gives each finding one of three outcomes:
   - **Fix:** a confirmed defect, or a design, test, or documentation problem
-    whose fix costs less than keeping it.
+    whose fix costs less than keeping it. Keeping a structure that permits a
+    class of defects costs every defect of that class, found or not.
   - **Reject,** with the reason in the review: the finding is speculative,
     misreads the intended behavior, or costs less to keep than to fix, such
     as an unmeasured scaling cost.
@@ -155,12 +187,13 @@ agent, which carries it through child sessions:
 1. A child session on Opus 5.5 at high effort runs `/ox-plan`. The user
    approves the plan's requirement changes with its other product questions.
 2. The top-level agent sanity-checks the plan with a quick look at the code it
-   names, without redoing the planning.
+   names, without redoing the planning, including that each defect's fix
+   changes the structure that caused it.
 3. A child session on Sonnet or Opus, chosen by the change's complexity,
    implements the plan, applying its requirement changes word for word.
 4. A child session on Opus or Sol runs `/ox-review` on the uncommitted
    changes for the plan.
-5. The implementing session fixes the review's findings.
+5. The implementing session fixes the review's findings at their causes.
 6. The reviewing session runs `/ox-review verify` on its review. Open
    findings or new regressions go back to the implementing session, until
    the verdict is Ready to commit.

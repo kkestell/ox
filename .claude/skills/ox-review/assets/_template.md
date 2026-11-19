@@ -10,7 +10,7 @@ Severity describes the cost of leaving the finding as it is, and orders the work
 
 Actions: `Fix`, `Record`, `Rejected`, as the skill defines them. Status: `Open` or `Resolved` for `Fix` and `Record`; `—` for `Rejected`.
 
-Categories: `Intent`, `Requirements`, `Settings`, `Settling`, `Process I/O`, `Ownership`, `Claude Code`, `Security`, `Correctness`, `Testing`, `Simplicity`, `Conventions`, `Documentation`, as the skill defines them.
+Categories: `Intent`, `Requirements`, `Settings`, `Settling`, `Process I/O`, `Construction`, `Ownership`, `Claude Code`, `Security`, `Correctness`, `Testing`, `Simplicity`, `Conventions`, `Documentation`, as the skill defines them.
 
 ## Scope and coverage
 
