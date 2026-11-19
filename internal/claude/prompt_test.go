@@ -97,6 +97,15 @@ func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
 		t.Fatalf("an interrupt before Claude took the prompt was not sent: %v, %q", err, input.String())
 	}
 
+	// A turn Claude starts itself while the prompt waits is not the prompt's.
+	output(t, a, `{"type":"command_lifecycle","command_uuid":"11111111-1111-4111-8111-111111111111","state":"started"}`)
+	output(t, a, `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"tick"}}}`)
+	state(t, a, "idle")
+	if len(*updates) != 1 || (*updates)[0].MessageID != "" || a.Snapshot().Prompt == nil {
+		t.Fatalf("Claude's own turn took the waiting prompt's identity: %+v", *updates)
+	}
+	*updates = nil
+
 	output(t, a, `{"type":"command_lifecycle","command_uuid":"`+id+`","state":"started"}`)
 	state(t, a, "running")
 	state(t, a, "idle")

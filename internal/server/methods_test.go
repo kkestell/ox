@@ -134,11 +134,29 @@ func TestSessionLifecycle(t *testing.T) {
 	}), &created)
 	id := created.SessionID
 
-	c.call("session/send", map[string]string{"session_id": id, "text": "hi"})
+	// The reply outlasts the park period, which starts only once the agent
+	// is parkable.
+	prompt := "one two three four five six seven eight"
+	c.call("session/send", map[string]string{"session_id": id, "text": prompt})
 	if busy := c.request("session/send", map[string]string{"session_id": id, "text": "again"}); busy.Error == nil || busy.Error.Code != sessionBusy {
 		t.Fatalf("a running session took a second prompt: %+v", busy.Error)
 	}
-	for c.update(id, "state").State != "idle" {
+	for {
+		var u agent.Update
+		c.next(func(m message) bool {
+			if m.Method != "session/update" || m.sessionID() != id {
+				return false
+			}
+			u = agent.Update{}
+			json.Unmarshal(m.Params, &u)
+			return u.Type == "state" || u.Type == "parked"
+		})
+		if u.Type == "parked" {
+			t.Fatal("a running session parked")
+		}
+		if u.State == "idle" {
+			break
+		}
 	}
 
 	if invalid := c.request("session/configure", map[string]string{"session_id": id, "effort": "max"}); invalid.Error == nil || invalid.Error.Code != jsonrpc.InvalidParams {
@@ -157,7 +175,7 @@ func TestSessionLifecycle(t *testing.T) {
 	}
 	var running got
 	json.Unmarshal(c.call("session/get", map[string]string{"session_id": id}), &running)
-	if running.State != "idle" || running.Effort != "high" || len(running.History) != 3 || running.History[1].Text != "You said: hi" {
+	if running.State != "idle" || running.Effort != "high" || len(running.History) != 3 || running.History[1].Text != "You said: "+prompt {
 		t.Fatalf("unexpected session: %+v", running)
 	}
 
@@ -212,5 +230,47 @@ func TestConfigurationTakenButNotStored(t *testing.T) {
 	configured := c.next(func(m message) bool { return m.Method == "session/configured" })
 	if !strings.Contains(string(configured.Params), `"effort":"high"`) {
 		t.Fatalf("clients were not told the settings the process took: %s", configured.Params)
+	}
+}
+
+// A process that exits during a configuration is replaced by one started with
+// the requested settings, so the configuration succeeds.
+func TestConfigurationOutlivesItsProcess(t *testing.T) {
+	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
+		Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}}},
+		PermissionModes: []config.Option{{ID: "plan"}},
+	}}}
+	s, err := New(openStore(t), cfg, 0, map[string]agent.Start{"fake": fake.Start})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c := connect(t, s)
+	var workspace struct {
+		WorkspaceID string `json:"workspace_id"`
+	}
+	json.Unmarshal(c.call("workspace/create", map[string]string{"path": t.TempDir()}), &workspace)
+	var created struct {
+		SessionID string `json:"session_id"`
+	}
+	json.Unmarshal(c.call("session/create", map[string]string{
+		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "effort": "low", "permission_mode": "plan",
+	}), &created)
+	id := created.SessionID
+	c.call("session/send", map[string]string{"session_id": id, "text": "hi"})
+	for c.update(id, "state").State != "idle" {
+	}
+
+	// The fake acknowledges a tick after the request, so the destroy stops
+	// its process first.
+	configure := c.send("session/configure", map[string]string{"session_id": id, "effort": "high"})
+	time.Sleep(10 * time.Millisecond)
+	c.call("session/destroy", map[string]string{"session_id": id})
+	if r := c.response(configure); r.Error != nil {
+		t.Fatalf("a configuration whose process exited failed: %+v", r.Error)
+	}
+	configured := c.next(func(m message) bool { return m.Method == "session/configured" })
+	if !strings.Contains(string(configured.Params), `"effort":"high"`) {
+		t.Fatalf("the requested settings were not taken: %s", configured.Params)
 	}
 }
