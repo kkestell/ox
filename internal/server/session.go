@@ -122,9 +122,6 @@ func (sess *session) stop() error {
 	if err := sess.agent.Stop(); err != nil {
 		return err
 	}
-	for !sess.agent.Exited() {
-		sess.agent.Handle(<-sess.agent.Events())
-	}
 	sess.agent = nil
 	return nil
 }

@@ -15,20 +15,29 @@ type Agent struct {
 	onUpdate    func(agent.Update)
 	onResumable func(string)
 
-	state  string
-	prompt string // client prompt ID
-	reply  string
-	words  []string
-	exited bool
+	state    string
+	settings agent.Settings
+	prompt   string // client prompt ID
+	reply    string
+	words    []string
+	config   *configured // the configuration awaiting its tick
+	exited   bool
 }
 
 // tick streams the next word of prompt's reply.
 type tick struct{ prompt string }
 
+// configured completes a configuration a tick after it starts, as Claude
+// acknowledges one after a delay.
+type configured struct {
+	settings agent.Settings
+	done     func(agent.Settings, error)
+}
+
 func Start(options agent.Options) (agent.Agent, error) {
 	a := &Agent{
 		events: make(chan agent.Event), done: make(chan struct{}),
-		onUpdate: options.OnUpdate, state: "idle",
+		onUpdate: options.OnUpdate, state: "idle", settings: options.Settings,
 	}
 	if options.Resume == "" {
 		a.onResumable = options.OnResumable
@@ -46,27 +55,34 @@ func (a *Agent) publish(update agent.Update) {
 	a.onUpdate(update)
 }
 
-func (a *Agent) tick() {
-	next := tick{a.prompt}
+// after delivers event through Events a tick from now.
+func (a *Agent) after(event agent.Event) {
 	time.AfterFunc(50*time.Millisecond, func() {
 		select {
-		case a.events <- next:
+		case a.events <- event:
 		case <-a.done:
 		}
 	})
 }
 
 func (a *Agent) Handle(event agent.Event) {
-	if event.(tick).prompt != a.prompt {
-		return // its prompt was interrupted
+	switch e := event.(type) {
+	case *configured:
+		a.config = nil
+		a.settings = e.settings
+		e.done(a.settings, nil)
+	case tick:
+		if e.prompt != a.prompt {
+			return // its prompt was interrupted
+		}
+		if len(a.words) > 0 {
+			a.publish(agent.Update{Type: "text_delta", Text: a.words[0]})
+			a.words = a.words[1:]
+			a.after(tick{a.prompt})
+			return
+		}
+		a.finish(agent.Result{Text: a.reply})
 	}
-	if len(a.words) > 0 {
-		a.publish(agent.Update{Type: "text_delta", Text: a.words[0]})
-		a.words = a.words[1:]
-		a.tick()
-		return
-	}
-	a.finish(agent.Result{Text: a.reply})
 }
 
 func (a *Agent) finish(result agent.Result) {
@@ -89,8 +105,12 @@ func (a *Agent) Snapshot() agent.Snapshot {
 	return snapshot
 }
 
+func (a *Agent) idle() bool {
+	return a.state == "idle" && a.config == nil
+}
+
 func (a *Agent) Send(text string) (string, error) {
-	if a.state != "idle" {
+	if !a.idle() {
 		return "", agent.ErrBusy
 	}
 	a.prompt = rand.Text()
@@ -99,7 +119,7 @@ func (a *Agent) Send(text string) (string, error) {
 	a.publish(agent.Update{Type: "state", State: a.state})
 	a.reply = "You said: " + text
 	a.words = strings.SplitAfter(a.reply, " ")
-	a.tick()
+	a.after(tick{a.prompt})
 	return a.prompt, nil
 }
 
@@ -115,22 +135,26 @@ func (a *Agent) Interrupt() error {
 }
 
 func (a *Agent) Configure(settings agent.Settings, done func(agent.Settings, error)) {
-	if a.state != "idle" {
+	if !a.idle() {
 		done(settings, agent.ErrBusy)
 		return
 	}
-	done(settings, nil)
+	a.config = &configured{settings, done}
+	a.after(a.config)
 }
 
 func (a *Agent) Parkable() bool {
-	return a.state == "idle"
+	return a.idle()
 }
 
-// Stop completes synchronously.
 func (a *Agent) Stop() error {
 	if a.prompt != "" {
 		a.publish(agent.Update{Type: "exited", Error: "stopped"})
 		a.prompt = ""
+	}
+	if a.config != nil {
+		a.config.done(a.settings, agent.ErrExited)
+		a.config = nil
 	}
 	a.publish(agent.Update{Type: "parked"})
 	a.exited = true

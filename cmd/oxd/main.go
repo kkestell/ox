@@ -57,7 +57,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	context.AfterFunc(ctx, func() { listener.Close() })
+	// Once shutdown starts, a second signal kills oxd.
+	context.AfterFunc(ctx, func() {
+		stop()
+		listener.Close()
+	})
 
 	err = s.Serve(listener)
 	s.Close()

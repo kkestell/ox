@@ -56,14 +56,14 @@ func Start(options agent.Options) (agent.Agent, error) {
 	if err != nil {
 		return nil, err
 	}
-	a := newAgent(input, events, sessionID, options)
-	a.proc = proc
-	return a, nil
+	return newAgent(input, events, proc, sessionID, options), nil
 }
 
-func newAgent(input *writer, events chan agent.Event, sessionID string, options agent.Options) *Agent {
+// newAgent runs the process proc, whose output arrives on events and whose
+// input is input.
+func newAgent(input *writer, events chan agent.Event, proc *process, sessionID string, options agent.Options) *Agent {
 	a := &Agent{
-		input: input, events: events, done: make(chan struct{}),
+		proc: proc, input: input, events: events, done: make(chan struct{}),
 		phase: available, state: "idle",
 		settings: options.Settings, onUpdate: options.OnUpdate, onError: options.OnError, sessionID: sessionID,
 	}
@@ -200,7 +200,19 @@ func (a *Agent) exit(err error) {
 	close(a.done)
 }
 
+// Stop asks Claude to exit and handles its events until it has.
 func (a *Agent) Stop() error {
+	if err := a.terminate(); err != nil {
+		return err
+	}
+	for a.phase != exited {
+		a.Handle(<-a.events)
+	}
+	return nil
+}
+
+// terminate asks Claude to exit; its exit event completes the shutdown.
+func (a *Agent) terminate() error {
 	a.stopping = true
 	return a.proc.Terminate()
 }

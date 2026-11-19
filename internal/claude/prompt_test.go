@@ -20,7 +20,7 @@ func testAgent() (*Agent, *bytes.Buffer, *recorder) {
 	input := new(bytes.Buffer)
 	updates := new(recorder)
 	options := agent.Options{OnUpdate: updates.record, OnError: func(err error) { panic(err) }}
-	return newAgent(newWriter(input), make(chan agent.Event), "claude-session", options), input, updates
+	return newAgent(newWriter(input), make(chan agent.Event), nil, "claude-session", options), input, updates
 }
 
 func promptingAgent() (*Agent, *bytes.Buffer, *recorder) {

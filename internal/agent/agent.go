@@ -38,8 +38,9 @@ type Agent interface {
 	// Parkable reports that nothing is using the process, so stopping it
 	// loses no work.
 	Parkable() bool
-	// Stop requests shutdown. A subprocess harness completes shutdown after
-	// Handle receives its exit event. Check Exited for completion.
+	// Stop shuts the process down and returns once it has exited and the
+	// agent has published its last update, parked. A process that does not
+	// exit when asked is killed.
 	Stop() error
 	// Exited reports that the process has exited and the agent has
 	// published its last update, parked.

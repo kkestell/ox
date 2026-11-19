@@ -95,7 +95,7 @@ func (a *Agent) controlTimedOut(requestID string) {
 		return
 	}
 	a.config.requestID = ""
-	if err := a.Stop(); err != nil {
+	if err := a.terminate(); err != nil {
 		a.endConfiguration(a.config.fail(err))
 	}
 }

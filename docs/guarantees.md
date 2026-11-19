@@ -34,7 +34,8 @@ contract that defines its details. Reviews check changes against them.
    and a lost event stream fails every pending request. A request waits
    behind its session's current operation: Claude's startup has a one-minute
    limit, an unacknowledged configuration stops the process after one
-   minute, and parking or destroying waits for Claude to exit after SIGTERM.
+   minute, and parking or destroying waits for Claude to exit after SIGTERM
+   and kills it after ten seconds.
 
 5. **A failure is shown where it happened.** A session's request errors
    appear in that session's view, including the first send after the session

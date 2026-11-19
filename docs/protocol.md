@@ -287,9 +287,9 @@ and also succeeds. The stopped turn ends with an error `result` whose text is
 
 Requires `session_id`. Removes the session from the daemon. A running process
 receives SIGTERM so Claude can clean up its tool processes, and the daemon
-waits for it to exit. Pending approvals are withdrawn, and an active prompt
-receives an `exited` update before the destroy response. Claude's transcript
-stays on disk.
+waits for it to exit, killing it after ten seconds. Pending approvals are
+withdrawn, and an active prompt receives an `exited` update before the
+destroy response. Claude's transcript stays on disk.
 
 ```json
 {"jsonrpc":"2.0","id":9,"method":"session/destroy","params":{"session_id":"session-id"}}

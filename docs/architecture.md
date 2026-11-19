@@ -25,7 +25,7 @@ cmd/oxd            socket, database, and configuration paths, signals, the harne
 
 | Package | Owns |
 | --- | --- |
-| `cmd/oxd` | Choosing the socket, database, and configuration, checking the configured harnesses, starting the server, and stopping it on a signal. |
+| `cmd/oxd` | Choosing the socket, database, and configuration, checking the configured harnesses, starting the server, and stopping it on a signal, or at once on a second. |
 | `paths` | The XDG locations of the configuration, database, and socket, which `cmd/oxd` uses unless a flag overrides them and `cmd/ox` uses for the socket. |
 | `config` | Reading the configuration file, or the built-in default, into each harness's models, efforts, and permission modes and the new-session defaults, and checking settings against them. |
 | `server` | Client connections, each session's goroutine and the agent it runs, and the mapping from each method to a session operation and its error codes. Each connection writes through its own queue, so sessions never wait on a client. |
@@ -64,8 +64,8 @@ store. See [the snapshot and history contract](protocol.md#sessionget).
 
 The session arms a park timer whenever its agent is `Parkable` and stops it
 when the agent stops being parkable, so the full period restarts each time. If
-the timer fires, the session stops the process and handles the agent's events
-until it has exited.
+the timer fires, the session stops the agent, which returns once its process
+has exited.
 
 ## Agents
 

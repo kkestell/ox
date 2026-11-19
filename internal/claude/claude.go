@@ -223,11 +223,16 @@ func (p *process) read(output *bufio.Reader, events chan<- agent.Event) {
 	events <- processExit{<-exited}
 }
 
-// Terminate asks Claude to exit so it can clean up its tool processes.
+// killAfter is how long Claude has to exit once asked before it is killed.
+const killAfter = 10 * time.Second
+
+// Terminate asks Claude to exit so it can clean up its tool processes, and
+// kills it if it is still running after killAfter.
 func (p *process) Terminate() error {
 	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return fmt.Errorf("stop Claude: %w", err)
 	}
+	time.AfterFunc(killAfter, func() { p.cmd.Process.Kill() })
 	return nil
 }
 
