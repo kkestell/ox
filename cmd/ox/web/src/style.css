@@ -16,6 +16,8 @@ ul, ol { list-style: none; }
   --foreground: light-dark(oklch(0.145 0 0), oklch(0.985 0 0));
   --text: light-dark(#404040, #d4d4d4);
   --card: light-dark(oklch(1 0 0), oklch(0.205 0 0));
+  --popover: light-dark(oklch(1 0 0), oklch(0.205 0 0));
+  --muted: light-dark(oklch(0.97 0 0), oklch(0.269 0 0));
   --primary: light-dark(oklch(0.205 0 0), oklch(0.922 0 0));
   --primary-foreground: light-dark(oklch(0.985 0 0), oklch(0.205 0 0));
   --secondary: light-dark(oklch(0.97 0 0), oklch(0.269 0 0));
@@ -34,6 +36,7 @@ ul, ol { list-style: none; }
   --radius-md: calc(var(--radius) - 2px);
   --shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 5%);
   --shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 10%), 0 1px 2px -1px rgb(0 0 0 / 10%);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 10%), 0 2px 4px -2px rgb(0 0 0 / 10%);
   --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 10%), 0 4px 6px -4px rgb(0 0 0 / 10%);
   --sidebar-width: 18rem;
   /* The transcript's sides line up with the composer's icons. */
@@ -56,6 +59,9 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: 
 .send { --icon: url(lucide-static/icons/send.svg); }
 .stop { --icon: url(lucide-static/icons/square.svg); }
 .context { --icon: url(lucide-static/icons/folder.svg); }
+.chevron-down { --icon: url(lucide-static/icons/chevron-down.svg); }
+.search-icon { --icon: url(lucide-static/icons/search.svg); }
+.check { --icon: url(lucide-static/icons/check.svg); }
 .marker.done { --icon: url(lucide-static/icons/check.svg); }
 .marker.failed { --icon: url(lucide-static/icons/circle-alert.svg); color: var(--destructive); }
 
@@ -79,6 +85,13 @@ input {
 }
 input:focus-visible { border-color: var(--ring); }
 input::placeholder, textarea::placeholder { color: var(--muted-foreground); }
+input[type="radio"] {
+  appearance: none; flex: none; width: 1rem; height: 1rem; padding: 0; border: 1px solid var(--input); border-radius: 50%;
+  background: light-dark(transparent, oklch(1 0 0 / 4.5%)); box-shadow: var(--shadow-xs);
+}
+input[type="radio"]:checked { background: radial-gradient(circle, var(--primary) 0 3.5px, transparent 4px), light-dark(transparent, oklch(1 0 0 / 4.5%)); }
+input[type="radio"]:focus-visible { border-color: var(--ring); }
+input:disabled { opacity: 0.5; }
 
 [role="alert"], .error { color: var(--destructive); }
 
@@ -130,14 +143,6 @@ main > [role="alert"] { padding: 0.5rem 1rem; font-size: 0.75rem; }
 .log .prompt { align-self: flex-end; max-width: 75%; margin: 0.75rem 0; padding: 0.75rem 1rem; border-radius: calc(var(--radius) + 4px); background: var(--secondary); color: var(--secondary-foreground); box-shadow: var(--shadow-sm); }
 .log .error { padding: 0.75rem 1rem; border-radius: var(--radius); background: var(--card); }
 
-fieldset { padding: 1rem; border: 1px solid var(--border); border-radius: 1rem; background: var(--card); display: flex; flex-wrap: wrap; gap: 0.5rem; }
-legend { float: left; width: 100%; font-weight: 500; color: var(--foreground); }
-fieldset pre { width: 100%; margin-bottom: 0.25rem; padding: 0.5rem 0.75rem; border-radius: var(--radius-md); background: var(--secondary); overflow-x: auto; white-space: pre-wrap; font-family: var(--font-mono); font-size: 0.75rem; }
-fieldset .plan { width: 100%; white-space: pre-wrap; overflow-wrap: break-word; }
-fieldset .denial-message { display: flex; flex-direction: column; gap: 0.25rem; width: 100%; font-size: 0.75rem; }
-fieldset button:not(.primary) { border-color: transparent; background: var(--secondary); color: var(--secondary-foreground); box-shadow: none; }
-fieldset button:not(.primary):hover { background: color-mix(in oklab, var(--secondary) 80%, transparent); }
-
 details.tool:not([open]) + details.tool { margin-top: -0.75rem; }
 details.tool summary { display: flex; align-items: center; padding: 0.25rem 0; list-style: none; cursor: default; }
 details.tool summary::-webkit-details-marker { display: none; }
@@ -150,14 +155,85 @@ details.tool pre { padding: 0.5rem 0.75rem; overflow-x: auto; white-space: pre-w
 details.tool pre + pre { border-top: 1px solid var(--border); }
 
 .composer { flex: none; margin: 1rem; }
-.composer .box { display: flex; align-items: flex-end; gap: 0.25rem; padding: 0.5rem 0.75rem 0.5rem 1rem; border: 1px solid var(--border); border-radius: 16px; background: var(--composer); }
+.composer .box { position: relative; display: flex; align-items: flex-end; gap: 0.25rem; padding: 0.5rem 0.75rem 0.5rem 1rem; border: 1px solid var(--border); border-radius: 16px; background: var(--composer); }
+.composer:has(.pending) .box { filter: drop-shadow(0 10px 8px rgb(0 0 0 / 4%)) drop-shadow(0 4px 3px rgb(0 0 0 / 10%)); }
 .composer textarea { flex: 1; min-height: 0; max-height: calc(8lh + 0.5rem); padding: 0.25rem; border: 0; outline: none; resize: none; field-sizing: content; background: transparent; line-height: 1.5rem; }
 .composer .box button.icon { width: 2rem; height: 2rem; }
 .composer .box .send::before { translate: 0 1px; }
 .composer .settings { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; margin-top: 0.5rem; padding-left: 11px; }
-.composer select {
-  height: 1.5rem; padding: 0 0.25rem; border: 0; border-radius: var(--radius-md); background: transparent;
-  font-size: 0.75rem; color: var(--muted-foreground); cursor: pointer; field-sizing: content;
+.composer .settings > button.picker, .composer .select {
+  height: 1.5rem; border-radius: var(--radius-md); background: transparent; font-size: 0.75rem; color: var(--muted-foreground);
 }
-.composer select:hover { background: var(--accent); }
-.composer select:disabled { opacity: 0.5; cursor: default; }
+.composer .settings > button.picker:hover, .composer .select:hover { background: var(--accent); }
+/* The chevron sits where the picker's does: 0.375rem after the text, 0.5rem from the edge. */
+.composer .select { position: relative; display: inline-flex; align-items: center; }
+.composer .select select {
+  appearance: none; height: 100%; padding: 0 1.875rem 0 0.5rem; border: 0; border-radius: inherit;
+  background: transparent; outline: none; cursor: pointer; field-sizing: content;
+}
+.composer .select .icon { position: absolute; right: 0.5rem; pointer-events: none; }
+.composer .select:not(.pointer):has(select:focus-visible) { outline: 3px solid color-mix(in oklab, var(--ring) 50%, transparent); }
+.composer .select:has(select:disabled) { opacity: 0.5; }
+.composer .select select:disabled { cursor: default; }
+
+.harness-icon { flex: none; width: 1rem; height: 1rem; }
+
+/* Pending approvals sit on the composer, their card tucked beneath it. */
+.pending {
+  max-height: 50vh; overflow-y: auto; display: flex; flex-direction: column; gap: 1rem;
+  margin: 0 0.75rem -1rem; padding: 1rem 1rem 2rem; border: 1px solid var(--border); border-bottom: 0;
+  border-radius: 16px 16px 0 0; background: var(--card);
+}
+.approval { display: flex; flex-direction: column; gap: 0.75rem; }
+.approval > p { color: var(--foreground); }
+.approval .choice { display: grid; grid-template-columns: auto 1fr; align-items: start; column-gap: 0.75rem; padding: 0.375rem 0; }
+.approval .choice label { line-height: 1.25rem; color: var(--foreground); }
+.approval .choice input[type="radio"] { margin-top: 0.125rem; }
+.approval .choice:last-child input[type="radio"] { margin-top: 0.5rem; }
+.approval input[type="text"] { height: 2rem; }
+.approval .actions { display: flex; justify-content: flex-end; }
+
+/* Model picker */
+.composer .settings > button.picker {
+  display: inline-flex; gap: 0.375rem; min-width: 0; padding: 0 0.5rem; border: 0; border-radius: var(--radius-md); box-shadow: none; font-weight: 400;
+}
+.picker .model { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.picker .effort-name { opacity: 0.6; }
+.model-picker {
+  position-area: top span-right; position-try-fallbacks: flip-block; inset: auto; margin: 0 0 4px;
+  width: 20rem; max-width: calc(100vw - 2rem); padding: 0.5rem; flex-direction: column; gap: 0.5rem;
+  border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--popover); color: var(--foreground); box-shadow: var(--shadow-md);
+}
+.model-picker:popover-open { display: flex; }
+.model-picker .search { display: flex; align-items: center; gap: 0.5rem; height: 2.25rem; padding: 0 0.75rem; }
+.model-picker .search .icon::before { opacity: 0.5; }
+.model-picker .search input { flex: 1; min-width: 0; height: 2.25rem; padding: 0; border: 0; background: transparent; box-shadow: none; outline: none; }
+.model-picker .options { max-height: 16rem; overflow-y: auto; }
+.model-picker .option { display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0.5rem; border-radius: calc(var(--radius) - 4px); cursor: default; user-select: none; }
+.model-picker .option[aria-selected="true"] { background: var(--accent); }
+.model-picker .option .model { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.model-picker .option .check { color: var(--muted-foreground); }
+.model-picker .empty { padding: 1.5rem 0; text-align: center; }
+.invisible { visibility: hidden; }
+
+/* The slider's thumb stays inside the track, so a step at fraction --p sits at 8px + p × (width − 16px). */
+.effort { display: grid; gap: 0.75rem; padding: 0.5rem; }
+.effort input[type="range"] {
+  --at: calc(8px + var(--p) * (100% - 16px));
+  appearance: none; width: 100%; height: 1rem; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none;
+}
+.effort input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px; border-radius: 9999px; background: linear-gradient(to right, var(--primary) var(--at), var(--muted) var(--at));
+}
+.effort input[type="range"]::-moz-range-track { height: 6px; border-radius: 9999px; background: var(--muted); }
+.effort input[type="range"]::-moz-range-progress { height: 6px; border-radius: 9999px; background: var(--primary); }
+.effort input[type="range"]::-webkit-slider-thumb {
+  appearance: none; width: 1rem; height: 1rem; margin-top: -5px; border: 1px solid var(--primary); border-radius: 50%; background: white; box-shadow: var(--shadow-sm);
+}
+.effort input[type="range"]::-moz-range-thumb { width: 1rem; height: 1rem; border: 1px solid var(--primary); border-radius: 50%; background: white; box-shadow: var(--shadow-sm); }
+.effort input[type="range"]:focus-visible { outline: none; }
+.effort input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px color-mix(in oklab, var(--ring) 50%, transparent); }
+.effort input[type="range"]:disabled { opacity: 0.5; }
+.ticks { position: relative; height: 2.25rem; margin-top: -0.25rem; font-size: 10px; color: var(--muted-foreground); }
+.ticks span { position: absolute; top: 0; left: calc(8px + var(--p) * (100% - 16px)); translate: -50% 0; display: flex; flex-direction: column; align-items: center; gap: 0.25rem; }
+.ticks span::before { content: ""; width: 1px; height: 6px; background: var(--muted-foreground); }

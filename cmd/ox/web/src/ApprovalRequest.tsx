@@ -1,41 +1,83 @@
-import { createSignal, Show, snapshot } from "solid-js";
+import { createSignal, createUniqueId, snapshot } from "solid-js";
 import type { Approval } from "./ox";
 import type { ApprovalResponse } from "./protocol";
 
-export function ApprovalRequest(props: { approval: Approval; onAnswer(response: ApprovalResponse): void }) {
-  const [message, setMessage] = createSignal("");
-  const plan = () => {
-    const request = props.approval.request;
-    return request.tool_name === "ExitPlanMode" && typeof request.input.plan === "string"
-      ? request.input.plan
-      : undefined;
+type Choice = "allow" | "deny" | "other";
+
+// ApprovalRequest answers one approval with Allow, Deny, or a typed reply,
+// which denies with the reply as Claude's message. Typing picks Other, and
+// picking a choice clears the reply.
+export function ApprovalRequest(props: { approval: Approval; onAnswer(response: ApprovalResponse): Promise<unknown> }) {
+  const id = createUniqueId();
+  const [choice, setChoice] = createSignal<Choice>();
+  const [reply, setReply] = createSignal("");
+  const [sending, setSending] = createSignal(false);
+  let field!: HTMLInputElement;
+  const ready = () => choice() === "allow" || choice() === "deny" || (choice() === "other" && !!reply().trim());
+
+  const pick = (picked: Choice) => {
+    setChoice(picked);
+    if (picked === "other") field.focus();
+    else setReply("");
   };
-  const deny = (interrupt: boolean) =>
-    props.onAnswer({ behavior: "deny", message: message().trim() || "Denied by user", interrupt });
+  const submit = () => {
+    if (!ready() || sending()) return;
+    const response: ApprovalResponse =
+      choice() === "allow"
+        ? { behavior: "allow", updatedInput: snapshot(props.approval.request.input) }
+        : { behavior: "deny", message: choice() === "other" ? reply().trim() : "Denied by user" };
+    setSending(true);
+    props.onAnswer(response).finally(() => setSending(false));
+  };
+
+  const radio = (value: Choice, label?: string) => (
+    <input
+      type="radio"
+      id={`${id}-${value}`}
+      name={id}
+      checked={choice() === value}
+      disabled={sending()}
+      aria-label={label}
+      onChange={() => pick(value)}
+    />
+  );
 
   return (
-    <fieldset>
-      <legend>{props.approval.request.tool_name}</legend>
-      <Show when={plan() !== undefined} fallback={<pre>{JSON.stringify(props.approval.request.input, null, 2)}</pre>}>
-        <div class="plan">{plan()}</div>
-      </Show>
-      <label class="denial-message">
-        Reason for denial (optional)
-        <input type="text" value={message()} onInput={(event) => setMessage(event.currentTarget.value)} />
-      </label>
-      <button
-        type="button"
-        class="primary"
-        onClick={() => props.onAnswer({ behavior: "allow", updatedInput: snapshot(props.approval.request.input) })}
-      >
-        Allow
-      </button>
-      <button type="button" onClick={() => deny(false)}>
-        Deny
-      </button>
-      <button type="button" onClick={() => deny(true)}>
-        Deny and stop
-      </button>
-    </fieldset>
+    <div class="approval">
+      <p>Allow {props.approval.request.tool_name}?</p>
+      <div class="choices" role="radiogroup" aria-label="Choices">
+        <div class="choice">
+          {radio("allow")}
+          <label for={`${id}-allow`}>Allow</label>
+        </div>
+        <div class="choice">
+          {radio("deny")}
+          <label for={`${id}-deny`}>Deny</label>
+        </div>
+        <div class="choice">
+          {radio("other", "Other")}
+          <input
+            ref={field}
+            type="text"
+            placeholder="Other"
+            aria-label="Other response"
+            value={reply()}
+            disabled={sending()}
+            onInput={(event) => {
+              setReply(event.currentTarget.value);
+              setChoice("other");
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.isComposing) submit();
+            }}
+          />
+        </div>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" disabled={!ready() || sending()} onClick={submit}>
+          Submit
+        </button>
+      </div>
+    </div>
   );
 }

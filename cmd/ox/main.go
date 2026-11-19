@@ -38,7 +38,6 @@ func main() {
 	http.Handle("GET /", http.FileServerFS(web))
 	http.HandleFunc("GET /events", r.events)
 	http.HandleFunc("POST /rpc", r.rpc)
-	log.Printf("serving http://%s", *addr)
 	log.Fatal(http.ListenAndServe(*addr, nil))
 }
 

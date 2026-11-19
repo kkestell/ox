@@ -1,33 +1,179 @@
-import { createSignal, For, Show } from "solid-js";
-import type { Defaults, Harness, Option, Settings } from "./protocol";
+import { createSignal, createUniqueId, For, flush, Show } from "solid-js";
+import { HarnessIcon, harnessName } from "./HarnessIcon";
+import type { Defaults, Harness, Model, Option, Settings } from "./protocol";
 
-export function SettingsFields(props: { harness: Harness; value: Settings; disabled?: boolean }) {
-  const [model, setModel] = createSignal(() => props.value.model);
-  const efforts = () => effortsOf(props.harness, model());
+export type ModelChoice = { harness: string; model: string; effort: string };
+
+type Entry = { harness: string; model: Model };
+
+// ModelPicker chooses a model from every harness in harnesses, and its effort.
+// A model keeps the current effort when it offers it.
+export function ModelPicker(props: {
+  harnesses: Record<string, Harness>;
+  value: ModelChoice;
+  disabled?: boolean;
+  onChange(value: ModelChoice): void;
+}) {
+  const id = createUniqueId();
+  const [query, setQuery] = createSignal("");
+  const [active, setActive] = createSignal(0);
+  let input!: HTMLInputElement;
+  let list!: HTMLDivElement;
+
+  const entries = (): Entry[] =>
+    Object.entries(props.harnesses).flatMap(([harness, catalog]) =>
+      catalog.models.map((model) => ({ harness, model })),
+    );
+  const matches = () => {
+    const q = query().trim().toLowerCase();
+    return entries().filter((e) => `${e.model.name} ${harnessName(e.harness)}`.toLowerCase().includes(q));
+  };
+  const isCurrent = (e: Entry) => e.harness === props.value.harness && e.model.id === props.value.model;
+  const current = () => entries().find(isCurrent);
+  const effortName = () =>
+    current()?.model.efforts.find((e) => e.id === props.value.effort)?.name ?? props.value.effort;
+
+  const choose = (entry: Entry) => {
+    if (props.disabled || isCurrent(entry)) return;
+    const efforts = entry.model.efforts;
+    const effort = efforts.some((e) => e.id === props.value.effort) ? props.value.effort : (efforts[0]?.id ?? "");
+    props.onChange({ harness: entry.harness, model: entry.model.id, effort });
+  };
+  const move = (step: number) => {
+    const n = matches().length;
+    if (!n) return;
+    setActive((i) => (i + step + n) % n);
+    flush();
+    list.querySelector("[aria-selected=true]")?.scrollIntoView({ block: "nearest" });
+  };
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      move(event.key === "ArrowDown" ? 1 : -1);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const entry = matches()[active()];
+      if (entry) choose(entry);
+    }
+  };
+
   return (
     <>
-      <Select
-        name="model"
-        options={props.harness.models}
-        value={props.value.model}
+      <button
+        type="button"
+        class="picker"
+        popovertarget={id}
         disabled={props.disabled}
-        onChange={setModel}
-      />
-      <Show when={efforts().length}>
-        <Select name="effort" options={efforts()} value={props.value.effort} disabled={props.disabled} />
-      </Show>
-      <Select
-        name="permission_mode"
-        options={props.harness.permission_modes}
-        value={props.value.permission_mode}
-        disabled={props.disabled}
-      />
+        style={{ "anchor-name": `--${id}` }}
+      >
+        <HarnessIcon harness={props.value.harness} />
+        <span class="model">{current()?.model.name ?? props.value.model}</span>
+        <Show when={effortName()}>
+          <span class="effort-name">{effortName()}</span>
+        </Show>
+        <span class="icon chevron-down" />
+      </button>
+      <div
+        id={id}
+        popover="auto"
+        class="model-picker"
+        style={{ "position-anchor": `--${id}` }}
+        onToggle={(event) => {
+          if (event.newState !== "open") return;
+          setQuery("");
+          setActive(0);
+          input.focus();
+        }}
+      >
+        <div class="search">
+          <span class="icon search-icon" />
+          <input
+            ref={input}
+            role="combobox"
+            aria-controls={`${id}-list`}
+            aria-expanded="true"
+            aria-activedescendant={matches().length ? `${id}-${active()}` : undefined}
+            placeholder="Search models"
+            aria-label="Search models"
+            value={query()}
+            onInput={(event) => {
+              setQuery(event.currentTarget.value);
+              setActive(0);
+            }}
+            onKeyDown={onKeyDown}
+          />
+        </div>
+        <div id={`${id}-list`} class="options" role="listbox" ref={list}>
+          <For each={matches()} fallback={<p class="empty">No models match.</p>}>
+            {(entry, i) => (
+              // biome-ignore lint/a11y/useFocusableInteractive: focus stays in the search field, which names the active option with aria-activedescendant.
+              <div
+                role="option"
+                id={`${id}-${i()}`}
+                class="option"
+                aria-selected={i() === active() ? "true" : "false"}
+                onPointerMove={() => setActive(i())}
+                onClick={() => choose(entry)}
+              >
+                <HarnessIcon harness={entry.harness} />
+                <span class="model">{entry.model.name}</span>
+                <span class={["icon check", { invisible: !isCurrent(entry) }]} />
+              </div>
+            )}
+          </For>
+        </div>
+        <Effort
+          efforts={current()?.model.efforts ?? []}
+          value={props.value.effort}
+          disabled={props.disabled}
+          onChange={(effort) => props.onChange({ ...props.value, effort })}
+        />
+      </div>
     </>
   );
 }
 
+// Effort is always shown; it moves only when the model offers a choice.
+function Effort(props: { efforts: Option[]; value: string; disabled?: boolean; onChange(id: string): void }) {
+  const [dragged, setDragged] = createSignal<number>();
+  const last = () => Math.max(props.efforts.length - 1, 1);
+  const position = () =>
+    dragged() ??
+    Math.max(
+      props.efforts.findIndex((e) => e.id === props.value),
+      0,
+    );
+  return (
+    <div class="effort">
+      <span>Effort</span>
+      <input
+        type="range"
+        min="0"
+        max={last()}
+        step="1"
+        value={position()}
+        disabled={props.disabled || props.efforts.length < 2}
+        aria-label="Effort"
+        aria-valuetext={props.efforts[position()]?.name}
+        style={{ "--p": position() / last() }}
+        onInput={(event) => setDragged(Number(event.currentTarget.value))}
+        onChange={(event) => {
+          setDragged(undefined);
+          const effort = props.efforts[Number(event.currentTarget.value)];
+          if (effort && effort.id !== props.value) props.onChange(effort.id);
+        }}
+      />
+      <Show when={props.efforts.length}>
+        <div class="ticks" aria-hidden="true">
+          <For each={props.efforts}>{(effort, i) => <span style={{ "--p": i() / last() }}>{effort.name}</span>}</For>
+        </div>
+      </Show>
+    </div>
+  );
+}
+
 // A saved setting can outlive its entry in the harness catalog.
-function Select(props: {
+export function Select(props: {
   name: string;
   options: Option[];
   value: string;
@@ -38,53 +184,29 @@ function Select(props: {
     props.value && !props.options.some((o) => o.id === props.value)
       ? [...props.options, { id: props.value, name: props.value }]
       : props.options;
+  // Chrome treats a clicked select as keyboard-focused; the ring is for focus
+  // that arrives by keyboard.
+  const [pointer, setPointer] = createSignal(false);
   return (
-    <select
-      name={props.name}
-      disabled={props.disabled}
-      onChange={(event) => props.onChange?.(event.currentTarget.value)}
-    >
-      <For each={options()}>
-        {(option) => (
-          <option value={option.id} selected={option.id === props.value}>
-            {option.name}
-          </option>
-        )}
-      </For>
-    </select>
+    <span class={["select", { pointer: pointer() }]}>
+      <select
+        name={props.name}
+        disabled={props.disabled}
+        onPointerDown={() => setPointer(true)}
+        onBlur={() => setPointer(false)}
+        onChange={(event) => props.onChange?.(event.currentTarget.value)}
+      >
+        <For each={options()}>
+          {(option) => (
+            <option value={option.id} selected={option.id === props.value}>
+              {option.name}
+            </option>
+          )}
+        </For>
+      </select>
+      <span class="icon chevron-down" />
+    </span>
   );
-}
-
-function effortsOf(harness: Harness, model: string): Option[] {
-  return harness.models.find((m) => m.id === model)?.efforts ?? [];
-}
-
-export function settingsFrom(harness: Harness, form: FormData): Settings {
-  const model = String(form.get("model"));
-  const efforts = effortsOf(harness, model);
-  const effort = String(form.get("effort") ?? "");
-  return {
-    model,
-    effort: efforts.some((e) => e.id === effort) ? effort : (efforts[0]?.id ?? ""),
-    permission_mode: String(form.get("permission_mode")),
-  };
-}
-
-export function changedSettings(harness: Harness, from: Settings, form: FormData): Partial<Settings> {
-  const changes: Partial<Settings> = {};
-  const model = String(form.get("model"));
-  if (model !== from.model) {
-    changes.model = model;
-    const efforts = effortsOf(harness, model);
-    const effort = efforts.some((e) => e.id === from.effort) ? from.effort : (efforts[0]?.id ?? "");
-    if (effort !== from.effort) changes.effort = effort;
-  } else {
-    const effort = form.get("effort");
-    if (effort !== null && effort !== from.effort) changes.effort = String(effort);
-  }
-  const mode = String(form.get("permission_mode"));
-  if (mode !== from.permission_mode) changes.permission_mode = mode;
-  return changes;
 }
 
 export function defaultSettings(name: string, harness: Harness, defaults?: Defaults): Settings {

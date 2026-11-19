@@ -2,7 +2,7 @@ import { action, createOptimistic, createSignal, For, Match, onSettled, Show, Sw
 import { ApprovalRequest } from "./ApprovalRequest";
 import { createAttempt, type Entry, type Session, useOx } from "./ox";
 import type { Settings } from "./protocol";
-import { changedSettings, defaultSettings, SettingsFields, settingsFrom } from "./SettingsFields";
+import { defaultSettings, type ModelChoice, ModelPicker, Select } from "./SettingsFields";
 
 type Tool = Extract<Entry, { kind: "tool" }>;
 
@@ -64,19 +64,23 @@ export function SessionView(props: { session: Session; prompt?: string }) {
       </p>
       <div class="log" ref={log}>
         <Transcript entries={props.session.entries} />
-        <For each={props.session.approvals}>
-          {(approval) => (
-            <ApprovalRequest
-              approval={approval}
-              onAnswer={(response) => attempt(ox.approve(props.session.id, approval.id, response))}
-            />
-          )}
-        </For>
       </div>
       <Show when={error()}>{(error) => <p role="alert">{error()}</p>}</Show>
       <div class="composer">
+        <Show when={props.session.approvals.length}>
+          <section class="pending" aria-label="Waiting on you">
+            <For each={props.session.approvals}>
+              {(approval) => (
+                <ApprovalRequest
+                  approval={approval}
+                  onAnswer={(response) => attempt(ox.approve(props.session.id, approval.id, response))}
+                />
+              )}
+            </For>
+          </section>
+        </Show>
         <form class="box" ref={form} onSubmit={send}>
-          <textarea ref={textarea} name="text" rows="1" placeholder="Prompt" required onKeyDown={sendOnEnter} />
+          <textarea ref={textarea} name="text" rows="1" aria-label="Prompt" required onKeyDown={sendOnEnter} />
           <Show
             when={running()}
             fallback={<button type="submit" class="icon send" aria-label="Send" title="Send" disabled={!canSend()} />}
@@ -101,19 +105,32 @@ export function NewSessionView(props: { workspaceId: string; onCreated(id: strin
   const [error, attempt] = createAttempt();
   const [sending, setSending] = createSignal(false);
   const workspace = () => ox.state.workspaces.find((w) => w.id === props.workspaceId)?.path;
-  const [harness, setHarness] = createSignal(() => ox.state.defaults?.harness ?? "");
-  const catalog = () => ox.state.harnesses[harness()];
+  // Until the session starts, the picker offers every harness's models.
+  const [choice, setChoice] = createSignal<(Settings & { harness: string }) | undefined>(() => {
+    const harness = ox.state.defaults?.harness ?? Object.keys(ox.state.harnesses)[0];
+    const catalog = harness === undefined ? undefined : ox.state.harnesses[harness];
+    return catalog && { harness, ...defaultSettings(harness, catalog, ox.state.defaults) };
+  });
+  // Another harness keeps the permission mode when it offers it.
+  const pick = (value: ModelChoice) =>
+    setChoice((current) => {
+      const catalog = ox.state.harnesses[value.harness];
+      const mode = catalog.permission_modes.some((m) => m.id === current?.permission_mode)
+        ? (current?.permission_mode ?? "")
+        : defaultSettings(value.harness, catalog, ox.state.defaults).permission_mode;
+      return { ...value, permission_mode: mode };
+    });
 
   const send = (event: SubmitEvent & { currentTarget: HTMLFormElement }) => {
     event.preventDefault();
-    if (sending()) return;
-    const form = new FormData(event.currentTarget);
+    const c = choice();
+    if (sending() || !c) return;
+    const text = String(new FormData(event.currentTarget).get("text"));
+    const { harness, ...settings } = c;
     setSending(true);
-    attempt(
-      ox
-        .createSession(props.workspaceId, harness(), settingsFrom(catalog(), form))
-        .then((id) => props.onCreated(id, String(form.get("text")))),
-    ).finally(() => setSending(false));
+    attempt(ox.createSession(props.workspaceId, harness, settings).then((id) => props.onCreated(id, text))).finally(
+      () => setSending(false),
+    );
   };
 
   return (
@@ -123,22 +140,22 @@ export function NewSessionView(props: { workspaceId: string; onCreated(id: strin
       <Show when={error()}>{(error) => <p role="alert">{error()}</p>}</Show>
       <form class="composer" onSubmit={send}>
         <div class="box">
-          <textarea name="text" rows="1" placeholder="Prompt" required autofocus onKeyDown={sendOnEnter} />
+          <textarea name="text" rows="1" aria-label="Prompt" required autofocus onKeyDown={sendOnEnter} />
           <button type="submit" class="icon send" aria-label="Send" title="Send" disabled={sending()} />
         </div>
-        <div class="settings">
-          <select name="harness" onChange={(event) => setHarness(event.currentTarget.value)}>
-            <For each={Object.keys(ox.state.harnesses)}>
-              {(name) => <option selected={name === harness()}>{name}</option>}
-            </For>
-          </select>
-          {/* Keyed, so choosing another harness starts from its defaults. */}
-          <Show when={catalog()} keyed>
-            {(catalog) => (
-              <SettingsFields harness={catalog} value={defaultSettings(harness(), catalog, ox.state.defaults)} />
-            )}
-          </Show>
-        </div>
+        <Show when={choice()}>
+          {(choice) => (
+            <div class="settings">
+              <ModelPicker harnesses={ox.state.harnesses} value={choice()} onChange={pick} />
+              <Select
+                name="permission_mode"
+                options={ox.state.harnesses[choice().harness]?.permission_modes ?? []}
+                value={choice().permission_mode}
+                onChange={(mode) => setChoice({ ...choice(), permission_mode: mode })}
+              />
+            </div>
+          )}
+        </Show>
       </form>
     </>
   );
@@ -193,19 +210,33 @@ function SettingsForm(props: { session: Session; attempt(request: Promise<unknow
     yield ox.configure(props.session.id, changes);
   });
   const configurable = () => !configuring() && (props.session.state === "idle" || props.session.state === "parked");
+  const change = (requested: Partial<Settings>) => {
+    const from = shown();
+    const changes = Object.fromEntries(
+      Object.entries(requested).filter(([key, value]) => from[key as keyof Settings] !== value),
+    ) as Partial<Settings>;
+    if (Object.keys(changes).length) props.attempt(configure({ ...from, ...changes }, changes));
+  };
 
+  // Once the session starts, the picker offers only its harness's models.
   return (
     <Show when={ox.state.harnesses[props.session.harness]}>
       {(harness) => (
-        <form
-          class="settings"
-          onChange={(event) => {
-            const changes = changedSettings(harness(), shown(), new FormData(event.currentTarget));
-            if (Object.keys(changes).length) props.attempt(configure({ ...shown(), ...changes }, changes));
-          }}
-        >
-          <SettingsFields harness={harness()} value={shown()} disabled={!configurable()} />
-        </form>
+        <div class="settings">
+          <ModelPicker
+            harnesses={{ [props.session.harness]: harness() }}
+            value={{ harness: props.session.harness, model: shown().model, effort: shown().effort }}
+            disabled={!configurable()}
+            onChange={(value) => change({ model: value.model, effort: value.effort })}
+          />
+          <Select
+            name="permission_mode"
+            options={harness().permission_modes}
+            value={shown().permission_mode}
+            disabled={!configurable()}
+            onChange={(mode) => change({ permission_mode: mode })}
+          />
+        </div>
       )}
     </Show>
   );
