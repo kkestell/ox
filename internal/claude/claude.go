@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -25,7 +26,23 @@ const systemInstructions = "Lead with the big idea up front. " +
 	"Use crisp, deadpan, military-efficient delivery. " +
 	"Use dry wit with complete emotional neutrality."
 
+// efforts are the effort levels Claude takes. Given any other, it runs at its
+// default effort with only a warning.
+var efforts = []string{"low", "medium", "high", "xhigh", "max"}
+
+// CheckEffort reports whether Claude takes effort; an empty effort leaves its
+// default.
+func CheckEffort(effort string) error {
+	if effort != "" && !slices.Contains(efforts, effort) {
+		return fmt.Errorf("Claude has no effort level %q", effort)
+	}
+	return nil
+}
+
 func startProcess(workspace, sessionID string, resume bool, settings agent.Settings, events chan<- agent.Event) (*process, *writer, error) {
+	if err := CheckEffort(settings.Effort); err != nil {
+		return nil, nil, err
+	}
 	args := []string{
 		"-p", "--input-format=stream-json", "--output-format=stream-json", "--verbose",
 		"--include-partial-messages", "--permission-prompt-tool=stdio",

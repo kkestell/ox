@@ -2,15 +2,7 @@
 
 | Issue | Frequency in real use | Confirmed |
 | --- | --- | --- |
-| [An unknown effort level is ignored](#an-unknown-effort-level-is-ignored) | Unknown | Live |
 | [A failed configuration can leave settings the page does not show](#a-failed-configuration-can-leave-settings-the-page-does-not-show) | Unknown | Source |
-
-## An unknown effort level is ignored
-
-Claude starts with a misspelled effort from the configuration and runs at
-its [default effort](claude-code.md#initialize-first) without an error. The
-page shows the configured value, so prompts can run at a different effort and
-cost than shown. Confirmed live with the `--effort` launch flag.
 
 ## A failed configuration can leave settings the page does not show
 

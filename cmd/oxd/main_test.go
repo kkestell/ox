@@ -5,6 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/kkestell/ox/internal/agent"
+	"github.com/kkestell/ox/internal/claude"
+	"github.com/kkestell/ox/internal/config"
 )
 
 func TestListenReplacesOnlyAStaleSocket(t *testing.T) {
@@ -38,5 +42,22 @@ func TestListenReplacesOnlyAStaleSocket(t *testing.T) {
 	}
 	if data, err := os.ReadFile(file); err != nil || string(data) != "kept" {
 		t.Fatalf("listen changed the regular file at its path: %q, %v", data, err)
+	}
+}
+
+func TestConfigOffersOnlyClaudesEfforts(t *testing.T) {
+	builtIn, err := config.Load(filepath.Join(t.TempDir(), "none.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	harnesses := map[string]agent.Start{"claude": claude.Start}
+	if err := checkConfig(builtIn, harnesses); err != nil {
+		t.Fatalf("the built-in configuration was refused: %v", err)
+	}
+	misspelled := &config.Config{Harnesses: map[string]config.Harness{"claude": {
+		Models: []config.Model{{ID: "claude-haiku-5-5", Efforts: []config.Option{{ID: "hgih"}}}},
+	}}}
+	if err := checkConfig(misspelled, harnesses); err == nil {
+		t.Error("a Claude effort level Claude does not take was accepted")
 	}
 }

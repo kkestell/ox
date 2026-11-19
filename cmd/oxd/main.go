@@ -37,10 +37,8 @@ func main() {
 		log.Fatal(err)
 	}
 	harnesses := map[string]agent.Start{"claude": claude.Start, "fake": fake.Start}
-	for name := range cfg.Harnesses {
-		if harnesses[name] == nil {
-			log.Fatalf("%s: unknown harness %q", *configPath, name)
-		}
+	if err := checkConfig(cfg, harnesses); err != nil {
+		log.Fatalf("%s: %v", *configPath, err)
 	}
 
 	st, err := store.Open(*dbPath)
@@ -66,6 +64,27 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+// checkConfig refuses a configuration that offers a harness oxd does not
+// have, or a Claude effort level Claude does not take.
+func checkConfig(cfg *config.Config, harnesses map[string]agent.Start) error {
+	for name, harness := range cfg.Harnesses {
+		if harnesses[name] == nil {
+			return fmt.Errorf("unknown harness %q", name)
+		}
+		if name != "claude" {
+			continue
+		}
+		for _, model := range harness.Models {
+			for _, effort := range model.Efforts {
+				if err := claude.CheckEffort(effort.ID); err != nil {
+					return fmt.Errorf("model %q: %w", model.ID, err)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // defaultPath sets an empty path flag to its default.

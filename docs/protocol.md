@@ -79,6 +79,9 @@ Clients offer these choices, and the daemon accepts only these in
 [`session/create`](#sessioncreate) and [`session/configure`](#sessionconfigure).
 It passes them to the harness as they are, so a configured value the harness
 does not accept surfaces as its error, usually on the next `session/send`.
+Claude ignores an effort level it does not know, so the daemon refuses to
+start with one and a session stored with one fails to start; see
+[Claude's effort levels](claude-code.md#initialize-first).
 
 ### `harness/list`
 
