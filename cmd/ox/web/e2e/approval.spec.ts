@@ -65,3 +65,24 @@ test("an ExitPlanMode plan renders as Markdown", async ({ page }) => {
   await tool.locator("summary").click();
   await expect(tool.locator(".plan li").first()).toBeVisible();
 });
+
+test("an AskUserQuestion is answered from its form", async ({ page }) => {
+  await open(page, services);
+  await page.getByRole("button", { name: "New session" }).click();
+  await expect(page.locator("select[name=permission_mode]")).toHaveValue("manual");
+  const approval = page.locator(".approval");
+
+  await prompt(page).fill(
+    'Load and call the AskUserQuestion tool now with one single-select question, "Which color?", with the options Red and Blue. Then reply with just the chosen color.',
+  );
+  await prompt(page).press("Enter");
+  await expect(approval.locator("fieldset")).toBeVisible({ timeout: 120_000 });
+  await approval.getByLabel("Red").check();
+  await approval.getByRole("button", { name: "Submit" }).click();
+  await expect(approval).toHaveCount(0);
+  await expect(send(page)).toBeVisible({ timeout: 120_000 });
+
+  const tool = page.locator("details.tool").filter({ has: page.locator(".name", { hasText: "AskUserQuestion" }) });
+  await tool.locator("summary").click();
+  await expect(tool).toContainText('="Red"');
+});

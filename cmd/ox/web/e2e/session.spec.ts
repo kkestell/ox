@@ -215,7 +215,7 @@ test("a send held in one session leaves another usable", async ({ page }) => {
 });
 
 // The fake harness has no approval tool. Replay the raw event a client receives.
-test("Allow sends the exact numbers displayed in the tool input", async ({ page }) => {
+async function replayApprovals(page: Page) {
   await page.addInitScript(() => {
     const BrowserEventSource = window.EventSource;
     window.EventSource = class extends BrowserEventSource {
@@ -227,13 +227,21 @@ test("Allow sends the exact numbers displayed in the tool input", async ({ page 
       }
     };
   });
+}
+
+async function replay(page: Page, requestId: string, toolName: string, inputJSON: string) {
+  const id = new URL(page.url()).hash.slice(1);
+  const update = `{"method":"session/update","params":{"session_id":"${id}","type":"approval","request_id":"${requestId}","request":{"tool_name":"${toolName}","input":${inputJSON}}}}`;
+  await page.evaluate((detail) => window.dispatchEvent(new CustomEvent("approval-fixture", { detail })), update);
+}
+
+test("Allow sends the exact numbers displayed in the tool input", async ({ page }) => {
+  await replayApprovals(page);
   await open(page, services);
   await newSession(page, "approval fixture");
 
   const input = '{"ids":[9007199254740993],"amount":1.00000000000000001}';
-  const id = new URL(page.url()).hash.slice(1);
-  const update = `{"method":"session/update","params":{"session_id":"${id}","type":"approval","request_id":"req","request":{"tool_name":"Example","input":${input}}}}`;
-  await page.evaluate((detail) => window.dispatchEvent(new CustomEvent("approval-fixture", { detail })), update);
+  await replay(page, "req", "Example", input);
   const card = page.locator(".approval");
   await card.locator("summary").click();
   await expect(card.locator("pre")).toHaveText('{ "ids": [ 9007199254740993 ], "amount": 1.00000000000000001 }');
@@ -241,6 +249,56 @@ test("Allow sends the exact numbers displayed in the tool input", async ({ page 
   const answer = page.waitForRequest((r) => r.postDataJSON()?.method === "session/approve");
   await card.getByRole("button", { name: "Submit" }).click();
   expect((await answer).postData()).toContain(`"updatedInput":${input}`);
+});
+
+test("AskUserQuestion is answered from a form", async ({ page }) => {
+  await replayApprovals(page);
+  await open(page, services);
+  await newSession(page, "question fixture");
+
+  const input =
+    '{"questions":[{"question":"Which color?","header":"Color","options":[{"label":"Red","description":"Warm"},{"label":"Blue","description":"Cool"}],"multiSelect":false},{"question":"Which sections?","header":"Sections","options":[{"label":"Introduction","description":"a"},{"label":"Conclusion","description":"b"},{"label":"Appendix","description":"c"}],"multiSelect":true}]}';
+  await replay(page, "ask", "AskUserQuestion", input);
+  const card = page.locator(".approval");
+  await expect(card.locator("legend")).toHaveText(["ColorWhich color?", "SectionsWhich sections?"]);
+  await expect(card).toContainText("Warm");
+  const submit = card.getByRole("button", { name: "Submit" });
+
+  await card.getByLabel("Red").check();
+  await expect(submit).toBeDisabled();
+  await card.getByLabel("Appendix").check();
+  await card.getByLabel("Introduction").check();
+  await card.getByLabel("Other answer").last().fill("Glossary");
+  await expect(submit).toBeEnabled();
+
+  // Moving between an option and Other leaves one answer to "Which color?".
+  const otherBox = card.getByLabel("Other", { exact: true }).first();
+  const otherField = card.getByLabel("Other answer").first();
+  await otherBox.check();
+  await expect(submit).toBeDisabled();
+  await card.getByLabel("Red").check();
+  await expect(submit).toBeEnabled();
+  await otherField.fill("Green");
+  await otherField.fill("");
+  await expect(submit).toBeDisabled();
+  await otherField.fill("Green");
+  await card.getByLabel("Red").check();
+  await expect(otherBox).not.toBeChecked();
+  await expect(otherField).toHaveValue("Green");
+  await expect(submit).toBeEnabled();
+
+  const decline = page.waitForRequest((r) => r.postDataJSON()?.method === "session/approve");
+  await card.getByRole("button", { name: "Decline" }).click();
+  expect((await decline).postData()).toContain('"response":{"behavior":"deny","message":"User declined to answer"}');
+
+  const answer = page.waitForRequest((r) => r.postDataJSON()?.method === "session/approve");
+  await submit.click();
+  expect((await answer).postData()).toContain(
+    `"updatedInput":${input.slice(0, -1)},"answers":{"Which color?":"Red","Which sections?":"Introduction, Appendix, Glossary"}}`,
+  );
+
+  await replay(page, "bad", "AskUserQuestion", '{"questions":"x"}');
+  await expect(page.locator(".approval").last().getByLabel("Allow")).toBeVisible();
 });
 
 test("a lost creation reply is recovered after leaving the draft", async ({ page }) => {
