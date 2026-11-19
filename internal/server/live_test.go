@@ -146,8 +146,10 @@ func TestLive(t *testing.T) {
 	}
 
 	t.Log("pending schedules keep a session running, even after a failed turn")
+	deniedBash := false
 	denyBash := func(r request) any {
 		if r.ToolName == "Bash" {
+			deniedBash = true
 			return map[string]any{"behavior": "deny", "message": "no", "interrupt": true}
 		}
 		return allow(r)
@@ -157,6 +159,9 @@ func TestLive(t *testing.T) {
 		"Step 2: only after CronCreate succeeds, run the Bash command `touch marker.txt`. Do both steps.", denyBash)
 	if !slices.Contains(tools, "CronCreate") || !slices.Contains(tools, "Bash") {
 		t.Fatalf("Haiku did not call CronCreate and then Bash (%v); run again", tools)
+	}
+	if !deniedBash {
+		t.Fatal("Bash did not ask for approval; no interrupting denial was sent")
 	}
 	completed := create("acceptEdits")
 	tools = turn(completed, "Use the CronCreate tool to create a recurring job with cron '*/30 * * * *' and prompt 'say hi'. "+

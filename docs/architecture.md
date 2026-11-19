@@ -113,7 +113,7 @@ as Server-Sent Events, and `/rpc` posts the page's JSON-RPC requests to the sock
 | `protocol.ts` | Types for the `oxd` methods, updates, and notifications. |
 | `connection.ts` | Opening the event stream, sending requests, matching replies, and reporting stream errors. |
 | `ox.tsx` | A provider that reloads the catalog, workspaces, and sessions on each connection, applies notifications, and exposes RPC calls. |
-| `App.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `SettingsFields.tsx` | The components. |
+| `App.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `ApprovalRequest.tsx`, `SettingsFields.tsx` | The components. |
 
 The page shows stream errors while reconnecting and asks for a reload if the
 browser closes the stream after `ox` refuses it. The settings form sends a

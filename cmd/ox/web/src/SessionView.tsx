@@ -1,13 +1,22 @@
-import { action, createOptimistic, createSignal, For, Match, Show, Switch, snapshot } from "solid-js";
-import { type Approval, type Entry, type Session, useOx } from "./ox";
-import type { ApprovalResponse, Settings } from "./protocol";
+import { action, createOptimistic, createSignal, For, Match, Show, Switch } from "solid-js";
+import { ApprovalRequest } from "./ApprovalRequest";
+import { type Entry, type Session, useOx } from "./ox";
+import type { Settings } from "./protocol";
 import { changedSettings, defaultSettings, SettingsFields, settingsFrom } from "./SettingsFields";
 
 type Tool = Extract<Entry, { kind: "tool" }>;
 
+function sendOnEnter(event: KeyboardEvent & { currentTarget: HTMLTextAreaElement }) {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    event.preventDefault();
+    if (!event.repeat) event.currentTarget.form?.requestSubmit();
+  }
+}
+
 export function SessionView(props: { session: Session }) {
   const ox = useOx();
   const [error, setError] = createSignal<string>();
+  const [sending, setSending] = createSignal(false);
   const attempt = (request: Promise<unknown>) => {
     setError(undefined);
     return request.catch((e: Error) => {
@@ -15,12 +24,15 @@ export function SessionView(props: { session: Session }) {
     });
   };
   const workspace = () => ox.state.workspaces.find((w) => w.id === props.session.workspaceId)?.path;
+  const canSend = () => !sending() && (props.session.state === "idle" || props.session.state === "parked");
 
   const send = (event: SubmitEvent & { currentTarget: HTMLFormElement }) => {
     event.preventDefault();
+    if (!canSend()) return;
     const form = event.currentTarget;
     const text = String(new FormData(form).get("text"));
-    attempt(ox.send(props.session.id, text).then(() => form.reset()));
+    setSending(true);
+    attempt(ox.send(props.session.id, text).then(() => form.reset())).finally(() => setSending(false));
   };
 
   return (
@@ -42,8 +54,8 @@ export function SessionView(props: { session: Session }) {
       <Show when={error()}>{(error) => <p role="alert">{error()}</p>}</Show>
       <div class="composer">
         <form class="box" onSubmit={send}>
-          <textarea name="text" rows="1" placeholder="Prompt" required />
-          <button type="submit" class="icon send" aria-label="Send" title="Send" />
+          <textarea name="text" rows="1" placeholder="Prompt" required onKeyDown={sendOnEnter} />
+          <button type="submit" class="icon send" aria-label="Send" title="Send" disabled={!canSend()} />
         </form>
         <SettingsForm session={props.session} attempt={attempt} />
       </div>
@@ -54,12 +66,15 @@ export function SessionView(props: { session: Session }) {
 export function NewSessionView(props: { workspaceId: string; onStarted(id: string): void }) {
   const ox = useOx();
   const [error, setError] = createSignal<string>();
+  const [sending, setSending] = createSignal(false);
   const workspace = () => ox.state.workspaces.find((w) => w.id === props.workspaceId)?.path;
   const [harness, setHarness] = createSignal(() => ox.state.defaults?.harness ?? "");
   const catalog = () => ox.state.harnesses[harness()];
 
   const send = async (event: SubmitEvent & { currentTarget: HTMLFormElement }) => {
     event.preventDefault();
+    if (sending()) return;
+    setSending(true);
     setError(undefined);
     const form = new FormData(event.currentTarget);
     try {
@@ -67,6 +82,8 @@ export function NewSessionView(props: { workspaceId: string; onStarted(id: strin
       props.onStarted(await ox.startSession(props.workspaceId, harness(), settings, String(form.get("text"))));
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      setSending(false);
     }
   };
 
@@ -77,8 +94,8 @@ export function NewSessionView(props: { workspaceId: string; onStarted(id: strin
       <Show when={error()}>{(error) => <p role="alert">{error()}</p>}</Show>
       <form class="composer" onSubmit={send}>
         <div class="box">
-          <textarea name="text" rows="1" placeholder="Prompt" required autofocus />
-          <button type="submit" class="icon send" aria-label="Send" title="Send" />
+          <textarea name="text" rows="1" placeholder="Prompt" required autofocus onKeyDown={sendOnEnter} />
+          <button type="submit" class="icon send" aria-label="Send" title="Send" disabled={sending()} />
         </div>
         <div class="settings">
           <select name="harness" onChange={(event) => setHarness(event.currentTarget.value)}>
@@ -110,9 +127,7 @@ function Transcript(props: { entries: Entry[] }) {
           <Match when={entry.kind === "result" && entry.result.is_error && entry}>
             {(result) => <div class="error">{result().result.text}</div>}
           </Match>
-          <Match when={entry.kind === "exited" && entry}>
-            {(exited) => <div class="error">Claude exited: {exited().error}</div>}
-          </Match>
+          <Match when={entry.kind === "exited" && entry}>{(exited) => <div class="error">{exited().error}</div>}</Match>
         </Switch>
       )}
     </For>
@@ -136,25 +151,6 @@ function ToolCall(props: { tool: Tool }) {
         <Show when={props.tool.result}>{(result) => <pre>{result().text}</pre>}</Show>
       </div>
     </details>
-  );
-}
-
-function ApprovalRequest(props: { approval: Approval; onAnswer(response: ApprovalResponse): void }) {
-  return (
-    <fieldset>
-      <legend>{props.approval.request.tool_name}</legend>
-      <pre>{JSON.stringify(props.approval.request.input, null, 2)}</pre>
-      <button
-        type="button"
-        class="primary"
-        onClick={() => props.onAnswer({ behavior: "allow", updatedInput: snapshot(props.approval.request.input) })}
-      >
-        Allow
-      </button>
-      <button type="button" onClick={() => props.onAnswer({ behavior: "deny", message: "Denied by user" })}>
-        Deny
-      </button>
-    </fieldset>
   );
 }
 

@@ -17,7 +17,7 @@ export type ApprovalRequest = { tool_name: string; input: Record<string, unknown
 
 export type ApprovalResponse =
   | { behavior: "allow"; updatedInput: Record<string, unknown> }
-  | { behavior: "deny"; message: string };
+  | { behavior: "deny"; message: string; interrupt?: boolean };
 
 export type Update = { time: string } & (
   | { type: "prompt"; text: string }

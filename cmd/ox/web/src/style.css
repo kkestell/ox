@@ -3,9 +3,8 @@
 * { margin: 0; padding: 0; }
 html, body { height: 100%; }
 body { -webkit-font-smoothing: antialiased; }
-img, picture, video, canvas, svg { display: block; max-width: 100%; }
 input, button, textarea, select { font: inherit; color: inherit; }
-p, h1, h2, h3, h4, h5, h6 { overflow-wrap: break-word; }
+p { overflow-wrap: break-word; }
 ul, ol { list-style: none; }
 
 /* The neutral palette of shadcn/ui. */
@@ -129,6 +128,8 @@ main > [role="alert"] { padding: 0.5rem 1rem; font-size: 0.75rem; }
 fieldset { padding: 1rem; border: 1px solid var(--border); border-radius: 1rem; background: var(--card); display: flex; flex-wrap: wrap; gap: 0.5rem; }
 legend { float: left; width: 100%; font-weight: 500; color: var(--foreground); }
 fieldset pre { width: 100%; margin-bottom: 0.25rem; padding: 0.5rem 0.75rem; border-radius: var(--radius-md); background: var(--secondary); overflow-x: auto; white-space: pre-wrap; font-family: var(--font-mono); font-size: 0.75rem; }
+fieldset .plan { width: 100%; white-space: pre-wrap; overflow-wrap: break-word; }
+fieldset .denial-message { display: flex; flex-direction: column; gap: 0.25rem; width: 100%; font-size: 0.75rem; }
 fieldset button:not(.primary) { border-color: transparent; background: var(--secondary); color: var(--secondary-foreground); box-shadow: none; }
 fieldset button:not(.primary):hover { background: color-mix(in oklab, var(--secondary) 80%, transparent); }
 

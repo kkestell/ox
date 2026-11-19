@@ -22,7 +22,7 @@ Ordered by priority.
   (`docs/claude-code.md` §2, "Interrupt" in §4), plus a Stop button that
   replaces Send while the session is running. Today a turn that asks for no
   approval can be stopped only by deleting the session.
-- [ ] **Composer follows session state.** Disable Send while the session is
+- [x] **Composer follows session state.** Disable Send while the session is
   `running` or `requires_action`, so it stops returning "Session is busy".
   Enter sends and Shift+Enter adds a newline, in both `SessionView` and
   `NewSessionView`.
@@ -42,14 +42,14 @@ Ordered by priority.
 - [ ] **Answer `AskUserQuestion`.** Show the questions and options as a form
   and allow with `updatedInput` holding the original input plus `answers`
   (`docs/claude-code.md` §5). Today Allow echoes the input with no answers.
-- [ ] **Deny with a message and stop.** Let the user type a deny `message`,
+- [x] **Deny with a message and stop.** Let the user type a deny `message`,
   and offer deny with `interrupt: true`.
 - [ ] **Allow always.** Offer it when `permission_suggestions` is non-empty
   and `suppress_always_allow_rule` is false, sending the suggestions as
   `updatedPermissions`. The suggestions usually target `localSettings`, which
   writes `.claude/settings.local.json` in the workspace; decide whether that is
   acceptable before building it.
-- [ ] **Show `ExitPlanMode` as its plan**, not raw JSON.
+- [x] **Show `ExitPlanMode` as its plan**, not raw JSON.
 
 ## Sessions and workspaces
 
@@ -57,7 +57,7 @@ Ordered by priority.
   exists. Decide what happens to its sessions (destroy them, or refuse while
   any exist).
 - [ ] **Keep the selected session in the URL**, so a reload keeps it.
-- [ ] **Exit errors read "Claude exited: Claude exited: …"** (audit F10). The
+- [x] **Exit errors read "Claude exited: Claude exited: …"** (audit F10). The
   stored error already has the prefix; drop the one the UI adds
   (`SessionView.tsx`, `Transcript`).
 - [ ] **Startup failures lose Claude's reason** (`docs/known-issues.md`).
@@ -72,7 +72,7 @@ Ordered by priority.
 - [ ] F6, F8, F9: still present, and none has an entry in
   `docs/known-issues.md`. F8 holds: `make test` runs `lint`, not `web`, so
   `cmd/ox` fails setup without `web/dist`.
-- [ ] F7: the live failed-turn check passes without confirming the
+- [x] F7: the live failed-turn check passes without confirming the
   interrupting deny was sent. Fail unless `denyBash` denied Bash.
 - [ ] F11: `docs/architecture.md:10` (server imports `config`), `:61`
   (`Server.mu` also guards `closed`), `:100-101` (exit ends `queued` and
@@ -80,6 +80,6 @@ Ordered by priority.
   marks `effort` required at creation though it may be omitted;
   `docs/claude-code.md:3` gives 2.1.326 as the latest version observed while
   later lines cite 2.1.327.
-- [ ] F12: the `img, picture, …` and heading selectors in `style.css` match
+- [x] F12: the `img, picture, …` and heading selectors in `style.css` match
   nothing. The `details.error` part no longer applies: tool calls use
   `.marker` now.
