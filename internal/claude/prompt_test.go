@@ -82,6 +82,11 @@ func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var wire map[string]any
+	if err := json.Unmarshal(input.Bytes(), &wire); err != nil || wire["uuid"] != id || wire["priority"] != "next" {
+		t.Fatalf("prompt not written for steering under its ID: %s", input)
+	}
+
 	if len(*updates) != 2 || (*updates)[0].Type != "prompt" || (*updates)[0].Text != "hello" || (*updates)[0].MessageID != id ||
 		(*updates)[1].State != "running" || (*updates)[1].MessageID != id || a.Snapshot().State != "running" {
 		t.Fatalf("a written prompt was not published as running: %+v", *updates)

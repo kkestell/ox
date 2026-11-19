@@ -268,7 +268,7 @@ func (in *writer) write(message any) error {
 // messages once it takes the prompt into its conversation.
 func (in *writer) Prompt(uuid, text string) error {
 	return in.write(map[string]any{
-		"type": "user", "uuid": uuid, "session_id": "",
+		"type": "user", "uuid": uuid, "session_id": "", "priority": "next",
 		"message": map[string]string{"role": "user", "content": text},
 	})
 }
