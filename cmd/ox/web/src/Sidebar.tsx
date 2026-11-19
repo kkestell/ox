@@ -1,14 +1,17 @@
 import { createSignal, For, Show } from "solid-js";
 import type { Selection } from "./App";
-import { createAttempt, type Session, useOx } from "./ox";
+import { createAttempt, type Session, useOx, type Workspace } from "./ox";
 
 export function Sidebar(props: { selected?: Selection; onSelect(selection: Selection): void }) {
   const ox = useOx();
   const [addError, attemptAdd, clearAddError] = createAttempt();
   const [deleteError, attemptDelete, clearDeleteError] = createAttempt();
+  const [removeError, attemptRemove, clearRemoveError] = createAttempt();
   const [deleting, setDeleting] = createSignal<Session>();
+  const [removing, setRemoving] = createSignal<Workspace>();
   let addDialog!: HTMLDialogElement;
   let deleteDialog!: HTMLDialogElement;
+  let removeDialog!: HTMLDialogElement;
 
   const add = (event: SubmitEvent & { currentTarget: HTMLFormElement }) => {
     event.preventDefault();
@@ -38,6 +41,18 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
     event.preventDefault();
     const session = deleting();
     if (session) attemptDelete(ox.destroy(session.id).then(() => deleteDialog.close()));
+  };
+
+  const confirmRemove = (workspace: Workspace) => {
+    clearRemoveError();
+    setRemoving(workspace);
+    removeDialog.showModal();
+  };
+
+  const remove = (event: SubmitEvent) => {
+    event.preventDefault();
+    const workspace = removing();
+    if (workspace) attemptRemove(ox.removeWorkspace(workspace.id).then(() => removeDialog.close()));
   };
 
   return (
@@ -77,11 +92,35 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
         </form>
         <Show when={deleteError()}>{(error) => <p role="alert">{error()}</p>}</Show>
       </dialog>
+      <dialog ref={removeDialog} role="alertdialog">
+        <form onSubmit={remove}>
+          <h2>Remove workspace?</h2>
+          <Show when={removing()}>
+            {(workspace) => (
+              <p class="description">This removes "{workspace().path}" from Ox. The directory stays on disk.</p>
+            )}
+          </Show>
+          <button type="button" onClick={() => removeDialog.close()}>
+            Cancel
+          </button>
+          <button type="submit">Remove</button>
+        </form>
+        <Show when={removeError()}>{(error) => <p role="alert">{error()}</p>}</Show>
+      </dialog>
       <For each={ox.state.workspaces}>
         {(workspace) => (
           <>
             <p title={workspace.path}>
               <span class="name">{workspace.path.split("/").at(-1) || workspace.path}</span>
+              <Show when={sessionsOf(workspace.id).length === 0}>
+                <button
+                  type="button"
+                  class="icon trash"
+                  aria-label="Remove workspace"
+                  title="Remove workspace"
+                  onClick={() => confirmRemove(workspace)}
+                />
+              </Show>
               <button
                 type="button"
                 class="icon plus"

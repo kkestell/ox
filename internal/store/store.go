@@ -149,6 +149,11 @@ func (s *Store) SaveSession(r *Session) error {
 	return err
 }
 
+func (s *Store) DeleteWorkspace(id string) error {
+	_, err := s.db.Exec(`DELETE FROM workspaces WHERE id = ?`, id)
+	return err
+}
+
 func (s *Store) DeleteSession(id string) error {
 	_, err := s.db.Exec(`DELETE FROM sessions WHERE id = ?`, id)
 	return err

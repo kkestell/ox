@@ -21,8 +21,9 @@ contract that defines its details. Reviews check changes against them.
    session's creation is pending, and unsent text in a session the user
    leaves, survive navigation and reconnects. Reloading or closing the page
    discards unsent text, and a new session's text before it is submitted
-   belongs to its workspace draft. A lost creation reply keeps the same
-   session ID and draft text for manual submission.
+   belongs to its workspace draft, which goes when the workspace is removed.
+   A lost creation reply keeps the same session ID and draft text for manual
+   submission.
 
 3. **Only the user sends prompts.** A prompt is sent once, when the user
    submits it. Showing a view again, reconnecting, and reloading send

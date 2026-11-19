@@ -45,6 +45,8 @@ func (s *Server) handle(reply replyFunc, line []byte) {
 		s.createWorkspace(reply, id, params)
 	case "workspace/list":
 		s.listWorkspaces(reply, id)
+	case "workspace/remove":
+		s.removeWorkspace(reply, id, params)
 	case "harness/list":
 		reply(jsonrpc.Success(id, s.config))
 	case "session/create":
@@ -169,6 +171,41 @@ func (s *Server) listWorkspaces(reply replyFunc, id json.RawMessage) {
 	reply(jsonrpc.Success(id, struct {
 		Workspaces []workspaceInfo `json:"workspaces"`
 	}{workspaces}))
+}
+
+func (s *Server) removeWorkspace(reply replyFunc, id, params json.RawMessage) {
+	var input struct {
+		WorkspaceID string `json:"workspace_id"`
+	}
+	if err := json.Unmarshal(params, &input); err != nil || input.WorkspaceID == "" {
+		reply(invalidParams(id, "workspace_id is required"))
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		reply(shuttingDown(id))
+		return
+	}
+	w := s.workspace(input.WorkspaceID)
+	switch {
+	case w == nil:
+		reply(jsonrpc.Failure(id, notFound, "workspace not found"))
+		return
+	case len(w.sessions) > 0:
+		reply(jsonrpc.Failure(id, operationFailed, "workspace has sessions"))
+		return
+	}
+	if err := s.store.DeleteWorkspace(w.id); err != nil {
+		reply(failure(id, err))
+		return
+	}
+	s.workspaces = slices.DeleteFunc(s.workspaces, func(other *workspace) bool { return other == w })
+	s.broadcast("workspace/removed", struct {
+		WorkspaceID string `json:"workspace_id"`
+	}{w.id})
+	reply(jsonrpc.Success(id, struct{}{}))
 }
 
 func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {

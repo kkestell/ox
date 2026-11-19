@@ -117,7 +117,8 @@ func TestSessionLifecycle(t *testing.T) {
 		Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}}},
 		PermissionModes: []config.Option{{ID: "plan"}},
 	}}}
-	s, err := New(openStore(t), cfg, 300*time.Millisecond, map[string]agent.Start{"fake": fake.Start})
+	st := openStore(t)
+	s, err := New(st, cfg, 300*time.Millisecond, map[string]agent.Start{"fake": fake.Start})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,11 +189,54 @@ func TestSessionLifecycle(t *testing.T) {
 		t.Fatalf("unexpected parked session: %+v", parked)
 	}
 
+	listed := func(c *client) int {
+		var list struct {
+			Workspaces []json.RawMessage `json:"workspaces"`
+		}
+		json.Unmarshal(c.call("workspace/list", struct{}{}), &list)
+		return len(list.Workspaces)
+	}
 	c.call("session/send", map[string]string{"session_id": id, "text": "resumed"})
+	if refused := c.request("workspace/remove", map[string]string{"workspace_id": workspace.WorkspaceID}); refused.Error == nil || refused.Error.Code != operationFailed || refused.Error.Message != "workspace has sessions" {
+		t.Fatalf("a workspace with a session was removed: %+v", refused.Error)
+	}
+	if n := listed(c); n != 1 {
+		t.Fatalf("a refused removal changed the workspace list: %d", n)
+	}
 	c.call("session/destroy", map[string]string{"session_id": id})
 	c.next(func(m message) bool { return m.Method == "session/destroyed" })
 	if gone := c.request("session/get", map[string]string{"session_id": id}); gone.Error == nil || gone.Error.Code != notFound {
 		t.Fatalf("a destroyed session answered: %+v", gone)
+	}
+
+	if err := c.request("workspace/remove", map[string]string{"workspace_id": ""}).Error; err == nil || err.Code != jsonrpc.InvalidParams {
+		t.Fatalf("removing without a workspace ID: %+v", err)
+	}
+	c.call("workspace/remove", map[string]string{"workspace_id": workspace.WorkspaceID})
+	removed := c.next(func(m message) bool { return m.Method == "workspace/removed" })
+	if !strings.Contains(string(removed.Params), workspace.WorkspaceID) {
+		t.Fatalf("workspace/removed names another workspace: %s", removed.Params)
+	}
+	if n := listed(c); n != 0 {
+		t.Fatalf("a removed workspace is still listed: %d", n)
+	}
+	if again := c.request("workspace/remove", map[string]string{"workspace_id": workspace.WorkspaceID}); again.Error == nil || again.Error.Code != notFound {
+		t.Fatalf("a removed workspace was removed again: %+v", again.Error)
+	}
+	if late := c.request("session/create", map[string]string{
+		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "effort": "low", "permission_mode": "plan",
+	}); late.Error == nil || late.Error.Code != notFound {
+		t.Fatalf("a session was created in a removed workspace: %+v", late.Error)
+	}
+
+	// The removal is stored: a daemon over the same store loads no workspace.
+	restarted, err := New(st, cfg, 0, map[string]agent.Start{"fake": fake.Start})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restarted.Close)
+	if n := listed(connect(t, restarted)); n != 0 {
+		t.Fatalf("a removed workspace came back after a restart: %d", n)
 	}
 }
 

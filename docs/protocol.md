@@ -129,6 +129,21 @@ settings and state come from `session/get`.
 {"jsonrpc":"2.0","id":2,"result":{"workspaces":[{"workspace_id":"workspace-id","path":"/Users/kyle/src/ox","created_at":"2026-11-18T19:53:47.102Z","sessions":[{"session_id":"session-id","harness":"claude","created_at":"2026-11-18T19:53:48.416Z"}]}]}}
 ```
 
+### `workspace/remove`
+
+Requires `workspace_id`. Deletes the workspace from the daemon and tells every
+connection with `workspace/removed`. The workspace's directory is untouched.
+A workspace that has sessions is refused with `workspace has sessions`; destroy
+its sessions first.
+
+```json
+{"jsonrpc":"2.0","id":3,"method":"workspace/remove","params":{"workspace_id":"workspace-id"}}
+```
+
+```json
+{"jsonrpc":"2.0","id":3,"result":{}}
+```
+
 ## Session methods
 
 ### `session/create`
@@ -381,6 +396,7 @@ Every connection is told when workspaces and sessions come and go:
 | Method | `params` | Meaning |
 | --- | --- | --- |
 | `workspace/created` | `workspace_id`, `path`, `created_at` | A workspace was registered. |
+| `workspace/removed` | `workspace_id` | A workspace was removed. |
 | `session/created` | `session_id`, `workspace_id`, `harness`, `created_at` | A session was created, parked. |
 | `session/configured` | `session_id`, `model`, `effort`, `permission_mode` | A session's settings changed, by `session/configure` or by the harness itself, such as Claude leaving plan mode; the fields are the settings the session now uses. |
 | `session/destroyed` | `session_id` | A session was destroyed, after its last update. |

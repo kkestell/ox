@@ -9,9 +9,3 @@ Gaps in features Ox already supports, ordered by priority.
   `updatedPermissions`. The suggestions usually target `localSettings`, which
   writes `.claude/settings.local.json` in the workspace; decide whether that is
   acceptable before building it.
-
-## Sessions and workspaces
-
-- [ ] **Remove a workspace.** Needs a new method and a store delete; neither
-  exists. Decide what happens to its sessions (destroy them, or refuse while
-  any exist).

@@ -365,6 +365,10 @@ function createOx() {
         return setState((s) => {
           s.workspaces.push({ id: params.workspace_id, path: params.path });
         });
+      case "workspace/removed":
+        return setState((s) => {
+          s.workspaces = s.workspaces.filter((w) => w.id !== params.workspace_id);
+        });
       case "session/created":
         return void load(params.session_id, params.workspace_id, params.harness, params.created_at).catch(fail);
       case "session/configured":
@@ -404,6 +408,7 @@ function createOx() {
     error,
     ready,
     addWorkspace: (path: string) => connection.rpc("workspace/create", { path }),
+    removeWorkspace: (id: string) => connection.rpc("workspace/remove", { workspace_id: id }),
     control,
     destroy: (id: string) => connection.rpc("session/destroy", { session_id: id }),
   };

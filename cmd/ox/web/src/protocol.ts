@@ -36,6 +36,7 @@ export type Update = { time: string } & (
 export type Notification =
   | { method: "session/update"; params: Update & { session_id: string } }
   | { method: "workspace/created"; params: { workspace_id: string; path: string; created_at: string } }
+  | { method: "workspace/removed"; params: { workspace_id: string } }
   | {
       method: "session/created";
       params: { session_id: string; workspace_id: string; harness: string; created_at: string };
@@ -59,6 +60,7 @@ export type Methods = {
       }[];
     },
   ];
+  "workspace/remove": [{ workspace_id: string }, Empty];
   "session/create": [
     Settings & { session_id?: string; workspace_id: string; harness: string },
     { session_id: string; existing?: boolean },

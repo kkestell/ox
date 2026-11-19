@@ -44,9 +44,11 @@ function Layout() {
     const session = ox.state.sessions[s.id];
     return session?.id === s.id ? session : undefined;
   };
+  // A removed workspace's draft goes with it.
+  const liveDrafts = () => drafts().filter((d) => ox.state.workspaces.some((w) => w.id === d.workspaceId));
   const draft = () => {
     const s = selected();
-    return s?.kind === "draft" ? drafts().find((d) => d.workspaceId === s.workspaceId) : undefined;
+    return s?.kind === "draft" ? liveDrafts().find((d) => d.workspaceId === s.workspaceId) : undefined;
   };
 
   const finish = (created: Draft) => {
@@ -58,7 +60,7 @@ function Layout() {
   // notification or reconnect snapshot. Reattach the draft without sending.
   createEffect(
     () =>
-      drafts().find(
+      liveDrafts().find(
         (d) => d.control.error() && ox.state.sessions[d.id]?.synced && (d === draft() || session()?.id === d.id),
       ),
     (recovered) => {
@@ -74,7 +76,7 @@ function Layout() {
       <Sidebar selected={selected()} onSelect={select} />
       <main>
         <Show when={ox.error()}>{(error) => <p role="alert">{error()}</p>}</Show>
-        <For each={drafts().filter((d) => d.control.error() && d !== draft())}>
+        <For each={liveDrafts().filter((d) => d.control.error() && d !== draft())}>
           {(failed) => (
             <p role="alert">
               {failed.control.error()}{" "}
