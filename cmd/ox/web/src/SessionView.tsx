@@ -1,6 +1,7 @@
 import { For, Match, onSettled, Show, Switch } from "solid-js";
 import { ApprovalRequest } from "./ApprovalRequest";
-import { type Entry, type Session, type SessionControl, toolInputJSON, toolSubject, useOx } from "./ox";
+import { Markdown } from "./Markdown";
+import { type Entry, planOf, type Session, type SessionControl, toolInputJSON, toolSubject, useOx } from "./ox";
 import type { Settings } from "./protocol";
 import { ModelPicker, Select } from "./SettingsFields";
 
@@ -113,7 +114,9 @@ function Transcript(props: { entries: Entry[] }) {
       {(entry) => (
         <Switch>
           <Match when={entry.kind === "prompt" && entry}>{(prompt) => <div class="prompt">{prompt().text}</div>}</Match>
-          <Match when={entry.kind === "reply" && entry}>{(reply) => <div class="reply">{reply().text}</div>}</Match>
+          <Match when={entry.kind === "reply" && entry}>
+            {(reply) => <Markdown class="reply" text={reply().text} />}
+          </Match>
           <Match when={entry.kind === "tool" && entry}>{(tool) => <ToolCall tool={tool()} />}</Match>
           {/* A successful result repeats the reply, so only a failed turn shows its result. */}
           <Match when={entry.kind === "result" && entry.result.is_error && entry}>
@@ -139,6 +142,9 @@ function ToolCall(props: { tool: Tool }) {
         <span class="name">{props.tool.name}</span> <span class="detail">{detail()}</span>
       </summary>
       <div class="card">
+        <Show when={planOf(props.tool.name, props.tool.input)}>
+          {(plan) => <Markdown class="plan" text={plan()} />}
+        </Show>
         <pre>{toolInputJSON(props.tool.input)}</pre>
         <Show when={props.tool.result}>{(result) => <pre>{result().text}</pre>}</Show>
       </div>

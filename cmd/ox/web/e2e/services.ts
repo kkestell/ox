@@ -28,6 +28,7 @@ const claude = {
   permission_modes: [
     { id: "manual", name: "Manual" },
     { id: "acceptEdits", name: "Accept edits" },
+    { id: "plan", name: "Plan" },
   ],
 };
 

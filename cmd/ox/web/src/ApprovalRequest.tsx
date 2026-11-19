@@ -1,5 +1,6 @@
-import { createSignal, createUniqueId, snapshot } from "solid-js";
-import { type Approval, toolInputJSON, toolSubject } from "./ox";
+import { createSignal, createUniqueId, Show, snapshot } from "solid-js";
+import { Markdown } from "./Markdown";
+import { type Approval, planOf, toolInputJSON, toolSubject } from "./ox";
 import type { ApprovalResponse } from "./protocol";
 
 type Choice = "allow" | "deny" | "other";
@@ -13,6 +14,7 @@ export function ApprovalRequest(props: { approval: Approval; onAnswer(response: 
   const [reply, setReply] = createSignal("");
   const [sending, setSending] = createSignal(false);
   let field!: HTMLInputElement;
+  const plan = () => planOf(props.approval.request.tool_name, props.approval.request.input);
   const ready = () => choice() === "allow" || choice() === "deny" || (choice() === "other" && !!reply().trim());
 
   const pick = (picked: Choice) => {
@@ -45,10 +47,11 @@ export function ApprovalRequest(props: { approval: Approval; onAnswer(response: 
   return (
     <div class="approval">
       <p>Allow {props.approval.request.tool_name}?</p>
+      <Show when={plan()}>{(text) => <Markdown class="plan" text={text()} />}</Show>
       {/* The subject summarizes the input; expanding shows all of it. */}
       <details class="input">
         <summary>
-          <span class="subject">{toolSubject(props.approval.request.input) || "Input"}</span>
+          <span class="subject">{plan() ? "Input" : toolSubject(props.approval.request.input) || "Input"}</span>
           <span class="icon chevron-down" />
         </summary>
         <pre>{toolInputJSON(props.approval.request.input)}</pre>

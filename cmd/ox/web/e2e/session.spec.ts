@@ -41,6 +41,44 @@ test("the first send hands its text and later edits to the new session", async (
   await expect(prompt(page)).toHaveValue("first prompt and more again");
 });
 
+test("a reply renders as Markdown and its prompt stays plain", async ({ page }) => {
+  await open(page, services);
+  await page.getByRole("button", { name: "New session" }).click();
+  const text = [
+    "**bold** `code` <b>raw</b> [site](https://example.com) [bad](javascript:alert(1)) ![pic](https://example.com/p.png) https://example.org",
+    "",
+    "- one",
+    "- two",
+  ].join("\n");
+  await prompt(page).fill(text);
+  await prompt(page).press("Enter");
+  await expect(send(page)).toBeVisible();
+  const reply = page.locator(".reply");
+  await expect(reply.locator("strong")).toHaveText("bold");
+  await expect(reply.locator("code")).toHaveText("code");
+  await expect(reply.locator("li")).toHaveText(["one", "two"]);
+  await expect(reply.locator("b")).toHaveCount(0);
+  await expect(reply).toContainText("<b>raw</b>");
+  await expect(reply.locator("img")).toHaveCount(0);
+  await expect(reply.getByRole("link", { name: "pic", exact: true })).toHaveAttribute(
+    "href",
+    "https://example.com/p.png",
+  );
+  const site = reply.getByRole("link", { name: "site", exact: true });
+  await expect(site).toHaveAttribute("href", "https://example.com");
+  await expect(site).toHaveAttribute("target", "_blank");
+  await expect(site).toHaveAttribute("rel", "noopener noreferrer");
+  await expect(reply.locator("a[href^='javascript:']")).toHaveCount(0);
+  await expect(reply).toContainText("[bad](javascript:alert(1))");
+  await expect(reply.getByRole("link", { name: "https://example.org" })).toHaveAttribute(
+    "href",
+    /^https:\/\/example\.org\/?$/,
+  );
+  await expect(page.locator(".prompt")).toContainText("**bold**");
+  await expect(page.locator(".prompt")).toContainText("<b>raw</b>");
+  await expect(page.locator(".prompt strong")).toHaveCount(0);
+});
+
 test("a failed first send is retried in the session with its settings", async ({ page }) => {
   await open(page, services);
   await page.getByRole("button", { name: "New session" }).click();

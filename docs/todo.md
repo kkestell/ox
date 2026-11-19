@@ -2,11 +2,6 @@
 
 Gaps in features Ox already supports, ordered by priority.
 
-## Prompting
-
-- [ ] **Render replies as Markdown.** Replies and the `ExitPlanMode` plan show
-  as plain text.
-
 ## Approvals
 
 - [ ] **Answer `AskUserQuestion`.** Show the questions and options as a form

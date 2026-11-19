@@ -43,3 +43,25 @@ test("an approval is answered from its card", async ({ page }) => {
   await expect(send(page)).toBeVisible({ timeout: 120_000 });
   expect(existsSync(join(services.workspace, "denied.txt"))).toBe(false);
 });
+
+test("an ExitPlanMode plan renders as Markdown", async ({ page }) => {
+  await open(page, services);
+  await page.getByRole("button", { name: "New session" }).click();
+  await page.locator("select[name=permission_mode]").selectOption("plan");
+  const approval = page.locator(".approval");
+
+  await prompt(page).fill(
+    "Load and call the ExitPlanMode tool now with this plan, as a Markdown list of exactly two items: first step, second step.",
+  );
+  await prompt(page).press("Enter");
+  await expect(approval.locator(".plan li").nth(1)).toBeVisible({ timeout: 120_000 });
+  await expect(approval.locator("summary .subject")).toHaveText("Input");
+  await approval.getByLabel("Deny").check();
+  await approval.getByRole("button", { name: "Submit" }).click();
+  await expect(approval).toHaveCount(0);
+  await expect(send(page)).toBeVisible({ timeout: 120_000 });
+
+  const tool = page.locator("details.tool").filter({ has: page.locator(".name", { hasText: "ExitPlanMode" }) });
+  await tool.locator("summary").click();
+  await expect(tool.locator(".plan li").first()).toBeVisible();
+});

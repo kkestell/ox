@@ -128,7 +128,7 @@ origin, so a page whose domain rebinds to the relay's address cannot reach `oxd`
 | `protocol.ts` | Types for the `oxd` methods, updates, and notifications. |
 | `connection.ts` | Opening the event stream, sending requests, matching replies, and reporting stream errors. |
 | `ox.tsx` | A provider that reloads the catalog, workspaces, and sessions on each connection, updating loaded sessions in place so their views keep their state, applies notifications, and exposes RPC calls; each session's control; `createAttempt`, which shows a request's error. |
-| `App.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `NewSessionView.tsx`, `ApprovalRequest.tsx`, `SettingsFields.tsx`, `HarnessIcon.tsx` | The components. |
+| `App.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `NewSessionView.tsx`, `ApprovalRequest.tsx`, `SettingsFields.tsx`, `HarnessIcon.tsx`, `Markdown.tsx` | The components. |
 
 The page shows stream errors while reconnecting and asks for a reload if the
 browser closes the stream after `ox` refuses it.

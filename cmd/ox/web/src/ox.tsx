@@ -43,6 +43,10 @@ export type Approval = { id: string; request: ApprovalRequest };
 export const toolSubject = (input: Record<string, unknown>) =>
   Object.values(input).find((v): v is string => typeof v === "string") ?? "";
 
+// planOf is the plan of an ExitPlanMode call, which is Markdown.
+export const planOf = (tool: string, input: Record<string, unknown>) =>
+  tool === "ExitPlanMode" && typeof input.plan === "string" ? input.plan : undefined;
+
 // Raw JSON numbers must reach the serializer outside the store's proxy.
 export const toolInputJSON = (input: Record<string, unknown>) => stringify(snapshot(input), null, 2);
 
