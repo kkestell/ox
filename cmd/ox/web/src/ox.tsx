@@ -99,28 +99,69 @@ function apply(session: Session, u: Update) {
   }
 }
 
-// createAttempt runs requests and holds the error of the latest one until the
-// next starts or clear runs. The promise attempt returns settles once the
-// request has.
+// createAttempt runs requests and holds an error until the next request
+// starts or clear runs. A request that fails shows its error even after a
+// later one has started. The promise attempt returns settles once the request
+// has.
 export function createAttempt() {
   const [error, setError] = createSignal<string>();
-  let latest = 0;
-  const clear = () => {
-    latest++;
-    setError(undefined);
-  };
+  const clear = () => setError(undefined);
   const attempt = (request: Promise<unknown>) => {
     clear();
-    const current = latest;
     return request.then(
       () => {},
-      (e: Error) => {
-        if (current === latest) setError(e.message);
-      },
+      (e: Error) => setError(e.message),
     );
   };
   return [error, attempt, clear] as const;
 }
+
+// SessionControl is the page's side of one session: its composer text and the
+// requests the page has in flight for it, with their errors. It outlives the
+// session's view, so leaving the view, or reconnecting, keeps the text and
+// repeats no request. A send and a configuration exclude each other, so a
+// prompt runs with the settings the page shows.
+function createSessionControl(id: string, rpc: Connection["rpc"], stored: () => Settings | undefined) {
+  const [text, setText] = createSignal("");
+  const [sending, setSending] = createSignal(false);
+  const [requested, setRequested] = createSignal<Settings>();
+  const [error, attempt] = createAttempt();
+  const busy = () => sending() || requested() !== undefined;
+  return {
+    text,
+    setText,
+    error,
+    sending,
+    busy,
+    // requested is the settings a configuration in flight asks for.
+    requested,
+    // send sends a prompt. Text typed while it is pending stays in the box.
+    send(sent: string) {
+      if (busy() || !sent.trim()) return;
+      setSending(true);
+      const request = rpc("session/send", { session_id: id, text: sent }).then(() => {
+        if (text() === sent) setText("");
+      });
+      attempt(request).finally(() => setSending(false));
+    },
+    configure(changes: Partial<Settings>) {
+      const current = stored();
+      if (busy() || !current) return;
+      const changed = Object.fromEntries(
+        Object.entries(changes).filter(([key, value]) => current[key as keyof Settings] !== value),
+      ) as Partial<Settings>;
+      if (!Object.keys(changed).length) return;
+      setRequested({ ...current, ...changed });
+      const request = rpc("session/configure", { session_id: id, ...changed });
+      attempt(request).finally(() => setRequested(undefined));
+    },
+    interrupt: () => attempt(rpc("session/interrupt", { session_id: id })),
+    approve: (requestId: string, response: ApprovalResponse) =>
+      attempt(rpc("session/approve", { session_id: id, request_id: requestId, response })),
+  };
+}
+
+export type SessionControl = ReturnType<typeof createSessionControl>;
 
 function createOx() {
   const [state, setState] = createStore<{
@@ -134,7 +175,23 @@ function createOx() {
     sessions: {},
   });
   const [error, setError] = createSignal<string>();
+  const controls = new Map<string, SessionControl>();
   let connection!: Connection;
+
+  // control returns the page's control of a session, which may not be loaded
+  // yet: a new session's first send starts before its session/get returns.
+  function control(id: string) {
+    let c = controls.get(id);
+    if (!c) {
+      c = createSessionControl(
+        id,
+        (method, params) => connection.rpc(method, params),
+        () => state.sessions[id]?.settings,
+      );
+      controls.set(id, c);
+    }
+    return c;
+  }
 
   // load adds a session, or brings a loaded one up to date in place, which
   // keeps its view and the view's state. Its settings and earlier updates
@@ -192,6 +249,7 @@ function createOx() {
       )(s.workspaces);
       for (const id of Object.keys(s.sessions)) if (!listed.has(id)) delete s.sessions[id];
     });
+    for (const id of controls.keys()) if (!listed.has(id)) controls.delete(id);
     await Promise.all(
       workspaces.flatMap((w) => w.sessions.map((s) => load(s.session_id, w.workspace_id, s.harness, s.created_at))),
     );
@@ -217,6 +275,7 @@ function createOx() {
           if (session) session.settings = settingsOf(params);
         });
       case "session/destroyed":
+        controls.delete(params.session_id);
         return setState((s) => {
           delete s.sessions[params.session_id];
         });
@@ -242,12 +301,7 @@ function createOx() {
       });
       return session_id;
     },
-    send: (id: string, text: string) => connection.rpc("session/send", { session_id: id, text }),
-    interrupt: (id: string) => connection.rpc("session/interrupt", { session_id: id }),
-    configure: (id: string, changes: Partial<Settings>) =>
-      connection.rpc("session/configure", { session_id: id, ...changes }),
-    approve: (id: string, requestId: string, response: ApprovalResponse) =>
-      connection.rpc("session/approve", { session_id: id, request_id: requestId, response }),
+    control,
     destroy: (id: string) => connection.rpc("session/destroy", { session_id: id }),
   };
 }

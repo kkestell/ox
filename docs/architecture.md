@@ -120,10 +120,19 @@ as Server-Sent Events, and `/rpc` posts the page's JSON-RPC requests to the sock
 | --- | --- |
 | `protocol.ts` | Types for the `oxd` methods, updates, and notifications. |
 | `connection.ts` | Opening the event stream, sending requests, matching replies, and reporting stream errors. |
-| `ox.tsx` | A provider that reloads the catalog, workspaces, and sessions on each connection, updating loaded sessions in place so their views keep their state, applies notifications, and exposes RPC calls; `createAttempt`, which shows a request's error. |
+| `ox.tsx` | A provider that reloads the catalog, workspaces, and sessions on each connection, updating loaded sessions in place so their views keep their state, applies notifications, and exposes RPC calls; each session's control; `createAttempt`, which shows a request's error. |
 | `App.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `ApprovalRequest.tsx`, `SettingsFields.tsx`, `HarnessIcon.tsx` | The components. |
 
 The page shows stream errors while reconnecting and asks for a reload if the
-browser closes the stream after `ox` refuses it. The settings form sends a
-patch to [`session/configure`](protocol.md#sessionconfigure) and shows its
-values until the request settles. On failure, it shows the stored settings.
+browser closes the stream after `ox` refuses it.
+
+A session's control owns the page's requests for that session: its composer
+text, sends, configuration, interrupts, approval answers, and their errors. It
+outlives the session's view, so leaving the view or reconnecting keeps the
+text and repeats no request. A send and a configuration exclude each other.
+The settings form sends a patch to
+[`session/configure`](protocol.md#sessionconfigure) and shows the requested
+values, with Send disabled, until the request settles; then it shows the
+stored settings. The new-session view creates the session and hands its text
+to the session's control, which sends the first prompt. The page then selects
+the session unless the user has selected something else.

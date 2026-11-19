@@ -1,6 +1,6 @@
-import { action, createOptimistic, createSignal, For, Match, onSettled, Show, Switch } from "solid-js";
+import { createSignal, For, Match, onSettled, Show, Switch } from "solid-js";
 import { ApprovalRequest } from "./ApprovalRequest";
-import { createAttempt, type Entry, type Session, toolSubject, useOx } from "./ox";
+import { createAttempt, type Entry, type Session, type SessionControl, toolSubject, useOx } from "./ox";
 import type { Settings } from "./protocol";
 import { defaultSettings, type ModelChoice, ModelPicker, Select } from "./SettingsFields";
 
@@ -42,26 +42,19 @@ function pinToBottom(log: HTMLElement) {
 
 export function SessionView(props: { session: Session }) {
   const ox = useOx();
-  const [error, attempt] = createAttempt();
-  const [sending, setSending] = createSignal(false);
+  const control = ox.control(props.session.id);
   const workspace = () => ox.state.workspaces.find((w) => w.id === props.session.workspaceId)?.path;
-  const canSend = () => !sending() && (props.session.state === "idle" || props.session.state === "parked");
-  const running = () => props.session.state === "running" || props.session.state === "requires_action";
+  const idle = () => props.session.state === "idle" || props.session.state === "parked";
+  const canSend = () => !control.busy() && idle();
+  // A send shows Stop from the start, while a parked session starts its harness.
+  const running = () => control.sending() || !idle();
   let log!: HTMLDivElement;
-  let textarea!: HTMLTextAreaElement;
 
   onSettled(() => pinToBottom(log));
 
   const send = (event: SubmitEvent) => {
     event.preventDefault();
-    if (!canSend()) return;
-    const text = textarea.value;
-    setSending(true);
-    // Text typed while the send was pending stays in the box.
-    const sent = ox.send(props.session.id, text).then(() => {
-      if (textarea.value === text) textarea.value = "";
-    });
-    attempt(sent).finally(() => setSending(false));
+    if (canSend()) control.send(control.text());
   };
 
   return (
@@ -72,22 +65,27 @@ export function SessionView(props: { session: Session }) {
       <div class="log" ref={log}>
         <Transcript entries={props.session.entries} />
       </div>
-      <Show when={error()}>{(error) => <p role="alert">{error()}</p>}</Show>
+      <Show when={control.error()}>{(error) => <p role="alert">{error()}</p>}</Show>
       <div class="composer">
         <Show when={props.session.approvals.length}>
           <section class="pending" aria-label="Waiting on you">
             <For each={props.session.approvals}>
               {(approval) => (
-                <ApprovalRequest
-                  approval={approval}
-                  onAnswer={(response) => attempt(ox.approve(props.session.id, approval.id, response))}
-                />
+                <ApprovalRequest approval={approval} onAnswer={(response) => control.approve(approval.id, response)} />
               )}
             </For>
           </section>
         </Show>
         <form class="box" onSubmit={send}>
-          <textarea ref={textarea} name="text" rows="1" aria-label="Prompt" required onKeyDown={sendOnEnter} />
+          <textarea
+            name="text"
+            rows="1"
+            aria-label="Prompt"
+            required
+            value={control.text()}
+            onInput={(event) => control.setText(event.currentTarget.value)}
+            onKeyDown={sendOnEnter}
+          />
           <Show
             when={running()}
             fallback={<button type="submit" class="icon send" aria-label="Send" title="Send" disabled={!canSend()} />}
@@ -97,24 +95,24 @@ export function SessionView(props: { session: Session }) {
               class="icon stop"
               aria-label="Stop"
               title="Stop"
-              onClick={() => attempt(ox.interrupt(props.session.id))}
+              onClick={() => control.interrupt()}
             />
           </Show>
         </form>
-        <SettingsForm session={props.session} attempt={attempt} />
+        <SettingsForm session={props.session} control={control} />
       </div>
     </>
   );
 }
 
-// NewSessionView creates a session and sends its first prompt. A session
-// whose first send failed takes the retry, with the settings it was created
-// with.
-export function NewSessionView(props: { workspaceId: string; onSent(id: string): void }) {
+// NewSessionView creates a session for its first prompt and hands over to it:
+// the session gets the box's text, including edits made while it was being
+// created, and sends the prompt. The page then shows the session, unless the
+// user has gone elsewhere.
+export function NewSessionView(props: { workspaceId: string; onCreated(id: string): void }) {
   const ox = useOx();
   const [error, attempt] = createAttempt();
-  const [sending, setSending] = createSignal(false);
-  const [created, setCreated] = createSignal<string>();
+  const [creating, setCreating] = createSignal(false);
   const workspace = () => ox.state.workspaces.find((w) => w.id === props.workspaceId)?.path;
   // Until the session starts, the picker offers every harness's models.
   const [choice, setChoice] = createSignal<(Settings & { harness: string }) | undefined>(() => {
@@ -130,24 +128,26 @@ export function NewSessionView(props: { workspaceId: string; onSent(id: string):
         : defaultSettings(value.harness, catalog, ox.state.defaults).permission_mode;
       return { ...value, permission_mode: mode };
     });
+  let textarea!: HTMLTextAreaElement;
+  let open = true;
+  onSettled(() => () => {
+    open = false;
+  });
 
-  const send = (event: SubmitEvent & { currentTarget: HTMLFormElement }) => {
+  const create = (event: SubmitEvent) => {
     event.preventDefault();
     const c = choice();
-    if (sending() || !c) return;
-    const text = String(new FormData(event.currentTarget).get("text"));
+    const text = textarea.value;
+    if (creating() || !c || !text.trim()) return;
     const { harness, ...settings } = c;
-    setSending(true);
-    const sent = (async () => {
-      let id = created();
-      if (id === undefined) {
-        id = await ox.createSession(props.workspaceId, harness, settings);
-        setCreated(id);
-      }
-      await ox.send(id, text);
-      props.onSent(id);
-    })();
-    attempt(sent).finally(() => setSending(false));
+    setCreating(true);
+    const created = ox.createSession(props.workspaceId, harness, settings).then((id) => {
+      const session = ox.control(id);
+      session.setText(textarea.value);
+      session.send(text);
+      if (open) props.onCreated(id);
+    });
+    attempt(created).finally(() => setCreating(false));
   };
 
   return (
@@ -155,25 +155,28 @@ export function NewSessionView(props: { workspaceId: string; onSent(id: string):
       <p class="context">{workspace()} · new session</p>
       <div class="log" />
       <Show when={error()}>{(error) => <p role="alert">{error()}</p>}</Show>
-      <form class="composer" onSubmit={send}>
+      <form class="composer" onSubmit={create}>
         <div class="box">
-          <textarea name="text" rows="1" aria-label="Prompt" required autofocus onKeyDown={sendOnEnter} />
-          <button type="submit" class="icon send" aria-label="Send" title="Send" disabled={sending()} />
+          <textarea
+            ref={textarea}
+            name="text"
+            rows="1"
+            aria-label="Prompt"
+            required
+            autofocus
+            onKeyDown={sendOnEnter}
+          />
+          <button type="submit" class="icon send" aria-label="Send" title="Send" disabled={creating()} />
         </div>
         <Show when={choice()}>
           {(choice) => (
             <div class="settings">
-              <ModelPicker
-                harnesses={ox.state.harnesses}
-                value={choice()}
-                disabled={created() !== undefined}
-                onChange={pick}
-              />
+              <ModelPicker harnesses={ox.state.harnesses} value={choice()} disabled={creating()} onChange={pick} />
               <Select
                 name="permission_mode"
                 options={ox.state.harnesses[choice().harness]?.permission_modes ?? []}
                 value={choice().permission_mode}
-                disabled={created() !== undefined}
+                disabled={creating()}
                 onChange={(mode) => setChoice({ ...choice(), permission_mode: mode })}
               />
             </div>
@@ -223,23 +226,13 @@ function ToolCall(props: { tool: Tool }) {
   );
 }
 
-function SettingsForm(props: { session: Session; attempt(request: Promise<unknown>): void }) {
+// SettingsForm changes a session's settings through its control, which shows
+// a change while it is in flight and the stored settings once it settles.
+function SettingsForm(props: { session: Session; control: SessionControl }) {
   const ox = useOx();
-  const [shown, setShown] = createOptimistic(() => props.session.settings);
-  const [configuring, setConfiguring] = createOptimistic(false);
-  const configure = action(function* (settings: Settings, changes: Partial<Settings>) {
-    setShown(settings);
-    setConfiguring(true);
-    yield ox.configure(props.session.id, changes);
-  });
-  const configurable = () => !configuring() && (props.session.state === "idle" || props.session.state === "parked");
-  const change = (requested: Partial<Settings>) => {
-    const from = shown();
-    const changes = Object.fromEntries(
-      Object.entries(requested).filter(([key, value]) => from[key as keyof Settings] !== value),
-    ) as Partial<Settings>;
-    if (Object.keys(changes).length) props.attempt(configure({ ...from, ...changes }, changes));
-  };
+  const configurable = () =>
+    !props.control.busy() && (props.session.state === "idle" || props.session.state === "parked");
+  const shown = () => props.control.requested() ?? props.session.settings;
 
   // Once the session starts, the picker offers only its harness's models.
   return (
@@ -250,14 +243,14 @@ function SettingsForm(props: { session: Session; attempt(request: Promise<unknow
             harnesses={{ [props.session.harness]: harness() }}
             value={{ harness: props.session.harness, model: shown().model, effort: shown().effort }}
             disabled={!configurable()}
-            onChange={(value) => change({ model: value.model, effort: value.effort })}
+            onChange={(value) => props.control.configure({ model: value.model, effort: value.effort })}
           />
           <Select
             name="permission_mode"
             options={harness().permission_modes}
             value={shown().permission_mode}
             disabled={!configurable()}
-            onChange={(mode) => change({ permission_mode: mode })}
+            onChange={(mode) => props.control.configure({ permission_mode: mode })}
           />
         </div>
       )}

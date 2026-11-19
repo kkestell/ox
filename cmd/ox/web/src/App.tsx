@@ -48,7 +48,7 @@ function Layout() {
           </Match>
           <Match when={draft()} keyed>
             {(workspaceId) => (
-              <NewSessionView workspaceId={workspaceId} onSent={(id) => select({ kind: "session", id })} />
+              <NewSessionView workspaceId={workspaceId} onCreated={(id) => select({ kind: "session", id })} />
             )}
           </Match>
         </Switch>
