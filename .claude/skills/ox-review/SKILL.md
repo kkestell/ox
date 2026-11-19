@@ -1,21 +1,27 @@
 ---
 name: ox-review
-description: Review Ox code in uncommitted changes, a commit, a branch, named files, or the whole repository, against its plan, Ox's guarantees, and `AGENTS.md`. Fix every confirmed finding, asking the user only for product decisions; reject the rest with a reason, or record in `docs/known-issues.md` what cannot be fixed yet. Write the review in `.agents/reviews/` and stage the fixes. Do not use for plan critiques or standalone documentation reviews. Never use it unless the user invokes it or explicitly asks for it.
-argument-hint: "[review scope, and the plan it implements]"
+description: Review Ox code in uncommitted changes, a commit, a branch, named files, or the whole repository, against its plan, Ox's guarantees, and `AGENTS.md`, and write the review in `.agents/reviews/`, marking each confirmed finding to fix or to record, and each rejected one with its reason. Fixes nothing. Run again with an existing review to verify the fixes made for it. Do not use for plan critiques or standalone documentation reviews. Never use it unless the user, or an agent acting on the user's request, invokes it.
+argument-hint: "[review scope and the plan it implements, or verify <review path>]"
 ---
 
-Use this skill only when the user invokes it or explicitly asks for it. Never use it on your own initiative.
+Use this skill only when the user, or an agent acting on the user's request, invokes it. Never use it on your own initiative.
 
 ## Objective
 
-Review the code the user names and leave every finding with one outcome, as `AGENTS.md` ("Defects") defines them: **Fixed**, **Rejected** with a reason, or **Recorded** in `docs/known-issues.md`. Decide every fix yourself except one that raises a product question, which the user decides.
+Review the code and write a review that tells whoever implemented it exactly what to change. Give every finding one action, as `AGENTS.md` ("Defects") defines the outcomes:
+
+- `Fix`: a confirmed defect, or a design, test, or documentation problem whose fix costs less than keeping it.
+- `Record`: a confirmed defect that cannot be fixed yet, because it needs reproducing or depends on Claude Code behavior Ox cannot change. The implementer writes it into `docs/known-issues.md`.
+- `Rejected`: speculative, a misreading of the intended behavior, or cheaper to keep than to fix, such as an unmeasured scaling cost. The reason is recorded so the finding is not raised again.
+
+Change no code, tests, or documentation, and stage or commit nothing. Edit only the review file. Do not start other agents.
 
 Correctness matters for what happens in normal use and for the promises in `docs/guarantees.md`. Handling every case that could occur does not.
 
 ## Choose what to review
 
-1. Read `<review_scope> $ARGUMENTS </review_scope>`. Ask for clarification only when the answer would change what you review.
-2. For uncommitted changes, a commit, or a branch, review the changes and the code that calls or depends on them. For named files or the whole repository, review that full scope.
+1. Read `<review_scope> $ARGUMENTS </review_scope>`. If it asks to verify an existing review, go to [Verify fixes](#verify-fixes). Ask the user only when the answer would change what you review.
+2. For uncommitted changes, a commit, or a branch, review the changes and the code that calls or depends on them. For named files or the whole repository, review that full scope. Record the base revision and the state of the working tree you reviewed.
 3. Read `AGENTS.md`, `docs/guarantees.md`, and `docs/known-issues.md`; for web client code, also `cmd/ox/web/AGENTS.md`. Read the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/claude-code.md` that cover the code under review. If the scope names a plan in `.agents/plans/`, read it: its Goal, its Decisions, and its settled Check your assumptions entries are the requirements.
 
 ## Review
@@ -31,63 +37,50 @@ Correctness matters for what happens in normal use and for the promises in `docs
    - **Claude Code.** Each assumption about Claude's output, ordering, timing, or flags matches `docs/claude-code.md` and handles every variant it records, or has a live check. A fact inferred from Claude's tool calls or hooks names the event that clears it. Updates are attributed to the turn that produced them.
    - **Security.** Listeners, the relay, file paths, process environments, and files outside Ox's own directories admit only the user and touch only what Ox owns.
    - **Correctness.** Other required behavior: results, state changes, and error reporting.
-   - **Testing.** Each test fails when the behavior it names breaks. Tests use the public interface of the code they test, and a live or e2e check waits for the event it claims to test, not an earlier one. A server path the fake harness does not reach has a live case.
+   - **Testing.** Each behavior the change adds or fixes has a kept test that fails without it, at the cheapest layer that observes it. Tests use the public interface of the code they test, and a live or e2e check waits for the event it claims to test, not an earlier one.
    - **Simplicity.** Code that adds no required behavior, including speculative fallbacks, retries, and recovery for failures that have not happened.
    - **Conventions.** The rules in `AGENTS.md` and `cmd/ox/web/AGENTS.md`, such as one name per field and log lines that name the session.
    - **Documentation.** Each changed fact is stated by the document `AGENTS.md` assigns it, and no document contradicts the code.
-6. Confirm each suspected finding by tracing the code, reproducing it, or running a focused check: a stand-in `claude` script, an injected `/rpc` delay or failure in an e2e spec, or a probe against built binaries on a temporary socket, database, and port. Report missing handling only when a guarantee or a reachable failure needs it. Do not ask for tests of hypothetical cases. Say when you reviewed only part of the scope. Do not change the code under review until Fix, and revert any edit a check needs before you finish.
+6. Confirm each suspected finding by tracing the code, reproducing it, or running a focused check: a stand-in `claude` script, an injected `/rpc` delay or failure in an e2e spec, or a probe against built binaries on a temporary socket, database, and port. Report missing handling only when a guarantee or a reachable failure needs it. Do not ask for tests of hypothetical cases. Leave out what you cannot confirm. Revert every edit a check needs before you finish.
 7. Skip a defect `docs/known-issues.md` records unless what its entry waits on has changed.
-8. Run each test the change adds against the code before the change, in a detached worktree of the base revision, and remove the worktree afterwards. Then remove each condition the change adds, one at a time, and confirm a test fails. A test that passes on the base revision, or that no removed condition breaks, is a `Testing` finding.
-
-## Decide each outcome
-
-9. Give each finding one outcome:
-   - **Fix** a confirmed defect, or a design, test, or documentation problem whose fix costs less than keeping it.
-   - **Reject** a finding that is speculative, misreads the intended behavior, or costs less to keep than to fix, such as an unmeasured scaling cost. State the reason.
-   - **Record** a confirmed defect that cannot be fixed yet, because it needs reproducing or depends on Claude Code behavior Ox cannot change.
-10. A fix needs a decision only when it raises a product question, a choice that changes what the user sees or does in everyday use, that the plan and the user's answers do not settle. Design, interface, and internal behavior choices are yours, and so is how a rare case behaves. Severity, size, and file count alone do not make a fix need a decision.
-
-## Fix
-
-11. Fix each finding that needs no decision, at its cause. Give a behavior defect a test at the cheapest layer that observes it: an `internal/claude` test through the agent's public methods, with a stand-in `claude` script for process I/O; an `internal/server` test with the fake harness; a `make e2e` spec; or a `TestLive` case with Haiku. The test fails before the fix. If a fix turns out to need a decision, revert it.
-12. Ask the user to decide each finding that needs a decision, one focused question at a time, and wait for the answer. Ask as the user experiences Ox: what they would see happen, the options as they would experience them, and a recommendation, without code names. Fix it as the user decided.
-13. Write each Recorded finding into `docs/known-issues.md`: its worst cost, how it was confirmed, and what it waits on. Remove each entry the review fixed or showed not to exist.
-14. Run `make test` and `make e2e`. When the change or a fix alters how Ox drives Claude Code, also run `make live`. Fix failures before continuing, and report each check you could not run.
+8. Run each test the change adds against the base revision, in a detached worktree that you remove afterwards; a new test that passes there checks nothing the change did. Then remove each condition the change adds, one at a time, and confirm a test fails. Each test that survives either check, and each condition no test protects, is a `Testing` finding.
+9. Run the checks that cover the change: `make test` and `make e2e`; `make live` when the change alters how Ox drives Claude Code; and headless Chrome with Playwright through the `make dev` stack on spare ports when it changes how the page reaches `oxd`. Each failure is a finding. Report a check as blocked only when something you cannot change prevents it, and name the blocker.
 
 ## Write the review
 
-15. Read this skill's `assets/_template.md` and write the review in `.agents/reviews/`, named `YYYY-MM-DD-NNN-slug.md` with the next sequence for the day. Do not stage or commit it.
-16. Write the commit messages the review's changes land with. For uncommitted changes, one message covers the change and its fixes. For committed code, each fix is its own change with its own message. Each message follows `AGENTS.md` and the style of `git log`: what was wrong and when it showed, what the code does now, the test that failed before, and for new state, the behavior that needs it, its races, and its cleanup. A message does not refer to the review or its finding IDs.
+10. Give each finding its action, as the Objective defines them. When the right fix raises a product question, a choice that changes what the user sees or does in everyday use that the plan and the user's answers do not settle, ask the user, one focused question at a time: what they would see happen, the options as they would experience them, and your recommendation, without code names. Wait for the answer, and make it the finding's `Fix`. Design, interface, and internal behavior choices, and how a rare case behaves, are yours; severity, size, and file count alone do not make a product question.
+11. Read this skill's `assets/_template.md` and write the review in `.agents/reviews/`, named `YYYY-MM-DD-NNN-slug.md` with the next sequence for the day.
+12. For each `Fix`, state the change to make at the cause, and the test to keep: its layer, the behavior it guards, and the existing test that should carry it when one already reaches the case. For each `Record`, state the entry: its worst cost, how it was confirmed, and what it waits on. For a fix the user decided, state their decision.
+13. Give the final response and stop.
 
-## Stage
+## Verify fixes
 
-17. Stage the fixes and the `docs/known-issues.md` changes, and for uncommitted changes, the change under review. Stage nothing else, and do not commit.
-18. Give the final response and stop.
+Run this when asked to verify the fixes for an existing review.
+
+14. Read the review. Inspect the changes made since it was written, and the code each `Fix` and `Record` finding names.
+15. For each `Fix` and `Record` finding, confirm the change addresses its cause, and that its test exists, fails with the fix removed, and passes with it. A `Record` finding is resolved by its `docs/known-issues.md` entry. Mark each finding `Resolved` or `Open`, with the evidence. Do not raise a `Rejected` finding again.
+16. Review the changes made since the review as in [Review](#review), for regressions and new defects, and run the checks in step 9 again. Add each new finding with the next ID and its action.
+17. Add a verification round to the review: the revision you checked, each finding's status, the new findings, and the checks run. Then give the final response and stop.
 
 ## Final response
 
-Reply in the form below and nothing else. Lead with the main point, write plainly, and leave out the checks that passed, the suspected findings you ruled out, and the steps you took.
+Reply in the form below and nothing else, for a review and for a verification. Lead with the main point, write plainly, and leave out the checks that passed, the suspected findings you ruled out, and the steps you took.
 
 ```markdown
-One or two sentences giving the verdict and the number of findings by outcome.
+One or two sentences: the verdict, and the number of findings by action and, after verification, by status.
 
-| ID | Severity | Outcome  | Title                                 | Location                    |
-| -- | -------- | -------- | ------------------------------------- | --------------------------- |
-| F1 | High     | Fixed    | Relay accepts requests from any host  | `cmd/ox/main.go:41`         |
-| F2 | Low      | Rejected | Reconnect reloads every history       | `cmd/ox/web/src/ox.tsx:285` |
+| ID | Severity | Action   | Status | Title                                | Location                    |
+| -- | -------- | -------- | ------ | ------------------------------------ | --------------------------- |
+| F1 | High     | Fix      | Open   | Relay accepts requests from any host | `cmd/ox/main.go:41`         |
+| F2 | Low      | Rejected | —      | Reconnect reloads every history      | `cmd/ox/web/src/ox.tsx:285` |
 
 **Review:** `.agents/reviews/YYYY-MM-DD-NNN-slug.md`
 
-**Views to check:** the session view, the new-session view.
+**Views changed:** the session view, the new-session view.
 
-**Not run:** `make live`.
+**Blocked:** `make live`: what blocks it.
 
-**Files:**
-
-- `cmd/ox/main.go` (modified)
-- `docs/known-issues.md` (modified)
-
-**Next:** commit with the messages in the review.
+**Verdict:** Fixes needed. (or: Ready to commit.)
 ```
 
-The table lists every finding, most severe first; if there are none, replace it with `No findings.` List the web client views the change and its fixes touch under Views to check, for the user to check by eye, and omit the line when there are none. Omit Not run when every check ran. List every file the review created or modified, other than the review itself, marked `(created)` or `(modified)`.
+List every finding, most severe first; if there are none, replace the table with `No findings.` List under Views changed the web client views the change touches, for the user to judge how they look, and omit the line when there are none. Omit Blocked when every check ran. The verdict is `Ready to commit` only when every `Fix` and `Record` finding is `Resolved` and every check passed.
