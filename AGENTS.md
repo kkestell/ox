@@ -142,6 +142,25 @@ We test with `make dev`. Ox's test state is disposable.
   again only when what it waits on has changed.
 - Remove an entry once its defect is fixed or shown not to exist.
 
+## Workflow
+
+The user settles the direction and rough scope of a change with a top-level
+agent, which carries it through child sessions:
+
+1. A child session on Opus 5.5 at high effort runs `/ox-plan`.
+2. The top-level agent sanity-checks the plan with a quick look at the code it
+   names, without redoing the planning.
+3. A child session on Sonnet or Opus, chosen by the change's complexity,
+   implements the plan.
+4. A child session on Opus or Sol runs `/ox-review` on the uncommitted
+   changes for the plan.
+5. The implementing session fixes the review's findings.
+6. The reviewing session runs `/ox-review verify` on its review. Open
+   findings or new regressions go back to the implementing session, until
+   the verdict is Ready to commit.
+7. The top-level agent sanity-checks the result and commits the change. The
+   plan and review stay in `.agents/`, which Git ignores.
+
 ## Verification
 
 - Each behavior a change adds or fixes keeps a test that fails without it, at
