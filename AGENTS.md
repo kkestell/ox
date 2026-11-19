@@ -13,12 +13,16 @@ We test with `make dev`. Ox's test state is disposable.
 ├── AGENTS.md                  # agent instructions
 ├── bin                        # build output
 │   ├── ox
+│   ├── ox-mcp
 │   └── oxd
 ├── cmd
 │   ├── ox                     # web UI server
 │   │   ├── main_test.go       # relay tests
 │   │   ├── main.go            # web UI and its relay to oxd
 │   │   └── web                # web client
+│   ├── ox-mcp                 # MCP forwarder
+│   │   ├── main_test.go       # forwarder tests
+│   │   └── main.go            # stdio forwarder to oxd
 │   └── oxd                    # daemon
 │       ├── main_test.go       # startup tests
 │       └── main.go            # daemon startup
@@ -63,6 +67,7 @@ We test with `make dev`. Ox's test state is disposable.
 │   │   ├── history_test.go    # history tests
 │   │   ├── history.go         # session history
 │   │   ├── live_test.go       # live Claude tests
+│   │   ├── mcp.go             # MCP connections
 │   │   ├── methods_test.go    # method tests
 │   │   ├── methods.go         # RPC methods
 │   │   ├── server.go          # listener, workspaces, and sessions

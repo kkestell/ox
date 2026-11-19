@@ -8,6 +8,8 @@ harness meet only at `internal/agent`; `cmd/oxd` gives the server each
 harness's `Start` function by name.
 
 ```
+cmd/ox-mcp         stdio forwarder from a harness's MCP client to the socket
+
 cmd/oxd            socket, database, and configuration paths, signals, the harnesses by name
    ├── internal/paths     the default file locations, shared with cmd/ox
    ├── internal/config    the harnesses offered and their choices
@@ -25,10 +27,11 @@ cmd/oxd            socket, database, and configuration paths, signals, the harne
 
 | Package | Owns |
 | --- | --- |
+| `cmd/ox-mcp` | Connecting a harness's MCP client, over stdio, to `oxd`'s socket for one session: attaching, then copying each line between stdin and the socket and the socket and stdout. |
 | `cmd/oxd` | Choosing the socket, database, and configuration, checking the configured harnesses, starting the server, and stopping it on a signal, or at once on a second. |
 | `paths` | The XDG locations of the configuration, database, and socket, which `cmd/oxd` uses unless a flag overrides them and `cmd/ox` uses for the socket. |
 | `config` | Reading the configuration file, or the built-in default, into each harness's models, efforts, and permission modes and the new-session defaults, and checking settings against them. |
-| `server` | Client connections, each session's goroutine and the agent it runs, and the mapping from each method to a session operation and its error codes. Each connection writes through its own queue, so sessions never wait on a client. |
+| `server` | Client and MCP connections, each session's goroutine and the agent it runs, and the mapping from each method to a session operation and its error codes. Each connection writes through its own queue, so sessions never wait on a client. |
 | `store` | The SQLite database of workspaces, sessions, and session events. |
 | `jsonrpc` | Request validation and the response and notification types. |
 | `agent` | The `Agent` interface a harness implements, its `Start` function and options, and the updates, snapshots, settings, and errors they share. |

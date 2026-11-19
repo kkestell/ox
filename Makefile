@@ -1,7 +1,7 @@
 .PHONY: dev web test live lint e2e
 
 dev: web
-	go build -race -o bin/ ./cmd/ox ./cmd/oxd
+	go build -race -o bin/ ./cmd/ox ./cmd/ox-mcp ./cmd/oxd
 	GORACE=halt_on_error=1 node cmd/ox/web/dev.mjs
 
 test: lint web

@@ -19,7 +19,8 @@ batch requests return `-32600`.
 
 Clients must continuously read the socket: responses and notifications share
 the stream. Every connection receives every notification, for every session,
-from the moment it connects. Notifications can arrive before the response to
+from the moment it connects, except one attached with
+[`mcp/attach`](#mcp). Notifications can arrive before the response to
 the request that caused them. Each session handles its requests one at a time,
 independently of other sessions. Requests sent without waiting for earlier
 responses can run in any order. The daemon gives each socket write five
@@ -414,6 +415,37 @@ Closing a connection leaves its sessions running. A prompt continues, and its
 pending approvals stay pending until a client answers them. A client that
 connects calls `workspace/list` and `session/get` to load the sessions, then
 follows the notifications.
+
+## MCP
+
+`ox-mcp` connects a harness's MCP client, over stdio, to the socket on behalf
+of one session. It reads `OX_SOCKET` and `OX_SESSION_ID` from its environment,
+writes only `oxd`'s answers to stdout, and exits with a message on stderr when
+it cannot reach the socket or attach. It exits when stdin or the socket closes.
+
+### `mcp/attach`
+
+Valid only as a connection's first line. Params: `session_id`. The result is
+`{}`. The connection then receives no notifications, and every line after the
+result is an MCP request for that session. A missing `session_id` returns
+`-32602`, and the connection stays an ordinary client connection. Every
+notification the connection was sent precedes the result. On any later line,
+`mcp/attach` returns `-32601`.
+
+### MCP methods
+
+An attached connection serves `initialize`, `ping`, `tools/list`, and
+`tools/call`; any other method returns `-32601`. A notification is ignored.
+Each request returns `-32001` when the session does not exist, and `-32000`
+when the daemon is shutting down. `initialize` requires a string
+`protocolVersion`, returns it unchanged, and advertises the `tools`
+capability.
+
+### Tools
+
+`list_models` takes no arguments and returns one text content item holding the
+JSON that [`harness/list`](#harnesslist) returns. A call to another tool
+returns `-32602`.
 
 ## Errors
 

@@ -90,7 +90,8 @@ func (s *Server) serveConn(netConn net.Conn) {
 	}()
 	reply := func(response *jsonrpc.Response) { c.queue(response) }
 	reader := bufio.NewReader(netConn)
-	for {
+	var mcpSession string // set by an mcp/attach first line
+	for first := true; ; first = false {
 		line, err := reader.ReadBytes('\n')
 		if err != nil {
 			if err != io.EOF {
@@ -98,7 +99,17 @@ func (s *Server) serveConn(netConn net.Conn) {
 			}
 			return
 		}
-		go s.handle(reply, line)
+		if first {
+			if id, handled := s.attach(c, reply, line); handled {
+				mcpSession = id
+				continue
+			}
+		}
+		if mcpSession != "" {
+			go s.handleMCP(reply, mcpSession, line)
+		} else {
+			go s.handle(reply, line)
+		}
 	}
 }
 
