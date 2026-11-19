@@ -8,7 +8,7 @@ input, button, textarea, select { font: inherit; color: inherit; }
 p, h1, h2, h3, h4, h5, h6 { overflow-wrap: break-word; }
 ul, ol { list-style: none; }
 
-/* The neutral palette of shadcn/ui, as Hypercube uses it. */
+/* The neutral palette of shadcn/ui. */
 :root {
   color-scheme: light dark;
   --font-sans: ui-sans-serif, system-ui, sans-serif;
@@ -108,7 +108,6 @@ nav li button.icon { width: 1.5rem; height: 1.5rem; margin-right: -0.25rem; colo
 nav li button.icon:hover { color: inherit; }
 nav p button.icon, nav li button.icon { visibility: hidden; }
 nav p:is(:hover, :focus-within) button.icon, nav li:is(:hover, :focus-within) button.icon { visibility: visible; }
-/* A parked session has no process; it dims, as Hypercube dims an exited one. */
 nav li:has(.status.parked) > :not(button) { opacity: 0.6; }
 
 /* A session's state, as a dot centered in an icon-sized box. */

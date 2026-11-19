@@ -1,6 +1,6 @@
 # Driving Claude Code with `claude -p` and stream-json
 
-Collected from the Rust implementation that preceded this repository, called Ox-rs here (`crates/claude-code-acp`, baseline `c0c3f0f`), and Hypercube (`plugins/claude`, Go, baseline `60b62ab`), including their git history, plans, reviews, work logs, research notes and recorded fixtures. Observations were made against Claude Code 2.1.312 through 2.1.326 (October–November 2026); fixtures used `claude-haiku-5-5`. Treat field names and behaviors as version-specific and re-probe when upgrading.
+Observed by running Claude Code 2.1.312 through 2.1.327 directly (October–November 2026). Treat field names and behaviors as version-specific and re-probe when upgrading.
 
 ## 1. Launch
 
@@ -31,8 +31,7 @@ claude -p \
 - `--allowedTools mcp__<server>` pre-approves every tool of that server so it never prompts. `--allowedTools` auto-approves; it does not restrict the tool catalog (`--tools` does that, and `--tools` does not cover MCP tools).
 - `--allowedTools` and `--disallowedTools` are variadic and consume every following argument that is not a flag. Put another `--flag` right after their values.
 - Per-process flags (`--mcp-config`, `--settings`, `--plugin-dir`, `--add-dir`, `--fallback-model`, `--append-system-prompt`, model, effort, permission mode) must be passed again on every resume. A resumed process runs the `--permission-mode` it is given, or `default` without one, whatever mode the transcript was written in (2.1.327; the `system` `init` line's `permissionMode` and its approval requests both follow the flag).
-- `--session-id` must be a UUID. Hypercube derives fork destination IDs deterministically (first 32 hex chars of sha256 of its own ID, formatted `%s-%s-4%s-8%s-%s`) so a restart before the first turn reuses the same ID.
-- Ox-rs makes its own session ID the Claude session ID, and chooses `--resume <id>` only when a transcript for that ID exists in that cwd; otherwise `--session-id <id>`.
+- `--session-id` must be a UUID.
 - Set the process's working directory to the session's directory.
 
 ### Environment
@@ -120,7 +119,7 @@ Permission modes: `manual` (alias `default`), `auto`, `acceptEdits`, `plan`, `do
 
 ### Stopping
 
-Close stdin; Claude exits on its own. Kill it if it is still alive after a few seconds (Hypercube waits 3 s). Spawn with kill-on-drop so a crashed host does not leak it.
+Close stdin; Claude exits on its own. Kill it if it is still alive after a few seconds. Spawn with kill-on-drop so a crashed host does not leak it.
 
 ## 3. The stdout protocol
 
@@ -149,7 +148,7 @@ Lines of type `stream_event` wrap an SSE event in `.event`; unwrap before dispat
 - Use `content_block_delta` with `delta.type` `text_delta` (`.text`) or `thinking_delta` (`.thinking`).
 - `thinking_delta` strings are empty in these builds (with `estimated_tokens`), and the final thinking block is `{"type":"thinking","thinking":""}`. Drop empty thinking and whitespace-only text.
 - `index` is the block's position in the whole API message. Key streamed items by `api_message_id:index`.
-- Subagents' lines in the recordings had no `stream_event`s; only complete messages.
+- Subagent lines arrive as complete messages, without `stream_event`s.
 
 ### `assistant`
 
@@ -322,7 +321,7 @@ Answer by allowing with the original input plus `answers`, keyed by question tex
 - Read stdout until the process exits, not until EOF. Claude's children (background Bash, MCP servers) can hold stdout and stderr open after Claude exits.
 - Do not lose Claude's last lines (often the final `result`) at exit. After `wait` returns, drain the reader's buffer and then read the descriptor non-blockingly until `EAGAIN`; the async runtime may not yet have seen the pipe become readable. In Go, use an `os.Pipe` you own rather than `cmd.StdoutPipe` (which `Wait` closes), set `cmd.WaitDelay`, and set a short read deadline after exit.
 - Read stderr concurrently so a full pipe never blocks Claude, and keep the last ~2 KiB for exit messages.
-- Lines can be large (base64 images, big tool results). Size line buffers generously (Hypercube: 1 MiB reader, up to 64 MiB scanner) and handle a final line without a newline.
+- Lines can be large (base64 images, big tool results). Size line buffers generously and handle a final line without a newline.
 
 ## 7. Subagents
 
@@ -403,7 +402,7 @@ claude -p --input-format stream-json --output-format stream-json --verbose \
 
 ## 14. Stream-json compared with the interactive TUI and hooks
 
-Hypercube first drove interactive `claude` in tmux with `--settings` hooks (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`, `StopFailure`, `PermissionRequest`) and a status-line script. Facts from that approach that matter when choosing:
+Interactive `claude` can be driven in tmux with `--settings` hooks (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`, `StopFailure`, `PermissionRequest`) and a status-line script. Facts that matter when choosing:
 
 - An idle foreground session can only be woken by an `asyncRewake: true` hook exiting 2, whose stderr becomes a system reminder.
 - A user interrupt fires no `Stop` hook, so hook-based busy/idle tracking stays "busy".
@@ -418,8 +417,3 @@ The persistent stream-json process delivers message injection at any time, expli
 Put a shell script named `claude` first on `PATH`. It reads stdin line by line (exiting when stdin closes), records argv and control requests to files, answers `initialize` with a canned `control_response`, and plays a recorded JSONL fixture per user message: `command_lifecycle started`, the `isReplay` echo, `session_state_changed`, a `can_use_tool` request, the interrupt sequence, or a failed resume (print the error `result`, write to stderr, exit 1). Set `CLAUDE_CONFIG_DIR` to an empty directory and set a dummy `ANTHROPIC_API_KEY` to check that it is stripped. Record fixtures from a real run and trim them to the fields the host reads.
 
 Live smoke tests against a real model (Haiku) are flaky when the test depends on the model following instructions; keep their assertions to protocol behavior.
-
-## Sources
-
-- Ox-rs: `crates/claude-code-acp/src/{runner,updates,background,questions,content,commands,history,sessions}.rs`, `crates/acp-bridge/src/pipes.rs`, `tests/protocol.rs`, `spec/claude.md`, `docs/research/harnesses/claude-code.md`, `docs/research/utility-model.md`; commits `03bfdcc` (persistent process), `fc13def` (background tasks), `d00463b` (`priority: next`), `1647c4f` (turn ends, preemption), `d421e4b` (output lost at exit), `c977427` (initialize at spawn), `a542b25` (AskUserQuestion).
-- Hypercube: `plugins/claude/{main,events,requests,configure,discovery,generate}.go`, `plugins/claude/testdata/*.jsonl`, `plugins/internal/plugin/process.go`, `.agents/research/harnesses/claude-code.md`, `.agents/research/utility-model.md`, `docs/harness-support.md`; commits `d535ef4` (stream-json switch), `444f60a` (model discovery), `11a3bd3` (`apply_flag_settings`), `4dd12a0` (state across results), `4d85b1d` (EPIPE on resume), `c06825e` (self-started turns), `ff4f5c0` (rate limits), `08f0d1a` (TUI and hooks era).
