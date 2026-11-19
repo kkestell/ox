@@ -140,15 +140,12 @@ func (a *Agent) handleOutput(m message) {
 			a.publish(agent.Update{Type: "text_delta", Text: delta.Text})
 		}
 	case "result":
-		result := agent.Result{Text: m.Result, IsError: m.IsError || m.Subtype != "success"}
+		result := agent.Result{Text: m.Result, IsError: m.failed()}
 		if strings.HasPrefix(m.TerminalReason, "aborted") {
 			// errors[] holds only internal diagnostics for an interrupt.
 			result.Text = "Interrupted"
-		} else if result.IsError && result.Text == "" {
-			result.Text = strings.Join(m.Errors, "\n")
-			if result.Text == "" {
-				result.Text = m.Subtype
-			}
+		} else if result.IsError {
+			result.Text = m.errorText()
 		}
 		// Claude follows an automatic turn with an empty bookkeeping result.
 		if result.Text != "" || result.IsError {

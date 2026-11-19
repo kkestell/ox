@@ -2,7 +2,6 @@
 
 | Issue | Frequency in real use | Confirmed |
 | --- | --- | --- |
-| [Startup failures lose Claude's reason](#startup-failures-lose-claudes-reason) | Unknown | Live |
 | [RPC bodies over 1 MiB never settle](#rpc-bodies-over-1-mib-never-settle) | Unknown | Live |
 | [Process exit is detected at stdout EOF](#process-exit-is-detected-at-stdout-eof) | Unknown | Injected fault |
 | [An unknown effort level is ignored](#an-unknown-effort-level-is-ignored) | Unknown | Live |
@@ -10,15 +9,6 @@
 | [An unexpected exit can look like parking](#an-unexpected-exit-can-look-like-parking) | No occurrence | Source |
 | [A failed approval answer leaves a stale approval](#a-failed-approval-answer-leaves-a-stale-approval) | No occurrence | Source |
 | [A configuration that omits a list breaks the web UI](#a-configuration-that-omits-a-list-breaks-the-web-ui) | No occurrence | Source |
-
-## Startup failures lose Claude's reason
-
-`initialize` discards output other than its control response. In a live test
-with a missing transcript, `session/send` reported only
-`initialize Claude: read startup response: EOF` instead of
-[Claude's startup diagnostic](claude-code.md#startup-failures). Each retry
-fails with the same EOF; the client cannot resume or tell why. The same path
-hides unknown-model and not-logged-in errors, which a new user meets first.
 
 ## RPC bodies over 1 MiB never settle
 

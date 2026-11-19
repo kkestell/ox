@@ -36,6 +36,7 @@ We test with `make dev`. Ox's test state is disposable.
 │   │   ├── agent.go           # Claude agent state machine
 │   │   ├── approval_test.go   # approval tests
 │   │   ├── approval.go        # tool approvals
+│   │   ├── claude_test.go     # startup tests
 │   │   ├── claude.go          # Claude process and input
 │   │   ├── configure_test.go  # configuration tests
 │   │   ├── configure.go       # setting changes on a running process

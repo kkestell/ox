@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,6 +99,16 @@ func TestLive(t *testing.T) {
 			}
 		}
 		return false
+	}
+
+	t.Log("a failed start reports Claude's reason")
+	missing := "00000000-0000-4000-8000-000000000000"
+	_, err = claude.Start(agent.Options{
+		Workspace: dir, Resume: missing, Settings: agent.Settings{Model: haiku, Effort: "low", PermissionMode: "manual"},
+		OnUpdate: func(agent.Update) {}, OnError: func(error) {},
+	})
+	if err == nil || !strings.Contains(err.Error(), missing) {
+		t.Errorf("resuming a missing conversation failed without Claude's reason: %v", err)
 	}
 
 	t.Log("configuring one setting keeps the others")

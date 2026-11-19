@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 
@@ -73,19 +74,37 @@ func startProcess(workspace, sessionID string, resume bool, settings agent.Setti
 	return p, newWriter(stdin), nil
 }
 
+// initialize sends Claude's handshake and waits for its answer. Claude can
+// fail at startup with an error result or plain text and exit, sometimes
+// before it reads the handshake; the last such output is the error.
 func initialize(input io.Writer, output *bufio.Reader) error {
 	// Declare Stop to receive pending schedules at the end of each completed turn.
 	const request = `{"type":"control_request","request_id":"initialize","request":{"subtype":"initialize","hooks":{"Stop":[{"hookCallbackIds":["stop"]}]}}}`
-	if _, err := io.WriteString(input, request+"\n"); err != nil {
-		return err
-	}
+	_, writeErr := io.WriteString(input, request+"\n")
+	var reason string
 	for {
 		line, err := output.ReadBytes('\n')
 		if err != nil {
+			switch {
+			case reason != "":
+				return errors.New(reason)
+			case writeErr != nil:
+				return writeErr
+			}
 			return fmt.Errorf("read startup response: %w", err)
 		}
 		var m message
-		if json.Unmarshal(line, &m) != nil || m.Type != "control_response" || m.Response.RequestID != "initialize" {
+		if json.Unmarshal(line, &m) != nil {
+			if text := strings.TrimSpace(string(line)); text != "" {
+				reason = text
+			}
+			continue
+		}
+		if m.Type == "result" && m.failed() {
+			reason = m.errorText()
+			continue
+		}
+		if m.Type != "control_response" || m.Response.RequestID != "initialize" {
 			continue
 		}
 		if m.Response.Subtype != "success" {

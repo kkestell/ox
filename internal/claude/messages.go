@@ -31,6 +31,22 @@ type message struct {
 	} `json:"event"`
 }
 
+func (m message) failed() bool {
+	return m.IsError || m.Subtype != "success"
+}
+
+// errorText is a failed result's error: its text, else its errors, else its
+// subtype.
+func (m message) errorText() string {
+	if m.Result != "" {
+		return m.Result
+	}
+	if len(m.Errors) > 0 {
+		return strings.Join(m.Errors, "\n")
+	}
+	return m.Subtype
+}
+
 type controlReply struct {
 	Subtype   string `json:"subtype"`
 	RequestID string `json:"request_id"`

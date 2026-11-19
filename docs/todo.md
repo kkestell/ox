@@ -35,7 +35,3 @@ Gaps in features Ox already supports, ordered by priority.
 - [ ] **Remove a workspace.** Needs a new method and a store delete; neither
   exists. Decide what happens to its sessions (destroy them, or refuse while
   any exist).
-- [ ] **Startup failures lose Claude's reason**
-  ([known issue](known-issues.md#startup-failures-lose-claudes-reason)). Read
-  the error `result` printed before exit, or the stderr tail, into the
-  `session/send` error.
