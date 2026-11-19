@@ -5,6 +5,7 @@
 | [Startup errors on stderr reach only the daemon's log](#startup-errors-on-stderr-reach-only-the-daemons-log) | No occurrence | Live |
 | [A resumed session can park with restored schedules](#a-resumed-session-can-park-with-restored-schedules) | Unknown | Source |
 | [A last line without a newline is dropped](#a-last-line-without-a-newline-is-dropped) | Unknown | Source |
+| [Allow rounds large integers in a tool's input](#allow-rounds-large-integers-in-a-tools-input) | No occurrence | Source |
 | [A lost session/create response leaves an empty session](#a-lost-sessioncreate-response-leaves-an-empty-session) | No occurrence | Source |
 | [make dev can use a daemon that is already running](#make-dev-can-use-a-daemon-that-is-already-running) | Unknown | Source |
 | [An invalid escape in the URL fragment blanks the page](#an-invalid-escape-in-the-url-fragment-blanks-the-page) | No occurrence | Source |
@@ -33,6 +34,14 @@ cost: missed scheduled runs. From `Parkable` in `internal/claude/park.go`.
 The reader parses only complete lines. Claude's
 [final line can end at EOF](claude-code.md#pipes), and that record, which
 can be a result or a diagnostic, is discarded.
+
+## Allow rounds large integers in a tool's input
+
+The page parses each approval with `JSON.parse` and sends the parsed input
+back as `updatedInput`, so an integer beyond 2^53 reaches Claude rounded,
+where [Claude expects the input byte for byte](claude-code.md#can_use_tool).
+The card shows the same rounded value. `oxd` forwards the page's answer
+unchanged.
 
 ## A lost session/create response leaves an empty session
 

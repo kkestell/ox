@@ -51,7 +51,7 @@ contract that defines its details. Reviews check changes against them.
    answer is written to Claude, or Ox withdraws it when Claude cancels it,
    goes idle, or exits; every page is told which
    ([approval lifecycle](protocol.md#approval-lifecycle)). Allow sends the
-   tool's input unchanged.
+   tool's input as the card shows it.
 
 8. **Closing a page leaves work running.** Prompts, approvals, and Claude's
    own turns continue without a page ([connections](protocol.md#connections)),
