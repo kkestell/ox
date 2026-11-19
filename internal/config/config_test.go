@@ -74,3 +74,22 @@ func TestCatalogListsArePresent(t *testing.T) {
 		t.Errorf("a model without effort levels is served null: %s", data)
 	}
 }
+
+// An empty ID reaches the harness as an empty flag: Claude given --model=
+// starts with its default model, which the page shows under the choice's name.
+func TestChoicesHaveIDs(t *testing.T) {
+	for _, harness := range []string{
+		`{"models":[{"id":"","name":"M","efforts":[{"id":"low","name":"Low"}]},{"id":"m","name":"M","efforts":[{"id":"low","name":"Low"}]}],"permission_modes":[{"id":"auto","name":"Auto"}]}`,
+		`{"models":[{"id":"m","name":"M","efforts":[{"id":"low","name":"Low"},{"id":"","name":"High"}]}],"permission_modes":[{"id":"auto","name":"Auto"}]}`,
+		`{"models":[{"id":"m","name":"M","efforts":[{"id":"low","name":"Low"}]}],"permission_modes":[{"id":"auto","name":"Auto"},{"id":"","name":"Plan"}]}`,
+	} {
+		path := filepath.Join(t.TempDir(), "config.json")
+		data := `{"harnesses":{"h":` + harness + `},"defaults":{"harness":"h","model":"m","effort":"low","permission_mode":"auto"}}`
+		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Errorf("a choice without an ID loaded: %s", harness)
+		}
+	}
+}

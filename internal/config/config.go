@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"slices"
 )
 
 //go:embed default.json
@@ -59,20 +60,35 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("read %s: content after the configuration", path)
 	}
 	for name, harness := range config.Harnesses {
-		if len(harness.Models) == 0 || len(harness.PermissionModes) == 0 {
-			return nil, fmt.Errorf("%s: harness %q needs models and permission_modes", path, name)
-		}
-		// A model without effort levels is served an empty list.
-		for i := range harness.Models {
-			if harness.Models[i].Efforts == nil {
-				harness.Models[i].Efforts = []Option{}
-			}
+		if err := harness.check(); err != nil {
+			return nil, fmt.Errorf("%s: harness %q: %w", path, name, err)
 		}
 	}
 	if err := config.Defaults.check(config.Harnesses); err != nil {
 		return nil, fmt.Errorf("%s: defaults: %w", path, err)
 	}
 	return &config, nil
+}
+
+// check requires every list a client reads and an ID for every choice, which
+// the harness receives as a flag. A model without effort levels is served an
+// empty list.
+func (h Harness) check() error {
+	if len(h.Models) == 0 || len(h.PermissionModes) == 0 {
+		return errors.New("needs models and permission_modes")
+	}
+	for i, m := range h.Models {
+		if m.Efforts == nil {
+			h.Models[i].Efforts = []Option{}
+		}
+		if m.ID == "" || slices.ContainsFunc(m.Efforts, func(o Option) bool { return o.ID == "" }) {
+			return errors.New("every model and effort level needs an id")
+		}
+	}
+	if slices.ContainsFunc(h.PermissionModes, func(o Option) bool { return o.ID == "" }) {
+		return errors.New("every permission mode needs an id")
+	}
+	return nil
 }
 
 func (d Defaults) check(harnesses map[string]Harness) error {

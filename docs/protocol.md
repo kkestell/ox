@@ -64,8 +64,8 @@ The daemon reads the harnesses it offers from `ox/config.json` beneath
 the built-in Claude Code catalog. The daemon validates harness names at startup.
 
 Each harness lists at least one model, each with the effort levels it takes,
-and at least one permission mode. Every choice has an `id`, passed to the
-harness, and a `name` to show. A model with no effort levels omits `efforts`
+and at least one permission mode. Every choice has a nonempty `id`, passed to
+the harness, and a `name` to show. A model with no effort levels omits `efforts`
 or lists none, and takes an empty `effort`. The
 required `defaults` name the harness, model, effort, and permission mode a new
 session starts with, each one of the configured choices; the daemon refuses to
