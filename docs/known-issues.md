@@ -3,7 +3,6 @@
 | Issue | Frequency in real use | Confirmed |
 | --- | --- | --- |
 | [RPC bodies over 1 MiB never settle](#rpc-bodies-over-1-mib-never-settle) | Unknown | Live |
-| [Process exit is detected at stdout EOF](#process-exit-is-detected-at-stdout-eof) | Unknown | Injected fault |
 | [An unknown effort level is ignored](#an-unknown-effort-level-is-ignored) | Unknown | Live |
 | [A failed configuration can leave settings the page does not show](#a-failed-configuration-can-leave-settings-the-page-does-not-show) | Unknown | Source |
 | [An unexpected exit can look like parking](#an-unexpected-exit-can-look-like-parking) | No occurrence | Source |
@@ -17,16 +16,6 @@ a live test, a 1,048,685-byte `session/send` returned `204`, and the event
 stream received `{"id":null,"error":{"code":-32700,"message":"Parse error"}}`.
 The page matches replies by ID, so the send remains pending until the
 connection closes. The prompt stays in the box without an error or a response.
-
-## Process exit is detected at stdout EOF
-
-`Process.read` waits for stdout EOF before reporting exit. A child that keeps
-the descriptor open can block parking, destruction, and later requests for
-that session indefinitely. Daemon shutdown also waits for the session.
-
-An injected child inherited stdout and delayed the exit report by 13 seconds.
-In a live comparison, a background Bash `sleep` used a task output file in
-its own process group, and `session/destroy` returned in 0.8 seconds.
 
 ## An unknown effort level is ignored
 

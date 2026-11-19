@@ -17,7 +17,8 @@ import (
 )
 
 type process struct {
-	cmd *exec.Cmd
+	cmd    *exec.Cmd
+	output *os.File // the read end of Claude's stdout
 }
 
 const systemInstructions = "Lead with the big idea up front. " +
@@ -48,12 +49,19 @@ func startProcess(workspace, sessionID string, resume bool, settings agent.Setti
 	if err != nil {
 		return nil, nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
+	// Ox owns the stdout pipe, unlike StdoutPipe's, so Wait neither waits for
+	// it nor closes it: read stops once Claude has exited and its output has
+	// drained, even while a child that inherited the pipe holds it open.
+	stdout, childStdout, err := os.Pipe()
 	if err != nil {
 		stdin.Close()
 		return nil, nil, err
 	}
-	if err := cmd.Start(); err != nil {
+	cmd.Stdout = childStdout
+	err = cmd.Start()
+	childStdout.Close()
+	if err != nil {
+		stdout.Close()
 		return nil, nil, err
 	}
 
@@ -66,10 +74,11 @@ func startProcess(workspace, sessionID string, resume bool, settings agent.Setti
 	if err != nil {
 		cmd.Process.Kill()
 		cmd.Wait()
+		stdout.Close()
 		return nil, nil, fmt.Errorf("initialize Claude: %w", err)
 	}
 
-	p := &process{cmd: cmd}
+	p := &process{cmd: cmd, output: stdout}
 	go p.read(output, events)
 	return p, newWriter(stdin), nil
 }
@@ -114,7 +123,16 @@ func initialize(input io.Writer, output *bufio.Reader) error {
 	}
 }
 
+// read delivers Claude's output, then its exit. Output Claude wrote before
+// exiting is already in the pipe; a second after the exit, reading stops even
+// if a child still holds the pipe open.
 func (p *process) read(output *bufio.Reader, events chan<- agent.Event) {
+	exited := make(chan error, 1)
+	go func() {
+		err := p.cmd.Wait()
+		p.output.SetReadDeadline(time.Now().Add(time.Second))
+		exited <- err
+	}()
 	for {
 		line, err := output.ReadBytes('\n')
 		if err != nil {
@@ -125,7 +143,8 @@ func (p *process) read(output *bufio.Reader, events chan<- agent.Event) {
 			events <- m
 		}
 	}
-	events <- processExit{p.cmd.Wait()}
+	p.output.Close()
+	events <- processExit{<-exited}
 }
 
 // Terminate asks Claude to exit so it can clean up its tool processes.
