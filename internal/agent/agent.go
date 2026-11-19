@@ -10,6 +10,7 @@ var (
 	ErrExited           = errors.New("agent has exited")
 	ErrBusy             = errors.New("agent is busy")
 	ErrApprovalNotFound = errors.New("approval request is no longer pending")
+	ErrNoConversation   = errors.New("the conversation to resume no longer exists")
 )
 
 // Agent runs one harness instance. The session goroutine owns all method
@@ -56,7 +57,8 @@ type Options struct {
 	SessionID string // the session's ID, which the harness's own log lines name
 	Workspace string
 	// Resume is the harness's token for the conversation to continue; empty
-	// starts a new one.
+	// starts a new one. Start returns ErrNoConversation when the harness has
+	// no conversation for it.
 	Resume   string
 	Settings Settings
 	OnUpdate func(Update)

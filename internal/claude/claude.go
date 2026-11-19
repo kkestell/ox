@@ -135,12 +135,16 @@ func startProcess(workspace, logID, sessionID string, resume bool, settings agen
 // initialize sends Claude's handshake and waits for its answer. Claude can
 // fail at startup with an error result or plain text and exit, sometimes
 // before it reads the handshake; the last such output is the error. Without
-// one, the error is what diagnostic returns, Claude's stderr, if any.
+// one, the error is what diagnostic returns, Claude's stderr, if any. A
+// resume whose conversation Claude no longer has fails with
+// agent.ErrNoConversation, even when Claude answers the handshake after
+// reporting it.
 func initialize(input io.Writer, output *bufio.Reader, diagnostic func() string) error {
 	// Declare Stop to receive pending schedules at the end of each completed turn.
 	const request = `{"type":"control_request","request_id":"initialize","request":{"subtype":"initialize","hooks":{"Stop":[{"hookCallbackIds":["stop"]}]}}}`
 	_, writeErr := io.WriteString(input, request+"\n")
 	var reason string
+	noConversation := false
 	for {
 		// A line that ends at EOF is still a line.
 		line, err := output.ReadBytes('\n')
@@ -149,11 +153,19 @@ func initialize(input io.Writer, output *bufio.Reader, diagnostic func() string)
 		case strings.TrimSpace(string(line)) == "":
 		case json.Unmarshal(line, &m) != nil:
 			reason = strings.TrimSpace(string(line))
+			noConversation = false
 		case m.Type == "result" && m.failed():
 			reason = m.errorText()
+			noConversation = m.Subtype == "error_during_execution" && len(m.Errors) > 0 &&
+				strings.HasPrefix(m.Errors[0], "No conversation found with session ID")
 		case m.Type == "control_response" && m.Response.RequestID == "initialize":
 			if m.Response.Subtype != "success" {
 				return fmt.Errorf("Claude refused initialization (%s): %s", m.Response.Subtype, m.Response.Error)
+			}
+			// Claude can report the missing conversation before its
+			// response, then exit.
+			if noConversation {
+				return fmt.Errorf("%w: %s", agent.ErrNoConversation, reason)
 			}
 			return nil
 		}
@@ -162,6 +174,8 @@ func initialize(input io.Writer, output *bufio.Reader, diagnostic func() string)
 				reason = diagnostic()
 			}
 			switch {
+			case noConversation:
+				return fmt.Errorf("%w: %s", agent.ErrNoConversation, reason)
 			case reason != "":
 				return errors.New(reason)
 			case writeErr != nil:

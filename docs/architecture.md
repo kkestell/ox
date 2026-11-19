@@ -39,7 +39,9 @@ cmd/oxd            socket, database, and configuration paths, signals, the harne
 
 The server loads the stored workspaces and sessions at startup, all parked. A
 session's ID is Ox's own. The session stores the harness's conversation token
-when it receives `OnResumable` and supplies it at later starts. See the
+when it receives `OnResumable` and supplies it at later starts. It clears the
+token when `Start` returns `ErrNoConversation`, so the next start begins a new
+conversation. See the
 [session lifecycle](protocol.md#workspaces-and-sessions) for client behavior.
 
 Each session runs on its own goroutine, which owns its settings, resume token,

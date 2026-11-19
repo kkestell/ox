@@ -43,7 +43,10 @@ contract that defines its details. Reviews check changes against them.
    and a request that fails shows its error even if a later one started
    first. A start that fails carries the reason Claude printed on stdout or,
    failing that, the end of its stderr, and a process that exits without
-   being stopped leaves an `exited` entry in the transcript.
+   being stopped leaves an `exited` entry in the transcript. A send that finds
+   Claude can no longer resume the conversation fails with a notice in the
+   transcript, and the next send starts a new conversation without the
+   earlier context.
 
 6. **Sessions are independent.** A session starting, configuring, or
    running holds up only its own requests

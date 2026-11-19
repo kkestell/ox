@@ -47,8 +47,13 @@ daemon. Each workspace and session records when it was created, as
 `created_at`, an RFC 3339 timestamp.
 
 A new session starts parked. `session/send` starts its harness and resumes
-its conversation when a resume token is available. The session parks when
-the harness exits, including at daemon shutdown.
+its conversation when a resume token is available. When Claude no longer has
+the conversation, as after it
+[deletes the transcript](claude-code.md#10-transcripts-on-disk), the send
+fails, an `exited` update says so, and the next send starts a new
+conversation without the earlier context; the history keeps the earlier
+transcript. The session parks when the harness exits, including at daemon
+shutdown.
 
 The daemon parks a session after five minutes of harness inactivity
 (`-park-after` changes the period). For Claude, that means idle with no prompt,
@@ -327,7 +332,7 @@ can run after a prompt's `result` and before the `idle` that releases it:
 | `approval` | `request_id`: string; `request`: object | A pending Claude request needing a client decision. |
 | `approval_answered` | `request_id`: string | A client answered the approval. |
 | `approval_cancelled` | `request_id`: string | Withdraw an unanswered approval. Discard any later answer. |
-| `exited` | `error`: string | The process exited during an active prompt, which has ended, or exited without being stopped. |
+| `exited` | `error`: string | The process exited during an active prompt, which has ended, or exited without being stopped, or could not resume the session's conversation. |
 | `parked` | — | The session's process has exited, for any reason. The last update from that process. |
 
 `running` means Claude is working. `requires_action` means it is waiting for

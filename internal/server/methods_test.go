@@ -2,12 +2,14 @@ package server
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/kkestell/ox/internal/agent"
+	"github.com/kkestell/ox/internal/claude"
 	"github.com/kkestell/ox/internal/config"
 	"github.com/kkestell/ox/internal/fake"
 	"github.com/kkestell/ox/internal/jsonrpc"
@@ -272,5 +274,67 @@ func TestConfigurationOutlivesItsProcess(t *testing.T) {
 	configured := c.next(func(m message) bool { return m.Method == "session/configured" })
 	if !strings.Contains(string(configured.Params), `"effort":"high"`) {
 		t.Fatalf("the requested settings were not taken: %s", configured.Params)
+	}
+}
+
+// A resume token whose conversation Claude no longer has, such as one whose
+// transcript Claude deleted, fails one send with a notice in the transcript;
+// the next send starts a new conversation.
+func TestUnresumableConversationStartsAnew(t *testing.T) {
+	dir := t.TempDir()
+	args := filepath.Join(dir, "args")
+	// A stand-in for Claude, which fails a resume as Claude does when it has
+	// no transcript for the ID.
+	script := "#!/bin/sh\necho \"$@\" >> " + args + "\n" +
+		`case "$*" in *--resume=*) echo '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["No conversation found with session ID: gone"]}'; exit 1;; esac` + "\n" +
+		"read line\n" +
+		`echo '{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}'` + "\n" +
+		"exec cat >/dev/null\n"
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	st := openStore(t)
+	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: dir, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Model: "m", PermissionMode: "plan", ResumeToken: "gone", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(st, &config.Config{}, 0, map[string]agent.Start{"claude": claude.Start})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c := connect(t, s)
+
+	failed := c.request("session/send", map[string]string{"session_id": "s", "text": "hi"})
+	if failed.Error == nil || failed.Error.Message != lostConversation {
+		t.Fatalf("a send that found the conversation gone did not say so: %+v", failed.Error)
+	}
+	if notice := c.update("s", "exited"); notice.Error != lostConversation {
+		t.Fatalf("the transcript has no notice: %+v", notice)
+	}
+	var got struct {
+		History []agent.Update `json:"history"`
+	}
+	json.Unmarshal(c.call("session/get", map[string]string{"session_id": "s"}), &got)
+	if len(got.History) != 1 || got.History[0].Error != lostConversation {
+		t.Fatalf("the notice was not recorded: %+v", got.History)
+	}
+
+	c.call("session/send", map[string]string{"session_id": "s", "text": "hi"})
+	starts, err := os.ReadFile(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(starts)), "\n")
+	if len(lines) != 2 || strings.Contains(lines[1], "--resume") || !strings.Contains(lines[1], "--session-id=") {
+		t.Fatalf("the next send did not start a new conversation: %q", lines)
+	}
+	workspaces, err := st.Workspaces()
+	if err != nil || workspaces[0].Sessions[0].ResumeToken != "" {
+		t.Fatalf("the stored token was kept: %v", err)
 	}
 }

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -112,6 +113,9 @@ func (sess *session) start() error {
 		OnResumable: sess.markResumable,
 		OnError:     func(err error) { log.Printf("session %s: %v", sess.id, err) },
 	})
+	if errors.Is(err, agent.ErrNoConversation) {
+		return sess.forgetConversation(err)
+	}
 	if err != nil {
 		return err
 	}
@@ -166,4 +170,22 @@ func (sess *session) markResumable(token string) {
 		return
 	}
 	sess.resumeToken = token
+}
+
+// lostConversation tells the user that the next prompt starts a new
+// conversation. The send that found the conversation gone fails with it, so
+// the user decides whether to send the prompt without the earlier context.
+const lostConversation = "Claude could not resume the earlier conversation; the next prompt starts a new one without its context"
+
+// forgetConversation clears a resume token the harness can no longer resume,
+// such as one whose transcript Claude has deleted, and leaves a notice in the
+// transcript.
+func (sess *session) forgetConversation(cause error) error {
+	log.Printf("session %s: %v", sess.id, cause)
+	if err := sess.save(sess.settings, ""); err != nil {
+		return err
+	}
+	sess.resumeToken = ""
+	sess.update(agent.Update{Type: agent.UpdateExited, Error: lostConversation, Time: time.Now()})
+	return errors.New(lostConversation)
 }
