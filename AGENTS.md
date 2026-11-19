@@ -25,6 +25,7 @@ We test with `make dev`. Ox's test state is disposable.
 ├── docs
 │   ├── architecture.md        # how oxd and ox are built
 │   ├── claude-code.md         # observed Claude Code behavior
+│   ├── guarantees.md          # behavior Ox promises
 │   ├── known-issues.md        # unfixed defects
 │   ├── protocol.md            # the interface oxd serves
 │   └── todo.md                # planned work
@@ -170,6 +171,8 @@ facts listed for it:
   events, and errors.
 - `docs/claude-code.md`: how Claude Code behaves when driven with `claude -p`
   and stream-json, as observed.
+- `docs/guarantees.md`: the behavior Ox promises the person using it, linked
+  to the contracts that define it.
 - `docs/known-issues.md`: confirmed defects that are not fixed yet, kept as
   the Defects section describes.
 - `docs/todo.md`: planned work, by priority.
