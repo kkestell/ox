@@ -4,9 +4,10 @@ Use `make dev` to work on the [web client](../../../docs/architecture.md#web-ui)
 
 - Lint and format with Biome: `npm run lint` checks, `npm run fix` rewrites.
   `make test` runs the check.
-- The user checks UI changes by eye. The report on a UI change names the views
-  it touches, and that list is all it says about checking them. Open a browser
-  only when the user asks, and drive it with Playwright.
+- The user judges how UI changes look; the report on a UI change names the
+  views it touches. Check how a change behaves in headless Chrome with
+  Playwright, through `make e2e` specs or against a stack started on spare
+  ports.
 - `make e2e` runs the Playwright specs in `e2e` in headless Chrome against
   `ox` and `oxd` with the fake harness. Each spec file runs its own `oxd` and
   relay on a temporary socket, database, and port. `approval.spec.ts` uses

@@ -144,8 +144,10 @@ We test with `make dev`. Ox's test state is disposable.
 
 ## Verification
 
-- Keep unit tests minimal. Use them for consequential logic that benefits from
-  an isolated check, not to mirror the implementation.
+- Each behavior a change adds or fixes keeps a test that fails without it, at
+  the cheapest layer that observes it. A probe that confirms a behavior becomes
+  that test. Tests check behavior through public interfaces, not the
+  implementation.
 - Prefer small live tests against real Claude Code processes, using Haiku only.
   Check observable protocol behavior rather than exact model wording. They live
   in `TestLive` and the web client's `approval.spec.ts`, and run with
@@ -153,7 +155,11 @@ We test with `make dev`. Ox's test state is disposable.
 - Keep test setup simple; avoid elaborate mocks and fake runtimes.
 - `make test`, `make e2e`, and `make dev` build with the race detector. A data race fails
   the test, or stops `oxd` with the race's report.
-- Report what was verified and any live checks that could not be run.
+- A change is done once every check that covers it has run: `make test` and
+  `make e2e`; `make live` when it changes how Ox drives Claude Code; and a
+  check in headless Chrome through the `make dev` stack when it changes how
+  the page reaches `oxd`. A check is reported as not run only when something
+  the agent cannot change blocks it, named in the report.
 
 ## Documentation
 
