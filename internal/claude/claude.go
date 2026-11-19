@@ -61,7 +61,12 @@ func startProcess(workspace, sessionID string, resume bool, settings agent.Setti
 
 	cmd := exec.Command("claude", args...)
 	cmd.Dir = workspace
-	cmd.Env = append(cmd.Environ(), "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1")
+	// In -p mode Claude bills an API key it inherits instead of the user's
+	// subscription.
+	env := slices.DeleteFunc(cmd.Environ(), func(v string) bool {
+		return strings.HasPrefix(v, "ANTHROPIC_API_KEY=") || strings.HasPrefix(v, "ANTHROPIC_AUTH_TOKEN=")
+	})
+	cmd.Env = append(env, "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, nil, err
