@@ -1,6 +1,6 @@
 import { action, createOptimistic, createSignal, For, Match, onSettled, Show, Switch } from "solid-js";
 import { ApprovalRequest } from "./ApprovalRequest";
-import { createAttempt, type Entry, type Session, useOx } from "./ox";
+import { createAttempt, type Entry, type Session, toolSubject, useOx } from "./ox";
 import type { Settings } from "./protocol";
 import { defaultSettings, type ModelChoice, ModelPicker, Select } from "./SettingsFields";
 
@@ -18,7 +18,12 @@ function sendOnEnter(event: KeyboardEvent & { currentTarget: HTMLTextAreaElement
 // scrolled up.
 function pinToBottom(log: HTMLElement) {
   let pinned = true;
+  let top = log.scrollTop;
+  // Chrome also fires scroll when the log shrinks without moving; only a
+  // move counts as the user scrolling.
   log.addEventListener("scroll", () => {
+    if (log.scrollTop === top) return;
+    top = log.scrollTop;
     pinned = log.scrollHeight - log.scrollTop - log.clientHeight < 32;
   });
   const follow = () => {
@@ -188,10 +193,7 @@ function Transcript(props: { entries: Entry[] }) {
 }
 
 function ToolCall(props: { tool: Tool }) {
-  const detail = () => {
-    const first = Object.values(props.tool.input).find((v) => typeof v === "string") ?? "";
-    return first.split("\n")[0].slice(0, 120);
-  };
+  const detail = () => toolSubject(props.tool.input).split("\n")[0].slice(0, 120);
   const status = () => (props.tool.result ? (props.tool.result.is_error ? "failed" : "done") : "running");
   return (
     <details class="tool">

@@ -28,6 +28,11 @@ export type Entry =
 
 export type Approval = { id: string; request: ApprovalRequest };
 
+// toolSubject is what a tool call acts on, such as Bash's command or Edit's
+// file: the first string in its input.
+export const toolSubject = (input: Record<string, unknown>) =>
+  Object.values(input).find((v): v is string => typeof v === "string") ?? "";
+
 export type Session = {
   id: string;
   workspaceId: string;

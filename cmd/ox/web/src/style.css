@@ -186,6 +186,10 @@ details.tool pre + pre { border-top: 1px solid var(--border); }
 }
 .approval { display: flex; flex-direction: column; gap: 0.75rem; }
 .approval > p { color: var(--foreground); }
+.approval .subject {
+  padding: 0.5rem 0.75rem; border-radius: var(--radius-md); background: var(--secondary);
+  white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 0.75rem;
+}
 .approval .choice { display: grid; grid-template-columns: auto 1fr; align-items: start; column-gap: 0.75rem; padding: 0.375rem 0; }
 .approval .choice label { line-height: 1.25rem; color: var(--foreground); }
 .approval .choice input[type="radio"] { margin-top: 0.125rem; }
