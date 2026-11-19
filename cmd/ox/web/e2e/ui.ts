@@ -20,7 +20,7 @@ export const sessionButton = (page: Page, title: string) => page.locator("nav bu
 
 // hold intercepts the page's next request for method until release passes it
 // on, or fail answers it as a relay error.
-export async function hold(page: Page, method: string) {
+export async function hold(page: Page, method: string, sessionId?: string) {
   let release!: () => void;
   let fail!: (message: string) => void;
   const answer = new Promise<(route: Route) => Promise<void>>((resolve) => {
@@ -33,7 +33,9 @@ export async function hold(page: Page, method: string) {
   });
   let taken = false;
   await page.route("**/rpc*", async (route) => {
-    if (taken || route.request().postDataJSON()?.method !== method) return route.fallback();
+    const request = route.request().postDataJSON();
+    if (taken || request?.method !== method || (sessionId && request.params.session_id !== sessionId))
+      return route.fallback();
     taken = true;
     held();
     await (await answer)(route);

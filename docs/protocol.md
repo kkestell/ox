@@ -53,7 +53,7 @@ the harness exits, including at daemon shutdown.
 The daemon parks a session after five minutes of harness inactivity
 (`-park-after` changes the period). For Claude, that means idle with no prompt,
 configuration, approval, background task, or pending schedule. A scheduling
-tool call also keeps the harness active until its next
+tool call or a resumed conversation keeps the harness active until its next
 [Stop hook schedule report](claude-code.md#8-background-work-and-schedules).
 
 ## Configuration
@@ -135,13 +135,17 @@ there. A setting the [configuration](#configuration) does not offer returns
 
 | Parameter | Required | Meaning |
 | --- | --- | --- |
+| `session_id` | No | A client-chosen ID of 32 hexadecimal digits. Omit it for a daemon-generated ID. |
 | `workspace_id` | Yes | The workspace whose directory the harness runs in. |
 | `harness` | Yes | A harness in the configuration. |
 | `model` | Yes | One of the harness's models; passed to Claude's `--model` flag. |
 | `effort` | No | One of the model's effort levels; passed to Claude's `--effort` flag. A model without effort levels takes an empty or omitted value, which leaves the flag unset. |
 | `permission_mode` | Yes | One of the harness's permission modes; passed to Claude's `--permission-mode` flag. |
 
-Each process the session starts receives the stored settings.
+A repeat using the same ID in the same workspace returns the existing ID and
+`"existing":true`. It leaves the session and its settings intact. An ID already
+used by another workspace is refused. Each process starts with the session's
+stored settings.
 
 ```json
 {"jsonrpc":"2.0","id":3,"method":"session/create","params":{"workspace_id":"workspace-id","harness":"claude","model":"claude-haiku-5-5","effort":"low","permission_mode":"manual"}}

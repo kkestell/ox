@@ -3,6 +3,7 @@ package server
 import (
 	"cmp"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -172,12 +173,42 @@ func (s *Server) listWorkspaces(reply replyFunc, id json.RawMessage) {
 
 func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 	var input struct {
+		SessionID   string `json:"session_id"`
 		WorkspaceID string `json:"workspace_id"`
 		Harness     string `json:"harness"`
 		agent.Settings
 	}
 	if err := json.Unmarshal(params, &input); err != nil || input.WorkspaceID == "" || input.Harness == "" {
 		reply(invalidParams(id, "workspace_id, harness, model, and permission_mode are required"))
+		return
+	}
+	if input.SessionID != "" {
+		if _, err := hex.DecodeString(input.SessionID); len(input.SessionID) != 32 || err != nil {
+			reply(invalidParams(id, "session_id must be 32 hexadecimal digits"))
+			return
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Close ends the goroutine of every session that exists when it starts.
+	if s.closed {
+		reply(shuttingDown(id))
+		return
+	}
+	w := s.workspace(input.WorkspaceID)
+	type result struct {
+		SessionID string `json:"session_id"`
+		Existing  bool   `json:"existing,omitempty"`
+	}
+	sessionID := input.SessionID
+	if sessionID == "" {
+		sessionID = rand.Text()
+	} else if existing := s.sessions[sessionID]; existing != nil {
+		if w == nil || !slices.Contains(w.sessions, existing) {
+			reply(invalidParams(id, "session_id belongs to another workspace"))
+			return
+		}
+		reply(jsonrpc.Success(id, result{SessionID: sessionID, Existing: true}))
 		return
 	}
 	harness, offered := s.config.Harnesses[input.Harness]
@@ -190,20 +221,12 @@ func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 		return
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	// Close ends the goroutine of every session that exists when it starts.
-	if s.closed {
-		reply(shuttingDown(id))
-		return
-	}
-	w := s.workspace(input.WorkspaceID)
 	if w == nil {
 		reply(jsonrpc.Failure(id, notFound, "workspace not found"))
 		return
 	}
 	record := &store.Session{
-		ID: rand.Text(), Harness: input.Harness, Model: input.Model, Effort: input.Effort, PermissionMode: input.PermissionMode,
+		ID: sessionID, Harness: input.Harness, Model: input.Model, Effort: input.Effort, PermissionMode: input.PermissionMode,
 		CreatedAt: time.Now(),
 	}
 	if err := s.store.AddSession(w.id, record); err != nil {
@@ -219,9 +242,7 @@ func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 		Harness     string    `json:"harness"`
 		CreatedAt   time.Time `json:"created_at"`
 	}{sess.id, w.id, sess.harness, sess.createdAt})
-	reply(jsonrpc.Success(id, struct {
-		SessionID string `json:"session_id"`
-	}{sess.id}))
+	reply(jsonrpc.Success(id, result{SessionID: sess.id}))
 }
 
 // getSession returns a session's settings, history, and current state. Every

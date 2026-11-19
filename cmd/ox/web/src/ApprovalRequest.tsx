@@ -1,5 +1,5 @@
 import { createSignal, createUniqueId, snapshot } from "solid-js";
-import { type Approval, toolSubject } from "./ox";
+import { type Approval, toolInputJSON, toolSubject } from "./ox";
 import type { ApprovalResponse } from "./protocol";
 
 type Choice = "allow" | "deny" | "other";
@@ -51,7 +51,7 @@ export function ApprovalRequest(props: { approval: Approval; onAnswer(response: 
           <span class="subject">{toolSubject(props.approval.request.input) || "Input"}</span>
           <span class="icon chevron-down" />
         </summary>
-        <pre>{JSON.stringify(props.approval.request.input, null, 2)}</pre>
+        <pre>{toolInputJSON(props.approval.request.input)}</pre>
       </details>
       <div class="choices" role="radiogroup" aria-label="Choices">
         <div class="choice">

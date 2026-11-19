@@ -103,9 +103,9 @@ after taking it. Both `available` and `idle` are required to take a prompt or
 configuration, and an interrupt is sent whenever the state is not `idle`.
 
 The agent derives `Parkable` from its phase, its state, pending approvals,
-and counts from [Claude's task and schedule reports](claude-code.md#8-background-work-and-schedules).
-A scheduling tool call sets a flag that the next Stop report with a schedule
-list clears. See the [parking rule](protocol.md#workspaces-and-sessions).
+and [Claude's reports of background work](claude-code.md#8-background-work-and-schedules).
+On resume or after a scheduling tool call, only a Stop report with an empty
+schedule list clears the possible pending work. See the [parking rule](protocol.md#workspaces-and-sessions).
 
 ## Web UI
 
@@ -123,7 +123,7 @@ as Server-Sent Events, and `/rpc` posts the page's JSON-RPC requests to the sock
 | `protocol.ts` | Types for the `oxd` methods, updates, and notifications. |
 | `connection.ts` | Opening the event stream, sending requests, matching replies, and reporting stream errors. |
 | `ox.tsx` | A provider that reloads the catalog, workspaces, and sessions on each connection, updating loaded sessions in place so their views keep their state, applies notifications, and exposes RPC calls; each session's control; `createAttempt`, which shows a request's error. |
-| `App.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `ApprovalRequest.tsx`, `SettingsFields.tsx`, `HarnessIcon.tsx` | The components. |
+| `App.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `NewSessionView.tsx`, `ApprovalRequest.tsx`, `SettingsFields.tsx`, `HarnessIcon.tsx` | The components. |
 
 The page shows stream errors while reconnecting and asks for a reload if the
 browser closes the stream after `ox` refuses it.
@@ -135,6 +135,11 @@ text and repeats no request. A send and a configuration exclude each other.
 The settings form sends a patch to
 [`session/configure`](protocol.md#sessionconfigure) and shows the requested
 values, each changed one with a spinner, and Send disabled until the request
-settles; then it shows the stored settings. The new-session view creates the session and hands its text
-to the session's control, which sends the first prompt. The page then selects
-the session unless the user has selected something else.
+settles. After a reconnect each session waits for its own snapshot before
+allowing another send or settings change.
+
+The page keeps one draft per workspace. Its ID and composer carry over to
+the created session. A successful create sends the submitted text once.
+If the reply is lost, the page can recognize the session after reconnect,
+restore its composer and let the user decide when to send. A failed creation
+in another view links back to the draft.

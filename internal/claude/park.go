@@ -6,15 +6,13 @@ import (
 )
 
 func (a *Agent) Parkable() bool {
-	return a.idle() && len(a.approvals) == 0 && a.background == 0 && a.schedules == 0 && !a.scheduling
+	return a.idle() && len(a.approvals) == 0 && a.background == 0 && !a.mayHaveSchedules
 }
 
-// A scheduling tool call keeps the agent active until Stop supplies a fresh
-// count. Interrupted and failed turns can leave the previous count in effect.
+// Only a Stop report with a schedule list settles whether Claude has work pending.
 func (a *Agent) stopHook(requestID string, crons *[]json.RawMessage) {
 	if crons != nil {
-		a.schedules = len(*crons)
-		a.scheduling = false
+		a.mayHaveSchedules = len(*crons) > 0
 	}
 	if err := a.input.Respond(requestID, map[string]any{}); err != nil {
 		a.onError(fmt.Errorf("answer Claude's Stop hook: %w", err))

@@ -66,6 +66,50 @@ func TestSettingsValidation(t *testing.T) {
 	}
 }
 
+// A client that missed its create reply can identify the same parked
+// session without overwriting settings another page has since changed.
+func TestRepeatSessionCreation(t *testing.T) {
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "no-config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(openStore(t), cfg, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c := connect(t, s)
+	workspace := func() string {
+		var w struct {
+			ID string `json:"workspace_id"`
+		}
+		json.Unmarshal(c.call("workspace/create", map[string]string{"path": t.TempDir()}), &w)
+		return w.ID
+	}
+	id := "00112233445566778899aabbccddeeff"
+	params := map[string]string{
+		"workspace_id": workspace(), "session_id": id, "harness": cfg.Defaults.Harness,
+		"model": cfg.Defaults.Model, "effort": cfg.Defaults.Effort, "permission_mode": cfg.Defaults.PermissionMode,
+	}
+	check := func(existing bool) {
+		t.Helper()
+		var got struct {
+			ID       string `json:"session_id"`
+			Existing bool   `json:"existing"`
+		}
+		if err := json.Unmarshal(c.call("session/create", params), &got); err != nil || got.ID != id || got.Existing != existing {
+			t.Fatalf("repeat=%v returned %+v, %v", existing, got, err)
+		}
+	}
+	check(false)
+	params["permission_mode"] = "obsolete"
+	check(true)
+	params["workspace_id"] = workspace()
+	if r := c.request("session/create", params); r.Error == nil || r.Error.Code != jsonrpc.InvalidParams {
+		t.Fatal("a different workspace claimed the session")
+	}
+}
+
 func TestSessionLifecycle(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
 		Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}}},

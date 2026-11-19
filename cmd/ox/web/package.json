@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@solidjs/web": "^2.0.1",
+    "@ungap/raw-json": "^0.4.4",
     "solid-js": "^2.0.1"
   },
   "devDependencies": {

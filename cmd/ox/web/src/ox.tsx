@@ -1,4 +1,14 @@
-import { createContext, createSignal, createStore, onSettled, type ParentProps, reconcile, useContext } from "solid-js";
+import { stringify } from "@ungap/raw-json";
+import {
+  createContext,
+  createSignal,
+  createStore,
+  onSettled,
+  type ParentProps,
+  reconcile,
+  snapshot,
+  useContext,
+} from "solid-js";
 import { type Connection, connect, RpcError } from "./connection";
 import {
   type ApprovalRequest,
@@ -33,6 +43,9 @@ export type Approval = { id: string; request: ApprovalRequest };
 export const toolSubject = (input: Record<string, unknown>) =>
   Object.values(input).find((v): v is string => typeof v === "string") ?? "";
 
+// Raw JSON numbers must reach the serializer outside the store's proxy.
+export const toolInputJSON = (input: Record<string, unknown>) => stringify(snapshot(input), null, 2);
+
 export type Session = {
   id: string;
   workspaceId: string;
@@ -42,6 +55,7 @@ export type Session = {
   settings: Settings;
   entries: Entry[];
   approvals: Approval[];
+  synced: boolean;
 };
 
 const settingsOf = (p: Settings): Settings => ({
@@ -113,7 +127,7 @@ export function createAttempt() {
       (e: Error) => setError(e.message),
     );
   };
-  return [error, attempt, clear] as const;
+  return [error, attempt, clear, setError] as const;
 }
 
 // SessionControl is the page's side of one session: its composer text and the
@@ -121,22 +135,32 @@ export function createAttempt() {
 // session's view, so leaving the view, or reconnecting, keeps the text and
 // repeats no request. A send and a configuration exclude each other, so a
 // prompt runs with the settings the page shows.
-function createSessionControl(id: string, rpc: Connection["rpc"], stored: () => Settings | undefined) {
+function createSessionControl(
+  id: string,
+  rpc: Connection["rpc"],
+  stored: () => Settings | undefined,
+  ready: () => boolean,
+) {
   const [text, setText] = createSignal("");
   const [sending, setSending] = createSignal(false);
   const [requested, setRequested] = createSignal<Settings>();
-  const [error, attempt] = createAttempt();
-  const busy = () => sending() || requested() !== undefined;
+  const [error, attempt, , reportError] = createAttempt();
+  const [creating, setCreating] = createSignal(false);
+  const sendBlocked = () => !ready() || sending() || requested() !== undefined;
+  const busy = () => creating() || sendBlocked();
   return {
     text,
     setText,
     error,
     busy,
+    creating,
+    setCreating,
+    reportError,
     // requested is the settings a configuration in flight asks for.
     requested,
     // send sends a prompt. Text typed while it is pending stays in the box.
     send(sent: string) {
-      if (busy() || !sent.trim()) return;
+      if (sendBlocked() || !sent.trim()) return;
       setSending(true);
       const request = rpc("session/send", { session_id: id, text: sent }).then(() => {
         if (text() === sent) setText("");
@@ -175,6 +199,7 @@ function createOx() {
   });
   const [error, setError] = createSignal<string>();
   const controls = new Map<string, SessionControl>();
+  const [ready, setReady] = createSignal(false);
   let connection!: Connection;
 
   // control returns the page's control of a session, which may not be loaded
@@ -186,6 +211,7 @@ function createOx() {
         id,
         (method, params) => connection.rpc(method, params),
         () => state.sessions[id]?.settings,
+        () => ready() && (state.sessions[id]?.synced ?? true),
       );
       controls.set(id, c);
     }
@@ -214,6 +240,7 @@ function createOx() {
       settings: settingsOf(result),
       entries: [],
       approvals: [],
+      synced: true,
     };
     for (const u of result.history) apply(session, u);
     for (const a of result.approvals) session.approvals.push({ id: a.request_id, request: a.request });
@@ -225,6 +252,7 @@ function createOx() {
         s.sessions[id] = session;
         return;
       }
+      loaded.synced = true;
       loaded.state = session.state;
       loaded.settings = session.settings;
       loaded.entries = session.entries;
@@ -246,9 +274,14 @@ function createOx() {
         workspaces.map((w) => ({ id: w.workspace_id, path: w.path })),
         "id",
       )(s.workspaces);
-      for (const id of Object.keys(s.sessions)) if (!listed.has(id)) delete s.sessions[id];
+      for (const id of Object.keys(s.sessions)) {
+        if (!listed.has(id)) {
+          delete s.sessions[id];
+          controls.delete(id);
+        }
+      }
     });
-    for (const id of controls.keys()) if (!listed.has(id)) controls.delete(id);
+    setReady(true);
     await Promise.all(
       workspaces.flatMap((w) => w.sessions.map((s) => load(s.session_id, w.workspace_id, s.harness, s.created_at))),
     );
@@ -284,21 +317,34 @@ function createOx() {
   const fail = (e: Error) => setError(e.message);
 
   onSettled(() => {
-    connection = connect({ onConnect: () => void reload().catch(fail), onNotification: receive, onError: fail });
+    connection = connect({
+      onConnect: () => {
+        void reload().catch(fail);
+      },
+      onNotification: receive,
+      onError: (error) => {
+        setReady(false);
+        setState((s) => {
+          for (const session of Object.values(s.sessions)) session.synced = false;
+        });
+        fail(error);
+      },
+    });
     return () => connection.close();
   });
 
   return {
     state,
     error,
+    ready,
     addWorkspace: (path: string) => connection.rpc("workspace/create", { path }),
-    async createSession(workspaceId: string, harness: string, settings: Settings) {
-      const { session_id } = await connection.rpc("session/create", {
+    createSession(id: string, workspaceId: string, harness: string, settings: Settings) {
+      return connection.rpc("session/create", {
+        session_id: id,
         workspace_id: workspaceId,
         harness,
         ...settings,
       });
-      return session_id;
     },
     control,
     destroy: (id: string) => connection.rpc("session/destroy", { session_id: id }),

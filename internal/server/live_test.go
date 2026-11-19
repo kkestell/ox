@@ -208,7 +208,7 @@ func TestLive(t *testing.T) {
 	if !deniedBash {
 		t.Fatal("Bash did not ask for approval; no interrupting denial was sent")
 	}
-	completed := create("acceptEdits")
+	completed := create("manual")
 	tools = turn(completed, "Use the CronCreate tool to create a recurring job with cron '*/30 * * * *' and prompt 'say hi'. "+
 		"Then reply with just the word ok.", allow)
 	if !slices.Contains(tools, "CronCreate") {
@@ -223,5 +223,26 @@ func TestLive(t *testing.T) {
 	}
 	if !parked(a) {
 		t.Error("an idle session with nothing scheduled did not park")
+	}
+
+	t.Log("a resumed session keeps restored schedules through an interrupted first turn")
+	s.Close()
+	restarted, err := New(st, cfg, 2*time.Second, map[string]agent.Start{"claude": claude.Start})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restarted.Close)
+	c = connect(t, restarted)
+	c.timeout = 3 * time.Minute
+	// Use the session whose completed turn created a recurring job. Deny
+	// the first tool on resume so Claude never sends a Stop schedule report.
+	deniedBash = false
+	turn(completed, "Run the Bash command `touch resumed.txt` now.", denyBash)
+	if !deniedBash {
+		t.Fatal("the first turn on resume did not reach an interrupting denial")
+	}
+	time.Sleep(4 * time.Second)
+	if parked(completed) {
+		t.Error("the interrupted first turn let the resumed session park")
 	}
 }

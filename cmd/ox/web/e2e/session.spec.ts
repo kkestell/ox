@@ -175,3 +175,93 @@ test("a send held in one session leaves another usable", async ({ page }) => {
   await sessionButton(page, "first session").click();
   await expect(page.locator(".reply").last()).toHaveText("You said: held prompt");
 });
+
+// The fake harness has no approval tool. Replay the raw event a client receives.
+test("Allow sends the exact numbers displayed in the tool input", async ({ page }) => {
+  await page.addInitScript(() => {
+    const BrowserEventSource = window.EventSource;
+    window.EventSource = class extends BrowserEventSource {
+      constructor(url: string | URL, init?: EventSourceInit) {
+        super(url, init);
+        window.addEventListener("approval-fixture", (event) =>
+          this.dispatchEvent(new MessageEvent("message", { data: (event as CustomEvent).detail })),
+        );
+      }
+    };
+  });
+  await open(page, services);
+  await newSession(page, "approval fixture");
+
+  const input = '{"ids":[9007199254740993],"amount":1.00000000000000001}';
+  const id = new URL(page.url()).hash.slice(1);
+  const update = `{"method":"session/update","params":{"session_id":"${id}","type":"approval","request_id":"req","request":{"tool_name":"Example","input":${input}}}}`;
+  await page.evaluate((detail) => window.dispatchEvent(new CustomEvent("approval-fixture", { detail })), update);
+  const card = page.locator(".approval");
+  await card.locator("summary").click();
+  await expect(card.locator("pre")).toHaveText('{ "ids": [ 9007199254740993 ], "amount": 1.00000000000000001 }');
+  await card.getByLabel("Allow").check();
+  const answer = page.waitForRequest((r) => r.postDataJSON()?.method === "session/approve");
+  await card.getByRole("button", { name: "Submit" }).click();
+  expect((await answer).postData()).toContain(`"updatedInput":${input}`);
+});
+
+test("a lost creation reply is recovered after leaving the draft", async ({ page }) => {
+  await page.addInitScript(() => {
+    const Original = window.EventSource;
+    window.EventSource = class extends Original {
+      constructor(url: string | URL, init?: EventSourceInit) {
+        super(url, init);
+        this.addEventListener("message", (event) => {
+          if (document.body.dataset.dropCreate && JSON.parse(event.data).result?.session_id) {
+            delete document.body.dataset.dropCreate;
+            event.stopImmediatePropagation();
+          }
+        });
+      }
+    };
+  });
+  await open(page, services);
+  await newSession(page, "another conversation");
+  const before = await page.locator("nav button.open").count();
+  await page.getByRole("button", { name: "New session" }).click();
+  await page.evaluate(() => {
+    document.body.dataset.dropCreate = "true";
+  });
+  await prompt(page).fill("recover my prompt");
+  await prompt(page).press("Enter");
+  await expect(page.locator("nav button.open")).toHaveCount(before + 1);
+  await prompt(page).fill("recover my edited prompt");
+  await sessionButton(page, "another conversation").click();
+  await services.restartRelay();
+  await page.getByRole("button", { name: "Reopen draft" }).click();
+  await expect(prompt(page)).toHaveValue("recover my edited prompt");
+  await expect(page.getByRole("alert").filter({ hasText: "Session recovered" })).toBeVisible();
+  await expect(page.locator(".prompt")).toHaveCount(0);
+  await send(page).click();
+  await expect(page.locator(".reply")).toHaveText("You said: recover my edited prompt");
+  await expect(page.locator("nav button.open")).toHaveCount(before + 1);
+});
+
+test("on reconnect each session waits for its own settings", async ({ page, context }) => {
+  await open(page, services);
+  await newSession(page, "available independently");
+  await newSession(page, "refresh my settings");
+  const id = new URL(page.url()).hash.slice(1);
+  const other = await context.newPage();
+  await other.goto(page.url());
+  await expect(other.locator(".reply")).toHaveText("You said: refresh my settings");
+
+  const snapshot = await hold(page, "session/get", id);
+  await services.restartRelay();
+  await snapshot.arrived;
+  await other.locator("select[name=permission_mode]").selectOption("plan");
+  await expect(other.locator("select[name=permission_mode]")).not.toHaveAttribute("aria-busy");
+  await prompt(page).fill("after reload");
+  await expect(send(page)).toBeDisabled();
+  await sessionButton(page, "available independently").click();
+  await expect(send(page)).toBeEnabled();
+  await sessionButton(page, "refresh my settings").click();
+  snapshot.release();
+  await expect(page.locator("select[name=permission_mode]")).toHaveValue("plan");
+  await expect(send(page)).toBeEnabled();
+});

@@ -103,8 +103,19 @@ func defaultPath(flag *string, path func() (string, error)) {
 // report or a closed terminal does, and is replaced. Any other file at path
 // is left alone: Linux also refuses connections to a regular file.
 func listen(path string) (net.Listener, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
+	}
+	// Serialize the check and replacement among starters. The directory
+	// survives replacement of the socket and needs no lock file cleanup.
+	parent, err := os.Open(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer parent.Close()
+	if err := syscall.Flock(int(parent.Fd()), syscall.LOCK_EX); err != nil {
+		return nil, fmt.Errorf("lock socket directory: %w", err)
 	}
 	listener, err := net.Listen("unix", path)
 	if !errors.Is(err, syscall.EADDRINUSE) {

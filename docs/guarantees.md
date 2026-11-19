@@ -10,7 +10,8 @@ contract that defines its details. Reviews check changes against them.
    flight, it shows the requested values marked pending and holds Send;
    once the change settles, it shows the session's settings, which after a
    partial or unstored change are the ones the process took. A change made
-   from another page appears when its `session/configured` event arrives. A
+   from another page appears when its `session/configured` event arrives.
+   On reconnect, Send waits for that session’s fresh settings. A
    mode change Claude makes itself is [not yet tracked](todo.md#check-first).
 
 2. **Typed text stays until it is sent.** The composer clears only the text
@@ -18,7 +19,8 @@ contract that defines its details. Reviews check changes against them.
    session's creation is pending, and unsent text in a session the user
    leaves, survive navigation and reconnects. Reloading or closing the page
    discards unsent text, and a new session's text before it is submitted
-   belongs to its draft.
+   belongs to its workspace draft. A lost creation reply keeps the same
+   session ID and draft text for manual submission.
 
 3. **Only the user sends prompts.** A prompt is sent once, when the user
    submits it. Showing a view again, reconnecting, and reloading send
@@ -62,8 +64,8 @@ contract that defines its details. Reviews check changes against them.
    ([parking](protocol.md#workspaces-and-sessions)). Turns Claude starts
    itself are reported without a prompt's `message_id`
    ([updates](protocol.md#session-updates)). A parked session runs no
-   schedules until a prompt starts it again, including one that
-   [parked before reporting restored schedules](known-issues.md#a-resumed-session-can-park-with-restored-schedules).
+   schedules until a prompt starts it again. A resumed process stays active
+   until Claude reports which schedules it restored.
 
 10. **Ox's bookkeeping stays in its own files.** `oxd` writes only its
     [database](protocol.md#workspaces-and-sessions) and

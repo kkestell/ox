@@ -81,7 +81,7 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
         {(workspace) => (
           <>
             <p title={workspace.path}>
-              <span class="name">{workspace.path.split("/").at(-1)}</span>
+              <span class="name">{workspace.path.split("/").at(-1) || workspace.path}</span>
               <button
                 type="button"
                 class="icon plus"

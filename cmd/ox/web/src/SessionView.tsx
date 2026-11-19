@@ -1,12 +1,12 @@
-import { createSignal, For, Match, onSettled, Show, Switch } from "solid-js";
+import { For, Match, onSettled, Show, Switch } from "solid-js";
 import { ApprovalRequest } from "./ApprovalRequest";
-import { createAttempt, type Entry, type Session, type SessionControl, toolSubject, useOx } from "./ox";
+import { type Entry, type Session, type SessionControl, toolInputJSON, toolSubject, useOx } from "./ox";
 import type { Settings } from "./protocol";
-import { defaultSettings, type ModelChoice, ModelPicker, Select } from "./SettingsFields";
+import { ModelPicker, Select } from "./SettingsFields";
 
 type Tool = Extract<Entry, { kind: "tool" }>;
 
-function sendOnEnter(event: KeyboardEvent & { currentTarget: HTMLTextAreaElement }) {
+export function sendOnEnter(event: KeyboardEvent & { currentTarget: HTMLTextAreaElement }) {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
     if (!event.repeat) event.currentTarget.form?.requestSubmit();
@@ -106,88 +106,6 @@ export function SessionView(props: { session: Session }) {
   );
 }
 
-// NewSessionView creates a session for its first prompt and hands over to it:
-// the session gets the box's text, including edits made while it was being
-// created, and sends the prompt. The page then shows the session, unless the
-// user has gone elsewhere.
-export function NewSessionView(props: { workspaceId: string; onCreated(id: string): void }) {
-  const ox = useOx();
-  const [error, attempt] = createAttempt();
-  const [creating, setCreating] = createSignal(false);
-  const workspace = () => ox.state.workspaces.find((w) => w.id === props.workspaceId)?.path;
-  // Until the session starts, the picker offers every harness's models.
-  const [choice, setChoice] = createSignal<(Settings & { harness: string }) | undefined>(() => {
-    const defaults = ox.state.defaults;
-    return defaults && { ...defaults };
-  });
-  // Another harness keeps the permission mode when it offers it.
-  const pick = (value: ModelChoice) =>
-    setChoice((current) => {
-      const catalog = ox.state.harnesses[value.harness];
-      const mode = catalog.permission_modes.some((m) => m.id === current?.permission_mode)
-        ? (current?.permission_mode ?? "")
-        : defaultSettings(value.harness, catalog, ox.state.defaults).permission_mode;
-      return { ...value, permission_mode: mode };
-    });
-  let textarea!: HTMLTextAreaElement;
-  let open = true;
-  onSettled(() => () => {
-    open = false;
-  });
-
-  const create = (event: SubmitEvent) => {
-    event.preventDefault();
-    const c = choice();
-    const text = textarea.value;
-    if (creating() || !c || !text.trim()) return;
-    const { harness, ...settings } = c;
-    setCreating(true);
-    const created = ox.createSession(props.workspaceId, harness, settings).then((id) => {
-      const session = ox.control(id);
-      session.setText(textarea.value);
-      session.send(text);
-      if (open) props.onCreated(id);
-    });
-    attempt(created).finally(() => setCreating(false));
-  };
-
-  return (
-    <>
-      <p class="context">{workspace()} · new session</p>
-      <div class="log" />
-      <Show when={error()}>{(error) => <p role="alert">{error()}</p>}</Show>
-      <form class="composer" onSubmit={create}>
-        <div class="box">
-          <textarea
-            ref={textarea}
-            name="text"
-            rows="1"
-            aria-label="Prompt"
-            required
-            autofocus
-            onKeyDown={sendOnEnter}
-          />
-          <button type="submit" class="icon send" aria-label="Send" title="Send" disabled={creating()} />
-        </div>
-        <Show when={choice()}>
-          {(choice) => (
-            <div class="settings">
-              <ModelPicker harnesses={ox.state.harnesses} value={choice()} disabled={creating()} onChange={pick} />
-              <Select
-                name="permission_mode"
-                options={ox.state.harnesses[choice().harness]?.permission_modes ?? []}
-                value={choice().permission_mode}
-                disabled={creating()}
-                onChange={(mode) => setChoice({ ...choice(), permission_mode: mode })}
-              />
-            </div>
-          )}
-        </Show>
-      </form>
-    </>
-  );
-}
-
 function Transcript(props: { entries: Entry[] }) {
   return (
     <For each={props.entries}>
@@ -220,7 +138,7 @@ function ToolCall(props: { tool: Tool }) {
         <span class="name">{props.tool.name}</span> <span class="detail">{detail()}</span>
       </summary>
       <div class="card">
-        <pre>{JSON.stringify(props.tool.input, null, 2)}</pre>
+        <pre>{toolInputJSON(props.tool.input)}</pre>
         <Show when={props.tool.result}>{(result) => <pre>{result().text}</pre>}</Show>
       </div>
     </details>

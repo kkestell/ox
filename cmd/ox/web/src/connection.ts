@@ -1,3 +1,4 @@
+import { parse, rawJSON, stringify } from "@ungap/raw-json";
 import type { Methods, Notification } from "./protocol";
 
 export class RpcError extends Error {
@@ -43,7 +44,13 @@ export function connect(handlers: {
     handlers.onError(error);
   };
   source.onmessage = (event) => {
-    const message = JSON.parse(event.data);
+    // Keep the original token when a Number would change a tool argument on Allow.
+    const message = parse(event.data, (_key, value, context?: { source?: string }) => {
+      if (typeof value === "number" && context?.source && String(value) !== context.source) {
+        return rawJSON(context.source);
+      }
+      return value;
+    });
     if (message.method) return handlers.onNotification(message);
     const call = pending.get(message.id);
     if (!call) return;
@@ -63,10 +70,12 @@ export function connect(handlers: {
         };
         fetch(`/rpc?connection=${connection}`, {
           method: "POST",
-          body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
-        }).then(async (response) => {
-          if (!response.ok) fail(new Error((await response.text()).trim()));
-        }, fail);
+          body: stringify({ jsonrpc: "2.0", id, method, params }),
+        })
+          .then(async (response) => {
+            if (!response.ok) fail(new Error((await response.text()).trim()));
+          })
+          .catch(fail);
       });
     },
     close() {

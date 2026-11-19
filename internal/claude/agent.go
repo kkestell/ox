@@ -27,20 +27,19 @@ type Agent struct {
 	phase phase
 	// state is the execution state clients see: Claude's report, except that
 	// a prompt is running from the moment it is written.
-	state       string
-	prompt      *submission      // the client prompt holding the agent until Claude is idle
-	turn        string           // the client prompt whose turn is running, until its result
-	approvals   []agent.Approval // pending, in arrival order
-	config      *configuration
-	settings    agent.Settings // the settings the process is using
-	onUpdate    func(agent.Update)
-	onResumable func(string) // set until the new conversation's first result
-	onError     func(error)
-	sessionID   string
-	stopping    bool // Ox asked the process to exit
-	background  int  // Claude's live background tasks
-	schedules   int  // Claude's pending schedules, from the last Stop hook
-	scheduling  bool // a scheduling tool ran since the last Stop hook
+	state            string
+	prompt           *submission      // the client prompt holding the agent until Claude is idle
+	turn             string           // the client prompt whose turn is running, until its result
+	approvals        []agent.Approval // pending, in arrival order
+	config           *configuration
+	settings         agent.Settings // the settings the process is using
+	onUpdate         func(agent.Update)
+	onResumable      func(string) // set until the new conversation's first result
+	onError          func(error)
+	sessionID        string
+	stopping         bool // Ox asked the process to exit
+	background       int  // Claude's live background tasks
+	mayHaveSchedules bool // true until Stop reports an empty schedule list
 }
 
 type processExit struct{ err error }
@@ -70,6 +69,8 @@ func newAgent(input *writer, events chan agent.Event, sessionID string, options 
 	}
 	if options.Resume == "" {
 		a.onResumable = options.OnResumable
+	} else {
+		a.mayHaveSchedules = true
 	}
 	return a
 }
@@ -124,7 +125,7 @@ func (a *Agent) handleOutput(m message) {
 		for _, use := range m.toolUses() {
 			switch use.Name {
 			case "CronCreate", "CronDelete", "ScheduleWakeup":
-				a.scheduling = true
+				a.mayHaveSchedules = true
 			}
 			if m.ParentToolUseID == "" {
 				a.publish(agent.Update{Type: "tool_use", ToolUseID: use.ID, ToolName: use.Name, Input: use.Input})

@@ -59,7 +59,10 @@ export type Methods = {
       }[];
     },
   ];
-  "session/create": [Settings & { workspace_id: string; harness: string }, { session_id: string }];
+  "session/create": [
+    Settings & { session_id?: string; workspace_id: string; harness: string },
+    { session_id: string; existing?: boolean },
+  ];
   "session/get": [
     { session_id: string },
     Settings & {
