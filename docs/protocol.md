@@ -313,7 +313,7 @@ task finishing, produce the same updates without `message_id`:
 | `approval` | `request_id`: string; `request`: object | A pending Claude request needing a client decision. |
 | `approval_answered` | `request_id`: string | A client answered the approval. |
 | `approval_cancelled` | `request_id`: string | Withdraw an unanswered approval. Discard any later answer. |
-| `exited` | `error`: string | The process exited during an active prompt; the prompt has ended. |
+| `exited` | `error`: string | The process exited during an active prompt, which has ended, or exited without being stopped. |
 | `parked` | — | The session's process has exited, for any reason. The last update from that process. |
 
 `running` means Claude is working. `requires_action` means it is waiting for

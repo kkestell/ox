@@ -36,6 +36,7 @@ type Agent struct {
 	onResumable func(string) // set until the new conversation's first result
 	onError     func(error)
 	sessionID   string
+	stopping    bool // Ox asked the process to exit
 	background  int  // Claude's live background tasks
 	schedules   int  // Claude's pending schedules, from the last Stop hook
 	scheduling  bool // a scheduling tool ran since the last Stop hook
@@ -176,6 +177,7 @@ func (a *Agent) exit(err error) {
 	if err != nil {
 		reason += ": " + err.Error()
 	}
+	reported := a.phase == queued || a.phase == prompting
 	switch a.phase {
 	case queued, prompting:
 		a.endPrompt(agent.Update{Type: "exited", Error: reason})
@@ -183,12 +185,18 @@ func (a *Agent) exit(err error) {
 		a.endConfiguration(a.config.fail(agent.ErrExited))
 	}
 	a.withdrawApprovals()
+	// Claude exits on its own only when something has gone wrong, which can
+	// cut short a turn it started itself.
+	if !reported && !a.stopping {
+		a.publish(agent.Update{Type: "exited", Error: reason})
+	}
 	a.publish(agent.Update{Type: "parked"})
 	a.phase = exited
 	close(a.done)
 }
 
 func (a *Agent) Stop() error {
+	a.stopping = true
 	return a.proc.Terminate()
 }
 

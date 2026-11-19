@@ -100,7 +100,7 @@ func TestTurnsClaudeStartsArePublished(t *testing.T) {
 		}
 		types = append(types, u.Type)
 	}
-	if strings.Join(types, ",") != "state,text_delta,result,state,parked" {
+	if strings.Join(types, ",") != "state,text_delta,result,state,exited,parked" {
 		t.Fatalf("unexpected updates: %v", types)
 	}
 }
@@ -120,5 +120,23 @@ func TestTopLevelToolCallsArePublished(t *testing.T) {
 	}
 	if result.Type != "tool_result" || result.ToolUseID != "t1" || result.Result.Text != "a\nb" || !result.Result.IsError {
 		t.Fatalf("unexpected tool_result: %+v", result)
+	}
+}
+
+// Claude exits on its own only on failure, which clients see even when no
+// prompt is active; an exit Ox asked for is plain parking.
+func TestUnexpectedExitIsReported(t *testing.T) {
+	a, _, updates := testAgent()
+	a.exit(errors.New("exit status 1"))
+	if len(*updates) != 2 || (*updates)[0].Type != "exited" || !strings.Contains((*updates)[0].Error, "exit status 1") ||
+		(*updates)[1].Type != "parked" {
+		t.Fatalf("an unexpected exit looked like parking: %+v", *updates)
+	}
+
+	a, _, updates = testAgent()
+	a.stopping = true
+	a.exit(errors.New("signal: terminated"))
+	if len(*updates) != 1 || (*updates)[0].Type != "parked" {
+		t.Fatalf("a requested stop was reported as a failure: %+v", *updates)
 	}
 }

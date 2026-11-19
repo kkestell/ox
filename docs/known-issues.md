@@ -5,7 +5,6 @@
 | [RPC bodies over 1 MiB never settle](#rpc-bodies-over-1-mib-never-settle) | Unknown | Live |
 | [An unknown effort level is ignored](#an-unknown-effort-level-is-ignored) | Unknown | Live |
 | [A failed configuration can leave settings the page does not show](#a-failed-configuration-can-leave-settings-the-page-does-not-show) | Unknown | Source |
-| [An unexpected exit can look like parking](#an-unexpected-exit-can-look-like-parking) | No occurrence | Source |
 | [A failed approval answer leaves a stale approval](#a-failed-approval-answer-leaves-a-stale-approval) | No occurrence | Source |
 | [A configuration that omits a list breaks the web UI](#a-configuration-that-omits-a-list-breaks-the-web-ui) | No occurrence | Source |
 
@@ -37,13 +36,6 @@ efforts. Which efforts Claude refuses through a control request is untested.
 Until a successful configuration reconciles the settings or the process
 restarts, prompts can use a different effort, a costlier model, or (after a
 failed database write) a permission mode other than the one shown.
-
-## An unexpected exit can look like parking
-
-`Agent.exit` includes the exit reason in an update only when a client prompt
-is queued or active. In other phases it publishes the same `parked` update
-as normal parking. The client loses the crash diagnostic and can show an
-incomplete harness-initiated reply without explaining why it stopped.
 
 ## A failed approval answer leaves a stale approval
 
