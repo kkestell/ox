@@ -1,7 +1,8 @@
 // The web client against the real relay and oxd, with the fake harness,
-// which echoes each prompt back a word at a time.
+// which echoes each prompt back a word at a time, or first asks to approve a
+// tool call for a prompt "approve <tool> <input JSON>".
 import { expect, type Page, test } from "@playwright/test";
-import { fakeConfig, type Services, startServices } from "./services";
+import { fakeConfig, haikuConfig, type Services, startServices } from "./services";
 import { hold, open, prompt, send, sessionButton, stop } from "./ui";
 
 let services: Services;
@@ -214,52 +215,48 @@ test("a send held in one session leaves another usable", async ({ page }) => {
   await expect(page.locator(".reply").last()).toHaveText("You said: held prompt");
 });
 
-// The fake harness has no approval tool. Replay the raw event a client receives.
-async function replayApprovals(page: Page) {
-  await page.addInitScript(() => {
-    const BrowserEventSource = window.EventSource;
-    window.EventSource = class extends BrowserEventSource {
-      constructor(url: string | URL, init?: EventSourceInit) {
-        super(url, init);
-        window.addEventListener("approval-fixture", (event) =>
-          this.dispatchEvent(new MessageEvent("message", { data: (event as CustomEvent).detail })),
-        );
-      }
-    };
-  });
+// ask sends a prompt that has the fake harness ask to approve a call of tool
+// with inputJSON, and returns the approval's card.
+async function ask(page: Page, tool: string, inputJSON: string) {
+  await prompt(page).fill(`approve ${tool} ${inputJSON}`);
+  await prompt(page).press("Enter");
+  const card = page.locator(".approval");
+  await expect(card).toHaveCount(1);
+  return card;
 }
 
-async function replay(page: Page, requestId: string, toolName: string, inputJSON: string) {
-  const id = new URL(page.url()).hash.slice(1);
-  const update = `{"method":"session/update","params":{"session_id":"${id}","type":"approval","request_id":"${requestId}","request":{"tool_name":"${toolName}","input":${inputJSON}}}}`;
-  await page.evaluate((detail) => window.dispatchEvent(new CustomEvent("approval-fixture", { detail })), update);
-}
+// toolResult is the result text of the last call of tool, which the fake
+// harness sets to the answer it received.
+const toolResult = (page: Page, tool: string) =>
+  page
+    .locator("details.tool")
+    .filter({ has: page.locator(".name", { hasText: tool }) })
+    .last()
+    .locator(".card pre")
+    .last();
 
 test("Allow sends the exact numbers displayed in the tool input", async ({ page }) => {
-  await replayApprovals(page);
   await open(page, services);
-  await newSession(page, "approval fixture");
+  await page.getByRole("button", { name: "New session" }).click();
 
   const input = '{"ids":[9007199254740993],"amount":1.00000000000000001}';
-  await replay(page, "req", "Example", input);
-  const card = page.locator(".approval");
+  const card = await ask(page, "Example", input);
   await card.locator("summary").click();
   await expect(card.locator("pre")).toHaveText('{ "ids": [ 9007199254740993 ], "amount": 1.00000000000000001 }');
   await card.getByLabel("Allow").check();
-  const answer = page.waitForRequest((r) => r.postDataJSON()?.method === "session/approve");
   await card.getByRole("button", { name: "Submit" }).click();
-  expect((await answer).postData()).toContain(`"updatedInput":${input}`);
+  await expect(card).toHaveCount(0);
+  await expect(toolResult(page, "Example")).toHaveText(`{"behavior":"allow","updatedInput":${input}}`);
+  await expect(send(page)).toBeVisible();
 });
 
 test("AskUserQuestion is answered from a form", async ({ page }) => {
-  await replayApprovals(page);
   await open(page, services);
-  await newSession(page, "question fixture");
+  await page.getByRole("button", { name: "New session" }).click();
 
   const input =
     '{"questions":[{"question":"Which color?","header":"Color","options":[{"label":"Red","description":"Warm"},{"label":"Blue","description":"Cool"}],"multiSelect":false},{"question":"Which sections?","header":"Sections","options":[{"label":"Introduction","description":"a"},{"label":"Conclusion","description":"b"},{"label":"Appendix","description":"c"}],"multiSelect":true}]}';
-  await replay(page, "ask", "AskUserQuestion", input);
-  const card = page.locator(".approval");
+  let card = await ask(page, "AskUserQuestion", input);
   await expect(card.locator("legend")).toHaveText(["ColorWhich color?", "SectionsWhich sections?"]);
   await expect(card).toContainText("Warm");
   const submit = card.getByRole("button", { name: "Submit" });
@@ -287,18 +284,72 @@ test("AskUserQuestion is answered from a form", async ({ page }) => {
   await expect(otherField).toHaveValue("Green");
   await expect(submit).toBeEnabled();
 
-  const decline = page.waitForRequest((r) => r.postDataJSON()?.method === "session/approve");
-  await card.getByRole("button", { name: "Decline" }).click();
-  expect((await decline).postData()).toContain('"response":{"behavior":"deny","message":"User declined to answer"}');
-
-  const answer = page.waitForRequest((r) => r.postDataJSON()?.method === "session/approve");
   await submit.click();
-  expect((await answer).postData()).toContain(
-    `"updatedInput":${input.slice(0, -1)},"answers":{"Which color?":"Red","Which sections?":"Introduction, Appendix, Glossary"}}`,
+  await expect(card).toHaveCount(0);
+  await expect(toolResult(page, "AskUserQuestion")).toHaveText(
+    `{"behavior":"allow","updatedInput":${input.slice(0, -1)},"answers":{"Which color?":"Red","Which sections?":"Introduction, Appendix, Glossary"}}}`,
   );
+  await expect(send(page)).toBeVisible();
 
-  await replay(page, "bad", "AskUserQuestion", '{"questions":"x"}');
-  await expect(page.locator(".approval").last().getByLabel("Allow")).toBeVisible();
+  card = await ask(page, "AskUserQuestion", input);
+  await card.getByRole("button", { name: "Decline" }).click();
+  await expect(card).toHaveCount(0);
+  await expect(toolResult(page, "AskUserQuestion")).toHaveText(
+    '{"behavior":"deny","message":"User declined to answer"}',
+  );
+  await expect(send(page)).toBeVisible();
+
+  card = await ask(page, "AskUserQuestion", '{"questions":"x"}');
+  await expect(card.getByLabel("Allow")).toBeVisible();
+});
+
+test("a tool whose process ended with oxd shows stopped on every page", async ({ page, context }) => {
+  await open(page, services);
+  await page.getByRole("button", { name: "New session" }).click();
+  await ask(page, "Bash", '{"command":"sleep 60"}');
+  const marker = page.locator("details.tool .marker");
+  await expect(marker).toHaveAttribute("aria-label", "running");
+  await services.restartDaemon(fakeConfig, "SIGKILL");
+  await expect(marker).toHaveAttribute("aria-label", "stopped");
+  await prompt(page).fill("after the crash");
+  await prompt(page).press("Enter");
+  await expect(page.locator(".reply").last()).toHaveText("You said: after the crash");
+  const other = await context.newPage();
+  await other.goto(page.url());
+  await expect(other.locator("details.tool .marker").first()).toHaveAttribute("aria-label", "stopped");
+});
+
+test("a reconnect keeps an expanded tool call open", async ({ page }) => {
+  await open(page, services);
+  await page.getByRole("button", { name: "New session" }).click();
+  const card = await ask(page, "Bash", '{"command":"ls"}');
+  await card.getByLabel("Allow").check();
+  await card.getByRole("button", { name: "Submit" }).click();
+  await expect(send(page)).toBeVisible();
+  const tool = page.locator("details.tool");
+  await tool.locator("summary").click();
+  await expect(tool).toHaveAttribute("open");
+  // Send waits for the session's reloaded transcript.
+  await prompt(page).fill("after the reconnect");
+  const snapshot = await hold(page, "session/get");
+  await services.restartRelay();
+  await snapshot.arrived;
+  await expect(send(page)).toBeDisabled();
+  snapshot.release();
+  await expect(send(page)).toBeEnabled();
+  await expect(tool).toHaveAttribute("open");
+});
+
+test("a session whose harness is no longer offered shows its settings", async ({ page }) => {
+  await open(page, services);
+  await newSession(page, "harness retired");
+  await services.restartDaemon(haikuConfig);
+  try {
+    await expect(page.locator(".settings .picker .model")).toHaveText("echo");
+    await expect(page.locator(".settings select[name=permission_mode]")).toHaveValue("manual");
+  } finally {
+    await services.restartDaemon(fakeConfig);
+  }
 });
 
 test("a lost creation reply is recovered after leaving the draft", async ({ page }) => {

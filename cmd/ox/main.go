@@ -36,12 +36,26 @@ func main() {
 		log.Fatal(err)
 	}
 
-	host, _, err := net.SplitHostPort(*addr)
+	host, err := serveHost(*addr)
 	if err != nil {
 		log.Fatal(err)
 	}
 	r := &relay{socket: *socketPath, host: host, conns: make(map[string]net.Conn)}
 	log.Fatal(http.ListenAndServe(*addr, r.handler(web)))
+}
+
+// serveHost returns the host addr names. An address that names every
+// interface would let any machine on the network reach oxd: checkHost only
+// stops browsers, and other clients choose their own Host header.
+func serveHost(addr string) (string, error) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", err
+	}
+	if ip := net.ParseIP(host); host == "" || ip != nil && ip.IsUnspecified() {
+		return "", fmt.Errorf("-addr %q must name a host, not every interface", addr)
+	}
+	return host, nil
 }
 
 type relay struct {

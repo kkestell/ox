@@ -47,6 +47,9 @@ export type Services = {
   // workspace is an empty directory for the sessions to run in.
   workspace: string;
   restartRelay(): Promise<void>;
+  // restartDaemon restarts oxd over the same database with config. SIGKILL
+  // stops it without its shutdown, as a crash does.
+  restartDaemon(config: object, signal?: NodeJS.Signals): Promise<void>;
   stop(): Promise<void>;
 };
 
@@ -61,11 +64,9 @@ export async function startServices(config: object): Promise<Services> {
   const url = `http://127.0.0.1:${port}`;
   const env = { ...process.env, GORACE: "halt_on_error=1" };
 
-  const daemon = run(join(bin, "oxd"), [
-    `-socket=${socket}`,
-    `-db=${join(dir, "ox.db")}`,
-    `-config=${join(dir, "config.json")}`,
-  ]);
+  const startDaemon = () =>
+    run(join(bin, "oxd"), [`-socket=${socket}`, `-db=${join(dir, "ox.db")}`, `-config=${join(dir, "config.json")}`]);
+  let daemon = startDaemon();
   let relay: ChildProcess | undefined;
   const startRelay = async () => {
     relay = run(join(bin, "ox"), [`-addr=127.0.0.1:${port}`, `-socket=${socket}`]);
@@ -89,6 +90,12 @@ export async function startServices(config: object): Promise<Services> {
       if (relay) await stopProcess(relay);
       await startRelay();
     },
+    async restartDaemon(config: object, signal: NodeJS.Signals = "SIGTERM") {
+      await stopProcess(daemon, signal);
+      writeFileSync(join(dir, "config.json"), JSON.stringify(config));
+      daemon = startDaemon();
+      await waitFor(url);
+    },
     async stop() {
       const exited = daemon.exitCode;
       if (relay) await stopProcess(relay);
@@ -100,11 +107,11 @@ export async function startServices(config: object): Promise<Services> {
   };
 }
 
-function stopProcess(child: ChildProcess) {
+function stopProcess(child: ChildProcess, signal: NodeJS.Signals = "SIGTERM") {
   return new Promise<void>((resolve) => {
     if (child.exitCode !== null || child.signalCode !== null) return resolve();
     child.once("exit", () => resolve());
-    child.kill("SIGTERM");
+    child.kill(signal);
   });
 }
 

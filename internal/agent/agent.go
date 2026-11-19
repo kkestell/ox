@@ -40,11 +40,11 @@ type Agent interface {
 	// loses no work.
 	Parkable() bool
 	// Stop shuts the process down and returns once it has exited and the
-	// agent has published its last update, parked. A process that does not
-	// exit when asked is killed.
+	// agent has published its last update. A process that does not exit when
+	// asked is killed.
 	Stop() error
 	// Exited reports that the process has exited and the agent has
-	// published its last update, parked.
+	// published its last update.
 	Exited() bool
 }
 
@@ -132,13 +132,8 @@ type Result struct {
 }
 
 type Snapshot struct {
-	State     string          `json:"state"`
-	Prompt    *PromptSnapshot `json:"prompt"`
-	Approvals []Approval      `json:"approvals"`
-}
-
-type PromptSnapshot struct {
-	MessageID string `json:"message_id"`
+	State     string     `json:"state"`
+	Approvals []Approval `json:"approvals"`
 }
 
 type Approval struct {

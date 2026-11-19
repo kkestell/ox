@@ -1,5 +1,5 @@
-// Approvals against real Claude with Haiku, which the fake harness cannot
-// ask for. They run only with OX_LIVE=1, as make live does.
+// Approvals against real Claude with Haiku. They run only with OX_LIVE=1, as
+// make live does.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";

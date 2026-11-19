@@ -72,7 +72,7 @@ func (s *Server) handleMCP(reply replyFunc, sessionID string, line []byte) {
 	case "ping":
 		reply(jsonrpc.Success(id, struct{}{}))
 	case "tools/list":
-		reply(jsonrpc.Success(id, map[string]any{"tools": []any{listModelsTool}}))
+		reply(jsonrpc.Success(id, map[string]any{"tools": tools}))
 	case "tools/call":
 		var input struct {
 			Name string `json:"name"`
@@ -98,15 +98,23 @@ func (s *Server) handleMCP(reply replyFunc, sessionID string, line []byte) {
 	}
 }
 
-var listModelsTool = map[string]any{
+var tools = []map[string]any{{
 	"name":        "list_models",
 	"description": "List the harnesses Ox offers, with their models, effort levels, and permission modes, and the defaults for a new session.",
 	"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
 	// Claude's plan mode prompts for an MCP tool its --allowedTools names
 	// unless the tool is annotated read-only.
 	"annotations": map[string]any{"readOnlyHint": true},
-}
+}}
 
-// approvedTools are the tools that only read, which run without an approval
-// prompt.
-var approvedTools = []string{"list_models"}
+// approvedTools are the tools annotated read-only, which run without an
+// approval prompt.
+var approvedTools = func() []string {
+	var names []string
+	for _, tool := range tools {
+		if annotations, _ := tool["annotations"].(map[string]any); annotations["readOnlyHint"] == true {
+			names = append(names, tool["name"].(string))
+		}
+	}
+	return names
+}()

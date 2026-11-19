@@ -20,7 +20,9 @@ type Agent struct {
 	prompt   string // client prompt ID
 	reply    string
 	words    []string
-	config   *configured // the configuration awaiting its tick
+	tool     string          // the tool call the prompt asked to approve
+	approval *agent.Approval // pending until answered, interrupted, or stopped
+	config   *configured     // the configuration awaiting its tick
 	exited   bool
 }
 
@@ -99,8 +101,8 @@ func (a *Agent) finish(result agent.Result) {
 
 func (a *Agent) Snapshot() agent.Snapshot {
 	snapshot := agent.Snapshot{State: a.state, Approvals: []agent.Approval{}}
-	if a.prompt != "" {
-		snapshot.Prompt = &agent.PromptSnapshot{MessageID: a.prompt}
+	if a.approval != nil {
+		snapshot.Approvals = append(snapshot.Approvals, *a.approval)
 	}
 	return snapshot
 }
@@ -119,16 +121,67 @@ func (a *Agent) Send(text string) (string, error) {
 	a.publish(agent.Update{Type: agent.UpdateState, State: a.state})
 	a.reply = "You said: " + text
 	a.words = strings.SplitAfter(a.reply, " ")
-	a.after(tick{a.prompt})
+	if tool, input, ok := approvalRequest(text); ok {
+		a.ask(tool, input)
+	} else {
+		a.after(tick{a.prompt})
+	}
 	return a.prompt, nil
 }
 
-func (a *Agent) Approve(string, json.RawMessage) error {
-	return agent.ErrApprovalNotFound
+// approvalRequest reads a prompt of the form "approve <tool> <input JSON>",
+// which asks for approval of that tool call before the reply.
+func approvalRequest(text string) (string, json.RawMessage, bool) {
+	rest, ok := strings.CutPrefix(text, "approve ")
+	if !ok {
+		return "", nil, false
+	}
+	tool, input, ok := strings.Cut(rest, " ")
+	if !ok || !json.Valid([]byte(input)) {
+		return "", nil, false
+	}
+	return tool, json.RawMessage(input), true
+}
+
+// ask calls tool with input and waits for its approval, as Claude does in
+// manual mode.
+func (a *Agent) ask(tool string, input json.RawMessage) {
+	a.tool = rand.Text()
+	a.publish(agent.Update{Type: agent.UpdateToolUse, ToolUseID: a.tool, ToolName: tool, Input: input})
+	request, _ := json.Marshal(map[string]any{"subtype": "can_use_tool", "tool_name": tool, "input": input, "tool_use_id": a.tool})
+	a.approval = &agent.Approval{RequestID: rand.Text(), Request: request}
+	a.publish(agent.Update{Type: agent.UpdateApproval, RequestID: a.approval.RequestID, Request: request})
+	a.state = agent.StateRequiresAction
+	a.publish(agent.Update{Type: agent.UpdateState, State: a.state})
+}
+
+// Approve answers the pending approval. The tool call's result is the
+// response, so it shows what reached the harness.
+func (a *Agent) Approve(requestID string, response json.RawMessage) error {
+	if a.approval == nil || a.approval.RequestID != requestID {
+		return agent.ErrApprovalNotFound
+	}
+	a.approval = nil
+	a.publish(agent.Update{Type: agent.UpdateApprovalAnswered, RequestID: requestID})
+	a.publish(agent.Update{Type: agent.UpdateToolResult, ToolUseID: a.tool, Result: &agent.Result{Text: string(response)}})
+	a.state = agent.StateRunning
+	a.publish(agent.Update{Type: agent.UpdateState, State: a.state})
+	a.after(tick{a.prompt})
+	return nil
+}
+
+// withdraw cancels the pending approval, if any, which ends its tool call.
+func (a *Agent) withdraw() {
+	if a.approval != nil {
+		a.publish(agent.Update{Type: agent.UpdateApprovalCancelled, RequestID: a.approval.RequestID})
+		a.publish(agent.Update{Type: agent.UpdateToolResult, ToolUseID: a.tool, Result: &agent.Result{Text: "Cancelled", IsError: true}})
+		a.approval = nil
+	}
 }
 
 func (a *Agent) Interrupt() error {
 	if a.state != agent.StateIdle {
+		a.withdraw()
 		a.finish(agent.Result{Text: "Interrupted", IsError: true})
 	}
 	return nil
@@ -148,6 +201,7 @@ func (a *Agent) Parkable() bool {
 }
 
 func (a *Agent) Stop() error {
+	a.withdraw()
 	if a.prompt != "" {
 		a.publish(agent.Update{Type: agent.UpdateExited, Error: "stopped"})
 		a.prompt = ""
@@ -156,7 +210,6 @@ func (a *Agent) Stop() error {
 		a.config.done(a.settings, agent.ErrExited)
 		a.config = nil
 	}
-	a.publish(agent.Update{Type: agent.UpdateParked})
 	a.exited = true
 	close(a.done)
 	return nil

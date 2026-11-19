@@ -35,7 +35,7 @@ cmd/oxd            socket, database, and configuration paths, signals, the harne
 | `store` | The SQLite database of workspaces, sessions, and session events. |
 | `jsonrpc` | Request validation and the response and notification types. |
 | `agent` | The `Agent` interface a harness implements, its `Start` function and options, and the updates, snapshots, settings, and errors they share. |
-| `fake` | A harness that runs no process and echoes each prompt back, a word at a time. |
+| `fake` | A harness that runs no process and echoes each prompt back, a word at a time. A prompt `approve <tool> <input JSON>` first asks to approve that tool call, and the call's result is the answer. |
 | `claude` | The Claude Code harness: starting and initializing Claude, its stream-json wire format, and the state machine that runs it as an `Agent`. |
 
 ## Sessions
@@ -56,9 +56,9 @@ finishes it. Nothing else touches a session's state, and a response lands in a
 connection's queue after every update it reflects and before every update it
 does not. The server handles each connection's requests on separate goroutines.
 Changes are written to the database before they are applied in memory,
-except settings a running process has already taken and the resume token of
-a conversation Claude has started, which the session keeps even when storing
-them fails.
+except settings a running process has already taken, the resume token of a
+conversation Claude has started, and the clearing of a token Claude can no
+longer resume, which the session keeps even when storing them fails.
 
 `Server.mu` guards workspace and session membership and the shutdown flag.
 Membership changes and `workspace/list` queue their messages under the same
@@ -138,6 +138,7 @@ origin, so a page whose domain rebinds to the relay's address cannot reach `oxd`
 | `protocol.ts` | Types for the `oxd` methods, updates, and notifications. |
 | `connection.ts` | Opening the event stream, sending requests, matching replies, and reporting stream errors. |
 | `ox.tsx` | A provider that reloads the catalog, workspaces, and sessions on each connection, updating loaded sessions in place so their views keep their state, applies notifications, and exposes RPC calls; each session's control; `createAttempt`, which shows a request's error. |
+| `toolInput.ts` | Readers of Claude's tool calls: a call's subject, an `ExitPlanMode` plan, `AskUserQuestion` questions, and a call's input as JSON. |
 | `App.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `NewSessionView.tsx`, `ApprovalRequest.tsx`, `SettingsFields.tsx`, `HarnessIcon.tsx`, `Markdown.tsx` | The components. |
 
 The page shows stream errors while reconnecting and asks for a reload if the

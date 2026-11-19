@@ -212,21 +212,20 @@ response arrives.
 ```
 
 ```json
-{"jsonrpc":"2.0","id":5,"result":{"model":"claude-haiku-5-5","effort":"low","permission_mode":"manual","state":"requires_action","prompt":{"message_id":"prompt-id"},"approvals":[{"request_id":"claude-request-id","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch notes.txt"}}}],"history":[{"message_id":"prompt-id","type":"prompt","text":"Create notes.txt.","time":"2026-11-18T19:53:50Z"},{"message_id":"prompt-id","type":"text_delta","text":"I'll create the file.","time":"2026-11-18T19:53:51Z"}]}}
+{"jsonrpc":"2.0","id":5,"result":{"model":"claude-haiku-5-5","effort":"low","permission_mode":"manual","state":"requires_action","approvals":[{"request_id":"claude-request-id","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch notes.txt"}}}],"history":[{"message_id":"prompt-id","type":"prompt","text":"Create notes.txt.","time":"2026-11-18T19:53:50Z"},{"message_id":"prompt-id","type":"text_delta","text":"I'll create the file.","time":"2026-11-18T19:53:51Z"}]}}
 ```
 
 | Field | Meaning |
 | --- | --- |
 | `model`, `effort`, `permission_mode` | The session's stored settings. |
 | `state` | `parked`, or the execution state: `running`, `requires_action`, or `idle`. A prompt is `running` from the moment `session/send` writes it. |
-| `prompt` | The active prompt, or `null`. |
-| `prompt.message_id` | The prompt's identifier, matching its updates. |
 | `approvals` | Pending approvals in the order they arrived, each with `request_id` and Claude's `request`, whether or not a prompt is active. |
 | `history` | The session's recorded updates, oldest first, in the form of `session/update` params without `session_id`. |
 
 The daemon records every session's `prompt`, `text_delta`, `tool_use`,
-`tool_result`, `result`, and `exited` updates, including those of turns Claude starts itself, and keeps
-them across parking and daemon restarts. Consecutive `text_delta` fragments
+`tool_result`, `result`, `exited`, and `parked` updates, including those of turns Claude starts itself, and keeps
+them across parking and daemon restarts. A daemon that exited without
+recording a session's last `parked` update records it when it next starts. Consecutive `text_delta` fragments
 are recorded as one. Applying the history the same way as live updates
 reproduces the conversation. Deleting the session deletes its history.
 
@@ -351,7 +350,7 @@ can run after a prompt's `result` and before the `idle` that releases it:
 | `approval_answered` | `request_id`: string | A client answered the approval. |
 | `approval_cancelled` | `request_id`: string | Withdraw an unanswered approval. Discard any later answer. |
 | `exited` | `error`: string | The process exited during an active prompt, which has ended, or exited without being stopped, or could not resume the session's conversation. |
-| `parked` | — | The session's process has exited, for any reason. The last update from that process. |
+| `parked` | — | The session's process has exited, for any reason. The session's last update until its next process starts. |
 
 `running` means Claude is working. `requires_action` means it is waiting for
 user action; read the approval notifications to obtain the requests. `idle`

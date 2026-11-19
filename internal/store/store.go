@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"time"
@@ -184,6 +185,17 @@ func (s *Store) Events(sessionID string) ([]Event, error) {
 		events = append(events, Event{at, []byte(data)})
 	}
 	return events, rows.Err()
+}
+
+// LastEvent returns the data of the session's latest event, or nil when it
+// has none.
+func (s *Store) LastEvent(sessionID string) ([]byte, error) {
+	var data string
+	err := s.db.QueryRow(`SELECT data FROM events WHERE session_id = ? ORDER BY id DESC LIMIT 1`, sessionID).Scan(&data)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return []byte(data), err
 }
 
 // Times are stored as fixed-width UTC RFC 3339 text, so they sort as text.

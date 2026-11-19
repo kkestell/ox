@@ -114,8 +114,8 @@ func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
 	output(t, a, `{"type":"command_lifecycle","command_uuid":"11111111-1111-4111-8111-111111111111","state":"started"}`)
 	output(t, a, `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"tick"}}}`)
 	state(t, a, "idle")
-	if len(*updates) != 1 || (*updates)[0].MessageID != "" || a.Snapshot().Prompt == nil {
-		t.Fatalf("Claude's own turn took the waiting prompt's identity: %+v", *updates)
+	if _, err := a.Send("again"); !errors.Is(err, agent.ErrBusy) || len(*updates) != 1 || (*updates)[0].MessageID != "" {
+		t.Fatalf("Claude's own turn took the waiting prompt's identity: %v, %+v", err, *updates)
 	}
 	*updates = nil
 
@@ -125,24 +125,20 @@ func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
 	if len(*updates) != 1 || (*updates)[0].State != "idle" || (*updates)[0].MessageID != id {
 		t.Fatalf("unexpected prompt updates: %+v", *updates)
 	}
-	if a.Snapshot().Prompt != nil {
-		t.Fatal("idle after Claude took the prompt did not release it")
-	}
 	if _, err := a.Send("next"); err != nil {
 		t.Fatalf("the released agent refused a prompt: %v", err)
 	}
 }
 
-func TestSnapshotReturnsRunningPrompt(t *testing.T) {
-	a, _, _, id := promptingAgent(t)
+func TestSnapshotReturnsStateAndApprovals(t *testing.T) {
+	a, _, _, _ := promptingAgent(t)
 	request := `{"subtype":"can_use_tool","tool_name":"Bash"}`
 	output(t, a, `{"type":"control_request","request_id":"pending","request":`+request+`}`)
 
 	snapshot := a.Snapshot()
-	if snapshot.State != "running" || snapshot.Prompt == nil || snapshot.Prompt.MessageID != id ||
-		len(snapshot.Approvals) != 1 || snapshot.Approvals[0].RequestID != "pending" ||
+	if snapshot.State != "running" || len(snapshot.Approvals) != 1 || snapshot.Approvals[0].RequestID != "pending" ||
 		string(snapshot.Approvals[0].Request) != request {
-		t.Fatalf("snapshot missing the running prompt: %+v", snapshot)
+		t.Fatalf("snapshot missing the running state or approval: %+v", snapshot)
 	}
 }
 
@@ -161,7 +157,7 @@ func TestTurnsClaudeStartsArePublished(t *testing.T) {
 		}
 		types = append(types, u.Type)
 	}
-	if strings.Join(types, ",") != "state,text_delta,result,state,exited,parked" {
+	if strings.Join(types, ",") != "state,text_delta,result,state,exited" {
 		t.Fatalf("unexpected updates: %v", types)
 	}
 }
@@ -189,8 +185,7 @@ func TestTopLevelToolCallsArePublished(t *testing.T) {
 func TestUnexpectedExitIsReported(t *testing.T) {
 	a, _, updates := testAgent()
 	a.Handle(processExit{errors.New("exit status 1")})
-	if len(*updates) != 2 || (*updates)[0].Type != "exited" || !strings.Contains((*updates)[0].Error, "exit status 1") ||
-		(*updates)[1].Type != "parked" {
+	if !a.Exited() || len(*updates) != 1 || (*updates)[0].Type != "exited" || !strings.Contains((*updates)[0].Error, "exit status 1") {
 		t.Fatalf("an unexpected exit looked like parking: %+v", *updates)
 	}
 
@@ -198,7 +193,7 @@ func TestUnexpectedExitIsReported(t *testing.T) {
 	if err := a.Stop(); err != nil {
 		t.Fatal(err)
 	}
-	if !a.Exited() || len(*updates) != 1 || (*updates)[0].Type != "parked" {
+	if !a.Exited() || len(*updates) != 0 {
 		t.Fatalf("a requested stop was reported as a failure: %+v", *updates)
 	}
 }

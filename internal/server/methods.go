@@ -112,7 +112,8 @@ func (s *Server) createWorkspace(reply replyFunc, id, params json.RawMessage) {
 		return
 	}
 	path := filepath.Clean(input.Path)
-	if info, err := os.Stat(path); err != nil || !info.IsDir() {
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
 		reply(invalidParams(id, "path must be an existing directory"))
 		return
 	}
@@ -126,8 +127,10 @@ func (s *Server) createWorkspace(reply replyFunc, id, params json.RawMessage) {
 		reply(shuttingDown(id))
 		return
 	}
+	// A symlink or a path that differs only in case can name a workspace's
+	// directory.
 	for _, w := range s.workspaces {
-		if w.path == path {
+		if existing, err := os.Stat(w.path); err == nil && os.SameFile(info, existing) {
 			reply(jsonrpc.Success(id, result{w.id}))
 			return
 		}

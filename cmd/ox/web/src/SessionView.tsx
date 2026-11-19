@@ -1,9 +1,10 @@
 import { For, Match, onSettled, Show, Switch } from "solid-js";
 import { ApprovalRequest } from "./ApprovalRequest";
 import { Markdown } from "./Markdown";
-import { type Entry, planOf, type Session, type SessionControl, toolInputJSON, toolSubject, useOx } from "./ox";
+import { type Entry, type Session, type SessionControl, useOx } from "./ox";
 import type { Settings } from "./protocol";
 import { ModelPicker, Select } from "./SettingsFields";
+import { planOf, toolInputJSON, toolSubject } from "./toolInput";
 
 type Tool = Extract<Entry, { kind: "tool" }>;
 
@@ -159,29 +160,28 @@ function SettingsForm(props: { session: Session; control: SessionControl }) {
   const ox = useOx();
   const shown = () => props.control.requested() ?? props.session.settings;
   const pending = (key: keyof Settings) => shown()[key] !== props.session.settings[key];
+  // A harness the configuration no longer offers has no choices, and its
+  // session still shows the settings it has.
+  const harness = () => ox.state.harnesses[props.session.harness] ?? { models: [], permission_modes: [] };
 
   // Once the session starts, the picker offers only its harness's models.
   return (
-    <Show when={ox.state.harnesses[props.session.harness]}>
-      {(harness) => (
-        <div class="settings">
-          <ModelPicker
-            harnesses={{ [props.session.harness]: harness() }}
-            value={{ harness: props.session.harness, model: shown().model, effort: shown().effort }}
-            disabled={!props.control.available()}
-            pending={pending("model") || pending("effort")}
-            onChange={(value) => props.control.configure({ model: value.model, effort: value.effort })}
-          />
-          <Select
-            name="permission_mode"
-            options={harness().permission_modes}
-            value={shown().permission_mode}
-            disabled={!props.control.available()}
-            pending={pending("permission_mode")}
-            onChange={(mode) => props.control.configure({ permission_mode: mode })}
-          />
-        </div>
-      )}
-    </Show>
+    <div class="settings">
+      <ModelPicker
+        harnesses={{ [props.session.harness]: harness() }}
+        value={{ harness: props.session.harness, model: shown().model, effort: shown().effort }}
+        disabled={!props.control.available()}
+        pending={pending("model") || pending("effort")}
+        onChange={(value) => props.control.configure({ model: value.model, effort: value.effort })}
+      />
+      <Select
+        name="permission_mode"
+        options={harness().permission_modes}
+        value={shown().permission_mode}
+        disabled={!props.control.available()}
+        pending={pending("permission_mode")}
+        onChange={(mode) => props.control.configure({ permission_mode: mode })}
+      />
+    </div>
   );
 }

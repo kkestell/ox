@@ -1,10 +1,12 @@
 package server
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/kkestell/ox/internal/agent"
+	"github.com/kkestell/ox/internal/config"
 	"github.com/kkestell/ox/internal/store"
 )
 
@@ -46,10 +48,43 @@ func TestHistoryMergesTextAndKeepsConversation(t *testing.T) {
 	for _, e := range entries {
 		got = append(got, e.Type+":"+e.Text)
 	}
-	if len(got) != 4 || got[0] != "prompt:hi" || got[1] != "text_delta:hello" || got[2] != "result:" || got[3] != "text_delta:tick" {
+	if strings.Join(got, ",") != "prompt:hi,text_delta:hello,result:,text_delta:tick,parked:" {
 		t.Fatalf("unexpected history: %v", got)
 	}
 	if !entries[1].Time.Equal(replyStarted) {
 		t.Fatalf("merged text is not timed by its first fragment: %v", entries[1].Time)
+	}
+}
+
+// A process whose end the history does not record, as when oxd itself was
+// killed, is recorded as ended once, when the session next loads.
+func TestUnrecordedEndIsRecordedAtLoad(t *testing.T) {
+	st := openStore(t)
+	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: t.TempDir(), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSession("w", &store.Session{ID: "s", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	h := &history{store: st, sessionID: "s"}
+	h.record(agent.Update{MessageID: "p", Type: "prompt", Text: "hi"})
+	h.record(agent.Update{MessageID: "p", Type: "tool_use", ToolUseID: "t", ToolName: "Bash"})
+	for range 2 {
+		s, err := New(st, &config.Config{}, 0, nil, MCP{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.Close()
+	}
+	entries, err := h.entries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range entries {
+		got = append(got, e.Type)
+	}
+	if strings.Join(got, ",") != "prompt,tool_use,parked" {
+		t.Fatalf("unexpected history: %v", got)
 	}
 }

@@ -1,7 +1,8 @@
 import { createSignal, createStore, createUniqueId, For, Show, snapshot } from "solid-js";
 import { Markdown } from "./Markdown";
-import { type Approval, planOf, type Question, questionsOf, toolInputJSON, toolSubject } from "./ox";
+import type { Approval } from "./ox";
 import type { ApprovalResponse } from "./protocol";
+import { planOf, type Question, questionsOf, toolInputJSON, toolSubject } from "./toolInput";
 
 type Choice = "allow" | "deny" | "other";
 

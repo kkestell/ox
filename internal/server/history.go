@@ -27,8 +27,23 @@ func (h *history) record(update agent.Update) {
 	}
 	h.flush()
 	switch update.Type {
-	case agent.UpdatePrompt, agent.UpdateToolUse, agent.UpdateToolResult, agent.UpdateResult, agent.UpdateExited:
+	case agent.UpdatePrompt, agent.UpdateToolUse, agent.UpdateToolResult, agent.UpdateResult, agent.UpdateExited, agent.UpdateParked:
 		h.append(update)
+	}
+}
+
+// recordEnd records that the session's last process has ended when the
+// history does not say so, as after oxd itself exited without stopping it.
+func (h *history) recordEnd() {
+	last, err := h.store.LastEvent(h.sessionID)
+	var update agent.Update
+	if err == nil && last != nil {
+		if err = json.Unmarshal(last, &update); err == nil && update.Type != agent.UpdateParked {
+			h.append(agent.Update{Type: agent.UpdateParked, Time: time.Now()})
+		}
+	}
+	if err != nil {
+		log.Printf("record session %s history: %v", h.sessionID, err)
 	}
 }
 

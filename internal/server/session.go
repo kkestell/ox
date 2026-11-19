@@ -42,6 +42,8 @@ func (s *Server) newSession(record *store.Session, workspace string) *session {
 		resumeToken: record.ResumeToken,
 		history:     history{store: s.store, sessionID: record.ID},
 	}
+	// A session starts parked, so any earlier process has ended.
+	sess.history.recordEnd()
 	go sess.run()
 	return sess
 }
@@ -63,7 +65,7 @@ func (sess *session) run() {
 		case event := <-events:
 			sess.agent.Handle(event)
 			if sess.agent.Exited() {
-				sess.agent = nil
+				sess.parked()
 			}
 		case <-park:
 			sess.parkTimer = nil
@@ -133,8 +135,14 @@ func (sess *session) stop() error {
 	if err := sess.agent.Stop(); err != nil {
 		return err
 	}
-	sess.agent = nil
+	sess.parked()
 	return nil
+}
+
+// parked drops the agent whose process has exited and tells every client.
+func (sess *session) parked() {
+	sess.agent = nil
+	sess.update(agent.Update{Type: agent.UpdateParked, Time: time.Now()})
 }
 
 func (sess *session) end() {
@@ -195,13 +203,14 @@ const lostConversation = "Claude could not resume the earlier conversation; the 
 
 // forgetConversation clears a resume token the harness can no longer resume,
 // such as one whose transcript Claude has deleted, and leaves a notice in the
-// transcript.
+// transcript. The session forgets the token even when storing that fails,
+// since resuming it can only fail again.
 func (sess *session) forgetConversation(cause error) error {
 	log.Printf("session %s: %v", sess.id, cause)
-	if err := sess.save(sess.settings, ""); err != nil {
-		return err
-	}
 	sess.resumeToken = ""
+	if err := sess.save(sess.settings, ""); err != nil {
+		log.Printf("session %s: forget conversation: %v", sess.id, err)
+	}
 	sess.update(agent.Update{Type: agent.UpdateExited, Error: lostConversation, Time: time.Now()})
 	return errors.New(lostConversation)
 }

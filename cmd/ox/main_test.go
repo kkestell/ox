@@ -61,6 +61,21 @@ func TestRelayAcceptsItsPage(t *testing.T) {
 	}
 }
 
+// The relay serves only a named host. On every interface, any machine could
+// reach oxd by sending a loopback name as Host.
+func TestRelayRefusesEveryInterface(t *testing.T) {
+	for _, addr := range []string{":8080", "0.0.0.0:8080", "[::]:8080"} {
+		if _, err := serveHost(addr); err == nil {
+			t.Errorf("-addr %s was accepted", addr)
+		}
+	}
+	for _, addr := range []string{"localhost:8080", "127.0.0.1:8080", "[::1]:8080", "ox.test:8080"} {
+		if host, err := serveHost(addr); err != nil || host == "" {
+			t.Errorf("-addr %s: %q, %v", addr, host, err)
+		}
+	}
+}
+
 // An oversized request fails at once instead of reaching oxd truncated, where
 // its parse error carries no ID and the page's request would never settle.
 func TestRPCRefusesOversizedBody(t *testing.T) {

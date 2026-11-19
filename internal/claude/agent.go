@@ -188,11 +188,7 @@ func (a *Agent) idle() bool {
 }
 
 func (a *Agent) Snapshot() agent.Snapshot {
-	snapshot := agent.Snapshot{State: a.state, Approvals: append([]agent.Approval{}, a.approvals...)}
-	if a.prompt != nil {
-		snapshot.Prompt = &agent.PromptSnapshot{MessageID: a.prompt.id}
-	}
-	return snapshot
+	return agent.Snapshot{State: a.state, Approvals: append([]agent.Approval{}, a.approvals...)}
 }
 
 func (a *Agent) exit(err error) {
@@ -213,7 +209,6 @@ func (a *Agent) exit(err error) {
 	if !reported && !a.stopping {
 		a.publish(agent.Update{Type: agent.UpdateExited, Error: reason})
 	}
-	a.publish(agent.Update{Type: agent.UpdateParked})
 	a.phase = exited
 	close(a.done)
 }

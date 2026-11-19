@@ -185,7 +185,7 @@ func TestSessionLifecycle(t *testing.T) {
 	c.update(id, "parked")
 	var parked got
 	json.Unmarshal(c.call("session/get", map[string]string{"session_id": id}), &parked)
-	if parked.State != "parked" || len(parked.History) != 3 || parked.Model != "m" {
+	if parked.State != "parked" || len(parked.History) != 4 || parked.History[3].Type != "parked" || parked.Model != "m" {
 		t.Fatalf("unexpected parked session: %+v", parked)
 	}
 
@@ -325,6 +325,64 @@ func TestConfigurationOutlivesItsProcess(t *testing.T) {
 // transcript Claude deleted, fails one send with a notice in the transcript;
 // the next send starts a new conversation.
 func TestUnresumableConversationStartsAnew(t *testing.T) {
+	st, c, args := unresumableSession(t)
+
+	failed := c.request("session/send", map[string]string{"session_id": "s", "text": "hi"})
+	if failed.Error == nil || failed.Error.Message != lostConversation {
+		t.Fatalf("a send that found the conversation gone did not say so: %+v", failed.Error)
+	}
+	if notice := c.update("s", "exited"); notice.Error != lostConversation {
+		t.Fatalf("the transcript has no notice: %+v", notice)
+	}
+	var got struct {
+		History []agent.Update `json:"history"`
+	}
+	json.Unmarshal(c.call("session/get", map[string]string{"session_id": "s"}), &got)
+	if len(got.History) != 1 || got.History[0].Error != lostConversation {
+		t.Fatalf("the notice was not recorded: %+v", got.History)
+	}
+
+	c.call("session/send", map[string]string{"session_id": "s", "text": "hi"})
+	if lines := starts(t, args); len(lines) != 2 || strings.Contains(lines[1], "--resume") || !strings.Contains(lines[1], "--session-id=") {
+		t.Fatalf("the next send did not start a new conversation: %q", lines)
+	}
+	workspaces, err := st.Workspaces()
+	if err != nil || workspaces[0].Sessions[0].ResumeToken != "" {
+		t.Fatalf("the stored token was kept: %v", err)
+	}
+}
+
+// A session forgets a conversation Claude no longer has even when storing
+// that fails, so the next send starts a new one instead of failing again.
+func TestUnresumableConversationForgottenWhenNotStored(t *testing.T) {
+	st, c, args := unresumableSession(t)
+	st.Close()
+	if failed := c.request("session/send", map[string]string{"session_id": "s", "text": "hi"}); failed.Error == nil || failed.Error.Message != lostConversation {
+		t.Fatalf("a send that found the conversation gone did not say so: %+v", failed.Error)
+	}
+	if notice := c.update("s", "exited"); notice.Error != lostConversation {
+		t.Fatalf("the transcript has no notice: %+v", notice)
+	}
+	c.call("session/send", map[string]string{"session_id": "s", "text": "hi"})
+	if lines := starts(t, args); len(lines) != 2 || strings.Contains(lines[1], "--resume") {
+		t.Fatalf("the next send did not start a new conversation: %q", lines)
+	}
+}
+
+// starts returns the arguments of each start the stand-in Claude recorded.
+func starts(t *testing.T, args string) []string {
+	t.Helper()
+	recorded, err := os.ReadFile(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Split(strings.TrimSpace(string(recorded)), "\n")
+}
+
+// unresumableSession serves a stored session whose resume token Claude no
+// longer has. It returns the store, a client, and the file where the
+// stand-in Claude records its arguments.
+func unresumableSession(t *testing.T) (*store.Store, *client, string) {
 	dir := t.TempDir()
 	args := filepath.Join(dir, "args")
 	// A stand-in for Claude, which fails a resume as Claude does when it has
@@ -351,36 +409,7 @@ func TestUnresumableConversationStartsAnew(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(s.Close)
-	c := connect(t, s)
-
-	failed := c.request("session/send", map[string]string{"session_id": "s", "text": "hi"})
-	if failed.Error == nil || failed.Error.Message != lostConversation {
-		t.Fatalf("a send that found the conversation gone did not say so: %+v", failed.Error)
-	}
-	if notice := c.update("s", "exited"); notice.Error != lostConversation {
-		t.Fatalf("the transcript has no notice: %+v", notice)
-	}
-	var got struct {
-		History []agent.Update `json:"history"`
-	}
-	json.Unmarshal(c.call("session/get", map[string]string{"session_id": "s"}), &got)
-	if len(got.History) != 1 || got.History[0].Error != lostConversation {
-		t.Fatalf("the notice was not recorded: %+v", got.History)
-	}
-
-	c.call("session/send", map[string]string{"session_id": "s", "text": "hi"})
-	starts, err := os.ReadFile(args)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines := strings.Split(strings.TrimSpace(string(starts)), "\n")
-	if len(lines) != 2 || strings.Contains(lines[1], "--resume") || !strings.Contains(lines[1], "--session-id=") {
-		t.Fatalf("the next send did not start a new conversation: %q", lines)
-	}
-	workspaces, err := st.Workspaces()
-	if err != nil || workspaces[0].Sessions[0].ResumeToken != "" {
-		t.Fatalf("the stored token was kept: %v", err)
-	}
+	return st, connect(t, s), args
 }
 
 // A session keeps its conversation's resume token even when storing it fails,
@@ -416,6 +445,7 @@ func TestResumeTokenKeptWhenNotStored(t *testing.T) {
 	st.Close()
 	c.call("session/send", map[string]string{"session_id": "s", "text": "hi"})
 	c.update("s", "exited")
+	c.update("s", "parked")
 	c.call("session/send", map[string]string{"session_id": "s", "text": "again"})
 	starts, err := os.ReadFile(args)
 	if err != nil {
@@ -474,5 +504,88 @@ func TestClaudeModeChangeIsAdopted(t *testing.T) {
 	workspaces, err := st.Workspaces()
 	if err != nil || workspaces[0].Sessions[0].PermissionMode != "manual" {
 		t.Fatalf("the stored mode was not updated: %v", err)
+	}
+}
+
+// An approval reaches every client and a reloaded snapshot, takes one answer,
+// which reaches the harness untouched, and is refused once answered.
+func TestApprovalAnsweredOnce(t *testing.T) {
+	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
+		Models:          []config.Model{{ID: "m"}},
+		PermissionModes: []config.Option{{ID: "manual"}},
+	}}}
+	s, err := New(openStore(t), cfg, 0, map[string]agent.Start{"fake": fake.Start}, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c := connect(t, s)
+	var workspace struct {
+		WorkspaceID string `json:"workspace_id"`
+	}
+	json.Unmarshal(c.call("workspace/create", map[string]string{"path": t.TempDir()}), &workspace)
+	var created struct {
+		SessionID string `json:"session_id"`
+	}
+	json.Unmarshal(c.call("session/create", map[string]string{
+		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "permission_mode": "manual",
+	}), &created)
+	id := created.SessionID
+	approve := func(requestID, response string) message {
+		return c.request("session/approve", map[string]any{"session_id": id, "request_id": requestID, "response": json.RawMessage(response)})
+	}
+
+	if parked := approve("none", `{}`); parked.Error == nil || parked.Error.Code != approvalNotPending {
+		t.Fatalf("a parked session took an answer: %+v", parked.Error)
+	}
+	c.call("session/send", map[string]string{"session_id": id, "text": `approve Bash {"command":"ls"}`})
+	asked := c.update(id, "approval")
+	var snapshot struct {
+		State     string           `json:"state"`
+		Approvals []agent.Approval `json:"approvals"`
+	}
+	json.Unmarshal(c.call("session/get", map[string]string{"session_id": id}), &snapshot)
+	if snapshot.State != "requires_action" || len(snapshot.Approvals) != 1 || snapshot.Approvals[0].RequestID != asked.RequestID ||
+		!strings.Contains(string(snapshot.Approvals[0].Request), `"input":{"command":"ls"}`) {
+		t.Fatalf("the snapshot does not hold the approval: %+v", snapshot)
+	}
+
+	response := `{"behavior":"allow","updatedInput":{"n":9007199254740993}}`
+	if r := approve(asked.RequestID, response); r.Error != nil {
+		t.Fatalf("the answer was refused: %+v", r.Error)
+	}
+	if answered := c.update(id, "approval_answered"); answered.RequestID != asked.RequestID {
+		t.Fatalf("approval_answered names another request: %+v", answered)
+	}
+	if result := c.update(id, "tool_result"); result.Result.Text != response {
+		t.Fatalf("the harness received %q", result.Result.Text)
+	}
+	if again := approve(asked.RequestID, response); again.Error == nil || again.Error.Code != approvalNotPending {
+		t.Fatalf("an answered approval took a second answer: %+v", again.Error)
+	}
+}
+
+// A directory reached through a symlink is the workspace it already is.
+func TestSameDirectoryIsOneWorkspace(t *testing.T) {
+	s, err := New(openStore(t), &config.Config{}, 0, nil, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c := connect(t, s)
+	dir := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	add := func(path string) string {
+		var w struct {
+			ID string `json:"workspace_id"`
+		}
+		json.Unmarshal(c.call("workspace/create", map[string]string{"path": path}), &w)
+		return w.ID
+	}
+	if first, again := add(dir), add(link); first != again {
+		t.Fatalf("the directory and a symlink to it are two workspaces: %s, %s", first, again)
 	}
 }
