@@ -121,27 +121,26 @@ We test with `make dev`. Ox's test state is disposable.
 
 ## Defects
 
-- Fix a defect once it happens in real use. Before then, fix it only when one
-  of these holds:
-  - Its damage reaches anything beyond Ox's own disposable state: the user's
-    work, machine, accounts, or money. Examples include losing work in a
-    repository or worktree, Claude acting with permissions other than the ones
-    shown, and runaway spending on model usage.
-  - It fails silently in ordinary use, so nobody would notice it. The fix makes
-    the failure visible.
-  - It comes from a structure that keeps producing defects. The fix changes the
-    structure.
-- A race that can leave state the design says cannot exist comes from such a
-  structure, however unlikely it is. Fix it by changing who owns the state, not
-  by handling the interleaving. A race between independent requests in which
-  every outcome is valid is not a defect.
-- Record every other confirmed defect in `docs/known-issues.md` with how often
-  it occurs in real use, its worst cost, and how it was confirmed: live, from
-  the source, or by an injected fault. Keep each entry current with the code.
-- A review reads `docs/known-issues.md` first. It reports a recorded defect
-  again only when its frequency or cost has changed. It records a new defect
-  that falls below the threshold instead of proposing a fix.
-- When a recorded defect happens in real use, fix it and remove its entry.
+- Fix every confirmed defect. A defect is confirmed live, from the source, or
+  by an injected fault.
+- Fix a defect at its cause. A race that can leave state the design says
+  cannot exist comes from who owns the state, however unlikely it is. Fix it
+  by changing who owns the state, not by handling the interleaving. A race
+  between independent requests in which every outcome is valid is not a
+  defect.
+- A review gives each finding one of three outcomes:
+  - **Fix:** a confirmed defect, or a design, test, or documentation problem
+    whose fix costs less than keeping it.
+  - **Reject,** with the reason in the review: the finding is speculative,
+    misreads the intended behavior, or costs less to keep than to fix, such
+    as an unmeasured scaling cost.
+  - **Record** in `docs/known-issues.md`: a defect that cannot be fixed yet,
+    because it needs reproducing or depends on Claude Code behavior Ox cannot
+    change. The entry states the defect's worst cost, how it was found, and
+    what it waits on.
+- A review reads `docs/known-issues.md` first and reports a recorded defect
+  again only when what it waits on has changed.
+- Remove an entry once its defect is fixed or shown not to exist.
 
 ## Verification
 
@@ -173,8 +172,8 @@ facts listed for it:
   and stream-json, as observed.
 - `docs/guarantees.md`: the behavior Ox promises the person using it, linked
   to the contracts that define it.
-- `docs/known-issues.md`: confirmed defects that are not fixed yet, kept as
-  the Defects section describes.
+- `docs/known-issues.md`: defects that cannot be fixed yet, kept as the
+  Defects section describes.
 - `docs/todo.md`: planned work, by priority.
 
 Every fact lives in one place. A document that needs a fact owned by another
