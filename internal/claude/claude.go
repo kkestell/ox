@@ -2,7 +2,6 @@ package claude
 
 import (
 	"bufio"
-	"bytes"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -171,24 +170,26 @@ const stderrKept = 2048
 // or its read deadline passes, then closes it and sends the last of it.
 func logStderr(stderr *os.File, tail chan<- string) {
 	var last []byte
+	cut := false
 	buf := make([]byte, 4096)
 	for {
 		n, err := stderr.Read(buf)
 		os.Stderr.Write(buf[:n])
 		last = append(last, buf[:n]...)
 		if len(last) > stderrKept {
-			last = last[len(last)-stderrKept:]
-			// Start at a line when the start was cut.
-			if i := bytes.IndexByte(last, '\n'); i >= 0 {
-				last = last[i+1:]
-			}
+			last, cut = last[len(last)-stderrKept:], true
 		}
 		if err != nil {
 			break
 		}
 	}
 	stderr.Close()
-	tail <- strings.TrimSpace(string(last))
+	text := strings.TrimSpace(string(last))
+	// Drop the line whose start was cut, unless it is the only one.
+	if i := strings.IndexByte(text, '\n'); cut && i >= 0 {
+		text = text[i+1:]
+	}
+	tail <- text
 }
 
 // read delivers Claude's output, then its exit. Output Claude wrote before

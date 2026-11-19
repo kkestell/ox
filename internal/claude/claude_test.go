@@ -76,10 +76,15 @@ func TestExitReportedWhileAChildHoldsStdout(t *testing.T) {
 }
 
 // Claude prints some refusals, such as an invalid option, only on stderr. A
-// child that inherits stderr delays the reason by at most a second.
+// child that inherits stderr delays the reason by at most a second, and a
+// reason longer than what is kept loses only its start.
 func TestStartupFailureOnStderr(t *testing.T) {
 	const refusal = "error: option '--permission-mode <mode>' argument '' is invalid."
-	for name, child := range map[string]string{"exits": "", "child holds stderr": "sleep 15 >/dev/null &\necho $! > pid\n"} {
+	for name, before := range map[string]string{
+		"exits":              "",
+		"child holds stderr": "sleep 15 >/dev/null &\necho $! > pid\n",
+		"long line":          "printf '%03000d' 0 >&2\n",
+	} {
 		t.Run(name, func(t *testing.T) {
 			workspace := t.TempDir()
 			t.Cleanup(func() {
@@ -87,7 +92,7 @@ func TestStartupFailureOnStderr(t *testing.T) {
 					exec.Command("kill", strings.TrimSpace(string(data))).Run()
 				}
 			})
-			script(t, "#!/bin/sh\n"+child+"echo \"warning: a warning\" >&2\necho \""+refusal+"\" >&2\nexit 1\n")
+			script(t, "#!/bin/sh\necho \"warning: a warning\" >&2\n"+before+"echo \""+refusal+"\" >&2\nexit 1\n")
 			start := time.Now()
 			_, _, err := startProcess(workspace, newUUID(), false, agent.Settings{}, make(chan agent.Event))
 			if err == nil || !strings.Contains(err.Error(), refusal) {
