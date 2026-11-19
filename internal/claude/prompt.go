@@ -23,8 +23,9 @@ func (a *Agent) Send(text string) (string, error) {
 	}
 	a.prompt = prompt
 	a.phase = queued
-	a.publish(agent.Update{Type: "prompt", Text: text})
-	a.setState("running")
+	a.publish(agent.Update{MessageID: prompt.id, Type: "prompt", Text: text})
+	a.state = "running"
+	a.publish(agent.Update{MessageID: prompt.id, Type: "state", State: a.state})
 	return prompt.id, nil
 }
 
@@ -45,6 +46,7 @@ func (a *Agent) Interrupt() error {
 func (a *Agent) commandStarted(id string) {
 	if a.phase == queued && a.prompt.id == id {
 		a.phase = prompting
+		a.turn = id
 	}
 }
 
@@ -73,19 +75,22 @@ func (a *Agent) setState(state string) {
 	}
 }
 
+// endPrompt releases the agent with the prompt's final update.
 func (a *Agent) endPrompt(final agent.Update) {
 	a.withdrawApprovals()
+	final.MessageID = a.prompt.id
 	a.publish(final)
 	a.prompt = nil
+	a.turn = ""
 	a.phase = available
 }
 
-// publish reports an update, tagged with the current prompt's ID when a
-// client's prompt owns the turn.
+// publish reports an update, tagged with the client prompt whose turn
+// produced it unless it names its prompt itself.
 func (a *Agent) publish(update agent.Update) {
 	update.Time = time.Now()
-	if a.prompt != nil {
-		update.MessageID = a.prompt.id
+	if update.MessageID == "" {
+		update.MessageID = a.turn
 	}
 	a.onUpdate(update)
 }

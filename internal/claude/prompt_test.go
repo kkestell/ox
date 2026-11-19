@@ -26,7 +26,7 @@ func testAgent() (*Agent, *bytes.Buffer, *recorder) {
 func promptingAgent() (*Agent, *bytes.Buffer, *recorder) {
 	a, input, updates := testAgent()
 	a.phase, a.state = prompting, "running"
-	a.prompt = &submission{id: "prompt"}
+	a.prompt, a.turn = &submission{id: "prompt"}, "prompt"
 	return a, input, updates
 }
 
@@ -138,5 +138,36 @@ func TestUnexpectedExitIsReported(t *testing.T) {
 	a.exit(errors.New("signal: terminated"))
 	if len(*updates) != 1 || (*updates)[0].Type != "parked" {
 		t.Fatalf("a requested stop was reported as a failure: %+v", *updates)
+	}
+}
+
+// A background subagent's findings arrive in a turn Claude starts after the
+// prompt's result. That turn is not the prompt's, though the prompt holds the
+// session until Claude is idle.
+func TestTurnAfterPromptResultIsClaudes(t *testing.T) {
+	a, _, updates := testAgent()
+	id, err := a.Send("start a background agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.commandStarted(id)
+	output(t, a, `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"launched"}}}`)
+	output(t, a, `{"type":"result","subtype":"success","result":"launched"}`)
+	for _, u := range *updates {
+		if u.MessageID != id {
+			t.Fatalf("the prompt's turn was not attributed to it: %+v", u)
+		}
+	}
+	*updates = nil
+	output(t, a, `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"found it"}}}`)
+	output(t, a, `{"type":"result","subtype":"success","result":"found it"}`)
+	output(t, a, `{"type":"result","subtype":"success","result":""}`)
+	if _, err := a.Send("again"); !errors.Is(err, agent.ErrBusy) {
+		t.Fatalf("the prompt released the session before Claude was idle: %v", err)
+	}
+	a.sessionState("idle")
+	if len(*updates) != 3 || (*updates)[0].MessageID != "" || (*updates)[1].MessageID != "" ||
+		(*updates)[2].State != "idle" || (*updates)[2].MessageID != id {
+		t.Fatalf("Claude's own turn was attributed to the prompt: %+v", *updates)
 	}
 }

@@ -28,7 +28,8 @@ type Agent struct {
 	// state is the execution state clients see: Claude's report, except that
 	// a prompt is running from the moment it is written.
 	state       string
-	prompt      *submission
+	prompt      *submission      // the client prompt holding the agent until Claude is idle
+	turn        string           // the client prompt whose turn is running, until its result
 	approvals   []agent.Approval // pending, in arrival order
 	config      *configuration
 	settings    agent.Settings // the settings the process is using
@@ -157,6 +158,9 @@ func (a *Agent) handleOutput(m message) {
 				a.onResumable = nil
 			}
 		}
+		// A later turn before idle, such as one reporting a background
+		// subagent's findings, is Claude's own.
+		a.turn = ""
 	}
 }
 

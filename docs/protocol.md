@@ -299,11 +299,14 @@ stays on disk.
 
 Updates go to every connection. Every notification uses method
 `session/update` and includes `session_id`, `type`, and `time` inside
-`params`, and `message_id` when the update belongs to a client's prompt.
+`params`, and `message_id` when the update belongs to a client's prompt: the
+prompt itself, the turn that takes it up to its `result`, and the `state` or
+`exited` update that releases it.
 `time` is when the daemon published the update, as an RFC 3339 timestamp; a
 recorded reply's `text_delta` carries the time of its first fragment.
 Turns Claude starts itself, such as a scheduled prompt firing or a background
-task finishing, produce the same updates without `message_id`:
+task finishing, produce the same updates without `message_id`. Such a turn
+can run after a prompt's `result` and before the `idle` that releases it:
 
 ```json
 {"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"text_delta","text":"This repository ","time":"2026-11-18T19:53:50.674Z"}}
