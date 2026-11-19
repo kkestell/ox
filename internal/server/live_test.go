@@ -118,8 +118,8 @@ func TestLive(t *testing.T) {
 	for c.update(a, "state").State != "running" {
 	}
 	c.call("session/interrupt", map[string]string{"session_id": a})
-	if r := c.update(a, "result").Result; !r.IsError {
-		t.Errorf("an interrupted turn ended with a successful result: %+v", r)
+	if r := c.update(a, "result").Result; !r.IsError || r.Text != "Interrupted" {
+		t.Errorf("an interrupted turn ended with %+v", r)
 	}
 	idle(a)
 

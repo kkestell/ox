@@ -141,7 +141,10 @@ func (a *Agent) handleOutput(message Message) {
 		}
 	case "result":
 		result := agent.Result{Text: message.Result, IsError: message.IsError || message.Subtype != "success"}
-		if result.IsError && result.Text == "" {
+		if strings.HasPrefix(message.TerminalReason, "aborted") {
+			// errors[] holds only internal diagnostics for an interrupt.
+			result.Text = "Interrupted"
+		} else if result.IsError && result.Text == "" {
 			result.Text = strings.Join(message.Errors, "\n")
 			if result.Text == "" {
 				result.Text = message.Subtype

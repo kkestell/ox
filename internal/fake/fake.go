@@ -107,7 +107,7 @@ func (a *Agent) Approve(string, json.RawMessage) error {
 
 func (a *Agent) Interrupt() error {
 	if a.state != "idle" {
-		a.finish(agent.Result{Text: "interrupted", IsError: true})
+		a.finish(agent.Result{Text: "Interrupted", IsError: true})
 	}
 	return nil
 }

@@ -261,8 +261,8 @@ reading prompt updates for the outcome.
 Requires `session_id`. Asks a running session to stop its turn and the tools
 it runs, using Claude's [interrupt](claude-code.md#interrupt). Success means
 the request was written; a session that is idle or parked has nothing to stop
-and also succeeds. The stopped turn ends with an error `result` and an `idle`
-state, which release a prompt as usual.
+and also succeeds. The stopped turn ends with an error `result` whose text is
+`Interrupted`, and an `idle` state, which release a prompt as usual.
 
 ```json
 {"jsonrpc":"2.0","id":8,"method":"session/interrupt","params":{"session_id":"session-id"}}

@@ -13,6 +13,7 @@ type Message struct {
 	ParentToolUseID string            `json:"parent_tool_use_id"`
 	Result          string            `json:"result"`
 	IsError         bool              `json:"is_error"`
+	TerminalReason  string            `json:"terminal_reason"`
 	Errors          []string          `json:"errors"`
 	RequestID       string            `json:"request_id"`
 	Request         json.RawMessage   `json:"request"`

@@ -13,19 +13,26 @@ function sendOnEnter(event: KeyboardEvent & { currentTarget: HTMLTextAreaElement
   }
 }
 
-// pinToBottom keeps log scrolled to the bottom as content arrives, unless the
-// user has scrolled up.
+// pinToBottom keeps log scrolled to the bottom as content arrives or the log
+// shrinks, as when an approval grows the composer, unless the user has
+// scrolled up.
 function pinToBottom(log: HTMLElement) {
   let pinned = true;
   log.addEventListener("scroll", () => {
     pinned = log.scrollHeight - log.scrollTop - log.clientHeight < 32;
   });
-  const observer = new MutationObserver(() => {
+  const follow = () => {
     if (pinned) log.scrollTop = log.scrollHeight;
-  });
-  observer.observe(log, { childList: true, subtree: true, characterData: true });
+  };
+  const mutations = new MutationObserver(follow);
+  mutations.observe(log, { childList: true, subtree: true, characterData: true });
+  const resizes = new ResizeObserver(follow);
+  resizes.observe(log);
   log.scrollTop = log.scrollHeight;
-  return () => observer.disconnect();
+  return () => {
+    mutations.disconnect();
+    resizes.disconnect();
+  };
 }
 
 // SessionView sends prompt, a new session's first prompt, once it opens.
