@@ -20,10 +20,15 @@ type Process struct {
 	cmd *exec.Cmd
 }
 
+const systemInstructions = "Lead with the big idea up front. " +
+	"Use crisp, deadpan, military-efficient delivery. " +
+	"Use dry wit with complete emotional neutrality."
+
 func startProcess(workspace, sessionID string, resume bool, settings agent.Settings, events chan<- agent.Event) (*Process, error) {
 	args := []string{
 		"-p", "--input-format=stream-json", "--output-format=stream-json", "--verbose",
 		"--include-partial-messages", "--permission-prompt-tool=stdio",
+		"--append-system-prompt", systemInstructions, "--system-prompt-snapshot=off",
 	}
 	if resume {
 		args = append(args, "--resume="+sessionID)
