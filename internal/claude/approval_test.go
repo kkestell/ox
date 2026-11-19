@@ -10,10 +10,10 @@ import (
 )
 
 func TestApprovalRouting(t *testing.T) {
-	a, input, updates := promptingAgent()
+	a, input, updates, id := promptingAgent(t)
 	request := json.RawMessage(`{"subtype":"can_use_tool","tool_name":"Example","input":{"number":9007199254740993},"permission_suggestions":[],"extra":"preserved"}`)
-	a.handleOutput(message{Type: "control_request", RequestID: "request", Request: request})
-	if len(*updates) != 1 || (*updates)[0].Type != "approval" || (*updates)[0].MessageID != "prompt" || !bytes.Equal((*updates)[0].Request, request) {
+	output(t, a, `{"type":"control_request","request_id":"request","request":`+string(request)+`}`)
+	if len(*updates) != 1 || (*updates)[0].Type != "approval" || (*updates)[0].MessageID != id || !bytes.Equal((*updates)[0].Request, request) {
 		t.Fatalf("approval did not reach the prompt client intact: %+v", *updates)
 	}
 	response := json.RawMessage(`{"behavior":"allow","updatedInput":{"number":9007199254740993},"extra":"preserved"}`)
@@ -45,15 +45,15 @@ func TestApprovalRouting(t *testing.T) {
 func TestApprovalCancellation(t *testing.T) {
 	for _, event := range []string{"control_cancel_request", "idle", "exit"} {
 		t.Run(event, func(t *testing.T) {
-			a, input, updates := promptingAgent()
-			a.controlRequest("request", json.RawMessage(`{"subtype":"can_use_tool"}`))
+			a, input, updates, _ := promptingAgent(t)
+			output(t, a, `{"type":"control_request","request_id":"request","request":{"subtype":"can_use_tool"}}`)
 			switch event {
 			case "idle":
-				a.sessionState("idle")
+				state(t, a, "idle")
 			case "exit":
-				a.exit(nil)
+				a.Handle(processExit{})
 			default:
-				a.handleOutput(message{Type: event, Subtype: "success", RequestID: "request"})
+				output(t, a, `{"type":"control_cancel_request","request_id":"request"}`)
 			}
 			if len(*updates) < 2 || (*updates)[1].Type != "approval_cancelled" || (*updates)[1].RequestID != "request" {
 				t.Fatalf("approval not withdrawn before the terminal update: %+v", *updates)
@@ -66,9 +66,9 @@ func TestApprovalCancellation(t *testing.T) {
 }
 
 func TestApprovalSurvivesResult(t *testing.T) {
-	a, input, updates := promptingAgent()
-	a.controlRequest("background", json.RawMessage(`{"subtype":"can_use_tool"}`))
-	a.handleOutput(message{Type: "result", Subtype: "success", Result: "Background agent launched"})
+	a, input, updates, _ := promptingAgent(t)
+	output(t, a, `{"type":"control_request","request_id":"background","request":{"subtype":"can_use_tool"}}`)
+	output(t, a, `{"type":"result","subtype":"success","result":"Background agent launched"}`)
 	if len(*updates) != 2 || (*updates)[1].Type != "result" {
 		t.Fatalf("result withdrew a background approval: %+v", *updates)
 	}
@@ -90,7 +90,7 @@ func TestApprovalSurvivesResult(t *testing.T) {
 
 func TestApprovalWithoutPrompt(t *testing.T) {
 	a, input, updates := testAgent()
-	a.controlRequest("scheduled", json.RawMessage(`{"subtype":"can_use_tool"}`))
+	output(t, a, `{"type":"control_request","request_id":"scheduled","request":{"subtype":"can_use_tool"}}`)
 	if len(*updates) != 1 || (*updates)[0].Type != "approval" || (*updates)[0].MessageID != "" {
 		t.Fatalf("approval in a turn Claude started was not published: %+v", *updates)
 	}
@@ -112,9 +112,8 @@ func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("broken p
 // A failed answer leaves the approval pending, so the exit that follows a
 // broken pipe withdraws it from every client.
 func TestFailedAnswerLeavesApprovalPending(t *testing.T) {
-	a, _, updates := promptingAgent()
-	a.input = newWriter(failingWriter{})
-	a.controlRequest("request", json.RawMessage(`{"subtype":"can_use_tool"}`))
+	a, updates := agentWriting(failingWriter{}, make(chan agent.Event), nil)
+	output(t, a, `{"type":"control_request","request_id":"request","request":{"subtype":"can_use_tool"}}`)
 	if err := a.Approve("request", json.RawMessage(`{"behavior":"allow"}`)); err == nil {
 		t.Fatal("a failed write was reported as answered")
 	}
@@ -122,7 +121,7 @@ func TestFailedAnswerLeavesApprovalPending(t *testing.T) {
 		t.Fatalf("a failed answer removed the approval: %+v", a.Snapshot())
 	}
 	*updates = nil
-	a.exit(errors.New("signal: broken pipe"))
+	a.Handle(processExit{errors.New("signal: broken pipe")})
 	if len(*updates) == 0 || (*updates)[0].Type != "approval_cancelled" || (*updates)[0].RequestID != "request" {
 		t.Fatalf("exit did not withdraw the approval: %+v", *updates)
 	}

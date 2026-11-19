@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -16,18 +18,48 @@ func (r *recorder) record(update agent.Update) {
 	*r = append(*r, update)
 }
 
-func testAgent() (*Agent, *bytes.Buffer, *recorder) {
-	input := new(bytes.Buffer)
+// agentWriting returns an agent that writes to input and runs proc, whose
+// exit arrives on events.
+func agentWriting(input io.Writer, events chan agent.Event, proc *process) (*Agent, *recorder) {
 	updates := new(recorder)
 	options := agent.Options{OnUpdate: updates.record, OnError: func(err error) { panic(err) }}
-	return newAgent(newWriter(input), make(chan agent.Event), nil, "claude-session", options), input, updates
+	return newAgent(newWriter(input), events, proc, "claude-session", options), updates
 }
 
-func promptingAgent() (*Agent, *bytes.Buffer, *recorder) {
-	a, input, updates := testAgent()
-	a.phase, a.state = prompting, "running"
-	a.prompt, a.turn = &submission{id: "prompt"}, "prompt"
+func testAgent() (*Agent, *bytes.Buffer, *recorder) {
+	input := new(bytes.Buffer)
+	a, updates := agentWriting(input, make(chan agent.Event), nil)
 	return a, input, updates
+}
+
+// stoppableAgent is a testAgent whose process waits to be stopped and
+// delivers its exit as Claude's does.
+func stoppableAgent(t *testing.T) (*Agent, *bytes.Buffer, *recorder) {
+	cmd := exec.Command("sleep", "60")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cmd.Process.Kill() })
+	events := make(chan agent.Event, 1)
+	go func() { events <- processExit{cmd.Wait()} }()
+	input := new(bytes.Buffer)
+	a, updates := agentWriting(input, events, &process{cmd: cmd})
+	return a, input, updates
+}
+
+// promptingAgent returns an agent running a prompt Claude has taken, with
+// its input and updates so far cleared.
+func promptingAgent(t *testing.T) (*Agent, *bytes.Buffer, *recorder, string) {
+	a, input, updates := testAgent()
+	id, err := a.Send("hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	output(t, a, `{"type":"command_lifecycle","command_uuid":"`+id+`","state":"started"}`)
+	output(t, a, `{"type":"system","subtype":"session_state_changed","state":"running"}`)
+	input.Reset()
+	*updates = nil
+	return a, input, updates, id
 }
 
 func output(t *testing.T, a *Agent, line string) {
@@ -39,20 +71,24 @@ func output(t *testing.T, a *Agent, line string) {
 	a.Handle(m)
 }
 
+func state(t *testing.T, a *Agent, state string) {
+	t.Helper()
+	output(t, a, `{"type":"system","subtype":"session_state_changed","state":"`+state+`"}`)
+}
+
 func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
 	a, input, updates := testAgent()
 	id, err := a.Send("hello")
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	if len(*updates) != 2 || (*updates)[0].Type != "prompt" || (*updates)[0].Text != "hello" || (*updates)[0].MessageID != id ||
 		(*updates)[1].State != "running" || (*updates)[1].MessageID != id || a.Snapshot().State != "running" {
 		t.Fatalf("a written prompt was not published as running: %+v", *updates)
 	}
 	*updates = nil
 
-	a.sessionState("idle")
+	state(t, a, "idle")
 	if _, err := a.Send("again"); !errors.Is(err, agent.ErrBusy) || len(*updates) != 0 || a.Snapshot().State != "running" {
 		t.Fatalf("idle before Claude took the prompt released it: %v, %+v", err, *updates)
 	}
@@ -61,38 +97,41 @@ func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
 		t.Fatalf("an interrupt before Claude took the prompt was not sent: %v, %q", err, input.String())
 	}
 
-	a.commandStarted(id)
-	a.sessionState("running")
-	a.sessionState("idle")
+	output(t, a, `{"type":"command_lifecycle","command_uuid":"`+id+`","state":"started"}`)
+	state(t, a, "running")
+	state(t, a, "idle")
 	if len(*updates) != 1 || (*updates)[0].State != "idle" || (*updates)[0].MessageID != id {
 		t.Fatalf("unexpected prompt updates: %+v", *updates)
 	}
-	if !a.idle() || a.prompt != nil {
+	if a.Snapshot().Prompt != nil {
 		t.Fatal("idle after Claude took the prompt did not release it")
+	}
+	if _, err := a.Send("next"); err != nil {
+		t.Fatalf("the released agent refused a prompt: %v", err)
 	}
 }
 
 func TestSnapshotReturnsRunningPrompt(t *testing.T) {
-	a, _, _ := promptingAgent()
-	request := json.RawMessage(`{"subtype":"can_use_tool","tool_name":"Bash"}`)
-	a.controlRequest("pending", request)
+	a, _, _, id := promptingAgent(t)
+	request := `{"subtype":"can_use_tool","tool_name":"Bash"}`
+	output(t, a, `{"type":"control_request","request_id":"pending","request":`+request+`}`)
 
 	snapshot := a.Snapshot()
-	if snapshot.State != "running" || snapshot.Prompt == nil || snapshot.Prompt.MessageID != "prompt" ||
+	if snapshot.State != "running" || snapshot.Prompt == nil || snapshot.Prompt.MessageID != id ||
 		len(snapshot.Approvals) != 1 || snapshot.Approvals[0].RequestID != "pending" ||
-		!bytes.Equal(snapshot.Approvals[0].Request, request) {
+		string(snapshot.Approvals[0].Request) != request {
 		t.Fatalf("snapshot missing the running prompt: %+v", snapshot)
 	}
 }
 
 func TestTurnsClaudeStartsArePublished(t *testing.T) {
 	a, _, updates := testAgent()
-	a.sessionState("running")
+	state(t, a, "running")
 	output(t, a, `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"tick"}}}`)
 	output(t, a, `{"type":"result","subtype":"success","result":"tick"}`)
 	output(t, a, `{"type":"result","subtype":"success","result":""}`)
-	a.sessionState("idle")
-	a.exit(nil)
+	state(t, a, "idle")
+	a.Handle(processExit{})
 	types := []string{}
 	for _, u := range *updates {
 		if u.MessageID != "" {
@@ -106,7 +145,7 @@ func TestTurnsClaudeStartsArePublished(t *testing.T) {
 }
 
 func TestTopLevelToolCallsArePublished(t *testing.T) {
-	a, _, updates := promptingAgent()
+	a, _, updates, id := promptingAgent(t)
 	output(t, a, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}`)
 	output(t, a, `{"type":"assistant","parent_tool_use_id":"t0","message":{"content":[{"type":"tool_use","id":"t2","name":"Read","input":{}}]}}`)
 	output(t, a, `{"type":"user","parent_tool_use_id":"t0","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"sub"}]}}`)
@@ -115,7 +154,7 @@ func TestTopLevelToolCallsArePublished(t *testing.T) {
 		t.Fatalf("expected the top-level call and result only: %+v", *updates)
 	}
 	use, result := (*updates)[0], (*updates)[1]
-	if use.Type != "tool_use" || use.ToolUseID != "t1" || use.ToolName != "Bash" || string(use.Input) != `{"command":"ls"}` || use.MessageID != "prompt" {
+	if use.Type != "tool_use" || use.ToolUseID != "t1" || use.ToolName != "Bash" || string(use.Input) != `{"command":"ls"}` || use.MessageID != id {
 		t.Fatalf("unexpected tool_use: %+v", use)
 	}
 	if result.Type != "tool_result" || result.ToolUseID != "t1" || result.Result.Text != "a\nb" || !result.Result.IsError {
@@ -127,16 +166,17 @@ func TestTopLevelToolCallsArePublished(t *testing.T) {
 // prompt is active; an exit Ox asked for is plain parking.
 func TestUnexpectedExitIsReported(t *testing.T) {
 	a, _, updates := testAgent()
-	a.exit(errors.New("exit status 1"))
+	a.Handle(processExit{errors.New("exit status 1")})
 	if len(*updates) != 2 || (*updates)[0].Type != "exited" || !strings.Contains((*updates)[0].Error, "exit status 1") ||
 		(*updates)[1].Type != "parked" {
 		t.Fatalf("an unexpected exit looked like parking: %+v", *updates)
 	}
 
-	a, _, updates = testAgent()
-	a.stopping = true
-	a.exit(errors.New("signal: terminated"))
-	if len(*updates) != 1 || (*updates)[0].Type != "parked" {
+	a, _, updates = stoppableAgent(t)
+	if err := a.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if !a.Exited() || len(*updates) != 1 || (*updates)[0].Type != "parked" {
 		t.Fatalf("a requested stop was reported as a failure: %+v", *updates)
 	}
 }
@@ -150,7 +190,7 @@ func TestTurnAfterPromptResultIsClaudes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a.commandStarted(id)
+	output(t, a, `{"type":"command_lifecycle","command_uuid":"`+id+`","state":"started"}`)
 	output(t, a, `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"launched"}}}`)
 	output(t, a, `{"type":"result","subtype":"success","result":"launched"}`)
 	for _, u := range *updates {
@@ -165,7 +205,7 @@ func TestTurnAfterPromptResultIsClaudes(t *testing.T) {
 	if _, err := a.Send("again"); !errors.Is(err, agent.ErrBusy) {
 		t.Fatalf("the prompt released the session before Claude was idle: %v", err)
 	}
-	a.sessionState("idle")
+	state(t, a, "idle")
 	if len(*updates) != 3 || (*updates)[0].MessageID != "" || (*updates)[1].MessageID != "" ||
 		(*updates)[2].State != "idle" || (*updates)[2].MessageID != id {
 		t.Fatalf("Claude's own turn was attributed to the prompt: %+v", *updates)

@@ -1,9 +1,9 @@
 package claude
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
-	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
@@ -11,15 +11,37 @@ import (
 	"github.com/kkestell/ox/internal/agent"
 )
 
-func replyTo(result chan error) func(agent.Settings, error) {
-	return func(_ agent.Settings, err error) { result <- err }
+type outcome struct {
+	applied agent.Settings
+	err     error
+}
+
+func replyTo(result chan outcome) func(agent.Settings, error) {
+	return func(applied agent.Settings, err error) { result <- outcome{applied, err} }
+}
+
+// controlRequestID reads the next control request written to Claude.
+func controlRequestID(t *testing.T, input *bytes.Buffer) string {
+	t.Helper()
+	var wire struct {
+		RequestID string `json:"request_id"`
+	}
+	if err := json.NewDecoder(input).Decode(&wire); err != nil {
+		t.Fatal(err)
+	}
+	return wire.RequestID
+}
+
+func acknowledge(t *testing.T, a *Agent, requestID, subtype string) {
+	t.Helper()
+	output(t, a, `{"type":"control_response","response":{"subtype":"`+subtype+`","request_id":"`+requestID+`","error":"refused"}}`)
 }
 
 func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 	a, input, _ := testAgent()
 	decoder := json.NewDecoder(input)
 	config := agent.Settings{Model: "haiku", Effort: "low", PermissionMode: "plan"}
-	result := make(chan error, 1)
+	result := make(chan outcome, 1)
 	a.Configure(config, replyTo(result))
 
 	for _, expected := range []map[string]any{
@@ -41,39 +63,35 @@ func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 		if _, err := a.Send("hello"); !errors.Is(err, agent.ErrBusy) {
 			t.Fatalf("prompt accepted during configuration: %v", err)
 		}
-		overlapping := make(chan error, 1)
-		if a.Configure(config, replyTo(overlapping)); !errors.Is(<-overlapping, agent.ErrBusy) {
+		overlapping := make(chan outcome, 1)
+		if a.Configure(config, replyTo(overlapping)); !errors.Is((<-overlapping).err, agent.ErrBusy) {
 			t.Fatal("overlapping configuration accepted")
 		}
-		a.handleOutput(message{Type: "control_response", Response: controlReply{RequestID: "unrelated", Subtype: "success"}})
+		acknowledge(t, a, "unrelated", "success")
 		select {
-		case err := <-result:
-			t.Fatalf("configuration finished before its acknowledgement: %v", err)
+		case r := <-result:
+			t.Fatalf("configuration finished before its acknowledgement: %v", r.err)
 		default:
 		}
-		a.handleOutput(message{Type: "control_response", Response: controlReply{RequestID: wire.RequestID, Subtype: "success"}})
+		acknowledge(t, a, wire.RequestID, "success")
 	}
 	select {
-	case err := <-result:
-		if err != nil {
-			t.Fatal(err)
+	case r := <-result:
+		if r.err != nil || r.applied != config {
+			t.Fatalf("acknowledged settings were not applied: %+v", r)
 		}
 	default:
 		t.Fatal("configuration did not finish")
 	}
-	if !a.idle() {
-		t.Fatal("configuration kept its reservation")
-	}
-	if a.settings != config {
-		t.Fatalf("acknowledged settings were not recorded: %+v", a.settings)
+	if _, err := a.Send("hello"); err != nil {
+		t.Fatalf("configuration kept its reservation: %v", err)
 	}
 }
 
 func TestConfigureSendsOnlyChangedSettings(t *testing.T) {
 	a, input, _ := testAgent()
-	a.settings = agent.Settings{Model: "haiku", Effort: "low", PermissionMode: "plan"}
-	result := make(chan error, 1)
-	a.Configure(agent.Settings{Model: "haiku", Effort: "high", PermissionMode: "plan"}, replyTo(result))
+	result := make(chan outcome, 1)
+	a.Configure(agent.Settings{Effort: "high"}, replyTo(result))
 	var wire struct {
 		RequestID string         `json:"request_id"`
 		Request   map[string]any `json:"request"`
@@ -84,44 +102,42 @@ func TestConfigureSendsOnlyChangedSettings(t *testing.T) {
 	if wire.Request["subtype"] != "apply_flag_settings" || input.Len() != 0 {
 		t.Fatalf("unchanged settings were sent: %+v, %s", wire, input)
 	}
-	a.handleOutput(message{Type: "control_response", Response: controlReply{RequestID: wire.RequestID, Subtype: "success"}})
-	if err := <-result; err != nil {
-		t.Fatal(err)
+	acknowledge(t, a, wire.RequestID, "success")
+	if r := <-result; r.err != nil {
+		t.Fatal(r.err)
 	}
 
-	a.Configure(a.settings, replyTo(result))
-	if err := <-result; err != nil || input.Len() != 0 || !a.idle() {
-		t.Fatalf("configuration without a change was sent to Claude: %v, %s", err, input)
+	a.Configure(agent.Settings{Effort: "high"}, replyTo(result))
+	if r := <-result; r.err != nil || input.Len() != 0 {
+		t.Fatalf("configuration without a change was sent to Claude: %v, %s", r.err, input)
+	}
+	if _, err := a.Send("hello"); err != nil {
+		t.Fatalf("configuration without a change kept a reservation: %v", err)
 	}
 }
 
 func TestConfigureFailure(t *testing.T) {
-	for _, outcome := range []string{"rejected", "exited"} {
-		t.Run(outcome, func(t *testing.T) {
+	for _, ending := range []string{"rejected", "exited"} {
+		t.Run(ending, func(t *testing.T) {
 			a, input, _ := testAgent()
-			result := make(chan error, 1)
+			result := make(chan outcome, 1)
 			a.Configure(agent.Settings{Model: "haiku", Effort: "low", PermissionMode: "plan"}, replyTo(result))
-			var wire struct {
-				RequestID string `json:"request_id"`
-			}
-			if err := json.NewDecoder(input).Decode(&wire); err != nil {
-				t.Fatal(err)
-			}
-			switch outcome {
+			requestID := controlRequestID(t, input)
+			switch ending {
 			case "rejected":
-				a.handleOutput(message{Type: "control_response", Response: controlReply{RequestID: wire.RequestID, Subtype: "error", Error: "Unsupported model"}})
+				output(t, a, `{"type":"control_response","response":{"subtype":"error","request_id":"`+requestID+`","error":"Unsupported model"}}`)
+				if _, err := a.Send("hello"); err != nil {
+					t.Fatalf("failed configuration kept its reservation: %v", err)
+				}
 			case "exited":
-				a.exit(nil)
+				a.Handle(processExit{})
 			}
-			err := <-result
-			if outcome == "rejected" && (err == nil || !strings.Contains(err.Error(), "Unsupported model")) {
+			err := (<-result).err
+			if ending == "rejected" && (err == nil || !strings.Contains(err.Error(), "Unsupported model")) {
 				t.Fatalf("Claude's refusal was lost: %v", err)
 			}
-			if outcome == "exited" && !errors.Is(err, agent.ErrExited) {
+			if ending == "exited" && !errors.Is(err, agent.ErrExited) {
 				t.Fatalf("process exit did not fail configuration: %v", err)
-			}
-			if a.config != nil || a.phase == configuring {
-				t.Fatal("failed configuration kept its reservation")
 			}
 		})
 	}
@@ -131,81 +147,58 @@ func TestConfigureFailure(t *testing.T) {
 // took, which the session must adopt.
 func TestPartialConfigurationReportsAppliedSettings(t *testing.T) {
 	a, input, _ := testAgent()
-	a.settings = agent.Settings{Model: "haiku", Effort: "low", PermissionMode: "plan"}
-	decoder := json.NewDecoder(input)
-	var applied agent.Settings
-	var result error
-	a.Configure(agent.Settings{Model: "sonnet", Effort: "high", PermissionMode: "plan"}, func(s agent.Settings, err error) {
-		applied, result = s, err
-	})
-	for _, subtype := range []string{"success", "error"} {
-		var wire struct {
-			RequestID string `json:"request_id"`
-		}
-		if err := decoder.Decode(&wire); err != nil {
-			t.Fatal(err)
-		}
-		a.handleOutput(message{Type: "control_response", Response: controlReply{RequestID: wire.RequestID, Subtype: subtype, Error: "refused"}})
-	}
-	if result == nil || applied != (agent.Settings{Model: "sonnet", Effort: "low", PermissionMode: "plan"}) {
-		t.Fatalf("a partial configuration reported %+v, %v", applied, result)
+	result := make(chan outcome, 1)
+	a.Configure(agent.Settings{Model: "sonnet", Effort: "high"}, replyTo(result))
+	acknowledge(t, a, controlRequestID(t, input), "success")
+	acknowledge(t, a, controlRequestID(t, input), "error")
+	if r := <-result; r.err == nil || r.applied != (agent.Settings{Model: "sonnet"}) {
+		t.Fatalf("a partial configuration reported %+v", r)
 	}
 }
 
 // A timed-out control request may still be applied, so the process stops and
 // its exit ends the configuration; a late acknowledgement changes nothing.
 func TestConfigureTimeoutStopsProcess(t *testing.T) {
-	a, input, _ := testAgent()
-	cmd := exec.Command("sleep", "60")
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	a.proc = &process{cmd: cmd}
-	a.settings = agent.Settings{Model: "haiku", Effort: "low", PermissionMode: "manual"}
-	result := make(chan error, 1)
-	a.Configure(agent.Settings{Model: "haiku", Effort: "low", PermissionMode: "plan"}, replyTo(result))
-	var wire struct {
-		RequestID string `json:"request_id"`
-	}
-	if err := json.NewDecoder(input).Decode(&wire); err != nil {
-		t.Fatal(err)
-	}
+	a, input, _ := stoppableAgent(t)
+	result := make(chan outcome, 1)
+	a.Configure(agent.Settings{PermissionMode: "plan"}, replyTo(result))
+	requestID := controlRequestID(t, input)
 
 	a.Handle(controlTimeout{"stale"})
-	a.Handle(controlTimeout{wire.RequestID})
-	if err := cmd.Wait(); err == nil {
-		t.Fatal("the process was not stopped")
-	}
-	a.handleOutput(message{Type: "control_response", Response: controlReply{RequestID: wire.RequestID, Subtype: "success"}})
+	a.Handle(controlTimeout{requestID})
+	exit := <-a.Events()
+	acknowledge(t, a, requestID, "success")
 	select {
-	case err := <-result:
-		t.Fatalf("configuration ended before the process exited: %v", err)
+	case r := <-result:
+		t.Fatalf("configuration ended before the process exited: %v", r.err)
 	default:
 	}
-	if a.idle() || a.settings.PermissionMode != "manual" {
-		t.Fatalf("stopping process was released or changed: %v, %+v", a.phase, a.settings)
+	if _, err := a.Send("hello"); !errors.Is(err, agent.ErrBusy) {
+		t.Fatalf("stopping process was released: %v", err)
 	}
-	a.Handle(processExit{})
-	if err := <-result; !errors.Is(err, agent.ErrExited) {
-		t.Fatalf("process exit did not end configuration: %v", err)
+	a.Handle(exit)
+	if r := <-result; !errors.Is(r.err, agent.ErrExited) || r.applied != (agent.Settings{}) {
+		t.Fatalf("process exit did not end configuration unchanged: %+v", r)
 	}
 }
 
 func TestConfigureRequiresIdle(t *testing.T) {
-	for _, state := range []string{"running", "requires_action", "queued", "prompting"} {
-		t.Run(state, func(t *testing.T) {
+	for _, busy := range []string{"running", "requires_action", "queued", "prompting"} {
+		t.Run(busy, func(t *testing.T) {
 			a, _, _ := testAgent()
-			switch state {
+			switch busy {
 			case "queued":
-				a.phase = queued
+				if _, err := a.Send("hello"); err != nil {
+					t.Fatal(err)
+				}
 			case "prompting":
-				a.phase = prompting
+				a, _, _, _ = promptingAgent(t)
 			default:
-				a.state = state
+				state(t, a, busy)
 			}
-			result := make(chan error, 1)
-			if a.Configure(agent.Settings{Model: "haiku"}, replyTo(result)); !errors.Is(<-result, agent.ErrBusy) {
-				t.Fatalf("configuration accepted in %s", state)
+			result := make(chan outcome, 1)
+			if a.Configure(agent.Settings{Model: "haiku"}, replyTo(result)); !errors.Is((<-result).err, agent.ErrBusy) {
+				t.Fatalf("configuration accepted in %s", busy)
 			}
 		})
 	}
