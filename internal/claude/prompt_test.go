@@ -24,7 +24,7 @@ func (r *recorder) record(update agent.Update) {
 // exit arrives on events.
 func agentWriting(input io.Writer, events chan agent.Event, proc *process) (*Agent, *recorder) {
 	updates := new(recorder)
-	options := agent.Options{OnUpdate: updates.record, OnError: func(err error) { panic(err) }}
+	options := agent.Options{OnUpdate: updates.record, OnConfigured: func(agent.Settings) {}, OnError: func(err error) { panic(err) }}
 	return newAgent(newWriter(input), events, proc, "claude-session", options), updates
 }
 

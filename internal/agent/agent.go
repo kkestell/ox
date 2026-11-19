@@ -65,6 +65,10 @@ type Options struct {
 	// OnResumable receives the token that resumes a new conversation, once
 	// the harness has saved enough to resume it. It is called at most once.
 	OnResumable func(token string)
+	// OnConfigured receives the settings the process now uses when the harness
+	// changes them itself, without a Configure call, such as leaving plan mode
+	// once its plan is approved. It is called during Handle.
+	OnConfigured func(Settings)
 	// OnError receives failures that no call returns, for the session's log.
 	OnError func(error)
 }

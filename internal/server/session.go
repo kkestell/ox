@@ -105,13 +105,14 @@ func (sess *session) start() error {
 		return fmt.Errorf("unknown harness %q", sess.harness)
 	}
 	a, err := start(agent.Options{
-		SessionID:   sess.id,
-		Workspace:   sess.workspace,
-		Resume:      sess.resumeToken,
-		Settings:    sess.settings,
-		OnUpdate:    sess.update,
-		OnResumable: sess.markResumable,
-		OnError:     func(err error) { log.Printf("session %s: %v", sess.id, err) },
+		SessionID:    sess.id,
+		Workspace:    sess.workspace,
+		Resume:       sess.resumeToken,
+		Settings:     sess.settings,
+		OnUpdate:     sess.update,
+		OnResumable:  sess.markResumable,
+		OnConfigured: sess.adopt,
+		OnError:      func(err error) { log.Printf("session %s: %v", sess.id, err) },
 	})
 	if errors.Is(err, agent.ErrNoConversation) {
 		return sess.forgetConversation(err)
@@ -162,6 +163,15 @@ func (sess *session) configured(settings agent.Settings) {
 		SessionID string `json:"session_id"`
 		agent.Settings
 	}{sess.id, settings})
+}
+
+// adopt takes settings the harness changed itself. The session adopts them
+// even when storing fails, as session/configure does.
+func (sess *session) adopt(settings agent.Settings) {
+	if err := sess.save(settings, sess.resumeToken); err != nil {
+		log.Printf("session %s: store settings: %v", sess.id, err)
+	}
+	sess.configured(settings)
 }
 
 func (sess *session) markResumable(token string) {

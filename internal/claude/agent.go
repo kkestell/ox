@@ -35,6 +35,7 @@ type Agent struct {
 	settings         agent.Settings // the settings the process is using
 	onUpdate         func(agent.Update)
 	onResumable      func(string) // set until the new conversation's first result
+	onConfigured     func(agent.Settings)
 	onError          func(error)
 	sessionID        string
 	stopping         bool // Ox asked the process to exit
@@ -65,7 +66,7 @@ func newAgent(input *writer, events chan agent.Event, proc *process, sessionID s
 	a := &Agent{
 		proc: proc, input: input, events: events, done: make(chan struct{}),
 		phase: available, state: agent.StateIdle,
-		settings: options.Settings, onUpdate: options.OnUpdate, onError: options.OnError, sessionID: sessionID,
+		settings: options.Settings, onUpdate: options.OnUpdate, onConfigured: options.OnConfigured, onError: options.OnError, sessionID: sessionID,
 	}
 	if options.Resume == "" {
 		a.onResumable = options.OnResumable
@@ -112,6 +113,9 @@ func (a *Agent) handleOutput(m message) {
 			a.commandStarted(m.CommandUUID)
 		}
 	case "system":
+		if m.PermissionMode != "" {
+			a.permissionMode(m.PermissionMode)
+		}
 		switch m.Subtype {
 		case "session_state_changed":
 			switch m.State {
@@ -163,6 +167,20 @@ func (a *Agent) handleOutput(m message) {
 		// subagent's findings, is Claude's own.
 		a.turn = ""
 	}
+}
+
+// permissionMode adopts the mode Claude reports, which it changes itself when
+// a plan is approved or when it enters plan mode.
+func (a *Agent) permissionMode(reported string) {
+	// Claude reports manual as default.
+	if reported == "default" {
+		reported = "manual"
+	}
+	if reported == a.settings.PermissionMode {
+		return
+	}
+	a.settings.PermissionMode = reported
+	a.onConfigured(a.settings)
 }
 
 func (a *Agent) idle() bool {

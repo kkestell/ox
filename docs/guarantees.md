@@ -11,8 +11,10 @@ contract that defines its details. Reviews check changes against them.
    once the change settles, it shows the session's settings, which after a
    partial or unstored change are the ones the process took. A change made
    from another page appears when its `session/configured` event arrives.
-   On reconnect, Send waits for that session’s fresh settings. A
-   mode change Claude makes itself is [not yet tracked](todo.md#check-first).
+   On reconnect, Send waits for that session’s fresh settings. A permission
+   mode Claude changes itself, such as leaving plan mode once its plan is
+   approved, appears as a `session/configured` event and is stored for later
+   processes.
 
 2. **Typed text stays until it is sent.** The composer clears only the text
    it sent, once `oxd` accepts it. Text typed while a send or a new

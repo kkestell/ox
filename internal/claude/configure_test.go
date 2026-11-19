@@ -203,3 +203,43 @@ func TestConfigureRequiresIdle(t *testing.T) {
 		})
 	}
 }
+
+// Claude changes its own permission mode, such as leaving plan mode once a
+// plan is approved, and reports it on system lines, with manual as default.
+func TestClaudeReportsPermissionMode(t *testing.T) {
+	input := new(bytes.Buffer)
+	var adopted []agent.Settings
+	a := newAgent(newWriter(input), make(chan agent.Event), nil, "claude-session", agent.Options{
+		Settings:     agent.Settings{Model: "haiku", Effort: "low", PermissionMode: "plan"},
+		OnUpdate:     func(agent.Update) {},
+		OnConfigured: func(s agent.Settings) { adopted = append(adopted, s) },
+	})
+
+	output(t, a, `{"type":"system","subtype":"status","status":null,"permissionMode":"default"}`)
+	if want := []agent.Settings{{Model: "haiku", Effort: "low", PermissionMode: "manual"}}; !reflect.DeepEqual(adopted, want) {
+		t.Fatalf("a change to default was adopted as %+v", adopted)
+	}
+	output(t, a, `{"type":"system","subtype":"init","permissionMode":"default"}`)
+	output(t, a, `{"type":"system","subtype":"session_state_changed","state":"idle"}`)
+	if len(adopted) != 1 {
+		t.Fatalf("a report of the current mode changed settings: %+v", adopted)
+	}
+
+	result := make(chan outcome, 1)
+	a.Configure(agent.Settings{Model: "haiku", Effort: "low", PermissionMode: "plan"}, replyTo(result))
+	var wire struct {
+		RequestID string         `json:"request_id"`
+		Request   map[string]any `json:"request"`
+	}
+	if err := json.NewDecoder(input).Decode(&wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire.Request["subtype"] != "set_permission_mode" || wire.Request["mode"] != "plan" {
+		t.Fatalf("configuration did not leave the mode Claude reported: %+v", wire)
+	}
+	acknowledge(t, a, wire.RequestID, "success")
+	output(t, a, `{"type":"system","subtype":"status","status":null,"permissionMode":"plan"}`)
+	if r := <-result; r.err != nil || len(adopted) != 1 {
+		t.Fatalf("the report that followed a configuration changed settings: %+v, %+v", r, adopted)
+	}
+}

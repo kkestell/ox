@@ -193,6 +193,19 @@ func TestLive(t *testing.T) {
 		t.Errorf("a notification followed session/destroyed: %v, %v", c.received(d), c.received(b))
 	}
 
+	t.Log("a mode Claude changes itself reaches the client")
+	planned := create("plan")
+	tools := turn(planned, "Load and call the ExitPlanMode tool now with the one-line plan: reply ok. Then reply with just ok.", allow)
+	if !slices.Contains(tools, "ExitPlanMode") {
+		t.Fatalf("Haiku did not call ExitPlanMode (%v); run again", tools)
+	}
+	moved := c.next(func(m message) bool { return m.Method == "session/configured" && m.sessionID() == planned })
+	var movedTo agent.Settings
+	json.Unmarshal(moved.Params, &movedTo)
+	if movedTo.PermissionMode != "manual" {
+		t.Errorf("approving ExitPlanMode left the mode %q", movedTo.PermissionMode)
+	}
+
 	t.Log("pending schedules keep a session running, even after a failed turn")
 	deniedBash := false
 	denyBash := func(r request) any {
@@ -203,7 +216,7 @@ func TestLive(t *testing.T) {
 		return allow(r)
 	}
 	failed := create("manual")
-	tools := turn(failed, "Step 1: load and call the CronCreate tool with cron '*/30 * * * *' and prompt 'say hi'. "+
+	tools = turn(failed, "Step 1: load and call the CronCreate tool with cron '*/30 * * * *' and prompt 'say hi'. "+
 		"Step 2: only after CronCreate succeeds, run the Bash command `touch marker.txt`. Do both steps.", denyBash)
 	if !slices.Contains(tools, "CronCreate") || !slices.Contains(tools, "Bash") {
 		t.Fatalf("Haiku did not call CronCreate and then Bash (%v); run again", tools)

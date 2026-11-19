@@ -106,7 +106,7 @@ Envelope: `{"type":"control_request","request_id":"<unique>","request":{...}}`. 
 | `{"subtype":"interrupt"}` | Stops the running turn and its tools. Response: `{"still_queued":[...]}`. |
 | `{"subtype":"interrupt","cancel_queued":true}` | Also drops prompts Claude has not taken yet. |
 | `{"subtype":"set_model","model":"haiku"}` | Changes the model. Does not change effort. |
-| `{"subtype":"set_permission_mode","mode":"acceptEdits"}` | Changes the permission mode. |
+| `{"subtype":"set_permission_mode","mode":"acceptEdits"}` | Changes the permission mode. Response: `{"mode":<mode>}`, with `default` for `manual`. |
 | `{"subtype":"apply_flag_settings","settings":{"model":"haiku","effortLevel":"max"}}` | In-process flag override (no settings file write). Can affect the next model call within the running turn. `"effortLevel":null` clears effort. |
 | `{"subtype":"reload_skills"}` | Rescans skills; response `{"skills":[...]}`. Skills added after `initialize` are neither listed nor invocable until this runs. |
 | `{"subtype":"reload_plugins"}` | Response has a refreshed `commands` list in the `initialize` shape. |
@@ -126,7 +126,8 @@ Stdout carries JSON lines and can carry plain text on [failure](#startup-failure
 
 ### `system`
 
-- `init`: `session_id`, `model` (resolved ID), `tools`, `mcp_servers`, `slash_commands`, `skills`. Emitted at the start of every turn, including turns Claude starts itself. [`initialize`](#initialize-first) supplies startup data.
+- `init`: `session_id`, `model` (resolved ID), `tools`, `mcp_servers`, `slash_commands`, `skills`, `permissionMode` (the mode the turn runs in, with `manual` reported as `default`). Emitted at the start of every turn, including turns Claude starts itself. [`initialize`](#initialize-first) supplies startup data.
+- `status`: `status` and `permissionMode`, emitted after every permission mode change: a `set_permission_mode` (after its `control_response`), `EnterPlanMode` (which asks for no approval), and an approved `ExitPlanMode` (to `default` in a process started in `plan`).
 - `session_state_changed`: `state` is `running`, `requires_action` (just before a `can_use_tool` request) or `idle`; carries `"sdk_host_only":true`. `idle` arrives after the turn's `result` is flushed.
 - `commands_changed`: `commands` replaces the slash-command catalog (possibly with an empty list).
 - `task_started`: `task_id`, `tool_use_id`, `is_backgrounded`. Foreground tasks get this too but never join the live set.

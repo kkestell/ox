@@ -2,18 +2,6 @@
 
 Gaps in features Ox already supports, ordered by priority.
 
-## Check first
-
-- [ ] **Plan mode can change without Ox knowing.** Ox never reads a permission
-  mode change from Claude's output. Check live with Haiku: start a session in
-  `plan`, approve `ExitPlanMode`, and see whether the next approval request or
-  the `system` `init`/status lines show a different mode. Repeat for
-  `EnterPlanMode` from `manual`. If approving `ExitPlanMode` leaves plan mode,
-  the page shows "Plan" while Claude edits files, with permissions other
-  than the ones shown. A resumed process returns to the
-  stored mode ([per-process flags](claude-code.md#persistent-session)), so the
-  mismatch lasts until the process parks.
-
 ## Prompting
 
 - [ ] **Render replies as Markdown.** Replies and the `ExitPlanMode` plan show

@@ -338,3 +338,53 @@ func TestUnresumableConversationStartsAnew(t *testing.T) {
 		t.Fatalf("the stored token was kept: %v", err)
 	}
 }
+
+// A mode Claude changes itself, as it does when a plan is approved, reaches
+// every client and the store.
+func TestClaudeModeChangeIsAdopted(t *testing.T) {
+	dir := t.TempDir()
+	// A stand-in for Claude that leaves plan mode once it has read a prompt.
+	script := "#!/bin/sh\n" +
+		"read line\n" +
+		`echo '{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}'` + "\n" +
+		"read prompt\n" +
+		`echo '{"type":"system","subtype":"status","status":null,"permissionMode":"default"}'` + "\n" +
+		"exec cat >/dev/null\n"
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	st := openStore(t)
+	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: dir, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Model: "m", Effort: "low", PermissionMode: "plan", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(st, &config.Config{}, 0, map[string]agent.Start{"claude": claude.Start})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c := connect(t, s)
+
+	c.call("session/send", map[string]string{"session_id": "s", "text": "hi"})
+	configured := c.next(func(m message) bool { return m.Method == "session/configured" && m.sessionID() == "s" })
+	var settings agent.Settings
+	json.Unmarshal(configured.Params, &settings)
+	if want := (agent.Settings{Model: "m", Effort: "low", PermissionMode: "manual"}); settings != want {
+		t.Fatalf("session/configured reported %+v", settings)
+	}
+	var got struct {
+		PermissionMode string `json:"permission_mode"`
+	}
+	json.Unmarshal(c.call("session/get", map[string]string{"session_id": "s"}), &got)
+	if got.PermissionMode != "manual" {
+		t.Fatalf("session/get reported %q", got.PermissionMode)
+	}
+	workspaces, err := st.Workspaces()
+	if err != nil || workspaces[0].Sessions[0].PermissionMode != "manual" {
+		t.Fatalf("the stored mode was not updated: %v", err)
+	}
+}
