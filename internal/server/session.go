@@ -33,7 +33,6 @@ type session struct {
 	ended       bool
 }
 
-// newSession starts the goroutine of a stored session, parked.
 func (s *Server) newSession(record *store.Session, workspace string) *session {
 	sess := &session{
 		server: s, id: record.ID, harness: record.Harness, workspace: workspace, createdAt: record.CreatedAt,
@@ -46,8 +45,6 @@ func (s *Server) newSession(record *store.Session, workspace string) *session {
 	return sess
 }
 
-// run handles operations, the agent's events, and the park timer, one at a
-// time, until an operation ends the session.
 func (sess *session) run() {
 	defer close(sess.done)
 	for !sess.ended {
@@ -101,7 +98,6 @@ func (sess *session) armPark() {
 	}
 }
 
-// start starts a harness process that continues the session's conversation.
 func (sess *session) start() error {
 	start := sess.server.harnesses[sess.harness]
 	if start == nil {
@@ -121,7 +117,6 @@ func (sess *session) start() error {
 	return nil
 }
 
-// stop asks the agent's process to exit and handles its events until it has.
 func (sess *session) stop() error {
 	if err := sess.agent.Stop(); err != nil {
 		return err
@@ -133,7 +128,6 @@ func (sess *session) stop() error {
 	return nil
 }
 
-// end stops the session's process, if any, and ends its goroutine.
 func (sess *session) end() {
 	if sess.agent != nil {
 		if err := sess.stop(); err != nil {
@@ -143,7 +137,6 @@ func (sess *session) end() {
 	sess.ended = true
 }
 
-// update records an update in the history and sends it to every connection.
 func (sess *session) update(update agent.Update) {
 	sess.history.record(update)
 	sess.server.broadcast("session/update", struct {
@@ -152,7 +145,6 @@ func (sess *session) update(update agent.Update) {
 	}{sess.id, update})
 }
 
-// save stores the session's settings and resume token.
 func (sess *session) save(settings agent.Settings, resumeToken string) error {
 	return sess.server.store.SaveSession(&store.Session{
 		ID: sess.id, Model: settings.Model, Effort: settings.Effort, PermissionMode: settings.PermissionMode,
@@ -160,7 +152,6 @@ func (sess *session) save(settings agent.Settings, resumeToken string) error {
 	})
 }
 
-// markResumable stores the token that resumes the session's conversation.
 func (sess *session) markResumable(token string) {
 	if err := sess.save(sess.settings, token); err != nil {
 		log.Printf("mark session resumable: %v", err)

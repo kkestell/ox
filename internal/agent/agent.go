@@ -1,7 +1,3 @@
-// Package agent is the contract between the server and a harness: an Agent
-// runs one harness process for one session, accepts prompts, approvals, and
-// settings, and reports the session's progress as updates. Each harness
-// package implements it and provides a Start function.
 package agent
 
 import (
@@ -16,15 +12,12 @@ var (
 	ErrApprovalNotFound = errors.New("approval request is no longer pending")
 )
 
-// Agent is one running harness process for one session. It has no goroutine
-// of its own: the session's goroutine makes every call, and passes it each
-// event from Events. Updates and the resume token arrive through the Options
-// callbacks during those calls.
+// Agent runs one harness instance. The session goroutine owns all method
+// calls and runs the Options callbacks during those calls.
 type Agent interface {
 	// Events delivers the harness's own input, such as its process's output
 	// and its timers, until the agent has exited.
 	Events() <-chan Event
-	// Handle acts on one event from Events.
 	Handle(Event)
 	Snapshot() Snapshot
 	// Send writes a prompt to an idle agent and returns its message ID. It
@@ -40,7 +33,8 @@ type Agent interface {
 	// Parkable reports that nothing is using the process, so stopping it
 	// loses no work.
 	Parkable() bool
-	// Stop asks the process to exit. The exit arrives through Events.
+	// Stop requests shutdown. A subprocess harness completes shutdown after
+	// Handle receives its exit event. Check Exited for completion.
 	Stop() error
 	// Exited reports that the process has exited and the agent has
 	// published its last update, parked.
@@ -50,7 +44,6 @@ type Agent interface {
 // Event is a harness's own input, opaque to the server.
 type Event any
 
-// Start starts a harness process and returns its agent.
 type Start func(Options) (Agent, error)
 
 type Options struct {
@@ -59,14 +52,12 @@ type Options struct {
 	// starts a new one.
 	Resume   string
 	Settings Settings
-	// OnUpdate receives every update.
 	OnUpdate func(Update)
 	// OnResumable receives the token that resumes a new conversation, once
 	// the harness has saved enough to resume it. It is called at most once.
 	OnResumable func(token string)
 }
 
-// Settings are a session's model, effort, and permission mode.
 type Settings struct {
 	Model          string `json:"model"`
 	Effort         string `json:"effort"`
@@ -93,8 +84,6 @@ type Result struct {
 	IsError bool   `json:"is_error"`
 }
 
-// Snapshot is an agent's current state. State is running, requires_action,
-// or idle.
 type Snapshot struct {
 	State     string          `json:"state"`
 	Prompt    *PromptSnapshot `json:"prompt"`

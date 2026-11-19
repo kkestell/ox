@@ -1,12 +1,71 @@
 # Experimental Claude Code multiplexer
 
-This is an experiment. Optimize for learning and code that is cheap to change,
-not production reliability.
+Optimize for learning and code that is cheap to change.
 
 ## Status
 
-Not in production use: just testing using `make dev`. There is no data or state
-that cannot be deleted if necessary.
+We test with `make dev`. Ox's test state is disposable.
+
+## Source Map
+
+```
+.
+├── AGENTS.md                  # agent instructions
+├── bin                        # build output
+│   ├── ox
+│   └── oxd
+├── cmd
+│   ├── ox                     # web UI server
+│   │   ├── main.go            # web UI and its relay to oxd
+│   │   └── web                # web client
+│   └── oxd                    # daemon
+│       └── main.go            # daemon startup
+├── docs
+│   ├── architecture.md        # how oxd and ox are built
+│   ├── claude-code.md         # observed Claude Code behavior
+│   ├── known-issues.md        # unfixed defects
+│   └── protocol.md            # the interface oxd serves
+├── go.mod                     # Go module
+├── go.sum                     # dependency checksums
+├── internal
+│   ├── agent
+│   │   └── agent.go           # harness interface
+│   ├── claude
+│   │   ├── agent.go           # Claude agent state machine
+│   │   ├── approval_test.go   # approval tests
+│   │   ├── approval.go        # tool approvals
+│   │   ├── claude.go          # Claude process and input
+│   │   ├── configure_test.go  # configuration tests
+│   │   ├── configure.go       # setting changes on a running process
+│   │   ├── messages.go        # Claude output format
+│   │   ├── park_test.go       # parking tests
+│   │   ├── park.go            # when the process can be parked
+│   │   ├── prompt_test.go     # prompt tests
+│   │   └── prompt.go          # prompt lifecycle
+│   ├── config
+│   │   ├── config_test.go     # configuration tests
+│   │   ├── config.go          # user configuration
+│   │   └── default.json       # built-in configuration
+│   ├── fake
+│   │   └── fake.go            # echo harness
+│   ├── jsonrpc
+│   │   └── jsonrpc.go         # JSON-RPC messages
+│   ├── server
+│   │   ├── client_test.go     # test client
+│   │   ├── conn.go            # client connections
+│   │   ├── history_test.go    # history tests
+│   │   ├── history.go         # session history
+│   │   ├── live_test.go       # live Claude tests
+│   │   ├── methods_test.go    # method tests
+│   │   ├── methods.go         # RPC methods
+│   │   ├── server.go          # listener, workspaces, and sessions
+│   │   └── session.go         # session goroutine and lifecycle
+│   ├── socket
+│   │   └── socket.go          # socket location
+│   └── store
+│       └── store.go           # SQLite persistence
+└── Makefile                   # build, test, and run
+```
 
 ## Implementation
 

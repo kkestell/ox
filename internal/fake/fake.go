@@ -1,6 +1,3 @@
-// Package fake is a harness that runs no process: it answers each prompt by
-// echoing it back, a word at a time. It accepts any settings and asks for no
-// approvals.
 package fake
 
 import (
@@ -12,24 +9,21 @@ import (
 	"github.com/kkestell/ox/internal/agent"
 )
 
-// Agent echoes prompts. Its only events are the ticks that stream a reply.
 type Agent struct {
 	events      chan agent.Event
 	done        chan struct{} // closed on exit, so late ticks deliver nothing
 	onUpdate    func(agent.Update)
 	onResumable func(string)
 
-	state  string   // running or idle
-	prompt string   // the client's prompt in progress, by message ID
-	reply  string   // the reply in progress
-	words  []string // the reply's words still to send
+	state  string
+	prompt string // client prompt ID
+	reply  string
+	words  []string
 	exited bool
 }
 
 type tick struct{}
 
-// Start returns a fake agent. A new conversation reports a random resume
-// token at its first result.
 func Start(options agent.Options) (agent.Agent, error) {
 	a := &Agent{
 		events: make(chan agent.Event), done: make(chan struct{}),
@@ -51,7 +45,6 @@ func (a *Agent) publish(update agent.Update) {
 	a.onUpdate(update)
 }
 
-// tick delivers the next word after a pause.
 func (a *Agent) tick() {
 	time.AfterFunc(50*time.Millisecond, func() {
 		select {
@@ -61,8 +54,6 @@ func (a *Agent) tick() {
 	})
 }
 
-// Handle sends the reply's next word, or ends the turn once every word is
-// sent.
 func (a *Agent) Handle(agent.Event) {
 	if len(a.words) > 0 {
 		a.publish(agent.Update{Type: "text_delta", Text: a.words[0]})
@@ -118,7 +109,7 @@ func (a *Agent) Parkable() bool {
 	return a.state == "idle"
 }
 
-// Stop exits at once: there is no process to wait for.
+// Stop completes synchronously.
 func (a *Agent) Stop() error {
 	if a.prompt != "" {
 		a.publish(agent.Update{Type: "exited", Error: "stopped"})

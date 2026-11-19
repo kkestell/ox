@@ -22,8 +22,6 @@ func newConn(c net.Conn) *conn {
 	return cn
 }
 
-// queue sends a message without blocking. A client too far behind to take it
-// is disconnected.
 func (c *conn) queue(message any) {
 	select {
 	case <-c.done:

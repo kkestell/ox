@@ -1,7 +1,3 @@
-// Package claude is the Claude Code harness. Start runs a Claude Code process
-// in stream-json mode as an agent.Agent: Process owns the subprocess, Message
-// and Input are Claude's wire format, and Agent is the state machine that
-// turns them into prompts, approvals, configuration, and updates.
 package claude
 
 import (
@@ -24,10 +20,6 @@ type Process struct {
 	cmd *exec.Cmd
 }
 
-// startProcess starts Claude in workspace on the conversation named by
-// sessionID, a UUID, and waits up to one minute for it to accept
-// initialization. resume continues the conversation's transcript instead of
-// starting it. Claude's output then goes to events, followed by its exit.
 func startProcess(workspace, sessionID string, resume bool, settings agent.Settings, events chan<- agent.Event) (*Process, error) {
 	args := []string{
 		"-p", "--input-format=stream-json", "--output-format=stream-json", "--verbose",
@@ -78,7 +70,7 @@ func startProcess(workspace, sessionID string, resume bool, settings agent.Setti
 }
 
 func initialize(input io.Writer, output *bufio.Reader) error {
-	// The Stop hook reports Claude's pending schedules at the end of each turn.
+	// Declare Stop to receive pending schedules at the end of each completed turn.
 	const request = `{"type":"control_request","request_id":"initialize","request":{"subtype":"initialize","hooks":{"Stop":[{"hookCallbackIds":["stop"]}]}}}`
 	if _, err := io.WriteString(input, request+"\n"); err != nil {
 		return err
@@ -99,8 +91,6 @@ func initialize(input io.Writer, output *bufio.Reader) error {
 	}
 }
 
-// read sends each of Claude's messages to events, then how the process
-// exited.
 func (p *Process) read(output *bufio.Reader, events chan<- agent.Event) {
 	for {
 		line, err := output.ReadBytes('\n')
@@ -153,7 +143,6 @@ func (in *Input) Control(requestID string, request any) error {
 	})
 }
 
-// Respond answers one of Claude's control requests.
 func (in *Input) Respond(requestID string, response any) error {
 	return in.write(map[string]any{
 		"type": "control_response",
@@ -163,7 +152,6 @@ func (in *Input) Respond(requestID string, response any) error {
 	})
 }
 
-// Reject refuses one of Claude's control requests.
 func (in *Input) Reject(requestID, message string) error {
 	return in.write(map[string]any{
 		"type": "control_response",

@@ -16,8 +16,6 @@ type configuration struct {
 	done      func(error)
 }
 
-// control is one control request and the setting it changes once Claude
-// acknowledges it.
 type control struct {
 	request map[string]any
 	apply   func(*agent.Settings)
@@ -27,8 +25,6 @@ func (c *configuration) fail(err error) error {
 	return fmt.Errorf("configure Claude (%s): %w", c.requests[0].request["subtype"], err)
 }
 
-// Configure sends Claude a control request for each setting that differs
-// from the process's, one at a time.
 func (a *Agent) Configure(settings agent.Settings, done func(error)) {
 	if !a.idle() {
 		done(agent.ErrBusy)

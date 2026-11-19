@@ -5,7 +5,6 @@ import (
 	"strings"
 )
 
-// Message is one line of Claude's output, reduced to the fields Ox reads.
 type Message struct {
 	Type            string            `json:"type"`
 	Subtype         string            `json:"subtype"`
@@ -45,11 +44,10 @@ type ToolUse struct {
 
 type ToolResult struct {
 	ToolUseID string
-	Text      string // the result's text blocks, joined
+	Text      string
 	IsError   bool
 }
 
-// ToolUses returns the tool_use blocks in an assistant message.
 func (m Message) ToolUses() []ToolUse {
 	var blocks []struct {
 		Type string `json:"type"`
@@ -65,7 +63,6 @@ func (m Message) ToolUses() []ToolUse {
 	return uses
 }
 
-// ToolResults returns the tool_result blocks in a user message.
 func (m Message) ToolResults() []ToolResult {
 	var blocks []struct {
 		Type      string          `json:"type"`

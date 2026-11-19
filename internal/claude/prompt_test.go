@@ -16,14 +16,12 @@ func (r *recorder) record(update agent.Update) {
 	*r = append(*r, update)
 }
 
-// testAgent returns an idle agent that records its updates.
 func testAgent() (*Agent, *bytes.Buffer, *recorder) {
 	input := new(bytes.Buffer)
 	updates := new(recorder)
 	return newAgent(NewInput(input), updates.record), input, updates
 }
 
-// promptingAgent returns an agent running prompt "prompt".
 func promptingAgent() (*Agent, *bytes.Buffer, *recorder) {
 	a, input, updates := testAgent()
 	a.phase, a.claudeState = prompting, "running"

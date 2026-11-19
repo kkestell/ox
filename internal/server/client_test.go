@@ -11,7 +11,6 @@ import (
 	"github.com/kkestell/ox/internal/jsonrpc"
 )
 
-// message is one line from oxd: a response or a notification.
 type message struct {
 	ID     json.RawMessage `json:"id"`
 	Method string          `json:"method"`
@@ -20,7 +19,6 @@ type message struct {
 	Error  *jsonrpc.Error  `json:"error"`
 }
 
-// sessionID returns the session a notification is about, if any.
 func (m message) sessionID() string {
 	var params struct {
 		SessionID string `json:"session_id"`
@@ -29,7 +27,6 @@ func (m message) sessionID() string {
 	return params.SessionID
 }
 
-// client is one connection to a server, read on its own goroutine.
 type client struct {
 	t        *testing.T
 	conn     net.Conn
@@ -85,8 +82,8 @@ func (c *client) next(matches func(message) bool) message {
 	}
 }
 
-// received returns every notification about the session read so far,
-// oldest first, including those already matched by nothing.
+// received drains pending reads and returns this session's unmatched
+// notifications, oldest first.
 func (c *client) received(sessionID string) []message {
 	for {
 		select {
@@ -109,7 +106,6 @@ func (c *client) received(sessionID string) []message {
 	return mine
 }
 
-// forget discards the unmatched notifications about the session.
 func (c *client) forget(sessionID string) {
 	c.received(sessionID)
 	kept := c.backlog[:0]
@@ -121,7 +117,6 @@ func (c *client) forget(sessionID string) {
 	c.backlog = kept
 }
 
-// send writes a request and returns its ID without waiting for the response.
 func (c *client) send(method string, params any) string {
 	c.t.Helper()
 	c.nextID++
@@ -132,7 +127,6 @@ func (c *client) send(method string, params any) string {
 	return fmt.Sprint(c.nextID)
 }
 
-// response waits for the response to the request with id.
 func (c *client) response(id string) message {
 	c.t.Helper()
 	return c.next(func(m message) bool { return string(m.ID) == id })
@@ -143,7 +137,6 @@ func (c *client) request(method string, params any) message {
 	return c.response(c.send(method, params))
 }
 
-// call sends a request and returns its result, failing on an error.
 func (c *client) call(method string, params any) json.RawMessage {
 	c.t.Helper()
 	response := c.request(method, params)
@@ -153,7 +146,6 @@ func (c *client) call(method string, params any) json.RawMessage {
 	return response.Result
 }
 
-// update returns the session's next session/update of the given type.
 func (c *client) update(sessionID, kind string) agent.Update {
 	c.t.Helper()
 	var u agent.Update

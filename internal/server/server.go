@@ -1,10 +1,3 @@
-// Package server is the Ox daemon. It accepts client connections, keeps the
-// stored workspaces and sessions, and turns each JSON-RPC request into a
-// session operation. Each session runs on its own goroutine, which owns its
-// settings, history, and harness process: a parked session has no process,
-// and the next prompt resumes its conversation.
-// Clients have no identity: any connection can use any session, and every
-// connection receives every session's updates.
 package server
 
 import (
@@ -45,13 +38,9 @@ type workspace struct {
 	id        string
 	path      string
 	createdAt time.Time
-	sessions  []*session // oldest first
+	sessions  []*session
 }
 
-// New loads the stored workspaces and sessions. Every session starts parked;
-// harnesses start a session's process by its harness name, and a process
-// parks once it has been unused for parkAfter. The configuration's harnesses
-// are offered to clients.
 func New(st *store.Store, cfg *config.Config, parkAfter time.Duration, harnesses map[string]agent.Start) (*Server, error) {
 	stored, err := st.Workspaces()
 	if err != nil {
@@ -73,7 +62,6 @@ func New(st *store.Store, cfg *config.Config, parkAfter time.Duration, harnesses
 	return s, nil
 }
 
-// Serve accepts connections until the listener is closed.
 func (s *Server) Serve(listener net.Listener) error {
 	for {
 		c, err := listener.Accept()
@@ -114,8 +102,6 @@ func (s *Server) serveConn(netConn net.Conn) {
 	}
 }
 
-// Close stops every running process and ends every session's goroutine. The
-// sessions stay stored.
 func (s *Server) Close() {
 	s.mu.Lock()
 	s.closed = true
@@ -143,7 +129,6 @@ func (s *Server) workspace(id string) *workspace {
 	return nil
 }
 
-// broadcast sends a notification to every connection.
 func (s *Server) broadcast(method string, params any) {
 	notification := jsonrpc.Notify(method, params)
 	s.connsMu.Lock()

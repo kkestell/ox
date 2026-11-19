@@ -11,7 +11,6 @@ import (
 	"github.com/kkestell/ox/internal/agent"
 )
 
-// replyTo returns a done callback that sends its outcome to result.
 func replyTo(result chan error) func(error) {
 	return func(err error) { result <- err }
 }

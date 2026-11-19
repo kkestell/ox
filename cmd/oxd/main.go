@@ -1,8 +1,3 @@
-// Command oxd is the Ox daemon. It serves the protocol in docs/protocol.md on
-// a Unix socket until interrupted, then stops every harness process. Workspaces,
-// sessions, and session events are stored in a SQLite database and outlive the
-// daemon. The harnesses offered, with their models, efforts, and modes, come
-// from the configuration file.
 package main
 
 import (

@@ -29,8 +29,6 @@ func (a *Agent) controlRequest(requestID string, request json.RawMessage) {
 	a.publish(agent.Update{Type: "approval", RequestID: requestID, Request: request})
 }
 
-// Approve answers a pending approval with Claude's permission response,
-// keeping its fields as they are.
 func (a *Agent) Approve(requestID string, response json.RawMessage) error {
 	if !validApprovalResponse(response) {
 		return errors.New("response must be an allow or deny permission response")
@@ -53,8 +51,6 @@ func (a *Agent) cancelApproval(requestID string) {
 	}
 }
 
-// withdrawApprovals cancels every unanswered approval, once Claude is idle or
-// has exited.
 func (a *Agent) withdrawApprovals() {
 	for id := range a.approvals {
 		a.publish(agent.Update{Type: "approval_cancelled", RequestID: id})
@@ -62,8 +58,6 @@ func (a *Agent) withdrawApprovals() {
 	clear(a.approvals)
 }
 
-// validApprovalResponse checks the response shape while keeping Claude's
-// fields as raw JSON.
 func validApprovalResponse(raw json.RawMessage) bool {
 	var response struct {
 		Behavior           string          `json:"behavior"`

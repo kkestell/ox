@@ -1,6 +1,5 @@
 import type { Methods, Notification } from "./protocol";
 
-// RpcError is an error response from oxd, with its code.
 export class RpcError extends Error {
   code: number;
   constructor(message: string, code: number) {
@@ -14,12 +13,6 @@ export type Connection = {
   close(): void;
 };
 
-// connect opens the page's oxd connection through ox: the event stream
-// carries every response and notification, and requests are posted to /rpc.
-// onConnect runs each time the stream (re)connects, with a new oxd
-// connection that has seen no earlier notifications. onError runs each time
-// the stream fails; once ox refuses it, as while oxd is down, the browser
-// stops reconnecting.
 export function connect(handlers: {
   onConnect(): void;
   onNotification(notification: Notification): void;

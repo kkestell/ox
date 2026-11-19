@@ -1,11 +1,7 @@
 # Ox architecture
 
-`oxd` is a daemon that keeps workspaces and agent sessions, runs a harness
-process for each session in use, and serves them to clients over a
-Unix socket. `ox` (`cmd/ox`) serves the web UI, embedded from its build in
-`cmd/ox/web/dist`. It gives each open page its own `oxd` connection: lines from
-`oxd` reach the page as Server-Sent Events on `/events`, and the page posts
-JSON-RPC requests to `/rpc`. The page speaks the `oxd` protocol directly.
+`oxd` keeps workspaces and agent sessions, runs their harnesses, and serves
+clients over a Unix socket. `ox` serves the [web UI](#web-ui).
 
 Each package of `oxd` depends only on the packages beneath it. The server and each
 harness meet only at `internal/agent`; `cmd/oxd` gives the server each
@@ -40,11 +36,9 @@ cmd/oxd            socket, database, and configuration paths, signals, the harne
 ## Sessions
 
 The server loads the stored workspaces and sessions at startup, all parked. A
-session's ID is Ox's own, and its harness is fixed at creation. Its resume
-token is the harness's name for the conversation: empty until the harness
-reports it through `OnResumable`, and then passed to every later process so it
-continues the same conversation. Each process receives the session's stored
-model, effort, and permission mode.
+session's ID is Ox's own. The session stores the harness's conversation token
+when it receives `OnResumable` and supplies it at later starts. See the
+[session lifecycle](protocol.md#workspaces-and-sessions) for client behavior.
 
 Each session runs on its own goroutine, which owns its settings, resume token,
 history, agent, and park timer. Every request for a session is an operation
@@ -53,94 +47,75 @@ handled there between operations. An operation queues its own response there:
 at once, or, for a configuration Claude must acknowledge, from the event that
 finishes it. Nothing else touches a session's state, and a response lands in a
 connection's queue after every update it reflects and before every update it
-does not. A connection handles each request on its own
-goroutine, so a slow operation, such as starting Claude, holds up only the
-requests for that session. Changes are written to the database before they
-are applied in memory.
+does not. The server handles each connection's requests on separate goroutines.
+Changes are written to the database before they are applied in memory.
 
-`Server.mu` guards only which workspaces and sessions exist. Creating or
-destroying one broadcasts the change while holding it, and `workspace/list`
-queues its response while holding it, so every connection sees them in one
-order. Nothing posts to a session while holding it.
+`Server.mu` guards workspace and session membership and the shutdown flag.
+Membership changes and `workspace/list` queue their messages under the same
+lock so every connection sees them in one order. Nothing posts to a session
+while holding it.
 
-A session's updates go to its history and to every open connection. The
-history stores the conversation's updates as events in the database, holding
-the current reply's text in memory until the next update ends it.
+The session owns the history buffer and writes conversation events to the
+store. See [the snapshot and history contract](protocol.md#sessionget).
 
 The session arms a park timer whenever its agent is `Parkable` and stops it
 when the agent stops being parkable, so the full period restarts each time. If
 the timer fires, the session stops the process and handles the agent's events
-until it has exited. A session parks when its process exits for any reason.
+until it has exited.
 
 ## Agents
 
-An `Agent` runs one harness process and has no goroutine of its own. The
-session's goroutine makes every call: it passes each event from `Events` to
-`Handle`, and calls `Send`, `Approve`, `Configure`, `Snapshot`, `Parkable`, and
-`Stop`. Updates and the resume token arrive through the `Options` callbacks
-during those calls. An agent refuses a prompt or configuration with `ErrBusy`
-unless it is idle, and publishes `parked` as its last update.
+An `Agent` runs one harness instance. The session goroutine drives it by
+calling its methods and passing each event from `Events` to `Handle`. The
+agent publishes through `OnUpdate` during those calls; see the
+[update contract](protocol.md#session-updates) for the wire format and ordering.
 
 ### The Claude agent
 
-The Claude agent names a new conversation with a fresh UUID passed to
-`--session-id`, reports it as the resume token at the first result, once Claude
-has written the transcript, and resumes a conversation with `--resume`.
+Ox assigns a fresh UUID to a new Claude conversation and reports it through
+`OnResumable` with the first published result. See Claude's
+[launch flags](claude-code.md#persistent-session) and
+[transcript timing](claude-code.md#session-ids).
 
-The Claude agent is a state machine driven by the session's goroutine. Its
-events are Claude's output, the process's exit, and control-request timeouts:
-a goroutine reads Claude's stdout, and timers fire, and both deliver through
-`Events`. Updates therefore go out in the order their causes occurred.
+The stdout reader and control-request timers deliver through `Events`. The
+session publishes updates in the order it handles operations and events.
 
-The agent's phase records what owns its Claude process:
+The phase identifies the current operation:
 
 | Phase | Meaning | Leaves on |
 | --- | --- | --- |
-| `available` | Nothing owns the process. | A prompt or configuration starts. |
-| `queued` | A prompt was written; Claude has not taken it yet. | `command_lifecycle started` for the prompt. |
+| `available` | Available for a prompt or configuration. | A prompt or configuration starts. |
+| `queued` | A written prompt is waiting for Claude to take it. | `command_lifecycle started` for the prompt. |
 | `prompting` | Claude is working on the prompt. | Claude reports `idle`. |
-| `configuring` | Control requests are in flight, one at a time, for each setting that differs from the process's. | The last acknowledgement, a refusal, a write failure, or the process exiting, which a timeout causes by stopping it. |
+| `configuring` | Control requests are in flight, one at a time. | The last acknowledgement, a refusal, or a write failure. |
 | `exited` | The Claude process has exited. | — |
 
-Claude's reported session state (`running`, `requires_action`, `idle`) is kept
-alongside the phase. The agent accepts a prompt or configuration only when it
-is `available` and Claude is `idle`.
+Process exit moves any live phase to `exited`. The agent stores Claude's
+reported state alongside the phase. Both `available` and `idle` are required
+to take a prompt or configuration.
 
-The agent also tracks the size of Claude's background-task set from
-`background_tasks_changed`, and the number of pending schedules from the Stop
-hook Claude calls at the end of each completed turn. A turn that ends by
-interrupt or error calls no Stop hook, so the count from the last completed
-turn stands, and a `CronCreate`, `CronDelete`, or `ScheduleWakeup` call counts
-as a pending schedule until the next Stop hook. The agent is `Parkable` when
-it is `available`, Claude is `idle`, and no approval, background task, or
-schedule is pending.
-
-Every update goes to `OnUpdate`: those of a client's prompt carry its ID, and
-those of turns Claude starts itself carry none. The agent publishes `parked`
-as its last update when the process exits.
+The agent derives `Parkable` from its phase, Claude's state, pending approvals,
+and counts from [Claude's task and schedule reports](claude-code.md#8-background-work-and-schedules).
+A scheduling tool call sets a flag that the next Stop report with a schedule
+list clears. See the [parking rule](protocol.md#workspaces-and-sessions).
 
 ## Web UI
 
-The web UI in `cmd/ox/web` is a Solid 2.0 app written in TypeScript and built
-by Vite into `cmd/ox/web/dist`, which `ox` embeds; `make web` builds it, and
-`make dev` builds it before `ox`. `ox` serves the built `index.html` as a Go
-template that fills in the directory `ox` runs in as the default workspace.
+The web UI in `cmd/ox/web` is a Solid 2.0 app written in TypeScript. `make web`
+builds it with Vite into `cmd/ox/web/dist`, which `ox` embeds. `make dev` builds
+it before `ox` and starts Vite's dev server.
+
+Each page gets an `oxd` connection through `ox`: `/events` relays socket lines
+as Server-Sent Events, and `/rpc` posts the page's JSON-RPC requests to the socket.
 
 | File | Owns |
 | --- | --- |
 | `protocol.ts` | Types for the `oxd` methods, updates, and notifications. |
-| `connection.ts` | The event stream and the requests posted on it, with no Solid state. |
-| `ox.tsx` | The page's view of every workspace and session: a store created in a provider, loaded when the stream connects and kept current by notifications, and the requests that change it. |
+| `connection.ts` | Opening the event stream, sending requests, matching replies, and reporting stream errors. |
+| `ox.tsx` | A provider that reloads the catalog, workspaces, and sessions on each connection, applies notifications, and exposes RPC calls. |
 | `App.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `SettingsFields.tsx` | The components. |
 
-The store changes only through notifications and `session/get` responses, so
-every page shows the same state. Requests write nothing to it: `oxd` sends the
-resulting notification to every connection, including the one that asked.
-Each new connection clears the store and loads it again, since it has missed
-the notifications sent while the page was disconnected. A failed stream shows
-an error until the stream reconnects. When `ox` refuses the stream, as it does
-while `oxd` is down, the browser stops reconnecting and the error asks for a
-reload. A session's settings come from `session/get` and `session/configured`.
-The settings form sends only the settings the user changed, and shows the
-change while `session/configure` is in flight with an optimistic value, which
-reverts to the stored settings if the request fails.
+The page shows stream errors while reconnecting and asks for a reload if the
+browser closes the stream after `ox` refuses it. The settings form sends a
+patch to [`session/configure`](protocol.md#sessionconfigure) and shows its
+values until the request settles. On failure, it shows the stored settings.

@@ -45,7 +45,6 @@ const settingsOf = (p: Settings): Settings => ({
   permission_mode: p.permission_mode,
 });
 
-// apply adds one update, live or from history, to a session.
 function apply(session: Session, u: Update) {
   switch (u.type) {
     case "prompt":
@@ -89,10 +88,6 @@ function apply(session: Session, u: Update) {
   }
 }
 
-// createOx holds the page's view of oxd: every workspace and session, kept
-// current from the connection's notifications, and the requests that change
-// them. Changes reach the view through the notifications oxd sends every
-// connection, so the requests write nothing themselves.
 function createOx() {
   const [state, setState] = createStore<{
     harnesses: Record<string, Harness>;
@@ -192,10 +187,7 @@ function createOx() {
   return {
     state,
     error,
-    // The created events add the workspace and session to the view. Adding a
-    // workspace oxd already has changes nothing.
     addWorkspace: (path: string) => connection.rpc("workspace/create", { path }),
-    // startSession creates a session and sends its first prompt.
     async startSession(workspaceId: string, harness: string, settings: Settings, text: string) {
       const { session_id } = await connection.rpc("session/create", {
         workspace_id: workspaceId,
@@ -206,7 +198,6 @@ function createOx() {
       return session_id;
     },
     send: (id: string, text: string) => connection.rpc("session/send", { session_id: id, text }),
-    // configure changes only the settings given.
     configure: (id: string, changes: Partial<Settings>) =>
       connection.rpc("session/configure", { session_id: id, ...changes }),
     approve: (id: string, requestId: string, response: ApprovalResponse) =>

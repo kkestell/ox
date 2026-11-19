@@ -1,6 +1,6 @@
 # Driving Claude Code with `claude -p` and stream-json
 
-Observed by running Claude Code 2.1.312 through 2.1.327 directly (October–November 2026). Treat field names and behaviors as version-specific and re-probe when upgrading.
+Observed with Claude Code 2.1.312 through 2.1.327 (October–November 2026).
 
 ## 1. Launch
 
@@ -27,8 +27,8 @@ claude -p \
 - `--replay-user-messages` echoes each prompt back as a `user` line with `isReplay: true` and the prompt's `uuid` once Claude takes it into a turn.
 - `--permission-prompt-tool stdio` routes permission prompts to the host as `can_use_tool` control requests on stdout. The alternative is `--permission-prompt-tool mcp__server__tool`.
 - `--system-prompt-snapshot off`: by default Claude records the fully composed system prompt on the first request and reuses it, including across `--resume`, until compaction. A host that passes `--append-system-prompt` on every launch needs the snapshot off for later launches to take effect.
-- `--mcp-config` accepts inline JSON; a temp file is unnecessary. Shape: `{"mcpServers":{"<name>":{"command":"/abs/path","args":[],"env":{}}}}`. MCP tools are named `mcp__<server>__<tool>`.
-- `--allowedTools mcp__<server>` pre-approves every tool of that server so it never prompts. `--allowedTools` auto-approves; it does not restrict the tool catalog (`--tools` does that, and `--tools` does not cover MCP tools).
+- `--mcp-config` accepts inline JSON. Shape: `{"mcpServers":{"<name>":{"command":"/abs/path","args":[],"env":{}}}}`. MCP tools are named `mcp__<server>__<tool>`.
+- `--allowedTools mcp__<server>` pre-approves every tool of that server. `--allowedTools` auto-approves without restricting the tool catalog; `--tools` restricts built-in tools and does not cover MCP tools.
 - `--allowedTools` and `--disallowedTools` are variadic and consume every following argument that is not a flag. Put another `--flag` right after their values.
 - Per-process flags (`--mcp-config`, `--settings`, `--plugin-dir`, `--add-dir`, `--fallback-model`, `--append-system-prompt`, model, effort, permission mode) must be passed again on every resume. A resumed process runs the `--permission-mode` it is given, or `default` without one, whatever mode the transcript was written in (2.1.327; the `system` `init` line's `permissionMode` and its approval requests both follow the flag).
 - `--session-id` must be a UUID.
@@ -36,7 +36,7 @@ claude -p \
 
 ### Environment
 
-- `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1` enables `system/session_state_changed` (`running` / `requires_action` / `idle`). Without it those events are absent.
+- `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1` enables [`session_state_changed`](#system) events.
 - `CLAUDE_CODE_BG_TASKS_REPORT_RUNNING=0` makes Claude report `idle` at the end of a turn while background tasks keep running, then `running` when a turn they trigger begins. With the default, a background subagent keeps the state at `running` until it finishes, and the follow-up turn gets no fresh `running`. Background Bash and Monitor report `idle` either way.
 - Remove `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the child environment to keep subscription auth; in `-p` mode an inherited API key is always used.
 - `CLAUDE_CONFIG_DIR` (default `~/.claude`) isolates settings, history, plugins and most auth. `~/.claude.json` still holds global trust, account and MCP state.
@@ -50,11 +50,11 @@ claude -p \
 - `-p` skips the trust dialog and silently drops invalid non-managed settings.
 - Settings files reload while running; model and effort changes need control requests.
 - `claude -p` with empty stdin exits 1.
-- The CLI's `--help` is not exhaustive. Several documented flags (`--permission-prompt-tool`, `--max-turns`, `--system-prompt-file`) are missing from it.
+- `--help` omits some documented flags, including `--permission-prompt-tool`, `--max-turns`, and `--system-prompt-file`.
 
 ## 2. The stdin protocol
 
-Every message is one JSON object per line, terminated by `\n`. Serialize writes (one writer task or a mutex).
+Every message is one JSON object per line, terminated by `\n`.
 
 ### Initialize first
 
@@ -75,11 +75,9 @@ The response carries the slash-command catalog and the model list. No model turn
             {"value":"haiku","resolvedModel":"claude-haiku-5-5","displayName":"Haiku", "...":"..."}]}}}
 ```
 
-- `models[].value` is what `--model` and runtime model changes accept; `resolvedModel` is what an alias resolves to. Match a user's choice against either.
-- An empty `models` list means the CLI is too old for model discovery.
+- `models[].value` is the identifier accepted by `--model` and runtime model changes. `resolvedModel` is the model an alias selects. `supportedEffortLevels` lists the effort choices for models with `supportsEffort`.
 - A refusal is `{"subtype":"error","request_id":"initialize","error":"..."}`.
-- Allow up to 60 s for the response.
-- Claude accepts any `--model` string and any model in a runtime change, and fails only on the next prompt. Unknown `--effort` values are ignored with a stderr warning (`Unknown --effort value 'minimal' — ignoring it and using the default effort. Valid values: low, medium, high, xhigh, max.`) and exit 0. Validate model and effort against `initialize` yourself: a model with `supportsEffort` needs one of its `supportedEffortLevels`, and a model without effort accepts none.
+- Claude accepts any model in `--model` or a runtime change and fails only on the next prompt. An unknown `--effort` value produces a stderr warning, and Claude runs at its default effort.
 - Model discovery alone: run `claude -p --input-format stream-json --output-format stream-json --verbose` with no `--model` and no MCP config in the project directory, send `initialize`, read `models`, close stdin.
 
 ### User messages
@@ -113,23 +111,22 @@ Envelope: `{"type":"control_request","request_id":"<unique>","request":{...}}`. 
 | `{"subtype":"reload_skills"}` | Rescans skills; response `{"skills":[...]}`. Skills added after `initialize` are neither listed nor invocable until this runs. |
 | `{"subtype":"reload_plugins"}` | Response has a refreshed `commands` list in the `initialize` shape. |
 
-Responses are `{"type":"control_response","response":{"subtype":"success","request_id":"..."}}` or `{"subtype":"error","request_id":"...","error":"bad model"}`. Treat a closed process as "no answer" and apply the setting on the next launch instead.
+Responses are `{"type":"control_response","response":{"subtype":"success","request_id":"..."}}` or `{"subtype":"error","request_id":"...","error":"bad model"}`.
 
 Permission modes: `manual` (alias `default`), `auto`, `acceptEdits`, `plan`, `dontAsk`, `bypassPermissions`. In `auto`, requests the classifier rejects never reach the host.
 
 ### Stopping
 
-Close stdin; Claude exits on its own. Kill it if it is still alive after a few seconds. Spawn with kill-on-drop so a crashed host does not leak it.
+Closing stdin lets Claude exit on its own.
 
 ## 3. The stdout protocol
 
-Parse each non-empty line as JSON. Skip lines that fail to parse, but keep the last one: some failures are printed as plain text on stdout (section 6).
-
-Lines of type `stream_event` wrap an SSE event in `.event`; unwrap before dispatching.
+Stdout carries JSON lines and can carry plain text on [failure](#startup-failures).
+`stream_event` lines carry an SSE event in `.event`.
 
 ### `system`
 
-- `init`: `session_id`, `model` (resolved ID), `tools`, `mcp_servers`, `slash_commands`, `skills`. Emitted at the start of every turn, including turns Claude starts itself. It is not emitted at process start, so use `initialize` for startup data.
+- `init`: `session_id`, `model` (resolved ID), `tools`, `mcp_servers`, `slash_commands`, `skills`. Emitted at the start of every turn, including turns Claude starts itself. [`initialize`](#initialize-first) supplies startup data.
 - `session_state_changed`: `state` is `running`, `requires_action` (just before a `can_use_tool` request) or `idle`; carries `"sdk_host_only":true`. `idle` arrives after the turn's `result` is flushed.
 - `commands_changed`: `commands` replaces the slash-command catalog (possibly with an empty list).
 - `task_started`: `task_id`, `tool_use_id`, `is_backgrounded`. Foreground tasks get this too but never join the live set.
@@ -215,16 +212,14 @@ Once per turn, after the assistant message and before the result; nothing before
 
 ### When a prompt is taken
 
-Two signals mark a prompt entering the conversation: `command_lifecycle` `started` with `command_uuid`, and the `isReplay: true` echo with `uuid`. Use whichever arrives first. Acknowledge a prompt at that point, not at the turn's end; output and completion arrive separately.
+Either [`command_lifecycle`](#command_lifecycle) or the [prompt echo](#persistent-session) signals prompt uptake. Output and completion arrive separately.
 
 ### When a turn ends
 
 - `result` ends a model turn but does not mean Claude is idle. With a background subagent the sequence is: main `result` while the subagent runs → subagent lines continue → new `system/init` and an automatic main turn → its `result` → an empty bookkeeping `result` → `session_state_changed idle`.
-- Use `idle` (requires `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`) as the authoritative end. Keep pending permission requests across `result`s: background subagents can still be waiting for their answers. Withdraw them when Claude cancels the request, becomes idle, or exits.
-- `idle` can arrive without a `result` after a cancel. Clear any "cancelling" flag on `idle` so the next turn's error is not misread as a cancel.
-- A resumed conversation can start a turn on its own during startup (for a background task notification). Report idle after start only if Claude has not reported a state.
-- The final answer is the text of the newest main-thread assistant message confirmed by a successful `result`. A bookkeeping result with no newer message leaves it alone; subagent text is never the final answer.
-- Keep per-process state (block counters, open tool maps) across `result`s. Subagent output straddles main-thread results, and clearing at `result` merges items and loses late tool results.
+- `idle` marks the end of the turn and can arrive directly after a cancellation. A background subagent can still be waiting for a permission answer after a main-thread `result`.
+- A resumed conversation can start a turn during startup, for example to handle a background task notification.
+- A successful `result` confirms the newest main-thread assistant message as the final answer. A bookkeeping result preserves that answer.
 
 ### Interrupt
 
@@ -236,15 +231,13 @@ Send `interrupt` (with `cancel_queued: true` to drop untaken prompts). The seque
 4. `result` with `subtype:"error_during_execution"`, `is_error:true`, `terminal_reason:"aborted_tools"`.
 5. `session_state_changed idle`.
 
-On the aborted result, fail the prompts Claude never took as cancelled. A failed result, or a process exit, while you are cancelling counts as a cancel. The stopped turn stays in the transcript.
+The stopped turn stays in the transcript.
 
 ### Session IDs
 
-Claude names the session at startup but writes the transcript only once a turn runs. Record the conversation as resumable only after a `result` (or once the transcript exists). A cancelled or failed first turn may leave nothing to resume. A fork reports no conversation until its first result.
-
-### Exit and restart
-
-If Claude exits mid-turn, end the turn as an error with `claude exited with <status>: <stderr tail>`. Start a new process with `--resume` on the next prompt, or `--session-id` if no transcript was saved.
+Claude names the session at startup and writes the transcript once a turn
+runs. `--resume` needs a saved transcript; a fork can be resumed once its
+first turn has saved one.
 
 ## 5. Permissions and questions
 
@@ -310,18 +303,16 @@ Answer by allowing with the original input plus `answers`, keyed by question tex
   {"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"1111...","total_cost_usd":0,"modelUsage":{},
    "errors":["No conversation found with session ID: 1111..."]}
   ```
-  Treat any `result` before `initialize` answers as the startup failure reason, keep the first one, and report it on the waiting prompt. Do not fall back to a fresh conversation.
-- Writing `initialize` can fail with EPIPE because Claude already exited; the real reason is the unread `result`. Ignore write errors during startup and let the reader report the exit reason.
-- An error `result` while a prompt waits and no turn is running belongs to no turn. Hold it as the reason the waiting prompt fails if the process then exits; clear it when a prompt is taken.
-- Failures can appear as plain text on stdout with empty stderr: `Not logged in · Please run /login`, `API Error: Connection refused`, unknown-model messages (exit 1). Keep the last undecodable stdout line and include it in the exit reason when no `result` arrives.
-- Exit status alone is insufficient: SIGINT can exit 0 with empty stdout; SIGTERM exits 143.
+- Claude can exit before reading `initialize`; the write can then fail with EPIPE while the error result is still readable.
+- Claude can emit an error `result` while a prompt is waiting to enter a turn.
+- Failures can appear as plain text on stdout: `Not logged in · Please run /login`, `API Error: Connection refused`, or an unknown-model message (exit 1).
+- SIGINT can exit 0 with empty stdout; SIGTERM exits 143.
 
 ### Pipes
 
-- Read stdout until the process exits, not until EOF. Claude's children (background Bash, MCP servers) can hold stdout and stderr open after Claude exits.
-- Do not lose Claude's last lines (often the final `result`) at exit. After `wait` returns, drain the reader's buffer and then read the descriptor non-blockingly until `EAGAIN`; the async runtime may not yet have seen the pipe become readable. In Go, use an `os.Pipe` you own rather than `cmd.StdoutPipe` (which `Wait` closes), set `cmd.WaitDelay`, and set a short read deadline after exit.
-- Read stderr concurrently so a full pipe never blocks Claude, and keep the last ~2 KiB for exit messages.
-- Lines can be large (base64 images, big tool results). Size line buffers generously and handle a final line without a newline.
+- A child that inherits an output descriptor can delay EOF after Claude exits.
+- Claude's final lines can still be buffered when the process exits.
+- Base64 images and large tool results can produce long lines. The final line can end at EOF.
 
 ## 7. Subagents
 
@@ -356,7 +347,7 @@ Answer by allowing with the original input plus `answers`, keyed by question tex
 
 - Context in use = `input_tokens + cache_read_input_tokens + cache_creation_input_tokens` of the latest main-thread assistant message.
 - Context window = `result.modelUsage[<current resolved model>].contextWindow`; take the current model from `system/init.model` and main-thread `message.model`.
-- Cost = `result.total_cost_usd` (process running total).
+- Cost comes from [`result.total_cost_usd`](#result).
 - `--max-budget-usd` (print only) is a client estimate that counts subagents and can overshoot.
 
 ## 10. Transcripts on disk
@@ -399,21 +390,3 @@ claude -p --input-format stream-json --output-format stream-json --verbose \
 ## 13. Built-in tool names (2.1.319)
 
 `Bash{command,description}`, `PowerShell`, `Monitor{command}`, `Read{file_path,offset}`, `Write`, `Edit{file_path,old_string,new_string}`, `NotebookEdit{notebook_path}`, `Glob{pattern,path}`, `Grep{pattern,path,glob}`, `LSP{operation,filePath,line}`, `WebFetch{url,prompt}`, `WebSearch{query}`, `Agent`/`Task{subagent_type,description,prompt}`, `Skill{skill,args}`, `ToolSearch{query,max_results}`, `TodoWrite{todos}`, `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate`, `TaskStop`, `CronCreate`, `CronDelete`, `CronList`, `ScheduleWakeup{delaySeconds,reason,prompt}`, `EnterPlanMode`, `ExitPlanMode{plan}`, `EnterWorktree`, `ExitWorktree`, `ListMcpResourcesTool`, `ReadMcpResourceTool`, `ReadMcpResourceDirTool`, `SendMessage{to,message}`, `PushNotification{message}`, `AskUserQuestion{questions}`.
-
-## 14. Stream-json compared with the interactive TUI and hooks
-
-Interactive `claude` can be driven in tmux with `--settings` hooks (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`, `StopFailure`, `PermissionRequest`) and a status-line script. Facts that matter when choosing:
-
-- An idle foreground session can only be woken by an `asyncRewake: true` hook exiting 2, whose stderr becomes a system reminder.
-- A user interrupt fires no `Stop` hook, so hook-based busy/idle tracking stays "busy".
-- Hooks also run inside native subagents (input has `agent_id`); `agent_type` alone does not identify a subagent, because `--agent` main sessions have one.
-- `UserPromptSubmit.prompt` wraps pastes in `<pasted_content>` tags.
-- The status-line JSON (`context_window`, `cost`, `rate_limits`, `model`, `effort`) is debounced and can have null fields.
-
-The persistent stream-json process delivers message injection at any time, explicit `running`/`idle` states, interrupts and structured permission requests, without terminal scraping.
-
-## 15. Testing
-
-Put a shell script named `claude` first on `PATH`. It reads stdin line by line (exiting when stdin closes), records argv and control requests to files, answers `initialize` with a canned `control_response`, and plays a recorded JSONL fixture per user message: `command_lifecycle started`, the `isReplay` echo, `session_state_changed`, a `can_use_tool` request, the interrupt sequence, or a failed resume (print the error `result`, write to stderr, exit 1). Set `CLAUDE_CONFIG_DIR` to an empty directory and set a dummy `ANTHROPIC_API_KEY` to check that it is stripped. Record fixtures from a real run and trim them to the fields the host reads.
-
-Live smoke tests against a real model (Haiku) are flaky when the test depends on the model following instructions; keep their assertions to protocol behavior.

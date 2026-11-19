@@ -13,7 +13,6 @@ type submission struct {
 	id string
 }
 
-// Send writes a prompt to an idle agent.
 func (a *Agent) Send(text string) (string, error) {
 	if !a.idle() {
 		return "", agent.ErrBusy
@@ -52,8 +51,6 @@ func (a *Agent) sessionState(state string) {
 	}
 }
 
-// endPrompt withdraws unanswered approvals, publishes the prompt's final
-// update, and releases the agent.
 func (a *Agent) endPrompt(final agent.Update) {
 	a.withdrawApprovals()
 	a.publish(final)

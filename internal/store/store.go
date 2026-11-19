@@ -1,5 +1,3 @@
-// Package store keeps the daemon's workspaces, sessions, and session events
-// in a SQLite database. It holds no running state.
 package store
 
 import (
@@ -66,8 +64,6 @@ type Store struct {
 	db *sql.DB
 }
 
-// Path returns ox.db in the ox directory of $XDG_STATE_HOME, or of
-// ~/.local/state when that is unset.
 func Path() (string, error) {
 	dir := os.Getenv("XDG_STATE_HOME")
 	if dir == "" {
@@ -80,7 +76,6 @@ func Path() (string, error) {
 	return filepath.Join(dir, "ox", "ox.db"), nil
 }
 
-// Open opens the database at path, creating it and its tables if needed.
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
@@ -89,8 +84,7 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	// One connection serializes every statement, so writers never meet a
-	// locked database.
+	// Serialize this store's operations on one SQLite connection.
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
@@ -103,8 +97,6 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// Workspaces returns every workspace with its sessions, each in creation
-// order.
 func (s *Store) Workspaces() ([]*Workspace, error) {
 	rows, err := s.db.Query(`SELECT id, path, created_at FROM workspaces ORDER BY created_at, rowid`)
 	if err != nil {
@@ -163,15 +155,12 @@ func (s *Store) AddSession(workspaceID string, r *Session) error {
 	return err
 }
 
-// SaveSession stores a session's settings and resume token. Its harness never
-// changes.
 func (s *Store) SaveSession(r *Session) error {
 	_, err := s.db.Exec(`UPDATE sessions SET model = ?, effort = ?, permission_mode = ?, resume_token = ? WHERE id = ?`,
 		r.Model, r.Effort, r.PermissionMode, r.ResumeToken, r.ID)
 	return err
 }
 
-// DeleteSession deletes a session and its events.
 func (s *Store) DeleteSession(id string) error {
 	_, err := s.db.Exec(`DELETE FROM sessions WHERE id = ?`, id)
 	return err
@@ -183,7 +172,6 @@ func (s *Store) AddEvent(sessionID string, e Event) error {
 	return err
 }
 
-// Events returns a session's events, oldest first.
 func (s *Store) Events(sessionID string) ([]Event, error) {
 	rows, err := s.db.Query(`SELECT created_at, data FROM events WHERE session_id = ? ORDER BY id`, sessionID)
 	if err != nil {

@@ -8,21 +8,17 @@ import (
 	"github.com/kkestell/ox/internal/agent"
 )
 
-// phase is the agent's ownership of its Claude process. Claude's reported
-// session state is tracked separately in Agent.claudeState.
+// phase tracks the current operation separately from Claude's reported state.
 type phase int
 
 const (
-	available   phase = iota // nothing owns the process
-	queued                   // prompt written; Claude has not taken it yet
-	prompting                // Claude took the prompt; its next idle state releases it
-	configuring              // control requests in flight, one at a time
+	available   phase = iota
+	queued            // prompt written; Claude has not taken it yet
+	prompting         // Claude took the prompt; its next idle state releases it
+	configuring       // control requests in flight, one at a time
 	exited
 )
 
-// Agent runs one Claude process as a state machine. The session's goroutine
-// makes every call and passes it each event from Events: Claude's output,
-// the process's exit, and control-request timeouts.
 type Agent struct {
 	proc   *Process
 	input  *Input
@@ -43,15 +39,10 @@ type Agent struct {
 	scheduling  bool // a scheduling tool ran since the last Stop hook
 }
 
-// processExit is the last event from a process: how it exited.
 type processExit struct{ err error }
 
 type controlTimeout struct{ requestID string }
 
-// Start starts and initializes a Claude process and returns its agent. The
-// resume token is Claude's session ID: a new conversation gets a fresh one,
-// reported to OnResumable once the first result shows Claude has written the
-// transcript.
 func Start(options agent.Options) (agent.Agent, error) {
 	sessionID, resume := options.Resume, options.Resume != ""
 	if !resume {
@@ -96,8 +87,6 @@ func (a *Agent) Handle(event agent.Event) {
 	}
 }
 
-// after delivers event through Events once d has passed, unless the agent has
-// exited by then.
 func (a *Agent) after(d time.Duration, event agent.Event) {
 	time.AfterFunc(d, func() {
 		select {
@@ -170,7 +159,6 @@ func (a *Agent) handleOutput(message Message) {
 	}
 }
 
-// idle reports whether the agent can take a prompt or configuration.
 func (a *Agent) idle() bool {
 	return a.phase == available && a.claudeState == "idle"
 }
@@ -203,7 +191,6 @@ func (a *Agent) exit(err error) {
 	close(a.done)
 }
 
-// Stop asks Claude to exit so it can clean up its tool processes.
 func (a *Agent) Stop() error {
 	return a.proc.Terminate()
 }

@@ -15,8 +15,6 @@ import (
 
 const haiku = "claude-haiku-5-5"
 
-// TestLive drives real Claude Code processes, using Haiku, through the
-// protocol. It runs only with OX_LIVE set, as make live does.
 func TestLive(t *testing.T) {
 	if os.Getenv("OX_LIVE") == "" {
 		t.Skip("set OX_LIVE=1 to run against real Claude with Haiku, as make live does")
@@ -56,8 +54,6 @@ func TestLive(t *testing.T) {
 	allow := func(r request) any {
 		return map[string]any{"behavior": "allow", "updatedInput": r.Input}
 	}
-	// turn sends a prompt, answers its approvals, and returns the tools it
-	// called once the session is idle.
 	turn := func(id, text string, answer func(request) any) []string {
 		t.Helper()
 		c.forget(id)
@@ -89,8 +85,6 @@ func TestLive(t *testing.T) {
 		for c.update(id, "state").State != "idle" {
 		}
 	}
-	// lastIs reports whether the session's last notification so far has the
-	// given method.
 	lastIs := func(id, method string) bool {
 		received := c.received(id)
 		return len(received) > 0 && received[len(received)-1].Method == method

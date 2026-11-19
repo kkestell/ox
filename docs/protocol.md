@@ -9,67 +9,58 @@ Run `go run ./cmd/oxd` and connect to its Unix socket. The default path is
 `ox/oxd.sock` beneath Go's user cache directory (`~/Library/Caches` on macOS).
 Use `-socket /absolute/path/to/oxd.sock` to choose a different socket.
 
-Each message is one JSON object terminated by a newline. The examples below
-each occupy one line on the wire. Requests use JSON-RPC `"2.0"`, a string or
-numeric `id`, a `method`, and an object in `params`. Responses echo the request
-`id` and contain either `result` or `error`. A null `id` is also accepted;
-omitting `id` does not execute an operation or produce a response for a valid
-message. Batch requests are unsupported. No connection handshake is required.
+Each message is one JSON object terminated by a newline. Requests use
+JSON-RPC `"2.0"`, a string, number, or null `id`, and a `method`. The envelope
+accepts an object, an array, or an omitted `params`; methods with parameters
+take an object. Responses echo the request `id` and contain either `result`
+or `error`. A valid request without `id` is ignored. Send requests individually;
+batch requests return `-32600`.
 
 Clients must continuously read the socket: responses and notifications share
 the stream. Every connection receives every notification, for every session,
 from the moment it connects. Notifications can arrive before the response to
-the request that caused them. Each session handles its requests one at a time.
-The daemon handles each request separately, so a slow request, such as a send
-that starts Claude, holds up only the requests for that session, and requests
-sent without waiting for earlier responses can run in any order. The daemon gives each socket write five seconds to complete
-and buffers a limited backlog; a client that stops reading loses its
-connection.
+the request that caused them. Each session handles its requests one at a time,
+independently of other sessions. Requests sent without waiting for earlier
+responses can run in any order. The daemon gives each socket write five
+seconds to complete and buffers a limited backlog; a client that stops reading
+loses its connection.
 
 | Identifier | Meaning |
 | --- | --- |
 | `id` | Client-chosen JSON-RPC request identifier, echoed in its response. |
 | `workspace_id` | Opaque identifier returned by `workspace/create`. |
 | `session_id` | Opaque identifier returned by `session/create`. |
-| `message_id` | Prompt identifier returned by `session/send` and included in its updates. Updates from turns Claude starts itself have none. |
+| `message_id` | Prompt identifier returned by `session/send` and included in its [updates](#session-updates). |
 | `request_id` | Claude's identifier for an approval, used to answer or withdraw it. |
 
 ## Workspaces and sessions
 
 A workspace is a directory. A session is a conversation with a harness in a
-workspace. Its harness is chosen at creation and never changes. The daemon
-knows two harnesses: `claude`, which runs Claude Code, and `fake`, which runs
-no process and echoes each prompt back. The daemon stores workspaces,
-sessions, and session history in the SQLite database `ox/ox.db` beneath
-`$XDG_STATE_HOME`, or beneath `~/.local/state` when that is unset;
+workspace. Its harness is chosen at creation. The daemon recognizes `claude`
+and `fake`; see [architecture](architecture.md#ox-architecture) for their
+implementations. The daemon stores workspaces, sessions, and session history in
+`ox/ox.db` beneath `$XDG_STATE_HOME`, or beneath `~/.local/state` when that
+is unset;
 `-db /absolute/path/to/ox.db` chooses a different file. They outlive the
 daemon. Each workspace and session records when it was created, as
 `created_at`, an RFC 3339 timestamp.
 
-A session runs a Claude process only while it is in use. A session without
-one is parked. A new session starts parked; `session/send` to a parked session
-starts a process that continues the conversation where it left off. A session
-parks when its process exits for any reason, including daemon shutdown.
+A new session starts parked. `session/send` starts its harness and resumes
+its conversation when a resume token is available. The session parks when
+the harness exits, including at daemon shutdown.
 
-The daemon parks a session whose process has gone unused for five minutes
-(`-park-after` changes the period): no prompt or configuration in progress,
-Claude idle, no approval pending, no background task running, and no scheduled
-prompt pending (`CronCreate`, `ScheduleWakeup`, or `/loop`), so scheduled
-prompts keep firing. Claude reports its pending schedules at the end of each
-completed turn. After a turn that ends by error or interrupt, the daemon keeps
-the schedules from the last completed turn, and if the failed turn called a
-scheduling tool, it keeps the session running until a later turn completes.
-A session can therefore stay running with nothing scheduled.
-Connected clients do not keep a session running.
+The daemon parks a session after five minutes of harness inactivity
+(`-park-after` changes the period). For Claude, that means idle with no prompt,
+configuration, approval, background task, or pending schedule. A scheduling
+tool call also keeps the harness active until its next
+[Stop hook schedule report](claude-code.md#8-background-work-and-schedules).
 
 ## Configuration
 
 The daemon reads the harnesses it offers from `ox/config.json` beneath
 `$XDG_CONFIG_HOME`, or beneath `~/.config` when that is unset; `-config
-/absolute/path/to/config.json` chooses a different file. Without a file, it
-uses a built-in configuration offering Claude's current models and no
-`fake`. The daemon
-reads the file at startup and refuses to start on a harness it does not know.
+/absolute/path/to/config.json` chooses a different file. A missing file selects
+the built-in Claude Code catalog. The daemon validates harness names at startup.
 
 Each harness lists its models, each with the effort levels it takes, and its
 permission modes. Every choice has an `id`, passed to the harness, and a
@@ -103,8 +94,8 @@ Returns the configuration's harnesses and new-session defaults.
 ### `workspace/create`
 
 Requires `path`, an absolute path to an existing directory. Registers the
-directory and returns its workspace. A path that is already registered returns
-the existing workspace.
+directory and returns its workspace ID. An already registered path returns
+the existing ID.
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"workspace/create","params":{"path":"/Users/kyle/src/ox"}}
@@ -131,16 +122,16 @@ settings and state come from `session/get`.
 
 ### `session/create`
 
-Requires `workspace_id`, `harness`, `model`, `effort`, and `permission_mode`. Records a
-parked session in the workspace and returns its ID. No process starts, so startup errors such as an unknown model surface
-on the first `session/send`.
+Records a parked session in the workspace and returns its ID. The first
+[`session/send`](#sessionsend) starts the harness, so startup errors such as
+an unknown model surface there.
 
 | Parameter | Required | Meaning |
 | --- | --- | --- |
 | `workspace_id` | Yes | The workspace whose directory the harness runs in. |
 | `harness` | Yes | A harness in the configuration. |
 | `model` | Yes | Nonblank; passed to Claude's `--model` flag. |
-| `effort` | Yes | Passed to Claude's `--effort` flag; empty passes none. |
+| `effort` | No | Passed to Claude's `--effort` flag. An empty or omitted value leaves the flag unset. |
 | `permission_mode` | Yes | Nonblank; passed to Claude's `--permission-mode` flag. |
 
 Model names, effort levels, and permission modes are interpreted by the
@@ -189,7 +180,7 @@ response arrives.
 ```
 
 ```json
-{"jsonrpc":"2.0","id":5,"result":{"model":"haiku","effort":"low","permission_mode":"manual","state":"requires_action","prompt":{"message_id":"prompt-id"},"approvals":[{"request_id":"claude-request-id","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch notes.txt"}}}],"history":[{"message_id":"prompt-id","type":"prompt","text":"Create notes.txt."},{"message_id":"prompt-id","type":"text_delta","text":"I'll create the file."}]}}
+{"jsonrpc":"2.0","id":5,"result":{"model":"haiku","effort":"low","permission_mode":"manual","state":"requires_action","prompt":{"message_id":"prompt-id"},"approvals":[{"request_id":"claude-request-id","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch notes.txt"}}}],"history":[{"message_id":"prompt-id","type":"prompt","text":"Create notes.txt.","time":"2026-11-18T19:53:50Z"},{"message_id":"prompt-id","type":"text_delta","text":"I'll create the file.","time":"2026-11-18T19:53:51Z"}]}}
 ```
 
 | Field | Meaning |
@@ -225,7 +216,7 @@ session's later processes.
 A parked session stores the settings and applies them when its next process
 starts. A running session must be idle with no pending prompt. Configuration
 reserves it until completion; sends and other configuration requests during
-that time return `-32002`. Any connected client can configure an idle session.
+that time return `-32002`.
 
 For a running session, success means Claude acknowledged each setting that
 differs from its process's, and only then are they stored. Model, effort, and permission
@@ -234,14 +225,12 @@ applied to the process and later changes are skipped. Claude refusals and
 write failures return an operation error. A change Claude has not acknowledged
 after one minute stops the process. If the process exits first, including by
 that stop, the settings are stored for the next process and the request
-succeeds. As at creation, model identifiers are interpreted by
-Claude; acknowledgement does not guarantee the model will work on a prompt.
+succeeds. See [Claude's model validation](claude-code.md#initialize-first).
 
 ### `session/approve`
 
 Requires `session_id`, `request_id`, and a `response` object whose `behavior`
-is `"allow"` or `"deny"`. Any connection can answer a pending approval. The
-response payload is forwarded to Claude.
+is `"allow"` or `"deny"`. The response payload is forwarded to Claude.
 
 ```json
 {"jsonrpc":"2.0","id":7,"method":"session/approve","params":{"session_id":"session-id","request_id":"claude-request-id","response":{"behavior":"allow","updatedInput":{"command":"echo hello"},"toolUseID":"toolu_example"}}}
@@ -252,15 +241,13 @@ response payload is forwarded to Claude.
 ```
 
 For rejection, use `{"behavior":"deny","message":"Reason for rejection"}`
-as `response`. Set `interrupt: true` in that response to stop the turn as well.
+as `response`.
 
-The Claude harness checks the response shape and preserves its fields. If
+The Claude harness checks the response shape and preserves its fields. When
 supplied, `updatedInput` must be an object and `updatedPermissions` must be an
-array; a running session refuses a response of another shape with `-32000`.
-Clients can echo the original input, supply changed input (including
-`AskUserQuestion` answers), or return `updatedPermissions` chosen from
-Claude's suggestions. Claude applies those permission changes; Ox stores no
-grants or policy. See [Claude's response documentation](https://code.claude.com/docs/en/agent-sdk/user-input#respond-to-tool-requests).
+array; a running session returns `-32000` for an invalid shape. See
+[Claude's permission responses](claude-code.md#5-permissions-and-questions)
+for permission changes, interrupts, and `AskUserQuestion` answers.
 
 A successful RPC consumes the pending request; a duplicate or late answer is
 rejected. Success confirms forwarding to Claude, not tool execution. Continue
@@ -272,7 +259,7 @@ Requires `session_id`. Removes the session from the daemon. A running process
 receives SIGTERM so Claude can clean up its tool processes, and the daemon
 waits for it to exit. Pending approvals are withdrawn, and an active prompt
 receives an `exited` update before the destroy response. Claude's transcript
-stays on disk. Any connected client can destroy a session.
+stays on disk.
 
 ```json
 {"jsonrpc":"2.0","id":8,"method":"session/destroy","params":{"session_id":"session-id"}}
@@ -315,35 +302,30 @@ user action; read the approval notifications to obtain the requests. `idle`
 means the turn is over and, for a prompt, that another can be sent.
 
 ```json
-{"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"tool_use","tool_use_id":"toolu_example","tool_name":"Bash","input":{"command":"ls","description":"List files"}}}
-{"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"tool_result","tool_use_id":"toolu_example","result":{"text":"go.mod\ncmd","is_error":false}}}
-{"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"result","result":{"text":"The repository contains a Go daemon.","is_error":false}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"tool_use","tool_use_id":"toolu_example","tool_name":"Bash","input":{"command":"ls","description":"List files"},"time":"2026-11-18T19:53:51Z"}}
+{"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"tool_result","tool_use_id":"toolu_example","result":{"text":"go.mod\ncmd","is_error":false},"time":"2026-11-18T19:53:52Z"}}
+{"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"result","result":{"text":"The repository contains a Go daemon.","is_error":false},"time":"2026-11-18T19:53:53Z"}}
 ```
 
-Claude's errors are delivered as `result.is_error: true`; an unexpected process
-exit is delivered as `exited`. JSON-RPC errors describe failures of the client
-operation itself. The stream exposes the top-level assistant text, tool calls
-and their results, states, results, and approval lifecycle events. Subagents'
-text and tool calls are not forwarded; a subagent appears as its top-level
-`Agent` tool call and result.
+Claude's turn errors are delivered as `result.is_error: true`. JSON-RPC errors
+describe failures of the client operation itself. A subagent appears in the
+stream as its top-level `Agent` tool call and result.
 
 ### Approval lifecycle
 
-Claude decides when a tool needs approval using its permission mode and rules.
-Ox forwards Claude's complete `can_use_tool` request, including any display
+Ox forwards the complete [`can_use_tool`](claude-code.md#can_use_tool) request, including any display
 metadata, tool input, permission suggestions, or question fields:
 
 ```json
-{"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"approval","request_id":"claude-request-id","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"echo hello"},"tool_use_id":"toolu_example","permission_suggestions":[]}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"approval","request_id":"claude-request-id","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"echo hello"},"tool_use_id":"toolu_example","permission_suggestions":[]},"time":"2026-11-18T19:53:51Z"}}
 ```
 
 The client chooses how to obtain the decision and replies using
 `session/approve`. Reading output continues while approvals are pending.
 Multiple approvals can be pending; identify each by its `request_id`.
 
-Turns Claude starts itself request approval the same way, without
-`message_id`. An approval waits until a client answers it, however long that
-takes; while it is pending, the session's process keeps running.
+An approval waits until a client answers it, however long that takes; while
+it is pending, the session's process keeps running.
 
 When Claude cancels a request, becomes idle, or exits, Ox withdraws unanswered
 approvals. A `result` alone does not withdraw approvals: background subagents
@@ -351,7 +333,7 @@ can still be waiting for a decision. For idle or exit, the cancellation
 notifications precede the corresponding `idle` or `exited` update:
 
 ```json
-{"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"approval_cancelled","request_id":"claude-request-id"}}
+{"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"approval_cancelled","request_id":"claude-request-id","time":"2026-11-18T19:53:52Z"}}
 ```
 
 ## Workspace and session events
@@ -371,8 +353,8 @@ Every connection is told when workspaces and sessions come and go:
 
 ## Connections
 
-Clients have no identity: any connection can send a session a prompt when it
-is idle, answer its approvals, configure it, and destroy it.
+Any connection can send a session a prompt when it is idle, answer its
+approvals, configure it, and destroy it.
 
 Closing a connection leaves its sessions running. A prompt continues, and its
 pending approvals stay pending until a client answers them. A client that

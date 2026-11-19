@@ -8,7 +8,6 @@ type Tool = Extract<Entry, { kind: "tool" }>;
 export function SessionView(props: { session: Session }) {
   const ox = useOx();
   const [error, setError] = createSignal<string>();
-  // attempt clears the last error and shows this request's, if it fails.
   const attempt = (request: Promise<unknown>) => {
     setError(undefined);
     return request.catch((e: Error) => {
@@ -52,13 +51,10 @@ export function SessionView(props: { session: Session }) {
   );
 }
 
-// NewSessionView writes a workspace's next session: its first prompt and
-// settings. Sending creates the session and starts it on the prompt.
 export function NewSessionView(props: { workspaceId: string; onStarted(id: string): void }) {
   const ox = useOx();
   const [error, setError] = createSignal<string>();
   const workspace = () => ox.state.workspaces.find((w) => w.id === props.workspaceId)?.path;
-  // The harness chosen in the form; its choices fill the settings fields.
   const [harness, setHarness] = createSignal(() => ox.state.defaults?.harness ?? "");
   const catalog = () => ox.state.harnesses[harness()];
 
@@ -123,8 +119,6 @@ function Transcript(props: { entries: Entry[] }) {
   );
 }
 
-// ToolCall shows a tool call as its status, name, and first string input,
-// expanding to its full input and result.
 function ToolCall(props: { tool: Tool }) {
   const detail = () => {
     const first = Object.values(props.tool.input).find((v) => typeof v === "string") ?? "";
@@ -164,10 +158,6 @@ function ApprovalRequest(props: { approval: Approval; onAnswer(response: Approva
   );
 }
 
-// SettingsForm sends only the settings the user changed, with the effort a
-// model change requires. It shows the change while it is being applied,
-// until the session/configured event confirms it or the request fails and
-// the fields return to the stored settings.
 function SettingsForm(props: { session: Session; attempt(request: Promise<unknown>): void }) {
   const ox = useOx();
   const [shown, setShown] = createOptimistic(() => props.session.settings);
@@ -177,8 +167,6 @@ function SettingsForm(props: { session: Session; attempt(request: Promise<unknow
     setConfiguring(true);
     yield ox.configure(props.session.id, changes);
   });
-  // A running session takes configuration only while idle; a parked session
-  // stores it.
   const configurable = () => !configuring() && (props.session.state === "idle" || props.session.state === "parked");
 
   return (

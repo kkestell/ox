@@ -15,7 +15,6 @@ import (
 	"github.com/kkestell/ox/internal/store"
 )
 
-// Ox error codes.
 const (
 	operationFailed    = -32000
 	notFound           = -32001
@@ -23,7 +22,6 @@ const (
 	approvalNotPending = -32003
 )
 
-// replyFunc queues a response on the requesting connection.
 type replyFunc func(*jsonrpc.Response)
 
 // handle runs one request line. Each method queues its own response through
@@ -63,7 +61,6 @@ func (s *Server) handle(reply replyFunc, line []byte) {
 	}
 }
 
-// failure maps an operation error to its response.
 func failure(id json.RawMessage, err error) *jsonrpc.Response {
 	switch {
 	case errors.Is(err, agent.ErrBusy):
@@ -83,8 +80,6 @@ func sessionNotFound(id json.RawMessage) *jsonrpc.Response {
 	return jsonrpc.Failure(id, notFound, "Session not found")
 }
 
-// onSession runs op on the goroutine of the session named by sessionID, or
-// answers that there is no such session.
 func (s *Server) onSession(reply replyFunc, id json.RawMessage, sessionID string, op func(*session)) {
 	s.mu.Lock()
 	closed, sess := s.closed, s.sessions[sessionID]
@@ -136,8 +131,6 @@ func (s *Server) createWorkspace(reply replyFunc, id, params json.RawMessage) {
 	reply(jsonrpc.Success(id, result{w.id}))
 }
 
-// listWorkspaces returns the workspaces and their sessions. A session's
-// settings and state come from session/get.
 func (s *Server) listWorkspaces(reply replyFunc, id json.RawMessage) {
 	type sessionInfo struct {
 		SessionID string    `json:"session_id"`
@@ -165,9 +158,6 @@ func (s *Server) listWorkspaces(reply replyFunc, id json.RawMessage) {
 	}{workspaces}))
 }
 
-// invalidSettings describes what is wrong with a session's settings, or
-// returns "". They are passed to the harness as they are; a model without
-// effort levels takes an empty effort.
 func invalidSettings(settings agent.Settings) string {
 	switch {
 	case strings.TrimSpace(settings.Model) == "":
@@ -287,7 +277,6 @@ func (s *Server) sendSession(reply replyFunc, id, params json.RawMessage) {
 	})
 }
 
-// approveSession passes the response to the harness, which checks its shape.
 func (s *Server) approveSession(reply replyFunc, id, params json.RawMessage) {
 	var input struct {
 		SessionID string          `json:"session_id"`
@@ -311,7 +300,6 @@ func (s *Server) approveSession(reply replyFunc, id, params json.RawMessage) {
 	})
 }
 
-// configureSession changes the settings it is given and keeps the others.
 func (s *Server) configureSession(reply replyFunc, id, params json.RawMessage) {
 	var input struct {
 		SessionID      string  `json:"session_id"`
@@ -368,8 +356,6 @@ func (s *Server) configureSession(reply replyFunc, id, params json.RawMessage) {
 	})
 }
 
-// destroySession stops the session's process and deletes the session and its
-// events. The harness's own record of the conversation stays on disk.
 func (s *Server) destroySession(reply replyFunc, id, params json.RawMessage) {
 	var input struct {
 		SessionID string `json:"session_id"`

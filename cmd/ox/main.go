@@ -1,7 +1,3 @@
-// Command ox serves the Ox web UI. Each page gets its own connection to oxd:
-// ox streams the connection's messages to the page as Server-Sent Events and
-// writes the page's requests to it, so the page speaks the oxd protocol
-// directly.
 package main
 
 import (
@@ -20,8 +16,6 @@ import (
 	"github.com/kkestell/ox/internal/socket"
 )
 
-// web/dist is the web UI's build; see web/package.json.
-//
 //go:embed web/dist
 var dist embed.FS
 
@@ -49,16 +43,12 @@ func main() {
 	log.Fatal(http.ListenAndServe(*addr, nil))
 }
 
-// relay holds one oxd connection per open page, keyed by connection ID.
 type relay struct {
 	socket string
 	mu     sync.Mutex
 	conns  map[string]net.Conn
 }
 
-// events opens a connection to oxd, sends its ID as a "connection" event,
-// then forwards every line from oxd as a message until the page or oxd
-// closes.
 func (r *relay) events(w http.ResponseWriter, req *http.Request) {
 	conn, err := net.Dial("unix", r.socket)
 	if err != nil {

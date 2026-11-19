@@ -1,4 +1,3 @@
-// Package socket locates the Unix socket that oxd serves and ox connects to.
 package socket
 
 import (
@@ -6,8 +5,6 @@ import (
 	"path/filepath"
 )
 
-// Path returns oxd.sock in the ox directory of the user cache directory,
-// creating the directory.
 func Path() (string, error) {
 	cache, err := os.UserCacheDir()
 	if err != nil {

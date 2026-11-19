@@ -1,7 +1,3 @@
-// Package config reads the user's Ox configuration: the harnesses to offer,
-// for each its models, their effort levels, and its permission modes, and the
-// choices a new session starts with. Ox passes the chosen values to the
-// harness as they are.
 package config
 
 import (
@@ -23,8 +19,6 @@ type Config struct {
 	Defaults  Defaults           `json:"defaults"`
 }
 
-// Defaults are the choices a new session starts with, each one of the
-// configuration's own. Effort is empty for a model without effort levels.
 type Defaults struct {
 	Harness string `json:"harness"`
 	Model   string `json:"model"`
@@ -37,8 +31,6 @@ type Harness struct {
 	Modes  []Option `json:"modes"`
 }
 
-// Model is a model and the effort levels it takes; a model without effort
-// levels takes none.
 type Model struct {
 	ID      string   `json:"id"`
 	Name    string   `json:"name"`
@@ -50,8 +42,6 @@ type Option struct {
 	Name string `json:"name"`
 }
 
-// Path returns config.json in the ox directory of $XDG_CONFIG_HOME, or of
-// ~/.config when that is unset.
 func Path() (string, error) {
 	dir := os.Getenv("XDG_CONFIG_HOME")
 	if dir == "" {
@@ -64,8 +54,6 @@ func Path() (string, error) {
 	return filepath.Join(dir, "ox", "config.json"), nil
 }
 
-// Load reads the configuration at path, or the default configuration when
-// there is no file there.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -85,7 +73,6 @@ func Load(path string) (*Config, error) {
 	return &config, nil
 }
 
-// check reports a default that is not among the configured choices.
 func (d Defaults) check(harnesses map[string]Harness) error {
 	harness, ok := harnesses[d.Harness]
 	if !ok {

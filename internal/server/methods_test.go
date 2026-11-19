@@ -23,7 +23,6 @@ func openStore(t *testing.T) *store.Store {
 	return st
 }
 
-// answer runs one request line and returns its response.
 func answer(s *Server, line string) *jsonrpc.Response {
 	responses := make(chan *jsonrpc.Response, 1)
 	s.handle(func(r *jsonrpc.Response) { responses <- r }, []byte(line))

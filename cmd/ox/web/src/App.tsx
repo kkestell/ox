@@ -3,8 +3,6 @@ import { OxProvider, useOx } from "./ox";
 import { NewSessionView, SessionView } from "./SessionView";
 import { Sidebar } from "./Sidebar";
 
-// Selection is the session shown, or the workspace a new session is being
-// written for.
 export type Selection = { kind: "session"; id: string } | { kind: "draft"; workspaceId: string };
 
 export default function App() {
