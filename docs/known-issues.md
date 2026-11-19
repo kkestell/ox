@@ -2,18 +2,9 @@
 
 | Issue | Frequency in real use | Confirmed |
 | --- | --- | --- |
-| [RPC bodies over 1 MiB never settle](#rpc-bodies-over-1-mib-never-settle) | Unknown | Live |
 | [An unknown effort level is ignored](#an-unknown-effort-level-is-ignored) | Unknown | Live |
 | [A failed configuration can leave settings the page does not show](#a-failed-configuration-can-leave-settings-the-page-does-not-show) | Unknown | Source |
 | [A configuration that omits a list breaks the web UI](#a-configuration-that-omits-a-list-breaks-the-web-ui) | No occurrence | Source |
-
-## RPC bodies over 1 MiB never settle
-
-`ox` reads at most 1 MiB of an `/rpc` body and forwards the truncated JSON. In
-a live test, a 1,048,685-byte `session/send` returned `204`, and the event
-stream received `{"id":null,"error":{"code":-32700,"message":"Parse error"}}`.
-The page matches replies by ID, so the send remains pending until the
-connection closes. The prompt stays in the box without an error or a response.
 
 ## An unknown effort level is ignored
 

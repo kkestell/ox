@@ -65,7 +65,7 @@ export function connect(handlers: {
           method: "POST",
           body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
         }).then(async (response) => {
-          if (!response.ok) fail(new Error(await response.text()));
+          if (!response.ok) fail(new Error((await response.text()).trim()));
         }, fail);
       });
     },

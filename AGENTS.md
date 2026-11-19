@@ -16,6 +16,7 @@ We test with `make dev`. Ox's test state is disposable.
 │   └── oxd
 ├── cmd
 │   ├── ox                     # web UI server
+│   │   ├── main_test.go       # relay tests
 │   │   ├── main.go            # web UI and its relay to oxd
 │   │   └── web                # web client
 │   └── oxd                    # daemon

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/rand"
 	"embed"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -93,7 +94,11 @@ func (r *relay) rpc(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "unknown connection", http.StatusNotFound)
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(req.Body, 1<<20))
+	body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, 1<<20))
+	if _, tooLarge := errors.AsType[*http.MaxBytesError](err); tooLarge {
+		http.Error(w, "request is larger than 1 MiB", http.StatusRequestEntityTooLarge)
+		return
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
