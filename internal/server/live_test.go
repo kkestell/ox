@@ -112,6 +112,17 @@ func TestLive(t *testing.T) {
 	}
 	turn(a, "Reply with just the word again.", allow)
 
+	t.Log("an interrupt ends a running turn with an error result")
+	c.forget(a)
+	c.call("session/send", map[string]string{"session_id": a, "text": "Write the numbers from 1 to 2000 in words, one per line."})
+	for c.update(a, "state").State != "running" {
+	}
+	c.call("session/interrupt", map[string]string{"session_id": a})
+	if r := c.update(a, "result").Result; !r.IsError {
+		t.Errorf("an interrupted turn ended with a successful result: %+v", r)
+	}
+	idle(a)
+
 	t.Log("a session starting Claude holds up only its own requests")
 	b := create("acceptEdits")
 	start := time.Now()
@@ -154,7 +165,7 @@ func TestLive(t *testing.T) {
 		}
 		return allow(r)
 	}
-	failed := create("default")
+	failed := create("manual")
 	tools := turn(failed, "Step 1: load and call the CronCreate tool with cron '*/30 * * * *' and prompt 'say hi'. "+
 		"Step 2: only after CronCreate succeeds, run the Bash command `touch marker.txt`. Do both steps.", denyBash)
 	if !slices.Contains(tools, "CronCreate") || !slices.Contains(tools, "Bash") {

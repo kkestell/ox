@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 )
 
 //go:embed default.json
@@ -20,15 +19,15 @@ type Config struct {
 }
 
 type Defaults struct {
-	Harness string `json:"harness"`
-	Model   string `json:"model"`
-	Effort  string `json:"effort"`
-	Mode    string `json:"mode"`
+	Harness        string `json:"harness"`
+	Model          string `json:"model"`
+	Effort         string `json:"effort"`
+	PermissionMode string `json:"permission_mode"`
 }
 
 type Harness struct {
-	Models []Model  `json:"models"`
-	Modes  []Option `json:"modes"`
+	Models          []Model  `json:"models"`
+	PermissionModes []Option `json:"permission_modes"`
 }
 
 type Model struct {
@@ -40,18 +39,6 @@ type Model struct {
 type Option struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
-}
-
-func Path() (string, error) {
-	dir := os.Getenv("XDG_CONFIG_HOME")
-	if dir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		dir = filepath.Join(home, ".config")
-	}
-	return filepath.Join(dir, "ox", "config.json"), nil
 }
 
 func Load(path string) (*Config, error) {
@@ -78,19 +65,31 @@ func (d Defaults) check(harnesses map[string]Harness) error {
 	if !ok {
 		return fmt.Errorf("harness %q is not configured", d.Harness)
 	}
-	var model *Model
-	for i := range harness.Models {
-		if harness.Models[i].ID == d.Model {
-			model = &harness.Models[i]
-		}
+	if err := harness.CheckModel(d.Model, d.Effort); err != nil {
+		return err
 	}
-	switch {
-	case model == nil:
-		return fmt.Errorf("model %q is not one of %s's", d.Model, d.Harness)
-	case len(model.Efforts) == 0 && d.Effort != "", len(model.Efforts) > 0 && !has(model.Efforts, d.Effort):
-		return fmt.Errorf("effort %q is not one of %s's", d.Effort, d.Model)
-	case !has(harness.Modes, d.Mode):
-		return fmt.Errorf("mode %q is not one of %s's", d.Mode, d.Harness)
+	return harness.CheckPermissionMode(d.PermissionMode)
+}
+
+// CheckModel reports whether model is one of h's models and effort one of its
+// effort levels, empty for a model that has none.
+func (h Harness) CheckModel(model, effort string) error {
+	for _, m := range h.Models {
+		if m.ID != model {
+			continue
+		}
+		if len(m.Efforts) == 0 && effort == "" || has(m.Efforts, effort) {
+			return nil
+		}
+		return fmt.Errorf("effort %q is not one of %s's", effort, model)
+	}
+	return fmt.Errorf("model %q is not configured", model)
+}
+
+// CheckPermissionMode reports whether mode is one of h's permission modes.
+func (h Harness) CheckPermissionMode(mode string) error {
+	if !has(h.PermissionModes, mode) {
+		return fmt.Errorf("permission mode %q is not configured", mode)
 	}
 	return nil
 }

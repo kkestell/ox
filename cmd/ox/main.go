@@ -13,7 +13,7 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/kkestell/ox/internal/socket"
+	"github.com/kkestell/ox/internal/paths"
 )
 
 //go:embed web/dist
@@ -21,12 +21,11 @@ var dist embed.FS
 
 func main() {
 	addr := flag.String("addr", "localhost:8080", "address to serve the web UI on")
-	socketPath := flag.String("socket", "", "override the oxd socket in the user cache directory")
+	socketPath := flag.String("socket", "", "override the oxd socket in the user runtime directory")
 	flag.Parse()
-	path := *socketPath
-	if path == "" {
+	if *socketPath == "" {
 		var err error
-		if path, err = socket.Path(); err != nil {
+		if *socketPath, err = paths.Socket(); err != nil {
 			log.Fatal(err)
 		}
 	}
@@ -35,7 +34,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	r := &relay{socket: path, conns: make(map[string]net.Conn)}
+	r := &relay{socket: *socketPath, conns: make(map[string]net.Conn)}
 	http.Handle("GET /", http.FileServerFS(web))
 	http.HandleFunc("GET /events", r.events)
 	http.HandleFunc("POST /rpc", r.rpc)

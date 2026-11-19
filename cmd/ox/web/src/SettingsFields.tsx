@@ -18,7 +18,7 @@ export function SettingsFields(props: { harness: Harness; value: Settings; disab
       </Show>
       <Select
         name="permission_mode"
-        options={props.harness.modes}
+        options={props.harness.permission_modes}
         value={props.value.permission_mode}
         disabled={props.disabled}
       />
@@ -89,8 +89,12 @@ export function changedSettings(harness: Harness, from: Settings, form: FormData
 
 export function defaultSettings(name: string, harness: Harness, defaults?: Defaults): Settings {
   if (defaults?.harness === name) {
-    return { model: defaults.model, effort: defaults.effort, permission_mode: defaults.mode };
+    return { model: defaults.model, effort: defaults.effort, permission_mode: defaults.permission_mode };
   }
   const model = harness.models[0];
-  return { model: model?.id ?? "", effort: model?.efforts[0]?.id ?? "", permission_mode: harness.modes[0]?.id ?? "" };
+  return {
+    model: model?.id ?? "",
+    effort: model?.efforts[0]?.id ?? "",
+    permission_mode: harness.permission_modes[0]?.id ?? "",
+  };
 }

@@ -88,6 +88,22 @@ function apply(session: Session, u: Update) {
   }
 }
 
+// createAttempt runs requests and holds the error of the latest one until the
+// next starts or clear runs. The promise attempt returns settles once the
+// request has.
+export function createAttempt() {
+  const [error, setError] = createSignal<string>();
+  const clear = () => setError(undefined);
+  const attempt = (request: Promise<unknown>) => {
+    clear();
+    return request.then(
+      () => {},
+      (e: Error) => setError(e.message),
+    );
+  };
+  return [error, attempt, clear] as const;
+}
+
 function createOx() {
   const [state, setState] = createStore<{
     harnesses: Record<string, Harness>;
@@ -188,16 +204,16 @@ function createOx() {
     state,
     error,
     addWorkspace: (path: string) => connection.rpc("workspace/create", { path }),
-    async startSession(workspaceId: string, harness: string, settings: Settings, text: string) {
+    async createSession(workspaceId: string, harness: string, settings: Settings) {
       const { session_id } = await connection.rpc("session/create", {
         workspace_id: workspaceId,
         harness,
         ...settings,
       });
-      await connection.rpc("session/send", { session_id, text });
       return session_id;
     },
     send: (id: string, text: string) => connection.rpc("session/send", { session_id: id, text }),
+    interrupt: (id: string) => connection.rpc("session/interrupt", { session_id: id }),
     configure: (id: string, changes: Partial<Settings>) =>
       connection.rpc("session/configure", { session_id: id, ...changes }),
     approve: (id: string, requestId: string, response: ApprovalResponse) =>

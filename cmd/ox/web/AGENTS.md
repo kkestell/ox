@@ -4,8 +4,9 @@ Use `make dev` to work on the [web client](../../../docs/architecture.md#web-ui)
 
 - Lint and format with Biome: `npm run lint` checks, `npm run fix` rewrites.
   `make test` runs the check.
-- The user checks UI changes by eye. Report the views a change touches. Open
-  a browser only when the user asks, and drive it with Playwright.
+- The user checks UI changes by eye. The report on a UI change names the views
+  it touches, and that list is all it says about checking them. Open a browser
+  only when the user asks, and drive it with Playwright.
 
 ## Solid 2.0
 

@@ -9,13 +9,14 @@ harness's `Start` function by name.
 
 ```
 cmd/oxd            socket, database, and configuration paths, signals, the harness
-   ├── internal/socket    the default socket path, shared with cmd/ox
+   ├── internal/paths     the default file locations, shared with cmd/ox
    ├── internal/config    the harnesses offered and their choices
    ├── internal/claude    the Claude Code harness
    │      └── internal/agent
    ├── internal/fake      a harness that echoes prompts
    │      └── internal/agent
    └── internal/server    connections, sessions, JSON-RPC methods
+          ├── internal/config    the catalog that harness/list serves
           ├── internal/store     workspaces, sessions, and events in SQLite
           ├── internal/jsonrpc   message framing and envelopes
           └── internal/agent     the contract between the server and a harness
@@ -24,8 +25,8 @@ cmd/oxd            socket, database, and configuration paths, signals, the harne
 | Package | Owns |
 | --- | --- |
 | `cmd/oxd` | Choosing the socket, database, and configuration, checking the configured harnesses, starting the server, and stopping it on a signal. |
-| `socket` | The default socket path, which `cmd/oxd` serves and `cmd/ox` connects to. |
-| `config` | Reading the configuration file, or the built-in default, into each harness's models, efforts, and modes and the new-session defaults, and checking the defaults against them. |
+| `paths` | The XDG locations of the configuration, database, and socket, which `cmd/oxd` uses unless a flag overrides them and `cmd/ox` uses for the socket. |
+| `config` | Reading the configuration file, or the built-in default, into each harness's models, efforts, and permission modes and the new-session defaults, and checking settings against them. |
 | `server` | Client connections, each session's goroutine and the agent it runs, and the mapping from each method to a session operation and its error codes. Each connection writes through its own queue, so sessions never wait on a client. |
 | `store` | The SQLite database of workspaces, sessions, and session events. |
 | `jsonrpc` | Request validation and the response and notification types. |
@@ -112,7 +113,7 @@ as Server-Sent Events, and `/rpc` posts the page's JSON-RPC requests to the sock
 | --- | --- |
 | `protocol.ts` | Types for the `oxd` methods, updates, and notifications. |
 | `connection.ts` | Opening the event stream, sending requests, matching replies, and reporting stream errors. |
-| `ox.tsx` | A provider that reloads the catalog, workspaces, and sessions on each connection, applies notifications, and exposes RPC calls. |
+| `ox.tsx` | A provider that reloads the catalog, workspaces, and sessions on each connection, applies notifications, and exposes RPC calls; `createAttempt`, which shows a request's error. |
 | `App.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `ApprovalRequest.tsx`, `SettingsFields.tsx` | The components. |
 
 The page shows stream errors while reconnecting and asks for a reload if the

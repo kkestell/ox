@@ -1,6 +1,6 @@
-import { action, createOptimistic, createSignal, For, Match, Show, Switch } from "solid-js";
+import { action, createOptimistic, createSignal, For, Match, onSettled, Show, Switch } from "solid-js";
 import { ApprovalRequest } from "./ApprovalRequest";
-import { type Entry, type Session, useOx } from "./ox";
+import { createAttempt, type Entry, type Session, useOx } from "./ox";
 import type { Settings } from "./protocol";
 import { changedSettings, defaultSettings, SettingsFields, settingsFrom } from "./SettingsFields";
 
@@ -13,18 +13,40 @@ function sendOnEnter(event: KeyboardEvent & { currentTarget: HTMLTextAreaElement
   }
 }
 
-export function SessionView(props: { session: Session }) {
+// pinToBottom keeps log scrolled to the bottom as content arrives, unless the
+// user has scrolled up.
+function pinToBottom(log: HTMLElement) {
+  let pinned = true;
+  log.addEventListener("scroll", () => {
+    pinned = log.scrollHeight - log.scrollTop - log.clientHeight < 32;
+  });
+  const observer = new MutationObserver(() => {
+    if (pinned) log.scrollTop = log.scrollHeight;
+  });
+  observer.observe(log, { childList: true, subtree: true, characterData: true });
+  log.scrollTop = log.scrollHeight;
+  return () => observer.disconnect();
+}
+
+// SessionView sends prompt, a new session's first prompt, once it opens.
+export function SessionView(props: { session: Session; prompt?: string }) {
   const ox = useOx();
-  const [error, setError] = createSignal<string>();
+  const [error, attempt] = createAttempt();
   const [sending, setSending] = createSignal(false);
-  const attempt = (request: Promise<unknown>) => {
-    setError(undefined);
-    return request.catch((e: Error) => {
-      setError(e.message);
-    });
-  };
   const workspace = () => ox.state.workspaces.find((w) => w.id === props.session.workspaceId)?.path;
   const canSend = () => !sending() && (props.session.state === "idle" || props.session.state === "parked");
+  const running = () => props.session.state === "running" || props.session.state === "requires_action";
+  let log!: HTMLDivElement;
+  let form!: HTMLFormElement;
+  let textarea!: HTMLTextAreaElement;
+
+  onSettled(() => {
+    if (props.prompt) {
+      textarea.value = props.prompt;
+      form.requestSubmit();
+    }
+    return pinToBottom(log);
+  });
 
   const send = (event: SubmitEvent & { currentTarget: HTMLFormElement }) => {
     event.preventDefault();
@@ -40,7 +62,7 @@ export function SessionView(props: { session: Session }) {
       <p class="context">
         {workspace()} · {props.session.harness} · {props.session.id}
       </p>
-      <div class="log">
+      <div class="log" ref={log}>
         <Transcript entries={props.session.entries} />
         <For each={props.session.approvals}>
           {(approval) => (
@@ -53,9 +75,20 @@ export function SessionView(props: { session: Session }) {
       </div>
       <Show when={error()}>{(error) => <p role="alert">{error()}</p>}</Show>
       <div class="composer">
-        <form class="box" onSubmit={send}>
-          <textarea name="text" rows="1" placeholder="Prompt" required onKeyDown={sendOnEnter} />
-          <button type="submit" class="icon send" aria-label="Send" title="Send" disabled={!canSend()} />
+        <form class="box" ref={form} onSubmit={send}>
+          <textarea ref={textarea} name="text" rows="1" placeholder="Prompt" required onKeyDown={sendOnEnter} />
+          <Show
+            when={running()}
+            fallback={<button type="submit" class="icon send" aria-label="Send" title="Send" disabled={!canSend()} />}
+          >
+            <button
+              type="button"
+              class="icon stop"
+              aria-label="Stop"
+              title="Stop"
+              onClick={() => attempt(ox.interrupt(props.session.id))}
+            />
+          </Show>
         </form>
         <SettingsForm session={props.session} attempt={attempt} />
       </div>
@@ -63,28 +96,24 @@ export function SessionView(props: { session: Session }) {
   );
 }
 
-export function NewSessionView(props: { workspaceId: string; onStarted(id: string): void }) {
+export function NewSessionView(props: { workspaceId: string; onCreated(id: string, prompt: string): void }) {
   const ox = useOx();
-  const [error, setError] = createSignal<string>();
+  const [error, attempt] = createAttempt();
   const [sending, setSending] = createSignal(false);
   const workspace = () => ox.state.workspaces.find((w) => w.id === props.workspaceId)?.path;
   const [harness, setHarness] = createSignal(() => ox.state.defaults?.harness ?? "");
   const catalog = () => ox.state.harnesses[harness()];
 
-  const send = async (event: SubmitEvent & { currentTarget: HTMLFormElement }) => {
+  const send = (event: SubmitEvent & { currentTarget: HTMLFormElement }) => {
     event.preventDefault();
     if (sending()) return;
-    setSending(true);
-    setError(undefined);
     const form = new FormData(event.currentTarget);
-    try {
-      const settings = settingsFrom(catalog(), form);
-      props.onStarted(await ox.startSession(props.workspaceId, harness(), settings, String(form.get("text"))));
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setSending(false);
-    }
+    setSending(true);
+    attempt(
+      ox
+        .createSession(props.workspaceId, harness(), settingsFrom(catalog(), form))
+        .then((id) => props.onCreated(id, String(form.get("text")))),
+    ).finally(() => setSending(false));
   };
 
   return (

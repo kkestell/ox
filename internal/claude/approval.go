@@ -21,7 +21,7 @@ func (a *Agent) controlRequest(requestID string, request json.RawMessage) {
 	}
 	if control.Subtype != "can_use_tool" {
 		if err := a.input.Reject(requestID, "Unsupported control request"); err != nil {
-			log.Printf("reject Claude control request: %v", err)
+			log.Printf("reject control request in Claude session %s: %v", a.sessionID, err)
 		}
 		return
 	}

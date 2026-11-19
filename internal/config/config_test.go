@@ -10,16 +10,16 @@ func TestDefaultsMustBeConfiguredChoices(t *testing.T) {
 	if _, err := Load(filepath.Join(t.TempDir(), "missing.json")); err != nil {
 		t.Fatalf("built-in configuration: %v", err)
 	}
-	const harnesses = `"harnesses":{"h":{"models":[{"id":"m","name":"M","efforts":[{"id":"low","name":"Low"}]},{"id":"plain","name":"Plain","efforts":[]}],"modes":[{"id":"auto","name":"Auto"}]}}`
+	const harnesses = `"harnesses":{"h":{"models":[{"id":"m","name":"M","efforts":[{"id":"low","name":"Low"}]},{"id":"plain","name":"Plain","efforts":[]}],"permission_modes":[{"id":"auto","name":"Auto"}]}}`
 	for defaults, valid := range map[string]bool{
-		`{"harness":"h","model":"m","effort":"low","mode":"auto"}`:  true,
-		`{"harness":"h","model":"plain","effort":"","mode":"auto"}`: true,
+		`{"harness":"h","model":"m","effort":"low","permission_mode":"auto"}`:  true,
+		`{"harness":"h","model":"plain","effort":"","permission_mode":"auto"}`: true,
 		``: false,
-		`{"harness":"x","model":"m","effort":"low","mode":"auto"}`:     false,
-		`{"harness":"h","model":"x","effort":"low","mode":"auto"}`:     false,
-		`{"harness":"h","model":"m","effort":"","mode":"auto"}`:        false,
-		`{"harness":"h","model":"plain","effort":"low","mode":"auto"}`: false,
-		`{"harness":"h","model":"m","effort":"low","mode":"x"}`:        false,
+		`{"harness":"x","model":"m","effort":"low","permission_mode":"auto"}`:     false,
+		`{"harness":"h","model":"x","effort":"low","permission_mode":"auto"}`:     false,
+		`{"harness":"h","model":"m","effort":"","permission_mode":"auto"}`:        false,
+		`{"harness":"h","model":"plain","effort":"low","permission_mode":"auto"}`: false,
+		`{"harness":"h","model":"m","effort":"low","permission_mode":"x"}`:        false,
 	} {
 		path := filepath.Join(t.TempDir(), "config.json")
 		data := `{` + harnesses + `}`

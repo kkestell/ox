@@ -47,7 +47,7 @@ func (h *history) append(update agent.Update) {
 		err = h.store.AddEvent(h.sessionID, store.Event{CreatedAt: at, Data: data})
 	}
 	if err != nil {
-		log.Printf("record session history: %v", err)
+		log.Printf("record session %s history: %v", h.sessionID, err)
 	}
 }
 

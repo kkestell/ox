@@ -8,6 +8,9 @@
 | [An unknown effort level is ignored](#an-unknown-effort-level-is-ignored) | Unknown | Live |
 | [A failed configuration can leave settings the page does not show](#a-failed-configuration-can-leave-settings-the-page-does-not-show) | Unknown | Source |
 | [An unexpected exit can look like parking](#an-unexpected-exit-can-look-like-parking) | No occurrence | Source |
+| [A failed approval answer leaves a stale approval](#a-failed-approval-answer-leaves-a-stale-approval) | No occurrence | Source |
+| [`make test` fails without the web build](#make-test-fails-without-the-web-build) | Every fresh checkout | Source |
+| [A configuration that omits a list breaks the web UI](#a-configuration-that-omits-a-list-breaks-the-web-ui) | No occurrence | Source |
 
 ## Startup failures lose Claude's reason
 
@@ -62,3 +65,27 @@ failed database write) a permission mode other than the one shown.
 is queued or active. In other phases it publishes the same `parked` update
 as normal parking. The client loses the crash diagnostic and can show an
 incomplete harness-initiated reply without explaining why it stopped.
+
+## A failed approval answer leaves a stale approval
+
+`Agent.Approve` removes the approval before writing the answer to Claude. If
+the write fails, it returns the error without publishing `approval_answered`
+or `approval_cancelled`, and the process's exit cannot withdraw an approval
+that is no longer pending. Every page keeps the approval until it reloads;
+answering it again returns "approval request is no longer pending".
+
+## `make test` fails without the web build
+
+`cmd/ox` embeds `web/dist`, which is gitignored, and the `test` target builds
+only `lint`. In a fresh checkout, including a child session's worktree,
+`make test` reports `cmd/ox` as a setup failure until `make web` runs.
+
+## A configuration that omits a list breaks the web UI
+
+`config.Load` accepts a harness or model that omits `models`,
+`permission_modes`, or `efforts`, and `harness/list` sends `null` for it.
+`defaultSettings` and the `Select` in `SettingsFields.tsx` index those lists
+without a check, so the new-session form throws when such a harness is chosen,
+and a harness without `models` or `permission_modes` also breaks its sessions'
+views. The built-in
+configuration lists all three everywhere.

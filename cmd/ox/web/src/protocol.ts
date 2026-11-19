@@ -2,8 +2,8 @@
 
 export type Option = { id: string; name: string };
 export type Model = Option & { efforts: Option[] };
-export type Harness = { models: Model[]; modes: Option[] };
-export type Defaults = { harness: string; model: string; effort: string; mode: string };
+export type Harness = { models: Model[]; permission_modes: Option[] };
+export type Defaults = { harness: string; model: string; effort: string; permission_mode: string };
 
 export type Settings = { model: string; effort: string; permission_mode: string };
 
@@ -70,6 +70,7 @@ export type Methods = {
     },
   ];
   "session/send": [{ session_id: string; text: string }, { message_id: string }];
+  "session/interrupt": [{ session_id: string }, Empty];
   "session/configure": [Partial<Settings> & { session_id: string }, Empty];
   "session/approve": [{ session_id: string; request_id: string; response: ApprovalResponse }, Empty];
   "session/destroy": [{ session_id: string }, Empty];

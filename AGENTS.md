@@ -24,7 +24,8 @@ We test with `make dev`. Ox's test state is disposable.
 │   ├── architecture.md        # how oxd and ox are built
 │   ├── claude-code.md         # observed Claude Code behavior
 │   ├── known-issues.md        # unfixed defects
-│   └── protocol.md            # the interface oxd serves
+│   ├── protocol.md            # the interface oxd serves
+│   └── todo.md                # planned work
 ├── go.mod                     # Go module
 ├── go.sum                     # dependency checksums
 ├── internal
@@ -50,6 +51,8 @@ We test with `make dev`. Ox's test state is disposable.
 │   │   └── fake.go            # echo harness
 │   ├── jsonrpc
 │   │   └── jsonrpc.go         # JSON-RPC messages
+│   ├── paths
+│   │   └── paths.go           # XDG file locations
 │   ├── server
 │   │   ├── client_test.go     # test client
 │   │   ├── conn.go            # client connections
@@ -60,8 +63,6 @@ We test with `make dev`. Ox's test state is disposable.
 │   │   ├── methods.go         # RPC methods
 │   │   ├── server.go          # listener, workspaces, and sessions
 │   │   └── session.go         # session goroutine and lifecycle
-│   ├── socket
-│   │   └── socket.go          # socket location
 │   └── store
 │       └── store.go           # SQLite persistence
 └── Makefile                   # build, test, and run
@@ -97,6 +98,22 @@ We test with `make dev`. Ox's test state is disposable.
 - The body of a commit that adds a state, timer, retry, lock, or stored field
   names the user-visible behavior that needs it and the races and cleanup it
   brings.
+
+## Conventions
+
+- Ox's files live in the XDG base directories, beneath an `ox` directory.
+  `internal/paths` is the one place that resolves them. Whoever creates a file
+  creates its directory.
+- A setting or field has one name everywhere: configuration, protocol, store,
+  Go, and the web client all use the protocol's name, such as
+  `permission_mode`.
+- `oxd` checks every request against the configuration it serves, the way it
+  checks the configuration's defaults.
+- Error messages from `oxd` follow Go style: lowercase, no trailing period.
+  The standard JSON-RPC messages keep the specification's text.
+- A log line about a session names it by its ID.
+- The web client shows a request's error with `createAttempt` and asks for
+  confirmation with a `<dialog>`.
 
 ## Defects
 
@@ -151,7 +168,7 @@ facts listed for it:
   and stream-json, as observed.
 - `docs/known-issues.md`: confirmed defects that are not fixed yet, kept as
   the Defects section describes.
-- `.agents/reviews/`: reviews and audits of the repository.
+- `docs/todo.md`: planned work, by priority.
 
 Every fact lives in one place. A document that needs a fact owned by another
 links to it instead of restating it. Most changes need no doc edits: edit a

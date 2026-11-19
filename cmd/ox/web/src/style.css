@@ -54,6 +54,7 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: 
 .plus { --icon: url(lucide-static/icons/plus.svg); }
 .trash { --icon: url(lucide-static/icons/trash-2.svg); }
 .send { --icon: url(lucide-static/icons/send.svg); }
+.stop { --icon: url(lucide-static/icons/square.svg); }
 .context { --icon: url(lucide-static/icons/folder.svg); }
 .marker.done { --icon: url(lucide-static/icons/check.svg); }
 .marker.failed { --icon: url(lucide-static/icons/circle-alert.svg); color: var(--destructive); }
@@ -68,6 +69,8 @@ button[type="submit"], button.primary { border-color: transparent; background: v
 button[type="submit"]:hover, button.primary:hover { background: color-mix(in oklab, var(--primary) 90%, transparent); }
 button.icon { width: 1.75rem; height: 1.75rem; padding: 0; border: 0; background: transparent; box-shadow: none; color: inherit; }
 button.icon:hover { background: var(--accent); }
+button.destructive { border-color: transparent; background: var(--destructive); color: white; box-shadow: none; }
+button.destructive:hover { background: color-mix(in oklab, var(--destructive) 90%, transparent); }
 button:disabled { opacity: 0.5; pointer-events: none; }
 
 input {
@@ -86,6 +89,8 @@ dialog {
 dialog::backdrop { background: rgb(0 0 0 / 50%); }
 dialog form { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.5rem; }
 dialog input { width: 100%; margin-bottom: 0.5rem; }
+dialog h2 { width: 100%; font-size: 1.125rem; font-weight: 600; color: var(--foreground); }
+dialog .description { width: 100%; margin-bottom: 0.5rem; color: var(--muted-foreground); }
 dialog [role="alert"] { margin-top: 0.75rem; }
 
 /* Sidebar */

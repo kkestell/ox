@@ -154,7 +154,7 @@ func (sess *session) save(settings agent.Settings, resumeToken string) error {
 
 func (sess *session) markResumable(token string) {
 	if err := sess.save(sess.settings, token); err != nil {
-		log.Printf("mark session resumable: %v", err)
+		log.Printf("mark session %s resumable: %v", sess.id, err)
 		return
 	}
 	sess.resumeToken = token

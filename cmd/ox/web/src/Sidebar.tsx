@@ -1,29 +1,24 @@
 import { createSignal, For, Show } from "solid-js";
 import type { Selection } from "./App";
-import { type Session, useOx } from "./ox";
+import { createAttempt, type Session, useOx } from "./ox";
 
 export function Sidebar(props: { selected?: Selection; onSelect(selection: Selection): void }) {
   const ox = useOx();
-  const [error, setError] = createSignal<string>();
-  const [deleteError, setDeleteError] = createSignal<string>();
-  let dialog!: HTMLDialogElement;
+  const [addError, attemptAdd, clearAddError] = createAttempt();
+  const [deleteError, attemptDelete, clearDeleteError] = createAttempt();
+  const [deleting, setDeleting] = createSignal<Session>();
+  let addDialog!: HTMLDialogElement;
+  let deleteDialog!: HTMLDialogElement;
 
-  const open = () => {
-    setError(undefined);
-    dialog.showModal();
-  };
-
-  const add = async (event: SubmitEvent & { currentTarget: HTMLFormElement }) => {
+  const add = (event: SubmitEvent & { currentTarget: HTMLFormElement }) => {
     event.preventDefault();
     const form = event.currentTarget;
-    setError(undefined);
-    try {
-      await ox.addWorkspace(String(new FormData(form).get("path")));
-      form.reset();
-      dialog.close();
-    } catch (e) {
-      setError((e as Error).message);
-    }
+    attemptAdd(
+      ox.addWorkspace(String(new FormData(form).get("path"))).then(() => {
+        form.reset();
+        addDialog.close();
+      }),
+    );
   };
 
   const sessionsOf = (workspaceId: string) =>
@@ -31,31 +26,56 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
       .filter((s) => s.workspaceId === workspaceId)
       .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
 
-  const destroy = async (event: MouseEvent, id: string) => {
+  const confirmDelete = (event: MouseEvent, session: Session) => {
     event.stopPropagation();
-    if (!confirm(`Delete session ${id} and its history?`)) return;
-    setDeleteError(undefined);
-    try {
-      await ox.destroy(id);
-    } catch (e) {
-      setDeleteError((e as Error).message);
-    }
+    clearDeleteError();
+    setDeleting(session);
+    deleteDialog.showModal();
+  };
+
+  const destroy = (event: SubmitEvent) => {
+    event.preventDefault();
+    const session = deleting();
+    if (session) attemptDelete(ox.destroy(session.id).then(() => deleteDialog.close()));
   };
 
   return (
     <nav>
-      <button type="button" class="icon folder-plus" aria-label="Add workspace" title="Add workspace" onClick={open} />
-      <dialog ref={dialog}>
+      <button
+        type="button"
+        class="icon folder-plus"
+        aria-label="Add workspace"
+        title="Add workspace"
+        onClick={() => {
+          clearAddError();
+          addDialog.showModal();
+        }}
+      />
+      <dialog ref={addDialog}>
         <form onSubmit={add}>
           <input name="path" placeholder="/absolute/path/to/directory" size="40" required autofocus />
-          <button type="button" onClick={() => dialog.close()}>
+          <button type="button" onClick={() => addDialog.close()}>
             Cancel
           </button>
           <button type="submit">Add</button>
         </form>
-        <Show when={error()}>{(error) => <p role="alert">{error()}</p>}</Show>
+        <Show when={addError()}>{(error) => <p role="alert">{error()}</p>}</Show>
       </dialog>
-      <Show when={deleteError()}>{(error) => <p role="alert">{error()}</p>}</Show>
+      <dialog ref={deleteDialog} role="alertdialog">
+        <form onSubmit={destroy}>
+          <h2>Delete session?</h2>
+          <Show when={deleting()}>
+            {(session) => <p class="description">This deletes "{title(session())}" and its history.</p>}
+          </Show>
+          <button type="button" onClick={() => deleteDialog.close()}>
+            Cancel
+          </button>
+          <button type="submit" class="destructive">
+            Delete
+          </button>
+        </form>
+        <Show when={deleteError()}>{(error) => <p role="alert">{error()}</p>}</Show>
+      </dialog>
       <For each={ox.state.workspaces}>
         {(workspace) => (
           <>
@@ -88,7 +108,7 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
                       class="icon trash"
                       aria-label="Delete session"
                       title="Delete session"
-                      onClick={(event) => destroy(event, session.id)}
+                      onClick={(event) => confirmDelete(event, session)}
                     />
                   </li>
                 )}

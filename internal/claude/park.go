@@ -17,6 +17,6 @@ func (a *Agent) stopHook(requestID string, crons *[]json.RawMessage) {
 		a.scheduling = false
 	}
 	if err := a.input.Respond(requestID, map[string]any{}); err != nil {
-		log.Printf("answer Stop hook: %v", err)
+		log.Printf("answer Stop hook in Claude session %s: %v", a.sessionID, err)
 	}
 }

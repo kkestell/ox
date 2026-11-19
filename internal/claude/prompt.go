@@ -27,6 +27,19 @@ func (a *Agent) Send(text string) (string, error) {
 	return prompt.id, nil
 }
 
+// Interrupt asks Claude to stop the running turn. Claude ends it with an
+// error result and an idle state, which end a prompt as usual. Its control
+// response carries nothing Ox uses.
+func (a *Agent) Interrupt() error {
+	if a.claudeState == "idle" {
+		return nil
+	}
+	if err := a.input.Control(NewUUID(), map[string]any{"subtype": "interrupt"}); err != nil {
+		return fmt.Errorf("interrupt Claude: %w", err)
+	}
+	return nil
+}
+
 func (a *Agent) commandStarted(id string) {
 	if a.phase == queued && a.prompt.id == id {
 		a.phase = prompting

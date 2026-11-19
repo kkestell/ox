@@ -30,7 +30,11 @@ func answer(s *Server, line string) *jsonrpc.Response {
 }
 
 func TestSettingsValidation(t *testing.T) {
-	s, err := New(openStore(t), nil, 0, nil)
+	cfg := &config.Config{Harnesses: map[string]config.Harness{"h": {
+		Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}}}},
+		PermissionModes: []config.Option{{ID: "plan"}},
+	}}}
+	s, err := New(openStore(t), cfg, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,8 +44,6 @@ func TestSettingsValidation(t *testing.T) {
 	for _, params := range []string{
 		`{}`,
 		`{"session_id":"missing"}`,
-		`{"session_id":"missing","model":" "}`,
-		`{"session_id":"missing","permission_mode":""}`,
 		`{"session_id":"missing","model":42}`,
 	} {
 		if response := answer(s, request("session/configure", params)); response.Error == nil || response.Error.Code != -32602 {
@@ -50,7 +52,10 @@ func TestSettingsValidation(t *testing.T) {
 	}
 	for _, params := range []string{
 		`{"workspace_id":"missing"}`,
-		`{"workspace_id":"missing","harness":"claude","model":"haiku","effort":"low","permission_mode":""}`,
+		`{"workspace_id":"missing","harness":"x","model":"m","effort":"low","permission_mode":"plan"}`,
+		`{"workspace_id":"missing","harness":"h","model":"x","effort":"low","permission_mode":"plan"}`,
+		`{"workspace_id":"missing","harness":"h","model":"m","effort":"high","permission_mode":"plan"}`,
+		`{"workspace_id":"missing","harness":"h","model":"m","effort":"low","permission_mode":""}`,
 	} {
 		if response := answer(s, request("session/create", params)); response.Error == nil || response.Error.Code != -32602 {
 			t.Errorf("invalid creation %s: %+v", params, response.Error)
@@ -62,7 +67,10 @@ func TestSettingsValidation(t *testing.T) {
 }
 
 func TestSessionLifecycle(t *testing.T) {
-	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {}}}
+	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
+		Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}}},
+		PermissionModes: []config.Option{{ID: "plan"}},
+	}}}
 	s, err := New(openStore(t), cfg, 300*time.Millisecond, map[string]agent.Start{"fake": fake.Start})
 	if err != nil {
 		t.Fatal(err)
@@ -89,6 +97,9 @@ func TestSessionLifecycle(t *testing.T) {
 	for c.update(id, "state").State != "idle" {
 	}
 
+	if invalid := c.request("session/configure", map[string]string{"session_id": id, "effort": "max"}); invalid.Error == nil || invalid.Error.Code != jsonrpc.InvalidParams {
+		t.Fatalf("configuration took an effort the model does not offer: %+v", invalid.Error)
+	}
 	c.call("session/configure", map[string]string{"session_id": id, "effort": "high"})
 	configured := c.next(func(m message) bool { return m.Method == "session/configured" })
 	if !strings.Contains(string(configured.Params), `"model":"m","effort":"high","permission_mode":"plan"`) {

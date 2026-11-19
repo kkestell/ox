@@ -3,7 +3,15 @@ import { OxProvider, useOx } from "./ox";
 import { NewSessionView, SessionView } from "./SessionView";
 import { Sidebar } from "./Sidebar";
 
-export type Selection = { kind: "session"; id: string } | { kind: "draft"; workspaceId: string };
+// A session selected from a draft carries the draft's prompt, which the
+// session view sends.
+export type Selection = { kind: "session"; id: string; prompt?: string } | { kind: "draft"; workspaceId: string };
+
+// The URL's hash holds the selected session, so a reload keeps it.
+function selectionFromHash(): Selection | undefined {
+  const id = decodeURIComponent(location.hash.slice(1));
+  return id ? { kind: "session", id } : undefined;
+}
 
 export default function App() {
   return (
@@ -15,10 +23,19 @@ export default function App() {
 
 function Layout() {
   const ox = useOx();
-  const [selected, setSelected] = createSignal<Selection>();
+  const [selected, setSelected] = createSignal<Selection | undefined>(selectionFromHash());
+  const select = (selection: Selection) => {
+    setSelected(selection);
+    const hash = selection.kind === "session" ? `#${encodeURIComponent(selection.id)}` : "";
+    history.replaceState(null, "", location.pathname + location.search + hash);
+  };
   const session = () => {
     const s = selected();
     return s?.kind === "session" ? ox.state.sessions[s.id] : undefined;
+  };
+  const prompt = () => {
+    const s = selected();
+    return s?.kind === "session" ? s.prompt : undefined;
   };
   const draft = () => {
     const s = selected();
@@ -27,17 +44,20 @@ function Layout() {
 
   return (
     <>
-      <Sidebar selected={selected()} onSelect={setSelected} />
+      <Sidebar selected={selected()} onSelect={select} />
       <main>
         <Show when={ox.error()}>{(error) => <p role="alert">{error()}</p>}</Show>
         {/* Keyed, so each session and draft gets its own view and view state. */}
         <Switch>
           <Match when={session()} keyed>
-            {(session) => <SessionView session={session} />}
+            {(session) => <SessionView session={session} prompt={prompt()} />}
           </Match>
           <Match when={draft()} keyed>
             {(workspaceId) => (
-              <NewSessionView workspaceId={workspaceId} onStarted={(id) => setSelected({ kind: "session", id })} />
+              <NewSessionView
+                workspaceId={workspaceId}
+                onCreated={(id, prompt) => select({ kind: "session", id, prompt })}
+              />
             )}
           </Match>
         </Switch>

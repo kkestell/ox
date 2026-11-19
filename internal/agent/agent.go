@@ -26,6 +26,9 @@ type Agent interface {
 	Send(text string) (string, error)
 	// Approve answers a pending approval, or returns ErrApprovalNotFound.
 	Approve(requestID string, response json.RawMessage) error
+	// Interrupt stops the running turn. The turn's end arrives as updates;
+	// an idle agent has nothing to stop.
+	Interrupt() error
 	// Configure applies settings to the running process and calls done with
 	// the outcome, now or from a later Handle. It returns ErrBusy unless the
 	// agent is idle, and ErrExited if the process exits first.

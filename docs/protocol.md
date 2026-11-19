@@ -6,7 +6,8 @@ This reference describes the interface served by `oxd`. See
 ## Connection and messages
 
 Run `go run ./cmd/oxd` and connect to its Unix socket. The default path is
-`ox/oxd.sock` beneath Go's user cache directory (`~/Library/Caches` on macOS).
+`ox/oxd.sock` beneath `$XDG_RUNTIME_DIR`, or beside the
+[database](#workspaces-and-sessions) when that is unset.
 Use `-socket /absolute/path/to/oxd.sock` to choose a different socket.
 
 Each message is one JSON object terminated by a newline. Requests use
@@ -65,17 +66,18 @@ the built-in Claude Code catalog. The daemon validates harness names at startup.
 Each harness lists its models, each with the effort levels it takes, and its
 permission modes. Every choice has an `id`, passed to the harness, and a
 `name` to show. A model with no effort levels takes an empty `effort`. The
-required `defaults` name the harness, model, effort, and mode a new session
-starts with, each one of the configured choices; the daemon refuses to start
-otherwise.
+required `defaults` name the harness, model, effort, and permission mode a new
+session starts with, each one of the configured choices; the daemon refuses to
+start otherwise.
 
 ```json
-{"harnesses":{"claude":{"models":[{"id":"claude-haiku-5-5","name":"Haiku 5.5","efforts":[{"id":"low","name":"Low"},{"id":"high","name":"High"}]}],"modes":[{"id":"manual","name":"Manual"},{"id":"plan","name":"Plan"}]}},"defaults":{"harness":"claude","model":"claude-haiku-5-5","effort":"low","mode":"plan"}}
+{"harnesses":{"claude":{"models":[{"id":"claude-haiku-5-5","name":"Haiku 5.5","efforts":[{"id":"low","name":"Low"},{"id":"high","name":"High"}]}],"permission_modes":[{"id":"manual","name":"Manual"},{"id":"plan","name":"Plan"}]}},"defaults":{"harness":"claude","model":"claude-haiku-5-5","effort":"low","permission_mode":"plan"}}
 ```
 
-Clients offer these choices. The daemon passes settings to the harness as they
-are, so a value the harness does not accept surfaces as its error, usually on
-the next `session/send`.
+Clients offer these choices, and the daemon accepts only these in
+[`session/create`](#sessioncreate) and [`session/configure`](#sessionconfigure).
+It passes them to the harness as they are, so a configured value the harness
+does not accept surfaces as its error, usually on the next `session/send`.
 
 ### `harness/list`
 
@@ -86,7 +88,7 @@ Returns the configuration's harnesses and new-session defaults.
 ```
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"harnesses":{"claude":{"models":[{"id":"claude-haiku-5-5","name":"Haiku 5.5","efforts":[{"id":"low","name":"Low"}]}],"modes":[{"id":"manual","name":"Manual"}]}},"defaults":{"harness":"claude","model":"claude-haiku-5-5","effort":"low","mode":"manual"}}}
+{"jsonrpc":"2.0","id":1,"result":{"harnesses":{"claude":{"models":[{"id":"claude-haiku-5-5","name":"Haiku 5.5","efforts":[{"id":"low","name":"Low"}]}],"permission_modes":[{"id":"manual","name":"Manual"}]}},"defaults":{"harness":"claude","model":"claude-haiku-5-5","effort":"low","permission_mode":"manual"}}}
 ```
 
 ## Workspace methods
@@ -123,20 +125,19 @@ settings and state come from `session/get`.
 ### `session/create`
 
 Records a parked session in the workspace and returns its ID. The first
-[`session/send`](#sessionsend) starts the harness, so startup errors such as
-an unknown model surface there.
+[`session/send`](#sessionsend) starts the harness, so startup errors surface
+there. A setting the [configuration](#configuration) does not offer returns
+`-32602`.
 
 | Parameter | Required | Meaning |
 | --- | --- | --- |
 | `workspace_id` | Yes | The workspace whose directory the harness runs in. |
 | `harness` | Yes | A harness in the configuration. |
-| `model` | Yes | Nonblank; passed to Claude's `--model` flag. |
-| `effort` | No | Passed to Claude's `--effort` flag. An empty or omitted value leaves the flag unset. |
-| `permission_mode` | Yes | Nonblank; passed to Claude's `--permission-mode` flag. |
+| `model` | Yes | One of the harness's models; passed to Claude's `--model` flag. |
+| `effort` | No | One of the model's effort levels; passed to Claude's `--effort` flag. A model without effort levels takes an empty or omitted value, which leaves the flag unset. |
+| `permission_mode` | Yes | One of the harness's permission modes; passed to Claude's `--permission-mode` flag. |
 
-Model names, effort levels, and permission modes are interpreted by the
-installed Claude version. Each process the session starts receives the stored
-settings.
+Each process the session starts receives the stored settings.
 
 ```json
 {"jsonrpc":"2.0","id":3,"method":"session/create","params":{"workspace_id":"workspace-id","harness":"claude","model":"haiku","effort":"low","permission_mode":"manual"}}
@@ -201,9 +202,11 @@ reproduces the conversation. Deleting the session deletes its history.
 ### `session/configure`
 
 Requires `session_id` and at least one of `model`, `effort`, and
-`permission_mode`, validated as at creation. Changes the settings given and
-keeps the others, preserving the conversation, and stores them for the
-session's later processes.
+`permission_mode`. Changes the settings given and keeps the others, preserving
+the conversation, and stores them for the session's later processes. The
+changed settings must be configured choices, as at creation: a changed model
+or effort is checked as a pair, and a changed permission mode alone. A stored
+setting the configuration no longer offers stays until it is changed.
 
 ```json
 {"jsonrpc":"2.0","id":6,"method":"session/configure","params":{"session_id":"session-id","effort":"high"}}
@@ -253,6 +256,22 @@ A successful RPC consumes the pending request; a duplicate or late answer is
 rejected. Success confirms forwarding to Claude, not tool execution. Continue
 reading prompt updates for the outcome.
 
+### `session/interrupt`
+
+Requires `session_id`. Asks a running session to stop its turn and the tools
+it runs, using Claude's [interrupt](claude-code.md#interrupt). Success means
+the request was written; a session that is idle or parked has nothing to stop
+and also succeeds. The stopped turn ends with an error `result` and an `idle`
+state, which release a prompt as usual.
+
+```json
+{"jsonrpc":"2.0","id":8,"method":"session/interrupt","params":{"session_id":"session-id"}}
+```
+
+```json
+{"jsonrpc":"2.0","id":8,"result":{}}
+```
+
 ### `session/destroy`
 
 Requires `session_id`. Removes the session from the daemon. A running process
@@ -262,11 +281,11 @@ receives an `exited` update before the destroy response. Claude's transcript
 stays on disk.
 
 ```json
-{"jsonrpc":"2.0","id":8,"method":"session/destroy","params":{"session_id":"session-id"}}
+{"jsonrpc":"2.0","id":9,"method":"session/destroy","params":{"session_id":"session-id"}}
 ```
 
 ```json
-{"jsonrpc":"2.0","id":8,"result":{}}
+{"jsonrpc":"2.0","id":9,"result":{}}
 ```
 
 ## Session updates
@@ -354,7 +373,7 @@ Every connection is told when workspaces and sessions come and go:
 ## Connections
 
 Any connection can send a session a prompt when it is idle, answer its
-approvals, configure it, and destroy it.
+approvals, interrupt it, configure it, and destroy it.
 
 Closing a connection leaves its sessions running. A prompt continues, and its
 pending approvals stay pending until a client answers them. A client that
@@ -368,7 +387,7 @@ envelopes use `id: null`. Error messages for operation failures can include
 underlying process or I/O errors.
 
 ```json
-{"jsonrpc":"2.0","id":5,"error":{"code":-32002,"message":"Session is busy"}}
+{"jsonrpc":"2.0","id":5,"error":{"code":-32002,"message":"session is busy"}}
 ```
 
 | Code | Meaning |

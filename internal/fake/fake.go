@@ -55,13 +55,21 @@ func (a *Agent) tick() {
 }
 
 func (a *Agent) Handle(agent.Event) {
+	if a.state == "idle" {
+		return // interrupted; a tick was still pending
+	}
 	if len(a.words) > 0 {
 		a.publish(agent.Update{Type: "text_delta", Text: a.words[0]})
 		a.words = a.words[1:]
 		a.tick()
 		return
 	}
-	a.publish(agent.Update{Type: "result", Result: &agent.Result{Text: a.reply}})
+	a.finish(agent.Result{Text: a.reply})
+}
+
+func (a *Agent) finish(result agent.Result) {
+	a.words = nil
+	a.publish(agent.Update{Type: "result", Result: &result})
 	if a.onResumable != nil {
 		a.onResumable(rand.Text())
 		a.onResumable = nil
@@ -95,6 +103,13 @@ func (a *Agent) Send(text string) (string, error) {
 
 func (a *Agent) Approve(string, json.RawMessage) error {
 	return agent.ErrApprovalNotFound
+}
+
+func (a *Agent) Interrupt() error {
+	if a.state != "idle" {
+		a.finish(agent.Result{Text: "interrupted", IsError: true})
+	}
+	return nil
 }
 
 func (a *Agent) Configure(_ agent.Settings, done func(error)) {

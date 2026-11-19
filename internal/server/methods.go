@@ -1,9 +1,11 @@
 package server
 
 import (
+	"cmp"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -52,6 +54,8 @@ func (s *Server) handle(reply replyFunc, line []byte) {
 		s.sendSession(reply, id, params)
 	case "session/approve":
 		s.approveSession(reply, id, params)
+	case "session/interrupt":
+		s.interruptSession(reply, id, params)
 	case "session/configure":
 		s.configureSession(reply, id, params)
 	case "session/destroy":
@@ -64,7 +68,7 @@ func (s *Server) handle(reply replyFunc, line []byte) {
 func failure(id json.RawMessage, err error) *jsonrpc.Response {
 	switch {
 	case errors.Is(err, agent.ErrBusy):
-		return jsonrpc.Failure(id, sessionBusy, "Session is busy")
+		return jsonrpc.Failure(id, sessionBusy, "session is busy")
 	case errors.Is(err, agent.ErrApprovalNotFound):
 		return jsonrpc.Failure(id, approvalNotPending, err.Error())
 	default:
@@ -77,7 +81,11 @@ func invalidParams(id json.RawMessage, message string) *jsonrpc.Response {
 }
 
 func sessionNotFound(id json.RawMessage) *jsonrpc.Response {
-	return jsonrpc.Failure(id, notFound, "Session not found")
+	return jsonrpc.Failure(id, notFound, "session not found")
+}
+
+func shuttingDown(id json.RawMessage) *jsonrpc.Response {
+	return jsonrpc.Failure(id, operationFailed, "daemon is shutting down")
 }
 
 func (s *Server) onSession(reply replyFunc, id json.RawMessage, sessionID string, op func(*session)) {
@@ -86,7 +94,7 @@ func (s *Server) onSession(reply replyFunc, id json.RawMessage, sessionID string
 	s.mu.Unlock()
 	switch {
 	case closed:
-		reply(jsonrpc.Failure(id, operationFailed, "daemon is shutting down"))
+		reply(shuttingDown(id))
 	case sess == nil || !sess.post(func() { op(sess) }):
 		reply(sessionNotFound(id))
 	}
@@ -111,6 +119,10 @@ func (s *Server) createWorkspace(reply replyFunc, id, params json.RawMessage) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		reply(shuttingDown(id))
+		return
+	}
 	for _, w := range s.workspaces {
 		if w.path == path {
 			reply(jsonrpc.Success(id, result{w.id}))
@@ -158,16 +170,6 @@ func (s *Server) listWorkspaces(reply replyFunc, id json.RawMessage) {
 	}{workspaces}))
 }
 
-func invalidSettings(settings agent.Settings) string {
-	switch {
-	case strings.TrimSpace(settings.Model) == "":
-		return "model is required"
-	case strings.TrimSpace(settings.PermissionMode) == "":
-		return "permission_mode is required"
-	}
-	return ""
-}
-
 func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 	var input struct {
 		WorkspaceID string `json:"workspace_id"`
@@ -175,15 +177,16 @@ func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 		agent.Settings
 	}
 	if err := json.Unmarshal(params, &input); err != nil || input.WorkspaceID == "" || input.Harness == "" {
-		reply(invalidParams(id, "workspace_id, harness, model, effort, and permission_mode are required"))
+		reply(invalidParams(id, "workspace_id, harness, model, and permission_mode are required"))
 		return
 	}
-	if problem := invalidSettings(input.Settings); problem != "" {
-		reply(invalidParams(id, problem))
+	harness, offered := s.config.Harnesses[input.Harness]
+	if !offered {
+		reply(invalidParams(id, fmt.Sprintf("harness %q is not configured", input.Harness)))
 		return
 	}
-	if _, offered := s.config.Harnesses[input.Harness]; !offered {
-		reply(invalidParams(id, "harness is not configured"))
+	if err := cmp.Or(harness.CheckModel(input.Model, input.Effort), harness.CheckPermissionMode(input.PermissionMode)); err != nil {
+		reply(invalidParams(id, err.Error()))
 		return
 	}
 
@@ -191,12 +194,12 @@ func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 	defer s.mu.Unlock()
 	// Close ends the goroutine of every session that exists when it starts.
 	if s.closed {
-		reply(jsonrpc.Failure(id, operationFailed, "daemon is shutting down"))
+		reply(shuttingDown(id))
 		return
 	}
 	w := s.workspace(input.WorkspaceID)
 	if w == nil {
-		reply(jsonrpc.Failure(id, notFound, "Workspace not found"))
+		reply(jsonrpc.Failure(id, notFound, "workspace not found"))
 		return
 	}
 	record := &store.Session{
@@ -300,6 +303,25 @@ func (s *Server) approveSession(reply replyFunc, id, params json.RawMessage) {
 	})
 }
 
+func (s *Server) interruptSession(reply replyFunc, id, params json.RawMessage) {
+	var input struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(params, &input); err != nil || input.SessionID == "" {
+		reply(invalidParams(id, "session_id is required"))
+		return
+	}
+	s.onSession(reply, id, input.SessionID, func(sess *session) {
+		if sess.agent != nil {
+			if err := sess.agent.Interrupt(); err != nil {
+				reply(failure(id, err))
+				return
+			}
+		}
+		reply(jsonrpc.Success(id, struct{}{}))
+	})
+}
+
 func (s *Server) configureSession(reply replyFunc, id, params json.RawMessage) {
 	var input struct {
 		SessionID      string  `json:"session_id"`
@@ -312,11 +334,6 @@ func (s *Server) configureSession(reply replyFunc, id, params json.RawMessage) {
 		reply(invalidParams(id, "session_id and at least one of model, effort, and permission_mode are required"))
 		return
 	}
-	if (input.Model != nil && strings.TrimSpace(*input.Model) == "") ||
-		(input.PermissionMode != nil && strings.TrimSpace(*input.PermissionMode) == "") {
-		reply(invalidParams(id, "model and permission_mode cannot be blank"))
-		return
-	}
 	s.onSession(reply, id, input.SessionID, func(sess *session) {
 		settings := sess.settings
 		if input.Model != nil {
@@ -327,6 +344,20 @@ func (s *Server) configureSession(reply replyFunc, id, params json.RawMessage) {
 		}
 		if input.PermissionMode != nil {
 			settings.PermissionMode = *input.PermissionMode
+		}
+		// Only the settings the request changes are checked, so a stored
+		// setting the configuration no longer offers can stay.
+		harness := s.config.Harnesses[sess.harness]
+		var err error
+		if input.Model != nil || input.Effort != nil {
+			err = harness.CheckModel(settings.Model, settings.Effort)
+		}
+		if input.PermissionMode != nil {
+			err = cmp.Or(err, harness.CheckPermissionMode(settings.PermissionMode))
+		}
+		if err != nil {
+			reply(invalidParams(id, err.Error()))
+			return
 		}
 		finish := func() {
 			if err := sess.save(settings, sess.resumeToken); err != nil {

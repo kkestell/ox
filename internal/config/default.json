@@ -36,7 +36,7 @@
           ]
         }
       ],
-      "modes": [
+      "permission_modes": [
         { "id": "manual", "name": "Manual" },
         { "id": "auto", "name": "Auto" },
         { "id": "acceptEdits", "name": "Accept edits" },
@@ -48,6 +48,6 @@
     "harness": "claude",
     "model": "claude-haiku-5-5",
     "effort": "low",
-    "mode": "acceptEdits"
+    "permission_mode": "acceptEdits"
   }
 }
