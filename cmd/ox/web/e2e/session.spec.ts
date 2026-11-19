@@ -235,7 +235,7 @@ test("a lost creation reply is recovered after leaving the draft", async ({ page
   await services.restartRelay();
   await page.getByRole("button", { name: "Reopen draft" }).click();
   await expect(prompt(page)).toHaveValue("recover my edited prompt");
-  await expect(page.getByRole("alert").filter({ hasText: "Session recovered" })).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "Session recovered" })).toBeVisible();
   await expect(page.locator(".prompt")).toHaveCount(0);
   await send(page).click();
   await expect(page.locator(".reply")).toHaveText("You said: recover my edited prompt");

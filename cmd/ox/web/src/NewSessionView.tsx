@@ -1,5 +1,5 @@
 import { createSignal, Show } from "solid-js";
-import { createAttempt, useOx } from "./ox";
+import { useOx } from "./ox";
 import type { Defaults } from "./protocol";
 import { sendOnEnter } from "./SessionView";
 import { defaultSettings, type ModelChoice, ModelPicker, Select } from "./SettingsFields";
@@ -8,28 +8,9 @@ import { defaultSettings, type ModelChoice, ModelPicker, Select } from "./Settin
 // composer belongs to the same control that the new session will use.
 export function createDraft(workspaceId: string, ox: ReturnType<typeof useOx>) {
   const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), (n) => n.toString(16).padStart(2, "0")).join("");
-  const control = ox.control(id);
   const [chosen, setChoice] = createSignal<Defaults>();
   const choice = () => chosen() ?? ox.state.defaults;
-  const [error, attempt] = createAttempt();
-  const recover = () => control.reportError("Session recovered. Review its settings and send your prompt.");
-  function submit(onCreated: () => void) {
-    const c = choice();
-    const text = control.text();
-    if (!ox.ready() || control.creating() || !c || !text.trim()) return;
-    const { harness, ...settings } = c;
-    control.setCreating(true);
-    const created = ox.createSession(id, workspaceId, harness, settings).then((result) => {
-      // An earlier create reached oxd. Return to that session with its
-      // current settings and wait for the user to submit the retained text.
-      control.setCreating(false);
-      if (result.existing) recover();
-      else control.send(text);
-      onCreated();
-    });
-    attempt(created).finally(() => control.setCreating(false));
-  }
-  return { workspaceId, id, control, choice, setChoice, error, submit, recover };
+  return { workspaceId, id, control: ox.control(id), choice, setChoice };
 }
 
 export type Draft = ReturnType<typeof createDraft>;
@@ -49,13 +30,16 @@ export function NewSessionView(props: { draft: Draft; onCreated(): void }) {
   };
   const create = (event: SubmitEvent) => {
     event.preventDefault();
-    draft.submit(props.onCreated);
+    const choice = draft.choice();
+    if (!choice) return;
+    const { harness, ...settings } = choice;
+    draft.control.create(draft.workspaceId, harness, settings, props.onCreated);
   };
   return (
     <>
       <p class="context">{workspace()} · new session</p>
       <div class="log" />
-      <Show when={draft.error()}>{(error) => <p role="alert">{error()}</p>}</Show>
+      <Show when={draft.control.error()}>{(error) => <p role="alert">{error()}</p>}</Show>
       <form class="composer" onSubmit={create}>
         <div class="box">
           <textarea

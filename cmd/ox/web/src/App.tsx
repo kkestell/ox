@@ -58,10 +58,12 @@ function Layout() {
   // notification or reconnect snapshot. Reattach the draft without sending.
   createEffect(
     () =>
-      drafts().find((d) => d.error() && ox.state.sessions[d.id]?.synced && (d === draft() || session()?.id === d.id)),
+      drafts().find(
+        (d) => d.control.error() && ox.state.sessions[d.id]?.synced && (d === draft() || session()?.id === d.id),
+      ),
     (recovered) => {
       if (recovered) {
-        recovered.recover();
+        recovered.control.recover();
         finish(recovered);
       }
     },
@@ -72,10 +74,10 @@ function Layout() {
       <Sidebar selected={selected()} onSelect={select} />
       <main>
         <Show when={ox.error()}>{(error) => <p role="alert">{error()}</p>}</Show>
-        <For each={drafts().filter((d) => d.error() && d !== draft())}>
+        <For each={drafts().filter((d) => d.control.error() && d !== draft())}>
           {(failed) => (
             <p role="alert">
-              {failed.error()}{" "}
+              {failed.control.error()}{" "}
               <button type="button" onClick={() => select({ kind: "draft", workspaceId: failed.workspaceId })}>
                 Reopen draft
               </button>

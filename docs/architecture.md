@@ -134,9 +134,9 @@ The page shows stream errors while reconnecting and asks for a reload if the
 browser closes the stream after `ox` refuses it.
 
 A session's control owns the page's requests for that session: its composer
-text, sends, configuration, interrupts, approval answers, and their errors. It
-outlives the session's view, so leaving the view or reconnecting keeps the
-text and repeats no request. A send and a configuration exclude each other.
+text, creation, sends, configuration, interrupts, approval answers, and their
+errors. It outlives the session's view, so leaving the view or reconnecting
+keeps the text and repeats no request. A send and a configuration exclude each other.
 The settings form sends a patch to
 [`session/configure`](protocol.md#sessionconfigure) and shows the requested
 values, each changed one with a spinner, and Send disabled until the request

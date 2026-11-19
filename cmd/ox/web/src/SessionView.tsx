@@ -44,18 +44,16 @@ export function SessionView(props: { session: Session }) {
   const ox = useOx();
   const control = ox.control(props.session.id);
   const workspace = () => ox.state.workspaces.find((w) => w.id === props.session.workspaceId)?.path;
-  const idle = () => props.session.state === "idle" || props.session.state === "parked";
-  const canSend = () => !control.busy() && idle();
   // Stop shows once oxd reports the prompt running. oxd can take a stop sent
   // before the page's send is accepted ahead of the send, and it stops nothing.
-  const running = () => !idle();
+  const running = () => !control.idle();
   let log!: HTMLDivElement;
 
   onSettled(() => pinToBottom(log));
 
   const send = (event: SubmitEvent) => {
     event.preventDefault();
-    if (canSend()) control.send(control.text());
+    control.send(control.text());
   };
 
   return (
@@ -67,6 +65,7 @@ export function SessionView(props: { session: Session }) {
         <Transcript entries={props.session.entries} />
       </div>
       <Show when={control.error()}>{(error) => <p role="alert">{error()}</p>}</Show>
+      <Show when={control.notice()}>{(notice) => <p role="status">{notice()}</p>}</Show>
       <div class="composer">
         <Show when={props.session.approvals.length}>
           <section class="pending" aria-label="Waiting on you">
@@ -89,7 +88,9 @@ export function SessionView(props: { session: Session }) {
           />
           <Show
             when={running()}
-            fallback={<button type="submit" class="icon send" aria-label="Send" title="Send" disabled={!canSend()} />}
+            fallback={
+              <button type="submit" class="icon send" aria-label="Send" title="Send" disabled={!control.available()} />
+            }
           >
             <button
               type="button"
@@ -150,8 +151,6 @@ function ToolCall(props: { tool: Tool }) {
 // settles.
 function SettingsForm(props: { session: Session; control: SessionControl }) {
   const ox = useOx();
-  const configurable = () =>
-    !props.control.busy() && (props.session.state === "idle" || props.session.state === "parked");
   const shown = () => props.control.requested() ?? props.session.settings;
   const pending = (key: keyof Settings) => shown()[key] !== props.session.settings[key];
 
@@ -163,7 +162,7 @@ function SettingsForm(props: { session: Session; control: SessionControl }) {
           <ModelPicker
             harnesses={{ [props.session.harness]: harness() }}
             value={{ harness: props.session.harness, model: shown().model, effort: shown().effort }}
-            disabled={!configurable()}
+            disabled={!props.control.available()}
             pending={pending("model") || pending("effort")}
             onChange={(value) => props.control.configure({ model: value.model, effort: value.effort })}
           />
@@ -171,7 +170,7 @@ function SettingsForm(props: { session: Session; control: SessionControl }) {
             name="permission_mode"
             options={harness().permission_modes}
             value={shown().permission_mode}
-            disabled={!configurable()}
+            disabled={!props.control.available()}
             pending={pending("permission_mode")}
             onChange={(mode) => props.control.configure({ permission_mode: mode })}
           />

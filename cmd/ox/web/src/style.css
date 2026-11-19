@@ -98,6 +98,7 @@ input[type="radio"]:focus-visible { border-color: var(--ring); }
 input:disabled { opacity: 0.5; }
 
 [role="alert"], .error { color: var(--destructive); }
+[role="status"] { color: var(--muted-foreground); }
 
 dialog {
   margin: auto; width: calc(100% - 2rem); max-width: 32rem; padding: 1.5rem;
@@ -143,7 +144,7 @@ main > [role="alert"] { padding: 0.5rem 1rem; font-size: 0.75rem; }
 .context { flex: none; display: flex; align-items: center; gap: 0.375rem; height: 2rem; padding: 0 0.75rem; border-bottom: 1px solid var(--border); font-size: 0.75rem; color: var(--text); }
 .context::before { color: var(--muted-foreground); }
 .log { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 0.75rem; padding: 1rem var(--transcript-inset); }
-.log + [role="alert"] { padding: 0 var(--transcript-inset); font-size: 0.75rem; text-align: right; }
+.log ~ [role="alert"], .log ~ [role="status"] { padding: 0 var(--transcript-inset); font-size: 0.75rem; text-align: right; }
 .prompt, .reply, .error { white-space: pre-wrap; overflow-wrap: break-word; }
 .log .prompt { align-self: flex-end; max-width: 75%; margin: 0.75rem 0; padding: 0.75rem 1rem; border-radius: calc(var(--radius) + 4px); background: var(--secondary); color: var(--secondary-foreground); box-shadow: var(--shadow-sm); }
 .log .error { padding: 0.75rem 1rem; border-radius: var(--radius); background: var(--card); }

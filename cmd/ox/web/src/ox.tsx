@@ -127,60 +127,96 @@ export function createAttempt() {
       (e: Error) => setError(e.message),
     );
   };
-  return [error, attempt, clear, setError] as const;
+  return [error, attempt, clear] as const;
 }
 
 // SessionControl is the page's side of one session: its composer text and the
 // requests the page has in flight for it, with their errors. It outlives the
 // session's view, so leaving the view, or reconnecting, keeps the text and
 // repeats no request. A send and a configuration exclude each other, so a
-// prompt runs with the settings the page shows.
+// prompt runs with the settings the page shows. A new session's control
+// starts as its draft's composer, and its first send starts before its
+// session/get returns.
 function createSessionControl(
   id: string,
   rpc: Connection["rpc"],
-  stored: () => Settings | undefined,
-  ready: () => boolean,
+  session: () => Session | undefined,
+  connected: () => boolean,
 ) {
   const [text, setText] = createSignal("");
   const [sending, setSending] = createSignal(false);
   const [requested, setRequested] = createSignal<Settings>();
-  const [error, attempt, , reportError] = createAttempt();
+  const [error, attempt, clearError] = createAttempt();
+  const [notice, setNotice] = createSignal<string>();
   const [creating, setCreating] = createSignal(false);
-  const sendBlocked = () => !ready() || sending() || requested() !== undefined;
-  const busy = () => creating() || sendBlocked();
+  const ready = () => connected() && (session()?.synced ?? true);
+  // idle is whether the session can take a prompt or a settings change.
+  const idle = () => session()?.state === "idle" || session()?.state === "parked";
+  const available = () => ready() && !creating() && !sending() && requested() === undefined && idle();
+  const start = (request: Promise<unknown>) => {
+    setNotice(undefined);
+    return attempt(request);
+  };
+  // post sends a prompt. Text typed while it is pending stays in the box.
+  function post(sent: string) {
+    setSending(true);
+    const request = rpc("session/send", { session_id: id, text: sent }).then(() => {
+      if (text() === sent) setText("");
+    });
+    start(request).finally(() => setSending(false));
+  }
+  // recover returns to a session whose creation reply was lost, with its
+  // current settings, and waits for the user to send the retained text.
+  function recover() {
+    clearError();
+    setNotice("Session recovered. Review its settings and send your prompt.");
+  }
   return {
     text,
     setText,
     error,
-    busy,
+    // notice is information about the session that is not an error.
+    notice,
     creating,
-    setCreating,
-    reportError,
+    idle,
+    available,
     // requested is the settings a configuration in flight asks for.
     requested,
-    // send sends a prompt. Text typed while it is pending stays in the box.
+    // create creates the session with the composer's text as its first
+    // prompt, and calls onCreated once the session exists. If an earlier
+    // create already reached oxd, it recovers instead of sending.
+    create(workspaceId: string, harness: string, settings: Settings, onCreated: () => void) {
+      const sent = text();
+      if (!ready() || creating() || !sent.trim()) return;
+      setCreating(true);
+      const request = rpc("session/create", { session_id: id, workspace_id: workspaceId, harness, ...settings }).then(
+        (result) => {
+          setCreating(false);
+          if (result.existing) recover();
+          else post(sent);
+          onCreated();
+        },
+      );
+      start(request).finally(() => setCreating(false));
+    },
+    recover,
     send(sent: string) {
-      if (sendBlocked() || !sent.trim()) return;
-      setSending(true);
-      const request = rpc("session/send", { session_id: id, text: sent }).then(() => {
-        if (text() === sent) setText("");
-      });
-      attempt(request).finally(() => setSending(false));
+      if (available() && sent.trim()) post(sent);
     },
     configure(changes: Partial<Settings>) {
-      const current = stored();
-      if (busy() || !current) return;
+      const current = session()?.settings;
+      if (!available() || !current) return;
       const changed = Object.fromEntries(
         Object.entries(changes).filter(([key, value]) => current[key as keyof Settings] !== value),
       ) as Partial<Settings>;
       if (!Object.keys(changed).length) return;
       setRequested({ ...current, ...changed });
       const request = rpc("session/configure", { session_id: id, ...changed });
-      attempt(request).finally(() => setRequested(undefined));
+      start(request).finally(() => setRequested(undefined));
     },
-    interrupt: () => attempt(rpc("session/interrupt", { session_id: id })),
+    interrupt: () => start(rpc("session/interrupt", { session_id: id })),
     approve: (requestId: string, response: ApprovalResponse) =>
-      attempt(rpc("session/approve", { session_id: id, request_id: requestId, response })),
+      start(rpc("session/approve", { session_id: id, request_id: requestId, response })),
   };
 }
 
@@ -203,15 +239,15 @@ function createOx() {
   let connection!: Connection;
 
   // control returns the page's control of a session, which may not be loaded
-  // yet: a new session's first send starts before its session/get returns.
+  // yet.
   function control(id: string) {
     let c = controls.get(id);
     if (!c) {
       c = createSessionControl(
         id,
         (method, params) => connection.rpc(method, params),
-        () => state.sessions[id]?.settings,
-        () => ready() && (state.sessions[id]?.synced ?? true),
+        () => state.sessions[id],
+        ready,
       );
       controls.set(id, c);
     }
@@ -338,14 +374,6 @@ function createOx() {
     error,
     ready,
     addWorkspace: (path: string) => connection.rpc("workspace/create", { path }),
-    createSession(id: string, workspaceId: string, harness: string, settings: Settings) {
-      return connection.rpc("session/create", {
-        session_id: id,
-        workspace_id: workspaceId,
-        harness,
-        ...settings,
-      });
-    },
     control,
     destroy: (id: string) => connection.rpc("session/destroy", { session_id: id }),
   };
