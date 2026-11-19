@@ -50,7 +50,9 @@ at once, or, for a configuration Claude must acknowledge, from the event that
 finishes it. Nothing else touches a session's state, and a response lands in a
 connection's queue after every update it reflects and before every update it
 does not. The server handles each connection's requests on separate goroutines.
-Changes are written to the database before they are applied in memory.
+Changes are written to the database before they are applied in memory,
+except settings a running process has already taken, which the session
+adopts even when storing them fails.
 
 `Server.mu` guards workspace and session membership and the shutdown flag.
 Membership changes and `workspace/list` queue their messages under the same

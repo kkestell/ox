@@ -30,10 +30,11 @@ type Agent interface {
 	// not taken yet. The turn's end arrives as updates; an idle agent has
 	// nothing to stop.
 	Interrupt() error
-	// Configure applies settings to the running process and calls done with
-	// the outcome, now or from a later Handle: ErrBusy unless the agent is
-	// idle, and ErrExited if the process exits first.
-	Configure(settings Settings, done func(error))
+	// Configure applies settings to the running process and calls done, now
+	// or from a later Handle, with the settings the process then uses and the
+	// outcome: ErrBusy unless the agent is idle, and ErrExited if the process
+	// exits first. A failure can leave some of the settings applied.
+	Configure(settings Settings, done func(applied Settings, err error))
 	// Parkable reports that nothing is using the process, so stopping it
 	// loses no work.
 	Parkable() bool

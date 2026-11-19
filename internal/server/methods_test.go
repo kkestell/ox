@@ -131,3 +131,42 @@ func TestSessionLifecycle(t *testing.T) {
 		t.Fatalf("a destroyed session answered: %+v", gone)
 	}
 }
+
+// A running process keeps settings it has taken even when storing them
+// fails, so every client is told what it now uses.
+func TestConfigurationTakenButNotStored(t *testing.T) {
+	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
+		Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}}},
+		PermissionModes: []config.Option{{ID: "plan"}},
+	}}}
+	st := openStore(t)
+	s, err := New(st, cfg, 0, map[string]agent.Start{"fake": fake.Start})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c := connect(t, s)
+	var workspace struct {
+		WorkspaceID string `json:"workspace_id"`
+	}
+	json.Unmarshal(c.call("workspace/create", map[string]string{"path": t.TempDir()}), &workspace)
+	var created struct {
+		SessionID string `json:"session_id"`
+	}
+	json.Unmarshal(c.call("session/create", map[string]string{
+		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "effort": "low", "permission_mode": "plan",
+	}), &created)
+	id := created.SessionID
+	c.call("session/send", map[string]string{"session_id": id, "text": "hi"})
+	for c.update(id, "state").State != "idle" {
+	}
+
+	st.Close()
+	if failed := c.request("session/configure", map[string]string{"session_id": id, "effort": "high"}); failed.Error == nil {
+		t.Fatal("configuration succeeded without being stored")
+	}
+	configured := c.next(func(m message) bool { return m.Method == "session/configured" })
+	if !strings.Contains(string(configured.Params), `"effort":"high"`) {
+		t.Fatalf("clients were not told the settings the process took: %s", configured.Params)
+	}
+}

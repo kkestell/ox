@@ -153,6 +153,15 @@ func (sess *session) save(settings agent.Settings, resumeToken string) error {
 	})
 }
 
+// configured makes settings the session's own and tells every client.
+func (sess *session) configured(settings agent.Settings) {
+	sess.settings = settings
+	sess.server.broadcast("session/configured", struct {
+		SessionID string `json:"session_id"`
+		agent.Settings
+	}{sess.id, settings})
+}
+
 func (sess *session) markResumable(token string) {
 	if err := sess.save(sess.settings, token); err != nil {
 		log.Printf("mark session %s resumable: %v", sess.id, err)

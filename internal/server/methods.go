@@ -359,30 +359,37 @@ func (s *Server) configureSession(reply replyFunc, id, params json.RawMessage) {
 			reply(invalidParams(id, err.Error()))
 			return
 		}
-		finish := func() {
+		if sess.agent == nil {
 			if err := sess.save(settings, sess.resumeToken); err != nil {
 				reply(failure(id, err))
 				return
 			}
-			sess.settings = settings
-			s.broadcast("session/configured", struct {
-				SessionID string `json:"session_id"`
-				agent.Settings
-			}{sess.id, settings})
+			sess.configured(settings)
 			reply(jsonrpc.Success(id, struct{}{}))
-		}
-		// A parked session, or one whose process exits first, takes the
-		// settings when its next process starts.
-		if sess.agent == nil {
-			finish()
 			return
 		}
-		sess.agent.Configure(settings, func(err error) {
-			if err != nil && !errors.Is(err, agent.ErrExited) {
+		sess.agent.Configure(settings, func(applied agent.Settings, err error) {
+			if errors.Is(err, agent.ErrBusy) {
 				reply(failure(id, err))
 				return
 			}
-			finish()
+			// A process that exits first is replaced by one started with the
+			// requested settings.
+			if errors.Is(err, agent.ErrExited) {
+				applied, err = settings, nil
+			}
+			// The session takes the settings its process uses, even after a
+			// failure, so every client and later process match it; storing
+			// them can fail on its own.
+			if applied != sess.settings {
+				err = cmp.Or(err, sess.save(applied, sess.resumeToken))
+				sess.configured(applied)
+			}
+			if err != nil {
+				reply(failure(id, err))
+				return
+			}
+			reply(jsonrpc.Success(id, struct{}{}))
 		})
 	})
 }

@@ -11,8 +11,8 @@ import (
 	"github.com/kkestell/ox/internal/agent"
 )
 
-func replyTo(result chan error) func(error) {
-	return func(err error) { result <- err }
+func replyTo(result chan error) func(agent.Settings, error) {
+	return func(_ agent.Settings, err error) { result <- err }
 }
 
 func TestConfigureWaitsForAcknowledgements(t *testing.T) {
@@ -124,6 +124,31 @@ func TestConfigureFailure(t *testing.T) {
 				t.Fatal("failed configuration kept its reservation")
 			}
 		})
+	}
+}
+
+// A refusal after an acknowledgement leaves the process with the settings it
+// took, which the session must adopt.
+func TestPartialConfigurationReportsAppliedSettings(t *testing.T) {
+	a, input, _ := testAgent()
+	a.settings = agent.Settings{Model: "haiku", Effort: "low", PermissionMode: "plan"}
+	decoder := json.NewDecoder(input)
+	var applied agent.Settings
+	var result error
+	a.Configure(agent.Settings{Model: "sonnet", Effort: "high", PermissionMode: "plan"}, func(s agent.Settings, err error) {
+		applied, result = s, err
+	})
+	for _, subtype := range []string{"success", "error"} {
+		var wire struct {
+			RequestID string `json:"request_id"`
+		}
+		if err := decoder.Decode(&wire); err != nil {
+			t.Fatal(err)
+		}
+		a.handleOutput(message{Type: "control_response", Response: controlReply{RequestID: wire.RequestID, Subtype: subtype, Error: "refused"}})
+	}
+	if result == nil || applied != (agent.Settings{Model: "sonnet", Effort: "low", PermissionMode: "plan"}) {
+		t.Fatalf("a partial configuration reported %+v, %v", applied, result)
 	}
 }
 

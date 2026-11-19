@@ -114,12 +114,12 @@ func (a *Agent) Interrupt() error {
 	return nil
 }
 
-func (a *Agent) Configure(_ agent.Settings, done func(error)) {
+func (a *Agent) Configure(settings agent.Settings, done func(agent.Settings, error)) {
 	if a.state != "idle" {
-		done(agent.ErrBusy)
+		done(settings, agent.ErrBusy)
 		return
 	}
-	done(nil)
+	done(settings, nil)
 }
 
 func (a *Agent) Parkable() bool {

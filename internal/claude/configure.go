@@ -13,7 +13,7 @@ import (
 type configuration struct {
 	requests  []control
 	requestID string
-	done      func(error)
+	done      func(agent.Settings, error)
 }
 
 type control struct {
@@ -25,9 +25,9 @@ func (c *configuration) fail(err error) error {
 	return fmt.Errorf("configure Claude (%s): %w", c.requests[0].request["subtype"], err)
 }
 
-func (a *Agent) Configure(settings agent.Settings, done func(error)) {
+func (a *Agent) Configure(settings agent.Settings, done func(agent.Settings, error)) {
 	if !a.idle() {
-		done(agent.ErrBusy)
+		done(a.settings, agent.ErrBusy)
 		return
 	}
 	var requests []control
@@ -50,7 +50,7 @@ func (a *Agent) Configure(settings agent.Settings, done func(error)) {
 		})
 	}
 	if len(requests) == 0 {
-		done(nil)
+		done(a.settings, nil)
 		return
 	}
 	a.config = &configuration{requests: requests, done: done}
@@ -104,7 +104,7 @@ func (a *Agent) endConfiguration(err error) {
 	done := a.config.done
 	a.config = nil
 	a.phase = available
-	done(err)
+	done(a.settings, err)
 }
 
 // effortLevel is the effortLevel flag setting for effort: null clears it for

@@ -229,7 +229,10 @@ For a running session, success means Claude acknowledged each setting that
 differs from its process's, and only then are they stored. Model, effort, and permission
 mode are applied in that order. If a change fails, earlier changes remain
 applied to the process and later changes are skipped. Claude refusals and
-write failures return an operation error. A change Claude has not acknowledged
+write failures return an operation error. The session takes whatever settings
+its process now uses, even when the request fails or they cannot be stored,
+and a `session/configured` event reports them before the response. Settings
+that could not be stored last until the daemon restarts. A change Claude has not acknowledged
 after one minute stops the process. If the process exits first, including by
 that stop, the settings are stored for the next process and the request
 succeeds. See [Claude's model validation](claude-code.md#initialize-first).
