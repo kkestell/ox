@@ -46,8 +46,9 @@ export function SessionView(props: { session: Session }) {
   const workspace = () => ox.state.workspaces.find((w) => w.id === props.session.workspaceId)?.path;
   const idle = () => props.session.state === "idle" || props.session.state === "parked";
   const canSend = () => !control.busy() && idle();
-  // A send shows Stop from the start, while a parked session starts its harness.
-  const running = () => control.sending() || !idle();
+  // Stop shows once oxd reports the prompt running. oxd can take a stop sent
+  // before the page's send is accepted ahead of the send, and it stops nothing.
+  const running = () => !idle();
   let log!: HTMLDivElement;
 
   onSettled(() => pinToBottom(log));

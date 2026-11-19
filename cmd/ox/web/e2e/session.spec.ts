@@ -136,6 +136,21 @@ test("Stop interrupts a running reply", async ({ page }) => {
   await expect(send(page)).toBeVisible();
 });
 
+test("Stop appears once the page's send is accepted, and stops it", async ({ page }) => {
+  await open(page, services);
+  await newSession(page, "earlier prompt");
+  const held = await hold(page, "session/send");
+  await prompt(page).fill(Array.from({ length: 200 }, (_, i) => `word${i}`).join(" "));
+  await prompt(page).press("Enter");
+  await held.arrived;
+  await expect(send(page)).toBeDisabled();
+  await expect(stop(page)).toHaveCount(0);
+  held.release();
+  await stop(page).click();
+  await expect(page.locator(".error")).toHaveText("Interrupted");
+  await expect(send(page)).toBeVisible();
+});
+
 test("a send held in one session leaves another usable", async ({ page }) => {
   await open(page, services);
   await newSession(page, "first session");

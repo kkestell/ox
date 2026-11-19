@@ -131,7 +131,6 @@ function createSessionControl(id: string, rpc: Connection["rpc"], stored: () => 
     text,
     setText,
     error,
-    sending,
     busy,
     // requested is the settings a configuration in flight asks for.
     requested,
