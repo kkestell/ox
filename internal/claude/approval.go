@@ -27,7 +27,7 @@ func (a *Agent) controlRequest(requestID string, request json.RawMessage) {
 		return
 	}
 	a.approvals = append(a.approvals, agent.Approval{RequestID: requestID, Request: request})
-	a.publish(agent.Update{Type: "approval", RequestID: requestID, Request: request})
+	a.publish(agent.Update{Type: agent.UpdateApproval, RequestID: requestID, Request: request})
 }
 
 func (a *Agent) Approve(requestID string, response json.RawMessage) error {
@@ -43,13 +43,13 @@ func (a *Agent) Approve(requestID string, response json.RawMessage) error {
 		return fmt.Errorf("answer Claude: %w", err)
 	}
 	a.removeApproval(requestID)
-	a.publish(agent.Update{Type: "approval_answered", RequestID: requestID})
+	a.publish(agent.Update{Type: agent.UpdateApprovalAnswered, RequestID: requestID})
 	return nil
 }
 
 func (a *Agent) cancelApproval(requestID string) {
 	if a.removeApproval(requestID) {
-		a.publish(agent.Update{Type: "approval_cancelled", RequestID: requestID})
+		a.publish(agent.Update{Type: agent.UpdateApprovalCancelled, RequestID: requestID})
 	}
 }
 
@@ -67,7 +67,7 @@ func (a *Agent) withdrawApprovals() {
 	approvals := a.approvals
 	a.approvals = nil
 	for _, p := range approvals {
-		a.publish(agent.Update{Type: "approval_cancelled", RequestID: p.RequestID})
+		a.publish(agent.Update{Type: agent.UpdateApprovalCancelled, RequestID: p.RequestID})
 	}
 }
 

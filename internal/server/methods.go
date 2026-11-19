@@ -257,7 +257,7 @@ func (s *Server) getSession(reply replyFunc, id, params json.RawMessage) {
 		return
 	}
 	s.onSession(reply, id, input.SessionID, func(sess *session) {
-		snapshot := agent.Snapshot{State: "parked", Approvals: []agent.Approval{}}
+		snapshot := agent.Snapshot{State: agent.StateParked, Approvals: []agent.Approval{}}
 		if sess.agent != nil {
 			snapshot = sess.agent.Snapshot()
 		}

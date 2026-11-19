@@ -16,7 +16,7 @@ type history struct {
 }
 
 func (h *history) record(update agent.Update) {
-	if update.Type == "text_delta" {
+	if update.Type == agent.UpdateTextDelta {
 		if h.pending != nil && h.pending.MessageID == update.MessageID {
 			h.pending.Text += update.Text
 			return
@@ -27,7 +27,7 @@ func (h *history) record(update agent.Update) {
 	}
 	h.flush()
 	switch update.Type {
-	case "prompt", "tool_use", "tool_result", "result", "exited":
+	case agent.UpdatePrompt, agent.UpdateToolUse, agent.UpdateToolResult, agent.UpdateResult, agent.UpdateExited:
 		h.append(update)
 	}
 }

@@ -23,9 +23,9 @@ func (a *Agent) Send(text string) (string, error) {
 	}
 	a.prompt = prompt
 	a.phase = queued
-	a.publish(agent.Update{MessageID: prompt.id, Type: "prompt", Text: text})
-	a.state = "running"
-	a.publish(agent.Update{MessageID: prompt.id, Type: "state", State: a.state})
+	a.publish(agent.Update{MessageID: prompt.id, Type: agent.UpdatePrompt, Text: text})
+	a.state = agent.StateRunning
+	a.publish(agent.Update{MessageID: prompt.id, Type: agent.UpdateState, State: a.state})
 	return prompt.id, nil
 }
 
@@ -34,7 +34,7 @@ func (a *Agent) Send(text string) (string, error) {
 // has not taken yet starts and stops the same way. Its control response
 // carries nothing Ox uses.
 func (a *Agent) Interrupt() error {
-	if a.state == "idle" {
+	if a.state == agent.StateIdle {
 		return nil
 	}
 	if err := a.input.Control(newUUID(), map[string]any{"subtype": "interrupt"}); err != nil {
@@ -51,7 +51,7 @@ func (a *Agent) commandStarted(id string) {
 }
 
 func (a *Agent) sessionState(state string) {
-	if state != "idle" {
+	if state != agent.StateIdle {
 		a.setState(state)
 		return
 	}
@@ -61,7 +61,7 @@ func (a *Agent) sessionState(state string) {
 		// Claude can report idle before it takes the prompt; keep waiting.
 	case prompting:
 		a.state = state
-		a.endPrompt(agent.Update{Type: "state", State: state})
+		a.endPrompt(agent.Update{Type: agent.UpdateState, State: state})
 	default:
 		a.setState(state)
 	}
@@ -71,7 +71,7 @@ func (a *Agent) sessionState(state string) {
 func (a *Agent) setState(state string) {
 	if state != a.state {
 		a.state = state
-		a.publish(agent.Update{Type: "state", State: state})
+		a.publish(agent.Update{Type: agent.UpdateState, State: state})
 	}
 }
 

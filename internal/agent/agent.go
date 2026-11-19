@@ -73,6 +73,29 @@ type Settings struct {
 	PermissionMode string `json:"permission_mode"`
 }
 
+// Update types.
+const (
+	UpdatePrompt            = "prompt"
+	UpdateState             = "state"
+	UpdateTextDelta         = "text_delta"
+	UpdateToolUse           = "tool_use"
+	UpdateToolResult        = "tool_result"
+	UpdateResult            = "result"
+	UpdateApproval          = "approval"
+	UpdateApprovalAnswered  = "approval_answered"
+	UpdateApprovalCancelled = "approval_cancelled"
+	UpdateExited            = "exited"
+	UpdateParked            = "parked"
+)
+
+// Execution states, which state updates and snapshots carry.
+const (
+	StateIdle           = "idle"
+	StateRunning        = "running"
+	StateRequiresAction = "requires_action"
+	StateParked         = "parked" // snapshots only: no process is running
+)
+
 type Update struct {
 	MessageID string          `json:"message_id,omitempty"` // empty for turns the harness started itself
 	Type      string          `json:"type"`

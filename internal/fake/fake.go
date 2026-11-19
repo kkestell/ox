@@ -37,7 +37,7 @@ type configured struct {
 func Start(options agent.Options) (agent.Agent, error) {
 	a := &Agent{
 		events: make(chan agent.Event), done: make(chan struct{}),
-		onUpdate: options.OnUpdate, state: "idle", settings: options.Settings,
+		onUpdate: options.OnUpdate, state: agent.StateIdle, settings: options.Settings,
 	}
 	if options.Resume == "" {
 		a.onResumable = options.OnResumable
@@ -76,7 +76,7 @@ func (a *Agent) Handle(event agent.Event) {
 			return // its prompt was interrupted
 		}
 		if len(a.words) > 0 {
-			a.publish(agent.Update{Type: "text_delta", Text: a.words[0]})
+			a.publish(agent.Update{Type: agent.UpdateTextDelta, Text: a.words[0]})
 			a.words = a.words[1:]
 			a.after(tick{a.prompt})
 			return
@@ -87,13 +87,13 @@ func (a *Agent) Handle(event agent.Event) {
 
 func (a *Agent) finish(result agent.Result) {
 	a.words = nil
-	a.publish(agent.Update{Type: "result", Result: &result})
+	a.publish(agent.Update{Type: agent.UpdateResult, Result: &result})
 	if a.onResumable != nil {
 		a.onResumable(rand.Text())
 		a.onResumable = nil
 	}
-	a.state = "idle"
-	a.publish(agent.Update{Type: "state", State: a.state})
+	a.state = agent.StateIdle
+	a.publish(agent.Update{Type: agent.UpdateState, State: a.state})
 	a.prompt = ""
 }
 
@@ -106,7 +106,7 @@ func (a *Agent) Snapshot() agent.Snapshot {
 }
 
 func (a *Agent) idle() bool {
-	return a.state == "idle" && a.config == nil
+	return a.state == agent.StateIdle && a.config == nil
 }
 
 func (a *Agent) Send(text string) (string, error) {
@@ -114,9 +114,9 @@ func (a *Agent) Send(text string) (string, error) {
 		return "", agent.ErrBusy
 	}
 	a.prompt = rand.Text()
-	a.publish(agent.Update{Type: "prompt", Text: text})
-	a.state = "running"
-	a.publish(agent.Update{Type: "state", State: a.state})
+	a.publish(agent.Update{Type: agent.UpdatePrompt, Text: text})
+	a.state = agent.StateRunning
+	a.publish(agent.Update{Type: agent.UpdateState, State: a.state})
 	a.reply = "You said: " + text
 	a.words = strings.SplitAfter(a.reply, " ")
 	a.after(tick{a.prompt})
@@ -128,7 +128,7 @@ func (a *Agent) Approve(string, json.RawMessage) error {
 }
 
 func (a *Agent) Interrupt() error {
-	if a.state != "idle" {
+	if a.state != agent.StateIdle {
 		a.finish(agent.Result{Text: "Interrupted", IsError: true})
 	}
 	return nil
@@ -149,14 +149,14 @@ func (a *Agent) Parkable() bool {
 
 func (a *Agent) Stop() error {
 	if a.prompt != "" {
-		a.publish(agent.Update{Type: "exited", Error: "stopped"})
+		a.publish(agent.Update{Type: agent.UpdateExited, Error: "stopped"})
 		a.prompt = ""
 	}
 	if a.config != nil {
 		a.config.done(a.settings, agent.ErrExited)
 		a.config = nil
 	}
-	a.publish(agent.Update{Type: "parked"})
+	a.publish(agent.Update{Type: agent.UpdateParked})
 	a.exited = true
 	close(a.done)
 	return nil

@@ -64,7 +64,7 @@ func Start(options agent.Options) (agent.Agent, error) {
 func newAgent(input *writer, events chan agent.Event, proc *process, sessionID string, options agent.Options) *Agent {
 	a := &Agent{
 		proc: proc, input: input, events: events, done: make(chan struct{}),
-		phase: available, state: "idle",
+		phase: available, state: agent.StateIdle,
 		settings: options.Settings, onUpdate: options.OnUpdate, onError: options.OnError, sessionID: sessionID,
 	}
 	if options.Resume == "" {
@@ -115,7 +115,7 @@ func (a *Agent) handleOutput(m message) {
 		switch m.Subtype {
 		case "session_state_changed":
 			switch m.State {
-			case "running", "requires_action", "idle":
+			case agent.StateRunning, agent.StateRequiresAction, agent.StateIdle:
 				a.sessionState(m.State)
 			}
 		case "background_tasks_changed":
@@ -128,19 +128,19 @@ func (a *Agent) handleOutput(m message) {
 				a.mayHaveSchedules = true
 			}
 			if m.ParentToolUseID == "" {
-				a.publish(agent.Update{Type: "tool_use", ToolUseID: use.ID, ToolName: use.Name, Input: use.Input})
+				a.publish(agent.Update{Type: agent.UpdateToolUse, ToolUseID: use.ID, ToolName: use.Name, Input: use.Input})
 			}
 		}
 	case "user":
 		if m.ParentToolUseID == "" {
 			for _, r := range m.toolResults() {
-				a.publish(agent.Update{Type: "tool_result", ToolUseID: r.ToolUseID, Result: &agent.Result{Text: r.Text, IsError: r.IsError}})
+				a.publish(agent.Update{Type: agent.UpdateToolResult, ToolUseID: r.ToolUseID, Result: &agent.Result{Text: r.Text, IsError: r.IsError}})
 			}
 		}
 	case "stream_event":
 		delta := m.Event.Delta
 		if m.ParentToolUseID == "" && m.Event.Type == "content_block_delta" && delta.Type == "text_delta" && delta.Text != "" {
-			a.publish(agent.Update{Type: "text_delta", Text: delta.Text})
+			a.publish(agent.Update{Type: agent.UpdateTextDelta, Text: delta.Text})
 		}
 	case "result":
 		result := agent.Result{Text: m.Result, IsError: m.failed()}
@@ -152,7 +152,7 @@ func (a *Agent) handleOutput(m message) {
 		}
 		// Claude follows an automatic turn with an empty bookkeeping result.
 		if result.Text != "" || result.IsError {
-			a.publish(agent.Update{Type: "result", Result: &result})
+			a.publish(agent.Update{Type: agent.UpdateResult, Result: &result})
 			// Claude has written the transcript by its first result.
 			if a.onResumable != nil {
 				a.onResumable(a.sessionID)
@@ -166,7 +166,7 @@ func (a *Agent) handleOutput(m message) {
 }
 
 func (a *Agent) idle() bool {
-	return a.phase == available && a.state == "idle"
+	return a.phase == available && a.state == agent.StateIdle
 }
 
 func (a *Agent) Snapshot() agent.Snapshot {
@@ -185,7 +185,7 @@ func (a *Agent) exit(err error) {
 	reported := a.phase == queued || a.phase == prompting
 	switch a.phase {
 	case queued, prompting:
-		a.endPrompt(agent.Update{Type: "exited", Error: reason})
+		a.endPrompt(agent.Update{Type: agent.UpdateExited, Error: reason})
 	case configuring:
 		a.endConfiguration(a.config.fail(agent.ErrExited))
 	}
@@ -193,9 +193,9 @@ func (a *Agent) exit(err error) {
 	// Claude exits on its own only when something has gone wrong, which can
 	// cut short a turn it started itself.
 	if !reported && !a.stopping {
-		a.publish(agent.Update{Type: "exited", Error: reason})
+		a.publish(agent.Update{Type: agent.UpdateExited, Error: reason})
 	}
-	a.publish(agent.Update{Type: "parked"})
+	a.publish(agent.Update{Type: agent.UpdateParked})
 	a.phase = exited
 	close(a.done)
 }
