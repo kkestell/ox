@@ -6,7 +6,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "lint": "biome check .",
-    "fix": "biome check --write ."
+    "fix": "biome check --write .",
+    "e2e": "playwright test"
   },
   "dependencies": {
     "@solidjs/web": "^2.0.1",
@@ -14,7 +15,9 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.8",
+    "@playwright/test": "1.65.1",
     "@solidjs/vite-plugin": "^3.0.1",
+    "@types/node": "^26.6.6",
     "lucide-static": "1.75.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.8"

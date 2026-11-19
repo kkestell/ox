@@ -7,6 +7,10 @@ Use `make dev` to work on the [web client](../../../docs/architecture.md#web-ui)
 - The user checks UI changes by eye. The report on a UI change names the views
   it touches, and that list is all it says about checking them. Open a browser
   only when the user asks, and drive it with Playwright.
+- `make e2e` runs the Playwright specs in `e2e` in headless Chrome against
+  `ox` and `oxd` with the fake harness. Each spec file runs its own `oxd` and
+  relay on a temporary socket, database, and port. `approval.spec.ts` uses
+  Haiku and runs with `make live`.
 
 ## Solid 2.0
 

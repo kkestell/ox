@@ -148,9 +148,10 @@ We test with `make dev`. Ox's test state is disposable.
   an isolated check, not to mirror the implementation.
 - Prefer small live tests against real Claude Code processes, using Haiku only.
   Check observable protocol behavior rather than exact model wording. They live
-  in `TestLive` and run with `make live`.
+  in `TestLive` and the web client's `approval.spec.ts`, and run with
+  `make live`.
 - Keep test setup simple; avoid elaborate mocks and fake runtimes.
-- `make test` and `make dev` build with the race detector. A data race fails
+- `make test`, `make e2e`, and `make dev` build with the race detector. A data race fails
   the test, or stops `oxd` with the race's report.
 - Report what was verified and any live checks that could not be run.
 

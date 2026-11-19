@@ -1,4 +1,4 @@
-.PHONY: dev web test live lint
+.PHONY: dev web test live lint e2e
 
 dev: web
 	go build -race -o bin/ ./cmd/ox ./cmd/oxd
@@ -10,9 +10,15 @@ test: lint web
 lint: cmd/ox/web/node_modules
 	npm --prefix cmd/ox/web run lint
 
-# live drives real Claude Code processes with Haiku.
-live:
+# live drives real Claude Code processes with Haiku, through oxd and through
+# the web client.
+live: cmd/ox/web/node_modules
 	OX_LIVE=1 go test -race -count=1 -run TestLive -v ./internal/server
+	OX_LIVE=1 npm --prefix cmd/ox/web run e2e -- approval
+
+# e2e drives the web client in Chrome against oxd and the fake harness.
+e2e: cmd/ox/web/node_modules
+	npm --prefix cmd/ox/web run e2e
 
 web: cmd/ox/web/node_modules
 	npm --prefix cmd/ox/web run build
