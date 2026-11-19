@@ -125,11 +125,16 @@ func TestLive(t *testing.T) {
 
 	t.Log("an interrupt ends a generating turn with an error result")
 	c.forget(a)
-	c.call("session/send", map[string]string{"session_id": a, "text": "Write the numbers from 1 to 2000 in words, one per line."})
-	c.update(a, "text_delta")
+	var sent struct {
+		MessageID string `json:"message_id"`
+	}
+	json.Unmarshal(c.call("session/send", map[string]string{"session_id": a, "text": "Write the numbers from 1 to 2000 in words, one per line."}), &sent)
+	if u := c.update(a, "text_delta"); u.MessageID != sent.MessageID {
+		t.Errorf("the prompt's reply was attributed to %q, not %q", u.MessageID, sent.MessageID)
+	}
 	c.call("session/interrupt", map[string]string{"session_id": a})
-	if r := c.update(a, "result").Result; !r.IsError || r.Text != "Interrupted" {
-		t.Errorf("an interrupted turn ended with %+v", r)
+	if u := c.update(a, "result"); !u.Result.IsError || u.Result.Text != "Interrupted" || u.MessageID != sent.MessageID {
+		t.Errorf("an interrupted turn ended with %+v", u)
 	}
 	idle(a)
 
@@ -145,10 +150,10 @@ func TestLive(t *testing.T) {
 	t.Log("a session starting Claude holds up only its own requests")
 	b := create("acceptEdits")
 	start := time.Now()
-	sent := c.send("session/send", map[string]string{"session_id": b, "text": "Reply with just the word ok."})
+	sending := c.send("session/send", map[string]string{"session_id": b, "text": "Reply with just the word ok."})
 	c.call("session/get", map[string]string{"session_id": a})
 	answered := time.Since(start)
-	if r := c.response(sent); r.Error != nil {
+	if r := c.response(sending); r.Error != nil {
 		t.Fatalf("send: %+v", r.Error)
 	}
 	if started := time.Since(start); answered > 100*time.Millisecond || answered >= started {
@@ -158,9 +163,9 @@ func TestLive(t *testing.T) {
 
 	t.Log("a destroyed session's last notification is session/destroyed")
 	d := create("acceptEdits")
-	sent = c.send("session/send", map[string]string{"session_id": d, "text": "Reply with just the word ok."})
+	sending = c.send("session/send", map[string]string{"session_id": d, "text": "Reply with just the word ok."})
 	destroyed := c.send("session/destroy", map[string]string{"session_id": d})
-	c.response(sent) // succeeds or finds the session gone, depending on which runs first
+	c.response(sending) // succeeds or finds the session gone, depending on which runs first
 	if r := c.response(destroyed); r.Error != nil {
 		t.Fatalf("destroy while starting: %+v", r.Error)
 	}
