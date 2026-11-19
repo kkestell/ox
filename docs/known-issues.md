@@ -4,7 +4,6 @@
 | --- | --- | --- |
 | [An unknown effort level is ignored](#an-unknown-effort-level-is-ignored) | Unknown | Live |
 | [A failed configuration can leave settings the page does not show](#a-failed-configuration-can-leave-settings-the-page-does-not-show) | Unknown | Source |
-| [A configuration that omits a list breaks the web UI](#a-configuration-that-omits-a-list-breaks-the-web-ui) | No occurrence | Source |
 
 ## An unknown effort level is ignored
 
@@ -26,14 +25,3 @@ efforts. Which efforts Claude refuses through a control request is untested.
 Until a successful configuration reconciles the settings or the process
 restarts, prompts can use a different effort, a costlier model, or (after a
 failed database write) a permission mode other than the one shown.
-
-## A configuration that omits a list breaks the web UI
-
-`config.Load` accepts a harness or model that omits `models`,
-`permission_modes`, or `efforts`, and `harness/list` sends `null` for it.
-`ModelPicker`, `defaultSettings`, and the `Select` in `SettingsFields.tsx`
-index those lists without a check. The new-session form lists every harness's
-models, so one harness without `models` breaks it for all of them; a harness
-without `permission_modes` breaks it when chosen. Either omission also breaks
-its sessions' views. The built-in
-configuration lists all three everywhere.

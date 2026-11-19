@@ -58,6 +58,17 @@ func Load(path string) (*Config, error) {
 	if decoder.Decode(&struct{}{}) != io.EOF {
 		return nil, fmt.Errorf("read %s: content after the configuration", path)
 	}
+	for name, harness := range config.Harnesses {
+		if len(harness.Models) == 0 || len(harness.PermissionModes) == 0 {
+			return nil, fmt.Errorf("%s: harness %q needs models and permission_modes", path, name)
+		}
+		// A model without effort levels is served an empty list.
+		for i := range harness.Models {
+			if harness.Models[i].Efforts == nil {
+				harness.Models[i].Efforts = []Option{}
+			}
+		}
+	}
 	if err := config.Defaults.check(config.Harnesses); err != nil {
 		return nil, fmt.Errorf("%s: defaults: %w", path, err)
 	}
