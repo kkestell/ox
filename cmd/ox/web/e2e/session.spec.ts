@@ -36,7 +36,7 @@ test("the first send hands its text and later edits to the new session", async (
   await prompt(page).pressSequentially(" and more");
   create.release();
   await firstSend.arrived;
-  await expect(page.locator(".context")).not.toContainText("new session");
+  await expect(page.locator(".context h1")).not.toHaveText("New session");
   await prompt(page).pressSequentially(" again");
   firstSend.release();
   await expect(page.locator(".reply")).toHaveText("You said: first prompt");

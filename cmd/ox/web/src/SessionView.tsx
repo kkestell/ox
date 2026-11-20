@@ -29,9 +29,10 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
 
   return (
     <>
-      <p class="context">
-        {workspace()} · {props.session.harness} · {props.session.id}
-      </p>
+      <header class="context">
+        <h1>{sessionLabel(props.session)}</h1>
+        <p class="path">{workspace()}</p>
+      </header>
       <div class="log">
         <div class="transcript">
           <Transcript snapshot={props.snapshot} />

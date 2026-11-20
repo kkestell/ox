@@ -37,7 +37,10 @@ export function NewSessionView(props: { draft: Draft; onCreated(): void }) {
   };
   return (
     <>
-      <p class="context">{workspace()} · new session</p>
+      <header class="context">
+        <h1>New session</h1>
+        <p class="path">{workspace()}</p>
+      </header>
       <div class="log" />
       <Show when={draft.control.error()}>{(error) => <p role="alert">{error()}</p>}</Show>
       <form class="composer" onSubmit={create}>
