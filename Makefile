@@ -1,11 +1,14 @@
-.PHONY: dev web test live lint e2e metrics hooks
+.PHONY: dev build web test live lint e2e metrics hooks
 
-dev: web
-	go build -race -o bin/ ./cmd/ox ./cmd/ox-mcp ./cmd/oxd
+dev: web build
 	GORACE=halt_on_error=1 node cmd/ox/web/dev.mjs
+
+build:
+	go build -race -o bin/ ./cmd/ox ./cmd/ox-mcp ./cmd/oxd
 
 test: lint web
 	go test -race ./...
+	node --test cmd/ox/web/stack.test.mjs
 
 lint: cmd/ox/web/node_modules
 	gofmt -l . | (! grep .)
