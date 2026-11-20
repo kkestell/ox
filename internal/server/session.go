@@ -2,7 +2,6 @@ package server
 
 import (
 	"crypto/rand"
-	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -30,9 +29,8 @@ type session struct {
 	settings    agent.Settings
 	resumeToken string
 	history     history
-	agent       agent.Agent   // nil while parked
-	parkTimer   *time.Timer   // armed while the agent is parkable
-	inbox       []agent.Input // messages waiting to be written, oldest first
+	agent       agent.Agent // nil while parked
+	parkTimer   *time.Timer // armed while the agent is parkable
 	ended       bool
 }
 
@@ -73,61 +71,23 @@ func (sess *session) run() {
 			sess.parkTimer = nil
 			sess.stop()
 		}
-		sess.deliver()
 		sess.armPark()
 	}
 }
 
-// deliver sends the oldest waiting message to the agent, starting a parked
-// session for it. It runs after every operation and event, so each message
-// goes in as soon as the agent can take it, in order.
-func (sess *session) deliver() {
-	if sess.ended || len(sess.inbox) == 0 {
-		return
-	}
-	if sess.startForInput() != nil {
-		return
-	}
-	message := sess.inbox[0]
-	err := sess.agent.Send(message)
-	if errors.Is(err, agent.ErrBusy) {
-		return // retried after the next operation or event
-	}
-	sess.inbox[0] = agent.Input{}
-	sess.inbox = sess.inbox[1:]
-	if err != nil {
-		sess.inboxUpdate(message, agent.UpdatePromptCancelled)
-		log.Printf("session %s: deliver message: %v", sess.id, err)
-	}
-}
-
-// snapshot is the agent's snapshot, or a parked one with no approvals while no
-// process runs.
+// snapshot is the agent's snapshot, or a parked one with no approvals or
+// inputs while no process runs.
 func (sess *session) snapshot() agent.Snapshot {
 	if sess.agent == nil {
-		return agent.Snapshot{State: agent.StateParked, Approvals: []agent.Approval{}}
+		return agent.Snapshot{State: agent.StateParked, Approvals: []agent.Approval{}, Queued: []agent.Input{}}
 	}
 	return sess.agent.Snapshot()
 }
 
-// queued lists the inputs the agent has not taken: the one the agent holds
-// or has written, then the inbox, oldest first.
-func (sess *session) queued() []agent.Input {
-	queued := make([]agent.Input, 0, len(sess.inbox)+1)
-	if written := sess.snapshot().Queued; written != nil {
-		queued = append(queued, *written)
-	}
-	return append(queued, sess.inbox...)
-}
-
-// messagesWaiting reports that messages wait in the inbox, which go ahead of
-// a user prompt and hold off a configuration.
-func (sess *session) messagesWaiting() bool {
-	return len(sess.inbox) != 0
-}
-
+// sendPrompt refuses a user prompt while any input waits for the agent to
+// take it; a message waits its turn instead.
 func (sess *session) sendPrompt(text string) (string, error) {
-	if sess.messagesWaiting() {
+	if len(sess.snapshot().Queued) != 0 {
 		return "", agent.ErrBusy
 	}
 	if err := sess.startForInput(); err != nil {
@@ -137,34 +97,14 @@ func (sess *session) sendPrompt(text string) (string, error) {
 	return input.MessageID, sess.agent.Send(input)
 }
 
-func (sess *session) acceptMessage(message agent.Input) {
+// acceptMessage hands a message to the agent, which queues it behind every
+// input it has not taken.
+func (sess *session) acceptMessage(message agent.Input) error {
+	if err := sess.startForInput(); err != nil {
+		return err
+	}
 	message.MessageID = rand.Text()
-	sess.inbox = append(sess.inbox, message)
-	sess.inboxUpdate(message, agent.UpdatePromptQueued)
-}
-
-func (sess *session) cancelInbox() {
-	for _, message := range sess.inbox {
-		sess.inboxUpdate(message, agent.UpdatePromptCancelled)
-	}
-	sess.inbox = nil
-}
-
-// inboxUpdate publishes a lifecycle update for a message the agent has not
-// received.
-func (sess *session) inboxUpdate(message agent.Input, kind string) {
-	update := message.Update(kind)
-	update.Time = time.Now()
-	sess.update(update)
-}
-
-// agentUpdate publishes the agent's updates, except the announcement of a
-// message the inbox already made on acceptance.
-func (sess *session) agentUpdate(u agent.Update) {
-	if u.Type == agent.UpdatePromptQueued && u.From != "" {
-		return
-	}
-	sess.update(u)
+	return sess.agent.Send(message)
 }
 
 // post runs op on the session's goroutine. It reports false once the session
@@ -191,20 +131,14 @@ func (sess *session) armPark() {
 	}
 }
 
-// startForInput starts a parked session for either source of input and owns
-// the effects of a harness that cannot be launched. A user send also
-// receives the error. A start that fails later ends the agent, which drops
-// its input and reports why.
+// startForInput starts a parked session for an input. The sender receives
+// the error of a harness that cannot be launched; a start that fails later
+// ends the agent, which drops its inputs and reports why.
 func (sess *session) startForInput() error {
 	if sess.agent != nil {
 		return nil
 	}
-	err := sess.start()
-	if err != nil && len(sess.inbox) > 0 {
-		sess.cancelInbox()
-		sess.update(agent.Update{Type: agent.UpdateExited, Error: "messages not delivered: " + err.Error(), Time: time.Now()})
-	}
-	return err
+	return sess.start()
 }
 
 func (sess *session) start() error {
@@ -220,9 +154,9 @@ func (sess *session) start() error {
 		MCP: agent.MCPServer{
 			Command:  sess.server.mcp.Forwarder,
 			Env:      map[string]string{"OX_SOCKET": sess.server.mcp.Socket, "OX_SESSION_ID": sess.id},
-			Approved: approvedTools,
+			Approved: approvedTools(),
 		},
-		OnUpdate:     sess.agentUpdate,
+		OnUpdate:     sess.update,
 		OnResumable:  sess.markResumable,
 		OnConfigured: sess.adopt,
 		OnError:      func(err error) { log.Printf("session %s: %v", sess.id, err) },
@@ -240,11 +174,9 @@ func (sess *session) stop() {
 	sess.parked()
 }
 
-// parked drops the agent that has ended, with the messages waiting for it,
-// and tells every client.
+// parked drops the agent that has ended and tells every client.
 func (sess *session) parked() {
 	sess.agent = nil
-	sess.cancelInbox()
 	sess.update(agent.Update{Type: agent.UpdateParked, Time: time.Now()})
 }
 

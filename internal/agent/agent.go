@@ -20,19 +20,22 @@ type Agent interface {
 	Events() <-chan Event
 	Handle(Event)
 	Snapshot() Snapshot
-	// Send writes input's Content with its session-assigned ID, or holds the
-	// input until the harness has started. It publishes prompt_queued once it
-	// accepts the input, then prompt or prompt_cancelled on uptake or drop.
-	// Each update is built with Input.Update, so it carries the input's Text,
-	// From, and FromLabel. Snapshot().Queued reports the input from its
-	// acceptance until it is taken or dropped. Send returns ErrBusy during
-	// configuration or with an untaken input.
+	// Send queues input behind every input the harness has not taken, and
+	// writes its Content with its session-assigned ID once the harness has
+	// taken or dropped the inputs ahead of it, has started, and has finished
+	// any configuration. It publishes prompt_queued once, on acceptance, then
+	// prompt or prompt_cancelled on uptake or drop. Each update is built with
+	// Input.Update, so it carries the input's Text, From, and FromLabel.
+	// Snapshot().Queued reports the input from its acceptance until it is
+	// taken or dropped. Send returns an error only when it writes the input at
+	// once and the write fails, or when the agent has ended; it then publishes
+	// and keeps nothing.
 	Send(input Input) error
 	// Approve answers a pending approval, or returns ErrApprovalNotFound.
 	Approve(requestID string, response json.RawMessage) error
-	// Interrupt stops the running turn and drops a queued input with
-	// prompt_cancelled. The turn's end arrives as updates; an idle agent has
-	// nothing to stop.
+	// Interrupt stops the running turn and drops every input the harness has
+	// not taken, each with prompt_cancelled. The turn's end arrives as
+	// updates; an idle agent has no turn to stop.
 	Interrupt() error
 	// Configure applies the changed fields and calls done with the outcome,
 	// now or from a later Handle. Already applied changes are reported through
@@ -42,8 +45,9 @@ type Agent interface {
 	// Parkable reports that nothing is using the process, so stopping it
 	// loses no work.
 	Parkable() bool
-	// Stop ends the agent at once, publishing its last update, and asks the
-	// process to exit. A process that does not exit when asked is killed.
+	// Stop ends the agent at once, dropping every input the harness has not
+	// taken and publishing its last update, and asks the process to exit. A
+	// process that does not exit when asked is killed.
 	Stop()
 	// Exited reports that the agent has ended and published its last update.
 	Exited() bool
@@ -165,10 +169,8 @@ type Result struct {
 type Snapshot struct {
 	State     string     `json:"state"`
 	Approvals []Approval `json:"approvals"`
-	// Queued is the input written to the harness and not yet taken. It is not
-	// a snapshot field in the protocol: session/get lists it in queued, ahead
-	// of the session's waiting messages.
-	Queued *Input `json:"-"`
+	// Queued is every input the harness has not taken, oldest first.
+	Queued []Input `json:"queued"`
 }
 
 // Input is the user prompt or wrapped message the harness writes to the model.

@@ -48,7 +48,7 @@ conversation. See the
 [session lifecycle](protocol.md#workspaces-and-sessions) for client behavior.
 
 Each session runs on its own goroutine, which owns its settings, resume token,
-history, agent, inbox, and park timer. Every request for a session is an operation
+history, agent, and park timer. Every request for a session is an operation
 posted to that goroutine, and the agent's events and the park timer are
 handled there between operations. An operation queues its own response there:
 at once, or, for a configuration Claude must acknowledge, from the event that
@@ -67,15 +67,14 @@ while holding it.
 The session owns the history buffer and writes conversation events to the
 store. See [the snapshot and history contract](protocol.md#sessionget).
 
-The session owns the inbox: messages, with their IDs and attribution, wait
-there until sent to the agent. The agent owns an input it has accepted, with
-its text and attribution, until it is taken or dropped. One operation starts a
-parked session for either input source. After each operation and event,
-`deliver` tries the oldest waiting message; a busy agent leaves it for the
-next try. `send_message` posts to the recipient's goroutine and
+The agent owns every input it has not taken, user prompts and messages
+alike, with their IDs, text, and attribution, from acceptance until each is
+taken or dropped. The session hands it each input as it arrives, starting a
+parked session first, and refuses a user prompt while the agent reports any
+input untaken. `send_message` posts to the recipient's goroutine and
 `list_sessions` captures each entry on its owning goroutine. `read_session`
-reads the target's snapshot, inbox, and history on the target's goroutine and
-starts nothing. No session goroutine posts to another.
+reads the target's snapshot and history on the target's goroutine and starts
+nothing. No session goroutine posts to another.
 
 The session arms a park timer whenever its agent is `Parkable` and stops it
 when the agent stops being parkable, so the full period restarts each time. If
@@ -91,9 +90,10 @@ session goroutine drives it by calling its methods and passing each event from
 `Events` to `Handle`. The agent publishes through `OnUpdate` during those
 calls, and reports failures no call returns, such as a failed write to its
 process, through `OnError`, which the session logs under its ID. `Send`
-receives the input with its session-assigned ID, text, and attribution. The
-agent publishes the lifecycle updates for when it is accepted, taken, or
-dropped with that text and attribution, and reports the untaken input in
+receives the input with its session-assigned ID, text, and attribution, and
+queues it behind every input the harness has not taken. The agent publishes
+the lifecycle updates for when it is accepted, taken, or dropped with that
+text and attribution, and reports every untaken input, oldest first, in
 `Snapshot`. The agent reports settings changes through `OnConfigured`, as they
 happen, separately from the outcome of a `Configure` request. See the [update
 contract](protocol.md#session-updates).
@@ -124,22 +124,28 @@ only during it:
 
 | Phase | Meaning | Leaves on |
 | --- | --- | --- |
-| `starting` | Claude has not answered `initialize`. It holds at most one input, written once Claude answers, and Claude's last failure output. | The `initialize` response, a refusal, the startup limit, the process's exit, or `Stop`. |
-| `available` | Available for a prompt or configuration. | A prompt or configuration starts. |
-| `prompting` | Client prompts hold the agent. It holds at most one prompt Claude has not taken yet, which `command_lifecycle started` or `cancelled` ends. | Claude reports `idle` with no prompt queued. |
-| `configuring` | Control requests are in flight, one at a time. | The last acknowledgement, a refusal, a write failure, or a timeout. |
+| `starting` | Claude has not answered `initialize`. It holds Claude's last failure output; inputs sent meanwhile wait unwritten. | The `initialize` response, a refusal, the startup limit, the process's exit, or `Stop`. |
+| `available` | Available for a prompt or configuration, with no input untaken. | A prompt or configuration starts. |
+| `prompting` | Client prompts hold the agent. The first untaken input, if any, has been written, and `command_lifecycle started` or `cancelled` for it ends it. | Claude reports `idle` with no input untaken. |
+| `configuring` | Control requests are in flight, one at a time; inputs sent meanwhile wait unwritten. | The last acknowledgement, a refusal, a write failure, or a timeout. |
 | `timedOut` | A control request went unanswered and Ox asked the process to exit. | The process exits. |
 | `exited` | The agent has ended. | — |
 
 The process's exit, `Stop`, or a failed start moves any live phase to
-`exited`. Alongside the phase, the agent keeps the execution state it
-publishes: Claude's reported state, except that a prompt is `running` from
-the moment it is accepted until Claude reports `idle` with no prompt queued.
-A prompt is held in `starting`, and written in `available`, or in
-`prompting` while no prompt is queued. Both `available` and `idle` are
-required to take a configuration. An interrupt is sent whenever the state is
-not `idle`, and drops a queued prompt; in `starting` it drops the held input
-and sends nothing.
+`exited`, dropping every untaken input. Alongside the phase, the agent keeps
+the execution state it publishes: Claude's reported state, except that a
+prompt is `running` from the moment it is accepted until Claude reports
+`idle` with no input untaken.
+
+The agent keeps every untaken input in one queue, oldest first, and writes
+only the first. An input is written at once in `available`, or in
+`prompting` when nothing is untaken; otherwise it waits. When Claude answers
+`initialize`, a configuration ends, or Claude takes or drops the written
+input, the agent writes the next. Both `available` and `idle` are required to
+take a configuration. An interrupt drops every input not yet written; in
+`available` or `prompting` with the state not `idle` it is then sent to
+Claude, dropping the written input Claude has not taken. In `starting`,
+`configuring`, and `timedOut` it sends nothing.
 
 The agent derives `Parkable` from its phase, its state, pending approvals,
 and [Claude's reports of background work](claude-code.md#8-background-work-and-schedules).

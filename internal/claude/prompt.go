@@ -21,30 +21,26 @@ func checkPrompt(text string) error {
 	return nil
 }
 
-// Send writes an input, which Claude takes into the running turn after its
-// current tool call, or runs next if the turn ends first. While Claude
-// starts, it holds the input until Claude has answered initialize.
+// Send queues an input behind every input Claude has not taken. Claude takes
+// it into the running turn after its current tool call, or runs it next if
+// the turn ends first. The agent writes it at once when nothing is untaken
+// and Claude can take input; otherwise it writes it once Claude has answered
+// initialize, a configuration has ended, or Claude has taken or dropped the
+// input ahead of it.
 func (a *Agent) Send(input agent.Input) error {
-	switch phase := a.phase.(type) {
-	case *starting:
-		if phase.input != nil {
-			return agent.ErrBusy
+	switch a.phase.(type) {
+	case available, *prompting:
+		if len(a.untaken) == 0 {
+			if err := a.write(input); err != nil {
+				return err
+			}
 		}
-		phase.input = &input
-	case available:
-		if err := a.write(input); err != nil {
-			return err
-		}
-	case *prompting:
-		if phase.queued {
-			return agent.ErrBusy
-		}
-		if err := a.write(input); err != nil {
-			return err
-		}
-	default:
-		return agent.ErrBusy
+	case *starting, *configuring, timedOut:
+		// Held until ready, or dropped by the end.
+	case exited:
+		return agent.ErrExited
 	}
+	a.untaken = append(a.untaken, input)
 	a.publish(input.Update(agent.UpdatePromptQueued))
 	if a.state == agent.StateIdle {
 		a.state = agent.StateRunning
@@ -53,8 +49,8 @@ func (a *Agent) Send(input agent.Input) error {
 	return nil
 }
 
-// write writes input to Claude, which holds the agent in prompting with the
-// input queued until Claude takes or drops it.
+// write writes input to Claude, which holds the agent in prompting until
+// Claude reports idle with nothing untaken.
 func (a *Agent) write(input agent.Input) error {
 	if err := a.input.Prompt(input.MessageID, input.Content); err != nil {
 		return fmt.Errorf("send prompt to Claude: %w", err)
@@ -64,28 +60,63 @@ func (a *Agent) write(input agent.Input) error {
 		p = &prompting{}
 		a.phase = p
 	}
-	p.input, p.queued = input, true
+	p.input = input
 	return nil
 }
 
-// Interrupt asks Claude to stop the running turn and to drop a prompt it has
-// not taken yet. Claude ends the turn with an error result and an idle state,
-// which end the prompts as usual. Its control response carries nothing Ox
-// uses. While Claude starts, Interrupt drops the held input and writes
-// nothing.
-func (a *Agent) Interrupt() error {
-	if s, ok := a.phase.(*starting); ok {
-		if s.input != nil {
-			a.publish(s.input.Update(agent.UpdatePromptCancelled))
-			s.input = nil
-		}
-		return nil
+// writeNext writes the first untaken input. A failed write means Claude is
+// exiting, and its exit ends the agent, so every untaken input is dropped.
+func (a *Agent) writeNext() {
+	if len(a.untaken) == 0 {
+		return
 	}
-	if a.state == agent.StateIdle {
+	if err := a.write(a.untaken[0]); err != nil {
+		a.onError(err)
+		a.dropUntaken(0)
+	}
+}
+
+// ready makes the agent available, once Claude has answered initialize, a
+// configuration has ended, or a prompt has been released, and writes the
+// first untaken input. With none, the agent is idle.
+func (a *Agent) ready() {
+	a.phase = available{}
+	a.writeNext()
+	if _, available := a.phase.(available); available {
+		a.setState(agent.StateIdle)
+	}
+}
+
+// dropUntaken drops the untaken inputs from index from on, oldest first.
+func (a *Agent) dropUntaken(from int) {
+	dropped := a.untaken[from:]
+	a.untaken = a.untaken[:from:from]
+	for _, input := range dropped {
+		a.publish(input.Update(agent.UpdatePromptCancelled))
+	}
+}
+
+// Interrupt drops every input not yet written to Claude, then asks Claude to
+// stop the running turn and to drop the written input it has not taken.
+// Claude ends the turn with an error result and an idle state, which end the
+// prompts as usual. Its control response carries nothing Ox uses. While
+// Claude starts or a configuration runs, Interrupt writes nothing.
+func (a *Agent) Interrupt() error {
+	written := 0
+	if _, prompting := a.phase.(*prompting); prompting && len(a.untaken) > 0 {
+		written = 1
+	}
+	a.dropUntaken(written)
+	switch a.phase.(type) {
+	case available, *prompting:
+		if a.state == agent.StateIdle {
+			return nil
+		}
+	case *starting, *configuring, timedOut, exited:
 		return nil
 	}
 	request := map[string]any{"subtype": "interrupt"}
-	if a.queued() != nil {
+	if written > 0 {
 		request["cancel_queued"] = true
 	}
 	if err := a.input.Control(newUUID(), request); err != nil {
@@ -94,29 +125,9 @@ func (a *Agent) Interrupt() error {
 	return nil
 }
 
-// queued returns a copy of the input Claude has not taken yet, held or
-// written, or nil.
-func (a *Agent) queued() *agent.Input {
-	switch p := a.phase.(type) {
-	case *starting:
-		if p.input != nil {
-			input := *p.input
-			return &input
-		}
-	case *prompting:
-		if p.queued {
-			input := p.input
-			return &input
-		}
-	case available, *configuring, timedOut, exited:
-		// No input waits.
-	}
-	return nil
-}
-
-// waiting returns the prompting phase whose queued input is id, or nil.
+// waiting returns the prompting phase whose written input is id, or nil.
 func (a *Agent) waiting(id string) *prompting {
-	if p, ok := a.phase.(*prompting); ok && p.queued && id != "" && id == p.input.MessageID {
+	if p, ok := a.phase.(*prompting); ok && len(a.untaken) > 0 && id != "" && id == a.untaken[0].MessageID {
 		return p
 	}
 	return nil
@@ -127,23 +138,23 @@ func (a *Agent) commandStarted(id string) {
 	if p == nil {
 		return
 	}
-	p.queued = false
+	taken := a.untaken[0]
+	a.untaken = a.untaken[1:]
 	p.turn = id
-	a.publish(p.input.Update(agent.UpdatePrompt))
+	a.publish(taken.Update(agent.UpdatePrompt))
+	a.writeNext()
 }
 
 // commandCancelled handles Claude dropping a prompt. Claude also reports a
 // taken prompt whose turn it interrupted as cancelled, which changes nothing.
 func (a *Agent) commandCancelled(id string) {
-	if p := a.waiting(id); p != nil {
-		a.dropQueued(p)
+	if a.waiting(id) == nil {
+		return
 	}
-}
-
-// dropQueued ends the queued prompt before Claude took it.
-func (a *Agent) dropQueued(p *prompting) {
-	p.queued = false
-	a.publish(p.input.Update(agent.UpdatePromptCancelled))
+	dropped := a.untaken[0]
+	a.untaken = a.untaken[1:]
+	a.publish(dropped.Update(agent.UpdatePromptCancelled))
+	a.writeNext()
 }
 
 func (a *Agent) sessionState(state string) {
@@ -158,11 +169,11 @@ func (a *Agent) sessionState(state string) {
 	}
 	p, ok := a.phase.(*prompting)
 	switch {
-	case ok && p.queued:
-		// Claude can report idle before it takes a prompt; keep waiting.
+	case len(a.untaken) > 0:
+		// Claude can report idle before it takes a prompt, and inputs wait
+		// through a configuration; they keep the agent running.
 	case ok:
-		a.state = state
-		a.endPrompt(p, agent.Update{Type: agent.UpdateState, State: state})
+		a.endPrompt(p)
 	default:
 		a.setState(state)
 	}
@@ -176,13 +187,13 @@ func (a *Agent) setState(state string) {
 	}
 }
 
-// endPrompt releases the agent with the final update of the prompts that
-// held it, which names the latest of them.
-func (a *Agent) endPrompt(p *prompting, final agent.Update) {
+// endPrompt releases the agent with an idle state naming the latest input
+// written.
+func (a *Agent) endPrompt(p *prompting) {
 	a.withdrawApprovals()
-	final.MessageID = p.input.MessageID
-	a.publish(final)
-	a.phase = available{}
+	a.state = agent.StateIdle
+	a.publish(agent.Update{MessageID: p.input.MessageID, Type: agent.UpdateState, State: a.state})
+	a.ready()
 }
 
 // publish reports an update, tagged with the client prompt whose turn

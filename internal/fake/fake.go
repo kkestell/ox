@@ -18,8 +18,8 @@ type Agent struct {
 
 	state    string
 	settings agent.Settings
-	prompt   string       // the ID of the input whose turn is running
-	queued   *agent.Input // sent while running; taken at the next tick
+	prompt   string        // the ID of the input whose turn is running
+	queue    []agent.Input // accepted and not taken, oldest first
 	reply    string
 	words    []string
 	tool     string          // the tool call the prompt asked to approve
@@ -80,11 +80,14 @@ func (a *Agent) Handle(event agent.Event) {
 			a.onConfigured(a.settings)
 		}
 		e.done(nil)
+		if len(a.queue) > 0 {
+			a.begin()
+		}
 	case tick:
 		if e.prompt != a.prompt {
 			return // its prompt was interrupted
 		}
-		if a.queued != nil {
+		if len(a.queue) > 0 {
 			a.take()
 			return
 		}
@@ -111,7 +114,7 @@ func (a *Agent) finish(result agent.Result) {
 }
 
 func (a *Agent) Snapshot() agent.Snapshot {
-	snapshot := agent.Snapshot{State: a.state, Approvals: []agent.Approval{}, Queued: a.queued}
+	snapshot := agent.Snapshot{State: a.state, Approvals: []agent.Approval{}, Queued: append([]agent.Input{}, a.queue...)}
 	if a.approval != nil {
 		snapshot.Approvals = append(snapshot.Approvals, *a.approval)
 	}
@@ -122,17 +125,21 @@ func (a *Agent) idle() bool {
 	return a.state == agent.StateIdle && a.config == nil
 }
 
-// Send starts a turn with the input, or queues it while a turn runs. The
-// reply echoes the input's Content, which the model would receive.
+// Send queues the input, and starts a turn with it when the agent is idle.
+// The reply echoes the input's Content, which the model would receive.
 func (a *Agent) Send(input agent.Input) error {
-	if a.config != nil || a.queued != nil {
-		return agent.ErrBusy
-	}
+	a.queue = append(a.queue, input)
 	a.publish(input.Update(agent.UpdatePromptQueued))
-	if a.state != agent.StateIdle {
-		a.queued = &input
-		return nil
+	if a.idle() {
+		a.begin()
 	}
+	return nil
+}
+
+// begin starts a turn with the first queued input.
+func (a *Agent) begin() {
+	input := a.queue[0]
+	a.queue = a.queue[1:]
 	a.prompt = input.MessageID
 	a.publish(input.Update(agent.UpdatePrompt))
 	a.state = agent.StateRunning
@@ -144,14 +151,13 @@ func (a *Agent) Send(input agent.Input) error {
 	} else {
 		a.after(tick{a.prompt})
 	}
-	return nil
 }
 
-// take makes the queued input the turn's, whose reply replaces the rest of
-// the earlier one, as Claude takes a prompt after a tool call.
+// take makes the first queued input the turn's, whose reply replaces the rest
+// of the earlier one, as Claude takes a prompt after a tool call.
 func (a *Agent) take() {
-	taken := a.queued
-	a.queued = nil
+	taken := a.queue[0]
+	a.queue = a.queue[1:]
 	a.prompt = taken.MessageID
 	a.publish(taken.Update(agent.UpdatePrompt))
 	a.reply = "You said: " + taken.Content
@@ -159,11 +165,12 @@ func (a *Agent) take() {
 	a.after(tick{a.prompt})
 }
 
-// drop cancels the queued input, if any.
+// drop cancels every queued input, oldest first.
 func (a *Agent) drop() {
-	if a.queued != nil {
-		a.publish(a.queued.Update(agent.UpdatePromptCancelled))
-		a.queued = nil
+	dropped := a.queue
+	a.queue = nil
+	for _, input := range dropped {
+		a.publish(input.Update(agent.UpdatePromptCancelled))
 	}
 }
 
@@ -218,9 +225,9 @@ func (a *Agent) withdraw() {
 }
 
 func (a *Agent) Interrupt() error {
+	a.withdraw()
+	a.drop()
 	if a.state != agent.StateIdle {
-		a.withdraw()
-		a.drop()
 		a.finish(agent.Result{Text: "Interrupted", IsError: true})
 	}
 	return nil

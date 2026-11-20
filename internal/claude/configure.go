@@ -93,8 +93,10 @@ func (a *Agent) controlTimedOut(requestID string) {
 	a.phase = timedOut{c.done, c.fail(agent.ErrExited)}
 }
 
+// endConfiguration makes the agent ready, which writes any input sent while
+// the configuration ran, and reports the outcome.
 func (a *Agent) endConfiguration(done func(error), err error) {
-	a.phase = available{}
+	a.ready()
 	done(err)
 }
 

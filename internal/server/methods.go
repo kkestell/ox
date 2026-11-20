@@ -313,9 +313,8 @@ func (s *Server) getSession(reply replyFunc, id, params json.RawMessage) {
 		reply(jsonrpc.Success(id, struct {
 			agent.Snapshot
 			agent.Settings
-			Queued  []agent.Input  `json:"queued"`
 			History []agent.Update `json:"history"`
-		}{sess.snapshot(), sess.settings, sess.queued(), history}))
+		}{sess.snapshot(), sess.settings, history}))
 	})
 }
 
@@ -382,7 +381,6 @@ func (s *Server) interruptSession(reply replyFunc, id, params json.RawMessage) {
 		return
 	}
 	s.onSession(reply, id, input.SessionID, func(sess *session) {
-		sess.cancelInbox()
 		if sess.agent != nil {
 			if err := sess.agent.Interrupt(); err != nil {
 				reply(failure(id, err))
@@ -417,10 +415,6 @@ func (s *Server) configureSession(reply replyFunc, id, params json.RawMessage) {
 		}
 		if err != nil {
 			reply(invalidParams(id, err.Error()))
-			return
-		}
-		if sess.messagesWaiting() {
-			reply(failure(id, agent.ErrBusy))
 			return
 		}
 		if sess.agent == nil {

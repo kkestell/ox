@@ -960,15 +960,31 @@ func TestSameDirectoryIsOneWorkspace(t *testing.T) {
 	}
 }
 
+// configuringAgent reports each configuration it starts on started.
+type configuringAgent struct {
+	agent.Agent
+	started chan<- struct{}
+}
+
+func (a configuringAgent) Configure(patch agent.SettingsPatch, done func(error)) {
+	a.Agent.Configure(patch, done)
+	a.started <- struct{}{}
+}
+
 // Claude in one session lists the others and sends them messages, which
-// reach the recipient as prompts with their sender, one queued at a time.
+// reach the recipient as prompts with their sender, queued in order.
 func TestSendMessage(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{
 		"fake":   {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
 		"broken": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
 	}}
+	configuring := make(chan struct{}, 1)
+	start := func(o agent.Options) (agent.Agent, error) {
+		a, err := fake.Start(o)
+		return configuringAgent{a, configuring}, err
+	}
 	broken := func(agent.Options) (agent.Agent, error) { return nil, errors.New("no such harness binary") }
-	s, err := New(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}, "broken": {Start: broken}}, MCP{})
+	s, err := New(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: start}, "broken": {Start: broken}}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1074,7 +1090,7 @@ func TestSendMessage(t *testing.T) {
 		fromC.tool("send_message", map[string]string{"to": b, "text": fromCText})
 		waiting := c.update(b, "prompt_queued")
 		if waiting.MessageID == "" || waiting.From != cs || waiting.FromLabel != cs[:8] || waiting.Text != fromCText {
-			t.Fatalf("prompt_queued is not C's inbox message: %+v", waiting)
+			t.Fatalf("prompt_queued is not C's message: %+v", waiting)
 		}
 		var got struct {
 			Queued []agent.Input `json:"queued"`
@@ -1105,7 +1121,7 @@ func TestSendMessage(t *testing.T) {
 		var u agent.Update
 		json.Unmarshal(m.Params, &u)
 		if u.Type == "prompt_queued" {
-			t.Fatalf("the inbox message was announced again at delivery: %+v", u)
+			t.Fatalf("a message was announced again when taken: %+v", u)
 		}
 	}
 	c.call("session/interrupt", map[string]string{"session_id": b})
@@ -1114,7 +1130,7 @@ func TestSendMessage(t *testing.T) {
 	t.Log("Stop drops every message Claude has not taken")
 	_, dropped := waiting("two from A", "two from C")
 	c.call("session/interrupt", map[string]string{"session_id": b})
-	for _, want := range []agent.Update{dropped[1], dropped[0]} {
+	for _, want := range dropped {
 		if cancelled := c.update(b, "prompt_cancelled"); cancelled.MessageID != want.MessageID || cancelled.From != want.From || cancelled.FromLabel != want.FromLabel {
 			t.Fatalf("prompt_cancelled does not name %+v: %+v", want, cancelled)
 		}
@@ -1132,6 +1148,65 @@ func TestSendMessage(t *testing.T) {
 
 	if text, refused := fromA.tool("read_session", map[string]string{"to": b}); refused || !strings.Contains(text, "Tool: T {} (failed)") || !strings.Contains(text, "Error: Interrupted") {
 		t.Fatalf("read_session of an interrupted session returned %q, %v", text, refused)
+	}
+
+	// configureB sends B a configuration and returns its request's ID once
+	// the configuration runs.
+	configureB := func() string {
+		t.Helper()
+		id := c.send("session/configure", map[string]string{"session_id": b, "model": "m"})
+		select {
+		case <-configuring:
+		case <-time.After(c.timeout):
+			t.Fatal("the configuration did not start")
+		}
+		return id
+	}
+	isPrompt := func(m message) bool {
+		var u agent.Update
+		json.Unmarshal(m.Params, &u)
+		return m.Method == "session/update" && m.sessionID() == b && u.Type == "prompt"
+	}
+
+	t.Log("inputs sent during a configuration wait for it, in order")
+	c.forget(b)
+	configure := configureB()
+	var prompt struct {
+		MessageID string `json:"message_id"`
+	}
+	json.Unmarshal(c.call("session/send", map[string]string{"session_id": b, "text": "user during configuration"}), &prompt)
+	if queued := c.update(b, "prompt_queued"); queued.MessageID != prompt.MessageID {
+		t.Fatalf("the user prompt sent during configuration was not queued: %+v", queued)
+	}
+	fromA.tool("send_message", map[string]string{"to": b, "text": "during configuration"})
+	sent := c.update(b, "prompt_queued")
+	if first := c.next(func(m message) bool { return string(m.ID) == configure || isPrompt(m) }); string(first.ID) != configure || first.Error != nil {
+		t.Fatalf("an input was taken before the configuration succeeded: %+v", first)
+	}
+	for _, want := range []string{prompt.MessageID, sent.MessageID} {
+		if taken := c.update(b, "prompt"); taken.MessageID != want {
+			t.Fatalf("%s was not taken next after the configuration: %+v", want, taken)
+		}
+	}
+	idle(b)
+
+	t.Log("Stop during a configuration drops the inputs sent during it")
+	c.forget(b)
+	configure = configureB()
+	fromA.tool("send_message", map[string]string{"to": b, "text": "dropped during configuration"})
+	held := c.update(b, "prompt_queued")
+	c.call("session/interrupt", map[string]string{"session_id": b})
+	if cancelled := c.update(b, "prompt_cancelled"); cancelled.MessageID != held.MessageID {
+		t.Fatalf("Stop during a configuration did not drop the message: %+v", cancelled)
+	}
+	if response := c.response(configure); response.Error != nil {
+		t.Fatalf("the configuration failed: %+v", response.Error)
+	}
+	c.call("session/get", map[string]string{"session_id": b})
+	for _, m := range c.received(b) {
+		if isPrompt(m) {
+			t.Fatalf("an input dropped during a configuration was taken: %s", m.Params)
+		}
 	}
 
 	t.Log("a read leaves a parked session parked")
@@ -1176,30 +1251,14 @@ func TestSendMessage(t *testing.T) {
 		t.Fatalf("a refused message reached B: %v", received)
 	}
 
-	t.Log("a failed start drops the messages")
-	fromA.tool("send_message", map[string]string{"to": d, "text": "hello D"})
-	failed := c.update(d, "prompt_queued")
-	if cancelled := c.update(d, "prompt_cancelled"); cancelled.MessageID != failed.MessageID || cancelled.FromLabel != "first from A" {
-		t.Fatalf("a message whose process did not start was not cancelled: %+v", cancelled)
+	t.Log("a message to a session that cannot be launched is refused")
+	c.forget(d)
+	if text, refused := fromA.tool("send_message", map[string]string{"to": d, "text": "hello D"}); !refused || text != "no such harness binary" {
+		t.Fatalf("send_message to a session that cannot be launched returned %q, %v", text, refused)
 	}
-	if exited := c.update(d, "exited"); !strings.Contains(exited.Error, "no such harness binary") {
-		t.Fatalf("the failed start was reported as %+v", exited)
-	}
-	// A later operation would retry a start for a message still waiting; the
-	// one after it reads the history that retry would leave.
 	c.call("session/get", map[string]string{"session_id": d})
-	var history struct {
-		History []agent.Update `json:"history"`
-	}
-	json.Unmarshal(c.call("session/get", map[string]string{"session_id": d}), &history)
-	exits := 0
-	for _, u := range history.History {
-		if u.Type == "exited" {
-			exits++
-		}
-	}
-	if exits != 1 {
-		t.Fatalf("the failed start was retried: %+v", history.History)
+	if received := c.received(d); len(received) != 0 {
+		t.Fatalf("a refused message reached D: %v", received)
 	}
 
 	sessions := list()

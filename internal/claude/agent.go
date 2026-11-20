@@ -22,17 +22,16 @@ type exited struct{}
 // starting holds the agent from spawn until Claude answers initialize, the
 // start fails, or Ox stops the agent.
 type starting struct {
-	input          *agent.Input // the one input accepted while starting, or nil
-	reason         string       // Claude's last failure output: a failed result or a plain-text line
-	noConversation bool         // reason is Claude's report that the conversation to resume is gone
+	reason         string // Claude's last failure output: a failed result or a plain-text line
+	noConversation bool   // reason is Claude's report that the conversation to resume is gone
 }
 
 // prompting holds the agent from the first client input written until Claude
-// reports idle with none queued.
+// reports idle with nothing untaken. The first untaken input, if any, has
+// been written.
 type prompting struct {
-	input  agent.Input // the latest input written, which the releasing update names
-	queued bool        // Claude has not taken or dropped input yet
-	turn   string      // the client input whose turn is running, until its result
+	input agent.Input // the latest input written, which the releasing update names
+	turn  string      // the client input whose turn is running, until its result
 }
 
 // configuring holds the agent while control requests are in flight, one at a
@@ -64,6 +63,9 @@ type Agent struct {
 	done   chan struct{} // closed when the agent ends, so late timers and output deliver nothing
 
 	phase phase
+	// untaken is every input Claude has not taken, oldest first. Only the
+	// first is ever written, and only in prompting.
+	untaken []agent.Input
 	// state is the execution state clients see: Claude's report, except that
 	// a prompt is running from the moment it is accepted.
 	state            string
@@ -283,7 +285,7 @@ func (a *Agent) idle() bool {
 }
 
 func (a *Agent) Snapshot() agent.Snapshot {
-	return agent.Snapshot{State: a.state, Approvals: append([]agent.Approval{}, a.approvals...), Queued: a.queued()}
+	return agent.Snapshot{State: a.state, Approvals: append([]agent.Approval{}, a.approvals...), Queued: append([]agent.Input{}, a.untaken...)}
 }
 
 // startupOutput handles the output that ends or explains a start, and
@@ -303,27 +305,12 @@ func (a *Agent) startupOutput(s *starting, m message) bool {
 		case s.noConversation:
 			a.giveUp(s, s.reason)
 		default:
-			a.started(s)
+			a.ready()
 		}
 	default:
 		return false
 	}
 	return true
-}
-
-// started makes the agent available once Claude has answered initialize,
-// and writes the input held while it started.
-func (a *Agent) started(s *starting) {
-	a.phase = available{}
-	if s.input == nil {
-		a.setState(agent.StateIdle)
-		return
-	}
-	if err := a.write(*s.input); err != nil {
-		a.publish(s.input.Update(agent.UpdatePromptCancelled))
-		a.setState(agent.StateIdle)
-		a.onError(err)
-	}
 }
 
 // giveUp asks the process to exit and ends a start that failed with reason.
@@ -389,28 +376,32 @@ func (a *Agent) Stop() {
 }
 
 // end ends the agent, for its process's exit, Stop, or a start Ox gave up
-// on. It drops the input Claude has not taken, withdraws approvals, and ends
-// a configuration. A nonempty reason is published as exited, naming the
-// latest input of an active prompt or failed start.
+// on. It drops every input Claude has not taken, ends a configuration, and
+// withdraws approvals. A nonempty reason is published as exited, naming the
+// latest input written of an active prompt, or the latest input of a failed
+// start.
 func (a *Agent) end(reason string) {
 	final := agent.Update{Type: agent.UpdateExited, Error: reason}
 	switch p := a.phase.(type) {
 	case *starting:
-		if p.input != nil {
-			a.publish(p.input.Update(agent.UpdatePromptCancelled))
-			final.MessageID = p.input.MessageID
+		if len(a.untaken) > 0 {
+			final.MessageID = a.untaken[len(a.untaken)-1].MessageID
 		}
 	case *prompting:
-		if p.queued {
-			a.dropQueued(p)
-		}
 		final.MessageID = p.input.MessageID
+	case available, *configuring, timedOut, exited:
+		// No input names the end.
+	}
+	a.dropUntaken(0)
+	// Ending writes nothing, so a configuration ends here rather than
+	// through endConfiguration.
+	switch p := a.phase.(type) {
 	case *configuring:
-		a.endConfiguration(p.done, p.fail(agent.ErrExited))
+		p.done(p.fail(agent.ErrExited))
 	case timedOut:
-		a.endConfiguration(p.done, p.err)
-	case available, exited:
-		// No operation holds the agent.
+		p.done(p.err)
+	case available, *starting, *prompting, exited:
+		// No configuration waits.
 	}
 	a.withdrawApprovals()
 	if reason != "" {

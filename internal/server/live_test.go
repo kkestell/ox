@@ -200,7 +200,7 @@ func TestLive(t *testing.T) {
 		Workspace: dir, Settings: agent.Settings{Model: haiku, Effort: "low", PermissionMode: "manual"},
 		MCP: agent.MCPServer{
 			Command: mcp.Forwarder, Env: map[string]string{"OX_SOCKET": mcp.Socket, "OX_SESSION_ID": "direct"},
-			Approved: approvedTools,
+			Approved: approvedTools(),
 		},
 		OnUpdate:     func(u agent.Update) { direct = append(direct, u) },
 		OnResumable:  func(token string) { conversation = token },

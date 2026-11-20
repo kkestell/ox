@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -32,14 +33,17 @@ func acknowledge(t *testing.T, a *Agent, requestID, subtype string) {
 func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 	input := new(bytes.Buffer)
 	var applied []agent.Settings
+	updates := new(recorder)
 	a := newAgent(newWriter(input), make(chan agent.Event), make(chan struct{}), nil, agent.Options{
-		OnUpdate: func(agent.Update) {}, OnConfigured: func(s agent.Settings) { applied = append(applied, s) },
+		OnUpdate: updates.record, OnConfigured: func(s agent.Settings) { applied = append(applied, s) },
 	})
 	a.Handle(initialized)
+	*updates = nil
 	decoder := json.NewDecoder(input)
 	patch := agent.SettingsPatch{Model: new("haiku"), Effort: new("low"), PermissionMode: new("plan")}
 	result := make(chan error, 1)
 	a.Configure(patch, replyTo(result))
+	held := prompt("hello")
 
 	expectedSettings := []agent.Settings{
 		{Model: "haiku"},
@@ -62,8 +66,19 @@ func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 		if wire.Type != "control_request" || wire.RequestID == "" || !reflect.DeepEqual(wire.Request, expected) {
 			t.Fatalf("unexpected configuration request: %+v", wire)
 		}
-		if err := a.Send(prompt("hello")); !errors.Is(err, agent.ErrBusy) {
-			t.Fatalf("prompt accepted during configuration: %v", err)
+		// A prompt sent during the configuration is accepted, and the
+		// requests that follow it show it is not written.
+		if i == 1 {
+			if err := a.Send(held); err != nil {
+				t.Fatalf("prompt refused during configuration: %v", err)
+			}
+			if len(*updates) != 2 || (*updates)[0].Type != "prompt_queued" || (*updates)[0].MessageID != held.MessageID || (*updates)[1].State != "running" {
+				t.Fatalf("a prompt sent during configuration was not published: %+v", *updates)
+			}
+			state(t, a, "idle")
+			if a.Snapshot().State != "running" {
+				t.Fatal("Claude's idle during configuration released the held prompt")
+			}
 		}
 		overlapping := make(chan error, 1)
 		if a.Configure(patch, replyTo(overlapping)); !errors.Is(<-overlapping, agent.ErrBusy) {
@@ -91,8 +106,12 @@ func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 	default:
 		t.Fatal("configuration did not finish")
 	}
-	if err := a.Send(prompt("hello")); err != nil {
-		t.Fatalf("configuration kept its reservation: %v", err)
+	var wire struct {
+		Type string `json:"type"`
+		UUID string `json:"uuid"`
+	}
+	if err := decoder.Decode(&wire); err != nil || wire.Type != "user" || wire.UUID != held.MessageID || decoder.More() {
+		t.Fatalf("the last acknowledgement did not write the prompt sent during configuration alone: %v, %+v", err, wire)
 	}
 }
 
@@ -128,20 +147,29 @@ func TestConfigureSendsOnlyChangedSettings(t *testing.T) {
 func TestConfigureFailure(t *testing.T) {
 	for _, ending := range []string{"rejected", "exited"} {
 		t.Run(ending, func(t *testing.T) {
-			a, input, _ := testAgent()
+			a, input, updates := testAgent()
 			result := make(chan error, 1)
 			a.Configure(agent.SettingsPatch{Model: new("haiku")}, replyTo(result))
 			requestID := controlRequestID(t, input)
+			input.Reset()
+			id, err := sendTestPrompt(a, "hello")
+			if err != nil {
+				t.Fatal(err)
+			}
+			*updates = nil
 			switch ending {
 			case "rejected":
 				output(t, a, `{"type":"control_response","response":{"subtype":"error","request_id":"`+requestID+`","error":"Unsupported model"}}`)
-				if err := a.Send(prompt("hello")); err != nil {
-					t.Fatalf("failed configuration kept its reservation: %v", err)
+				if ids := written(t, input); !slices.Equal(ids, []string{id}) {
+					t.Fatalf("a failed configuration did not write the prompt held during it: %v", ids)
 				}
 			case "exited":
 				a.Handle(processExit{})
+				if len(*updates) != 2 || !cancelled((*updates)[:1], []string{id}) || (*updates)[1].Type != "exited" || input.Len() != 0 {
+					t.Fatalf("the exit did not drop the held prompt and end alone: %+v, %q", *updates, input)
+				}
 			}
-			err := <-result
+			err = <-result
 			if ending == "rejected" && (err == nil || !strings.Contains(err.Error(), "Unsupported model")) {
 				t.Fatalf("Claude's refusal was lost: %v", err)
 			}
@@ -149,6 +177,26 @@ func TestConfigureFailure(t *testing.T) {
 				t.Fatalf("process exit did not fail configuration: %v", err)
 			}
 		})
+	}
+}
+
+// An interrupt during a configuration drops the inputs held for it and
+// writes nothing, and the configuration's end releases the agent.
+func TestInterruptDuringConfiguration(t *testing.T) {
+	a, input, updates := testAgent()
+	result := make(chan error, 1)
+	a.Configure(agent.SettingsPatch{Model: new("haiku")}, replyTo(result))
+	requestID := controlRequestID(t, input)
+	input.Reset()
+	ids := sendHeld(t, a)
+	*updates = nil
+	if err := a.Interrupt(); err != nil || input.Len() != 0 || !cancelled(*updates, ids) {
+		t.Fatalf("an interrupt during configuration wrote %q or did not drop the held inputs: %v, %+v", input, err, *updates)
+	}
+	*updates = nil
+	acknowledge(t, a, requestID, "success")
+	if err := <-result; err != nil || input.Len() != 0 || len(*updates) != 1 || (*updates)[0].State != "idle" {
+		t.Fatalf("the configuration's end after an interrupt wrote %q or did not release the agent: %v, %+v", input, err, *updates)
 	}
 }
 
@@ -189,15 +237,17 @@ func TestConfigureTimeoutStopsProcess(t *testing.T) {
 	if len(reported) != 0 {
 		t.Fatalf("an acknowledgement after the timeout reported settings: %+v", reported)
 	}
-	if err := a.Send(prompt("hello")); !errors.Is(err, agent.ErrBusy) {
-		t.Fatalf("stopping process was released: %v", err)
+	id, err := sendTestPrompt(a, "hello")
+	if err != nil || input.Len() != 0 {
+		t.Fatalf("a prompt sent to a stopping process was refused or written: %v, %q", err, input)
 	}
+	*updates = nil
 	a.Handle(exit)
 	if err := <-result; !errors.Is(err, agent.ErrExited) {
 		t.Fatalf("process exit did not end configuration: %v", err)
 	}
-	if !a.Exited() || len(*updates) != 0 {
-		t.Fatalf("the exit Ox asked for was reported: %+v", *updates)
+	if !a.Exited() || !cancelled(*updates, []string{id}) {
+		t.Fatalf("the exit did not drop the held prompt alone, or the exit Ox asked for was reported: %+v", *updates)
 	}
 }
 
