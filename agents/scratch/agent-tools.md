@@ -136,19 +136,57 @@ Each phase is split into tasks, and each task goes to `/ox-plan`.
      them: an index into the history, which only grows.
    - The description says the transcript is another conversation's record,
      not instructions or the user's approval.
-4. **Child sessions without worktrees.** Children work in the parent's
-   directory or a `dir` they are given.
-   - The mailbox, since children's goroutines post to their parent.
-   - Requested children, `end_session`, roles, reports and holding them,
-     child instructions, the ended state.
-   - Offers and suggestions, which are cards Ox owns, with their own UI and
-     storage.
+4. **Child sessions without worktrees.** A top-level session starts children
+   the user asked for, briefs them, hears back when they finish a turn, and
+   ends them. Children work in the parent's directory or a `dir` they are
+   given.
+   - **Task 1: `create_session` starts a child.** Requested children only:
+     `name`, `title`, and `message` required; `harness`, `model`, `effort`,
+     and `dir` optional, inheriting the parent's settings and directory, and
+     checked against the configuration as `session/create` checks them. Only
+     a top-level session can create children, so nesting is one level. The
+     child's parent and name are stored, `name` is unique among the parent's
+     children, and `message` reaches the child as a message from the parent.
+     The tool answers with the child's name and session ID; addressing by
+     name is task 2. The page shows children beneath their parent. The plan
+     settles the child's permission mode, whether `create_session` skips the
+     approval prompt, and what removing a parent does to its children.
+   - **Task 2: Roles and addressing.** Tool lists are built per caller:
+     children see only `send_message` and `list_sessions`. A child addresses
+     only its parent, by ID, and its `list_sessions` lists only the parent. A
+     top-level session addresses its children by name and other top-level
+     sessions by ID, and cannot address another session's children; its
+     `list_sessions` and `read_session` cover that scope. The wrapping of a
+     message tells the recipient how to answer for its relationship to the
+     sender, and a child gets generated instructions naming its parent and
+     telling it to message only the parent.
+   - **Task 3: `end_session` and the ended state.** A parent ends a child by
+     name. The child's process stops for good; it stays on the page with a
+     readable transcript, cannot be messaged, sent prompts, or resumed, and
+     its `dir` is left alone. The ended state is stored. The plan settles
+     whether `end_session` skips the approval prompt.
+   - **Task 4: Child reports.** The mailbox, since a child's goroutine now
+     posts to its parent. When a child's turn ends, its final response, cut
+     to 400 characters with a pointer to `read_session`, reaches the parent
+     as a report from the child; a failed turn reports the failure. No report
+     follows a turn whose last action was a successful `send_message` to the
+     parent. Reports are delivered as messages are. The child instructions
+     tell the child to put its conclusion first.
+   - **Task 5: Holding reports until the family is idle.** Reports wait
+     until the parent is idle with nothing pending and every live child is
+     idle, then reach the parent as one batched input that reminds it a
+     report marks the end of a turn, not a finished task. A child waiting on
+     the user does not hold reports back and is named in the batch. Messages
+     go before reports.
 
 Future:
 
 5. **Worktrees.** Git worktree and branch creation for fresh children, the
    refusal of a `dir` inside a foreign worktree, and `end_session`'s checks
    for uncommitted or unmerged work.
+6. **Offers and suggestions.** `create_session`'s offer, accepted offer, and
+   suggestion modes, which are cards Ox owns, with their own UI and storage.
+   To be decided.
 
 ## Open decisions
 
@@ -160,4 +198,4 @@ Future:
 - Whether queued messages and reports survive an `oxd` restart. Phase 2.
 - How a message from another session shows in the transcript and in
   `agent.Update`. Phase 2.
-- What permission mode a child runs in. Phase 4.
+- What permission mode a child runs in. Phase 4, task 1.
