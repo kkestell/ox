@@ -2,10 +2,12 @@
 
 ## Goal
 
-Enable tailnet access with `{"tailscale":true}` in Ox's configuration.
-At startup, Ox looks up its Tailscale IPv4 address, serves the web UI there
-alongside its existing listener, and prints the URL. This Mac's installed
-Tailscale client reports an IPv4 address that a local TCP socket can bind.
+Enable tailnet access by setting `tailscale_ip` to this machine's Tailscale
+IPv4 address in Ox's configuration, for example
+`{"tailscale_ip":"100.101.102.103"}`. At startup, Ox serves the web UI there
+on port 17840 alongside its existing listener and prints the URL, for example
+`http://100.101.102.103:17840`. Ox does not discover the address or invoke the
+Tailscale CLI.
 
 ## Related code
 
@@ -20,68 +22,66 @@ Tailscale client reports an IPv4 address that a local TCP socket can bind.
 
 ## Decisions
 
-- The flag is off by default. When enabled, `ox` gets the local address
-  from the installed client's documented `tailscale ip -4` command. Resolve
-  `tailscale` on PATH first. On macOS, use the bundled CLI at
-  `/Applications/Tailscale.app/Contents/MacOS/Tailscale` if no CLI is on PATH.
-  This Mac uses the bundled path. Set `TAILSCALE_BE_CLI=1` on the invocation
-  so the app runs in CLI mode. [Tailscale CLI documentation](https://tailscale.com/docs/reference/tailscale-cli?tab=macos)
-- Ox runs the command once with a bounded startup wait, parses stdout as an
-  IPv4 address in Tailscale's range, and binds directly to it using the
-  local listener's port. Ox reports a failed lookup or bind and exits before
-  serving. It prints the HTTP URL when both listeners have bound. Under
-  `make dev`, the tailnet URL uses the relay port (8081) and serves the
-  embedded build from startup. The local Vite URL still live-reloads.
+- Tailnet access is off when `tailscale_ip` is omitted or empty. A nonempty
+  value must be an IPv4 address within `100.64.0.0/10`. The user supplies
+  this machine's address; Ox requires no Tailscale CLI.
+- Ox binds directly to the configured address on dedicated port 17840,
+  independent of the local listener's port and `-addr` override. Ox rejects
+  an invalid address or reports a failed bind and exits before serving. It
+  prints the HTTP URL when both listeners have bound. Under `make dev`, the
+  tailnet URL also uses port 17840 and serves the embedded build from startup.
+  The local Vite URL still live-reloads.
 - Omitting both `harnesses` and `defaults` uses the built-in catalog so the
-  switch works in a one-setting file. When either catalog key is present,
+  address works in a one-setting file. When either catalog key is present,
   the file must still supply a valid complete catalog and defaults.
 - Both listeners use one relay and its existing cross-origin protection.
-  The discovered address joins the relay's allowed hosts from the same
+  The configured address joins the relay's allowed hosts from the same
   value used to bind the listener. A client that can reach the tailnet
   port can use the same session and workspace controls as a local client.
   Tailscale policy controls access over the tailnet. Ox adds no login.
 
 ## Implementation plan
 
-1. In `internal/config/config.go`, add the optional boolean `tailscale`,
-   defaulting to false. Keep strict JSON decoding. Track whether the catalog
-   keys were supplied so that the loader uses the built-in catalog only
-   when both are omitted. Use the existing catalog validation for both
-   sources.
+1. In `internal/config/config.go`, add the optional string `tailscale_ip`,
+   defaulting to empty. Validate nonempty values with `netip.ParseAddr` and
+   accept only an IPv4 address within `100.64.0.0/10`. Keep strict JSON
+   decoding. Track whether the catalog keys were supplied so that the loader
+   uses the built-in catalog only when both are omitted. Use the existing
+   catalog validation for both sources.
 2. In `cmd/ox/main.go`, load the shared configuration via `paths.Config()` or
    the same `-config` override as `oxd`. Keep the existing `-addr` default
-   and override. Use one startup function in `cmd/ox` for resolving and
-   running the Tailscale CLI. Parse its stdout with `netip.ParseAddr` and
-   accept only an address within `100.64.0.0/10`. Include the command's
-   error or stderr when available. Do not run the command unless enabled.
-   Bind the local and optional tailnet listeners before serving with the
-   shared handler. Populate the relay's allowlist from their configured
-   hostnames and exit on a serving error.
+   and override. Use the validated `tailscale_ip` for the optional tailnet
+   listener on port 17840; do not add CLI discovery. Bind the local and
+   optional tailnet listeners before serving with the shared handler.
+   Populate the relay's allowlist from their configured hostnames and exit
+   on a serving error.
 3. In `cmd/ox/web/e2e/services.ts`, pass the test's temporary configuration
    to `ox` as well, so the test runner uses its own network settings.
 4. Apply the approved requirements below. In `docs/protocol.md`, show the
-   one-setting config and CLI requirement. In `docs/architecture.md`,
-   document the shared relay, startup discovery, and embedded UI served by
+   one-setting config. In `docs/architecture.md`, document the shared relay,
+   configured tailnet listener, and embedded UI served by
    the tailnet listener under `make dev`.
 
 ## Test plan
 
 - In `internal/config/config_test.go`, load the one-setting file and verify
-  it enables Tailscale with the built-in catalog. Keep coverage of incomplete
-  custom catalogs.
-- In `cmd/ox`, exercise discovery with a small stand-in CLI that returns a
-  tailnet address and an unusable result. Extend the existing relay tests
-  for a matching origin and a foreign origin on the tailnet host.
+   it preserves the configured address with the built-in catalog. Cover an
+   omitted or empty address, malformed addresses, IPv6, and IPv4 outside
+   Tailscale's range. Keep coverage of incomplete custom catalogs.
+- In `cmd/ox`, exercise optional listener startup and bind failure with
+   supplied addresses. Verify the tailnet listener uses port 17840 regardless
+   of the local `-addr` port. Extend the existing relay tests for a matching
+   origin and a foreign origin on the tailnet host.
 - Run `make test` and `make e2e`. In headless Chrome on the `make dev` stack,
-  use temporary XDG directories, the fake harness, and `"tailscale":true`.
-  Open the printed URL, send a prompt, observe the echo, and verify the
-  local Vite URL sees the session.
+   use temporary XDG directories, the fake harness, and `tailscale_ip` set to
+   this machine's Tailscale IPv4 address. Open the printed URL, send a prompt,
+   observe the echo, and verify the local Vite URL sees the session.
 
 ## Requirement changes
 
 - Replace **Local access only.** Only pages served from this machine (or from the host `ox` was told to serve) can reach `oxd`.
 
-  **Web access.** The web relay accepts requests addressed to Ox's local or configured hosts. When Tailscale access is enabled, Ox also serves the web UI on its detected Tailscale address and prints that URL at startup.
+  **Web access.** The web relay accepts requests addressed to Ox's local or configured hosts. When the user configures `tailscale_ip`, Ox also serves the web UI on that Tailscale address at port 17840, independently of the local listener's port, and prints that URL at startup.
 
 - Replace **Built-in catalog.** Without a configuration file, Ox offers Claude Opus, Sonnet, and Haiku 5.5 with their effort levels and the manual, auto, acceptEdits, and plan modes.
 
