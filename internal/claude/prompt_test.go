@@ -95,9 +95,9 @@ func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
 		t.Fatalf("prompt not written for steering under its ID: %s", input)
 	}
 
-	if len(*updates) != 2 || (*updates)[0].Type != "prompt" || (*updates)[0].Text != "hello" || (*updates)[0].MessageID != id ||
+	if len(*updates) != 2 || (*updates)[0].Type != "prompt_queued" || (*updates)[0].Text != "hello" || (*updates)[0].MessageID != id ||
 		(*updates)[1].State != "running" || (*updates)[1].MessageID != id || a.Snapshot().State != "running" {
-		t.Fatalf("a written prompt was not published as running: %+v", *updates)
+		t.Fatalf("a written prompt was not published as queued and running: %+v", *updates)
 	}
 	*updates = nil
 
@@ -120,6 +120,11 @@ func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
 	*updates = nil
 
 	output(t, a, `{"type":"command_lifecycle","command_uuid":"`+id+`","state":"started"}`)
+	if len(*updates) != 1 || (*updates)[0].Type != "prompt" || (*updates)[0].Text != "hello" || (*updates)[0].MessageID != id ||
+		a.Snapshot().Queued != nil {
+		t.Fatalf("the taken prompt was not published: %+v", *updates)
+	}
+	*updates = nil
 	state(t, a, "running")
 	state(t, a, "idle")
 	if len(*updates) != 1 || (*updates)[0].State != "idle" || (*updates)[0].MessageID != id {
@@ -127,6 +132,107 @@ func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
 	}
 	if _, err := a.Send("next"); err != nil {
 		t.Fatalf("the released agent refused a prompt: %v", err)
+	}
+}
+
+func TestPromptSentWhileClaudeWorks(t *testing.T) {
+	a, input, updates, first := promptingAgent(t)
+	id, err := a.Send("steer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(input.Bytes(), &wire); err != nil || wire["uuid"] != id || wire["priority"] != "next" {
+		t.Fatalf("prompt not written for steering under its ID: %s", input)
+	}
+	if len(*updates) != 1 || (*updates)[0].Type != "prompt_queued" || (*updates)[0].Text != "steer" || (*updates)[0].MessageID != id {
+		t.Fatalf("a prompt sent while Claude works was not published as queued: %+v", *updates)
+	}
+	if queued := a.Snapshot().Queued; queued == nil || queued.MessageID != id || queued.Text != "steer" {
+		t.Fatalf("the snapshot does not hold the queued prompt: %+v", queued)
+	}
+	if _, err := a.Send("again"); !errors.Is(err, agent.ErrBusy) {
+		t.Fatalf("a second prompt was queued: %v", err)
+	}
+	*updates = nil
+
+	state(t, a, "requires_action")
+	state(t, a, "idle")
+	if _, err := a.Send("again"); !errors.Is(err, agent.ErrBusy) || len(*updates) != 1 || (*updates)[0].State != "requires_action" {
+		t.Fatalf("a stale idle released a queued prompt: %v, %+v", err, *updates)
+	}
+	*updates = nil
+
+	state(t, a, "running")
+	output(t, a, `{"type":"command_lifecycle","command_uuid":"`+id+`","state":"started"}`)
+	output(t, a, `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"steered"}}}`)
+	if len(*updates) != 3 || (*updates)[1].Type != "prompt" || (*updates)[1].MessageID != id || (*updates)[2].MessageID != id ||
+		a.Snapshot().Queued != nil {
+		t.Fatalf("the taken prompt did not take over the turn: %+v", *updates)
+	}
+	*updates = nil
+
+	last, err := a.Send("more")
+	if err != nil {
+		t.Fatalf("a prompt was refused once Claude took the queued one: %v", err)
+	}
+	output(t, a, `{"type":"command_lifecycle","command_uuid":"`+last+`","state":"started"}`)
+	output(t, a, `{"type":"result","subtype":"success","result":"done"}`)
+	state(t, a, "idle")
+	release := (*updates)[len(*updates)-1]
+	if release.State != "idle" || release.MessageID != last || release.MessageID == first {
+		t.Fatalf("the release does not name the latest taken prompt: %+v", *updates)
+	}
+
+	// Claude's own turn has no client prompt to hold the agent.
+	a, _, updates = testAgent()
+	state(t, a, "running")
+	*updates = nil
+	if _, err := a.Send("steer"); err != nil || len(*updates) != 1 || (*updates)[0].Type != "prompt_queued" {
+		t.Fatalf("a prompt sent during Claude's own turn changed the state: %v, %+v", err, *updates)
+	}
+}
+
+func TestStopDropsQueuedPrompt(t *testing.T) {
+	a, input, updates, first := promptingAgent(t)
+	id, err := a.Send("steer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.Reset()
+	*updates = nil
+	if err := a.Interrupt(); err != nil || !strings.Contains(input.String(), `"cancel_queued":true`) {
+		t.Fatalf("an interrupt did not drop the queued prompt: %v, %q", err, input.String())
+	}
+	output(t, a, `{"type":"command_lifecycle","command_uuid":"`+first+`","state":"cancelled"}`)
+	if len(*updates) != 0 {
+		t.Fatalf("cancelling the taken prompt published updates: %+v", *updates)
+	}
+	output(t, a, `{"type":"command_lifecycle","command_uuid":"`+id+`","state":"cancelled"}`)
+	if len(*updates) != 1 || (*updates)[0].Type != "prompt_cancelled" || (*updates)[0].MessageID != id || (*updates)[0].Text != "steer" ||
+		a.Snapshot().Queued != nil {
+		t.Fatalf("the dropped prompt was not published: %+v", *updates)
+	}
+	state(t, a, "idle")
+	if _, err := a.Send("next"); err != nil {
+		t.Fatalf("idle did not release the agent after the dropped prompt: %v", err)
+	}
+
+	a, input, _, _ = promptingAgent(t)
+	if err := a.Interrupt(); err != nil || !strings.Contains(input.String(), `"subtype":"interrupt"`) || strings.Contains(input.String(), "cancel_queued") {
+		t.Fatalf("an interrupt with nothing queued changed: %v, %q", err, input.String())
+	}
+
+	a, _, updates = stoppableAgent(t)
+	if _, err := a.Send("hello"); err != nil {
+		t.Fatal(err)
+	}
+	*updates = nil
+	if err := a.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if len(*updates) != 2 || (*updates)[0].Type != "prompt_cancelled" || (*updates)[0].Text != "hello" || (*updates)[1].Type != "exited" {
+		t.Fatalf("an exit did not drop the queued prompt first: %+v", *updates)
 	}
 }
 
@@ -248,8 +354,9 @@ func TestTurnAfterPromptResultIsClaudes(t *testing.T) {
 	output(t, a, `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"found it"}}}`)
 	output(t, a, `{"type":"result","subtype":"success","result":"found it"}`)
 	output(t, a, `{"type":"result","subtype":"success","result":""}`)
-	if _, err := a.Send("again"); !errors.Is(err, agent.ErrBusy) {
-		t.Fatalf("the prompt released the session before Claude was idle: %v", err)
+	result := make(chan outcome, 1)
+	if a.Configure(agent.Settings{Model: "haiku"}, replyTo(result)); !errors.Is((<-result).err, agent.ErrBusy) {
+		t.Fatal("the prompt released the session before Claude was idle")
 	}
 	state(t, a, "idle")
 	if len(*updates) != 3 || (*updates)[0].MessageID != "" || (*updates)[1].MessageID != "" ||

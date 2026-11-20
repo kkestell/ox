@@ -21,14 +21,15 @@ type Agent interface {
 	Events() <-chan Event
 	Handle(Event)
 	Snapshot() Snapshot
-	// Send writes a prompt to an idle agent and returns its message ID. It
-	// returns ErrBusy unless the agent is idle with no prompt or
-	// configuration in progress.
+	// Send writes a prompt and returns its message ID. The harness takes it
+	// into the running turn, or starts a turn with it. Send returns ErrBusy
+	// while a prompt the harness has not taken yet is queued, or while a
+	// configuration is in progress.
 	Send(text string) (string, error)
 	// Approve answers a pending approval, or returns ErrApprovalNotFound.
 	Approve(requestID string, response json.RawMessage) error
-	// Interrupt stops the running turn, including a prompt the harness has
-	// not taken yet. The turn's end arrives as updates; an idle agent has
+	// Interrupt stops the running turn and drops a queued prompt with
+	// prompt_cancelled. The turn's end arrives as updates; an idle agent has
 	// nothing to stop.
 	Interrupt() error
 	// Configure applies settings to the running process and calls done, now
@@ -90,7 +91,9 @@ type Settings struct {
 
 // Update types.
 const (
-	UpdatePrompt            = "prompt"
+	UpdatePrompt            = "prompt"           // the harness took a client prompt
+	UpdatePromptQueued      = "prompt_queued"    // a client prompt was written; the harness has not taken it yet
+	UpdatePromptCancelled   = "prompt_cancelled" // a queued prompt was dropped before the harness took it
 	UpdateState             = "state"
 	UpdateTextDelta         = "text_delta"
 	UpdateToolUse           = "tool_use"
@@ -134,6 +137,13 @@ type Result struct {
 type Snapshot struct {
 	State     string     `json:"state"`
 	Approvals []Approval `json:"approvals"`
+	Queued    *Prompt    `json:"queued,omitempty"`
+}
+
+// Prompt is a client prompt.
+type Prompt struct {
+	MessageID string `json:"message_id"`
+	Text      string `json:"text"`
 }
 
 type Approval struct {

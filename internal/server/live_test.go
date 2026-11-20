@@ -186,6 +186,81 @@ func TestLive(t *testing.T) {
 	}
 	idle(a)
 
+	// steer sends a prompt that waits on a Bash approval, then sends a
+	// second prompt while it waits, and returns the approval and the second
+	// prompt's ID.
+	const steerText = "Also reply with the word steered."
+	steer := func(id string) (agent.Update, string) {
+		t.Helper()
+		c.forget(id)
+		c.call("session/send", map[string]string{"session_id": id, "text": "Use the Bash tool to run `sleep 3 && touch steer.txt`, then reply with just the word done."})
+		asked := c.update(id, "approval")
+		var queued struct {
+			MessageID string `json:"message_id"`
+		}
+		json.Unmarshal(c.call("session/send", map[string]string{"session_id": id, "text": steerText}), &queued)
+		var u agent.Update
+		c.next(func(m message) bool {
+			if m.Method != "session/update" || m.sessionID() != id {
+				return false
+			}
+			u = agent.Update{}
+			json.Unmarshal(m.Params, &u)
+			return u.Type == "prompt_queued" && u.MessageID == queued.MessageID
+		})
+		if u.Text != steerText {
+			t.Errorf("prompt_queued carried %q", u.Text)
+		}
+		if busy := c.request("session/send", map[string]string{"session_id": id, "text": "again"}); busy.Error == nil || busy.Error.Code != sessionBusy {
+			t.Errorf("a second prompt was queued: %+v", busy.Error)
+		}
+		return asked, queued.MessageID
+	}
+
+	t.Log("a prompt sent while Claude works joins the turn")
+	steered := create("manual")
+	u, queued := steer(steered)
+	for taken := false; ; {
+		if u.Type == "approval" {
+			var r request
+			json.Unmarshal(u.Request, &r)
+			c.call("session/approve", map[string]any{"session_id": steered, "request_id": u.RequestID, "response": allow(r)})
+		}
+		c.next(func(m message) bool {
+			if m.Method != "session/update" || m.sessionID() != steered {
+				return false
+			}
+			u = agent.Update{}
+			json.Unmarshal(m.Params, &u)
+			return u.Type == "prompt" || u.Type == "approval" || (u.Type == "state" && u.State == "idle")
+		})
+		if u.Type == "prompt" {
+			taken = taken || u.MessageID == queued
+		}
+		if u.Type == "state" {
+			if !taken {
+				t.Error("Claude did not take the prompt sent while it worked")
+			}
+			break
+		}
+	}
+
+	t.Log("Stop drops a prompt Claude has not taken")
+	stopped := create("manual")
+	_, dropped := steer(stopped)
+	c.call("session/interrupt", map[string]string{"session_id": stopped})
+	if u := c.update(stopped, "prompt_cancelled"); u.MessageID != dropped || u.Text != steerText {
+		t.Errorf("prompt_cancelled named %+v, not %s", u, dropped)
+	}
+	idle(stopped)
+	for _, m := range c.received(stopped) {
+		var u agent.Update
+		json.Unmarshal(m.Params, &u)
+		if u.Type == "prompt" && u.MessageID == dropped {
+			t.Error("Claude took the prompt Stop dropped")
+		}
+	}
+
 	t.Log("a session starting Claude holds up only its own requests")
 	b := create("acceptEdits")
 	start := time.Now()

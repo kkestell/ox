@@ -95,7 +95,10 @@ The response carries the slash-command catalog and the model list. No model turn
   - `{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"..."}}`
   - Embedded text can be sent as a text block wrapping it in `<context ref="uri">…</context>`; a file link as `[@name](uri)`, which Claude opens with its tools.
 - `uuid` is your handle for the prompt. Claude reports it back when it takes the prompt into a turn (section 4).
-- Set `"priority":"next"` explicitly; the default depends on Claude's feature flags (2.1.326). With `next`, a prompt written during a turn is taken in at the turn's next opportunity (steering); one not taken before the turn ends runs as its own turn.
+- Set `"priority":"next"` explicitly; the default depends on Claude's feature flags (2.1.326). With `next`, a prompt written during a turn is taken in at the turn's next opportunity (steering); one not taken before the turn ends runs as its own turn (2.1.328):
+  - Claude takes it (`command_lifecycle started`) right after the running tool call's `tool_result`, with no new `system init`, and the turn ends with one `result`.
+  - While a `can_use_tool` request waits, the prompt stays untaken. Claude takes it after the answer's `tool_result`.
+  - A turn with no further tool calls does not take it. After the turn's `result`, Claude starts the prompt as its own turn (`started`, a new `system init`, its own `result`) with no `idle` in between. `idle` follows only the last turn.
 - A message cannot be withdrawn once written, short of an interrupt with `cancel_queued`.
 - Slash commands and user-invocable skills are plain prompt text: `/review src/main.rs`. Local commands such as `/model` and `/clear` complete without a model call. An unknown command reaches the model as ordinary text. `--disable-slash-commands` disables both commands and skills; streamed `client_composed: true` bypasses slash dispatch.
 
@@ -210,7 +213,7 @@ Once per turn, after the assistant message and before the result; nothing before
 
 ### `command_lifecycle`
 
-`{"type":"command_lifecycle","command_uuid":"<your uuid>","state":"started"}` marks a prompt taken into a turn. The same line with `queued` marks a prompt received but not yet taken, and with `cancelled` a prompt an interrupt dropped or stopped (2.1.328).
+`{"type":"command_lifecycle","command_uuid":"<your uuid>","state":"started"}` marks a prompt taken into a turn. The same line with `queued` marks a prompt received but not yet taken, which a prompt written during a turn gets at once; with `cancelled` a prompt an interrupt dropped or stopped; and with `completed` a prompt whose turn finished, around the turn's `result`. A prompt steered into a turn completes before the turn's original prompt (2.1.328).
 
 ## 4. Turns
 
@@ -243,6 +246,8 @@ A prompt Claude has received but not taken (2.1.328):
 
 - `interrupt` answers `{"still_queued":["<uuid>"]}`, then Claude takes the prompt and stops it at once: `command_lifecycle started`, `user` text `[Request interrupted by user]`, a `result` with `terminal_reason:"aborted_streaming"` and no API call, `command_lifecycle cancelled`, and `idle`.
 - `interrupt` with `cancel_queued: true` answers `{"still_queued":[],"cancelled":["<uuid>"]}` after `command_lifecycle cancelled`, then `idle`, with no turn and no `result`.
+
+A prompt written during a turn and not yet taken, with `cancel_queued: true` (2.1.328): `command_lifecycle cancelled` for the queued prompt, then the response `{"still_queued":[],"cancelled":["<uuid>"]}`, then steps 2 to 4 above for the running turn, then `command_lifecycle cancelled` for the turn's prompt, then `idle`.
 
 ### Session IDs
 

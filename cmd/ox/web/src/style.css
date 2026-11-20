@@ -157,6 +157,7 @@ main > [role="alert"] { padding: 0.5rem 1rem; font-size: 0.75rem; }
 .log ~ [role="alert"], .log ~ [role="status"] { padding: 0 var(--transcript-inset); font-size: 0.75rem; text-align: right; }
 .prompt, .error { white-space: pre-wrap; overflow-wrap: break-word; }
 .log .prompt { align-self: flex-end; max-width: 75%; margin: 0.75rem 0; padding: 0.75rem 1rem; border-radius: calc(var(--radius) + 4px); background: var(--secondary); color: var(--secondary-foreground); box-shadow: var(--shadow-sm); }
+.log .prompt.queued { opacity: 0.6; }
 .markdown { overflow-wrap: break-word; }
 .markdown > :first-child { margin-top: 0; }
 .markdown > :last-child { margin-bottom: 0; }

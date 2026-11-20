@@ -183,15 +183,15 @@ func TestConfigureTimeoutStopsProcess(t *testing.T) {
 }
 
 func TestConfigureRequiresIdle(t *testing.T) {
-	for _, busy := range []string{"running", "requires_action", "queued", "prompting"} {
+	for _, busy := range []string{"running", "requires_action", "prompt not taken", "prompt taken"} {
 		t.Run(busy, func(t *testing.T) {
 			a, _, _ := testAgent()
 			switch busy {
-			case "queued":
+			case "prompt not taken":
 				if _, err := a.Send("hello"); err != nil {
 					t.Fatal(err)
 				}
-			case "prompting":
+			case "prompt taken":
 				a, _, _, _ = promptingAgent(t)
 			default:
 				state(t, a, busy)

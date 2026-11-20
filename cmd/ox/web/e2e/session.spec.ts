@@ -20,7 +20,7 @@ async function newSession(page: Page, text: string) {
   await prompt(page).fill(text);
   await prompt(page).press("Enter");
   await expect(page.locator(".reply").last()).toHaveText(`You said: ${text}`);
-  await expect(send(page)).toBeVisible();
+  await expect(stop(page)).toHaveCount(0);
 }
 
 test("the first send hands its text and later edits to the new session", async ({ page }) => {
@@ -53,7 +53,7 @@ test("a reply renders as Markdown and its prompt stays plain", async ({ page }) 
   ].join("\n");
   await prompt(page).fill(text);
   await prompt(page).press("Enter");
-  await expect(send(page)).toBeVisible();
+  await expect(stop(page)).toHaveCount(0);
   const reply = page.locator(".reply");
   await expect(reply.locator("strong")).toHaveText("bold");
   await expect(reply.locator("code")).toHaveText("code");
@@ -179,7 +179,7 @@ test("Stop interrupts a running reply", async ({ page }) => {
   await expect(page.locator(".reply")).toContainText("You said:");
   await stop(page).click();
   await expect(page.locator(".error")).toHaveText("Interrupted");
-  await expect(send(page)).toBeVisible();
+  await expect(stop(page)).toHaveCount(0);
 });
 
 test("Stop appears once the page's send is accepted, and stops it", async ({ page }) => {
@@ -194,7 +194,7 @@ test("Stop appears once the page's send is accepted, and stops it", async ({ pag
   held.release();
   await stop(page).click();
   await expect(page.locator(".error")).toHaveText("Interrupted");
-  await expect(send(page)).toBeVisible();
+  await expect(stop(page)).toHaveCount(0);
 });
 
 test("a send held in one session leaves another usable", async ({ page }) => {
@@ -247,7 +247,95 @@ test("Allow sends the exact numbers displayed in the tool input", async ({ page 
   await card.getByRole("button", { name: "Submit" }).click();
   await expect(card).toHaveCount(0);
   await expect(toolResult(page, "Example")).toHaveText(`{"behavior":"allow","updatedInput":${input}}`);
+  await expect(stop(page)).toHaveCount(0);
+});
+
+test("a prompt sent while Claude works stays pending until Claude takes it", async ({ page }) => {
+  await open(page, services);
+  await page.getByRole("button", { name: "New session" }).click();
+  await ask(page, "Bash", "{}");
+  await expect(stop(page)).toBeVisible();
   await expect(send(page)).toBeVisible();
+  await prompt(page).fill("steer");
+  await prompt(page).press("Enter");
+  await expect(prompt(page)).toHaveValue("");
+  await expect(page.locator(".prompt.queued")).toHaveText("steer");
+  await expect(send(page)).toBeDisabled();
+
+  await page.reload();
+  await expect(page.locator(".prompt.queued")).toHaveText("steer");
+  const card = page.locator(".approval");
+  await card.getByLabel("Allow").check();
+  await card.getByRole("button", { name: "Submit" }).click();
+  await expect(page.locator(".prompt.queued")).toHaveCount(0);
+  await expect(page.locator(".prompt")).toHaveText(["approve Bash {}", "steer"]);
+  await expect(page.locator(".reply").last()).toHaveText("You said: steer");
+});
+
+test("Stop drops a pending prompt and returns its text to the composer", async ({ page }) => {
+  await open(page, services);
+  await page.getByRole("button", { name: "New session" }).click();
+  await ask(page, "Bash", "{}");
+  await prompt(page).fill("steer");
+  await prompt(page).press("Enter");
+  await expect(page.locator(".prompt.queued")).toHaveText("steer");
+  await expect(prompt(page)).toHaveValue("");
+  await prompt(page).fill("more");
+  await stop(page).click();
+  await expect(page.locator(".prompt.queued")).toHaveCount(0);
+  await expect(prompt(page)).toHaveValue("steer\nmore");
+  await expect(page.locator(".error")).toHaveText("Interrupted");
+});
+
+test("a dropped prompt returns only to the page that sent it", async ({ page, context }) => {
+  await open(page, services);
+  await page.getByRole("button", { name: "New session" }).click();
+  await ask(page, "Bash", "{}");
+  const other = await context.newPage();
+  await other.goto(page.url());
+  await expect(other.locator(".approval")).toHaveCount(1);
+  await prompt(page).fill("steer");
+  await prompt(page).press("Enter");
+  await expect(prompt(page)).toHaveValue("");
+  await expect(other.locator(".prompt.queued")).toHaveText("steer");
+  await stop(other).click();
+  await expect(page.locator(".prompt.queued")).toHaveCount(0);
+  await expect(other.locator(".prompt.queued")).toHaveCount(0);
+  await expect(other.locator(".error")).toHaveText("Interrupted");
+  await expect(prompt(page)).toHaveValue("steer");
+  await expect(prompt(other)).toHaveValue("");
+});
+
+test("a reconnect clears a pending prompt Claude took while the page was away", async ({ page, context }) => {
+  await open(page, services);
+  await page.getByRole("button", { name: "New session" }).click();
+  await ask(page, "Bash", "{}");
+  await prompt(page).fill("steer");
+  await prompt(page).press("Enter");
+  await expect(page.locator(".prompt.queued")).toHaveText("steer");
+  const other = await context.newPage();
+  await other.goto(page.url());
+  await expect(other.locator(".prompt.queued")).toHaveText("steer");
+
+  // The page stays disconnected while the other page reconnects and lets
+  // the harness take the prompt.
+  await page.route("**/events", (route) => route.abort());
+  const reloaded = other.waitForResponse(
+    (r) => r.url().includes("/rpc") && r.request().postDataJSON()?.method === "session/get",
+  );
+  await services.restartRelay();
+  await reloaded;
+  const card = other.locator(".approval");
+  await card.getByLabel("Allow").check();
+  await card.getByRole("button", { name: "Submit" }).click();
+  await expect(other.locator(".reply").last()).toHaveText("You said: steer");
+  await expect(page.locator(".prompt.queued")).toHaveText("steer");
+
+  await page.unroute("**/events");
+  await expect(page.locator(".reply").last()).toHaveText("You said: steer", { timeout: 15_000 });
+  await expect(page.locator(".prompt.queued")).toHaveCount(0);
+  await expect(page.locator(".prompt")).toHaveText(["approve Bash {}", "steer"]);
+  await expect(send(page)).toBeEnabled();
 });
 
 test("AskUserQuestion is answered from a form", async ({ page }) => {
@@ -289,7 +377,7 @@ test("AskUserQuestion is answered from a form", async ({ page }) => {
   await expect(toolResult(page, "AskUserQuestion")).toHaveText(
     `{"behavior":"allow","updatedInput":${input.slice(0, -1)},"answers":{"Which color?":"Red","Which sections?":"Introduction, Appendix, Glossary"}}}`,
   );
-  await expect(send(page)).toBeVisible();
+  await expect(stop(page)).toHaveCount(0);
 
   card = await ask(page, "AskUserQuestion", input);
   await card.getByRole("button", { name: "Decline" }).click();
@@ -297,7 +385,7 @@ test("AskUserQuestion is answered from a form", async ({ page }) => {
   await expect(toolResult(page, "AskUserQuestion")).toHaveText(
     '{"behavior":"deny","message":"User declined to answer"}',
   );
-  await expect(send(page)).toBeVisible();
+  await expect(stop(page)).toHaveCount(0);
 
   card = await ask(page, "AskUserQuestion", '{"questions":"x"}');
   await expect(card.getByLabel("Allow")).toBeVisible();
@@ -325,7 +413,7 @@ test("a reconnect keeps an expanded tool call open", async ({ page }) => {
   const card = await ask(page, "Bash", '{"command":"ls"}');
   await card.getByLabel("Allow").check();
   await card.getByRole("button", { name: "Submit" }).click();
-  await expect(send(page)).toBeVisible();
+  await expect(stop(page)).toHaveCount(0);
   const tool = page.locator("details.tool");
   await tool.locator("summary").click();
   await expect(tool).toHaveAttribute("open");

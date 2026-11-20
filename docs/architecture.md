@@ -103,16 +103,17 @@ The phase identifies the current operation:
 | Phase | Meaning | Leaves on |
 | --- | --- | --- |
 | `available` | Available for a prompt or configuration. | A prompt or configuration starts. |
-| `queued` | A written prompt is waiting for Claude to take it. | `command_lifecycle started` for the prompt. |
-| `prompting` | Claude is working on the prompt. | Claude reports `idle`. |
+| `prompting` | Client prompts hold the agent. It holds at most one prompt Claude has not taken yet, which `command_lifecycle started` or `cancelled` ends. | Claude reports `idle` with no prompt queued. |
 | `configuring` | Control requests are in flight, one at a time. | The last acknowledgement, a refusal, or a write failure. |
 | `exited` | The Claude process has exited. | — |
 
 Process exit moves any live phase to `exited`. Alongside the phase, the agent
 keeps the execution state it publishes: Claude's reported state, except that a
 prompt is `running` from the moment it is written until Claude reports `idle`
-after taking it. Both `available` and `idle` are required to take a prompt or
-configuration, and an interrupt is sent whenever the state is not `idle`.
+with no prompt queued. A prompt is written in any phase but `configuring` and
+`exited` while no prompt is queued. Both `available` and `idle` are required
+to take a configuration. An interrupt is sent whenever the state is not
+`idle`, and drops a queued prompt.
 
 The agent derives `Parkable` from its phase, its state, pending approvals,
 and [Claude's reports of background work](claude-code.md#8-background-work-and-schedules).
@@ -148,6 +149,8 @@ A session's control owns the page's requests for that session: its composer
 text, creation, sends, configuration, interrupts, approval answers, and their
 errors. It outlives the session's view, so leaving the view or reconnecting
 keeps the text and repeats no request. A send and a configuration exclude each other.
+The control remembers the prompt it sent last, so a prompt dropped before
+Claude took it returns to the composer of the page that sent it.
 The settings form sends a patch to
 [`session/configure`](protocol.md#sessionconfigure) and shows the requested
 values, each changed one with a spinner, and Send disabled until the request

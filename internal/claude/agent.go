@@ -12,8 +12,7 @@ type phase int
 
 const (
 	available   phase = iota
-	queued            // prompt written; Claude has not taken it yet
-	prompting         // Claude took the prompt; its next idle state releases it
+	prompting         // client prompts hold the agent until Claude reports idle with none queued
 	configuring       // control requests in flight, one at a time
 	exited
 )
@@ -28,7 +27,7 @@ type Agent struct {
 	// state is the execution state clients see: Claude's report, except that
 	// a prompt is running from the moment it is written.
 	state            string
-	prompt           *submission      // the client prompt holding the agent until Claude is idle
+	prompt           *submission      // the client prompts holding the agent until Claude is idle
 	turn             string           // the client prompt whose turn is running, until its result
 	approvals        []agent.Approval // pending, in arrival order
 	config           *configuration
@@ -109,8 +108,11 @@ func (a *Agent) handleOutput(m message) {
 	case "control_cancel_request":
 		a.cancelApproval(m.RequestID)
 	case "command_lifecycle":
-		if m.State == "started" {
+		switch m.State {
+		case "started":
 			a.commandStarted(m.CommandUUID)
+		case "cancelled":
+			a.commandCancelled(m.CommandUUID)
 		}
 	case "system":
 		if m.PermissionMode != "" {
@@ -188,7 +190,12 @@ func (a *Agent) idle() bool {
 }
 
 func (a *Agent) Snapshot() agent.Snapshot {
-	return agent.Snapshot{State: a.state, Approvals: append([]agent.Approval{}, a.approvals...)}
+	snapshot := agent.Snapshot{State: a.state, Approvals: append([]agent.Approval{}, a.approvals...)}
+	if queued := a.queued(); queued != nil {
+		copied := *queued
+		snapshot.Queued = &copied
+	}
+	return snapshot
 }
 
 func (a *Agent) exit(err error) {
@@ -196,9 +203,12 @@ func (a *Agent) exit(err error) {
 	if err != nil {
 		reason += ": " + err.Error()
 	}
-	reported := a.phase == queued || a.phase == prompting
+	reported := a.phase == prompting
 	switch a.phase {
-	case queued, prompting:
+	case prompting:
+		if a.queued() != nil {
+			a.dropQueued()
+		}
 		a.endPrompt(agent.Update{Type: agent.UpdateExited, Error: reason})
 	case configuring:
 		a.endConfiguration(a.config.fail(agent.ErrExited))

@@ -8,6 +8,7 @@ import {
   type Methods,
   type Notification,
   notFound,
+  type Prompt,
   type SessionState,
   type Settings,
   type ToolResult,
@@ -37,6 +38,8 @@ export type Session = {
   settings: Settings;
   entries: Entry[];
   approvals: Approval[];
+  // queued is the prompt sent while Claude works, until Claude takes it.
+  queued?: Prompt;
   synced: boolean;
 };
 
@@ -54,6 +57,13 @@ function apply(session: Session, u: Update) {
   switch (u.type) {
     case "prompt":
       session.entries.push({ kind: "prompt", text: u.text });
+      if (session.queued?.message_id === u.message_id) session.queued = undefined;
+      break;
+    case "prompt_queued":
+      session.queued = { message_id: u.message_id, text: u.text };
+      break;
+    case "prompt_cancelled":
+      if (session.queued?.message_id === u.message_id) session.queued = undefined;
       break;
     case "text_delta": {
       const last = session.entries.at(-1);
@@ -118,7 +128,8 @@ export function createAttempt() {
 // repeats no request. A send and a configuration exclude each other, so a
 // prompt runs with the settings the page shows. A new session's control
 // starts as its draft's composer, and its first send starts before its
-// session/get returns.
+// session/get returns. The control remembers the prompt it sent last, so a
+// prompt dropped before Claude took it returns to this page's composer.
 function createSessionControl(
   id: string,
   rpc: Connection["rpc"],
@@ -131,19 +142,27 @@ function createSessionControl(
   const [error, attempt, clearError] = createAttempt();
   const [notice, setNotice] = createSignal<string>();
   const [creating, setCreating] = createSignal(false);
+  // sent is the message ID of the latest prompt this page sent.
+  let sent: string | undefined;
   const ready = () => connected() && (session()?.synced ?? true);
-  // idle is whether the session can take a prompt or a settings change.
+  // idle is whether the session can take a settings change.
   const idle = () => session()?.state === "idle" || session()?.state === "parked";
-  const available = () => ready() && !creating() && !sending() && requested() === undefined && idle();
+  const free = () => ready() && !creating() && !sending() && requested() === undefined;
+  const canSend = () => {
+    const s = session();
+    return free() && s !== undefined && s.queued === undefined;
+  };
+  const canConfigure = () => free() && idle();
   const start = (request: Promise<unknown>) => {
     setNotice(undefined);
     return attempt(request);
   };
   // post sends a prompt. Text typed while it is pending stays in the box.
-  function post(sent: string) {
+  function post(prompt: string) {
     setSending(true);
-    const request = rpc("session/send", { session_id: id, text: sent }).then(() => {
-      if (text() === sent) setText("");
+    const request = rpc("session/send", { session_id: id, text: prompt }).then((result) => {
+      sent = result.message_id;
+      if (text() === prompt) setText("");
     });
     start(request).finally(() => setSending(false));
   }
@@ -161,33 +180,39 @@ function createSessionControl(
     notice,
     creating,
     idle,
-    available,
+    canSend,
+    canConfigure,
     // requested is the settings a configuration in flight asks for.
     requested,
     // create creates the session with the composer's text as its first
     // prompt, and calls onCreated once the session exists. If an earlier
     // create already reached oxd, it recovers instead of sending.
     create(workspaceId: string, harness: string, settings: Settings, onCreated: () => void) {
-      const sent = text();
-      if (!ready() || creating() || !sent.trim()) return;
+      const prompt = text();
+      if (!ready() || creating() || !prompt.trim()) return;
       setCreating(true);
       const request = rpc("session/create", { session_id: id, workspace_id: workspaceId, harness, ...settings }).then(
         (result) => {
           setCreating(false);
           if (result.existing) recover();
-          else post(sent);
+          else post(prompt);
           onCreated();
         },
       );
       start(request).finally(() => setCreating(false));
     },
     recover,
-    send(sent: string) {
-      if (available() && sent.trim()) post(sent);
+    send(prompt: string) {
+      if (canSend() && prompt.trim()) post(prompt);
+    },
+    // restore returns a dropped prompt this page sent to the composer, ahead
+    // of text typed since.
+    restore(messageId: string, prompt: string) {
+      if (messageId === sent) setText(text() ? `${prompt}\n${text()}` : prompt);
     },
     configure(changes: Partial<Settings>) {
       const current = session()?.settings;
-      if (!available() || !current) return;
+      if (!canConfigure() || !current) return;
       const changed = Object.fromEntries(
         Object.entries(changes).filter(([key, value]) => current[key as keyof Settings] !== value),
       ) as Partial<Settings>;
@@ -265,6 +290,7 @@ function createOx() {
     // response's state is the current one.
     session.state = result.state;
     for (const a of result.approvals) session.approvals.push({ id: a.request_id, request: a.request });
+    session.queued = result.queued;
     setState((s) => {
       const loaded = s.sessions[id];
       if (!loaded) {
@@ -274,6 +300,7 @@ function createOx() {
       loaded.synced = true;
       loaded.state = session.state;
       loaded.settings = session.settings;
+      loaded.queued = session.queued;
       reconcile(session.entries, null)(loaded.entries);
       reconcile(session.approvals, "id")(loaded.approvals);
     });
@@ -309,6 +336,8 @@ function createOx() {
   function receive({ method, params }: Notification) {
     switch (method) {
       case "session/update":
+        if (params.type === "prompt_cancelled")
+          controls.get(params.session_id)?.restore(params.message_id, params.text);
         // Updates for a session not loaded yet are in the history it loads with.
         return setState((s) => {
           const session = s.sessions[params.session_id];

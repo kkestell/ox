@@ -23,8 +23,8 @@ What the person using Ox can see and rely on. Each requirement is cited by its t
 - **Composer after a send.** After a successful send the composer clears, keeping anything typed since the send.
 - **Blank prompts.** A blank prompt is not sent.
 - **Enter to send.** Enter sends and Shift+Enter starts a new line; Enter while composing with an input method does not send.
-- **One prompt at a time.** A session takes one prompt at a time: Send is available only when the session can take one, and prompts are not queued.
-- **Stop.** While Claude works, Send becomes Stop. Stop ends the turn, the transcript shows it was interrupted, and the session takes prompts again.
+- **One prompt at a time.** While Claude works, the user can send a prompt, which Claude takes into the running turn after its current step, or runs next if the turn ends first. Until Claude takes it, the prompt shows as pending at the end of the transcript and Send is unavailable; once taken, it becomes a normal prompt where Claude took it.
+- **Stop.** While Claude works, Stop shows beside Send. Stop ends the turn, the transcript shows it was interrupted, and the session takes prompts again; a pending prompt is dropped, and its text returns to the composer of the page that sent it, ahead of anything typed since.
 - **Prompts as sent.** Prompts show in the transcript as the plain text the user sent.
 - **Replies as Markdown.** Claude's replies stream in as Markdown. Raw HTML shows as text, images are not loaded, unsafe links are not links, and links open in a new tab.
 - **Tool calls.** Each tool call shows its name, a summary of its input, and whether it is running, done, failed, or stopped; expanding it shows the full input and the result's text, and a plan renders as Markdown.

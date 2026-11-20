@@ -141,9 +141,6 @@ func TestSessionLifecycle(t *testing.T) {
 	// is parkable.
 	prompt := "one two three four five six seven eight"
 	c.call("session/send", map[string]string{"session_id": id, "text": prompt})
-	if busy := c.request("session/send", map[string]string{"session_id": id, "text": "again"}); busy.Error == nil || busy.Error.Code != sessionBusy {
-		t.Fatalf("a running session took a second prompt: %+v", busy.Error)
-	}
 	for {
 		var u agent.Update
 		c.next(func(m message) bool {
@@ -562,6 +559,86 @@ func TestApprovalAnsweredOnce(t *testing.T) {
 	}
 	if again := approve(asked.RequestID, response); again.Error == nil || again.Error.Code != approvalNotPending {
 		t.Fatalf("an answered approval took a second answer: %+v", again.Error)
+	}
+}
+
+// A prompt sent while the harness works is queued, one at a time, until the
+// harness takes it or Stop drops it.
+func TestPromptQueuedWhileClaudeWorks(t *testing.T) {
+	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
+		Models:          []config.Model{{ID: "m"}},
+		PermissionModes: []config.Option{{ID: "manual"}},
+	}}}
+	s, err := New(openStore(t), cfg, 0, map[string]agent.Start{"fake": fake.Start}, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c := connect(t, s)
+	var workspace struct {
+		WorkspaceID string `json:"workspace_id"`
+	}
+	json.Unmarshal(c.call("workspace/create", map[string]string{"path": t.TempDir()}), &workspace)
+
+	for _, ending := range []string{"stop", "allow"} {
+		t.Run(ending, func(t *testing.T) {
+			c.t = t
+			var created struct {
+				SessionID string `json:"session_id"`
+			}
+			json.Unmarshal(c.call("session/create", map[string]string{
+				"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "permission_mode": "manual",
+			}), &created)
+			id := created.SessionID
+			c.call("session/send", map[string]string{"session_id": id, "text": "approve Bash {}"})
+			asked := c.update(id, "approval")
+			c.forget(id)
+
+			var sent struct {
+				MessageID string `json:"message_id"`
+			}
+			json.Unmarshal(c.call("session/send", map[string]string{"session_id": id, "text": "steer"}), &sent)
+			if queued := c.update(id, "prompt_queued"); queued.MessageID != sent.MessageID || queued.Text != "steer" {
+				t.Fatalf("prompt_queued names another prompt: %+v", queued)
+			}
+			if busy := c.request("session/send", map[string]string{"session_id": id, "text": "again"}); busy.Error == nil || busy.Error.Code != sessionBusy {
+				t.Fatalf("a second prompt was queued: %+v", busy.Error)
+			}
+			var snapshot struct {
+				Queued *agent.Prompt `json:"queued"`
+			}
+			json.Unmarshal(c.call("session/get", map[string]string{"session_id": id}), &snapshot)
+			if snapshot.Queued == nil || snapshot.Queued.MessageID != sent.MessageID || snapshot.Queued.Text != "steer" {
+				t.Fatalf("the snapshot does not hold the queued prompt: %+v", snapshot.Queued)
+			}
+
+			var history struct {
+				History []agent.Update `json:"history"`
+			}
+			switch ending {
+			case "stop":
+				c.call("session/interrupt", map[string]string{"session_id": id})
+				if cancelled := c.update(id, "prompt_cancelled"); cancelled.MessageID != sent.MessageID || cancelled.Text != "steer" {
+					t.Fatalf("prompt_cancelled names another prompt: %+v", cancelled)
+				}
+				for c.update(id, "state").State != "idle" {
+				}
+				json.Unmarshal(c.call("session/get", map[string]string{"session_id": id}), &history)
+				for _, u := range history.History {
+					if u.Type == "prompt" && u.MessageID == sent.MessageID {
+						t.Fatalf("the dropped prompt is in the history: %+v", history.History)
+					}
+				}
+			case "allow":
+				c.call("session/approve", map[string]any{"session_id": id, "request_id": asked.RequestID, "response": json.RawMessage(`{"behavior":"allow"}`)})
+				if taken := c.update(id, "prompt"); taken.MessageID != sent.MessageID || taken.Text != "steer" {
+					t.Fatalf("the queued prompt was not taken: %+v", taken)
+				}
+				if result := c.update(id, "result"); result.MessageID != sent.MessageID || result.Result.Text != "You said: steer" {
+					t.Fatalf("the taken prompt did not reply: %+v", result)
+				}
+			}
+		})
 	}
 }
 

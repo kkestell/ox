@@ -19,8 +19,13 @@ export type ApprovalResponse =
   | { behavior: "allow"; updatedInput: Record<string, unknown> }
   | { behavior: "deny"; message: string; interrupt?: boolean };
 
+// Prompt is a client prompt, named by the message ID session/send returned.
+export type Prompt = { message_id: string; text: string };
+
 export type Update = { time: string } & (
-  | { type: "prompt"; text: string }
+  | ({ type: "prompt" } & Prompt)
+  | ({ type: "prompt_queued" } & Prompt)
+  | ({ type: "prompt_cancelled" } & Prompt)
   | { type: "text_delta"; text: string }
   | { type: "tool_use"; tool_use_id: string; tool_name: string; input: Record<string, unknown> }
   | { type: "tool_result"; tool_use_id: string; result: ToolResult }
@@ -70,6 +75,7 @@ export type Methods = {
     Settings & {
       state: SessionState;
       approvals: { request_id: string; request: ApprovalRequest }[];
+      queued?: Prompt;
       history: Update[];
     },
   ];

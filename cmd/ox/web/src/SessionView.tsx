@@ -64,7 +64,7 @@ export function SessionView(props: { session: Session }) {
         {workspace()} · {props.session.harness} · {props.session.id}
       </p>
       <div class="log" ref={log}>
-        <Transcript entries={props.session.entries} />
+        <Transcript session={props.session} />
       </div>
       <Show when={control.error()}>{(error) => <p role="alert">{error()}</p>}</Show>
       <Show when={control.notice()}>{(notice) => <p role="status">{notice()}</p>}</Show>
@@ -88,12 +88,7 @@ export function SessionView(props: { session: Session }) {
             onInput={(event) => control.setText(event.currentTarget.value)}
             onKeyDown={sendOnEnter}
           />
-          <Show
-            when={running()}
-            fallback={
-              <button type="submit" class="icon send" aria-label="Send" title="Send" disabled={!control.available()} />
-            }
-          >
+          <Show when={running()}>
             <button
               type="button"
               class="icon stop"
@@ -102,6 +97,7 @@ export function SessionView(props: { session: Session }) {
               onClick={() => control.interrupt()}
             />
           </Show>
+          <button type="submit" class="icon send" aria-label="Send" title="Send" disabled={!control.canSend()} />
         </form>
         <SettingsForm session={props.session} control={control} />
       </div>
@@ -109,24 +105,33 @@ export function SessionView(props: { session: Session }) {
   );
 }
 
-function Transcript(props: { entries: Entry[] }) {
+// Transcript shows a session's entries, then the prompt Claude has not taken
+// yet.
+function Transcript(props: { session: Session }) {
   return (
-    <For each={props.entries}>
-      {(entry) => (
-        <Switch>
-          <Match when={entry.kind === "prompt" && entry}>{(prompt) => <div class="prompt">{prompt().text}</div>}</Match>
-          <Match when={entry.kind === "reply" && entry}>
-            {(reply) => <Markdown class="reply" text={reply().text} />}
-          </Match>
-          <Match when={entry.kind === "tool" && entry}>{(tool) => <ToolCall tool={tool()} />}</Match>
-          {/* A successful result repeats the reply, so only a failed turn shows its result. */}
-          <Match when={entry.kind === "result" && entry.result.is_error && entry}>
-            {(result) => <div class="error">{result().result.text}</div>}
-          </Match>
-          <Match when={entry.kind === "exited" && entry}>{(exited) => <div class="error">{exited().error}</div>}</Match>
-        </Switch>
-      )}
-    </For>
+    <>
+      <For each={props.session.entries}>
+        {(entry) => (
+          <Switch>
+            <Match when={entry.kind === "prompt" && entry}>
+              {(prompt) => <div class="prompt">{prompt().text}</div>}
+            </Match>
+            <Match when={entry.kind === "reply" && entry}>
+              {(reply) => <Markdown class="reply" text={reply().text} />}
+            </Match>
+            <Match when={entry.kind === "tool" && entry}>{(tool) => <ToolCall tool={tool()} />}</Match>
+            {/* A successful result repeats the reply, so only a failed turn shows its result. */}
+            <Match when={entry.kind === "result" && entry.result.is_error && entry}>
+              {(result) => <div class="error">{result().result.text}</div>}
+            </Match>
+            <Match when={entry.kind === "exited" && entry}>
+              {(exited) => <div class="error">{exited().error}</div>}
+            </Match>
+          </Switch>
+        )}
+      </For>
+      <Show when={props.session.queued}>{(queued) => <div class="prompt queued">{queued().text}</div>}</Show>
+    </>
   );
 }
 
@@ -170,7 +175,7 @@ function SettingsForm(props: { session: Session; control: SessionControl }) {
       <ModelPicker
         harnesses={{ [props.session.harness]: harness() }}
         value={{ harness: props.session.harness, model: shown().model, effort: shown().effort }}
-        disabled={!props.control.available()}
+        disabled={!props.control.canConfigure()}
         pending={pending("model") || pending("effort")}
         onChange={(value) => props.control.configure({ model: value.model, effort: value.effort })}
       />
@@ -178,7 +183,7 @@ function SettingsForm(props: { session: Session; control: SessionControl }) {
         name="permission_mode"
         options={harness().permission_modes}
         value={shown().permission_mode}
-        disabled={!props.control.available()}
+        disabled={!props.control.canConfigure()}
         pending={pending("permission_mode")}
         onChange={(mode) => props.control.configure({ permission_mode: mode })}
       />
