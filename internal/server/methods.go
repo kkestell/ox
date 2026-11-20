@@ -47,6 +47,8 @@ func (s *Server) handle(reply replyFunc, line []byte) {
 		s.listWorkspaces(reply, id)
 	case "workspace/remove":
 		s.removeWorkspace(reply, id, params)
+	case "workspace/list_folder":
+		s.listFolder(reply, id, params)
 	case "harness/list":
 		reply(jsonrpc.Success(id, s.config))
 	case "session/create":
@@ -218,6 +220,43 @@ func (s *Server) removeWorkspace(reply replyFunc, id, params json.RawMessage) {
 		WorkspaceID string `json:"workspace_id"`
 	}{w.id})
 	reply(jsonrpc.Success(id, struct{}{}))
+}
+
+// listFolder lists a folder in a workspace's directory. The directory is read
+// outside s.mu, so a slow disk holds up no other request.
+func (s *Server) listFolder(reply replyFunc, id, params json.RawMessage) {
+	var input struct {
+		WorkspaceID string `json:"workspace_id"`
+		Path        string `json:"path"`
+	}
+	if err := json.Unmarshal(params, &input); err != nil || input.WorkspaceID == "" {
+		reply(invalidParams(id, "workspace_id is required"))
+		return
+	}
+	if input.Path != "" && !filepath.IsLocal(input.Path) {
+		reply(invalidParams(id, "path must be relative to the workspace"))
+		return
+	}
+
+	s.mu.Lock()
+	w := s.workspace(input.WorkspaceID)
+	var dir string
+	if w != nil {
+		dir = w.path
+	}
+	s.mu.Unlock()
+	if w == nil {
+		reply(jsonrpc.Failure(id, notFound, "workspace not found"))
+		return
+	}
+	entries, err := listFolder(dir, input.Path)
+	if err != nil {
+		reply(failure(id, err))
+		return
+	}
+	reply(jsonrpc.Success(id, struct {
+		Entries []folderEntry `json:"entries"`
+	}{entries}))
 }
 
 func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {

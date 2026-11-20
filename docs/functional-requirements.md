@@ -68,6 +68,9 @@ What the person using Ox can see and rely on. Each requirement is cited by its t
 - **Deleting a session.** A session can be deleted only when it has no child sessions. Deleting it asks first, then stops Claude, deletes Ox's history of it, leaves Claude's transcript and the workspace on disk, and removes it from every page.
 - **Failed startup.** A failed Claude startup ends within a minute and shows why, in Claude's own words when it gives a reason. The prompt that started it is dropped, and its text returns to the composer of the page that sent it.
 - **Working directory.** Claude works in the session's workspace directory, or in a child session, the directory it was created in.
+- **File tree.** Beside the transcript, a panel shows the selected session's workspace directory as a tree, folders first, whose folders expand and collapse. It hides `.git`, `.svn`, `.hg`, `.hypercube`, `.DS_Store`, and `Thumbs.db` at any depth, shows files Git ignores, lists nothing outside the workspace directory, and shows why a folder cannot be read.
+- **File tree updates.** While the page is visible, the tree shows changes on disk to the folders it shows within about a second.
+- **File tree expansion.** Each session keeps which folders are expanded through switching views and reconnecting; reloading the page collapses them.
 - **Subscription billing.** Claude's work is billed to the user's Claude subscription, never to an API key or token in Ox's environment.
 - **Ox's instructions.** Claude runs with Ox's appended instructions: its style, and that it is an Ox session, which one, and how to reach the other sessions.
 - **Messages stay in Ox.** Claude messages only Ox's own sessions, and only through Ox. Other Claude Code sessions on this machine cannot message an Ox session.

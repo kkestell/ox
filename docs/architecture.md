@@ -187,15 +187,16 @@ origin, so a page whose domain rebinds to the relay's address cannot reach `oxd`
 | `connection.ts` | Opening the event stream, sending requests, matching replies, and reporting stream errors. |
 | `ox.tsx` | A provider that reloads the catalog, workspaces, and sessions on each connection, updating loaded sessions in place so their views keep their state, applies notifications, and exposes RPC calls; each session's control; `createAttempt`, which shows a request's error. |
 | `toolInput.ts` | Readers of Claude's tool calls: a call's subject, an `ExitPlanMode` plan, `AskUserQuestion` questions, and a call's input as JSON. |
-| `App.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `NewSessionView.tsx`, `ApprovalRequest.tsx`, `SettingsFields.tsx`, `HarnessIcon.tsx`, `Markdown.tsx` | The components. |
+| `App.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `NewSessionView.tsx`, `FileTree.tsx`, `ApprovalRequest.tsx`, `SettingsFields.tsx`, `HarnessIcon.tsx`, `Markdown.tsx` | The components. |
 
 The page shows stream errors while reconnecting and asks for a reload if the
 browser closes the stream after `ox` refuses it.
 
 A session's control owns the page's requests for that session: its composer
-text, creation, sends, configuration, interrupts, approval answers, and their
-errors. It outlives the session's view, so leaving the view or reconnecting
-keeps the text and repeats no request. A send and a configuration exclude each other.
+text, the folders its file tree has expanded, creation, sends, configuration,
+interrupts, approval answers, and their errors. It outlives the session's
+view, so leaving the view or reconnecting keeps the text and expanded folders
+and repeats no request. A send and a configuration exclude each other.
 The control remembers the prompt it sent last, so a prompt dropped before
 Claude took it returns to the composer of the page that sent it.
 The settings form sends a patch to
@@ -209,3 +210,9 @@ the created session. A successful create sends the submitted text once.
 If the reply is lost, the page can recognize the session after reconnect,
 restore its composer and let the user decide when to send. A failed creation
 in another view links back to the draft.
+
+The file tree lists each folder it shows with
+[`workspace/list_folder`](protocol.md#workspacelist_folder): the workspace's
+directory, and each expanded folder that its parent's latest listing contains.
+Each folder lists itself when it appears and again once a second while the
+page is visible and connected, with one request in flight at a time.

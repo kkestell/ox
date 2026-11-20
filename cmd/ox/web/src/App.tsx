@@ -1,4 +1,5 @@
 import { createEffect, createSignal, For, Match, Show, Switch } from "solid-js";
+import { FileTree } from "./FileTree";
 import { createDraft, type Draft, NewSessionView } from "./NewSessionView";
 import { OxProvider, useOx } from "./ox";
 import { SessionView } from "./SessionView";
@@ -50,6 +51,19 @@ function Layout() {
     return s?.kind === "draft" ? liveDrafts().find((d) => d.workspaceId === s.workspaceId) : undefined;
   };
 
+  // The file tree shows the selected session's or draft's workspace, with
+  // that session's or draft's expanded folders.
+  const files = () => {
+    const current = session();
+    if (current) {
+      const workspace = ox.workspaceOf(current.id);
+      return workspace && { workspace, control: ox.control(current.id) };
+    }
+    const d = draft();
+    const workspace = d && ox.state.workspaces.find((w) => w.id === d.workspaceId);
+    return workspace && { workspace, control: d.control };
+  };
+
   const finish = (created: Draft) => {
     if (draft() === created) select({ kind: "session", id: created.id });
     setDrafts((all) => all.filter((d) => d !== created));
@@ -99,6 +113,14 @@ function Layout() {
           </Match>
         </Switch>
       </main>
+      {/* Keyed by workspace, so sessions of one workspace share its listings. */}
+      <Show when={files()?.workspace.id} keyed>
+        {(_workspaceId) => (
+          <Show when={files()}>
+            {(current) => <FileTree workspace={current().workspace} control={current().control} />}
+          </Show>
+        )}
+      </Show>
     </>
   );
 }

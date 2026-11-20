@@ -1,6 +1,6 @@
 import { createSignal, For, onSettled, Show } from "solid-js";
 import type { Selection } from "./App";
-import { createAttempt, type Session, sessionLabel, useOx } from "./ox";
+import { createAttempt, type Session, sessionLabel, useOx, workspaceName } from "./ox";
 
 type DialogRequest =
   | { kind: "add" }
@@ -113,7 +113,7 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
         {(workspace) => (
           <>
             <p title={workspace.path}>
-              <span class="name">{workspace.path.split("/").at(-1) || workspace.path}</span>
+              <span class="name">{workspaceName(workspace.path)}</span>
               <Show when={workspace.sessions.length === 0}>
                 <button
                   type="button"

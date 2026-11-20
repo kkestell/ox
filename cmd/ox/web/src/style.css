@@ -59,6 +59,10 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: 
 .stop { --icon: url(lucide-static/icons/square.svg); }
 .context .path { --icon: url(lucide-static/icons/folder.svg); }
 .chevron-down { --icon: url(lucide-static/icons/chevron-down.svg); }
+.chevron-right { --icon: url(lucide-static/icons/chevron-right.svg); }
+.folder { --icon: url(lucide-static/icons/folder.svg); }
+.folder-open { --icon: url(lucide-static/icons/folder-open.svg); }
+.file { --icon: url(lucide-static/icons/file.svg); }
 .search-icon { --icon: url(lucide-static/icons/search.svg); }
 .check { --icon: url(lucide-static/icons/check.svg); }
 .loader { --icon: url(lucide-static/icons/loader-circle.svg); }
@@ -288,3 +292,20 @@ details.tool pre + pre { border-top: 1px solid var(--border); }
 .ticks { position: relative; height: 2.25rem; margin-top: -0.25rem; font-size: 10px; color: var(--muted-foreground); }
 .ticks span { position: absolute; top: 0; left: calc(8px + var(--p) * (100% - 16px)); translate: -50% 0; display: flex; flex-direction: column; align-items: center; gap: 0.25rem; }
 .ticks span::before { content: ""; width: 1px; height: 6px; background: var(--muted-foreground); }
+
+/* File tree: the sidebar's mirror. Rows indent by --depth; a file's icon sits
+   under a folder's, past the chevron. Icons and notes are muted. */
+aside.files { flex: none; width: var(--sidebar-width); height: 100%; overflow-y: auto; padding: 0 0.5rem 0.5rem; background: var(--sidebar); border-left: 1px solid var(--border); }
+aside.files > p { height: 2.75rem; line-height: 2.75rem; padding: 0 0.5rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; text-transform: uppercase; color: var(--muted-foreground); }
+aside.files ul { list-style: none; }
+aside.files .row {
+  display: flex; align-items: center; justify-content: flex-start; gap: 0.25rem; width: 100%; height: 1.75rem;
+  padding: 0 0.5rem 0 calc(0.5rem + var(--depth) * 1rem); border-radius: var(--radius-md); color: var(--muted-foreground); cursor: default;
+}
+aside.files li.row, aside.files .note { padding-left: calc(1.75rem + var(--depth) * 1rem); }
+aside.files button.row { border: 0; background: transparent; box-shadow: none; font-weight: 400; text-align: left; }
+aside.files .row:hover { background: var(--accent); }
+aside.files .note { height: auto; min-height: 1.75rem; overflow-wrap: anywhere; }
+aside.files .note:hover { background: transparent; }
+aside.files .row .name { min-width: 0; color: var(--text); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+aside.files .chevron-right.open::before { transform: rotate(90deg); }

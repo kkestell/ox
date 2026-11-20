@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -958,6 +959,83 @@ func TestSameDirectoryIsOneWorkspace(t *testing.T) {
 	if first, viaParent := add(filepath.Dir(dir)), add(link+"/.."); first != viaParent {
 		t.Fatalf("the path through a symlink followed by .. named another workspace: %s, %s", first, viaParent)
 	}
+}
+
+func TestListFolder(t *testing.T) {
+	s, err := New(openStore(t), &config.Config{}, 0, nil, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c := connect(t, s)
+	dir, outside := t.TempDir(), t.TempDir()
+	for _, folder := range []string{"src", ".git", "empty"} {
+		if err := os.Mkdir(filepath.Join(dir, folder), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, content := range map[string]string{".DS_Store": "", ".gitignore": "ignored.log\n", "ignored.log": "", "src/main.go": "", "src/.git": ""} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("src", filepath.Join(dir, "inside")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "outside")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "src"), filepath.Join(dir, "absolute")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(".gitignore", filepath.Join(dir, "notes")); err != nil {
+		t.Fatal(err)
+	}
+	var w struct {
+		ID string `json:"workspace_id"`
+	}
+	json.Unmarshal(c.call("workspace/create", map[string]string{"path": dir}), &w)
+
+	list := func(path string) map[string]bool {
+		var result struct {
+			Entries []folderEntry `json:"entries"`
+		}
+		raw := c.call("workspace/list_folder", map[string]string{"workspace_id": w.ID, "path": path})
+		if err := json.Unmarshal(raw, &result); err != nil || result.Entries == nil {
+			t.Fatalf("listing %q returned %s", path, raw)
+		}
+		folders := map[string]bool{}
+		for _, e := range result.Entries {
+			folders[e.Name] = e.Folder
+		}
+		return folders
+	}
+	want := map[string]bool{
+		"src": true, "empty": true, "inside": true, "outside": false, "absolute": false, "notes": false,
+		".gitignore": false, "ignored.log": false,
+	}
+	if got := list(""); !maps.Equal(got, want) {
+		t.Errorf("root listed %v, want %v", got, want)
+	}
+	if got := list("src"); !maps.Equal(got, map[string]bool{"main.go": false}) {
+		t.Errorf("src listed %v", got)
+	}
+	if got := list("empty"); len(got) != 0 {
+		t.Errorf("empty folder listed %v", got)
+	}
+
+	refused := func(code int, workspaceID, path string) {
+		t.Helper()
+		response := c.request("workspace/list_folder", map[string]string{"workspace_id": workspaceID, "path": path})
+		if response.Error == nil || response.Error.Code != code {
+			t.Errorf("listing %q in %q: %s %+v, want error %d", path, workspaceID, response.Result, response.Error, code)
+		}
+	}
+	refused(-32602, w.ID, "../x")
+	refused(-32602, w.ID, outside)
+	refused(-32000, w.ID, "outside")
+	refused(-32000, w.ID, ".gitignore")
+	refused(-32001, "missing", "")
 }
 
 // configuringAgent reports each configuration it starts on started.

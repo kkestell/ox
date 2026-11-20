@@ -55,6 +55,9 @@ const settingsOf = (p: Settings): Settings => ({
   permission_mode: p.permission_mode,
 });
 
+// workspaceName is the name of a workspace's directory.
+export const workspaceName = (path: string) => path.split("/").at(-1) || path;
+
 // sessionLabel is a child's title, or else the first line of the first prompt
 // the user sent the session, or the start of its ID before it has one. Before
 // its snapshot loads, it is the label oxd listed.
@@ -139,10 +142,11 @@ export function createAttempt() {
   return [error, attempt, clear] as const;
 }
 
-// SessionControl is the page's side of one session: its composer text and the
-// requests the page has in flight for it, with their errors. It outlives the
-// session's view, so leaving the view, or reconnecting, keeps the text and
-// repeats no request. A send and a configuration exclude each other, so a
+// SessionControl is the page's side of one session: its composer text, the
+// folders its file tree has expanded, and the requests the page has in flight
+// for it, with their errors. It outlives the session's view, so leaving the
+// view, or reconnecting, keeps the text and expanded folders and repeats no
+// request. A send and a configuration exclude each other, so a
 // prompt runs with the settings the page shows. A new session's control
 // starts as its draft's composer, and its first send starts before its
 // session/get returns. The control remembers the prompt it sent last, so a
@@ -159,6 +163,8 @@ function createSessionControl(
   const [error, attempt, clearError] = createAttempt();
   const [notice, setNotice] = createSignal<string>();
   const [creating, setCreating] = createSignal(false);
+  // expanded holds the paths of the expanded folders in the file tree.
+  const [expanded, setExpandedStore] = createStore<Record<string, true>>({});
   // Keep a successfully sent prompt only until Claude takes it or it drops.
   let sent: { id: string; text: string } | undefined;
   const live = () => {
@@ -215,6 +221,13 @@ function createSessionControl(
     canConfigure,
     // requested is the settings a configuration in flight asks for.
     requested,
+    isExpanded: (path: string) => expanded[path] === true,
+    setExpanded(path: string, open: boolean) {
+      setExpandedStore((folders) => {
+        if (open) folders[path] = true;
+        else delete folders[path];
+      });
+    },
     // create creates the session with the composer's text as its first
     // prompt, and calls onCreated once the session exists. If an earlier
     // create already reached oxd, it recovers instead of sending.
@@ -447,6 +460,8 @@ function createOx() {
     session,
     addWorkspace: (path: string) => connection.rpc("workspace/create", { path }),
     removeWorkspace: (id: string) => connection.rpc("workspace/remove", { workspace_id: id }),
+    listFolder: (workspaceId: string, path: string) =>
+      connection.rpc("workspace/list_folder", { workspace_id: workspaceId, path }),
     control,
     destroy: (id: string) => connection.rpc("session/destroy", { session_id: id }),
   };

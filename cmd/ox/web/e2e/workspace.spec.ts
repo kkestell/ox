@@ -1,4 +1,7 @@
-import { expect, test } from "@playwright/test";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
+import { expect, type Request, type Route, test } from "@playwright/test";
 import { fakeConfig, startServices } from "./services";
 
 import { hold, open, prompt, send, sessionButton } from "./ui";
@@ -118,6 +121,147 @@ test("a workspace is removed once it has no sessions", async ({ page }) => {
     await expect(page.getByTitle(services.workspace)).toHaveCount(0);
     await expect(prompt(page)).toHaveCount(0);
   } finally {
+    await services.stop();
+  }
+});
+
+test("the file tree lists the workspace and keeps each session's expanded folders", async ({ page }) => {
+  const services = await startServices(fakeConfig);
+  const locked = join(services.workspace, "locked");
+  const other = mkdtempSync(join(tmpdir(), "ox-e2e-other-"));
+  writeFileSync(join(other, "other.txt"), "");
+  try {
+    mkdirSync(join(services.workspace, "src"));
+    mkdirSync(join(services.workspace, ".git"));
+    mkdirSync(join(services.workspace, "empty"));
+    mkdirSync(locked, { mode: 0o000 });
+    writeFileSync(join(services.workspace, "src", "a.txt"), "");
+    writeFileSync(join(services.workspace, ".git", "HEAD"), "");
+    writeFileSync(join(services.workspace, ".gitignore"), "");
+    const listed: string[] = [];
+    page.on("request", (request) => {
+      const body = request.url().includes("/rpc") && request.postDataJSON();
+      if (body?.method === "workspace/list_folder") listed.push(body.params.path);
+    });
+    const quiet = async (path?: string) => {
+      const before = listed.length;
+      await page.waitForTimeout(2500);
+      expect(listed.slice(before).filter((p) => path === undefined || p === path)).toEqual([]);
+    };
+
+    await open(page, services);
+    for (const text of ["first", "second"]) {
+      await page.getByRole("button", { name: "New session" }).click();
+      await prompt(page).fill(text);
+      await send(page).click();
+      await expect(page.locator(".reply")).toHaveText(`You said: ${text}`);
+    }
+    const files = page.getByRole("complementary", { name: "Files" });
+    const rows = files.locator(".row");
+    const src = files.getByRole("button", { name: "src" });
+    await expect(rows).toHaveText(["empty", "locked", "src", ".gitignore"]);
+    expect(listed).not.toContain("src");
+
+    await sessionButton(page, "first").click();
+    await src.click();
+    await expect(rows).toHaveText(["empty", "locked", "src", "a.txt", ".gitignore"]);
+    writeFileSync(join(services.workspace, "src", "b.txt"), "");
+    await expect(rows).toHaveText(["empty", "locked", "src", "a.txt", "b.txt", ".gitignore"], { timeout: 3000 });
+
+    await sessionButton(page, "second").click();
+    await expect(src).toHaveAttribute("aria-expanded", "false");
+    await expect(rows).toHaveText(["empty", "locked", "src", ".gitignore"]);
+    await sessionButton(page, "first").click();
+    await expect(src).toHaveAttribute("aria-expanded", "true");
+    await expect(rows).toHaveText(["empty", "locked", "src", "a.txt", "b.txt", ".gitignore"]);
+
+    const setVisibility = (state: string) =>
+      page.evaluate((state) => {
+        Object.defineProperty(document, "visibilityState", { value: state, configurable: true });
+        document.dispatchEvent(new Event("visibilitychange"));
+      }, state);
+    await setVisibility("hidden");
+    await page.waitForTimeout(100);
+    await quiet();
+    const visible = page.waitForRequest(
+      (r) => r.url().includes("/rpc") && r.postDataJSON()?.method === "workspace/list_folder",
+    );
+    await setVisibility("visible");
+    await visible;
+
+    // A listing in flight holds back the next one for its folder.
+    const isSrc = (request: Request) => {
+      const body = request.url().includes("/rpc") && request.postDataJSON();
+      return body?.method === "workspace/list_folder" && body.params.path === "src";
+    };
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let taken = false;
+    const holdSrc = async (route: Route) => {
+      if (taken || !isSrc(route.request())) return route.fallback();
+      taken = true;
+      await released;
+      await route.continue();
+    };
+    await page.route("**/rpc*", holdSrc);
+    await expect.poll(() => taken).toBe(true);
+    await quiet("src");
+    const answered = page.waitForResponse((r) => isSrc(r.request()));
+    release();
+    await answered;
+    await page.unroute("**/rpc*", holdSrc);
+
+    // A relay failure keeps the last listing.
+    let failed = 0;
+    const failSrc = (route: Route) => {
+      const body = route.request().postDataJSON();
+      if (body?.method !== "workspace/list_folder" || body.params.path !== "src") return route.fallback();
+      failed++;
+      return route.fulfill({ status: 502, body: "relay unavailable" });
+    };
+    await page.route("**/rpc*", failSrc);
+    await expect.poll(() => failed).toBeGreaterThanOrEqual(2);
+    await expect(rows).toHaveText(["empty", "locked", "src", "a.txt", "b.txt", ".gitignore"]);
+    await page.unroute("**/rpc*", failSrc);
+
+    // A lost connection lists nothing and keeps the tree; listing waits until
+    // the page has reloaded.
+    await page.route("**/events", (route) => route.abort());
+    await services.restartRelay();
+    await expect(page.getByRole("alert").filter({ hasText: "Lost the connection" })).toBeVisible();
+    await page.waitForTimeout(100);
+    await quiet();
+    await expect(rows).toHaveText(["empty", "locked", "src", "a.txt", "b.txt", ".gitignore"]);
+    const reload = await hold(page, "workspace/list");
+    await page.unroute("**/events");
+    await reload.arrived;
+    await quiet();
+    const resumed = page.waitForRequest(
+      (r) => r.url().includes("/rpc") && r.postDataJSON()?.method === "workspace/list_folder",
+    );
+    reload.release();
+    await resumed;
+
+    await files.getByRole("button", { name: "locked" }).click();
+    await expect(files.locator(".note")).toContainText("permission denied");
+    await files.getByRole("button", { name: "empty" }).click();
+    await expect(files.locator(".note").first()).toHaveText("Empty");
+    await src.click();
+    await expect(src).toHaveAttribute("aria-expanded", "false");
+    await expect(files.getByText("a.txt")).toHaveCount(0);
+
+    // Another workspace's draft shows that workspace's tree.
+    await page.getByRole("button", { name: "Add workspace" }).click();
+    await page.getByPlaceholder("/absolute/path/to/directory").fill(other);
+    await page.getByRole("button", { name: "Add", exact: true }).click();
+    await page.getByTitle(other).getByRole("button", { name: "New session" }).click();
+    await expect(files.locator("p").first()).toHaveText(basename(other));
+    await expect(rows).toHaveText(["other.txt"]);
+  } finally {
+    chmodSync(locked, 0o755);
+    rmSync(other, { recursive: true, force: true });
     await services.stop();
   }
 });

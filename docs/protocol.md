@@ -158,6 +158,29 @@ its sessions first.
 {"jsonrpc":"2.0","id":3,"result":{}}
 ```
 
+### `workspace/list_folder`
+
+Requires `workspace_id` and `path`, a slash-separated path relative to the
+workspace's directory, or `""` for the directory itself. Returns the folder's
+entries in directory order, each with its `name` and whether it is a `folder`.
+`.git`, `.svn`, `.hg`, `.hypercube`, `.DS_Store`, and `Thumbs.db` are left out.
+A symlink is a folder when its relative target leads to a folder inside the
+workspace's directory; one with an absolute target, one that leads outside the
+directory, and one that leads nowhere are not.
+
+A `path` that is absolute or leaves the directory returns `-32602`; an unknown
+workspace returns `-32001`. A folder that cannot be listed, including one
+reached through a symlink that leads outside the directory, returns `-32000`
+with the reason, naming the path relative to the workspace.
+
+```json
+{"jsonrpc":"2.0","id":4,"method":"workspace/list_folder","params":{"workspace_id":"workspace-id","path":"cmd"}}
+```
+
+```json
+{"jsonrpc":"2.0","id":4,"result":{"entries":[{"name":"ox","folder":true},{"name":"README.md","folder":false}]}}
+```
+
 ## Session methods
 
 ### `session/create`

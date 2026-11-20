@@ -8,9 +8,9 @@ Lines counted by cloc. Files, Comment, and Code cover production files; Tests is
 
 | Language | Files | Comment | Code | Tests |
 |---|---:|---:|---:|---:|
-| Go | 22 | 409 | 3,766 | 5,044 |
-| TypeScript | 13 | 92 | 1,552 | 1,211 |
-| CSS | 1 | 11 | 263 | 0 |
+| Go | 23 | 416 | 3,849 | 5,119 |
+| TypeScript | 14 | 107 | 1,704 | 1,340 |
+| CSS | 1 | 13 | 281 | 0 |
 
 ## High complexity
 
@@ -20,11 +20,11 @@ Production functions with cognitive complexity over 15, scored by gocognit for G
 |---:|---|---|
 | 47 | `(*Agent).handleOutput` | `internal/claude/agent.go:169` |
 | 27 | `createSession` | `internal/server/mcp.go:331` |
-| 18 | `(*Server).configureSession` | `internal/server/methods.go:403` |
+| 18 | `(*Server).configureSession` | `internal/server/methods.go:442` |
 | 17 | `deliverOutput` | `internal/claude/claude.go:290` |
 | 16 | `checkConfig` | `cmd/oxd/main.go:117` |
 | 16 | `(*Server).handleMCP` | `internal/server/mcp.go:50` |
-| 16 | `(*Server).createSession` | `internal/server/methods.go:223` |
+| 16 | `(*Server).createSession` | `internal/server/methods.go:262` |
 
 ## Long files
 
