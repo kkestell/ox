@@ -1,7 +1,7 @@
 ---
 name: ox-plan
-description: Plan a change to Ox, given a request, bug report, todo item, or known issue, and write the plan in `.agents/plans/`. The plan settles every decision except product questions, which the user answers, and accounts for the functional requirements, state owners, Claude Code behavior, and tests the change depends on. Use before implementing a code or behavior change to Ox, not for standalone documentation edits. Never use it unless the user, or an agent acting on the user's request, invokes it.
-argument-hint: "[request, bug report, todo item, or known issue]"
+description: Plan a change to Ox, given a request, bug report, todo item, known issue, or audit finding, and write the plan in `.agents/plans/`. The plan settles every decision except product questions, which the user answers, and accounts for the functional requirements, state owners, Claude Code behavior, and tests the change depends on. Use before implementing a code or behavior change to Ox, not for standalone documentation edits. Never use it unless the user, or an agent acting on the user's request, invokes it.
+argument-hint: "[request, bug report, todo item, known issue, or audit finding]"
 ---
 
 Use this skill only when the user, or an agent acting on the user's request, invokes it. Never use it on your own initiative.
@@ -12,12 +12,12 @@ Write a plan for one change to Ox without changing the code. Whoever implements 
 
 ## Establish the work
 
-1. Read `<request> $ARGUMENTS </request>`. If it is empty, ask the user what to plan and stop. If it names an item in `docs/todo.md` or `docs/known-issues.md`, read that item.
+1. Read `<request> $ARGUMENTS </request>`. If it is empty, ask the user what to plan and stop. If it names an item in `docs/todo.md` or `docs/known-issues.md`, read that item. If it names a finding in an audit in `.agents/audits/`, read the finding; the change replaces its structure at every place the finding names.
 2. Read `AGENTS.md`, `docs/functional-requirements.md`, and `docs/known-issues.md`. For web client work, also read `cmd/ox/web/AGENTS.md`. Read the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/claude-code.md` that cover the code the change touches.
 
 ## Explore the code
 
-3. Read the code to change, its callers, nearby examples, and its tests. Look beyond the files to change: whether Ox already does this, whether an existing owner or abstraction has the wrong shape for the change, and whether the change extends the architecture or sits bolted on. Follow an existing pattern when it is sound. For a defect, find its structural cause: the representation, duplicated fact, scattered rule, or owner that let the wrong state exist. Search the code for every other place with the same structure; those places belong to this change.
+3. Read the code to change, its callers, nearby examples, and its tests. Look beyond the files to change: whether Ox already does this, whether an existing owner or abstraction has the wrong shape for the change, and whether the change extends the architecture or sits bolted on. Follow an existing pattern when it is sound.
 4. Trace the change across every boundary it crosses: page, relay, `oxd` connection, session goroutine, harness agent, and Claude process. Name the owner of each piece of state it reads or writes. Treat the documented design as earlier choices, open to question: for each piece of state, list every component the docs or code say owns, holds, tracks, or decides it, find which component observes the events that change it, and ask which single owner would make the wrong states impossible to build. Plan for that owner, even when the docs name another.
 
 ## Settle the request
@@ -27,13 +27,13 @@ Write a plan for one change to Ox without changing the code. Whoever implements 
 ## Decide
 
 6. Settle every other decision yourself except product questions. A product question is a choice that changes what the user sees or does in everyday use of Ox. Internal design, which component owns a rule, protocol and data shapes, removing code that cannot run, and how rare cases behave are yours. Handle rare cases the simplest reasonable way; one becomes a product question only when it changes what the user sees in everyday use.
-7. Choose the option that leaves Ox simplest overall, which may move ownership, rewrite an abstraction, or delete code rather than make the smallest change. Prefer a design in which wrong states cannot be represented over one that checks for them, as `AGENTS.md` ("Correct by construction") describes. When the change repairs a defect, plan the fix at its structural cause so its whole class cannot recur, at every place the cause appears. Plan a guard, special case, or retry at the symptom only when the cause lies outside Ox, and name that cause. A race that can leave state the design says cannot exist is fixed by changing who owns the state, not by handling the interleaving.
+7. Choose the option that leaves Ox simplest overall, which may move ownership, rewrite an abstraction, or delete code rather than make the smallest change. Prefer a design in which wrong states cannot be represented over one that checks for them, as `AGENTS.md` ("Correct by construction") describes. When the change repairs a defect, plan the fix at its cause. A race that can leave state the design says cannot exist is fixed by changing who owns the state, not by handling the interleaving.
 8. Account for each of these concerns the change touches, and record what it requires under Decisions:
    - **Requirements.** Each requirement in `docs/functional-requirements.md` the change touches, by its title, and how it holds through the whole lifecycle of a page's request: in flight, its reply lost, a reconnect, navigation away and back, a second page acting on the same session, the process exiting or parking, and `oxd` running a page's independent requests in any order. The page shows an action as possible, or a value as applied, only once `oxd` has confirmed it.
    - **Settings.** Whatever reaches Claude's flags, environment, or control requests leaves the process running with exactly the model, effort, permission mode, and account the page shows, including after a partial failure or a restart. A setting Claude would silently ignore or default is refused.
    - **Settling.** Each wait the change adds, on a reply, a pipe, a process, or a child of Claude, ends: by what it waits on or by a bound. Every path gives the request a result or an error, shown where the request was made.
    - **Process I/O.** Claude's output is read to its last line, including one that ends at EOF; Claude's exit is seen even while a child holds its pipes; a failure reason on stdout or stderr reaches the request that failed.
-   - **Construction.** Each invariant the change adds or relies on, and the type, owner, or single source that enforces it, so that no reader has to check it. For a defect, the structure that let the wrong state exist, every place that structure appears, and how the change makes the state impossible to build.
+   - **Construction.** Each invariant the change adds or relies on, and the type, owner, or single source that enforces it, so that no reader has to check it.
    - **Ownership.** For each state, timer, retry, lock, or stored field the change adds: its owner, the user-visible behavior that needs it, the races it brings, and its cleanup. The commit body repeats this.
    - **Claude Code.** Each assumption about Claude's output, ordering, timing, or flags, with the section of `docs/claude-code.md` that records it. The plan handles every variant that section records. An assumption it does not record becomes a live check task whose result goes into `docs/claude-code.md`. A fact inferred from Claude's tool calls or hooks names the event that clears it.
    - **Trust boundaries.** For a change to a listener, the relay, a file path, a process environment, or a file outside Ox's own directories: who can reach it and what it can touch.

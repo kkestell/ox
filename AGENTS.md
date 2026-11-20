@@ -153,22 +153,14 @@ need them cannot happen.
 
 - Fix every confirmed defect. A defect is confirmed live, from the source, or
   by an injected fault.
-- Fix a defect at its structural cause, so that its whole class cannot
-  recur. Find why the code could reach the wrong state at all: the
-  representation, duplicated fact, scattered rule, or owner that allowed it.
-  Change that structure so the state cannot be built, as
-  [Correct by construction](#correct-by-construction) describes, and fix every
-  other place with the same structure in the same change. A guard, special
-  case, or retry at the symptom is the fix only when the cause lies outside
-  Ox, such as Claude Code behavior, and the plan or review names that cause.
-- A race that can leave state the design says cannot exist comes from who
-  owns the state, however unlikely it is. Fix it by changing who owns the
-  state, not by handling the interleaving. A race between independent
-  requests in which every outcome is valid is not a defect.
+- Fix a defect at its cause. A race that can leave state the design says
+  cannot exist comes from who owns the state, however unlikely it is. Fix it
+  by changing who owns the state, not by handling the interleaving. A race
+  between independent requests in which every outcome is valid is not a
+  defect.
 - A review gives each finding one of three outcomes:
   - **Fix:** a confirmed defect, or a design, test, or documentation problem
-    whose fix costs less than keeping it. Keeping a structure that permits a
-    class of defects costs every defect of that class, found or not.
+    whose fix costs less than keeping it.
   - **Reject,** with the reason in the review: the finding is speculative,
     misreads the intended behavior, or costs less to keep than to fix, such
     as an unmeasured scaling cost.
@@ -188,13 +180,12 @@ agent, which carries it through child sessions:
 1. A child session on Opus 5.5 at high effort runs `/ox-plan`. The user
    approves the plan's requirement changes with its other product questions.
 2. The top-level agent sanity-checks the plan with a quick look at the code it
-   names, without redoing the planning, including that each defect's fix
-   changes the structure that caused it.
+   names, without redoing the planning.
 3. A child session on Sonnet or Opus, chosen by the change's complexity,
    implements the plan, applying its requirement changes word for word.
 4. A child session on Opus or Sol runs `/ox-review` on the uncommitted
    changes for the plan.
-5. The implementing session fixes the review's findings at their causes.
+5. The implementing session fixes the review's findings.
 6. The reviewing session runs `/ox-review verify` on its review. Open
    findings or new regressions go back to the implementing session, until
    the verdict is Ready to commit.
@@ -207,6 +198,11 @@ the user approved in the plan. A bug fix leaves it alone unless the fix shows
 a requirement was wrong. No agent rewords a requirement to match the code.
 Plans and reviews cite requirements by title. A periodic `/ox-review` of the
 whole repository checks the code against every requirement.
+
+A periodic `/ox-audit` finds the structures that let classes of defects
+happen, drawing on past plans, reviews, and fixes as evidence. Each finding
+the user chooses to change goes through the workflow above, with the finding
+as the request for `/ox-plan`.
 
 ## Verification
 
