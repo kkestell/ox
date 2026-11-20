@@ -19,8 +19,8 @@ Change no code, tests, or documentation, and stage or commit nothing. Edit only 
 
 1. Read `<audit_scope> $ARGUMENTS </audit_scope>`. With no scope, audit the whole repository since the last audit in `.agents/audits/`, or all history if there is none. Record the revision and the state of the working tree you audit.
 2. Read `AGENTS.md`, `docs/functional-requirements.md`, `docs/known-issues.md`, and `docs/architecture.md`; for web client code, also `cmd/ox/web/AGENTS.md`. Read the sections of `docs/protocol.md` and `docs/claude-code.md` that cover the code in scope.
-3. Read the earlier audits in `.agents/audits/`. Note which `Plan` findings have landed, and do not raise a `Rejected` finding again unless the evidence its reason rests on has changed.
-4. Collect the defects in scope: the `Fix` and `Record` findings in `.agents/reviews/`, the entries in `docs/known-issues.md`, and the commits that fix behavior, found through `git log` and their diffs. For each, note what went wrong, where, and what the fix changed: the structure that allowed it, or a guard, special case, or retry at the symptom.
+3. Read the earlier audits in `.agents/audits/`, and note which `Plan` findings have landed. Do not raise a finding an earlier audit or review rejected unless the evidence its reason rests on has changed.
+4. Collect the defects in scope, starting with the `Fix` and `Record` findings in `.agents/reviews/` and the entries in `docs/known-issues.md`. Then read the messages of the commits in scope, and read the diff of a commit that fixes behavior only when no review explains it. For each defect, note what went wrong, where, and what the fix changed: the structure that allowed it, or a guard, special case, or retry at the symptom.
 
 ## Find the structures
 
@@ -31,18 +31,18 @@ Change no code, tests, or documentation, and stage or commit nothing. Edit only 
    - The wrong states it lets the code build, which of them have happened, with the defects that showed them, and which are reachable now.
    - The structure that would make those states impossible to build. Treat the documented design as earlier choices, open to question: for each piece of state involved, list every component the docs or code say owns, holds, tracks, or decides it, find which component observes the events that change it, and ask which single owner or representation would leave no wrong state to build. Name that owner even when the docs name another.
    - What the replacement removes: the guards, syncing, and special cases that exist only because of the structure.
-8. Confirm each candidate by tracing the code, reproducing a wrong state, or running a focused check: a stand-in `claude` script, an injected `/rpc` delay or failure in an e2e spec, or a probe against built binaries on a temporary socket, database, and port. Revert every edit a check needs before you finish. A candidate with no defect behind it and no reachable wrong state is `Rejected` as speculative.
-9. Give each confirmed structure its action, weighing the cost of keeping it against the cost of replacing it: the code and tests the change touches, the risk to behavior users rely on, and whether it changes anything the user can observe. Prefer the replacement that deletes the most code. Whether a replacement would change what the user sees is for `/ox-plan` to settle with the user; note it, and do not ask.
+8. Confirm each candidate by tracing the code, reproducing a wrong state, or running a focused check: a stand-in `claude` script, an injected `/rpc` delay or failure in an e2e spec, a probe against built binaries on a temporary socket, database, and port, or a small live check against Claude Code with Haiku. Revert every edit a check needs before you finish. A candidate that has caused no defect and permits no reachable wrong state is `Rejected` as speculative. A structure whose past defects were each guarded at the symptom is not speculative, even when no wrong state is reachable today: the guards, and the next path that must repeat them, are its cost.
+9. Give each confirmed structure its action, weighing the cost of keeping it against the cost of replacing it: the code and tests the change touches, the risk to behavior users rely on, and whether it changes anything the user can observe. When a plan chose the structure on purpose, quote the plan's reason and weigh it; the replacement has to answer it. Prefer the replacement that deletes the most code. Whether a replacement would change what the user sees is for `/ox-plan` to settle with the user; note it, and do not ask.
 
 ## Write the audit
 
 10. Read this skill's `assets/_template.md` and write the audit in `.agents/audits/`, named `YYYY-MM-DD-NNN-slug.md` with the next sequence for the day.
-11. Make each `Plan` finding stand on its own as a request for `/ox-plan`: the structure, every place it appears, the defects it caused, the wrong states it still permits, the owner or representation that replaces it, and what the replacement removes. Leave the design of the change to the plan. For each `Rejected` finding, state the reason.
+11. Make each `Plan` finding stand on its own as a request for `/ox-plan`: the structure, every place it appears, the defects it caused, the wrong states it still permits, the owner or representation that replaces it, and what the replacement removes. Leave the design of the change to the plan. Record a candidate as a `Rejected` finding only when a later audit or review would otherwise raise it again: an earlier review raised it, or it has the shape of a structure this audit looks for. State the reason.
 12. Give the final response and stop.
 
 ## Final response
 
-Reply in the form below and nothing else. Lead with the main point, write plainly, and leave out the candidates you ruled out and the steps you took.
+Reply in the form below and nothing else. Lead with the main point, write plainly, and leave out the candidates you ruled out without recording them and the steps you took.
 
 ```markdown
 One or two sentences: what the audit found, and the number of findings by action.

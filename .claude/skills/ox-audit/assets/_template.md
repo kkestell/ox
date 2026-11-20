@@ -2,7 +2,7 @@
 
 Delete placeholder text and unused sections, including this guidance. Give every finding an ID: `Plan` findings first, then `Rejected`, each group by cost, highest first: `F1`, `F2`, and so on. Each finding gets its own section. Do not put findings in bullets, and do not nest them under cost or action headings.
 
-Cost describes what keeping the structure costs, and orders the work. The action is decided separately.
+Cost describes what keeping the structure costs, and orders the work. Choose the level by the size of the harm as well as its kind: how often normal use reaches it, how long it lasts, and what it costs the user. The action is decided separately.
 
 - `High`: the structure has caused defects that broke a requirement, lost work, or ran a process with settings other than those shown, or normal use can still reach such a wrong state.
 - `Medium`: the structure has caused defects in uncommon but realistic cases, or forces checks, guards, or syncing on every change that touches it.
