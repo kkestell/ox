@@ -179,20 +179,36 @@ func (a *Agent) sessionState(state string) {
 	}
 }
 
-// setState publishes a change to the state clients see.
+// setState sets Claude's state and publishes a change to the state clients
+// see.
 func (a *Agent) setState(state string) {
-	if state != a.state {
-		a.state = state
-		a.publish(agent.Update{Type: agent.UpdateState, State: state})
+	was := a.published()
+	a.state = state
+	a.publishState(was)
+}
+
+// published is the execution state clients see: background while Claude is
+// idle with background tasks running, otherwise state.
+func (a *Agent) published() string {
+	if a.state == agent.StateIdle && a.background > 0 {
+		return agent.StateBackground
+	}
+	return a.state
+}
+
+// publishState publishes the state clients see when it differs from was.
+func (a *Agent) publishState(was string) {
+	if now := a.published(); now != was {
+		a.publish(agent.Update{Type: agent.UpdateState, State: now})
 	}
 }
 
-// endPrompt releases the agent with an idle state naming the latest input
-// written.
+// endPrompt releases the agent with an idle state, or background, naming the
+// latest input written.
 func (a *Agent) endPrompt(p *prompting) {
 	a.withdrawApprovals()
 	a.state = agent.StateIdle
-	a.publish(agent.Update{MessageID: p.input.MessageID, Type: agent.UpdateState, State: a.state})
+	a.publish(agent.Update{MessageID: p.input.MessageID, Type: agent.UpdateState, State: a.published()})
 	a.ready()
 }
 

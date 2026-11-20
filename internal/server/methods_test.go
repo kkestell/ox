@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -271,6 +272,34 @@ func TestSessionLifecycle(t *testing.T) {
 	if parked.State != "parked" || len(parked.History) != 4 || parked.History[3].Type != "parked" || parked.Model != "m" {
 		t.Fatalf("unexpected parked session: %+v", parked)
 	}
+
+	// A background task that outlasts the park period keeps the session
+	// from parking until it ends.
+	json.Unmarshal(c.call("session/create", map[string]string{
+		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "effort": "low", "permission_mode": "plan",
+	}), &created)
+	worker := created.SessionID
+	c.call("session/send", map[string]string{"session_id": worker, "text": "background 800"})
+	var states []string
+	for len(states) == 0 || states[len(states)-1] != "idle" {
+		var u agent.Update
+		c.next(func(m message) bool {
+			if m.Method != "session/update" || m.sessionID() != worker {
+				return false
+			}
+			u = agent.Update{}
+			json.Unmarshal(m.Params, &u)
+			return u.Type == "state" || u.Type == "parked"
+		})
+		if u.Type == "parked" {
+			t.Fatalf("a session parked with a background task running, after %v", states)
+		}
+		states = append(states, u.State)
+	}
+	if !slices.Equal(states, []string{"running", "background", "idle"}) {
+		t.Fatalf("a background task published %v", states)
+	}
+	c.call("session/destroy", map[string]string{"session_id": worker})
 
 	listed := func(c *client) int {
 		var list struct {

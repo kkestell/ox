@@ -22,6 +22,7 @@ import {
   type SessionState,
   type Settings,
   type SettingsPatch,
+  settled,
   type ToolResult,
   type Update,
 } from "./protocol";
@@ -185,7 +186,10 @@ function createSessionControl(
   };
   const free = () => connected() && !creating() && !sending() && requested() === undefined;
   const canSend = () => free() && live()?.queued.length === 0;
-  const canConfigure = () => free() && (live()?.state === "idle" || live()?.state === "parked");
+  const canConfigure = () => {
+    const state = live()?.state;
+    return free() && state !== undefined && settled(state);
+  };
 
   function finishPrompt(id: string, dropped: boolean) {
     if (sent?.id !== id) return;

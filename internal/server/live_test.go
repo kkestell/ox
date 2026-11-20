@@ -495,6 +495,42 @@ func TestLive(t *testing.T) {
 	listModels(listed)
 	listModels(create("plan"))
 
+	t.Log("background work shows as background until it ends, then Claude's own turn runs")
+	worker := create("manual")
+	c.forget(worker)
+	c.call("session/send", map[string]string{"session_id": worker,
+		"text": "Run the Bash command `sleep 8` with run_in_background set to true. Do not wait for it or check on it. Then reply with just the word started."})
+	// states is the session's published states, each change once, from the
+	// first background on.
+	var states []string
+	for !slices.Equal(states, []string{"background", "idle", "running", "idle"}) {
+		var u agent.Update
+		c.next(func(m message) bool {
+			if m.Method != "session/update" || m.sessionID() != worker {
+				return false
+			}
+			u = agent.Update{}
+			json.Unmarshal(m.Params, &u)
+			return u.Type == "approval" || u.Type == "state"
+		})
+		switch {
+		case u.Type == "approval":
+			var r request
+			json.Unmarshal(u.Request, &r)
+			c.call("session/approve", map[string]any{"session_id": worker, "request_id": u.RequestID, "response": allow(r)})
+		case u.State == "background" || len(states) > 0:
+			if len(states) == 0 || states[len(states)-1] != u.State {
+				states = append(states, u.State)
+			}
+			if len(states) > 4 {
+				t.Fatalf("background work published %v", states)
+			}
+		}
+	}
+	if snapshot := c.call("session/get", map[string]string{"session_id": worker}); !strings.Contains(string(snapshot), `"state":"idle"`) {
+		t.Errorf("after its background work the session is not idle: %s", snapshot)
+	}
+
 	t.Log("Claude lists sessions and messages a parked one")
 	describe := func(messages []message) string {
 		var b strings.Builder

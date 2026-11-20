@@ -66,8 +66,8 @@ type Agent struct {
 	// untaken is every input Claude has not taken, oldest first. Only the
 	// first is ever written, and only in prompting.
 	untaken []agent.Input
-	// state is the execution state clients see: Claude's report, except that
-	// a prompt is running from the moment it is accepted.
+	// state is Claude's execution state, except that a prompt is running from
+	// the moment it is accepted. Clients see it as published reports it.
 	state            string
 	approvals        []agent.Approval // pending, in arrival order
 	settings         agent.Settings   // the settings the process is using
@@ -210,7 +210,9 @@ func (a *Agent) handleOutput(m message) {
 				a.sessionState(m.State)
 			}
 		case "background_tasks_changed":
+			was := a.published()
 			a.background = len(m.Tasks)
+			a.publishState(was)
 		}
 	case "assistant":
 		for _, use := range m.toolUses() {
@@ -285,7 +287,7 @@ func (a *Agent) idle() bool {
 }
 
 func (a *Agent) Snapshot() agent.Snapshot {
-	return agent.Snapshot{State: a.state, Approvals: append([]agent.Approval{}, a.approvals...), Queued: append([]agent.Input{}, a.untaken...)}
+	return agent.Snapshot{State: a.published(), Approvals: append([]agent.Approval{}, a.approvals...), Queued: append([]agent.Input{}, a.untaken...)}
 }
 
 // startupOutput handles the output that ends or explains a start, and

@@ -284,7 +284,7 @@ response arrives.
 | Field | Meaning |
 | --- | --- |
 | `model`, `effort`, `permission_mode` | The settings the session now uses. |
-| `state` | `parked`, or the execution state: `running`, `requires_action`, or `idle`. A prompt is `running` from the moment `session/send` accepts it. |
+| `state` | `parked`, or the execution state: `running`, `requires_action`, `idle`, or `background`. A prompt is `running` from the moment `session/send` accepts it. |
 | `approvals` | Pending approvals in the order they arrived, each with `request_id` and Claude's `request`, whether or not a prompt is active. |
 | `queued` | All inputs Claude has not taken, prompts and messages, oldest first. Each has `message_id` and `text`, with `from` and `from_label` for a message. An empty queue is `[]`. |
 | `history` | The session's recorded updates, oldest first, in the form of `session/update` params without `session_id`. |
@@ -365,10 +365,10 @@ Requires `session_id`. Asks a running session to stop its turn and the tools
 it runs, using Claude's [interrupt](claude-code.md#interrupt). Success means
 the request was written; a session that is idle or parked has nothing to stop
 and also succeeds. The stopped turn ends with an error `result` whose text is
-`Interrupted`, and an `idle` state, which release a prompt as usual. Every
-prompt and message Claude has not taken is dropped with a `prompt_cancelled`
-update each. When no turn is running,
-cancellation and `idle` end the interrupt, with no `result`.
+`Interrupted`, and an `idle` or `background` state, which release a prompt as
+usual. Every prompt and message Claude has not taken is dropped with a
+`prompt_cancelled` update each. When no turn is running, cancellation and
+`idle` end the interrupt, with no `result`.
 
 ```json
 {"jsonrpc":"2.0","id":8,"method":"session/interrupt","params":{"session_id":"session-id"}}
@@ -400,10 +400,10 @@ session with children returns `-32000` `session has child sessions`.
 Requires `session_id`. Archives the session and, for a top-level session,
 each of its children, and stops each one's process as parking does, with a
 `parked` update. Each archived session is announced with `session/archived`
-before the response. A session in the family that is neither idle nor parked
-returns `-32002` and archives none. Archiving an archived family succeeds. An
-archived session keeps its history; it refuses `session/send`,
-`session/configure`, and [`send_message`](#tools), and
+before the response. A session in the family that is not `idle`,
+`background`, or `parked` returns `-32002` and archives none. Archiving an
+archived family succeeds. An archived session keeps its history; it refuses
+`session/send`, `session/configure`, and [`send_message`](#tools), and
 [`list_sessions`](#tools) leaves it out. `session/get`, `session/interrupt`,
 `session/destroy`, and [`read_session`](#tools) work on it as on any parked
 session. Archived sessions stay archived when the daemon restarts.
@@ -446,7 +446,8 @@ of that turn.
 recorded reply's `text_delta` carries the time of its first fragment.
 Turns Claude starts itself, such as a scheduled prompt firing or a background
 task finishing, produce the same updates without `message_id`. Such a turn
-can run after a prompt's `result` and before the `idle` that releases it:
+can run after a prompt's `result` and before the `idle` or `background` that
+releases it:
 
 ```json
 {"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"text_delta","text":"This repository ","time":"2026-11-18T19:53:50.674Z"}}
@@ -460,7 +461,7 @@ can run after a prompt's `result` and before the `idle` that releases it:
 | `text_delta` | `text`: string | Append this fragment of top-level assistant text. If a successful turn result has text but none was streamed, the daemon publishes its text here before the result. |
 | `tool_use` | `tool_use_id`: string; `tool_name`: string; `input`: object | Claude called a tool at the top level. |
 | `tool_result` | `tool_use_id`: string; `result`: object with `text` and `is_error` | The outcome of the top-level tool call with this `tool_use_id`. `text` joins the result's text blocks. |
-| `state` | `state`: `running`, `requires_action`, or `idle` | The session's execution state: Claude's report, or `running` for a prompt Claude has not taken yet. |
+| `state` | `state`: `running`, `requires_action`, `idle`, or `background` | The session's execution state: Claude's report, `running` for a prompt Claude has not taken yet, or `background` while Claude is idle with background tasks running. |
 | `result` | `result`: object with `text` and `is_error` | Claude's final response or turn error. The text is a complete result, not another delta to append. |
 | `approval` | `request_id`: string; `request`: object | A pending Claude request needing a client decision. |
 | `approval_answered` | `request_id`: string | A client answered the approval. |
@@ -474,7 +475,10 @@ if the sender is deleted. Older recorded prompts can omit `from_label`.
 
 `running` means Claude is working. `requires_action` means it is waiting for
 user action; read the approval notifications to obtain the requests. `idle`
-means the turn is over and the session can be configured.
+means the turn is over and the session can be configured. `background` is
+`idle` while background work Claude started, such as a background Bash
+command or a Monitor, still runs; when it ends, the session publishes `idle`,
+and Claude usually starts a turn of its own.
 
 ```json
 {"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"tool_use","tool_use_id":"toolu_example","tool_name":"Bash","input":{"command":"ls","description":"List files"},"time":"2026-11-18T19:53:51Z"}}
@@ -583,7 +587,7 @@ workspace order and oldest first. Each entry has `session_id`, `label` (a child'
 first line of the first prompt the user sent it, or the first 8 characters
 of its ID), `workspace`
 (the path), `harness`, `model`, `effort`, `permission_mode`, and `state`
-(`parked`, or the execution state).
+(`parked`, or the execution state, including `background`).
 
 `send_message` takes `to`, a session ID, and `text`. It queues the text
 behind every input that session has not taken, starting the session first
@@ -665,7 +669,7 @@ the history, which only grows. An entry that alone exceeds the page is cut
 to 40,000 characters and ends in `…`.
 
 The page ends with a blank line and the state in parentheses: `(idle)`,
-`(running)`, `(parked)`, or `(waiting for approval: <tool names>)`, followed
+`(background)`, `(running)`, `(parked)`, or `(waiting for approval: <tool names>)`, followed
 by `, <n> queued` when inputs wait, as in `(running, 2 queued)`. A session
 with no history is the state line alone.
 

@@ -181,6 +181,8 @@ nav > [role="alert"] { padding: 0 0.5rem 0.5rem; font-size: 0.75rem; }
 .status::before { content: ""; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: currentColor; }
 .status.idle, .status.parked { color: #525252; }
 .status.requires_action { color: #f59e0b; }
+.status.background { color: #16a34a; }
+.status.background::before { box-sizing: border-box; background: transparent; border: 1.5px solid currentColor; }
 .status.running, .marker.running { animation: breathe 1s ease-in-out infinite alternate; }
 @keyframes breathe { from { color: #16a34a; } to { color: #4ade80; } }
 

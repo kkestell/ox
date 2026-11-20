@@ -6,7 +6,7 @@ What the person using Ox can see and rely on. Each requirement is cited by its t
 - **Removing a workspace.** A workspace can be removed only when it has no sessions, archived ones included; otherwise its menu shows Remove workspace unavailable, with the reason. Removing it asks first, and leaves the directory on disk.
 - **Session order.** Each workspace lists its top-level sessions oldest first, each followed by its child sessions, oldest first and indented beneath it.
 - **Session labels.** A child session is labeled with the title it was created with. Any other session is labeled with the first line of the first prompt the user sent it, or a short identifier before it has one.
-- **Session status.** Each session shows whether it is parked, idle, running, waiting on the user, or archived.
+- **Session status.** Each session shows whether it is parked, idle, idle while background work Claude started still runs, running, waiting on the user, or archived.
 - **Session URL.** The URL names the selected session, so reloading the page reopens it.
 - **New-session defaults.** A new session starts with the configured default harness, model, effort, and permission mode.
 - **New-session choices.** Before sending, the user can pick any offered harness, model, effort, and permission mode for a new session.

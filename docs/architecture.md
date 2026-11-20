@@ -35,7 +35,7 @@ cmd/oxd            socket, database, and configuration paths, signals, the harne
 | `store` | The SQLite database of workspaces, sessions, child sessions' `children` rows, archived sessions' `archived` rows, and session events. |
 | `jsonrpc` | Request validation and the response and notification types. |
 | `agent` | The `Agent` interface a harness implements, its `Start` function and options, and the updates, snapshots, settings, and errors they share. |
-| `fake` | A harness that runs no process and echoes each prompt back, a word at a time. A prompt `approve <tool> <input JSON>` first asks to approve that tool call, and the call's result is the answer. |
+| `fake` | A harness that runs no process and echoes each prompt back, a word at a time. A prompt `approve <tool> <input JSON>` first asks to approve that tool call, and the call's result is the answer. A prompt `background <milliseconds>` also runs a background task that long. |
 | `claude` | The Claude Code harness: starting and initializing Claude, its stream-json wire format, and the state machine that runs it as an `Agent`. |
 
 ## Sessions
@@ -158,9 +158,10 @@ only during it:
 
 The process's exit, `Stop`, or a failed start moves any live phase to
 `exited`, dropping every untaken input. Alongside the phase, the agent keeps
-the execution state it publishes: Claude's reported state, except that a
-prompt is `running` from the moment it is accepted until Claude reports
-`idle` with no input untaken.
+Claude's execution state: its report, except that a prompt is `running`
+from the moment it is accepted until Claude reports `idle` with no input
+untaken. It publishes that state, or `background` while the state is `idle`
+and Claude reports live background tasks.
 
 The agent keeps every untaken input in one queue, oldest first, and writes
 only the first. An input is written at once in `available`, or in

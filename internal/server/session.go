@@ -185,7 +185,8 @@ func (sess *session) isArchived() bool {
 
 // held is a session whose goroutine waits in hold until it is released.
 type held struct {
-	// free is whether the session was idle or parked when held.
+	// free is whether the session was idle, in the background, or parked when
+	// held.
 	free    bool
 	release chan<- bool
 }
@@ -198,7 +199,7 @@ func (sess *session) hold() (held, bool) {
 	release := make(chan bool, 1)
 	if !sess.post(func() {
 		state := sess.snapshot().State
-		free <- state == agent.StateIdle || state == agent.StateParked
+		free <- state == agent.StateIdle || state == agent.StateBackground || state == agent.StateParked
 		if <-release && sess.agent != nil {
 			sess.stop()
 		}

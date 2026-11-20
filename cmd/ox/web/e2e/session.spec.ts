@@ -1,6 +1,7 @@
 // The web client against the real relay and oxd, with the fake harness,
 // which echoes each prompt back a word at a time, or first asks to approve a
-// tool call for a prompt "approve <tool> <input JSON>".
+// tool call for a prompt "approve <tool> <input JSON>", or also runs a
+// background task for a prompt "background <milliseconds>".
 import { mkdtempSync } from "node:fs";
 import { createConnection } from "node:net";
 import { basename } from "node:path";
@@ -320,6 +321,23 @@ test("Stop interrupts a running reply", async ({ page }) => {
   await stop(page).click();
   await expect(page.locator(".error")).toHaveText("Interrupted");
   await expect(stop(page)).toHaveCount(0);
+});
+
+test("a session in the background shows its status and stays configurable and archivable", async ({ page }) => {
+  await open(page, services);
+  await page.getByRole("button", { name: "New session" }).click();
+  await prompt(page).fill("background 2000");
+  await prompt(page).press("Enter");
+  await expect(page.locator(".reply")).toHaveText("You said: background 2000");
+  const status = sessionRow(page, "background 2000").locator(".status");
+  await expect(status).toHaveAttribute("aria-label", "background");
+  await expect(page.locator("select[name=permission_mode]")).toBeEnabled();
+  await expect(stop(page)).toHaveCount(0);
+  await expect(menuItem(await openMenu(sessionRow(page, "background 2000")), "Archive")).toBeEnabled();
+  await page.keyboard.press("Escape");
+  // Each check above passed while the task still ran.
+  expect(await status.getAttribute("aria-label")).toBe("background");
+  await expect(status).toHaveAttribute("aria-label", "idle");
 });
 
 test("Stop appears once the page's send is accepted, and stops it", async ({ page }) => {

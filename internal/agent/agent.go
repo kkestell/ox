@@ -141,7 +141,8 @@ const (
 	StateIdle           = "idle"
 	StateRunning        = "running"
 	StateRequiresAction = "requires_action"
-	StateParked         = "parked" // snapshots only: no process is running
+	StateBackground     = "background" // idle while background tasks the harness started still run
+	StateParked         = "parked"     // snapshots only: no process is running
 )
 
 type Update struct {

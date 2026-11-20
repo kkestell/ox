@@ -1,6 +1,7 @@
 import { createSignal, For, onSettled, Show } from "solid-js";
 import type { Selection } from "./App";
 import { createAttempt, type Session, sessionLabel, useOx, type Workspace, workspaceName } from "./ox";
+import { settled } from "./protocol";
 
 type DialogRequest =
   | { kind: "add" }
@@ -164,13 +165,11 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
     ox.workspaceOf(session.id)?.sessions.filter((other) => other.child?.parent_id === session.id) ?? [];
   const visible = (workspaceId: string, session: Session) => !session.archived || shown().has(workspaceId);
 
-  // oxd archives a family only when each member is idle or parked.
+  // oxd archives a family only when each member is settled.
   const archiveBlocked = (session: Session) => {
     if (!ox.ready()) return "Not connected";
     const children = childrenOf(session);
-    const free = [session, ...children].every(
-      (s) => s.load.kind === "live" && (s.load.snapshot.state === "idle" || s.load.snapshot.state === "parked"),
-    );
+    const free = [session, ...children].every((s) => s.load.kind === "live" && settled(s.load.snapshot.state));
     if (free) return undefined;
     return children.length ? "Wait until it and its child sessions are idle" : "Wait until it is idle";
   };

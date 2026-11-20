@@ -686,3 +686,47 @@ func TestTurnAfterPromptResultIsClaudes(t *testing.T) {
 		t.Fatalf("Claude's own turn was attributed to the prompt: %+v", *updates)
 	}
 }
+
+// A turn that ends while a background task Claude started still runs leaves
+// the session in background, which is idle for settings, until the task ends.
+func TestBackgroundTasksAfterTurn(t *testing.T) {
+	a, input, updates, id := promptingAgent(t)
+	tasks := func(list string) {
+		output(t, a, `{"type":"system","subtype":"background_tasks_changed","tasks":`+list+`}`)
+	}
+	tasks(`[{"task_id":"b0"}]`)
+	tasks(`[]`)
+	tasks(`[{"task_id":"b1"}]`)
+	output(t, a, `{"type":"result","subtype":"success","result":""}`)
+	if len(*updates) != 0 {
+		t.Fatalf("background tasks during a turn changed the state: %+v", *updates)
+	}
+
+	state(t, a, "idle")
+	if len(*updates) != 1 || (*updates)[0].State != agent.StateBackground || (*updates)[0].MessageID != id {
+		t.Fatalf("a turn ending with a background task did not publish background for its prompt: %+v", *updates)
+	}
+	if got := a.Snapshot().State; got != agent.StateBackground {
+		t.Fatalf("snapshot state %q, want background", got)
+	}
+
+	result := make(chan error, 1)
+	a.Configure(agent.SettingsPatch{Model: new("haiku")}, replyTo(result))
+	acknowledge(t, a, controlRequestID(t, input), "success")
+	if err := <-result; err != nil {
+		t.Fatalf("configuration refused in background: %v", err)
+	}
+
+	*updates = nil
+	state(t, a, "running")
+	state(t, a, "idle")
+	if len(*updates) != 2 || (*updates)[0].State != agent.StateRunning || (*updates)[1].State != agent.StateBackground {
+		t.Fatalf("a turn Claude started with a background task running did not end in background: %+v", *updates)
+	}
+
+	*updates = nil
+	tasks(`[]`)
+	if len(*updates) != 1 || (*updates)[0].State != agent.StateIdle || (*updates)[0].MessageID != "" {
+		t.Fatalf("the last background task's end did not publish idle: %+v", *updates)
+	}
+}

@@ -3,6 +3,7 @@ package fake
 import (
 	"crypto/rand"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,11 +26,18 @@ type Agent struct {
 	tool     string          // the tool call the prompt asked to approve
 	approval *agent.Approval // pending until answered, interrupted, or stopped
 	config   *configured     // the configuration awaiting its tick
+	tasks    int             // background tasks running
 	exited   bool
 }
 
+// step is the delay between a turn's steps.
+const step = 50 * time.Millisecond
+
 // tick streams the next word of prompt's reply.
 type tick struct{ prompt string }
+
+// taskEnded ends a background task.
+type taskEnded struct{}
 
 // configured completes a configuration a tick after it starts, as Claude
 // acknowledges one after a delay.
@@ -61,9 +69,9 @@ func (a *Agent) publish(update agent.Update) {
 	a.onUpdate(update)
 }
 
-// after delivers event through Events a tick from now.
-func (a *Agent) after(event agent.Event) {
-	time.AfterFunc(50*time.Millisecond, func() {
+// after delivers event through Events d from now.
+func (a *Agent) after(d time.Duration, event agent.Event) {
+	time.AfterFunc(d, func() {
 		select {
 		case a.events <- event:
 		case <-a.done:
@@ -83,6 +91,10 @@ func (a *Agent) Handle(event agent.Event) {
 		if len(a.queue) > 0 {
 			a.begin()
 		}
+	case taskEnded:
+		was := a.published()
+		a.tasks--
+		a.publishState(was)
 	case tick:
 		if e.prompt != a.prompt {
 			return // its prompt was interrupted
@@ -94,7 +106,7 @@ func (a *Agent) Handle(event agent.Event) {
 		if len(a.words) > 0 {
 			a.publish(agent.Update{Type: agent.UpdateTextDelta, Text: a.words[0]})
 			a.words = a.words[1:]
-			a.after(tick{a.prompt})
+			a.after(step, tick{a.prompt})
 			return
 		}
 		a.finish(agent.Result{Text: a.reply})
@@ -108,13 +120,30 @@ func (a *Agent) finish(result agent.Result) {
 		a.onResumable(rand.Text())
 		a.onResumable = nil
 	}
+	was := a.published()
 	a.state = agent.StateIdle
-	a.publish(agent.Update{Type: agent.UpdateState, State: a.state})
+	a.publishState(was)
 	a.prompt = ""
 }
 
+// published is the state clients see: background while idle with a task
+// running, otherwise state.
+func (a *Agent) published() string {
+	if a.state == agent.StateIdle && a.tasks > 0 {
+		return agent.StateBackground
+	}
+	return a.state
+}
+
+// publishState publishes the state clients see when it differs from was.
+func (a *Agent) publishState(was string) {
+	if now := a.published(); now != was {
+		a.publish(agent.Update{Type: agent.UpdateState, State: now})
+	}
+}
+
 func (a *Agent) Snapshot() agent.Snapshot {
-	snapshot := agent.Snapshot{State: a.state, Approvals: []agent.Approval{}, Queued: append([]agent.Input{}, a.queue...)}
+	snapshot := agent.Snapshot{State: a.published(), Approvals: []agent.Approval{}, Queued: append([]agent.Input{}, a.queue...)}
 	if a.approval != nil {
 		snapshot.Approvals = append(snapshot.Approvals, *a.approval)
 	}
@@ -126,7 +155,9 @@ func (a *Agent) idle() bool {
 }
 
 // Send queues the input, and starts a turn with it when the agent is idle.
-// The reply echoes the input's Content, which the model would receive.
+// The reply echoes the input's Content, which the model would receive. An
+// input "background <milliseconds>" also starts a background task that runs
+// that long.
 func (a *Agent) Send(input agent.Input) error {
 	a.queue = append(a.queue, input)
 	a.publish(input.Update(agent.UpdatePromptQueued))
@@ -146,10 +177,14 @@ func (a *Agent) begin() {
 	a.publish(agent.Update{Type: agent.UpdateState, State: a.state})
 	a.reply = "You said: " + input.Content
 	a.words = strings.SplitAfter(a.reply, " ")
+	if d, ok := backgroundRequest(input.Content); ok {
+		a.tasks++
+		a.after(d, taskEnded{})
+	}
 	if tool, toolInput, ok := approvalRequest(input.Content); ok {
 		a.ask(tool, toolInput)
 	} else {
-		a.after(tick{a.prompt})
+		a.after(step, tick{a.prompt})
 	}
 }
 
@@ -162,7 +197,7 @@ func (a *Agent) take() {
 	a.publish(taken.Update(agent.UpdatePrompt))
 	a.reply = "You said: " + taken.Content
 	a.words = strings.SplitAfter(a.reply, " ")
-	a.after(tick{a.prompt})
+	a.after(step, tick{a.prompt})
 }
 
 // drop cancels every queued input, oldest first.
@@ -172,6 +207,16 @@ func (a *Agent) drop() {
 	for _, input := range dropped {
 		a.publish(input.Update(agent.UpdatePromptCancelled))
 	}
+}
+
+// backgroundRequest reads a prompt of the form "background <milliseconds>".
+func backgroundRequest(text string) (time.Duration, bool) {
+	rest, ok := strings.CutPrefix(text, "background ")
+	if !ok {
+		return 0, false
+	}
+	ms, err := strconv.Atoi(rest)
+	return time.Duration(ms) * time.Millisecond, err == nil
 }
 
 // approvalRequest reads a prompt of the form "approve <tool> <input JSON>",
@@ -211,7 +256,7 @@ func (a *Agent) Approve(requestID string, response json.RawMessage) error {
 	a.publish(agent.Update{Type: agent.UpdateToolResult, ToolUseID: a.tool, Result: &agent.Result{Text: string(response)}})
 	a.state = agent.StateRunning
 	a.publish(agent.Update{Type: agent.UpdateState, State: a.state})
-	a.after(tick{a.prompt})
+	a.after(step, tick{a.prompt})
 	return nil
 }
 
@@ -239,11 +284,11 @@ func (a *Agent) Configure(patch agent.SettingsPatch, done func(error)) {
 		return
 	}
 	a.config = &configured{patch.Apply(a.settings), done}
-	a.after(a.config)
+	a.after(step, a.config)
 }
 
 func (a *Agent) Parkable() bool {
-	return a.idle()
+	return a.idle() && a.tasks == 0
 }
 
 func (a *Agent) Stop() {

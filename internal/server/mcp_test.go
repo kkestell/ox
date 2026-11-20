@@ -53,8 +53,9 @@ func TestListSessionsCapturesLabelWithOwnerRead(t *testing.T) {
 	unblock := sync.OnceFunc(func() { close(release) })
 	t.Cleanup(unblock)
 	c := connect(t, s)
-	for _, id := range []string{first, last} {
-		c.call("session/send", map[string]string{"session_id": id, "text": "label for " + id})
+	c.call("session/send", map[string]string{"session_id": first, "text": "label for " + first})
+	c.call("session/send", map[string]string{"session_id": last, "text": "background 60000"})
+	for c.update(last, "state").State != agent.StateBackground {
 	}
 	mcp := attach(t, s, caller)
 	listing := mcp.send("tools/call", map[string]any{"name": "list_sessions"})
@@ -75,11 +76,15 @@ func TestListSessionsCapturesLabelWithOwnerRead(t *testing.T) {
 	var sessions []struct {
 		SessionID string `json:"session_id"`
 		Label     string `json:"label"`
+		State     string `json:"state"`
 	}
 	if response.Error != nil || json.Unmarshal(response.Result, &result) != nil || result.IsError || len(result.Content) != 1 ||
 		json.Unmarshal([]byte(result.Content[0].Text), &sessions) != nil || len(sessions) != 2 ||
 		sessions[0].SessionID != first || sessions[0].Label != "label for "+first {
 		t.Fatalf("listing lost the label captured before deletion: %+v (%s)", sessions, response.Result)
+	}
+	if sessions[1].SessionID != last || sessions[1].State != agent.StateBackground {
+		t.Fatalf("listing did not report the background state: %+v", sessions[1])
 	}
 }
 
@@ -88,8 +93,8 @@ func TestReadSession(t *testing.T) {
 	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: t.TempDir(), CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	const caller, short, long, multibyte, tight = "caller-session", "short-session", "long-session", "multibyte-session", "tight-session"
-	for _, id := range []string{caller, short, long, multibyte, tight} {
+	const caller, short, long, multibyte, tight, background = "caller-session", "short-session", "long-session", "multibyte-session", "tight-session", "background-session"
+	for _, id := range []string{caller, short, long, multibyte, tight, background} {
 		if err := st.AddSession("w", &store.Session{ID: id, Harness: "fake", CreatedAt: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
@@ -193,6 +198,14 @@ func TestReadSession(t *testing.T) {
 			t.Fatalf("read_session %s %v returned %d runes (refused %v), starting %.80q; want %.80q", page.to, page.cursor, len([]rune(got)), refused, got, page.want)
 		}
 	}
+	c := connect(t, s)
+	c.call("session/send", map[string]string{"session_id": background, "text": "background 60000"})
+	for c.update(background, "state").State != agent.StateBackground {
+	}
+	if got, refused := read(map[string]any{"to": background}); refused || !strings.HasSuffix(got, "(turn finished)\n\n(background)") {
+		t.Fatalf("read_session on a session in the background returned %q, %v", got, refused)
+	}
+
 	if got, refused := read(map[string]any{"to": 5}); !refused || got != "invalid arguments" {
 		t.Errorf("undecodable arguments returned %q, %v", got, refused)
 	}
@@ -600,6 +613,15 @@ func TestArchive(t *testing.T) {
 	}
 	c.call("session/approve", map[string]any{"session_id": a, "request_id": asked.RequestID, "response": json.RawMessage(`{"behavior":"allow"}`)})
 	idle(a)
+
+	t.Log("a session in the background is archived and stopped")
+	bg := newSession(workspace)
+	c.call("session/send", map[string]string{"session_id": bg, "text": "background 60000"})
+	for c.update(bg, "state").State != agent.StateBackground {
+	}
+	c.call("session/archive", map[string]string{"session_id": bg})
+	notified("session/archived", bg)
+	c.update(bg, "parked")
 
 	t.Log("archiving the parent archives and stops its child")
 	c.call("session/archive", map[string]string{"session_id": a})

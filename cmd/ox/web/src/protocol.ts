@@ -15,7 +15,11 @@ export const notFound = -32001;
 // Child makes a session a child of the session parent_id.
 export type Child = { parent_id: string; name: string; title: string; directory: string };
 
-export type SessionState = "parked" | "running" | "requires_action" | "idle";
+export type SessionState = "parked" | "running" | "requires_action" | "idle" | "background";
+
+// settled is a state in which a session is idle, so its settings can change
+// and it can be archived.
+export const settled = (state: SessionState) => state === "idle" || state === "background" || state === "parked";
 
 export type ToolResult = { text: string; is_error: boolean };
 
