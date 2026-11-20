@@ -14,22 +14,22 @@ type submission struct {
 	last   string        // the latest client prompt Claude took or dropped, which the releasing update names
 }
 
-// Send writes a prompt, which Claude takes into the running turn after its
+// Send writes an input, which Claude takes into the running turn after its
 // current tool call, or runs next if the turn ends first.
-func (a *Agent) Send(text string) (string, error) {
+func (a *Agent) Send(input agent.Input) (string, error) {
 	if a.phase == configuring || a.phase == exited || a.queued() != nil {
 		return "", agent.ErrBusy
 	}
 	id := newUUID()
-	if err := a.input.Prompt(id, text); err != nil {
+	if err := a.input.Prompt(id, input.Content); err != nil {
 		return "", fmt.Errorf("send prompt to Claude: %w", err)
 	}
 	if a.phase == available {
 		a.prompt = &submission{}
 		a.phase = prompting
 	}
-	a.prompt.queued = &agent.Prompt{MessageID: id, Text: text}
-	a.publish(agent.Update{MessageID: id, Type: agent.UpdatePromptQueued, Text: text})
+	a.prompt.queued = &agent.Prompt{MessageID: id, Text: input.Text, From: input.From}
+	a.publish(agent.Update{MessageID: id, Type: agent.UpdatePromptQueued, Text: input.Text, From: input.From})
 	if a.state == agent.StateIdle {
 		a.state = agent.StateRunning
 		a.publish(agent.Update{MessageID: id, Type: agent.UpdateState, State: a.state})
@@ -77,7 +77,7 @@ func (a *Agent) commandStarted(id string) {
 	a.prompt.queued = nil
 	a.prompt.last = id
 	a.turn = id
-	a.publish(agent.Update{MessageID: id, Type: agent.UpdatePrompt, Text: taken.Text})
+	a.publish(agent.Update{MessageID: id, Type: agent.UpdatePrompt, Text: taken.Text, From: taken.From})
 }
 
 // commandCancelled handles Claude dropping a prompt. Claude also reports a
@@ -93,7 +93,7 @@ func (a *Agent) dropQueued() {
 	dropped := a.queued()
 	a.prompt.queued = nil
 	a.prompt.last = dropped.MessageID
-	a.publish(agent.Update{MessageID: dropped.MessageID, Type: agent.UpdatePromptCancelled, Text: dropped.Text})
+	a.publish(agent.Update{MessageID: dropped.MessageID, Type: agent.UpdatePromptCancelled, Text: dropped.Text, From: dropped.From})
 }
 
 func (a *Agent) sessionState(state string) {

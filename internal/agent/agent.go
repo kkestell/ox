@@ -21,14 +21,14 @@ type Agent interface {
 	Events() <-chan Event
 	Handle(Event)
 	Snapshot() Snapshot
-	// Send writes a prompt and returns its message ID. The harness takes it
-	// into the running turn, or starts a turn with it. Send returns ErrBusy
-	// while a prompt the harness has not taken yet is queued, or while a
-	// configuration is in progress.
-	Send(text string) (string, error)
+	// Send writes input's Content and returns its message ID. The harness
+	// takes it into the running turn, or starts a turn with it, and publishes
+	// its Text and From. Send returns ErrBusy while an input the harness has
+	// not taken yet is queued, or while a configuration is in progress.
+	Send(input Input) (string, error)
 	// Approve answers a pending approval, or returns ErrApprovalNotFound.
 	Approve(requestID string, response json.RawMessage) error
-	// Interrupt stops the running turn and drops a queued prompt with
+	// Interrupt stops the running turn and drops a queued input with
 	// prompt_cancelled. The turn's end arrives as updates; an idle agent has
 	// nothing to stop.
 	Interrupt() error
@@ -80,7 +80,7 @@ type Options struct {
 type MCPServer struct {
 	Command  string            // absolute path of the forwarder
 	Env      map[string]string // the forwarder's environment
-	Approved []string          // tools that only read, which run without an approval prompt
+	Approved []string          // tools that run without an approval prompt where the permission mode allows
 }
 
 type Settings struct {
@@ -91,9 +91,9 @@ type Settings struct {
 
 // Update types.
 const (
-	UpdatePrompt            = "prompt"           // the harness took a client prompt
-	UpdatePromptQueued      = "prompt_queued"    // a client prompt was written; the harness has not taken it yet
-	UpdatePromptCancelled   = "prompt_cancelled" // a queued prompt was dropped before the harness took it
+	UpdatePrompt            = "prompt"           // the harness took an input
+	UpdatePromptQueued      = "prompt_queued"    // an input was written; the harness has not taken it yet
+	UpdatePromptCancelled   = "prompt_cancelled" // a queued input was dropped before the harness took it
 	UpdateState             = "state"
 	UpdateTextDelta         = "text_delta"
 	UpdateToolUse           = "tool_use"
@@ -118,6 +118,7 @@ type Update struct {
 	MessageID string          `json:"message_id,omitempty"` // empty for turns the harness started itself
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
+	From      string          `json:"from,omitempty"` // the sending session of a message's prompt updates
 	State     string          `json:"state,omitempty"`
 	Result    *Result         `json:"result,omitempty"`
 	Error     string          `json:"error,omitempty"`
@@ -140,10 +141,19 @@ type Snapshot struct {
 	Queued    *Prompt    `json:"queued,omitempty"`
 }
 
-// Prompt is a client prompt.
+// Input is what a session gives its harness: the user's prompt, or a
+// message from another session.
+type Input struct {
+	Text    string // as the transcript shows it
+	From    string // the sending session's ID; empty for the user's prompt
+	Content string // what the model receives: Text for a prompt, Text wrapped with its sender for a message
+}
+
+// Prompt is an input the harness has written, named by its message ID.
 type Prompt struct {
 	MessageID string `json:"message_id"`
 	Text      string `json:"text"`
+	From      string `json:"from,omitempty"`
 }
 
 type Approval struct {

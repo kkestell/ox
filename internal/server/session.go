@@ -31,7 +31,10 @@ type session struct {
 	history     history
 	agent       agent.Agent // nil while parked
 	parkTimer   *time.Timer // armed while the agent is parkable
-	ended       bool
+	// inbox holds messages from other sessions, oldest first, while the
+	// agent refuses them as busy or has yet to start.
+	inbox []agent.Input
+	ended bool
 }
 
 func (s *Server) newSession(record *store.Session, workspace string) *session {
@@ -73,7 +76,32 @@ func (sess *session) run() {
 				log.Printf("park session %s: %v", sess.id, err)
 			}
 		}
+		sess.deliver()
 		sess.armPark()
+	}
+}
+
+// deliver sends the oldest waiting message to the agent, starting a parked
+// session for it. It runs after every operation and event, so each message
+// goes in as soon as the agent can take it, in order.
+func (sess *session) deliver() {
+	if sess.ended || len(sess.inbox) == 0 {
+		return
+	}
+	if sess.agent == nil {
+		if err := sess.start(); err != nil {
+			sess.inbox = nil
+			sess.update(agent.Update{Type: agent.UpdateExited, Error: "messages not delivered: " + err.Error(), Time: time.Now()})
+			return
+		}
+	}
+	_, err := sess.agent.Send(sess.inbox[0])
+	if errors.Is(err, agent.ErrBusy) {
+		return // retried after the next operation or event
+	}
+	sess.inbox = sess.inbox[1:]
+	if err != nil {
+		log.Printf("session %s: deliver message: %v", sess.id, err)
 	}
 }
 
@@ -139,9 +167,11 @@ func (sess *session) stop() error {
 	return nil
 }
 
-// parked drops the agent whose process has exited and tells every client.
+// parked drops the agent whose process has exited, with the messages waiting
+// for it, and tells every client.
 func (sess *session) parked() {
 	sess.agent = nil
+	sess.inbox = nil
 	sess.update(agent.Update{Type: agent.UpdateParked, Time: time.Now()})
 }
 

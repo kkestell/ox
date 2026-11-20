@@ -1,7 +1,7 @@
 import { For, Match, onSettled, Show, Switch } from "solid-js";
 import { ApprovalRequest } from "./ApprovalRequest";
 import { Markdown } from "./Markdown";
-import { type Entry, type Session, type SessionControl, useOx } from "./ox";
+import { type Entry, type Session, type SessionControl, sessionLabel, useOx } from "./ox";
 import type { Settings } from "./protocol";
 import { ModelPicker, Select } from "./SettingsFields";
 import { planOf, toolInputJSON, toolSubject } from "./toolInput";
@@ -105,16 +105,17 @@ export function SessionView(props: { session: Session }) {
   );
 }
 
-// Transcript shows a session's entries, then the prompt Claude has not taken
-// yet.
+// Transcript shows a session's entries, then the prompt or message Claude has
+// not taken yet.
 function Transcript(props: { session: Session }) {
   return (
     <>
       <For each={props.session.entries}>
         {(entry) => (
           <Switch>
-            <Match when={entry.kind === "prompt" && entry}>
-              {(prompt) => <div class="prompt">{prompt().text}</div>}
+            <Match when={entry.kind === "prompt" && entry}>{(prompt) => <PromptBubble text={prompt().text} />}</Match>
+            <Match when={entry.kind === "message" && entry}>
+              {(message) => <PromptBubble text={message().text} from={message().from} />}
             </Match>
             <Match when={entry.kind === "reply" && entry}>
               {(reply) => <Markdown class="reply" text={reply().text} />}
@@ -130,8 +131,25 @@ function Transcript(props: { session: Session }) {
           </Switch>
         )}
       </For>
-      <Show when={props.session.queued}>{(queued) => <div class="prompt queued">{queued().text}</div>}</Show>
+      <Show when={props.session.queued}>
+        {(queued) => <PromptBubble text={queued().text} from={queued().from} queued />}
+      </Show>
     </>
+  );
+}
+
+// PromptBubble shows a prompt, or a message headed with its sender's label.
+function PromptBubble(props: { text: string; from?: string; queued?: boolean }) {
+  const ox = useOx();
+  const sender = (id: string) => {
+    const session = ox.state.sessions[id];
+    return session ? sessionLabel(session) : id.slice(0, 8);
+  };
+  return (
+    <div class={["prompt", { queued: props.queued, message: props.from !== undefined }]}>
+      <Show when={props.from}>{(from) => <div class="from">{sender(from())}</div>}</Show>
+      {props.text}
+    </div>
   );
 }
 

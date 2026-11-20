@@ -5,7 +5,7 @@ What the person using Ox can see and rely on. Each requirement is cited by its t
 - **Adding a workspace.** The user adds a workspace by giving the absolute path of an existing directory; adding the same directory again changes nothing.
 - **Removing a workspace.** A workspace can be removed only when it has no sessions. Removing it asks first, and leaves the directory on disk.
 - **Session order.** Each workspace lists its sessions oldest first.
-- **Session labels.** A session is labeled with the first line of its first prompt, or a short identifier before it has one.
+- **Session labels.** A session is labeled with the first line of the first prompt the user sent it, or a short identifier before it has one.
 - **Session status.** Each session shows whether it is parked, idle, running, or waiting on the user.
 - **Session URL.** The URL names the selected session, so reloading the page reopens it.
 - **New-session defaults.** A new session starts with the configured default harness, model, effort, and permission mode.
@@ -17,15 +17,16 @@ What the person using Ox can see and rely on. Each requirement is cited by its t
 - **Creation keeps the user's view.** A session whose creation finishes after the user has moved to another view does not take them away from it.
 - **Failed creation.** If creating a session fails, the draft keeps its text and settings and shows the error, with a way back to the draft from any other view, and the user can submit again.
 - **Lost creation reply.** If the page loses the reply to a creation but the session exists, the page opens the session with the prompt unsent and asks the user to review its settings and send.
-- **Only the user sends.** A prompt is sent only when the user submits it: showing a view, reconnecting, or reloading sends nothing, and a failed send is never retried automatically.
+- **Only the user sends.** A prompt is sent only when the user submits it, and a message only when another session's Claude sends it: showing a view, reconnecting, or reloading sends nothing, and a failed send is never retried automatically.
 - **Send cut off.** A send cut off by a lost connection shows an error even if Claude received the prompt; the transcript shows whether it did.
 - **Unsent text.** Unsent text, in a session or in a workspace's new-session draft, survives switching views and reconnecting. Reloading the page discards it, and removing a workspace discards its draft.
 - **Composer after a send.** After a successful send the composer clears, keeping anything typed since the send.
 - **Blank prompts.** A blank prompt is not sent.
 - **Enter to send.** Enter sends and Shift+Enter starts a new line; Enter while composing with an input method does not send.
-- **One prompt at a time.** While Claude works, the user can send a prompt, which Claude takes into the running turn after its current step, or runs next if the turn ends first. Until Claude takes it, the prompt shows as pending at the end of the transcript and Send is unavailable; once taken, it becomes a normal prompt where Claude took it.
-- **Stop.** While Claude works, Stop shows beside Send. Stop ends the turn, the transcript shows it was interrupted, and the session takes prompts again; a pending prompt is dropped, and its text returns to the composer of the page that sent it, ahead of anything typed since.
+- **One prompt at a time.** While Claude works, the user can send a prompt, which Claude takes into the running turn after its current step, or runs next if the turn ends first. Until Claude takes it, the prompt shows as pending at the end of the transcript and Send is unavailable, as it is while a message from another session is pending or waiting; once taken, it becomes a normal prompt where Claude took it.
+- **Stop.** While Claude works, Stop shows beside Send. Stop ends the turn, the transcript shows it was interrupted, and the session takes prompts again; a pending prompt is dropped, and its text returns to the composer of the page that sent it, ahead of anything typed since. Messages from other sessions that Claude has not taken are dropped, and their senders are not told.
 - **Prompts as sent.** Prompts show in the transcript as the plain text the user sent.
+- **Messages in the transcript.** A message shows in the recipient's transcript as its text, headed with the label of the session that sent it, pending at the end of the transcript until Claude takes it, on every page and after a reload.
 - **Replies as Markdown.** Claude's replies stream in as Markdown. Raw HTML shows as text, images are not loaded, unsafe links are not links, and links open in a new tab.
 - **Tool calls.** Each tool call shows its name, a summary of its input, and whether it is running, done, failed, or stopped; expanding it shows the full input and the result's text, and a plan renders as Markdown.
 - **Main conversation only.** The transcript shows the main conversation only, not the inner messages of Claude's subagents.
@@ -35,11 +36,11 @@ What the person using Ox can see and rely on. Each requirement is cited by its t
 - **Claude's own turns.** Turns Claude starts itself, from a schedule or a finished background task, run and appear in the transcript like any other turn.
 - **One transcript.** The transcript is the same on every page and after a reload.
 - **Surviving restarts.** Workspaces, sessions, their settings, and their transcripts survive parking and `oxd` restarts.
-- **Resuming the conversation.** A parked session resumes its Claude conversation on the next send.
+- **Resuming the conversation.** A parked session resumes its Claude conversation on the next send or message.
 - **Database failures.** Saved state, including transcripts, persists only while Ox can write its database. `oxd` logs a failed write, and the page does not show it. A session whose conversation could not be saved still resumes it until `oxd` restarts.
 - **Lost conversation.** If Claude can no longer resume the conversation, the send fails with a notice in the transcript, and the next send starts a new conversation without the earlier context.
 - **Parking.** An idle session parks after five minutes; the period is configurable, and parking can be turned off. It does not park while a prompt, setting change, approval, background task, or schedule is pending.
-- **Parked schedules.** A parked session runs no schedules until the next prompt starts it.
+- **Parked schedules.** A parked session runs no schedules until the next prompt or message starts it.
 - **Settings shown are settings used.** The settings shown for a session are the ones Claude runs with.
 - **Pending setting changes.** A settings change reaches Claude before the next prompt. While it is pending, the page marks the changed setting as pending and holds Send. If it fails, the page shows the error and the settings Claude actually has.
 - **Setting changes keep the rest.** Changing a setting keeps the conversation and leaves the other settings alone.
@@ -53,6 +54,8 @@ What the person using Ox can see and rely on. Each requirement is cited by its t
 - **Allow and Deny.** Allow sends the tool's input exactly as the card shows it; Deny, or a typed reply, denies with that message.
 - **Questions from Claude.** A question from Claude appears as a form with its options and an Other answer; the user submits answers to every question or declines.
 - **Claude can list Ox's models.** Claude can look up the harnesses, models, effort levels, and permission modes Ox offers, in any permission mode, without asking for approval.
+- **Claude can message other sessions.** Claude can list the other sessions, with each one's label, workspace, settings, and status, and send any of them a message. It does so without asking for approval, except in plan mode, where each message asks first.
+- **Message delivery.** A message from another session reaches Claude as a prompt sent while it works does: Claude takes it into the running turn after its current step, or runs it next, and an idle session starts a turn with it. Messages that arrive while a prompt or message is pending wait their turn in order, and a message to a parked session starts it. Messages Claude has not taken are dropped if the session cannot start, when Claude exits, or when `oxd` stops; a failed start shows why in the transcript.
 - **Approvals wait.** An approval waits for an answer, and the session does not park meanwhile. It is withdrawn on every page when Claude cancels it, goes idle, or exits.
 - **One answer per approval.** An approval already answered, from this page or another, refuses a second answer with an error.
 - **Every request settles.** Every request ends in its result or an error, shown in the view that made it. The error stays until that view's next request, even if a later request finishes first.

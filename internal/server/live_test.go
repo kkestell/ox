@@ -331,6 +331,93 @@ func TestLive(t *testing.T) {
 	listModels(listed)
 	listModels(create("plan"))
 
+	t.Log("Claude lists sessions and messages a parked one")
+	describe := func(messages []message) string {
+		var b strings.Builder
+		for _, m := range messages {
+			b.Write(m.Params)
+			b.WriteString("\n")
+		}
+		return b.String()
+	}
+	// message has a session in mode list the sessions and message a new
+	// parked one, without asking, and the recipient starts and takes it.
+	message := func(mode string) {
+		t.Helper()
+		from, to := create(mode), create("manual")
+		tools := turn(from, "Do both steps. Step 1: load and call the mcp__ox__list_sessions tool. "+
+			"Step 2: load and call the mcp__ox__send_message tool with to set to "+to+
+			` and text "Reply with just the word ok, without calling any tool." Then reply with just ok.`, refuse)
+		if !slices.Contains(tools, "mcp__ox__list_sessions") || !slices.Contains(tools, "mcp__ox__send_message") {
+			t.Fatalf("Haiku did not call list_sessions and send_message (%v); run again: %s", tools, describe(c.received(from)))
+		}
+		listedRecipient := false
+		for _, m := range c.received(from) {
+			var u agent.Update
+			json.Unmarshal(m.Params, &u)
+			if u.Type == "tool_result" && !u.Result.IsError && strings.Contains(u.Result.Text, `"session_id":"`+to+`"`) {
+				listedRecipient = true
+			}
+		}
+		if !listedRecipient {
+			t.Errorf("list_sessions did not list the recipient: %v", c.received(from))
+		}
+		if u := c.update(to, "prompt"); u.From != from {
+			t.Errorf("the recipient took a prompt from %q, not %q", u.From, from)
+		}
+		idle(to)
+	}
+	message("manual")
+	message("auto")
+
+	t.Log("in plan mode, a message asks first")
+	// Haiku in plan mode usually declines to call a tool that is not
+	// read-only; when it does call send_message, the call asks first.
+	planner, recipient := create("plan"), create("manual")
+	askedToSend := false
+	tools = turn(planner, "Load and call the mcp__ox__send_message tool with to set to "+recipient+
+		` and text "Reply with just the word ok." Then reply with just ok.`, func(r request) any {
+		if r.ToolName != "mcp__ox__send_message" {
+			t.Errorf("%s asked for approval in plan mode", r.ToolName)
+		}
+		askedToSend = true
+		return allow(r)
+	})
+	switch {
+	case askedToSend:
+		if u := c.update(recipient, "prompt"); u.From != planner {
+			t.Errorf("the recipient took a prompt from %q, not %q", u.From, planner)
+		}
+		idle(recipient)
+	case slices.Contains(tools, "mcp__ox__send_message"):
+		t.Error("send_message ran without asking in plan mode")
+	default:
+		t.Logf("Haiku declined to call send_message in plan mode (%v)", tools)
+		for _, m := range c.received(recipient) {
+			if m.Method == "session/update" {
+				t.Errorf("a message reached the recipient without approval: %s", m.Params)
+			}
+		}
+	}
+
+	t.Log("a refused message reaches Claude as a tool error")
+	unknown := create("manual")
+	tools = turn(unknown, `Load and call the mcp__ox__send_message tool with to set to "no-such-session" and text "hi". Then reply with just ok.`, refuse)
+	if !slices.Contains(tools, "mcp__ox__send_message") {
+		t.Fatalf("Haiku did not call send_message (%v); run again", tools)
+	}
+	refused := false
+	for _, m := range c.received(unknown) {
+		var u agent.Update
+		json.Unmarshal(m.Params, &u)
+		if u.Type == "tool_result" && u.Result.IsError && strings.Contains(u.Result.Text, "session not found") {
+			refused = true
+		}
+	}
+	if !refused {
+		t.Errorf("the refusal did not reach Claude as an error: %v", c.received(unknown))
+	}
+
 	t.Log("pending schedules keep a session running, even after a failed turn")
 	deniedBash := false
 	denyBash := func(r request) any {

@@ -330,7 +330,7 @@ func (s *Server) sendSession(reply replyFunc, id, params json.RawMessage) {
 				return
 			}
 		}
-		messageID, err := sess.agent.Send(input.Text)
+		messageID, err := sess.agent.Send(promptInput(input.Text))
 		if err != nil {
 			reply(failure(id, err))
 			return
@@ -339,6 +339,11 @@ func (s *Server) sendSession(reply replyFunc, id, params json.RawMessage) {
 			MessageID string `json:"message_id"`
 		}{messageID}))
 	})
+}
+
+// promptInput is the user's prompt as the harness's input.
+func promptInput(text string) agent.Input {
+	return agent.Input{Text: text, Content: text}
 }
 
 func (s *Server) approveSession(reply replyFunc, id, params json.RawMessage) {
@@ -373,6 +378,9 @@ func (s *Server) interruptSession(reply replyFunc, id, params json.RawMessage) {
 		return
 	}
 	s.onSession(reply, id, input.SessionID, func(sess *session) {
+		// Stop drops every message Claude has not taken: those waiting here,
+		// and the queued one, which Interrupt drops.
+		sess.inbox = nil
 		if sess.agent != nil {
 			if err := sess.agent.Interrupt(); err != nil {
 				reply(failure(id, err))

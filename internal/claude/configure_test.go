@@ -60,7 +60,7 @@ func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 		if wire.Type != "control_request" || wire.RequestID == "" || !reflect.DeepEqual(wire.Request, expected) {
 			t.Fatalf("unexpected configuration request: %+v", wire)
 		}
-		if _, err := a.Send("hello"); !errors.Is(err, agent.ErrBusy) {
+		if _, err := a.Send(prompt("hello")); !errors.Is(err, agent.ErrBusy) {
 			t.Fatalf("prompt accepted during configuration: %v", err)
 		}
 		overlapping := make(chan outcome, 1)
@@ -83,7 +83,7 @@ func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 	default:
 		t.Fatal("configuration did not finish")
 	}
-	if _, err := a.Send("hello"); err != nil {
+	if _, err := a.Send(prompt("hello")); err != nil {
 		t.Fatalf("configuration kept its reservation: %v", err)
 	}
 }
@@ -111,7 +111,7 @@ func TestConfigureSendsOnlyChangedSettings(t *testing.T) {
 	if r := <-result; r.err != nil || input.Len() != 0 {
 		t.Fatalf("configuration without a change was sent to Claude: %v, %s", r.err, input)
 	}
-	if _, err := a.Send("hello"); err != nil {
+	if _, err := a.Send(prompt("hello")); err != nil {
 		t.Fatalf("configuration without a change kept a reservation: %v", err)
 	}
 }
@@ -126,7 +126,7 @@ func TestConfigureFailure(t *testing.T) {
 			switch ending {
 			case "rejected":
 				output(t, a, `{"type":"control_response","response":{"subtype":"error","request_id":"`+requestID+`","error":"Unsupported model"}}`)
-				if _, err := a.Send("hello"); err != nil {
+				if _, err := a.Send(prompt("hello")); err != nil {
 					t.Fatalf("failed configuration kept its reservation: %v", err)
 				}
 			case "exited":
@@ -173,7 +173,7 @@ func TestConfigureTimeoutStopsProcess(t *testing.T) {
 		t.Fatalf("configuration ended before the process exited: %v", r.err)
 	default:
 	}
-	if _, err := a.Send("hello"); !errors.Is(err, agent.ErrBusy) {
+	if _, err := a.Send(prompt("hello")); !errors.Is(err, agent.ErrBusy) {
 		t.Fatalf("stopping process was released: %v", err)
 	}
 	a.Handle(exit)
@@ -188,7 +188,7 @@ func TestConfigureRequiresIdle(t *testing.T) {
 			a, _, _ := testAgent()
 			switch busy {
 			case "prompt not taken":
-				if _, err := a.Send("hello"); err != nil {
+				if _, err := a.Send(prompt("hello")); err != nil {
 					t.Fatal(err)
 				}
 			case "prompt taken":

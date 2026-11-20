@@ -55,11 +55,16 @@ func agentRunning(t *testing.T, cmd *exec.Cmd) (*Agent, *bytes.Buffer, *recorder
 	return a, input, updates
 }
 
+// prompt is the user's prompt text as an input.
+func prompt(text string) agent.Input {
+	return agent.Input{Text: text, Content: text}
+}
+
 // promptingAgent returns an agent running a prompt Claude has taken, with
 // its input and updates so far cleared.
 func promptingAgent(t *testing.T) (*Agent, *bytes.Buffer, *recorder, string) {
 	a, input, updates := testAgent()
-	id, err := a.Send("hello")
+	id, err := a.Send(prompt("hello"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +91,7 @@ func state(t *testing.T, a *Agent, state string) {
 
 func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
 	a, input, updates := testAgent()
-	id, err := a.Send("hello")
+	id, err := a.Send(prompt("hello"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +107,7 @@ func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
 	*updates = nil
 
 	state(t, a, "idle")
-	if _, err := a.Send("again"); !errors.Is(err, agent.ErrBusy) || len(*updates) != 0 || a.Snapshot().State != "running" {
+	if _, err := a.Send(prompt("again")); !errors.Is(err, agent.ErrBusy) || len(*updates) != 0 || a.Snapshot().State != "running" {
 		t.Fatalf("idle before Claude took the prompt released it: %v, %+v", err, *updates)
 	}
 	input.Reset()
@@ -114,7 +119,7 @@ func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
 	output(t, a, `{"type":"command_lifecycle","command_uuid":"11111111-1111-4111-8111-111111111111","state":"started"}`)
 	output(t, a, `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"tick"}}}`)
 	state(t, a, "idle")
-	if _, err := a.Send("again"); !errors.Is(err, agent.ErrBusy) || len(*updates) != 1 || (*updates)[0].MessageID != "" {
+	if _, err := a.Send(prompt("again")); !errors.Is(err, agent.ErrBusy) || len(*updates) != 1 || (*updates)[0].MessageID != "" {
 		t.Fatalf("Claude's own turn took the waiting prompt's identity: %v, %+v", err, *updates)
 	}
 	*updates = nil
@@ -130,14 +135,14 @@ func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
 	if len(*updates) != 1 || (*updates)[0].State != "idle" || (*updates)[0].MessageID != id {
 		t.Fatalf("unexpected prompt updates: %+v", *updates)
 	}
-	if _, err := a.Send("next"); err != nil {
+	if _, err := a.Send(prompt("next")); err != nil {
 		t.Fatalf("the released agent refused a prompt: %v", err)
 	}
 }
 
 func TestPromptSentWhileClaudeWorks(t *testing.T) {
 	a, input, updates, first := promptingAgent(t)
-	id, err := a.Send("steer")
+	id, err := a.Send(prompt("steer"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,14 +156,14 @@ func TestPromptSentWhileClaudeWorks(t *testing.T) {
 	if queued := a.Snapshot().Queued; queued == nil || queued.MessageID != id || queued.Text != "steer" {
 		t.Fatalf("the snapshot does not hold the queued prompt: %+v", queued)
 	}
-	if _, err := a.Send("again"); !errors.Is(err, agent.ErrBusy) {
+	if _, err := a.Send(prompt("again")); !errors.Is(err, agent.ErrBusy) {
 		t.Fatalf("a second prompt was queued: %v", err)
 	}
 	*updates = nil
 
 	state(t, a, "requires_action")
 	state(t, a, "idle")
-	if _, err := a.Send("again"); !errors.Is(err, agent.ErrBusy) || len(*updates) != 1 || (*updates)[0].State != "requires_action" {
+	if _, err := a.Send(prompt("again")); !errors.Is(err, agent.ErrBusy) || len(*updates) != 1 || (*updates)[0].State != "requires_action" {
 		t.Fatalf("a stale idle released a queued prompt: %v, %+v", err, *updates)
 	}
 	*updates = nil
@@ -172,7 +177,7 @@ func TestPromptSentWhileClaudeWorks(t *testing.T) {
 	}
 	*updates = nil
 
-	last, err := a.Send("more")
+	last, err := a.Send(prompt("more"))
 	if err != nil {
 		t.Fatalf("a prompt was refused once Claude took the queued one: %v", err)
 	}
@@ -188,14 +193,40 @@ func TestPromptSentWhileClaudeWorks(t *testing.T) {
 	a, _, updates = testAgent()
 	state(t, a, "running")
 	*updates = nil
-	if _, err := a.Send("steer"); err != nil || len(*updates) != 1 || (*updates)[0].Type != "prompt_queued" {
+	if _, err := a.Send(prompt("steer")); err != nil || len(*updates) != 1 || (*updates)[0].Type != "prompt_queued" {
 		t.Fatalf("a prompt sent during Claude's own turn changed the state: %v, %+v", err, *updates)
+	}
+
+	// A message is written as its Content and published as its Text and sender.
+	a, input, updates, _ = promptingAgent(t)
+	id, err = a.Send(agent.Input{Text: "t", From: "s", Content: "wrapped t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var written struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(input.Bytes(), &written); err != nil || written.Message.Content != "wrapped t" {
+		t.Fatalf("the message was not written as its content: %s", input)
+	}
+	if len(*updates) != 1 || (*updates)[0].Type != "prompt_queued" || (*updates)[0].Text != "t" || (*updates)[0].From != "s" {
+		t.Fatalf("the queued message was not published with its sender: %+v", *updates)
+	}
+	if queued := a.Snapshot().Queued; queued == nil || queued.Text != "t" || queued.From != "s" {
+		t.Fatalf("the snapshot does not hold the message's sender: %+v", queued)
+	}
+	*updates = nil
+	output(t, a, `{"type":"command_lifecycle","command_uuid":"`+id+`","state":"started"}`)
+	if len(*updates) != 1 || (*updates)[0].Type != "prompt" || (*updates)[0].Text != "t" || (*updates)[0].From != "s" {
+		t.Fatalf("the taken message was not published with its sender: %+v", *updates)
 	}
 }
 
 func TestStopDropsQueuedPrompt(t *testing.T) {
 	a, input, updates, first := promptingAgent(t)
-	id, err := a.Send("steer")
+	id, err := a.Send(prompt("steer"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,8 +245,19 @@ func TestStopDropsQueuedPrompt(t *testing.T) {
 		t.Fatalf("the dropped prompt was not published: %+v", *updates)
 	}
 	state(t, a, "idle")
-	if _, err := a.Send("next"); err != nil {
+	if _, err := a.Send(prompt("next")); err != nil {
 		t.Fatalf("idle did not release the agent after the dropped prompt: %v", err)
+	}
+
+	a, _, updates, _ = promptingAgent(t)
+	id, err = a.Send(agent.Input{Text: "t", From: "s", Content: "wrapped t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	*updates = nil
+	output(t, a, `{"type":"command_lifecycle","command_uuid":"`+id+`","state":"cancelled"}`)
+	if len(*updates) != 1 || (*updates)[0].Type != "prompt_cancelled" || (*updates)[0].Text != "t" || (*updates)[0].From != "s" {
+		t.Fatalf("the dropped message was not published with its sender: %+v", *updates)
 	}
 
 	a, input, _, _ = promptingAgent(t)
@@ -224,7 +266,7 @@ func TestStopDropsQueuedPrompt(t *testing.T) {
 	}
 
 	a, _, updates = stoppableAgent(t)
-	if _, err := a.Send("hello"); err != nil {
+	if _, err := a.Send(prompt("hello")); err != nil {
 		t.Fatal(err)
 	}
 	*updates = nil
@@ -338,7 +380,7 @@ func TestStopKillsClaudeIgnoringSIGTERM(t *testing.T) {
 // session until Claude is idle.
 func TestTurnAfterPromptResultIsClaudes(t *testing.T) {
 	a, _, updates := testAgent()
-	id, err := a.Send("start a background agent")
+	id, err := a.Send(prompt("start a background agent"))
 	if err != nil {
 		t.Fatal(err)
 	}

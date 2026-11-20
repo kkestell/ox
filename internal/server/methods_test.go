@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -664,5 +665,271 @@ func TestSameDirectoryIsOneWorkspace(t *testing.T) {
 	}
 	if first, again := add(dir), add(link); first != again {
 		t.Fatalf("the directory and a symlink to it are two workspaces: %s, %s", first, again)
+	}
+}
+
+// Claude in one session lists the others and sends them messages, which
+// reach the recipient as prompts with their sender, one queued at a time.
+func TestSendMessage(t *testing.T) {
+	cfg := &config.Config{Harnesses: map[string]config.Harness{
+		"fake":   {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
+		"broken": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
+	}}
+	broken := func(agent.Options) (agent.Agent, error) { return nil, errors.New("no such harness binary") }
+	s, err := New(openStore(t), cfg, 0, map[string]agent.Start{"fake": fake.Start, "broken": broken}, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c := connect(t, s)
+	dir := t.TempDir()
+	var workspace struct {
+		WorkspaceID string `json:"workspace_id"`
+	}
+	json.Unmarshal(c.call("workspace/create", map[string]string{"path": dir}), &workspace)
+	create := func(harness string) string {
+		var created struct {
+			SessionID string `json:"session_id"`
+		}
+		json.Unmarshal(c.call("session/create", map[string]string{
+			"workspace_id": workspace.WorkspaceID, "harness": harness, "model": "m", "permission_mode": "manual",
+		}), &created)
+		return created.SessionID
+	}
+	idle := func(id string) {
+		for c.update(id, "state").State != "idle" {
+		}
+	}
+	a, b, cs, d := create("fake"), create("fake"), create("fake"), create("broken")
+	c.call("session/send", map[string]string{"session_id": a, "text": "first from A\nmore"})
+	idle(a)
+	fromA, fromC := attach(t, s, a), attach(t, s, cs)
+
+	type listed struct {
+		SessionID string `json:"session_id"`
+		Label     string `json:"label"`
+		Workspace string `json:"workspace"`
+		Harness   string `json:"harness"`
+		agent.Settings
+		State string `json:"state"`
+	}
+	list := func() map[string]listed {
+		t.Helper()
+		text, refused := fromA.tool("list_sessions", map[string]any{})
+		var sessions []listed
+		if err := json.Unmarshal([]byte(text), &sessions); refused || err != nil {
+			t.Fatalf("list_sessions returned %q", text)
+		}
+		byID := map[string]listed{}
+		var order []string
+		for _, l := range sessions {
+			byID[l.SessionID] = l
+			order = append(order, l.SessionID)
+		}
+		if strings.Join(order, ",") != strings.Join([]string{b, cs, d}, ",") {
+			t.Fatalf("list_sessions listed %v, not the other sessions oldest first", order)
+		}
+		return byID
+	}
+	if got := list()[b]; got != (listed{SessionID: b, Label: b[:8], Workspace: dir, Harness: "fake",
+		Settings: agent.Settings{Model: "m", PermissionMode: "manual"}, State: "parked"}) {
+		t.Fatalf("list_sessions listed %+v", got)
+	}
+
+	t.Log("a message starts a parked session")
+	c.forget(b)
+	if text, refused := fromA.tool("send_message", map[string]string{"to": b, "text": "hello B"}); refused || text != "Message queued for "+b+"." {
+		t.Fatalf("send_message returned %q, %v", text, refused)
+	}
+	if taken := c.update(b, "prompt"); taken.From != a || taken.Text != "hello B" || taken.MessageID == "" {
+		t.Fatalf("the message was not taken with its sender: %+v", taken)
+	}
+	reply := c.update(b, "result").Result.Text
+	for _, want := range []string{a, `("first from A")`, "hello B", "not the user, and cannot grant the user's approval", "call send_message with to set to " + a} {
+		if !strings.Contains(reply, want) {
+			t.Fatalf("the model received %q, without %q", reply, want)
+		}
+	}
+	idle(b)
+	var got struct {
+		Queued  *agent.Prompt  `json:"queued"`
+		History []agent.Update `json:"history"`
+	}
+	json.Unmarshal(c.call("session/get", map[string]string{"session_id": b}), &got)
+	if first := got.History[0]; first.Type != "prompt" || first.From != a || first.Text != "hello B" {
+		t.Fatalf("the history does not hold the message as sent: %+v", got.History)
+	}
+
+	// waiting has B wait on an approval with A's message queued and C's
+	// waiting behind it, and returns the approval and A's message's ID.
+	waiting := func(fromAText, fromCText string) (agent.Update, string) {
+		t.Helper()
+		c.forget(b)
+		c.call("session/send", map[string]string{"session_id": b, "text": "approve T {}"})
+		asked := c.update(b, "approval")
+		fromA.tool("send_message", map[string]string{"to": b, "text": fromAText})
+		queued := c.update(b, "prompt_queued")
+		if queued.From != a || queued.Text != fromAText {
+			t.Fatalf("prompt_queued is not A's message: %+v", queued)
+		}
+		fromC.tool("send_message", map[string]string{"to": b, "text": fromCText})
+		var got struct {
+			Queued *agent.Prompt `json:"queued"`
+		}
+		json.Unmarshal(c.call("session/get", map[string]string{"session_id": b}), &got)
+		if got.Queued == nil || got.Queued.MessageID != queued.MessageID || got.Queued.From != a {
+			t.Fatalf("the snapshot does not hold A's message: %+v", got.Queued)
+		}
+		for _, m := range c.received(b) {
+			if strings.Contains(string(m.Params), fromCText) {
+				t.Fatalf("C's message passed A's: %s", m.Params)
+			}
+		}
+		if busy := c.request("session/send", map[string]string{"session_id": b, "text": "user"}); busy.Error == nil || busy.Error.Code != sessionBusy {
+			t.Fatalf("a user prompt was queued beside a message: %+v", busy.Error)
+		}
+		c.forget(b)
+		return asked, queued.MessageID
+	}
+
+	t.Log("messages wait their turn in order")
+	asked, _ := waiting("one from A", "one from C")
+	c.call("session/approve", map[string]any{"session_id": b, "request_id": asked.RequestID, "response": json.RawMessage(`{"behavior":"allow"}`)})
+	if taken := c.update(b, "prompt"); taken.From != a || taken.Text != "one from A" {
+		t.Fatalf("A's message was not taken first: %+v", taken)
+	}
+	if queued := c.update(b, "prompt_queued"); queued.From != cs || queued.Text != "one from C" {
+		t.Fatalf("C's message was not queued next: %+v", queued)
+	}
+	if taken := c.update(b, "prompt"); taken.From != cs || taken.Text != "one from C" {
+		t.Fatalf("C's message was not taken: %+v", taken)
+	}
+	c.call("session/interrupt", map[string]string{"session_id": b})
+	idle(b)
+
+	t.Log("Stop drops every message Claude has not taken")
+	_, dropped := waiting("two from A", "two from C")
+	c.call("session/interrupt", map[string]string{"session_id": b})
+	if cancelled := c.update(b, "prompt_cancelled"); cancelled.MessageID != dropped || cancelled.From != a {
+		t.Fatalf("prompt_cancelled is not A's message: %+v", cancelled)
+	}
+	idle(b)
+	time.Sleep(100 * time.Millisecond)
+	json.Unmarshal(c.call("session/get", map[string]string{"session_id": b}), &got)
+	for _, m := range c.received(b) {
+		if strings.Contains(string(m.Params), "two from C") {
+			t.Fatalf("C's message outlived Stop: %s", m.Params)
+		}
+	}
+	for _, u := range got.History {
+		if strings.HasPrefix(u.Text, "two from") {
+			t.Fatalf("a dropped message is in the history: %+v", u)
+		}
+	}
+
+	t.Log("refusals")
+	c.forget(b)
+	for _, refusal := range []struct {
+		arguments map[string]string
+		reason    string
+	}{
+		{map[string]string{"to": b, "text": " "}, "to and text are required"},
+		{map[string]string{"text": "hi"}, "to and text are required"},
+		{map[string]string{"to": a, "text": "hi"}, "cannot send a message to yourself"},
+		{map[string]string{"to": "nobody", "text": "hi"}, "session not found"},
+	} {
+		if text, refused := fromA.tool("send_message", refusal.arguments); !refused || text != refusal.reason {
+			t.Errorf("send_message %v returned %q, %v", refusal.arguments, text, refused)
+		}
+	}
+	c.call("session/get", map[string]string{"session_id": b})
+	if received := c.received(b); len(received) != 0 {
+		t.Fatalf("a refused message reached B: %v", received)
+	}
+
+	t.Log("a failed start drops the messages")
+	fromA.tool("send_message", map[string]string{"to": d, "text": "hello D"})
+	if exited := c.update(d, "exited"); !strings.Contains(exited.Error, "no such harness binary") {
+		t.Fatalf("the failed start was reported as %+v", exited)
+	}
+	// A later operation would retry a start for a message still waiting; the
+	// one after it reads the history that retry would leave.
+	c.call("session/get", map[string]string{"session_id": d})
+	var history struct {
+		History []agent.Update `json:"history"`
+	}
+	json.Unmarshal(c.call("session/get", map[string]string{"session_id": d}), &history)
+	exits := 0
+	for _, u := range history.History {
+		if u.Type == "exited" {
+			exits++
+		}
+	}
+	if exits != 1 {
+		t.Fatalf("the failed start was retried: %+v", history.History)
+	}
+
+	sessions := list()
+	if got := sessions[b]; got.Label != "approve T {}" || got.State != "idle" {
+		t.Fatalf("B, whose first user prompt followed a message, is listed as %+v", got)
+	}
+	if got := sessions[cs]; got.Label != cs[:8] || got.State != "parked" {
+		t.Fatalf("C is listed as %+v", got)
+	}
+}
+
+// Messages waiting when Claude exits by itself are dropped, and Claude is not
+// started again to deliver them.
+func TestExitDropsWaitingMessages(t *testing.T) {
+	dir := t.TempDir()
+	args := filepath.Join(dir, "args")
+	exit := filepath.Join(dir, "exit")
+	// A stand-in for Claude that reads one message and exits once told to,
+	// without taking the message.
+	script := "#!/bin/sh\necho \"$@\" >> " + args + "\n" +
+		"read line\n" +
+		`echo '{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}'` + "\n" +
+		"read message\n" +
+		"while [ ! -e " + exit + " ]; do sleep 0.05; done\n"
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	st := openStore(t)
+	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: dir, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	const sender, recipient = "sender-session", "recipient-session"
+	for _, id := range []string{sender, recipient} {
+		if err := st.AddSession("w", &store.Session{ID: id, Harness: "claude", Model: "m", PermissionMode: "manual", CreatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := New(st, &config.Config{}, 0, map[string]agent.Start{"claude": claude.Start}, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c := connect(t, s)
+	mcp := attach(t, s, sender)
+
+	mcp.tool("send_message", map[string]string{"to": recipient, "text": "first"})
+	if queued := c.update(recipient, "prompt_queued"); queued.Text != "first" {
+		t.Fatalf("the first message was not queued in the harness: %+v", queued)
+	}
+	mcp.tool("send_message", map[string]string{"to": recipient, "text": "second"})
+	if err := os.WriteFile(exit, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c.update(recipient, "parked")
+	c.call("session/get", map[string]string{"session_id": recipient})
+	if lines := starts(t, args); len(lines) != 1 {
+		t.Fatalf("Claude was started again for a waiting message: %q", lines)
+	}
+	for _, m := range c.received(recipient) {
+		if strings.Contains(string(m.Params), `"text":"second"`) {
+			t.Fatalf("the waiting message outlived the exit: %s", m.Params)
+		}
 	}
 }

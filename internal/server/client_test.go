@@ -159,3 +159,26 @@ func (c *client) update(sessionID, kind string) agent.Update {
 	})
 	return u
 }
+
+// attach connects as the MCP forwarder of a session.
+func attach(t *testing.T, s *Server, sessionID string) *client {
+	c := connect(t, s)
+	c.call("mcp/attach", map[string]string{"session_id": sessionID})
+	return c
+}
+
+// tool calls an MCP tool and returns its text and whether it is a refusal.
+func (c *client) tool(name string, arguments any) (string, bool) {
+	c.t.Helper()
+	var result struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	}
+	raw := c.call("tools/call", map[string]any{"name": name, "arguments": arguments})
+	if err := json.Unmarshal(raw, &result); err != nil || len(result.Content) != 1 {
+		c.t.Fatalf("%s returned %s", name, raw)
+	}
+	return result.Content[0].Text, result.IsError
+}

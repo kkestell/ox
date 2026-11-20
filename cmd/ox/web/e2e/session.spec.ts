@@ -1,6 +1,7 @@
 // The web client against the real relay and oxd, with the fake harness,
 // which echoes each prompt back a word at a time, or first asks to approve a
 // tool call for a prompt "approve <tool> <input JSON>".
+import { createConnection } from "node:net";
 import { expect, type Page, test } from "@playwright/test";
 import { fakeConfig, haikuConfig, type Services, startServices } from "./services";
 import { hold, open, prompt, send, sessionButton, stop } from "./ui";
@@ -304,6 +305,82 @@ test("a dropped prompt returns only to the page that sent it", async ({ page, co
   await expect(other.locator(".error")).toHaveText("Interrupted");
   await expect(prompt(page)).toHaveValue("steer");
   await expect(prompt(other)).toHaveValue("");
+});
+
+// sendMessage calls send_message as session from's Claude does, through an
+// MCP connection attached to it, and returns the tool's text.
+function sendMessage(from: string, to: string, text: string) {
+  return new Promise<string>((resolve, reject) => {
+    const socket = createConnection(services.socket);
+    const call = (id: number, method: string, params: object) =>
+      socket.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+    let buffered = "";
+    socket.on("data", (data) => {
+      buffered += data;
+      for (let i = buffered.indexOf("\n"); i >= 0; i = buffered.indexOf("\n")) {
+        const line = JSON.parse(buffered.slice(0, i));
+        buffered = buffered.slice(i + 1);
+        if (line.id !== 2) continue;
+        socket.end();
+        if (line.error || line.result.isError) reject(new Error(JSON.stringify(line)));
+        else resolve(line.result.content[0].text);
+      }
+    });
+    socket.on("error", reject);
+    call(1, "mcp/attach", { session_id: from });
+    call(2, "tools/call", { name: "send_message", arguments: { to, text } });
+  });
+}
+
+// sessionId is the ID of the session the page shows.
+const sessionId = (page: Page) => decodeURIComponent(new URL(page.url()).hash.slice(1));
+
+// messaging creates sessions "first from A" and "first from B" and leaves B
+// waiting on an approval, and returns their IDs.
+async function messaging(page: Page) {
+  await open(page, services);
+  await newSession(page, "first from A");
+  const a = sessionId(page);
+  await newSession(page, "first from B");
+  const b = sessionId(page);
+  await ask(page, "Bash", "{}");
+  return { a, b };
+}
+
+test("a message from another session shows its sender, pending until Claude takes it", async ({ page }) => {
+  const { a, b } = await messaging(page);
+  expect(await sendMessage(a, b, "hello from A")).toBe(`Message queued for ${b}.`);
+  const pending = page.locator(".prompt.queued.message");
+  await expect(pending.locator(".from")).toHaveText("first from A");
+  await expect(pending).toContainText("hello from A");
+  await expect(send(page)).toBeDisabled();
+
+  const card = page.locator(".approval");
+  await card.getByLabel("Allow").check();
+  await card.getByRole("button", { name: "Submit" }).click();
+  await expect(page.locator(".prompt.queued")).toHaveCount(0);
+  const message = page.locator(".prompt.message");
+  await expect(message.locator(".from")).toHaveText("first from A");
+  await expect(message).toContainText("hello from A");
+  await expect(page.locator(".reply").last()).toContainText("hello from A");
+  await expect(stop(page)).toHaveCount(0);
+
+  await page.reload();
+  await expect(message.locator(".from")).toHaveText("first from A");
+  await expect(message).toContainText("hello from A");
+  await expect(sessionButton(page, "first from B")).toHaveCount(1);
+});
+
+test("Stop drops a pending message without touching the composer", async ({ page }) => {
+  const { a, b } = await messaging(page);
+  await prompt(page).fill("draft");
+  await sendMessage(a, b, "hello from A");
+  await expect(page.locator(".prompt.queued.message")).toContainText("hello from A");
+  await stop(page).click();
+  await expect(page.locator(".prompt.queued")).toHaveCount(0);
+  await expect(page.locator(".prompt.message")).toHaveCount(0);
+  await expect(prompt(page)).toHaveValue("draft");
+  await expect(page.locator(".error")).toHaveText("Interrupted");
 });
 
 test("a reconnect clears a pending prompt Claude took while the page was away", async ({ page, context }) => {

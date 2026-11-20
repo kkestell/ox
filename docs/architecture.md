@@ -48,7 +48,7 @@ conversation. See the
 [session lifecycle](protocol.md#workspaces-and-sessions) for client behavior.
 
 Each session runs on its own goroutine, which owns its settings, resume token,
-history, agent, and park timer. Every request for a session is an operation
+history, agent, inbox, and park timer. Every request for a session is an operation
 posted to that goroutine, and the agent's events and the park timer are
 handled there between operations. An operation queues its own response there:
 at once, or, for a configuration Claude must acknowledge, from the event that
@@ -68,6 +68,16 @@ while holding it.
 The session owns the history buffer and writes conversation events to the
 store. See [the snapshot and history contract](protocol.md#sessionget).
 
+The session's inbox holds messages from other sessions, in order, while its
+agent cannot take them: another input is queued, a configuration runs, or the
+session has yet to start. After each operation and event, the session's
+`deliver` sends the oldest message to the agent, starting a parked session
+first; a refusal as busy leaves it for the next try. A failed start, Stop, and
+the end of the process clear the inbox. `send_message` posts the message to
+the recipient's goroutine and `list_sessions` posts a read to each session,
+so an MCP request waits only on the sessions it reads, and no session
+goroutine posts to another.
+
 The session arms a park timer whenever its agent is `Parkable` and stops it
 when the agent stops being parkable, so the full period restarts each time. If
 the timer fires, the session stops the agent, which returns once its process
@@ -79,19 +89,20 @@ An `Agent` runs one harness instance. The session goroutine drives it by
 calling its methods and passing each event from `Events` to `Handle`. The
 agent publishes through `OnUpdate` during those calls, and reports failures no
 call returns, such as a failed write to its process, through `OnError`, which
-the session logs under its ID. See the
+the session logs under its ID. `Send` takes an `Input`: the agent writes its
+`Content`, which for a message wraps the text with its sender, and publishes
+its `Text` and `From`. See the
 [update contract](protocol.md#session-updates) for the wire format and ordering.
 
 Each harness receives Ox's MCP server for its session: the `ox-mcp` beside
 `oxd`, its environment naming the socket and the session, and the tools that
-run without approval.
+run without an approval prompt where the permission mode allows.
 
 ### The Claude agent
 
 Ox assigns a fresh UUID to a new Claude conversation and reports it through
 `OnResumable` with the first published result. On every launch, resumes
-included, it registers Ox's MCP server as `ox` and pre-approves the tools that
-run without approval. See Claude's
+included, it registers Ox's MCP server as `ox` and pre-approves its tools. See Claude's
 [launch flags](claude-code.md#persistent-session) and
 [transcript timing](claude-code.md#session-ids).
 

@@ -1,6 +1,6 @@
 import { createSignal, For, Show } from "solid-js";
 import type { Selection } from "./App";
-import { createAttempt, type Session, useOx, type Workspace } from "./ox";
+import { createAttempt, type Session, sessionLabel, useOx, type Workspace } from "./ox";
 
 export function Sidebar(props: { selected?: Selection; onSelect(selection: Selection): void }) {
   const ox = useOx();
@@ -81,7 +81,7 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
         <form onSubmit={destroy}>
           <h2>Delete session?</h2>
           <Show when={deleting()}>
-            {(session) => <p class="description">This deletes "{title(session())}" and its history.</p>}
+            {(session) => <p class="description">This deletes "{sessionLabel(session())}" and its history.</p>}
           </Show>
           <button type="button" onClick={() => deleteDialog.close()}>
             Cancel
@@ -145,7 +145,7 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
                         title={session.state}
                         aria-label={session.state}
                       />
-                      <span class="title">{title(session)}</span>
+                      <span class="title">{sessionLabel(session)}</span>
                     </button>
                     <button
                       type="button"
@@ -163,9 +163,4 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
       </For>
     </nav>
   );
-}
-
-function title(session: Session) {
-  const prompt = session.entries.find((e) => e.kind === "prompt");
-  return prompt?.kind === "prompt" ? prompt.text.trim().split("\n")[0] : session.id.slice(0, 8);
 }

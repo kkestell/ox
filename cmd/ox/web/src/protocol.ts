@@ -19,8 +19,9 @@ export type ApprovalResponse =
   | { behavior: "allow"; updatedInput: Record<string, unknown> }
   | { behavior: "deny"; message: string; interrupt?: boolean };
 
-// Prompt is a client prompt, named by the message ID session/send returned.
-export type Prompt = { message_id: string; text: string };
+// Prompt is a client prompt, named by the message ID session/send returned,
+// or a message from the session from.
+export type Prompt = { message_id: string; text: string; from?: string };
 
 export type Update = { time: string } & (
   | ({ type: "prompt" } & Prompt)

@@ -198,6 +198,19 @@ func (s *Store) LastEvent(sessionID string) ([]byte, error) {
 	return []byte(data), err
 }
 
+// FirstPrompt returns the data of the session's earliest prompt event the user
+// sent, which has no sender, or nil when it has none.
+func (s *Store) FirstPrompt(sessionID string) ([]byte, error) {
+	var data string
+	err := s.db.QueryRow(`SELECT data FROM events WHERE session_id = ?
+		AND json_extract(data, '$.type') = 'prompt' AND json_extract(data, '$.from') IS NULL
+		ORDER BY id LIMIT 1`, sessionID).Scan(&data)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return []byte(data), err
+}
+
 // Times are stored as fixed-width UTC RFC 3339 text, so they sort as text.
 const timeLayout = "2006-01-02T15:04:05.000000000Z07:00"
 

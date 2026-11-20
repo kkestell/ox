@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -257,7 +258,8 @@ func TestForwarder(t *testing.T) {
 		Tools []struct {
 			Name        string `json:"name"`
 			InputSchema struct {
-				Type string `json:"type"`
+				Type     string   `json:"type"`
+				Required []string `json:"required"`
 			} `json:"inputSchema"`
 			Annotations struct {
 				ReadOnlyHint bool `json:"readOnlyHint"`
@@ -265,9 +267,19 @@ func TestForwarder(t *testing.T) {
 		} `json:"tools"`
 	}
 	json.Unmarshal(r.Result, &list)
-	if len(list.Tools) != 1 || list.Tools[0].Name != "list_models" || list.Tools[0].InputSchema.Type != "object" ||
-		!list.Tools[0].Annotations.ReadOnlyHint {
+	if len(list.Tools) != 3 {
 		t.Fatalf("tools/list returned %s", r.Result)
+	}
+	for i, want := range []struct {
+		name     string
+		readOnly bool
+		required string
+	}{{"list_models", true, ""}, {"list_sessions", true, ""}, {"send_message", false, "to,text"}} {
+		got := list.Tools[i]
+		if got.Name != want.name || got.InputSchema.Type != "object" || got.Annotations.ReadOnlyHint != want.readOnly ||
+			strings.Join(got.InputSchema.Required, ",") != want.required {
+			t.Fatalf("tools/list returned %s", r.Result)
+		}
 	}
 
 	r = f.call("tools/call", map[string]any{"name": "list_models", "arguments": map[string]any{}})

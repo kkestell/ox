@@ -17,11 +17,13 @@ import {
 
 export type Workspace = { id: string; path: string };
 
-// A session's entries are its conversation, in order. A reply is Claude's
+// A session's entries are its conversation, in order. A message is a prompt
+// from another session. A reply is Claude's
 // text up to its next tool call or the end of its turn; a result entry ends a
 // turn. A tool is stopped when its process exited before its result.
 export type Entry =
   | { kind: "prompt"; text: string }
+  | { kind: "message"; from: string; text: string }
   | { kind: "reply"; text: string }
   | { kind: "tool"; id: string; name: string; input: Record<string, unknown>; result?: ToolResult; stopped?: boolean }
   | { kind: "result"; result: ToolResult }
@@ -38,7 +40,8 @@ export type Session = {
   settings: Settings;
   entries: Entry[];
   approvals: Approval[];
-  // queued is the prompt sent while Claude works, until Claude takes it.
+  // queued is the prompt or message sent while Claude works, until Claude
+  // takes it.
   queued?: Prompt;
   synced: boolean;
 };
@@ -49,6 +52,13 @@ const settingsOf = (p: Settings): Settings => ({
   permission_mode: p.permission_mode,
 });
 
+// sessionLabel is the first line of the first prompt the user sent the
+// session, or the start of its ID before it has one.
+export function sessionLabel(session: Session) {
+  const prompt = session.entries.find((e) => e.kind === "prompt");
+  return prompt?.kind === "prompt" ? prompt.text.trim().split("\n")[0] : session.id.slice(0, 8);
+}
+
 function stopTools(session: Session) {
   for (const e of session.entries) if (e.kind === "tool" && !e.result) e.stopped = true;
 }
@@ -56,11 +66,13 @@ function stopTools(session: Session) {
 function apply(session: Session, u: Update) {
   switch (u.type) {
     case "prompt":
-      session.entries.push({ kind: "prompt", text: u.text });
+      session.entries.push(
+        u.from === undefined ? { kind: "prompt", text: u.text } : { kind: "message", from: u.from, text: u.text },
+      );
       if (session.queued?.message_id === u.message_id) session.queued = undefined;
       break;
     case "prompt_queued":
-      session.queued = { message_id: u.message_id, text: u.text };
+      session.queued = { message_id: u.message_id, text: u.text, from: u.from };
       break;
     case "prompt_cancelled":
       if (session.queued?.message_id === u.message_id) session.queued = undefined;

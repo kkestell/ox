@@ -30,6 +30,8 @@ claude -p \
 - `--mcp-config` accepts inline JSON. Shape: `{"mcpServers":{"<name>":{"command":"/abs/path","args":[],"env":{}}}}`. MCP tools are named `mcp__<server>__<tool>`. The servers it names are added to the user's, plugin and claude.ai servers, which keep loading without `--strict-mcp-config`; an added server reports `source: "dynamic"`.
 - `--allowedTools=mcp__<server>__<tool>` pre-approves one MCP tool; several go comma-separated in one flag. `--allowedTools` auto-approves without restricting the tool catalog; `--tools` restricts built-in tools and does not cover MCP tools.
 - `plan` mode ignores `--allowedTools` for an MCP tool and asks with `decision_reason_type: "mode"`, unless the tool's `tools/list` entry has `annotations: {"readOnlyHint": true}`. `readOnlyHint` alone does not skip the prompt in `default`, so a tool that runs without asking in every mode needs both.
+- `auto` runs an MCP tool `--allowedTools` names, read-only or not, without asking and without a classifier refusal (2.1.328).
+- In `plan` mode Haiku declines to call an MCP tool that is not read-only, citing plan mode, even when the prompt asks for the call and says it asks for approval first (2.1.328).
 - MCP tools are deferred: the model loads one with `ToolSearch` `select:<name>`, which needs no approval, before calling it, unless the resumed conversation already loaded it.
 - `--allowedTools` and `--disallowedTools` are variadic and consume every following argument that is not a flag. Put another `--flag` right after their values.
 - Per-process flags (`--mcp-config`, `--settings`, `--plugin-dir`, `--add-dir`, `--fallback-model`, `--append-system-prompt`, model, effort, permission mode) must be passed again on every resume. A resumed process runs the `--permission-mode` it is given, or `default` without one, whatever mode the transcript was written in (2.1.327; the `system` `init` line's `permissionMode` and its approval requests both follow the flag).
@@ -168,6 +170,7 @@ Stdout carries JSON lines and can carry plain text on [failure](#startup-failure
 ### `user`
 
 - Tool results: `content` blocks `{"type":"tool_result","tool_use_id":"...","is_error":false,"content":...}`. `content` is a string or an array of `text`, `image` (base64 or `url` source), `tool_reference` and other blocks.
+- An MCP tool result with `isError: true` arrives as a `tool_result` with `is_error: true` and the result's text (2.1.328).
 - Structured tool output is on the line as `tool_use_result` (in transcripts: `toolUseResult`). It belongs to the line, so it is ambiguous when one line carries several `tool_result` blocks.
 - A `user` line whose `content` is a plain string, or one with `isReplay: true`, is the prompt echo.
 - Interrupts produce synthetic text: `[Request interrupted by user]` or `[Request interrupted by user for tool use]`.
