@@ -182,10 +182,10 @@ agent, which carries it through child sessions:
 2. The top-level agent sanity-checks the plan with a quick look at the code it
    names, without redoing the planning.
 3. A child session on Sonnet or Opus, chosen by the change's complexity,
-   implements the plan, applying its requirement changes word for word.
+   runs `/ox-work` on the plan.
 4. A child session on Opus or Sol runs `/ox-review` on the uncommitted
    changes for the plan.
-5. The implementing session fixes the review's findings.
+5. The implementing session runs `/ox-work fix` on the review.
 6. The reviewing session runs `/ox-review verify` on its review. Open
    findings or new regressions go back to the implementing session, until
    the verdict is Ready to commit.
