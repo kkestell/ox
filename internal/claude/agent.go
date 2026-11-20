@@ -7,15 +7,42 @@ import (
 	"github.com/kkestell/ox/internal/agent"
 )
 
-// phase tracks the current operation separately from Claude's reported state.
-type phase int
+// phase is what Ox is doing with the process, tracked separately from
+// Claude's reported state. Each phase's fields exist only while the agent is
+// in it.
+type phase interface{ isPhase() }
 
-const (
-	available   phase = iota
-	prompting         // client prompts hold the agent until Claude reports idle with none queued
-	configuring       // control requests in flight, one at a time
-	exited
-)
+type available struct{}
+type exited struct{}
+
+// prompting holds the agent from the first client input written until Claude
+// reports idle with none queued.
+type prompting struct {
+	input  agent.Input // the latest input written, which the releasing update names
+	queued bool        // Claude has not taken or dropped input yet
+	turn   string      // the client input whose turn is running, until its result
+}
+
+// configuring holds the agent while control requests are in flight, one at a
+// time: the first of requests, under requestID.
+type configuring struct {
+	requests  []control
+	requestID string
+	done      func(error)
+}
+
+// timedOut holds the agent after a control request went unanswered and Ox
+// asked the process to exit. The configuration fails with err once it has.
+type timedOut struct {
+	done func(error)
+	err  error
+}
+
+func (available) isPhase()    {}
+func (exited) isPhase()       {}
+func (*prompting) isPhase()   {}
+func (*configuring) isPhase() {}
+func (timedOut) isPhase()     {}
 
 type Agent struct {
 	proc   *process
@@ -27,11 +54,8 @@ type Agent struct {
 	// state is the execution state clients see: Claude's report, except that
 	// a prompt is running from the moment it is written.
 	state            string
-	prompt           *submission      // the client prompts holding the agent until Claude is idle
-	turn             string           // the client prompt whose turn is running, until its result
 	approvals        []agent.Approval // pending, in arrival order
-	config           *configuration
-	settings         agent.Settings // the settings the process is using
+	settings         agent.Settings   // the settings the process is using
 	onUpdate         func(agent.Update)
 	onResumable      func(string)
 	onConfigured     func(agent.Settings)
@@ -69,7 +93,7 @@ func Start(options agent.Options) (agent.Agent, error) {
 func newAgent(input *writer, events chan agent.Event, proc *process, options agent.Options) *Agent {
 	return &Agent{
 		proc: proc, input: input, events: events, done: make(chan struct{}),
-		phase: available, state: agent.StateIdle,
+		phase: available{}, state: agent.StateIdle,
 		settings: options.Settings, onUpdate: options.OnUpdate, onConfigured: options.OnConfigured, onError: options.OnError,
 		onResumable: options.OnResumable, resumable: options.Resume, mayHaveSchedules: options.Resume != "",
 	}
@@ -182,7 +206,9 @@ func (a *Agent) handleOutput(m message) {
 		}
 		// A later turn before idle, such as one reporting a background
 		// subagent's findings, is Claude's own.
-		a.turn = ""
+		if p, ok := a.phase.(*prompting); ok {
+			p.turn = ""
+		}
 	}
 }
 
@@ -208,7 +234,8 @@ func (a *Agent) configured(settings agent.Settings) {
 }
 
 func (a *Agent) idle() bool {
-	return a.phase == available && a.state == agent.StateIdle
+	_, available := a.phase.(available)
+	return available && a.state == agent.StateIdle
 }
 
 func (a *Agent) Snapshot() agent.Snapshot {
@@ -223,15 +250,18 @@ func (a *Agent) exit(exit processExit) {
 	if exit.stderr != "" {
 		reason += "\n" + exit.stderr
 	}
-	reported := a.phase == prompting
-	switch a.phase {
-	case prompting:
-		if a.queued() != nil {
-			a.dropQueued()
+	reported := false
+	switch p := a.phase.(type) {
+	case *prompting:
+		if p.queued {
+			a.dropQueued(p)
 		}
-		a.endPrompt(agent.Update{Type: agent.UpdateExited, Error: reason})
-	case configuring:
-		a.endConfiguration(a.config.fail(agent.ErrExited))
+		a.endPrompt(p, agent.Update{Type: agent.UpdateExited, Error: reason})
+		reported = true
+	case *configuring:
+		a.endConfiguration(p.done, p.fail(agent.ErrExited))
+	case timedOut:
+		a.endConfiguration(p.done, p.err)
 	}
 	a.withdrawApprovals()
 	// Claude exits on its own only when something has gone wrong, which can
@@ -239,7 +269,7 @@ func (a *Agent) exit(exit processExit) {
 	if !reported && !a.stopping {
 		a.publish(agent.Update{Type: agent.UpdateExited, Error: reason})
 	}
-	a.phase = exited
+	a.phase = exited{}
 	close(a.done)
 }
 
@@ -248,7 +278,7 @@ func (a *Agent) Stop() error {
 	if err := a.terminate(); err != nil {
 		return err
 	}
-	for a.phase != exited {
+	for !a.Exited() {
 		a.Handle(<-a.events)
 	}
 	return nil
@@ -261,5 +291,6 @@ func (a *Agent) terminate() error {
 }
 
 func (a *Agent) Exited() bool {
-	return a.phase == exited
+	_, exited := a.phase.(exited)
+	return exited
 }

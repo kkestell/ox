@@ -170,6 +170,8 @@ func TestPartialConfigurationReportsAppliedSettings(t *testing.T) {
 
 func TestConfigureTimeoutStopsProcess(t *testing.T) {
 	a, input, _ := stoppableAgent(t)
+	var reported []agent.Settings
+	a.onConfigured = func(s agent.Settings) { reported = append(reported, s) }
 	result := make(chan error, 1)
 	a.Configure(agent.SettingsPatch{PermissionMode: ptr("plan")}, replyTo(result))
 	requestID := controlRequestID(t, input)
@@ -178,10 +180,14 @@ func TestConfigureTimeoutStopsProcess(t *testing.T) {
 	a.Handle(controlTimeout{requestID})
 	exit := <-a.Events()
 	acknowledge(t, a, requestID, "success")
+	acknowledge(t, a, "", "success")
 	select {
 	case err := <-result:
 		t.Fatalf("configuration ended before the process exited: %v", err)
 	default:
+	}
+	if len(reported) != 0 {
+		t.Fatalf("an acknowledgement after the timeout reported settings: %+v", reported)
 	}
 	if err := a.Send(prompt("hello")); !errors.Is(err, agent.ErrBusy) {
 		t.Fatalf("stopping process was released: %v", err)

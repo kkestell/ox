@@ -7,21 +7,12 @@ import (
 	"github.com/kkestell/ox/internal/agent"
 )
 
-// configuration owns the agent in the configuring phase. Its first request is
-// in flight under requestID, which is empty once the request has timed out and
-// the process is stopping.
-type configuration struct {
-	requests  []control
-	requestID string
-	done      func(error)
-}
-
 type control struct {
 	request map[string]any
 	apply   func(*agent.Settings)
 }
 
-func (c *configuration) fail(err error) error {
+func (c *configuring) fail(err error) error {
 	return fmt.Errorf("configure Claude (%s): %w", c.requests[0].request["subtype"], err)
 }
 
@@ -54,39 +45,39 @@ func (a *Agent) Configure(patch agent.SettingsPatch, done func(error)) {
 		done(nil)
 		return
 	}
-	a.config = &configuration{requests: requests, done: done}
-	a.phase = configuring
-	a.sendControl()
+	c := &configuring{requests: requests, done: done}
+	a.phase = c
+	a.sendControl(c)
 }
 
-func (a *Agent) sendControl() {
-	c := a.config
+func (a *Agent) sendControl(c *configuring) {
 	c.requestID = newUUID()
 	if err := a.input.Control(c.requestID, c.requests[0].request); err != nil {
-		a.endConfiguration(c.fail(err))
+		a.endConfiguration(c.done, c.fail(err))
 		return
 	}
 	a.after(time.Minute, controlTimeout{c.requestID})
 }
 
 func (a *Agent) controlResponse(response controlReply) {
-	if a.phase != configuring || response.RequestID != a.config.requestID {
+	c, ok := a.phase.(*configuring)
+	if !ok || response.RequestID != c.requestID {
 		return
 	}
 	if response.Subtype != "success" {
 		err := fmt.Errorf("Claude refused control request (%s): %s", response.Subtype, response.Error)
-		a.endConfiguration(a.config.fail(err))
+		a.endConfiguration(c.done, c.fail(err))
 		return
 	}
 	settings := a.settings
-	a.config.requests[0].apply(&settings)
+	c.requests[0].apply(&settings)
 	a.configured(settings)
-	a.config.requests = a.config.requests[1:]
-	if len(a.config.requests) == 0 {
-		a.endConfiguration(nil)
+	c.requests = c.requests[1:]
+	if len(c.requests) == 0 {
+		a.endConfiguration(c.done, nil)
 		return
 	}
-	a.sendControl()
+	a.sendControl(c)
 }
 
 // controlTimedOut stops the process when a control request goes unanswered:
@@ -94,19 +85,19 @@ func (a *Agent) controlResponse(response controlReply) {
 // requested settings, is known to match them. The process's exit ends the
 // configuration.
 func (a *Agent) controlTimedOut(requestID string) {
-	if a.phase != configuring || requestID != a.config.requestID {
+	c, ok := a.phase.(*configuring)
+	if !ok || requestID != c.requestID {
 		return
 	}
-	a.config.requestID = ""
 	if err := a.terminate(); err != nil {
-		a.endConfiguration(a.config.fail(err))
+		a.endConfiguration(c.done, c.fail(err))
+		return
 	}
+	a.phase = timedOut{c.done, c.fail(agent.ErrExited)}
 }
 
-func (a *Agent) endConfiguration(err error) {
-	done := a.config.done
-	a.config = nil
-	a.phase = available
+func (a *Agent) endConfiguration(done func(error), err error) {
+	a.phase = available{}
 	done(err)
 }
 

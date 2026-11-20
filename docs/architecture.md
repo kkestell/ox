@@ -112,20 +112,22 @@ all captured output arrives before the exit event, which includes the stderr
 tail. The output queue and control-request timers deliver through `Events`.
 The session publishes updates in the order it handles operations and events.
 
-The phase identifies the current operation:
+The phase identifies the current operation and holds the fields valid
+only during it:
 
 | Phase | Meaning | Leaves on |
 | --- | --- | --- |
 | `available` | Available for a prompt or configuration. | A prompt or configuration starts. |
 | `prompting` | Client prompts hold the agent. It holds at most one prompt Claude has not taken yet, which `command_lifecycle started` or `cancelled` ends. | Claude reports `idle` with no prompt queued. |
-| `configuring` | Control requests are in flight, one at a time. | The last acknowledgement, a refusal, or a write failure. |
+| `configuring` | Control requests are in flight, one at a time. | The last acknowledgement, a refusal, a write failure, or a timeout. |
+| `timedOut` | A control request went unanswered and Ox asked the process to exit. | The process exits. |
 | `exited` | The Claude process has exited. | — |
 
 Process exit moves any live phase to `exited`. Alongside the phase, the agent
 keeps the execution state it publishes: Claude's reported state, except that a
 prompt is `running` from the moment it is written until Claude reports `idle`
-with no prompt queued. A prompt is written in any phase but `configuring` and
-`exited` while no prompt is queued. Both `available` and `idle` are required
+with no prompt queued. A prompt is written in `available`, or in `prompting`
+while no prompt is queued. Both `available` and `idle` are required
 to take a configuration. An interrupt is sent whenever the state is not
 `idle`, and drops a queued prompt.
 

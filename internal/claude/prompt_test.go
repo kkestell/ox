@@ -234,14 +234,26 @@ func TestStopDropsQueuedPrompt(t *testing.T) {
 	if queued := a.Snapshot().Queued; queued != nil {
 		t.Fatalf("the snapshot reports a dropped input: %+v", queued)
 	}
+	*updates = nil
 	state(t, a, "idle")
+	if len(*updates) != 1 || (*updates)[0].Type != "state" || (*updates)[0].MessageID != id {
+		t.Fatalf("the release did not name the dropped prompt %s rather than %s: %+v", id, first, *updates)
+	}
 	if err := a.Send(prompt("next")); err != nil {
 		t.Fatalf("idle did not release the agent after the dropped prompt: %v", err)
 	}
 
-	a, input, _, _ = promptingAgent(t)
+	a, input, updates, first = promptingAgent(t)
 	if err := a.Interrupt(); err != nil || !strings.Contains(input.String(), `"subtype":"interrupt"`) || strings.Contains(input.String(), "cancel_queued") {
 		t.Fatalf("an interrupt with nothing queued changed: %v, %q", err, input.String())
+	}
+	output(t, a, `{"type":"command_lifecycle","command_uuid":"`+first+`","state":"cancelled"}`)
+	if len(*updates) != 0 {
+		t.Fatalf("cancelling the taken prompt with nothing queued published updates: %+v", *updates)
+	}
+	state(t, a, "idle")
+	if len(*updates) != 1 || (*updates)[0].Type != "state" || (*updates)[0].MessageID != first {
+		t.Fatalf("the release did not name the interrupted prompt %s: %+v", first, *updates)
 	}
 
 	a, _, updates = stoppableAgent(t)
@@ -318,6 +330,22 @@ func TestUnexpectedExitIsReported(t *testing.T) {
 	a.Handle(processExit{err: errors.New("exit status 1"), stderr: "an unexpected diagnostic"})
 	if !a.Exited() || len(*updates) != 1 || (*updates)[0].Type != "exited" || !strings.Contains((*updates)[0].Error, "exit status 1\nan unexpected diagnostic") {
 		t.Fatalf("an unexpected exit looked like parking: %+v", *updates)
+	}
+
+	a, _, updates = testAgent()
+	id, err := sendTestPrompt(a, "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Handle(processExit{err: errors.New("exit status 1")})
+	var exits []agent.Update
+	for _, u := range *updates {
+		if u.Type == "exited" {
+			exits = append(exits, u)
+		}
+	}
+	if len(exits) != 1 || exits[0].MessageID != id {
+		t.Fatalf("an unexpected exit during a prompt was not reported once, naming it: %+v", *updates)
 	}
 
 	a, _, updates = stoppableAgent(t)

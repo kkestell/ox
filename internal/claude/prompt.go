@@ -21,28 +21,29 @@ func checkPrompt(text string) error {
 	return nil
 }
 
-// submission holds the agent in the prompting phase, from the first client
-// prompt written until Claude reports idle with none queued.
-type submission struct {
-	queued *agent.Input // written; Claude has not taken it yet
-	last   string       // the latest client prompt Claude took or dropped, which the releasing update names
-}
-
 // Send writes an input, which Claude takes into the running turn after its
 // current tool call, or runs next if the turn ends first.
 func (a *Agent) Send(input agent.Input) error {
-	if a.phase == configuring || a.phase == exited || a.queued() != nil {
+	var p *prompting
+	switch phase := a.phase.(type) {
+	case available:
+	case *prompting:
+		if phase.queued {
+			return agent.ErrBusy
+		}
+		p = phase
+	default:
 		return agent.ErrBusy
 	}
 	id := input.MessageID
 	if err := a.input.Prompt(id, input.Content); err != nil {
 		return fmt.Errorf("send prompt to Claude: %w", err)
 	}
-	if a.phase == available {
-		a.prompt = &submission{}
-		a.phase = prompting
+	if p == nil {
+		p = &prompting{}
+		a.phase = p
 	}
-	a.prompt.queued = &input
+	p.input, p.queued = input, true
 	a.publish(input.Update(agent.UpdatePromptQueued))
 	if a.state == agent.StateIdle {
 		a.state = agent.StateRunning
@@ -69,39 +70,45 @@ func (a *Agent) Interrupt() error {
 	return nil
 }
 
-// queued returns the input Claude has not taken yet, or nil.
+// queued returns a copy of the input Claude has not taken yet, or nil.
 func (a *Agent) queued() *agent.Input {
-	if a.phase != prompting {
-		return nil
+	if p, ok := a.phase.(*prompting); ok && p.queued {
+		input := p.input
+		return &input
 	}
-	return a.prompt.queued
+	return nil
+}
+
+// waiting returns the prompting phase whose queued input is id, or nil.
+func (a *Agent) waiting(id string) *prompting {
+	if p, ok := a.phase.(*prompting); ok && p.queued && id != "" && id == p.input.MessageID {
+		return p
+	}
+	return nil
 }
 
 func (a *Agent) commandStarted(id string) {
-	queued := a.queued()
-	if id == "" || queued == nil || id != queued.MessageID {
+	p := a.waiting(id)
+	if p == nil {
 		return
 	}
-	a.prompt.queued = nil
-	a.prompt.last = id
-	a.turn = id
-	a.publish(queued.Update(agent.UpdatePrompt))
+	p.queued = false
+	p.turn = id
+	a.publish(p.input.Update(agent.UpdatePrompt))
 }
 
 // commandCancelled handles Claude dropping a prompt. Claude also reports a
 // taken prompt whose turn it interrupted as cancelled, which changes nothing.
 func (a *Agent) commandCancelled(id string) {
-	if queued := a.queued(); id != "" && queued != nil && id == queued.MessageID {
-		a.dropQueued()
+	if p := a.waiting(id); p != nil {
+		a.dropQueued(p)
 	}
 }
 
 // dropQueued ends the queued prompt before Claude took it.
-func (a *Agent) dropQueued() {
-	dropped := a.queued()
-	a.prompt.queued = nil
-	a.prompt.last = dropped.MessageID
-	a.publish(dropped.Update(agent.UpdatePromptCancelled))
+func (a *Agent) dropQueued(p *prompting) {
+	p.queued = false
+	a.publish(p.input.Update(agent.UpdatePromptCancelled))
 }
 
 func (a *Agent) sessionState(state string) {
@@ -110,12 +117,13 @@ func (a *Agent) sessionState(state string) {
 		return
 	}
 	a.withdrawApprovals()
+	p, ok := a.phase.(*prompting)
 	switch {
-	case a.queued() != nil:
+	case ok && p.queued:
 		// Claude can report idle before it takes a prompt; keep waiting.
-	case a.phase == prompting:
+	case ok:
 		a.state = state
-		a.endPrompt(agent.Update{Type: agent.UpdateState, State: state})
+		a.endPrompt(p, agent.Update{Type: agent.UpdateState, State: state})
 	default:
 		a.setState(state)
 	}
@@ -131,21 +139,19 @@ func (a *Agent) setState(state string) {
 
 // endPrompt releases the agent with the final update of the prompts that
 // held it, which names the latest of them.
-func (a *Agent) endPrompt(final agent.Update) {
+func (a *Agent) endPrompt(p *prompting, final agent.Update) {
 	a.withdrawApprovals()
-	final.MessageID = a.prompt.last
+	final.MessageID = p.input.MessageID
 	a.publish(final)
-	a.prompt = nil
-	a.turn = ""
-	a.phase = available
+	a.phase = available{}
 }
 
 // publish reports an update, tagged with the client prompt whose turn
 // produced it unless it names its prompt itself.
 func (a *Agent) publish(update agent.Update) {
 	update.Time = time.Now()
-	if update.MessageID == "" {
-		update.MessageID = a.turn
+	if p, ok := a.phase.(*prompting); ok && update.MessageID == "" {
+		update.MessageID = p.turn
 	}
 	a.onUpdate(update)
 }
