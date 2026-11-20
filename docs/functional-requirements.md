@@ -42,6 +42,7 @@ What the person using Ox can see and rely on. Each requirement is cited by its t
 - **Parking.** An idle session parks after five minutes; the period is configurable, and parking can be turned off. It does not park while a prompt, setting change, approval, background task, or schedule is pending.
 - **Parked schedules.** A parked session runs no schedules until the next prompt or message starts it.
 - **Settings shown are settings used.** The settings shown for a session are the ones Claude runs with.
+- **Setting commands.** A prompt whose first word is `/model` or `/effort` is refused with an error and stays in the composer; the model and effort change only through the session's settings. Other slash commands are sent as typed.
 - **Pending setting changes.** A settings change reaches Claude before the next prompt. While it is pending, the page marks the changed setting as pending and holds Send. If it fails, the page shows the error and the settings Claude actually has.
 - **Setting changes keep the rest.** Changing a setting keeps the conversation and leaves the other settings alone.
 - **When settings can change.** Settings can change only while the session is idle or parked.

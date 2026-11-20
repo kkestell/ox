@@ -18,3 +18,18 @@ later turn completes or `oxd` restarts.
   in the session's history. If it does, a resumed process with no such call
   can start parkable. Otherwise it waits on Claude reporting restored jobs
   without a completed turn.
+
+## A plan written to a file shows no plan in its tool call
+
+When Claude calls `ExitPlanMode` with
+[empty input](claude-code.md#13-built-in-tool-names-21319), the transcript's
+tool call has no plan to render. The approval card still shows it.
+
+- **Worst cost:** after the approval is answered, the transcript no longer
+  shows the plan the user approved or denied. Claude's reply usually restates
+  it.
+- **Found:** in a `make live` run of the ExitPlanMode approval test, on
+  2026-11-20.
+- **Waits on:** a live reproduction showing when Claude sends `ExitPlanMode`
+  with empty input, and whether its stream-json output carries the plan
+  anywhere besides the `can_use_tool` request.

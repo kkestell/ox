@@ -100,7 +100,7 @@ func (sess *session) deliver() {
 	if sess.ended || len(sess.inbox) == 0 {
 		return
 	}
-	if sess.written != nil || sess.startForInput() != nil {
+	if sess.startForInput() != nil {
 		return
 	}
 	message := sess.inbox[0]
@@ -116,8 +116,14 @@ func (sess *session) deliver() {
 	}
 }
 
+// inputPending reports that an input the harness has not taken is written
+// or waiting, which holds the session for sends and configuration.
+func (sess *session) inputPending() bool {
+	return sess.written != nil || len(sess.inbox) != 0
+}
+
 func (sess *session) sendPrompt(text string) (string, error) {
-	if sess.written != nil || len(sess.inbox) != 0 {
+	if sess.inputPending() {
 		return "", agent.ErrBusy
 	}
 	if err := sess.startForInput(); err != nil {
@@ -127,7 +133,12 @@ func (sess *session) sendPrompt(text string) (string, error) {
 	return p.MessageID, sess.writeInput(p)
 }
 
+// writeInput writes p to the agent, refusing with agent.ErrBusy while
+// another written input has not been taken.
 func (sess *session) writeInput(p pendingInput) error {
+	if sess.written != nil {
+		return agent.ErrBusy
+	}
 	// Send can publish uptake synchronously, so it must see who sent this
 	// input before it calls back. A refused write publishes nothing.
 	sess.written = &p
@@ -169,8 +180,6 @@ func (sess *session) agentUpdate(u agent.Update) {
 	case agent.UpdatePrompt, agent.UpdatePromptCancelled:
 		u = sess.written.update(u.Type, u.Time)
 		sess.written = nil
-	case agent.UpdateExited:
-		sess.cancelInbox()
 	}
 	sess.update(u)
 }

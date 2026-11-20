@@ -154,6 +154,7 @@ func (s *Server) createWorkspace(reply replyFunc, id, params json.RawMessage) {
 func (s *Server) listWorkspaces(reply replyFunc, id json.RawMessage) {
 	type sessionInfo struct {
 		SessionID string    `json:"session_id"`
+		Label     string    `json:"label"`
 		Harness   string    `json:"harness"`
 		CreatedAt time.Time `json:"created_at"`
 	}
@@ -170,7 +171,12 @@ func (s *Server) listWorkspaces(reply replyFunc, id json.RawMessage) {
 	for i, w := range s.workspaces {
 		workspaces[i] = workspaceInfo{WorkspaceID: w.id, Path: w.path, CreatedAt: w.createdAt, Sessions: make([]sessionInfo, len(w.sessions))}
 		for j, sess := range w.sessions {
-			workspaces[i].Sessions[j] = sessionInfo{sess.id, sess.harness, sess.createdAt}
+			label, err := s.label(sess.id)
+			if err != nil {
+				reply(failure(id, err))
+				return
+			}
+			workspaces[i].Sessions[j] = sessionInfo{sess.id, label, sess.harness, sess.createdAt}
 		}
 	}
 	reply(jsonrpc.Success(id, struct {
@@ -417,7 +423,7 @@ func (s *Server) configureSession(reply replyFunc, id, params json.RawMessage) {
 			reply(invalidParams(id, err.Error()))
 			return
 		}
-		if len(sess.inbox) != 0 {
+		if sess.inputPending() {
 			reply(failure(id, agent.ErrBusy))
 			return
 		}

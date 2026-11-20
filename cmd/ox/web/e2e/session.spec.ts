@@ -819,7 +819,7 @@ test("session list membership and ordering don't wait for transcripts", async ({
     await page.reload();
     await reloadSnapshot.arrived;
     await expect(page.locator(".reply")).toHaveText("You said: younger session");
-    await expect(page.locator("nav li .title")).toHaveText([id.slice(0, 8), "younger session"]);
+    await expect(page.locator("nav li .title")).toHaveText(["older session", "younger session"]);
     reloadSnapshot.release();
     await expect(page.locator("nav li .title")).toHaveText(["older session", "younger session"]);
   } finally {

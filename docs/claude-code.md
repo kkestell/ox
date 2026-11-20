@@ -427,3 +427,5 @@ claude -p --input-format stream-json --output-format stream-json --verbose \
 ## 13. Built-in tool names (2.1.319)
 
 `Bash{command,description}`, `PowerShell`, `Monitor{command}`, `Read{file_path,offset}`, `Write`, `Edit{file_path,old_string,new_string}`, `NotebookEdit{notebook_path}`, `Glob{pattern,path}`, `Grep{pattern,path,glob}`, `LSP{operation,filePath,line}`, `WebFetch{url,prompt}`, `WebSearch{query}`, `Agent`/`Task{subagent_type,description,prompt}`, `Skill{skill,args}`, `ToolSearch{query,max_results}`, `TodoWrite{todos}`, `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate`, `TaskStop`, `CronCreate`, `CronDelete`, `CronList`, `ScheduleWakeup{delaySeconds,reason,prompt}`, `EnterPlanMode`, `ExitPlanMode{plan}`, `EnterWorktree`, `ExitWorktree`, `ListMcpResourcesTool`, `ReadMcpResourceTool`, `ReadMcpResourceDirTool`, `ListAgents{cursor}`, `SendMessage{to,message,summary,notify_when_idle}`, `PushNotification{message}`, `AskUserQuestion{questions}`.
+
+`ExitPlanMode` can also arrive with `{}` after Claude writes its plan to a file under `~/.claude/plans/`; its `can_use_tool` request still carries `plan` (2.1.329, once in three Haiku runs).

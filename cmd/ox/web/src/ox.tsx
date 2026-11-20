@@ -34,6 +34,8 @@ export type Approval = { id: string; request: ApprovalRequest };
 export type Session = {
   id: string;
   harness: string;
+  // label is oxd's label from the session listing, shown until a snapshot loads.
+  label: string;
   load: { kind: "reloading"; snapshot?: SessionSnapshot } | { kind: "live"; snapshot: SessionSnapshot };
 };
 
@@ -52,9 +54,12 @@ const settingsOf = (p: Settings): Settings => ({
 });
 
 // sessionLabel is the first line of the first prompt the user sent the
-// session, or the start of its ID before it has one.
+// session, or the start of its ID before it has one. Before its snapshot
+// loads, it is the label oxd listed.
 export function sessionLabel(session: Session) {
-  const prompt = session.load.snapshot?.entries.find((e) => e.kind === "prompt" && e.input.from === undefined);
+  const snapshot = session.load.snapshot;
+  if (!snapshot) return session.label;
+  const prompt = snapshot.entries.find((e) => e.kind === "prompt" && e.input.from === undefined);
   return prompt?.kind === "prompt" ? prompt.input.text.trim().split("\n")[0] : session.id.slice(0, 8);
 }
 
@@ -349,9 +354,12 @@ function createOx() {
       s.workspaces = workspaces.map((w) => ({
         id: w.workspace_id,
         path: w.path,
-        sessions: w.sessions.map(
-          ({ session_id: id, harness }) => previous.get(id) ?? { id, harness, load: { kind: "reloading" } },
-        ),
+        sessions: w.sessions.map(({ session_id: id, label, harness }) => {
+          const session = previous.get(id);
+          if (!session) return { id, harness, label, load: { kind: "reloading" } };
+          session.label = label;
+          return session;
+        }),
       }));
     });
     setReady(true);
@@ -381,7 +389,12 @@ function createOx() {
       case "session/created":
         setState((s) => {
           const workspace = s.workspaces.find((w) => w.id === params.workspace_id);
-          workspace?.sessions.push({ id: params.session_id, harness: params.harness, load: { kind: "reloading" } });
+          workspace?.sessions.push({
+            id: params.session_id,
+            harness: params.harness,
+            label: params.session_id.slice(0, 8),
+            load: { kind: "reloading" },
+          });
         });
         if (ready()) void load(params.session_id).catch(fail);
         return;

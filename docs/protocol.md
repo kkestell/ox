@@ -122,15 +122,16 @@ the existing ID.
 
 ### `workspace/list`
 
-Returns every workspace with its sessions, each oldest first. A session's
-settings and state come from `session/get`.
+Returns every workspace with its sessions, each oldest first. Each session
+has its `label`, as [`list_sessions`](#tools) gives it. A session's settings
+and state come from `session/get`.
 
 ```json
 {"jsonrpc":"2.0","id":2,"method":"workspace/list","params":{}}
 ```
 
 ```json
-{"jsonrpc":"2.0","id":2,"result":{"workspaces":[{"workspace_id":"workspace-id","path":"/Users/kyle/src/ox","created_at":"2026-11-18T19:53:47.102Z","sessions":[{"session_id":"session-id","harness":"claude","created_at":"2026-11-18T19:53:48.416Z"}]}]}}
+{"jsonrpc":"2.0","id":2,"result":{"workspaces":[{"workspace_id":"workspace-id","path":"/Users/kyle/src/ox","created_at":"2026-11-18T19:53:47.102Z","sessions":[{"session_id":"session-id","label":"Explain this repository.","harness":"claude","created_at":"2026-11-18T19:53:48.416Z"}]}]}}
 ```
 
 ### `workspace/remove`

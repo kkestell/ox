@@ -69,7 +69,7 @@ export type Methods = {
         workspace_id: string;
         path: string;
         created_at: string;
-        sessions: { session_id: string; harness: string; created_at: string }[];
+        sessions: { session_id: string; label: string; harness: string; created_at: string }[];
       }[];
     },
   ];
