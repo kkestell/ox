@@ -1,6 +1,6 @@
 ---
 name: ox-work
-description: Implement a plan for Ox from `agents/plans/`, or fix the findings of a review from `agents/reviews/`, and leave the changes uncommitted for `/ox-review`. Proves that each new test fails without the change before handing off. Use to carry out a plan or a review's fixes, not to plan or review. Never use it unless the user, or an agent acting on the user's request, invokes it.
+description: Implement a plan for Ox from `agents/plans/`, or fix the findings of a review from `agents/reviews/`, and leave the changes uncommitted for `/ox-review`. Proves that each new test protects the change before handing off. Use to carry out a plan or a review's fixes, not to plan or review. Never use it unless the user, or an agent acting on the user's request, invokes it.
 argument-hint: "[plan path, or fix <review path>]"
 ---
 
@@ -27,7 +27,7 @@ Change Ox exactly as the plan or review says, and hand off changes whose tests a
 
 ## Prove the tests
 
-7. Run each new or changed test against the base revision, in a detached worktree that you remove afterwards, and confirm it fails there. A test that passes there checks nothing the change did; rewrite it until it fails.
+7. Run each test that reproduces a defect once against the base revision, in a detached worktree that you remove afterwards, and confirm it fails there. Failing at its first assertion is enough. Step 8 covers every other new or changed test.
 8. Remove each condition the change adds, one at a time, and confirm a test fails. Add or strengthen a test for each removal no test catches. Revert every such edit.
 9. Run the checks `AGENTS.md` ("Verification") requires for the change, and fix each failure it causes. Report a check as blocked only when something you cannot change prevents it, and name the blocker.
 
@@ -47,9 +47,11 @@ One or two sentences: what the change does, and whether it is ready for review.
 
 **Findings:** F1 fixed; F2 recorded; F3 not fixed: its defect does not exist, because …
 
+**Tests proved:** `TestHeldPromptDropped` fails on the base revision; removing the `ended` check in `Send` fails `TestSendAfterEnd`.
+
 **Open choices:** each choice the plan or review left open that a reviewer should check.
 
 **Blocked:** `make live`: what blocks it.
 ```
 
-List every file created or modified. Write `None.` for Requirement changes when the plan has none. Include Findings only when fixing a review. Omit Open choices when there are none, and Blocked when every check ran.
+List every file created or modified. Under Tests proved, list each test run against the base revision, and each condition removed in step 8 with the test that caught it. Write `None.` for Requirement changes when the plan has none. Include Findings only when fixing a review. Omit Open choices when there are none, and Blocked when every check ran.
