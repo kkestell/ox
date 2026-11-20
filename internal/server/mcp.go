@@ -149,7 +149,7 @@ func init() {
 		},
 		{
 			name: "list_sessions",
-			description: "List Ox's other sessions, with each one's ID, label, workspace, harness, settings, and state. " +
+			description: "List Ox's other sessions that are not archived, with each one's ID, label, workspace, harness, settings, and state. " +
 				"A parked session has no process running; a message to it starts it.",
 			inputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 			readOnly:    true,
@@ -228,7 +228,7 @@ func listModels(s *Server, _ *session, _ json.RawMessage, respond func(string, e
 	respond(string(text), err)
 }
 
-// listSessions lists every session except the caller, in workspace order and
+// listSessions lists every session except the caller and archived ones, in workspace order and
 // oldest first. Each session fills its own entry from its goroutine.
 func listSessions(s *Server, caller *session, _ json.RawMessage, respond func(string, error)) {
 	type entry struct {
@@ -243,7 +243,7 @@ func listSessions(s *Server, caller *session, _ json.RawMessage, respond func(st
 	var sessions []*session
 	for _, w := range s.workspaces {
 		for _, sess := range w.sessions {
-			if sess != caller {
+			if sess != caller && !sess.archived {
 				sessions = append(sessions, sess)
 			}
 		}
@@ -403,6 +403,10 @@ func createSession(s *Server, caller *session, arguments json.RawMessage, respon
 		}
 		if s.closed {
 			err = errors.New("daemon is shutting down")
+			return
+		}
+		if caller.archived {
+			err = errArchived
 			return
 		}
 		// The caller is a member while its goroutine runs.

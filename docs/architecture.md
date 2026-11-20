@@ -32,7 +32,7 @@ cmd/oxd            socket, database, and configuration paths, signals, the harne
 | `paths` | The XDG locations of the configuration, database, and socket, which `cmd/oxd` uses unless a flag overrides them and `cmd/ox` uses for the socket. |
 | `config` | Reading the configuration file, or the built-in default, into each harness's models, efforts, and permission modes and the new-session defaults, and checking settings against them. |
 | `server` | Client and MCP connections, each session's goroutine and the agent it runs, and the mapping from each method to a session operation and its error codes. Each connection writes through its own queue, so sessions never wait on a client. |
-| `store` | The SQLite database of workspaces, sessions, child sessions' `children` rows, and session events. |
+| `store` | The SQLite database of workspaces, sessions, child sessions' `children` rows, archived sessions' `archived` rows, and session events. |
 | `jsonrpc` | Request validation and the response and notification types. |
 | `agent` | The `Agent` interface a harness implements, its `Start` function and options, and the updates, snapshots, settings, and errors they share. |
 | `fake` | A harness that runs no process and echoes each prompt back, a word at a time. A prompt `approve <tool> <input JSON>` first asks to approve that tool call, and the call's result is the answer. |
@@ -59,10 +59,22 @@ Workspace and session membership changes are stored before they are applied
 in memory. The session keeps the settings it adopts and the resume token it
 receives or clears even when storing them fails.
 
-`Server.mu` guards workspace and session membership and the shutdown flag.
-Membership changes and `workspace/list` queue their messages under the same
-lock so every connection sees them in one order. Nothing posts to a session
-while holding it.
+`Server.mu` guards workspace and session membership, each session's archived
+flag, and the shutdown flag. Membership and archive changes and
+`workspace/list` queue their messages under the same lock so every connection
+sees them in one order. Nothing posts to a session while holding it.
+
+An archived session has no agent, and a child of an archived session is
+archived. An archive holds each family member's goroutine, the parent's
+first, with an operation that reports whether the session is idle or parked
+and then waits. Holding the parent fixes its children, since they are created
+only on its goroutine. With every member idle or parked, the archive stores
+and sets the flags under `Server.mu` and releases each member, which stops
+its agent before its operation ends; otherwise it releases them unchanged.
+Unarchiving touches no goroutine: under `Server.mu` it refuses a child whose
+parent is archived and clears the flags. The one place an input starts a
+parked session refuses an archived one, and so does `create_session` for an
+archived caller.
 
 The session owns the history buffer and writes conversation events to the
 store. See [the snapshot and history contract](protocol.md#sessionget).

@@ -22,6 +22,11 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
   const directory = () => props.session.child?.directory ?? ox.workspaceOf(props.session.id)?.path;
   // A stop sent before oxd reports a prompt running can overtake the send.
   const running = () => props.snapshot.state === "running" || props.snapshot.state === "requires_action";
+  // A child of an archived session is unarchived with its parent.
+  const parentArchived = () => {
+    const parent = props.session.child && ox.session(props.session.child.parent_id);
+    return parent?.archived === true;
+  };
   const send = (event: SubmitEvent) => {
     event.preventDefault();
     control.send(control.text());
@@ -40,39 +45,54 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
       </div>
       <Show when={control.error()}>{(error) => <p role="alert">{error()}</p>}</Show>
       <Show when={control.notice()}>{(notice) => <p role="status">{notice()}</p>}</Show>
-      <div class="composer">
-        <Show when={props.snapshot.approvals.length}>
-          <section class="pending" aria-label="Waiting on you">
-            <For each={props.snapshot.approvals}>
-              {(approval) => (
-                <ApprovalRequest approval={approval} onAnswer={(response) => control.approve(approval.id, response)} />
-              )}
-            </For>
-          </section>
-        </Show>
-        <form class="box" onSubmit={send}>
-          <textarea
-            name="text"
-            rows="1"
-            aria-label="Prompt"
-            required
-            value={control.text()}
-            onInput={(event) => control.setText(event.currentTarget.value)}
-            onKeyDown={sendOnEnter}
-          />
-          <Show when={running()}>
-            <button
-              type="button"
-              class="icon stop"
-              aria-label="Stop"
-              title="Stop"
-              onClick={() => control.interrupt()}
-            />
+      <Show
+        when={!props.session.archived}
+        fallback={
+          <div class="composer archived">
+            <p>{parentArchived() ? "This session is archived with its parent." : "This session is archived."}</p>
+            <button type="button" disabled={!ox.ready() || parentArchived()} onClick={() => control.unarchive()}>
+              Unarchive
+            </button>
+          </div>
+        }
+      >
+        <div class="composer">
+          <Show when={props.snapshot.approvals.length}>
+            <section class="pending" aria-label="Waiting on you">
+              <For each={props.snapshot.approvals}>
+                {(approval) => (
+                  <ApprovalRequest
+                    approval={approval}
+                    onAnswer={(response) => control.approve(approval.id, response)}
+                  />
+                )}
+              </For>
+            </section>
           </Show>
-          <button type="submit" class="icon send" aria-label="Send" title="Send" disabled={!control.canSend()} />
-        </form>
-        <SettingsForm harness={props.session.harness} settings={props.snapshot.settings} control={control} />
-      </div>
+          <form class="box" onSubmit={send}>
+            <textarea
+              name="text"
+              rows="1"
+              aria-label="Prompt"
+              required
+              value={control.text()}
+              onInput={(event) => control.setText(event.currentTarget.value)}
+              onKeyDown={sendOnEnter}
+            />
+            <Show when={running()}>
+              <button
+                type="button"
+                class="icon stop"
+                aria-label="Stop"
+                title="Stop"
+                onClick={() => control.interrupt()}
+              />
+            </Show>
+            <button type="submit" class="icon send" aria-label="Send" title="Send" disabled={!control.canSend()} />
+          </form>
+          <SettingsForm harness={props.session.harness} settings={props.snapshot.settings} control={control} />
+        </div>
+      </Show>
     </>
   );
 }

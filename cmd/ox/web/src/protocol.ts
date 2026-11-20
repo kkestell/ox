@@ -60,7 +60,9 @@ export type Notification =
       params: { session_id: string; workspace_id: string; harness: string; created_at: string; child?: Child };
     }
   | { method: "session/configured"; params: Settings & { session_id: string } }
-  | { method: "session/destroyed"; params: { session_id: string } };
+  | { method: "session/destroyed"; params: { session_id: string } }
+  | { method: "session/archived"; params: { session_id: string } }
+  | { method: "session/unarchived"; params: { session_id: string } };
 
 type Empty = Record<string, never>;
 
@@ -74,7 +76,14 @@ export type Methods = {
         workspace_id: string;
         path: string;
         created_at: string;
-        sessions: { session_id: string; label: string; harness: string; created_at: string; child?: Child }[];
+        sessions: {
+          session_id: string;
+          label: string;
+          harness: string;
+          created_at: string;
+          child?: Child;
+          archived?: boolean;
+        }[];
       }[];
     },
   ];
@@ -98,4 +107,6 @@ export type Methods = {
   "session/configure": [SettingsPatch & { session_id: string }, Empty];
   "session/approve": [{ session_id: string; request_id: string; response: ApprovalResponse }, Empty];
   "session/destroy": [{ session_id: string }, Empty];
+  "session/archive": [{ session_id: string }, Empty];
+  "session/unarchive": [{ session_id: string }, Empty];
 };

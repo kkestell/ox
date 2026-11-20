@@ -30,7 +30,8 @@ type Session struct {
 	ResumeToken string
 	CreatedAt   time.Time
 	// Child is set for a child session, nil for a top-level one.
-	Child *Child
+	Child    *Child
+	Archived bool
 }
 
 // Child is what makes a session a child: its parent, its name among the
@@ -77,6 +78,9 @@ CREATE TABLE IF NOT EXISTS children (
 	title      TEXT NOT NULL,
 	directory  TEXT NOT NULL,
 	UNIQUE (parent_id, name)
+);
+CREATE TABLE IF NOT EXISTS archived (
+	session_id TEXT PRIMARY KEY REFERENCES sessions ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS events_session ON events (session_id, id);
 `
@@ -141,8 +145,9 @@ func (s *Store) Workspaces() ([]*Workspace, error) {
 	}
 
 	rows, err = s.db.Query(`SELECT s.id, s.workspace_id, s.harness, s.model, s.effort, s.permission_mode, s.resume_token, s.created_at,
-			c.parent_id, c.name, c.title, c.directory
-		FROM sessions s LEFT JOIN children c ON c.session_id = s.id ORDER BY s.created_at, s.rowid`)
+			c.parent_id, c.name, c.title, c.directory, a.session_id IS NOT NULL
+		FROM sessions s LEFT JOIN children c ON c.session_id = s.id LEFT JOIN archived a ON a.session_id = s.id
+		ORDER BY s.created_at, s.rowid`)
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +157,7 @@ func (s *Store) Workspaces() ([]*Workspace, error) {
 		var workspaceID, created string
 		var parentID, name, title, directory sql.NullString
 		if err := rows.Scan(&r.ID, &workspaceID, &r.Harness, &r.Model, &r.Effort, &r.PermissionMode, &r.ResumeToken, &created,
-			&parentID, &name, &title, &directory); err != nil {
+			&parentID, &name, &title, &directory, &r.Archived); err != nil {
 			return nil, err
 		}
 		if parentID.Valid {
@@ -198,6 +203,25 @@ func (s *Store) SaveSession(r *Session) error {
 	_, err := s.db.Exec(`UPDATE sessions SET model = ?, effort = ?, permission_mode = ?, resume_token = ? WHERE id = ?`,
 		r.Model, r.Effort, r.PermissionMode, r.ResumeToken, r.ID)
 	return err
+}
+
+// SetArchived archives or unarchives the sessions together.
+func (s *Store) SetArchived(ids []string, archived bool) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	query := `DELETE FROM archived WHERE session_id = ?`
+	if archived {
+		query = `INSERT OR IGNORE INTO archived (session_id) VALUES (?)`
+	}
+	for _, id := range ids {
+		if _, err := tx.Exec(query, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) DeleteWorkspace(id string) error {

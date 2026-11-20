@@ -1,5 +1,5 @@
 // Page helpers shared by the specs.
-import { expect, type Page, type Route } from "@playwright/test";
+import { expect, type Locator, type Page, type Route } from "@playwright/test";
 import type { Services } from "./services";
 
 // open loads the page and adds the services' workspace once.
@@ -17,6 +17,20 @@ export const prompt = (page: Page) => page.getByRole("textbox", { name: "Prompt"
 export const send = (page: Page) => page.getByRole("button", { name: "Send" });
 export const stop = (page: Page) => page.getByRole("button", { name: "Stop" });
 export const sessionButton = (page: Page, title: string) => page.locator("nav button.open").filter({ hasText: title });
+export const sessionRow = (page: Page, title: string) => page.locator("nav li").filter({ hasText: title });
+export const workspaceRow = (page: Page, path: string) => page.getByTitle(path, { exact: true });
+
+// openMenu opens a sidebar row's menu with its ⋯ button and returns the menu.
+export async function openMenu(row: Locator) {
+  await row.getByRole("button", { name: /actions$/ }).click();
+  const menu = row.page().getByRole("menu");
+  await expect(menu).toBeVisible();
+  return menu;
+}
+
+// menuItem is a menu's item whose label starts with label; a disabled item's
+// name ends with its reason.
+export const menuItem = (menu: Locator, label: string) => menu.getByRole("menuitem", { name: new RegExp(`^${label}`) });
 
 // hold intercepts the page's next request for method until release passes it
 // on (optionally with changed parameters), or fail answers it as a relay error.

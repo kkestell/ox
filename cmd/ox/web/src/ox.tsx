@@ -17,7 +17,7 @@ import {
   type Update,
 } from "./protocol";
 
-type Workspace = { id: string; path: string; sessions: Session[] };
+export type Workspace = { id: string; path: string; sessions: Session[] };
 
 // A session's entries are its conversation, in order. A message is a prompt
 // from another session. A reply is Claude's
@@ -38,6 +38,7 @@ export type Session = {
   child?: Child;
   // label is oxd's label from the session listing, shown until a snapshot loads.
   label: string;
+  archived: boolean;
   load: { kind: "reloading"; snapshot?: SessionSnapshot } | { kind: "live"; snapshot: SessionSnapshot };
 };
 
@@ -271,6 +272,7 @@ function createSessionControl(
     interrupt: () => start(rpc("session/interrupt", { session_id: id })),
     approve: (requestId: string, response: ApprovalResponse) =>
       start(rpc("session/approve", { session_id: id, request_id: requestId, response })),
+    unarchive: () => start(rpc("session/unarchive", { session_id: id })),
   };
 }
 
@@ -370,10 +372,11 @@ function createOx() {
       s.workspaces = workspaces.map((w) => ({
         id: w.workspace_id,
         path: w.path,
-        sessions: w.sessions.map(({ session_id: id, label, harness, child }) => {
+        sessions: w.sessions.map(({ session_id: id, label, harness, child, archived = false }) => {
           const session = previous.get(id);
-          if (!session) return { id, harness, child, label, load: { kind: "reloading" } };
+          if (!session) return { id, harness, child, label, archived, load: { kind: "reloading" } };
           session.label = label;
+          session.archived = archived;
           return session;
         }),
       }));
@@ -410,6 +413,7 @@ function createOx() {
             harness: params.harness,
             child: params.child,
             label: params.session_id.slice(0, 8),
+            archived: false,
             load: { kind: "reloading" },
           });
         });
@@ -419,6 +423,12 @@ function createOx() {
         return setState((s) => {
           const load = sessionIn(s.workspaces, params.session_id)?.load;
           if (load?.kind === "live") load.snapshot.settings = settingsOf(params);
+        });
+      case "session/archived":
+      case "session/unarchived":
+        return setState((s) => {
+          const session = sessionIn(s.workspaces, params.session_id);
+          if (session) session.archived = method === "session/archived";
         });
       case "session/destroyed":
         controls.delete(params.session_id);
@@ -464,6 +474,8 @@ function createOx() {
       connection.rpc("workspace/list_folder", { workspace_id: workspaceId, path }),
     control,
     destroy: (id: string) => connection.rpc("session/destroy", { session_id: id }),
+    archive: (id: string) => connection.rpc("session/archive", { session_id: id }),
+    unarchive: (id: string) => connection.rpc("session/unarchive", { session_id: id }),
   };
 }
 

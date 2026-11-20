@@ -65,6 +65,10 @@ func (s *Server) handle(reply replyFunc, line []byte) {
 		s.configureSession(reply, id, params)
 	case "session/destroy":
 		s.destroySession(reply, id, params)
+	case "session/archive":
+		s.archiveSession(reply, id, params, s.archive)
+	case "session/unarchive":
+		s.archiveSession(reply, id, params, s.unarchive)
 	default:
 		reply(jsonrpc.Failure(id, jsonrpc.MethodNotFound, "Method not found"))
 	}
@@ -76,6 +80,8 @@ func failure(id json.RawMessage, err error) *jsonrpc.Response {
 		return jsonrpc.Failure(id, sessionBusy, "session is busy")
 	case errors.Is(err, agent.ErrApprovalNotFound):
 		return jsonrpc.Failure(id, approvalNotPending, err.Error())
+	case errors.Is(err, errSessionNotFound):
+		return sessionNotFound(id)
 	default:
 		return jsonrpc.Failure(id, operationFailed, err.Error())
 	}
@@ -160,6 +166,7 @@ func (s *Server) listWorkspaces(reply replyFunc, id json.RawMessage) {
 		Harness   string    `json:"harness"`
 		CreatedAt time.Time `json:"created_at"`
 		Child     *child    `json:"child,omitempty"`
+		Archived  bool      `json:"archived,omitempty"`
 	}
 	type workspaceInfo struct {
 		WorkspaceID string        `json:"workspace_id"`
@@ -179,7 +186,7 @@ func (s *Server) listWorkspaces(reply replyFunc, id json.RawMessage) {
 				reply(failure(id, err))
 				return
 			}
-			workspaces[i].Sessions[j] = sessionInfo{sess.id, label, sess.harness, sess.createdAt, sess.child}
+			workspaces[i].Sessions[j] = sessionInfo{sess.id, label, sess.harness, sess.createdAt, sess.child, sess.archived}
 		}
 	}
 	reply(jsonrpc.Success(id, struct {
@@ -466,6 +473,10 @@ func (s *Server) configureSession(reply replyFunc, id, params json.RawMessage) {
 			return
 		}
 		if sess.agent == nil {
+			if sess.isArchived() {
+				reply(failure(id, errArchived))
+				return
+			}
 			sess.adopt(settings)
 			reply(jsonrpc.Success(id, struct{}{}))
 			return
@@ -500,4 +511,32 @@ func (s *Server) destroySession(reply replyFunc, id, params json.RawMessage) {
 		}
 		reply(jsonrpc.Success(id, struct{}{}))
 	})
+}
+
+// archiveSession archives or unarchives a session with change, which runs on
+// the request's goroutine.
+func (s *Server) archiveSession(reply replyFunc, id, params json.RawMessage, change func(*session) error) {
+	var input struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(params, &input); err != nil || input.SessionID == "" {
+		reply(invalidParams(id, "session_id is required"))
+		return
+	}
+	s.mu.Lock()
+	closed, sess := s.closed, s.sessions[input.SessionID]
+	s.mu.Unlock()
+	switch {
+	case closed:
+		reply(shuttingDown(id))
+		return
+	case sess == nil:
+		reply(sessionNotFound(id))
+		return
+	}
+	if err := change(sess); err != nil {
+		reply(failure(id, err))
+		return
+	}
+	reply(jsonrpc.Success(id, struct{}{}))
 }

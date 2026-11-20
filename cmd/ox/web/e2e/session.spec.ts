@@ -7,7 +7,7 @@ import { basename } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { expect, type Page, test } from "@playwright/test";
 import { fakeConfig, haikuConfig, type Services, startServices } from "./services";
-import { hold, open, prompt, send, sessionButton, stop } from "./ui";
+import { hold, menuItem, open, openMenu, prompt, send, sessionButton, sessionRow, stop, workspaceRow } from "./ui";
 
 let services: Services;
 test.beforeAll(async () => {
@@ -503,8 +503,8 @@ test("all waiting inputs show in order with their send-time labels", async ({ pa
   await checkPending();
 
   // Even deleting the sender doesn't change the label recorded on its messages.
-  const sender = page.locator("nav li").filter({ hasText: "first from A" });
-  await sender.getByRole("button", { name: "Delete session" }).click();
+  const sender = sessionRow(page, "first from A");
+  await menuItem(await openMenu(sender), "Delete").click();
   await page.getByRole("button", { name: "Delete", exact: true }).click();
   await expect(sender).toHaveCount(0);
   await page.reload();
@@ -551,8 +551,7 @@ test("a recorded message without a saved label still shows its sender", async ({
   await page.reload();
   await expect(from).toHaveText("legacy sender");
 
-  const row = page.locator("nav li").filter({ hasText: "legacy sender" });
-  await row.getByRole("button", { name: "Delete session" }).click();
+  await menuItem(await openMenu(sessionRow(page, "legacy sender")), "Delete").click();
   await page.getByRole("button", { name: "Delete", exact: true }).click();
   await expect(from).toHaveText(sender.slice(0, 8));
 });
@@ -809,7 +808,8 @@ test("session list membership and ordering don't wait for transcripts", async ({
     await prompt(page).press("Enter");
     await firstSnapshot.arrived;
     await expect(page.locator("nav li .title")).toHaveCount(1);
-    await expect(page.getByRole("button", { name: "Remove workspace" })).toHaveCount(0);
+    await expect(menuItem(await openMenu(workspaceRow(page, isolated.workspace)), "Remove workspace")).toBeDisabled();
+    await page.keyboard.press("Escape");
     await expect(page.getByRole("status")).toHaveText("Loading session…");
     const id = sessionId(page);
     await newSession(page, "younger session");
@@ -833,15 +833,14 @@ test("a cancelled deletion's reply cannot close the next confirmation", async ({
   await open(page, services);
   await newSession(page, "old deletion");
   await newSession(page, "new deletion");
-  const remove = (label: string) =>
-    page.locator("nav li").filter({ hasText: label }).getByRole("button", { name: "Delete session" });
+  const remove = async (label: string) => menuItem(await openMenu(sessionRow(page, label)), "Delete");
   const first = await hold(page, "session/destroy");
   const dialog = page.getByRole("alertdialog");
-  await remove("old deletion").click();
+  await (await remove("old deletion")).click();
   await dialog.getByRole("button", { name: "Delete", exact: true }).click();
   await first.arrived;
   await page.keyboard.press("Escape");
-  await remove("new deletion").click();
+  await (await remove("new deletion")).click();
   first.release();
   await expect(sessionButton(page, "old deletion")).toHaveCount(0);
   await expect(dialog).toBeVisible();
@@ -911,7 +910,10 @@ test("a child session shows beneath its parent with its title", async ({ page })
     await expect(childRow).toHaveClass(/child/);
     await expect(childRow.locator(".title")).toHaveText("Helper child");
     await expect(sessionButton(page, "Helper child")).toHaveCount(1);
-    await expect(parentRow.getByRole("button", { name: "Delete session" })).toHaveCount(0);
+    const parentDelete = menuItem(await openMenu(parentRow), "Delete");
+    await expect(parentDelete).toHaveAccessibleName("Delete Delete its child sessions first");
+    await expect(parentDelete).toBeDisabled();
+    await page.keyboard.press("Escape");
     await childRow.locator("button.open").click();
     await expect(page.locator(".context h1")).toHaveText("Helper child");
     expect(sessionId(page)).toBe(created.session_id);
@@ -923,8 +925,138 @@ test("a child session shows beneath its parent with its title", async ({ page })
   await page.reload();
   await check();
 
-  await childRow.getByRole("button", { name: "Delete session" }).click();
+  // A child archived alone hides beneath its parent.
+  const archiveChild = menuItem(await openMenu(childRow), "Archive");
+  await expect(archiveChild).toBeEnabled();
+  await archiveChild.click();
+  await expect(sessionButton(page, "Helper child")).toHaveCount(0);
+  await expect(sessionButton(page, "child parent")).toHaveCount(1);
+  await expect(page.locator(".composer.archived p")).toHaveText("This session is archived.");
+
+  // Archiving the parent archives its child, and both rows hide until shown.
+  const archive = menuItem(await openMenu(parentRow), "Archive");
+  await expect(archive).toBeEnabled();
+  await archive.click();
+  await expect(sessionButton(page, "child parent")).toHaveCount(0);
+  await expect(sessionButton(page, "Helper child")).toHaveCount(0);
+  await expect(page.locator(".composer.archived p")).toHaveText("This session is archived with its parent.");
+  await expect(page.getByRole("button", { name: "Unarchive", exact: true })).toBeDisabled();
+  const workspace = workspaceRow(page, services.workspace);
+  await menuItem(await openMenu(workspace), "Show archived").click();
+  await expect(parentRow).toHaveClass(/archived/);
+  await expect(childRow).toHaveClass(/archived/);
+  await expect(childRow.getByRole("img", { name: "archived" })).toHaveCount(1);
+  const childMenu = await openMenu(childRow);
+  await expect(menuItem(childMenu, "Unarchive")).toHaveAccessibleName("Unarchive Unarchive its parent first");
+  await expect(menuItem(childMenu, "Unarchive")).toBeDisabled();
+  await menuItem(childMenu, "Delete").click();
   await page.getByRole("button", { name: "Delete", exact: true }).click();
   await expect(sessionButton(page, "Helper child")).toHaveCount(0);
-  await expect(parentRow.getByRole("button", { name: "Delete session" })).toHaveCount(1);
+  await expect(menuItem(await openMenu(parentRow), "Delete")).toBeEnabled();
+  await menuItem(page.getByRole("menu"), "Unarchive").click();
+  await expect(parentRow).not.toHaveClass(/archived/);
+  await menuItem(await openMenu(workspace), "Hide archived").click();
+});
+
+test("an archived session is read-only and hidden until shown", async ({ page, context }) => {
+  await open(page, services);
+  await newSession(page, "archive me");
+  const row = sessionRow(page, "archive me");
+  const workspace = workspaceRow(page, services.workspace);
+  await prompt(page).fill('approve Bash {"command":"ls"}');
+  await prompt(page).press("Enter");
+  const card = page.locator(".approval");
+  await expect(card).toBeVisible();
+  const busy = menuItem(await openMenu(row), "Archive");
+  await expect(busy).toHaveAccessibleName("Archive Wait until it is idle");
+  await expect(busy).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await card.getByLabel("Allow").check();
+  await card.getByRole("button", { name: "Submit" }).click();
+  await expect(stop(page)).toHaveCount(0);
+  const offline = await hold(page, "workspace/list");
+  await services.restartRelay();
+  await offline.arrived;
+  await expect(menuItem(await openMenu(row), "Archive")).toHaveAccessibleName("Archive Not connected");
+  await page.keyboard.press("Escape");
+  offline.release();
+
+  await prompt(page).fill("kept while archived");
+  const archive = menuItem(await openMenu(row), "Archive");
+  await expect(archive).toBeEnabled();
+  const failed = await hold(page, "session/archive");
+  await archive.click();
+  await failed.arrived;
+  failed.fail("relay unavailable");
+  await expect(page.locator("nav [role=alert]")).toHaveText("relay unavailable");
+  await menuItem(await openMenu(row), "Archive").click();
+  await expect(row).toHaveCount(0);
+  await expect(page.locator("nav [role=alert]")).toHaveCount(0);
+  const archivedLine = page.locator(".composer.archived p");
+  await expect(archivedLine).toHaveText("This session is archived.");
+  await expect(prompt(page)).toHaveCount(0);
+  await expect(page.locator("select[name=permission_mode]")).toHaveCount(0);
+  await expect(page.locator(".reply").last()).toHaveText('You said: approve Bash {"command":"ls"}');
+
+  const other = await context.newPage();
+  await other.goto(page.url());
+  await expect(other.locator(".composer.archived p")).toHaveText("This session is archived.");
+  await expect(prompt(other)).toHaveCount(0);
+  await other.close();
+
+  await menuItem(await openMenu(workspace), "Show archived").click();
+  await expect(row).toHaveClass(/archived/);
+  await expect(row.getByRole("img", { name: "archived" })).toHaveCount(1);
+  const unarchive = page.getByRole("button", { name: "Unarchive", exact: true });
+  const reconnect = await hold(page, "workspace/list");
+  await services.restartRelay();
+  await reconnect.arrived;
+  await expect(menuItem(await openMenu(row), "Unarchive")).toHaveAccessibleName("Unarchive Not connected");
+  await page.keyboard.press("Escape");
+  await expect(unarchive).toBeDisabled();
+  reconnect.release();
+  await expect(unarchive).toBeEnabled();
+  // Opening another menu while one is open shows the new one.
+  await openMenu(row);
+  await expect((await openMenu(workspace)).getByRole("menuitem")).toHaveText(["Hide archived", /^Remove workspace/]);
+  // The first menu reports its close after the second opens.
+  await page.waitForTimeout(100);
+  await expect(page.getByRole("menu")).toBeVisible();
+  await page.keyboard.press("Escape");
+  // A menu opened near the window's bottom edge moves up to end at it.
+  const viewport = page.viewportSize();
+  const rowBox = await row.boundingBox();
+  if (!viewport || !rowBox) throw new Error("no viewport or row box");
+  const height = Math.ceil(rowBox.y + rowBox.height) + 4;
+  await page.setViewportSize({ width: viewport.width, height });
+  await row.click({ button: "right", position: { x: 10, y: rowBox.height - 2 } });
+  const menu = page.getByRole("menu");
+  await expect(menu.getByRole("menuitem")).toHaveText(["Unarchive", "Delete"]);
+  const menuBox = await menu.boundingBox();
+  if (!menuBox) throw new Error("no menu box");
+  expect(menuBox.y + menuBox.height).toBeCloseTo(height, 0);
+  await page.keyboard.press("Escape");
+  await page.setViewportSize(viewport);
+  await menuItem(await openMenu(workspace), "Hide archived").click();
+  await expect(row).toHaveCount(0);
+
+  await unarchive.click();
+  await expect(prompt(page)).toHaveValue("kept while archived");
+  await expect(row).not.toHaveClass(/archived/);
+
+  // An archive this page missed while disconnected shows once it reconnects.
+  await page.route("**/events", (route) => route.abort());
+  await services.restartRelay();
+  const archiver = await context.newPage();
+  await archiver.goto(page.url());
+  await menuItem(await openMenu(sessionRow(archiver, "archive me")), "Archive").click();
+  await expect(archiver.locator(".composer.archived p")).toBeVisible();
+  await archiver.close();
+  await page.unroute("**/events");
+  await expect(archivedLine).toBeVisible();
+  await menuItem(await openMenu(workspace), "Show archived").click();
+  await expect(row).toHaveCount(1);
+  await page.reload();
+  await expect(archivedLine).toBeVisible();
+  await expect(row).toHaveCount(0);
 });

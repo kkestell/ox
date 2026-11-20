@@ -54,7 +54,8 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: 
 }
 .folder-plus { --icon: url(lucide-static/icons/folder-plus.svg); }
 .plus { --icon: url(lucide-static/icons/plus.svg); }
-.trash { --icon: url(lucide-static/icons/trash-2.svg); }
+.ellipsis { --icon: url(lucide-static/icons/ellipsis.svg); }
+.archive { --icon: url(lucide-static/icons/archive.svg); }
 .send { --icon: url(lucide-static/icons/send.svg); }
 .stop { --icon: url(lucide-static/icons/square.svg); }
 .context .path { --icon: url(lucide-static/icons/folder.svg); }
@@ -130,7 +131,7 @@ nav > p { position: relative; display: flex; align-items: center; height: 1.75re
 nav > p:hover { background: var(--accent); }
 nav > p .name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 nav > p button.icon { position: absolute; right: 0.125rem; width: 1.5rem; height: 1.5rem; color: var(--text); }
-nav > p button.icon.trash { right: 1.625rem; }
+nav > p button.icon.ellipsis { right: 1.625rem; }
 nav ul { margin-bottom: 0.5rem; list-style: none; }
 nav li { position: relative; display: flex; align-items: center; gap: 0.375rem; height: 2rem; padding: 0 0.5rem; border-radius: var(--radius-md); cursor: default; }
 nav li:hover { background: var(--accent); }
@@ -153,7 +154,25 @@ nav li button.icon { width: 1.5rem; height: 1.5rem; margin-right: -0.25rem; colo
 nav li button.icon:hover { color: inherit; }
 nav > p button.icon, nav li button.icon { opacity: 0; }
 nav > p:is(:hover, :focus-within) button.icon, nav li:is(:hover, :focus-within) button.icon { opacity: 1; }
+nav li.archived button.open { opacity: 0.6; }
 nav li:has(.status.parked) button.open { opacity: 0.6; }
+nav li .archive { flex: none; width: 1rem; height: 1rem; display: flex; align-items: center; justify-content: center; color: var(--muted-foreground); }
+nav li .archive::before { width: 0.75rem; height: 0.75rem; }
+nav > [role="alert"] { padding: 0 0.5rem 0.5rem; font-size: 0.75rem; }
+
+/* Sidebar menu, placed at its request's coordinates. */
+.menu {
+  position: fixed; inset: auto; margin: 0; min-width: 11rem; max-width: 18rem; padding: 0.25rem;
+  border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--popover); color: var(--foreground); box-shadow: var(--shadow-md);
+}
+.menu:popover-open { display: flex; flex-direction: column; }
+.menu [role="menuitem"] {
+  height: auto; min-height: 2rem; padding: 0.375rem 0.5rem; flex-direction: column; align-items: flex-start; justify-content: center; gap: 0;
+  border: 0; background: transparent; box-shadow: none; font-weight: 400; text-align: left; white-space: normal;
+}
+.menu [role="menuitem"]:hover, .menu [role="menuitem"]:focus-visible { background: var(--accent); outline: none; }
+.menu [role="menuitem"]:disabled { opacity: 1; color: var(--muted-foreground); }
+.menu .reason { font-size: 0.75rem; }
 
 .status { flex: none; width: 1rem; height: 1rem; display: flex; align-items: center; justify-content: center; }
 .status::before { content: ""; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: currentColor; }
@@ -209,6 +228,7 @@ details.tool pre { padding: 0.5rem 0.75rem; overflow-x: auto; white-space: pre-w
 details.tool pre + pre { border-top: 1px solid var(--border); }
 
 .composer { flex: none; margin: 1rem; }
+.composer.archived { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.75rem 1rem; border: 1px solid var(--border); border-radius: 16px; background: var(--composer); color: var(--muted-foreground); }
 .composer .box { position: relative; display: flex; align-items: flex-end; gap: 0.25rem; padding: 0.5rem 0.75rem 0.5rem 1rem; border: 1px solid var(--border); border-radius: 16px; background: var(--composer); }
 .composer:has(.pending) .box { filter: drop-shadow(0 10px 8px rgb(0 0 0 / 4%)) drop-shadow(0 4px 3px rgb(0 0 0 / 10%)); }
 .composer textarea { flex: 1; min-height: 0; max-height: calc(8lh + 0.5rem); padding: 0.25rem; border: 0; outline: none; resize: none; field-sizing: content; background: transparent; line-height: 1.5rem; }

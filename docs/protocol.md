@@ -131,8 +131,8 @@ the existing ID.
 ### `workspace/list`
 
 Returns every workspace with its sessions, each oldest first. Each session
-has its `label`, as [`list_sessions`](#tools) gives it, and a child session
-its `child` object. A session's settings
+has its `label`, as [`list_sessions`](#tools) gives it, a child session
+its `child` object, and an archived session `"archived": true`. A session's settings
 and state come from `session/get`.
 
 ```json
@@ -147,8 +147,8 @@ and state come from `session/get`.
 
 Requires `workspace_id`. Deletes the workspace from the daemon and tells every
 connection with `workspace/removed`. The workspace's directory is untouched.
-A workspace that has sessions is refused with `workspace has sessions`; destroy
-its sessions first.
+A workspace that has sessions, archived ones included, is refused with
+`workspace has sessions`; destroy its sessions first.
 
 ```json
 {"jsonrpc":"2.0","id":3,"method":"workspace/remove","params":{"workspace_id":"workspace-id"}}
@@ -225,7 +225,8 @@ A start that fails, within a one-minute initialization limit, drops the prompt
 with `prompt_cancelled` and reports why with `exited`. For Claude, a prompt
 whose first word is `/model` or `/effort` is refused with `-32602`, without
 starting a parked session. Use [`session/configure`](#sessionconfigure) to
-change those settings.
+change those settings. An archived session refuses the prompt with `-32000`
+`session is archived`.
 
 ```json
 {"jsonrpc":"2.0","id":4,"method":"session/send","params":{"session_id":"session-id","text":"Explain this repository."}}
@@ -291,7 +292,8 @@ setting the configuration no longer offers stays until it is changed.
 {"jsonrpc":"2.0","id":6,"result":{}}
 ```
 
-A parked session adopts the changed settings for its next process. A running
+A parked session adopts the changed settings for its next process; an
+archived one refuses them with `-32000` `session is archived`. A running
 session must be idle with no queued input. Configuration reserves it until
 completion; other configuration requests then return `-32002`, and inputs
 sent meanwhile wait for it.
@@ -370,6 +372,43 @@ session with children returns `-32000` `session has child sessions`.
 
 ```json
 {"jsonrpc":"2.0","id":9,"result":{}}
+```
+
+### `session/archive`
+
+Requires `session_id`. Archives the session and, for a top-level session,
+each of its children, and stops each one's process as parking does, with a
+`parked` update. Each archived session is announced with `session/archived`
+before the response. A session in the family that is neither idle nor parked
+returns `-32002` and archives none. Archiving an archived family succeeds. An
+archived session keeps its history; it refuses `session/send`,
+`session/configure`, and [`send_message`](#tools), and
+[`list_sessions`](#tools) leaves it out. `session/get`, `session/interrupt`,
+`session/destroy`, and [`read_session`](#tools) work on it as on any parked
+session. Archived sessions stay archived when the daemon restarts.
+
+```json
+{"jsonrpc":"2.0","id":10,"method":"session/archive","params":{"session_id":"session-id"}}
+```
+
+```json
+{"jsonrpc":"2.0","id":10,"result":{}}
+```
+
+### `session/unarchive`
+
+Requires `session_id`. Unarchives the session and, for a top-level session,
+each of its children, announcing each with `session/unarchived` before the
+response. A child whose parent is archived returns `-32000`
+`parent session is archived`. Unarchiving a session that is not archived
+succeeds.
+
+```json
+{"jsonrpc":"2.0","id":11,"method":"session/unarchive","params":{"session_id":"session-id"}}
+```
+
+```json
+{"jsonrpc":"2.0","id":11,"result":{}}
 ```
 
 ## Session updates
@@ -462,6 +501,8 @@ Every connection is told when workspaces and sessions come and go:
 | `session/created` | `session_id`, `workspace_id`, `harness`, `created_at`, and a child's `child` | A session was created, parked. |
 | `session/configured` | `session_id`, `model`, `effort`, `permission_mode` | A session's settings changed, by `session/configure` or by the harness itself, such as Claude leaving plan mode; the fields are the settings the session now uses. |
 | `session/destroyed` | `session_id` | A session was destroyed, after its last update. |
+| `session/archived` | `session_id` | A session was archived, before the `parked` update that stops its process. |
+| `session/unarchived` | `session_id` | A session was unarchived. |
 
 ```json
 {"jsonrpc":"2.0","method":"session/created","params":{"session_id":"session-id","workspace_id":"workspace-id","harness":"claude","created_at":"2026-11-18T19:53:48.416Z"}}
@@ -516,8 +557,8 @@ for a tool not annotated `readOnlyHint`.
 the JSON that [`harness/list`](#harnesslist) returns.
 
 `list_sessions` takes no arguments, is annotated `readOnlyHint`, and returns a
-JSON array of every session except the caller, in workspace order and oldest
-first. Each entry has `session_id`, `label` (a child's title, or else the
+JSON array of every session except the caller and archived sessions, in
+workspace order and oldest first. Each entry has `session_id`, `label` (a child's title, or else the
 first line of the first prompt the user sent it, or the first 8 characters
 of its ID), `workspace`
 (the path), `harness`, `model`, `effort`, `permission_mode`, and `state`
@@ -530,8 +571,9 @@ delivery. Acceptance assigns `message_id` and publishes `prompt_queued`. See
 [Session updates](#session-updates) for uptake, cancellation, and attribution. A
 blank `to` or `text`, `to` naming the caller, or a session that does not
 exist is refused with `to and text are required`,
-`cannot send a message to yourself`, or `session not found`. A session whose
-harness cannot be launched refuses the message with the launch error. The model
+`cannot send a message to yourself`, or `session not found`. An archived
+session refuses the message with `session is archived`, and a session whose
+harness cannot be launched with the launch error. The model
 receives the text wrapped with its sender:
 
 ```text
@@ -572,6 +614,7 @@ created, as JSON: `session_id`, `name`, `harness`, `model`, `effort`,
   `a child named "<name>" already exists`;
 - the daemon shutting down: `daemon is shutting down`; the caller or child
   gone first: `session not found`;
+- an archived caller: `session is archived`;
 - a harness that cannot be launched: the launch error, after the child is
   deleted again with `session/destroyed`.
 

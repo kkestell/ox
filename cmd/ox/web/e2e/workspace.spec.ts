@@ -4,7 +4,7 @@ import { basename, join } from "node:path";
 import { expect, type Request, type Route, test } from "@playwright/test";
 import { fakeConfig, startServices } from "./services";
 
-import { hold, open, prompt, send, sessionButton } from "./ui";
+import { hold, menuItem, open, openMenu, prompt, send, sessionButton, sessionRow, workspaceRow } from "./ui";
 
 test("the workspace sidebar works after opening a malformed session link", async ({ page }) => {
   const fake = fakeConfig.harnesses.fake;
@@ -66,16 +66,15 @@ test("a cancelled add or remove cannot settle the next dialog", async ({ page })
     await submit.click();
     await expect(page.getByTitle(services.workspace)).toBeVisible();
 
-    const remove = (path: string) =>
-      page.getByTitle(path, { exact: true }).getByRole("button", { name: "Remove workspace" });
+    const remove = async (path: string) => menuItem(await openMenu(workspaceRow(page, path)), "Remove workspace");
     const removeDialog = page.getByRole("alertdialog");
     const confirm = removeDialog.getByRole("button", { name: "Remove", exact: true });
     const firstRemove = await hold(page, "workspace/remove");
-    await remove("/").click();
+    await (await remove("/")).click();
     await confirm.click();
     await firstRemove.arrived;
     await removeDialog.getByRole("button", { name: "Cancel" }).click();
-    await remove(services.workspace).click();
+    await (await remove(services.workspace)).click();
     firstRemove.release();
     await expect(page.getByTitle("/", { exact: true })).toHaveCount(0);
     await expect(removeDialog).toContainText(services.workspace);
@@ -90,21 +89,34 @@ test("a workspace is removed once it has no sessions", async ({ page }) => {
   const services = await startServices(fakeConfig);
   try {
     await open(page, services);
-    const remove = page.getByRole("button", { name: "Remove workspace" });
+    const workspace = workspaceRow(page, services.workspace);
+    const remove = async () => menuItem(await openMenu(workspace), "Remove workspace");
     await page.getByRole("button", { name: "New session" }).click();
     await prompt(page).fill("hello");
     await send(page).click();
     await expect(page.locator(".reply")).toHaveText("You said: hello");
-    await expect(remove).toHaveCount(0);
+    await expect(await remove()).toHaveAccessibleName("Remove workspace Delete its sessions first");
+    await expect(await remove()).toBeDisabled();
+    await page.keyboard.press("Escape");
 
-    await sessionButton(page, "hello").hover();
-    await page.getByRole("button", { name: "Delete session" }).click();
+    // An archived session, hidden or not, still keeps the workspace.
+    await menuItem(await openMenu(sessionRow(page, "hello")), "Archive").click();
+    await expect(sessionButton(page, "hello")).toHaveCount(0);
+    await expect(await remove()).toHaveAccessibleName(
+      "Remove workspace Delete its sessions first, including archived ones",
+    );
+    await expect(await remove()).toBeDisabled();
+    await page.keyboard.press("Escape");
+    await menuItem(await openMenu(workspace), "Show archived").click();
+    await menuItem(await openMenu(sessionRow(page, "hello")), "Delete").click();
     await page.getByRole("button", { name: "Delete", exact: true }).click();
-    await expect(remove).toHaveCount(1);
+    await expect(sessionButton(page, "hello")).toHaveCount(0);
+    await expect(await remove()).toBeEnabled();
+    await page.keyboard.press("Escape");
 
     await page.getByRole("button", { name: "New session" }).click();
     await prompt(page).fill("unsent");
-    await remove.click();
+    await (await remove()).click();
     const dialog = page.getByRole("alertdialog");
     await expect(dialog).toContainText(`This removes "${services.workspace}" from Ox. The directory stays on disk.`, {
       useInnerText: true,

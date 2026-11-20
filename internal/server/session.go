@@ -28,6 +28,10 @@ type session struct {
 	ops       chan func()
 	done      chan struct{} // closed once run returns
 
+	// Guarded by Server.mu. An archived session has no agent, and the child
+	// of an archived session is archived.
+	archived bool
+
 	// Owned by run.
 	settings    agent.Settings
 	resumeToken string
@@ -52,7 +56,7 @@ func (s *Server) newSession(record *store.Session, workspace string) *session {
 	}
 	sess := &session{
 		server: s, id: record.ID, harness: record.Harness, workspace: workspace, child: c, createdAt: record.CreatedAt,
-		ops: make(chan func()), done: make(chan struct{}),
+		ops: make(chan func()), done: make(chan struct{}), archived: record.Archived,
 		settings:    agent.Settings{Model: record.Model, Effort: record.Effort, PermissionMode: record.PermissionMode},
 		resumeToken: record.ResumeToken,
 		history:     history{store: s.store, sessionID: record.ID},
@@ -155,14 +159,131 @@ func (sess *session) armPark() {
 	}
 }
 
-// startForInput starts a parked session for an input. The sender receives
-// the error of a harness that cannot be launched; a start that fails later
-// ends the agent, which drops its inputs and reports why.
+var (
+	errArchived        = errors.New("session is archived")
+	errSessionNotFound = errors.New("session not found")
+)
+
+// startForInput starts a parked session for an input, unless it is archived.
+// The sender receives the error of a harness that cannot be launched; a start
+// that fails later ends the agent, which drops its inputs and reports why.
 func (sess *session) startForInput() error {
 	if sess.agent != nil {
 		return nil
 	}
+	if sess.isArchived() {
+		return errArchived
+	}
 	return sess.start()
+}
+
+func (sess *session) isArchived() bool {
+	sess.server.mu.Lock()
+	defer sess.server.mu.Unlock()
+	return sess.archived
+}
+
+// held is a session whose goroutine waits in hold until it is released.
+type held struct {
+	// free is whether the session was idle or parked when held.
+	free    bool
+	release chan<- bool
+}
+
+// hold holds the session's goroutine until it is released through the result.
+// Released with true, the session stops its agent before it goes on. hold
+// reports false once the session has ended.
+func (sess *session) hold() (held, bool) {
+	free := make(chan bool)
+	release := make(chan bool, 1)
+	if !sess.post(func() {
+		state := sess.snapshot().State
+		free <- state == agent.StateIdle || state == agent.StateParked
+		if <-release && sess.agent != nil {
+			sess.stop()
+		}
+	}) {
+		return held{}, false
+	}
+	return held{<-free, release}, true
+}
+
+// archive archives sess and, for a top-level session, its children, once
+// each is idle or parked, and stops their agents. It holds every member's
+// goroutine, the parent's first, while it checks them and sets their flags,
+// so none starts in between; a child is created only on its parent's
+// goroutine, so the children read while the parent is held are all of them.
+func (s *Server) archive(sess *session) error {
+	first, ok := sess.hold()
+	if !ok {
+		return errSessionNotFound
+	}
+	members, holds := []*session{sess}, []held{first}
+	if sess.child == nil {
+		s.mu.Lock()
+		children := s.children(sess)
+		s.mu.Unlock()
+		for _, c := range children {
+			if h, ok := c.hold(); ok {
+				members, holds = append(members, c), append(holds, h)
+			}
+		}
+	}
+	err := func() error {
+		if slices.ContainsFunc(holds, func(h held) bool { return !h.free }) {
+			return agent.ErrBusy
+		}
+		return s.setArchived(members, true)
+	}()
+	for _, h := range holds {
+		h.release <- err == nil
+	}
+	return err
+}
+
+// unarchive unarchives sess and, for a top-level session, its children. A
+// child of an archived session stays archived.
+func (s *Server) unarchive(sess *session) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess.child != nil {
+		if parent := s.sessions[sess.child.ParentID]; parent != nil && parent.archived {
+			return errors.New("parent session is archived")
+		}
+	}
+	return s.setArchivedLocked(append([]*session{sess}, s.children(sess)...), false)
+}
+
+func (s *Server) setArchived(members []*session, archived bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.setArchivedLocked(members, archived)
+}
+
+// setArchivedLocked stores and sets the members' archived flags and tells
+// every client. The caller holds s.mu.
+func (s *Server) setArchivedLocked(members []*session, archived bool) error {
+	if s.closed {
+		return errors.New("daemon is shutting down")
+	}
+	ids := make([]string, len(members))
+	for i, m := range members {
+		ids[i] = m.id
+	}
+	if err := s.store.SetArchived(ids, archived); err != nil {
+		return err
+	}
+	method := "session/unarchived"
+	if archived {
+		method = "session/archived"
+	}
+	for _, m := range members {
+		m.archived = archived
+		s.broadcast(method, struct {
+			SessionID string `json:"session_id"`
+		}{m.id})
+	}
+	return nil
 }
 
 func (sess *session) start() error {

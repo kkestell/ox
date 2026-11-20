@@ -499,3 +499,171 @@ func TestCreateSessionDuringShutdown(t *testing.T) {
 		}
 	}
 }
+
+// Archiving a parent archives its child, stops both, and leaves them
+// read-only, unlisted, and archived through a restart until unarchived.
+func TestArchive(t *testing.T) {
+	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
+		Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}}},
+		PermissionModes: []config.Option{{ID: "manual"}},
+	}}}
+	harnesses := map[string]agent.Harness{"fake": {Start: fake.Start}}
+	st := openStore(t)
+	s, err := New(st, cfg, 0, harnesses, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c := connect(t, s)
+	workspaceIn := func(c *client) string {
+		var workspace struct {
+			WorkspaceID string `json:"workspace_id"`
+		}
+		json.Unmarshal(c.call("workspace/create", map[string]string{"path": t.TempDir()}), &workspace)
+		return workspace.WorkspaceID
+	}
+	newSession := func(workspaceID string) string {
+		var created struct {
+			SessionID string `json:"session_id"`
+		}
+		json.Unmarshal(c.call("session/create", map[string]string{
+			"workspace_id": workspaceID, "harness": "fake", "model": "m", "effort": "low", "permission_mode": "manual",
+		}), &created)
+		return created.SessionID
+	}
+	idle := func(id string) {
+		for c.update(id, "state").State != "idle" {
+		}
+	}
+	notified := func(method, id string) {
+		t.Helper()
+		c.next(func(m message) bool { return m.Method == method && m.sessionID() == id })
+	}
+	archivedIn := func(c *client) map[string]bool {
+		t.Helper()
+		var listed struct {
+			Workspaces []struct {
+				Sessions []struct {
+					SessionID string `json:"session_id"`
+					Archived  bool   `json:"archived"`
+				} `json:"sessions"`
+			} `json:"workspaces"`
+		}
+		json.Unmarshal(c.call("workspace/list", map[string]any{}), &listed)
+		archived := map[string]bool{}
+		for _, w := range listed.Workspaces {
+			for _, sess := range w.Sessions {
+				archived[sess.SessionID] = sess.Archived
+			}
+		}
+		return archived
+	}
+	refused := func(response message, code int, text string) {
+		t.Helper()
+		if response.Error == nil || response.Error.Code != code || response.Error.Message != text {
+			t.Fatalf("got %+v, not the refusal %d %q", response.Error, code, text)
+		}
+	}
+
+	workspace := workspaceIn(c)
+	a := newSession(workspace)
+	c.call("session/send", map[string]string{"session_id": a, "text": "parent"})
+	idle(a)
+	fromA := attach(t, s, a)
+	text, isError := fromA.tool("create_session", map[string]string{"name": "kid", "title": "Kid", "message": "hello"})
+	var kid struct {
+		SessionID string `json:"session_id"`
+	}
+	if json.Unmarshal([]byte(text), &kid) != nil || isError {
+		t.Fatalf("create_session returned %q", text)
+	}
+	k := kid.SessionID
+	idle(k)
+	b := newSession(workspaceIn(c))
+	c.call("session/send", map[string]string{"session_id": b, "text": "bystander"})
+	idle(b)
+	fromB := attach(t, s, b)
+
+	t.Log("a family with a busy member is not archived")
+	c.call("session/send", map[string]string{"session_id": a, "text": "approve Bash {}"})
+	asked := c.update(a, "approval")
+	refused(c.request("session/archive", map[string]string{"session_id": a}), sessionBusy, "session is busy")
+	for _, id := range []string{a, k} {
+		for _, m := range c.received(id) {
+			if m.Method == "session/archived" {
+				t.Fatalf("a refused archive told clients %s was archived", id)
+			}
+		}
+	}
+	if got := archivedIn(c); got[a] || got[k] {
+		t.Fatalf("a refused archive archived %v", got)
+	}
+	c.call("session/approve", map[string]any{"session_id": a, "request_id": asked.RequestID, "response": json.RawMessage(`{"behavior":"allow"}`)})
+	idle(a)
+
+	t.Log("archiving the parent archives and stops its child")
+	c.call("session/archive", map[string]string{"session_id": a})
+	for _, id := range []string{a, k} {
+		notified("session/archived", id)
+		c.update(id, "parked")
+	}
+	if got := archivedIn(c); !got[a] || !got[k] || got[b] {
+		t.Fatalf("workspace/list marked %v", got)
+	}
+
+	t.Log("an archived session is read-only")
+	refused(c.request("session/send", map[string]string{"session_id": a, "text": "hi"}), operationFailed, "session is archived")
+	refused(c.request("session/configure", map[string]string{"session_id": a, "effort": "high"}), operationFailed, "session is archived")
+	var settings agent.Settings
+	json.Unmarshal(c.call("session/get", map[string]string{"session_id": a}), &settings)
+	if settings.Effort != "low" {
+		t.Fatalf("a refused configuration changed the settings to %+v", settings)
+	}
+
+	t.Log("other sessions cannot list or message it, but can read it")
+	if text, _ := fromB.tool("list_sessions", map[string]any{}); strings.Contains(text, a) || strings.Contains(text, k) {
+		t.Fatalf("list_sessions listed archived sessions: %s", text)
+	}
+	if text, isError := fromB.tool("send_message", map[string]string{"to": k, "text": "hi"}); !isError || text != "session is archived" {
+		t.Fatalf("send_message to an archived session returned %q, %v", text, isError)
+	}
+	if text, isError := fromB.tool("read_session", map[string]string{"to": a}); isError || !strings.Contains(text, "User: parent") || !strings.HasSuffix(text, "(parked)") {
+		t.Fatalf("read_session on an archived session returned %q, %v", text, isError)
+	}
+	if text, isError := fromA.tool("create_session", map[string]string{"name": "late", "title": "Late", "message": "hi"}); !isError || text != "session is archived" {
+		t.Fatalf("an archived session's create_session returned %q, %v", text, isError)
+	}
+	refused(c.request("session/unarchive", map[string]string{"session_id": k}), operationFailed, "parent session is archived")
+
+	t.Log("archived sessions stay archived through a restart")
+	restarted, err := New(st, cfg, 0, harnesses, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restarted.Close)
+	if got := archivedIn(connect(t, restarted)); !got[a] || !got[k] || got[b] {
+		t.Fatalf("after a restart workspace/list marked %v", got)
+	}
+
+	t.Log("unarchiving the parent unarchives its child")
+	c.call("session/unarchive", map[string]string{"session_id": a})
+	notified("session/unarchived", a)
+	notified("session/unarchived", k)
+	c.call("session/send", map[string]string{"session_id": a, "text": "back"})
+	idle(a)
+
+	t.Log("a child is archived alone")
+	c.call("session/archive", map[string]string{"session_id": k})
+	notified("session/archived", k)
+	if got := archivedIn(c); got[a] || !got[k] {
+		t.Fatalf("archiving the child marked %v", got)
+	}
+	c.call("session/unarchive", map[string]string{"session_id": k})
+	notified("session/unarchived", k)
+
+	t.Log("an archived session can be deleted, and keeps its workspace")
+	c.call("session/archive", map[string]string{"session_id": k})
+	c.call("session/destroy", map[string]string{"session_id": k})
+	c.call("session/archive", map[string]string{"session_id": a})
+	refused(c.request("workspace/remove", map[string]string{"workspace_id": workspace}), operationFailed, "workspace has sessions")
+}
