@@ -3,4 +3,4 @@
 /cmd/ox/web/dist/
 /cmd/ox/web/test-results/
 /cmd/ox/web/playwright-report/
-/.agents/
+.DS_Store
