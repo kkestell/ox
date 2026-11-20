@@ -66,7 +66,8 @@ What the person using Ox can see and rely on. Each requirement is cited by its t
 - **Failed startup.** A failed Claude startup fails the send within a minute and shows why, in Claude's own words when it gives a reason.
 - **Working directory.** Claude works in the session's workspace directory.
 - **Subscription billing.** Claude's work is billed to the user's Claude subscription, never to an API key or token in Ox's environment.
-- **Style instructions.** Claude runs with Ox's appended style instructions.
+- **Ox's instructions.** Claude runs with Ox's appended instructions: its style, and that it is an Ox session, which one, and how to reach the other sessions.
+- **Messages stay in Ox.** Claude messages only Ox's own sessions, and only through Ox. Other Claude Code sessions on this machine cannot message an Ox session.
 - **Local access only.** Only pages served from this machine (or from the host `ox` was told to serve) can reach `oxd`.
 - **Prompt size limit.** A prompt over 1 MiB is refused with an error and stays in the composer.
 - **Stopping oxd.** Stopping `oxd` stops every Claude process it runs; a second stop request ends it at once.

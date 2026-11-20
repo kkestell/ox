@@ -370,6 +370,25 @@ func TestLive(t *testing.T) {
 	message("manual")
 	message("auto")
 
+	t.Log("asked in plain words, Claude messages another session through Ox")
+	from, to := create("acceptEdits"), create("manual")
+	tools = turn(from, "Exchange a message with the other agent, session "+to+
+		": ask it to reply with just the word ok, without calling any tool. Then reply with just ok.", refuse)
+	if slices.Contains(tools, "SendMessage") || slices.Contains(tools, "ListAgents") {
+		t.Fatalf("Claude used its own messaging tools: %v", tools)
+	}
+	if !slices.Contains(tools, "mcp__ox__send_message") {
+		t.Fatalf("Haiku called no messaging tool (%v); run again: %s", tools, describe(c.received(from)))
+	}
+	if u := c.update(to, "prompt"); u.From != from {
+		t.Errorf("the recipient took a prompt from %q, not %q", u.From, from)
+	}
+	idle(to)
+	tools = turn(from, "Load and call the ListAgents tool. Then reply with just ok.", refuse)
+	if slices.Contains(tools, "ListAgents") {
+		t.Errorf("Claude called ListAgents: %v", tools)
+	}
+
 	t.Log("in plan mode, a message asks first")
 	// Haiku in plan mode usually declines to call a tool that is not
 	// read-only; when it does call send_message, the call asks first.

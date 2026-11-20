@@ -156,17 +156,18 @@ func TestClaudeStartsWithoutAnAPIKey(t *testing.T) {
 	}
 }
 
-// Every Claude process, resumed or new, has Ox's MCP server and runs its
-// read-only tools without asking.
-func TestClaudeRegistersOxMCP(t *testing.T) {
+// Every Claude process, new or resumed, has Ox's MCP server, Ox's
+// instructions, and no other messaging.
+func TestClaudeRunsAsAnOxSession(t *testing.T) {
 	mcp := agent.MCPServer{
 		Command: "/x/ox-mcp", Env: map[string]string{"OX_SOCKET": "/s", "OX_SESSION_ID": "id"}, Approved: []string{"list_models"},
 	}
 	for _, resume := range []bool{false, true} {
 		argv := filepath.Join(t.TempDir(), "argv")
-		standIn(t, "for a in \"$@\"; do printf '%s\\n' \"$a\"; done > "+argv+"\n")
+		standIn(t, "for a in \"$@\"; do printf '%s\\0' \"$a\"; done > "+argv+"\n")
 		events := make(chan agent.Event, 1)
-		if _, _, err := startProcess(t.TempDir(), "ox-session", newUUID(), resume, agent.Settings{}, mcp, events); err != nil {
+		workspace := t.TempDir()
+		if _, _, err := startProcess(workspace, "ox-session", newUUID(), resume, agent.Settings{}, mcp, events); err != nil {
 			t.Fatal(err)
 		}
 		for e := range events {
@@ -178,7 +179,7 @@ func TestClaudeRegistersOxMCP(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		args := strings.Split(string(data), "\n")
+		args := strings.Split(string(data), "\x00")
 		i := slices.Index(args, "--mcp-config")
 		if i < 0 || i+1 >= len(args) {
 			t.Fatalf("resume %v: no --mcp-config in %q", resume, args)
@@ -198,6 +199,28 @@ func TestClaudeRegistersOxMCP(t *testing.T) {
 		}
 		if !slices.Contains(args, "--allowedTools=mcp__ox__list_models") {
 			t.Errorf("resume %v: list_models is not pre-approved in %q", resume, args)
+		}
+		if !slices.Contains(args, "--disallowedTools=SendMessage,ListAgents") {
+			t.Errorf("resume %v: built-in messaging is not disallowed in %q", resume, args)
+		}
+		var settings struct {
+			CrossSessionInbound string `json:"crossSessionInbound"`
+		}
+		j := slices.IndexFunc(args, func(a string) bool { return strings.HasPrefix(a, "--settings=") })
+		if j < 0 {
+			t.Fatalf("resume %v: no --settings in %q", resume, args)
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(args[j], "--settings=")), &settings); err != nil || settings.CrossSessionInbound != "refuse" {
+			t.Errorf("resume %v: %s", resume, args[j])
+		}
+		k := slices.Index(args, "--append-system-prompt")
+		if k < 0 || k+1 >= len(args) {
+			t.Fatalf("resume %v: no --append-system-prompt in %q", resume, args)
+		}
+		for _, want := range []string{"Lead with the big idea up front.", "You are Ox session `ox-session` in `" + workspace + "`"} {
+			if !strings.Contains(args[k+1], want) {
+				t.Errorf("resume %v: instructions lack %q: %s", resume, want, args[k+1])
+			}
 		}
 	}
 }

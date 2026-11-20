@@ -367,6 +367,12 @@ func TestUnresumableConversationForgottenWhenNotStored(t *testing.T) {
 	}
 }
 
+// logStarts is the head of a stand-in claude script: it appends each start's
+// arguments to the file args as one line, which starts reads.
+func logStarts(args string) string {
+	return "#!/bin/sh\nprintf '%s\\n' \"$(echo \"$@\" | tr '\\n' ' ')\" >> " + args + "\n"
+}
+
 // starts returns the arguments of each start the stand-in Claude recorded.
 func starts(t *testing.T, args string) []string {
 	t.Helper()
@@ -385,7 +391,7 @@ func unresumableSession(t *testing.T) (*store.Store, *client, string) {
 	args := filepath.Join(dir, "args")
 	// A stand-in for Claude, which fails a resume as Claude does when it has
 	// no transcript for the ID.
-	script := "#!/bin/sh\necho \"$@\" >> " + args + "\n" +
+	script := logStarts(args) +
 		`case "$*" in *--resume=*) echo '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["No conversation found with session ID: gone"]}'; exit 1;; esac` + "\n" +
 		"read line\n" +
 		`echo '{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}'` + "\n" +
@@ -416,7 +422,7 @@ func TestResumeTokenKeptWhenNotStored(t *testing.T) {
 	dir := t.TempDir()
 	args := filepath.Join(dir, "args")
 	// A stand-in for Claude that answers one prompt and exits.
-	script := "#!/bin/sh\necho \"$@\" >> " + args + "\n" +
+	script := logStarts(args) +
 		"read line\n" +
 		`echo '{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}'` + "\n" +
 		"read prompt\n" +
@@ -445,11 +451,7 @@ func TestResumeTokenKeptWhenNotStored(t *testing.T) {
 	c.update("s", "exited")
 	c.update("s", "parked")
 	c.call("session/send", map[string]string{"session_id": "s", "text": "again"})
-	starts, err := os.ReadFile(args)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines := strings.Split(strings.TrimSpace(string(starts)), "\n")
+	lines := starts(t, args)
 	if len(lines) != 2 || !strings.Contains(lines[1], "--resume=") {
 		t.Fatalf("the next process did not resume the conversation: %q", lines)
 	}
@@ -886,7 +888,7 @@ func TestExitDropsWaitingMessages(t *testing.T) {
 	exit := filepath.Join(dir, "exit")
 	// A stand-in for Claude that reads one message and exits once told to,
 	// without taking the message.
-	script := "#!/bin/sh\necho \"$@\" >> " + args + "\n" +
+	script := logStarts(args) +
 		"read line\n" +
 		`echo '{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}'` + "\n" +
 		"read message\n" +
