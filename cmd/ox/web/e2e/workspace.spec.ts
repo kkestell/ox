@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { expect, type Request, type Route, test } from "@playwright/test";
+import { expect, type Locator, type Request, type Route, test } from "@playwright/test";
 import { fakeConfig, startServices } from "./services";
 
 import { hold, menuItem, open, openMenu, prompt, send, sessionButton, sessionRow, workspaceRow } from "./ui";
@@ -274,6 +274,106 @@ test("the file tree lists the workspace and keeps each session's expanded folder
   } finally {
     chmodSync(locked, 0o755);
     rmSync(other, { recursive: true, force: true });
+    await services.stop();
+  }
+});
+
+test("the file viewer shows each session's open file", async ({ page }) => {
+  const services = await startServices(fakeConfig);
+  const a = join(services.workspace, "src", "a.txt");
+  try {
+    mkdirSync(join(services.workspace, "src"));
+    writeFileSync(a, `first\n${`${"long line ".repeat(200)}\n`.repeat(400)}`);
+    writeFileSync(join(services.workspace, "bin.dat"), "a\0b");
+    await open(page, services);
+    for (const text of ["first", "second"]) {
+      await page.getByRole("button", { name: "New session" }).click();
+      await prompt(page).fill(text);
+      await send(page).click();
+      await expect(page.locator(".reply")).toHaveText(`You said: ${text}`);
+    }
+    const files = page.getByRole("complementary", { name: "Files" });
+    const src = files.getByRole("button", { name: "src" });
+    const aRow = files.getByRole("button", { name: "a.txt", exact: true });
+    const binRow = files.getByRole("button", { name: "bin.dat", exact: true });
+    const viewer = page.getByRole("region", { name: "File" });
+    const tab = viewer.getByRole("tab");
+    const panel = viewer.getByRole("tabpanel");
+
+    await sessionButton(page, "first").click();
+    await src.click();
+    await aRow.click();
+    await expect(tab).toHaveText("a.txt");
+    await expect(tab).toHaveAttribute("title", "src/a.txt");
+    await expect(panel).toContainText("first");
+    await expect(aRow).toHaveAttribute("aria-current", "true");
+    const height = async (locator: Locator) => (await locator.boundingBox())?.height;
+    expect(await height(viewer.locator("header"))).toBe(await height(page.locator("header.context h1")));
+    const width = async (locator: Locator) => (await locator.boundingBox())?.width ?? 0;
+    expect(Math.abs((await width(page.locator("main"))) - (await width(viewer)))).toBeLessThanOrEqual(1);
+    expect(await panel.evaluate((pre) => pre.scrollWidth > pre.clientWidth)).toBe(true);
+
+    // Reading an unchanged file keeps the pane's scroll position.
+    const scrolled = await panel.evaluate((pre) => {
+      pre.scrollTop = 2000;
+      pre.scrollLeft = 300;
+      return [pre.scrollTop, pre.scrollLeft];
+    });
+    expect(scrolled).toEqual([2000, 300]);
+    await page.waitForTimeout(2500);
+    expect(await panel.evaluate((pre) => [pre.scrollTop, pre.scrollLeft])).toEqual(scrolled);
+
+    writeFileSync(a, "changed\n");
+    await expect(panel).toHaveText("changed\n", { timeout: 3000 });
+
+    // Clicking the open file leaves its view alone.
+    await panel.evaluate((pre) => {
+      pre.dataset.marked = "true";
+    });
+    await aRow.click();
+    await page.waitForTimeout(1500);
+    await expect(viewer.locator("pre[data-marked]")).toHaveCount(1);
+
+    rmSync(a);
+    await expect(panel).toContainText("no such file or directory", { timeout: 3000 });
+    await expect(tab).toHaveText("a.txt");
+    writeFileSync(a, "back\n");
+    await expect(panel).toHaveText("back\n", { timeout: 3000 });
+
+    await binRow.click();
+    await expect(tab).toHaveText("bin.dat");
+    await expect(panel).toHaveText("file is binary");
+    await expect(aRow).not.toHaveAttribute("aria-current");
+
+    await sessionButton(page, "second").click();
+    await expect(viewer).toHaveCount(0);
+    await sessionButton(page, "first").click();
+    await expect(tab).toHaveText("bin.dat");
+
+    await viewer.getByRole("button", { name: "Close bin.dat" }).click();
+    await expect(viewer).toHaveCount(0);
+    await expect(binRow).not.toHaveAttribute("aria-current");
+
+    // A draft keeps its open file, and the session it creates inherits it.
+    await page.getByRole("button", { name: "New session" }).click();
+    await src.click();
+    await aRow.click();
+    await expect(tab).toHaveText("a.txt");
+    await sessionButton(page, "second").click();
+    await expect(viewer).toHaveCount(0);
+    await page.getByRole("button", { name: "New session" }).click();
+    await expect(tab).toHaveText("a.txt");
+    await prompt(page).fill("third");
+    await send(page).click();
+    await expect(page.locator(".reply")).toHaveText("You said: third");
+    await expect(tab).toHaveText("a.txt");
+    await expect(panel).toHaveText("back\n");
+
+    await page.reload();
+    await expect(page.locator(".reply")).toHaveText("You said: third");
+    await expect(files.getByRole("button", { name: "src" })).toBeVisible();
+    await expect(viewer).toHaveCount(0);
+  } finally {
     await services.stop();
   }
 });

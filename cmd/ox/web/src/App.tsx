@@ -1,5 +1,6 @@
 import { createEffect, createSignal, For, Match, Show, Switch } from "solid-js";
 import { FileTree } from "./FileTree";
+import { FileView } from "./FileView";
 import { createDraft, type Draft, NewSessionView } from "./NewSessionView";
 import { OxProvider, useOx } from "./ox";
 import { SessionView } from "./SessionView";
@@ -113,12 +114,20 @@ function Layout() {
           </Match>
         </Switch>
       </main>
-      {/* Keyed by workspace, so sessions of one workspace share its listings. */}
+      {/* Keyed by workspace, so sessions of one workspace share its listings,
+          and by path, so a file's view shows only that file. */}
       <Show when={files()?.workspace.id} keyed>
-        {(_workspaceId) => (
-          <Show when={files()}>
-            {(current) => <FileTree workspace={current().workspace} control={current().control} />}
-          </Show>
+        {(workspaceId) => (
+          <>
+            <Show when={files()?.control.file()} keyed>
+              {(path) => (
+                <FileView workspaceId={workspaceId} path={path} onClose={() => files()?.control.setFile(undefined)} />
+              )}
+            </Show>
+            <Show when={files()}>
+              {(current) => <FileTree workspace={current().workspace} control={current().control} />}
+            </Show>
+          </>
         )}
       </Show>
     </>

@@ -181,6 +181,27 @@ with the reason, naming the path relative to the workspace.
 {"jsonrpc":"2.0","id":4,"result":{"entries":[{"name":"ox","folder":true},{"name":"README.md","folder":false}]}}
 ```
 
+### `workspace/read_file`
+
+Requires `workspace_id` and `path`, a slash-separated path to a file relative
+to the workspace's directory. Returns the file's `text`.
+
+A `path` that is empty, absolute, or leaves the directory returns `-32602`; an
+unknown workspace returns `-32001`. Each of these returns `-32000` with the
+reason: a path that is not a regular file (`not a regular file`), a file
+larger than 1 MiB (`file is larger than 1 MiB`), one with a NUL byte in its
+first 8000 bytes (`file is binary`), one that is not valid UTF-8
+(`file is not UTF-8 text`), and one that cannot be read, including one
+reached through a symlink that leads outside the directory.
+
+```json
+{"jsonrpc":"2.0","id":5,"method":"workspace/read_file","params":{"workspace_id":"workspace-id","path":"go.mod"}}
+```
+
+```json
+{"jsonrpc":"2.0","id":5,"result":{"text":"module github.com/kkestell/ox\n"}}
+```
+
 ## Session methods
 
 ### `session/create`

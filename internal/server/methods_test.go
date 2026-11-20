@@ -961,7 +961,9 @@ func TestSameDirectoryIsOneWorkspace(t *testing.T) {
 	}
 }
 
-func TestListFolder(t *testing.T) {
+// A workspace's directory is listed and read through its root, which nothing
+// leads outside of.
+func TestWorkspaceFiles(t *testing.T) {
 	s, err := New(openStore(t), &config.Config{}, 0, nil, MCP{})
 	if err != nil {
 		t.Fatal(err)
@@ -974,22 +976,28 @@ func TestListFolder(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for name, content := range map[string]string{".DS_Store": "", ".gitignore": "ignored.log\n", "ignored.log": "", "src/main.go": "", "src/.git": ""} {
+	files := map[string]string{
+		".DS_Store": "", ".gitignore": "ignored.log\n", "ignored.log": "", "src/main.go": "package main\n", "src/.git": "",
+		"bin.dat": "a\x00b", "big.txt": strings.Repeat("x", 1<<20+1), "latin1.txt": "caf\xe9",
+	}
+	for name, content := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := os.Symlink("src", filepath.Join(dir, "inside")); err != nil {
+	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("secret\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(outside, filepath.Join(dir, "outside")); err != nil {
+	if err := syscall.Mkfifo(filepath.Join(dir, "pipe"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(dir, "src"), filepath.Join(dir, "absolute")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(".gitignore", filepath.Join(dir, "notes")); err != nil {
-		t.Fatal(err)
+	for link, target := range map[string]string{
+		"inside": "src", "outside": outside, "absolute": filepath.Join(dir, "src"), "notes": ".gitignore",
+		"leak": filepath.Join(outside, "secret"),
+	} {
+		if err := os.Symlink(target, filepath.Join(dir, link)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var w struct {
 		ID string `json:"workspace_id"`
@@ -1012,7 +1020,8 @@ func TestListFolder(t *testing.T) {
 	}
 	want := map[string]bool{
 		"src": true, "empty": true, "inside": true, "outside": false, "absolute": false, "notes": false,
-		".gitignore": false, "ignored.log": false,
+		".gitignore": false, "ignored.log": false, "bin.dat": false, "big.txt": false, "latin1.txt": false,
+		"pipe": false, "leak": false,
 	}
 	if got := list(""); !maps.Equal(got, want) {
 		t.Errorf("root listed %v, want %v", got, want)
@@ -1024,18 +1033,46 @@ func TestListFolder(t *testing.T) {
 		t.Errorf("empty folder listed %v", got)
 	}
 
-	refused := func(code int, workspaceID, path string) {
+	refused := func(method string, code int, workspaceID, path, message string) {
 		t.Helper()
-		response := c.request("workspace/list_folder", map[string]string{"workspace_id": workspaceID, "path": path})
-		if response.Error == nil || response.Error.Code != code {
-			t.Errorf("listing %q in %q: %s %+v, want error %d", path, workspaceID, response.Result, response.Error, code)
+		response := c.request(method, map[string]string{"workspace_id": workspaceID, "path": path})
+		if response.Error == nil || response.Error.Code != code || !strings.Contains(response.Error.Message, message) {
+			t.Errorf("%s %q in %q: %.200s %+v, want error %d %q", method, path, workspaceID, response.Result, response.Error, code, message)
 		}
 	}
-	refused(-32602, w.ID, "../x")
-	refused(-32602, w.ID, outside)
-	refused(-32000, w.ID, "outside")
-	refused(-32000, w.ID, ".gitignore")
-	refused(-32001, "missing", "")
+	refused("workspace/list_folder", -32602, w.ID, "../x", "")
+	refused("workspace/list_folder", -32602, w.ID, outside, "")
+	refused("workspace/list_folder", -32000, w.ID, "outside", "")
+	refused("workspace/list_folder", -32000, w.ID, ".gitignore", "")
+	refused("workspace/list_folder", -32001, "missing", "", "")
+
+	read := func(path string) string {
+		var result struct {
+			Text *string `json:"text"`
+		}
+		raw := c.call("workspace/read_file", map[string]string{"workspace_id": w.ID, "path": path})
+		if err := json.Unmarshal(raw, &result); err != nil || result.Text == nil {
+			t.Fatalf("reading %q returned %s", path, raw)
+		}
+		return *result.Text
+	}
+	if got := read("src/main.go"); got != "package main\n" {
+		t.Errorf("src/main.go read %q", got)
+	}
+	if got := read("notes"); got != "ignored.log\n" {
+		t.Errorf("notes read %q", got)
+	}
+	refused("workspace/read_file", -32000, w.ID, "bin.dat", "file is binary")
+	refused("workspace/read_file", -32000, w.ID, "big.txt", "file is larger than 1 MiB")
+	refused("workspace/read_file", -32000, w.ID, "latin1.txt", "file is not UTF-8 text")
+	refused("workspace/read_file", -32000, w.ID, "src", "not a regular file")
+	refused("workspace/read_file", -32000, w.ID, "pipe", "not a regular file")
+	refused("workspace/read_file", -32000, w.ID, "leak", "")
+	refused("workspace/read_file", -32000, w.ID, "missing.txt", "no such file or directory")
+	refused("workspace/read_file", -32602, w.ID, "", "path must be relative to the workspace")
+	refused("workspace/read_file", -32602, w.ID, "../x", "path must be relative to the workspace")
+	refused("workspace/read_file", -32602, w.ID, filepath.Join(outside, "secret"), "path must be relative to the workspace")
+	refused("workspace/read_file", -32001, "missing", "notes", "workspace not found")
 }
 
 // configuringAgent reports each configuration it starts on started.

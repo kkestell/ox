@@ -89,6 +89,7 @@ export type Methods = {
   ];
   "workspace/remove": [{ workspace_id: string }, Empty];
   "workspace/list_folder": [{ workspace_id: string; path: string }, { entries: FolderEntry[] }];
+  "workspace/read_file": [{ workspace_id: string; path: string }, { text: string }];
   "session/create": [
     Omit<Settings, "effort"> & { effort?: string; session_id?: string; workspace_id: string; harness: string },
     { session_id: string; existing?: boolean },
