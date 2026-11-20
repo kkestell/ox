@@ -305,26 +305,17 @@ func (s *Server) getSession(reply replyFunc, id, params json.RawMessage) {
 		return
 	}
 	s.onSession(reply, id, input.SessionID, func(sess *session) {
-		snapshot := agent.Snapshot{State: agent.StateParked, Approvals: []agent.Approval{}}
-		if sess.agent != nil {
-			snapshot = sess.agent.Snapshot()
-		}
 		history, err := sess.history.entries()
 		if err != nil {
 			reply(failure(id, err))
 			return
 		}
-		queued := make([]agent.Input, 0, len(sess.inbox)+1)
-		if snapshot.Queued != nil {
-			queued = append(queued, *snapshot.Queued)
-		}
-		queued = append(queued, sess.inbox...)
 		reply(jsonrpc.Success(id, struct {
 			agent.Snapshot
 			agent.Settings
 			Queued  []agent.Input  `json:"queued"`
 			History []agent.Update `json:"history"`
-		}{snapshot, sess.settings, queued, history}))
+		}{sess.snapshot(), sess.settings, sess.queued(), history}))
 	})
 }
 

@@ -16,6 +16,9 @@ func TestApprovalRouting(t *testing.T) {
 	if len(*updates) != 1 || (*updates)[0].Type != "approval" || (*updates)[0].MessageID != id || !bytes.Equal((*updates)[0].Request, request) {
 		t.Fatalf("approval did not reach the prompt client intact: %+v", *updates)
 	}
+	if pending := a.Snapshot().Approvals; len(pending) != 1 || pending[0].ToolName != "Example" {
+		t.Fatalf("the approval does not name its tool: %+v", pending)
+	}
 	response := json.RawMessage(`{"behavior":"allow","updatedInput":{"number":9007199254740993},"extra":"preserved"}`)
 	if err := a.Approve("request", response); err != nil {
 		t.Fatal(err)

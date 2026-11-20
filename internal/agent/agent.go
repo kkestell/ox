@@ -188,4 +188,5 @@ func (i Input) Update(kind string) Update {
 type Approval struct {
 	RequestID string          `json:"request_id"`
 	Request   json.RawMessage `json:"request"`
+	ToolName  string          `json:"-"` // the tool the approval asks about, named by the harness
 }

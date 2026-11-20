@@ -103,6 +103,25 @@ func (sess *session) deliver() {
 	}
 }
 
+// snapshot is the agent's snapshot, or a parked one with no approvals while no
+// process runs.
+func (sess *session) snapshot() agent.Snapshot {
+	if sess.agent == nil {
+		return agent.Snapshot{State: agent.StateParked, Approvals: []agent.Approval{}}
+	}
+	return sess.agent.Snapshot()
+}
+
+// queued lists the inputs the agent has not taken: the one written to the
+// harness, then the inbox, oldest first.
+func (sess *session) queued() []agent.Input {
+	queued := make([]agent.Input, 0, len(sess.inbox)+1)
+	if written := sess.snapshot().Queued; written != nil {
+		queued = append(queued, *written)
+	}
+	return append(queued, sess.inbox...)
+}
+
 // messagesWaiting reports that messages wait in the inbox, which go ahead of
 // a user prompt and hold off a configuration.
 func (sess *session) messagesWaiting() bool {

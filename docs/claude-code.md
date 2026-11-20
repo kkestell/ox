@@ -38,6 +38,7 @@ claude -p \
 - `plan` mode ignores `--allowedTools` for an MCP tool and asks with `decision_reason_type: "mode"`, unless the tool's `tools/list` entry has `annotations: {"readOnlyHint": true}`. `readOnlyHint` alone does not skip the prompt in `default`, so a tool that runs without asking in every mode needs both.
 - `auto` runs an MCP tool `--allowedTools` names, read-only or not, without asking and without a classifier refusal (2.1.328).
 - In `plan` mode Haiku declines to call an MCP tool that is not read-only, citing plan mode, even when the prompt asks for the call and says it asks for approval first (2.1.328).
+- An MCP tool's text result of about 38,000 characters reaches the model whole, and the `tool_result` the stream reports carries all of it (2.1.329).
 - MCP tools are deferred: the model loads one with `ToolSearch` `select:<name>`, which needs no approval, before calling it, unless the resumed conversation already loaded it.
 - `--allowedTools` and `--disallowedTools` are variadic and consume every following argument that is not a flag. Put another `--flag` right after their values.
 - Per-process flags (`--mcp-config`, `--settings`, `--plugin-dir`, `--add-dir`, `--fallback-model`, `--append-system-prompt`, model, effort, permission mode) must be passed again on every resume. A resumed process runs the `--permission-mode` it is given, or `default` without one, whatever mode the transcript was written in (2.1.327; the `system` `init` line's `permissionMode` and its approval requests both follow the flag).

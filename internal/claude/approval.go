@@ -11,8 +11,9 @@ import (
 
 func (a *Agent) controlRequest(requestID string, request json.RawMessage) {
 	var control struct {
-		Subtype string `json:"subtype"`
-		Input   struct {
+		Subtype  string `json:"subtype"`
+		ToolName string `json:"tool_name"`
+		Input    struct {
 			SessionCrons *[]json.RawMessage `json:"session_crons"`
 		} `json:"input"`
 	}
@@ -26,7 +27,7 @@ func (a *Agent) controlRequest(requestID string, request json.RawMessage) {
 		}
 		return
 	}
-	a.approvals = append(a.approvals, agent.Approval{RequestID: requestID, Request: request})
+	a.approvals = append(a.approvals, agent.Approval{RequestID: requestID, Request: request, ToolName: control.ToolName})
 	a.publish(agent.Update{Type: agent.UpdateApproval, RequestID: requestID, Request: request})
 }
 

@@ -73,8 +73,9 @@ text and attribution, until it is taken or dropped. One operation starts a
 parked session for either input source. After each operation and event,
 `deliver` tries the oldest waiting message; a busy agent leaves it for the
 next try. `send_message` posts to the recipient's goroutine and
-`list_sessions` captures each entry on its owning goroutine. No session
-goroutine posts to another.
+`list_sessions` captures each entry on its owning goroutine. `read_session`
+reads the target's snapshot, inbox, and history on the target's goroutine and
+starts nothing. No session goroutine posts to another.
 
 The session arms a park timer whenever its agent is `Parkable` and stops it
 when the agent stops being parkable, so the full period restarts each time. If

@@ -455,6 +455,35 @@ func TestLive(t *testing.T) {
 	message("manual")
 	message("auto")
 
+	t.Log("Claude reads another session's long transcript without asking, in plan mode")
+	const endMarker = "END-MARKER-7731"
+	long := create("manual")
+	turn(long, strings.Repeat("lorem ipsum dolor sit amet ", 1420)+"The marker is "+endMarker+". Reply with just ok.", refuse)
+	reader := create("plan")
+	tools = turn(reader, "Load and call the mcp__ox__read_session tool with to set to "+long+
+		`. Then reply with just the marker that ends the user prompt in the transcript, the word after "The marker is".`, refuse)
+	if !slices.Contains(tools, "mcp__ox__read_session") {
+		t.Fatalf("Haiku did not call read_session (%v); run again: %s", tools, describe(c.received(reader)))
+	}
+	read, replied := false, false
+	for _, m := range c.received(reader) {
+		var u agent.Update
+		json.Unmarshal(m.Params, &u)
+		switch {
+		case u.Type == "result":
+			replied = replied || strings.Contains(u.Result.Text, endMarker)
+		case u.Type == "tool_result" && !u.Result.IsError && strings.Contains(u.Result.Text, endMarker) && len(u.Result.Text) >= 38000:
+			read = true
+			t.Logf("read_session's result reached Claude as %d characters", len(u.Result.Text))
+		}
+	}
+	if !read {
+		t.Errorf("read_session did not return the whole transcript: %v", c.received(reader))
+	}
+	if !replied {
+		t.Errorf("Claude did not reply with the end of the transcript: %v", c.received(reader))
+	}
+
 	t.Log("asked in plain words, Claude messages another session through Ox")
 	from, to := create("acceptEdits"), create("manual")
 	tools = turn(from, "Exchange a message with the other agent, session "+to+

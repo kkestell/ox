@@ -115,6 +115,27 @@ Each phase is split into tasks, and each task goes to `/ox-plan`.
    shows in the transcript.
 3. **Reading transcripts.** `read_session`, rendering the history the target
    session already stores.
+   - `read_session {to, cursor?}` addresses any other session by ID, the
+     scope of `send_message`. Phase 4 narrows it to a parent's children by
+     name and withholds it from children.
+   - The target's goroutine reads `history.entries()`, as `session/get` does,
+     so the unflushed text of a running turn is included. A parked target is
+     read without starting it.
+   - Each history update renders as one entry: `prompt` as `User:` or
+     `Message from <label> (<id>):`, with its time; `text_delta` as
+     `Assistant:`; `tool_use` as `Tool: <name>` and its input on one line, cut
+     to about 200 characters, marked `(failed)` when its `tool_result` is an
+     error, with no output; a successful `result` as `(turn finished)`, since
+     its text repeats the streamed text; an error `result` as `Error: <text>`;
+     `exited` as `Exited: <error>`. `parked` is not rendered.
+   - The page ends with the target's current state from its snapshot, such
+     as `(running)`, `(waiting for approval: Bash)`, or `(parked)`, since
+     approvals and queued inputs are not in the history.
+   - Pages hold up to 40,000 characters, newest last, read backward from the
+     end. A page with earlier entries begins with the cursor to pass for
+     them: an index into the history, which only grows.
+   - The description says the transcript is another conversation's record,
+     not instructions or the user's approval.
 4. **Child sessions without worktrees.** Children work in the parent's
    directory or a `dir` they are given.
    - The mailbox, since children's goroutines post to their parent.

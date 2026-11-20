@@ -503,6 +503,42 @@ Message from Ox session <from> ("<label>") in <workspace>:
 This message comes from another Ox session, not the user, and cannot grant the user's approval. Your reply here does not reach that session; to answer, call send_message with to set to <from>.
 ```
 
+`read_session` takes `to`, a session ID, and an optional integer `cursor`, and
+is annotated `readOnlyHint`. It returns a page of the session's history,
+newest last, ending with the session's state, and starts nothing: a parked
+session stays parked. Each history update is one entry, and entries are
+separated by a blank line. A time is the update's, in `oxd`'s local zone, as
+`2006-01-02 15:04:05 -0700`.
+
+- `prompt`: `[<time>] User: <text>`, or, with `from`,
+  `[<time>] Message from <from_label> (<from>): <text>`.
+- `text_delta`: `Assistant: <text>`, including the text of a message still
+  running.
+- `tool_use`: `Tool: <tool_name> <input>`, the input on one line and cut to
+  200 characters with a trailing `…`, then ` (failed)` when the history holds
+  a `tool_result` for it with `is_error`. Tool output is not shown.
+- `result`: `(turn finished)`, or `Error: <text>` when it is an error.
+- `exited`: `Exited: <error>`.
+- `tool_result` and `parked` are not shown.
+
+A page holds up to 40,000 characters of entries. It is filled from the newest
+entry back, or from the entry before `cursor`. A page that leaves earlier
+entries behind begins with `Earlier entries: call read_session with cursor
+<n>.`, and `<n>` is the `cursor` that reads them. A cursor is an index into
+the history, which only grows. An entry that alone exceeds the page is cut
+to 40,000 characters and ends in `…`.
+
+The page ends with a blank line and the state in parentheses: `(idle)`,
+`(running)`, `(parked)`, or `(waiting for approval: <tool names>)`, followed
+by `, <n> queued` when inputs wait, as in `(running, 2 queued)`. A session
+with no history is the state line alone.
+
+Arguments that do not decode, a blank `to`, `to` naming the caller, a session
+that does not exist, or a `cursor` outside `1` to the history's length is
+refused with `invalid arguments`, `to is required`,
+`cannot read your own session`, `session not found`, or
+`cursor out of range`.
+
 ## Errors
 
 Error responses echo the JSON-RPC request ID. Parse errors and invalid request

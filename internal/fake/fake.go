@@ -187,7 +187,7 @@ func (a *Agent) ask(tool string, input json.RawMessage) {
 	a.tool = rand.Text()
 	a.publish(agent.Update{Type: agent.UpdateToolUse, ToolUseID: a.tool, ToolName: tool, Input: input})
 	request, _ := json.Marshal(map[string]any{"subtype": "can_use_tool", "tool_name": tool, "input": input, "tool_use_id": a.tool})
-	a.approval = &agent.Approval{RequestID: rand.Text(), Request: request}
+	a.approval = &agent.Approval{RequestID: rand.Text(), Request: request, ToolName: tool}
 	a.publish(agent.Update{Type: agent.UpdateApproval, RequestID: a.approval.RequestID, Request: request})
 	a.state = agent.StateRequiresAction
 	a.publish(agent.Update{Type: agent.UpdateState, State: a.state})

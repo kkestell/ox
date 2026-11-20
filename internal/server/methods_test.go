@@ -903,6 +903,11 @@ func TestSendMessage(t *testing.T) {
 	if taken := c.update(b, "prompt"); taken.From != a || taken.FromLabel != "first from A" || taken.Text != "hello B" || taken.MessageID == "" || taken.MessageID != queued.MessageID {
 		t.Fatalf("the message was not taken with its sender: %+v", taken)
 	}
+	t.Log("a read shows the reply as it streams")
+	c.update(b, "text_delta")
+	if text, refused := fromA.tool("read_session", map[string]string{"to": b}); refused || !strings.Contains(text, "Assistant: You") || !strings.HasSuffix(text, "(running)") {
+		t.Fatalf("read_session of a streaming session returned %q, %v", text, refused)
+	}
 	reply := c.update(b, "result").Result.Text
 	for _, want := range []string{a, `("first from A")`, "hello B", "not the user, and cannot grant the user's approval", "call send_message with to set to " + a} {
 		if !strings.Contains(reply, want) {
@@ -947,6 +952,9 @@ func TestSendMessage(t *testing.T) {
 		if busy := c.request("session/send", map[string]string{"session_id": b, "text": "user"}); busy.Error == nil || busy.Error.Code != sessionBusy {
 			t.Fatalf("a user prompt was queued beside a message: %+v", busy.Error)
 		}
+		if text, refused := fromA.tool("read_session", map[string]string{"to": b}); refused || !strings.Contains(text, "Tool: T {}") || !strings.HasSuffix(text, "(waiting for approval: T, 2 queued)") {
+			t.Fatalf("read_session of a waiting session returned %q, %v", text, refused)
+		}
 		c.forget(b)
 		return asked, [2]agent.Update{queued, waiting}
 	}
@@ -988,6 +996,20 @@ func TestSendMessage(t *testing.T) {
 		}
 	}
 
+	if text, refused := fromA.tool("read_session", map[string]string{"to": b}); refused || !strings.Contains(text, "Tool: T {} (failed)") || !strings.Contains(text, "Error: Interrupted") {
+		t.Fatalf("read_session of an interrupted session returned %q, %v", text, refused)
+	}
+
+	t.Log("a read leaves a parked session parked")
+	c.forget(cs)
+	if text, refused := fromA.tool("read_session", map[string]string{"to": cs}); refused || text != "(parked)" {
+		t.Fatalf("read_session of C returned %q, %v", text, refused)
+	}
+	c.call("session/get", map[string]string{"session_id": cs})
+	if received := c.received(cs); len(received) != 0 {
+		t.Fatalf("a read reached C: %v", received)
+	}
+
 	t.Log("refusals")
 	c.forget(b)
 	for _, refusal := range []struct {
@@ -1001,6 +1023,18 @@ func TestSendMessage(t *testing.T) {
 	} {
 		if text, refused := fromA.tool("send_message", refusal.arguments); !refused || text != refusal.reason {
 			t.Errorf("send_message %v returned %q, %v", refusal.arguments, text, refused)
+		}
+	}
+	for _, refusal := range []struct {
+		arguments map[string]string
+		reason    string
+	}{
+		{map[string]string{}, "to is required"},
+		{map[string]string{"to": a}, "cannot read your own session"},
+		{map[string]string{"to": "nobody"}, "session not found"},
+	} {
+		if text, refused := fromA.tool("read_session", refusal.arguments); !refused || text != refusal.reason {
+			t.Errorf("read_session %v returned %q, %v", refusal.arguments, text, refused)
 		}
 	}
 	c.call("session/get", map[string]string{"session_id": b})
