@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"slices"
 	"sync"
 	"time"
 
@@ -143,6 +144,27 @@ func (s *Server) workspace(id string) *workspace {
 		}
 	}
 	return nil
+}
+
+// workspaceOf returns the workspace sess belongs to. The caller holds s.mu.
+func (s *Server) workspaceOf(sess *session) *workspace {
+	for _, w := range s.workspaces {
+		if slices.Contains(w.sessions, sess) {
+			return w
+		}
+	}
+	return nil
+}
+
+// children returns parent's child sessions. The caller holds s.mu.
+func (s *Server) children(parent *session) []*session {
+	var children []*session
+	for _, sess := range s.sessions {
+		if sess.child != nil && sess.child.ParentID == parent.id {
+			children = append(children, sess)
+		}
+	}
+	return children
 }
 
 func (s *Server) broadcast(method string, params any) {

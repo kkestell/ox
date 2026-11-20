@@ -95,3 +95,22 @@ func TestChoiceIDs(t *testing.T) {
 		}
 	}
 }
+
+// A session moving to a model keeps its effort when the model offers it, or
+// takes the model's first, or none for a model without effort levels.
+func TestEffort(t *testing.T) {
+	h := Harness{Models: []Model{
+		{ID: "m", Efforts: []Option{{ID: "low"}, {ID: "high"}}},
+		{ID: "flat", Efforts: []Option{}},
+	}}
+	for _, c := range []struct{ model, current, want string }{
+		{"m", "high", "high"},
+		{"m", "medium", "low"},
+		{"m", "", "low"},
+		{"flat", "high", ""},
+	} {
+		if got := h.Effort(c.model, c.current); got != c.want {
+			t.Errorf("Effort(%q, %q) = %q, not %q", c.model, c.current, got, c.want)
+		}
+	}
+}

@@ -1,16 +1,24 @@
 package server
 
 import (
+	"cmp"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/kkestell/ox/internal/agent"
 	"github.com/kkestell/ox/internal/jsonrpc"
+	"github.com/kkestell/ox/internal/store"
 )
 
 // attach handles a connection's first line when it is an mcp/attach request.
@@ -180,6 +188,28 @@ func init() {
 			readOnly: true,
 			call:     readSession,
 		},
+		{
+			name: "create_session",
+			description: "Start a child Ox session and send it its first message. Use it only when the user asks for another session or agent. " +
+				"name is the child's address among your children: lowercase letters, digits, and hyphens. title is its label in Ox. " +
+				"The child runs with your harness, model, effort, permission mode, and directory unless harness, model, effort, or dir is given; " +
+				"list_models lists the choices. dir is an existing directory, absolute or relative to yours. " +
+				"The message reaches the child as a message from you. Returns the child's session ID.",
+			inputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name":    map[string]any{"type": "string", "description": "the child's name among your children"},
+					"title":   map[string]any{"type": "string", "description": "the child's label in Ox, one line"},
+					"message": map[string]any{"type": "string", "description": "the child's first message"},
+					"harness": map[string]any{"type": "string", "description": "a harness from list_models, if not yours"},
+					"model":   map[string]any{"type": "string", "description": "a model from list_models, if not yours"},
+					"effort":  map[string]any{"type": "string", "description": "an effort level of the model, if not yours"},
+					"dir":     map[string]any{"type": "string", "description": "the directory the child works in, if not yours"},
+				},
+				"required": []string{"name", "title", "message"},
+			},
+			call: createSession,
+		},
 	}
 }
 
@@ -228,7 +258,7 @@ func listSessions(s *Server, caller *session, _ json.RawMessage, respond func(st
 			done := make(chan struct{})
 			if !sess.post(func() {
 				defer close(done)
-				label, err := s.label(sess.id)
+				label, err := s.label(sess)
 				readErrors[i] = err
 				entries[i] = &entry{SessionID: sess.id, Label: label, Workspace: sess.workspace, Harness: sess.harness, Settings: sess.settings, State: sess.snapshot().State}
 			}) {
@@ -272,7 +302,7 @@ func sendMessage(s *Server, caller *session, arguments json.RawMessage, respond 
 		respond("", errors.New("session not found"))
 		return
 	}
-	label, err := s.label(caller.id)
+	label, err := s.label(caller)
 	if err != nil {
 		respond("", err)
 		return
@@ -287,6 +317,155 @@ func sendMessage(s *Server, caller *session, arguments json.RawMessage, respond 
 	}) {
 		respond("", errors.New("session not found"))
 	}
+}
+
+var childName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+
+const titleRunes = 48
+
+// createSession starts a child of the caller and hands it its first message.
+// The call goroutine checks the arguments; the parent's goroutine, which owns
+// its settings, resolves the child's and creates it; the child's goroutine
+// accepts the message, and deletes the child again when its harness cannot be
+// launched.
+func createSession(s *Server, caller *session, arguments json.RawMessage, respond func(string, error)) {
+	var input struct {
+		Name    string `json:"name"`
+		Title   string `json:"title"`
+		Message string `json:"message"`
+		Harness string `json:"harness"`
+		Model   string `json:"model"`
+		Effort  string `json:"effort"`
+		Dir     string `json:"dir"`
+	}
+	if err := json.Unmarshal(arguments, &input); err != nil {
+		respond("", errors.New("invalid arguments"))
+		return
+	}
+	title := strings.TrimSpace(input.Title)
+	switch {
+	case !childName.MatchString(input.Name):
+		respond("", errors.New("name must be lowercase letters, digits, and hyphens, starting with a letter or digit"))
+		return
+	case title == "" || utf8.RuneCountInString(title) > titleRunes || strings.ContainsAny(title, "\r\n"):
+		respond("", fmt.Errorf("title must be one line of 1 to %d characters", titleRunes))
+		return
+	case strings.TrimSpace(input.Message) == "":
+		respond("", errors.New("message is required"))
+		return
+	case caller.child != nil:
+		respond("", errors.New("a child session cannot create sessions"))
+		return
+	}
+	// Kept as given, as workspace/create keeps its path.
+	directory := caller.directory()
+	if input.Dir != "" {
+		directory = input.Dir
+		if !filepath.IsAbs(directory) {
+			directory = caller.directory() + "/" + directory
+		}
+		if info, err := os.Stat(directory); err != nil || !info.IsDir() {
+			respond("", errors.New("dir must be an existing directory"))
+			return
+		}
+	}
+
+	type result struct {
+		SessionID string `json:"session_id"`
+		Name      string `json:"name"`
+		Harness   string `json:"harness"`
+		agent.Settings
+		Directory string `json:"directory"`
+	}
+	var (
+		created *session
+		message agent.Input
+		answer  result
+		err     error
+	)
+	done := make(chan struct{})
+	if !caller.post(func() {
+		defer close(done)
+		var label string
+		if label, err = s.label(caller); err != nil {
+			return
+		}
+		var record *store.Session
+		if record, err = s.childRecord(caller, input.Harness, input.Model, input.Effort); err != nil {
+			return
+		}
+		record.Child = &store.Child{ParentID: caller.id, Name: input.Name, Title: title, Directory: directory}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if slices.ContainsFunc(s.children(caller), func(other *session) bool { return other.child.Name == input.Name }) {
+			err = fmt.Errorf("a child named %q already exists", input.Name)
+			return
+		}
+		if s.closed {
+			err = errors.New("daemon is shutting down")
+			return
+		}
+		// The caller is a member while its goroutine runs.
+		w := s.workspaceOf(caller)
+		if err = s.store.AddSession(w.id, record); err != nil {
+			return
+		}
+		created = s.addSession(w, record)
+		message = messageInput(caller, label, input.Message)
+		answer = result{record.ID, input.Name, record.Harness,
+			agent.Settings{Model: record.Model, Effort: record.Effort, PermissionMode: record.PermissionMode}, directory}
+	}) {
+		respond("", errors.New("session not found"))
+		return
+	}
+	<-done
+	if err != nil {
+		respond("", err)
+		return
+	}
+	if !created.post(func() {
+		if err := created.acceptMessage(message); err != nil {
+			if err := created.destroy(); err != nil {
+				log.Printf("session %s: delete after failed start: %v", created.id, err)
+			}
+			respond("", err)
+			return
+		}
+		text, err := json.Marshal(answer)
+		respond(string(text), err)
+	}) {
+		respond("", errors.New("session not found"))
+	}
+}
+
+// childRecord resolves the harness and settings of a child of parent, on
+// parent's goroutine, and checks them against the configuration. The child
+// takes the parent's harness and permission mode, the parent's model on the
+// parent's harness, and the parent's effort when its model offers it.
+func (s *Server) childRecord(parent *session, harnessName, model, effort string) (*store.Session, error) {
+	if harnessName == "" {
+		harnessName = parent.harness
+	}
+	harness, offered := s.config.Harnesses[harnessName]
+	if !offered {
+		return nil, fmt.Errorf("harness %q is not configured", harnessName)
+	}
+	if model == "" {
+		if harnessName != parent.harness {
+			return nil, errors.New("model is required with another harness")
+		}
+		model = parent.settings.Model
+	}
+	if effort == "" {
+		effort = harness.Effort(model, parent.settings.Effort)
+	}
+	mode := parent.settings.PermissionMode
+	if err := cmp.Or(harness.CheckModel(model, effort), harness.CheckPermissionMode(mode)); err != nil {
+		return nil, err
+	}
+	return &store.Session{
+		ID: rand.Text(), Harness: harnessName, Model: model, Effort: effort, PermissionMode: mode, CreatedAt: time.Now(),
+	}, nil
 }
 
 // readSession renders a page of another session's history, newest last, on
@@ -455,15 +634,18 @@ func messageInput(sender *session, label, text string) agent.Input {
 	}
 }
 
-// label is a session's label: the first line of the first prompt the user
-// sent it, or the start of its ID before it has one.
-func (s *Server) label(sessionID string) (string, error) {
-	data, err := s.store.FirstPrompt(sessionID)
+// label is a session's label: a child's title, or else the first line of the
+// first prompt the user sent it, or the start of its ID before it has one.
+func (s *Server) label(sess *session) (string, error) {
+	if sess.child != nil {
+		return sess.child.Title, nil
+	}
+	data, err := s.store.FirstPrompt(sess.id)
 	if err != nil {
 		return "", err
 	}
 	if data == nil {
-		return sessionID[:8], nil
+		return sess.id[:8], nil
 	}
 	var first agent.Update
 	if err := json.Unmarshal(data, &first); err != nil {

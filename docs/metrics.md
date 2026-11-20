@@ -8,9 +8,9 @@ Lines counted by cloc. Files, Comment, and Code cover production files; Tests is
 
 | Language | Files | Comment | Code | Tests |
 |---|---:|---:|---:|---:|
-| Go | 22 | 381 | 3,496 | 4,664 |
-| TypeScript | 13 | 89 | 1,514 | 1,171 |
-| CSS | 1 | 11 | 262 | 0 |
+| Go | 22 | 409 | 3,766 | 5,044 |
+| TypeScript | 13 | 92 | 1,552 | 1,211 |
+| CSS | 1 | 11 | 263 | 0 |
 
 ## High complexity
 
@@ -19,17 +19,20 @@ Production functions with cognitive complexity over 15, scored by gocognit for G
 | Complexity | Function | Location |
 |---:|---|---|
 | 47 | `(*Agent).handleOutput` | `internal/claude/agent.go:169` |
-| 18 | `(*Server).configureSession` | `internal/server/methods.go:394` |
+| 27 | `createSession` | `internal/server/mcp.go:331` |
+| 18 | `(*Server).configureSession` | `internal/server/methods.go:403` |
 | 17 | `deliverOutput` | `internal/claude/claude.go:290` |
 | 16 | `checkConfig` | `cmd/oxd/main.go:117` |
-| 16 | `(*Server).handleMCP` | `internal/server/mcp.go:42` |
-| 16 | `(*Server).createSession` | `internal/server/methods.go:222` |
+| 16 | `(*Server).handleMCP` | `internal/server/mcp.go:50` |
+| 16 | `(*Server).createSession` | `internal/server/methods.go:223` |
 
 ## Long files
 
 Production files with over 500 lines of code.
 
-None.
+| Code | File |
+|---:|---|
+| 586 | `internal/server/mcp.go` |
 
 ## Lint suppressions
 

@@ -3,6 +3,7 @@ import { type Connection, connect, RpcError } from "./connection";
 import {
   type ApprovalRequest,
   type ApprovalResponse,
+  type Child,
   type Defaults,
   type Harness,
   type Methods,
@@ -34,6 +35,7 @@ export type Approval = { id: string; request: ApprovalRequest };
 export type Session = {
   id: string;
   harness: string;
+  child?: Child;
   // label is oxd's label from the session listing, shown until a snapshot loads.
   label: string;
   load: { kind: "reloading"; snapshot?: SessionSnapshot } | { kind: "live"; snapshot: SessionSnapshot };
@@ -53,10 +55,11 @@ const settingsOf = (p: Settings): Settings => ({
   permission_mode: p.permission_mode,
 });
 
-// sessionLabel is the first line of the first prompt the user sent the
-// session, or the start of its ID before it has one. Before its snapshot
-// loads, it is the label oxd listed.
+// sessionLabel is a child's title, or else the first line of the first prompt
+// the user sent the session, or the start of its ID before it has one. Before
+// its snapshot loads, it is the label oxd listed.
 export function sessionLabel(session: Session) {
+  if (session.child) return session.child.title;
   const snapshot = session.load.snapshot;
   if (!snapshot) return session.label;
   const prompt = snapshot.entries.find((e) => e.kind === "prompt" && e.input.from === undefined);
@@ -354,9 +357,9 @@ function createOx() {
       s.workspaces = workspaces.map((w) => ({
         id: w.workspace_id,
         path: w.path,
-        sessions: w.sessions.map(({ session_id: id, label, harness }) => {
+        sessions: w.sessions.map(({ session_id: id, label, harness, child }) => {
           const session = previous.get(id);
-          if (!session) return { id, harness, label, load: { kind: "reloading" } };
+          if (!session) return { id, harness, child, label, load: { kind: "reloading" } };
           session.label = label;
           return session;
         }),
@@ -392,6 +395,7 @@ function createOx() {
           workspace?.sessions.push({
             id: params.session_id,
             harness: params.harness,
+            child: params.child,
             label: params.session_id.slice(0, 8),
             load: { kind: "reloading" },
           });

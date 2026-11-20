@@ -630,6 +630,46 @@ func TestLive(t *testing.T) {
 		t.Errorf("the refusal did not reach Claude as an error: %v", c.received(unknown))
 	}
 
+	t.Log("Claude starts a child session without asking")
+	parent, childDir := create("manual"), t.TempDir()
+	tools = turn(parent, "Load and call the mcp__ox__create_session tool with name helper, title Helper, dir "+childDir+
+		`, and message "Reply with just the word ok, without calling any tool." Then reply with just ok.`, refuse)
+	if !slices.Contains(tools, "mcp__ox__create_session") {
+		t.Fatalf("Haiku did not call create_session (%v); run again: %s", tools, describe(c.received(parent)))
+	}
+	var started struct {
+		SessionID string `json:"session_id"`
+	}
+	for _, m := range c.received(parent) {
+		var u agent.Update
+		json.Unmarshal(m.Params, &u)
+		if u.Type == "tool_result" && !u.Result.IsError && strings.Contains(u.Result.Text, `"session_id"`) {
+			json.Unmarshal([]byte(u.Result.Text), &started)
+		}
+	}
+	if started.SessionID == "" {
+		t.Fatalf("create_session returned no child: %s", describe(c.received(parent)))
+	}
+	var childCreated struct {
+		Child *child `json:"child"`
+	}
+	for _, m := range c.received(started.SessionID) {
+		if m.Method == "session/created" {
+			json.Unmarshal(m.Params, &childCreated)
+		}
+	}
+	if childCreated.Child == nil || childCreated.Child.Directory != childDir || childCreated.Child.ParentID != parent {
+		t.Errorf("session/created carried %+v", childCreated.Child)
+	}
+	if u := c.update(started.SessionID, "prompt"); u.From != parent {
+		t.Errorf("the child took a prompt from %q, not %q", u.From, parent)
+	}
+	if u := c.update(started.SessionID, "result"); u.Result.IsError {
+		t.Errorf("the child's turn failed: %s", u.Result.Text)
+	}
+	idle(started.SessionID)
+	c.call("session/destroy", map[string]string{"session_id": started.SessionID})
+
 	t.Log("pending schedules keep a session running, even after a failed turn")
 	deniedBash := false
 	denyBash := func(r request) any {

@@ -138,6 +138,24 @@ func (h Harness) CheckModel(model, effort string) error {
 	return fmt.Errorf("model %q is not configured", model)
 }
 
+// Effort is the effort a session takes with model, given its current effort:
+// current when model offers it, else model's first effort level, or empty
+// for a model that has none.
+func (h Harness) Effort(model, current string) string {
+	for _, m := range h.Models {
+		if m.ID != model {
+			continue
+		}
+		if has(m.Efforts, current) {
+			return current
+		}
+		if len(m.Efforts) > 0 {
+			return m.Efforts[0].ID
+		}
+	}
+	return ""
+}
+
 // CheckPermissionMode reports whether mode is one of h's permission modes.
 func (h Harness) CheckPermissionMode(mode string) error {
 	if !has(h.PermissionModes, mode) {

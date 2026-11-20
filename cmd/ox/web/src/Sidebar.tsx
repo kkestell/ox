@@ -57,6 +57,41 @@ function WorkspaceDialog(props: { request: DialogRequest; onClose(): void }) {
   );
 }
 
+// SessionRow is a session's row, indented for a child. A session with
+// children has no Delete button.
+function SessionRow(props: {
+  session: Session;
+  selected: boolean;
+  deletable: boolean;
+  onSelect(): void;
+  onDelete(): void;
+}) {
+  return (
+    <li class={{ selected: props.selected, child: props.session.child !== undefined }}>
+      <button
+        type="button"
+        class="open"
+        aria-current={props.selected ? "page" : undefined}
+        onClick={() => props.onSelect()}
+      >
+        <Show when={props.session.load.snapshot?.state}>
+          {(status) => <span class={["status", status()]} role="img" title={status()} aria-label={status()} />}
+        </Show>
+        <span class="title">{sessionLabel(props.session)}</span>
+      </button>
+      <Show when={props.deletable}>
+        <button
+          type="button"
+          class="icon trash"
+          aria-label="Delete session"
+          title="Delete session"
+          onClick={() => props.onDelete()}
+        />
+      </Show>
+    </li>
+  );
+}
+
 export function Sidebar(props: { selected?: Selection; onSelect(selection: Selection): void }) {
   const ox = useOx();
   const [request, setRequest] = createSignal<DialogRequest>();
@@ -97,31 +132,32 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
               />
             </p>
             <ul>
-              <For each={workspace.sessions}>
-                {(session) => (
-                  <li class={{ selected: isSelected(session) }}>
-                    <button
-                      type="button"
-                      class="open"
-                      aria-current={isSelected(session) ? "page" : undefined}
-                      onClick={() => props.onSelect({ kind: "session", id: session.id })}
-                    >
-                      <Show when={session.load.snapshot?.state}>
-                        {(status) => (
-                          <span class={["status", status()]} role="img" title={status()} aria-label={status()} />
+              <For each={workspace.sessions.filter((session) => !session.child)}>
+                {(session) => {
+                  const children = () => workspace.sessions.filter((other) => other.child?.parent_id === session.id);
+                  return (
+                    <>
+                      <SessionRow
+                        session={session}
+                        selected={isSelected(session)}
+                        deletable={children().length === 0}
+                        onSelect={() => props.onSelect({ kind: "session", id: session.id })}
+                        onDelete={() => setRequest({ kind: "delete", id: session.id, label: sessionLabel(session) })}
+                      />
+                      <For each={children()}>
+                        {(child) => (
+                          <SessionRow
+                            session={child}
+                            selected={isSelected(child)}
+                            deletable
+                            onSelect={() => props.onSelect({ kind: "session", id: child.id })}
+                            onDelete={() => setRequest({ kind: "delete", id: child.id, label: sessionLabel(child) })}
+                          />
                         )}
-                      </Show>
-                      <span class="title">{sessionLabel(session)}</span>
-                    </button>
-                    <button
-                      type="button"
-                      class="icon trash"
-                      aria-label="Delete session"
-                      title="Delete session"
-                      onClick={() => setRequest({ kind: "delete", id: session.id, label: sessionLabel(session) })}
-                    />
-                  </li>
-                )}
+                      </For>
+                    </>
+                  );
+                }}
               </For>
             </ul>
           </>

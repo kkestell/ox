@@ -157,6 +157,7 @@ func (s *Server) listWorkspaces(reply replyFunc, id json.RawMessage) {
 		Label     string    `json:"label"`
 		Harness   string    `json:"harness"`
 		CreatedAt time.Time `json:"created_at"`
+		Child     *child    `json:"child,omitempty"`
 	}
 	type workspaceInfo struct {
 		WorkspaceID string        `json:"workspace_id"`
@@ -171,12 +172,12 @@ func (s *Server) listWorkspaces(reply replyFunc, id json.RawMessage) {
 	for i, w := range s.workspaces {
 		workspaces[i] = workspaceInfo{WorkspaceID: w.id, Path: w.path, CreatedAt: w.createdAt, Sessions: make([]sessionInfo, len(w.sessions))}
 		for j, sess := range w.sessions {
-			label, err := s.label(sess.id)
+			label, err := s.label(sess)
 			if err != nil {
 				reply(failure(id, err))
 				return
 			}
-			workspaces[i].Sessions[j] = sessionInfo{sess.id, label, sess.harness, sess.createdAt}
+			workspaces[i].Sessions[j] = sessionInfo{sess.id, label, sess.harness, sess.createdAt, sess.child}
 		}
 	}
 	reply(jsonrpc.Success(id, struct {
@@ -281,6 +282,13 @@ func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 		reply(failure(id, err))
 		return
 	}
+	sess := s.addSession(w, record)
+	reply(jsonrpc.Success(id, result{SessionID: sess.id}))
+}
+
+// addSession starts a stored session in w and tells every client. The caller
+// holds s.mu.
+func (s *Server) addSession(w *workspace, record *store.Session) *session {
 	sess := s.newSession(record, w.path)
 	w.sessions = append(w.sessions, sess)
 	s.sessions[sess.id] = sess
@@ -289,8 +297,9 @@ func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 		WorkspaceID string    `json:"workspace_id"`
 		Harness     string    `json:"harness"`
 		CreatedAt   time.Time `json:"created_at"`
-	}{sess.id, w.id, sess.harness, sess.createdAt})
-	reply(jsonrpc.Success(id, result{SessionID: sess.id}))
+		Child       *child    `json:"child,omitempty"`
+	}{sess.id, w.id, sess.harness, sess.createdAt, sess.child})
+	return sess
 }
 
 // getSession returns a session's settings, history, and current state. Every
@@ -446,24 +455,10 @@ func (s *Server) destroySession(reply replyFunc, id, params json.RawMessage) {
 		return
 	}
 	s.onSession(reply, id, input.SessionID, func(sess *session) {
-		// The process stops first, so it records nothing after the events are gone.
-		if sess.agent != nil {
-			sess.stop()
-		}
-		if err := s.store.DeleteSession(sess.id); err != nil {
+		if err := sess.destroy(); err != nil {
 			reply(failure(id, err))
 			return
 		}
-		s.mu.Lock()
-		delete(s.sessions, sess.id)
-		for _, w := range s.workspaces {
-			w.sessions = slices.DeleteFunc(w.sessions, func(other *session) bool { return other == sess })
-		}
-		s.broadcast("session/destroyed", struct {
-			SessionID string `json:"session_id"`
-		}{sess.id})
-		s.mu.Unlock()
-		sess.ended = true
 		reply(jsonrpc.Success(id, struct{}{}))
 	})
 }

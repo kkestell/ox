@@ -4,8 +4,8 @@ What the person using Ox can see and rely on. Each requirement is cited by its t
 
 - **Adding a workspace.** The user adds a workspace by giving the absolute path of an existing directory; adding the same directory again changes nothing.
 - **Removing a workspace.** A workspace can be removed only when it has no sessions. Removing it asks first, and leaves the directory on disk.
-- **Session order.** Each workspace lists its sessions oldest first.
-- **Session labels.** A session is labeled with the first line of the first prompt the user sent it, or a short identifier before it has one.
+- **Session order.** Each workspace lists its top-level sessions oldest first, each followed by its child sessions, oldest first and indented beneath it.
+- **Session labels.** A child session is labeled with the title it was created with. Any other session is labeled with the first line of the first prompt the user sent it, or a short identifier before it has one.
 - **Session status.** Each session shows whether it is parked, idle, running, or waiting on the user.
 - **Session URL.** The URL names the selected session, so reloading the page reopens it.
 - **New-session defaults.** A new session starts with the configured default harness, model, effort, and permission mode.
@@ -57,6 +57,7 @@ What the person using Ox can see and rely on. Each requirement is cited by its t
 - **Claude can list Ox's models.** Claude can look up the harnesses, models, effort levels, and permission modes Ox offers, in any permission mode, without asking for approval.
 - **Claude can message other sessions.** Claude can list the other sessions, with each one's label, workspace, settings, and status, and send any of them a message. It does so without asking for approval, except in plan mode, where each message asks first.
 - **Claude can read other sessions.** Claude can read any other session's transcript and current status, a page at a time with the newest last, in any permission mode, without asking for approval.
+- **Claude can start child sessions.** A top-level session's Claude can start a child session with a name, a title, and a first message, which reaches the child as a message from its parent. The child takes its parent's harness, model, effort, permission mode, and directory unless Claude picks others Ox offers, cannot start children of its own, and is started without asking for approval, except in plan mode, where Claude asks first.
 - **Message delivery.** A message from another session reaches Claude as a prompt sent while it works does: Claude takes it into the running turn after its current step, or runs it next, and an idle session starts a turn with it. Messages that arrive while a prompt or message is pending wait their turn in order, and a message to a parked session starts it. A message to a session whose Claude cannot be launched is refused, and the sending Claude gets the reason. Messages Claude has not taken are dropped if Claude fails to start, when Claude exits, or when `oxd` stops; a failed start shows why in the transcript.
 - **Approvals wait.** An approval waits for an answer, and the session does not park meanwhile. It is withdrawn on every page when Claude cancels it, goes idle, or exits.
 - **One answer per approval.** An approval already answered, from this page or another, refuses a second answer with an error.
@@ -64,9 +65,9 @@ What the person using Ox can see and rely on. Each requirement is cited by its t
 - **Independent sessions.** One session starting, changing settings, or running never holds up another session.
 - **Lost connection.** When the connection drops, the page says so, fails its pending requests, and holds Send and settings until each session has reloaded. It reconnects by itself, unless `oxd` is still down when it tries, in which case it asks for a reload.
 - **Work outlives the page.** Closing every page leaves prompts, approvals, and Claude's own turns running.
-- **Deleting a session.** Deleting a session asks first, then stops Claude, deletes Ox's history of it, leaves Claude's transcript and the workspace on disk, and removes it from every page.
+- **Deleting a session.** A session can be deleted only when it has no child sessions. Deleting it asks first, then stops Claude, deletes Ox's history of it, leaves Claude's transcript and the workspace on disk, and removes it from every page.
 - **Failed startup.** A failed Claude startup ends within a minute and shows why, in Claude's own words when it gives a reason. The prompt that started it is dropped, and its text returns to the composer of the page that sent it.
-- **Working directory.** Claude works in the session's workspace directory.
+- **Working directory.** Claude works in the session's workspace directory, or in a child session, the directory it was created in.
 - **Subscription billing.** Claude's work is billed to the user's Claude subscription, never to an API key or token in Ox's environment.
 - **Ox's instructions.** Claude runs with Ox's appended instructions: its style, and that it is an Ox session, which one, and how to reach the other sessions.
 - **Messages stay in Ox.** Claude messages only Ox's own sessions, and only through Ox. Other Claude Code sessions on this machine cannot message an Ox session.

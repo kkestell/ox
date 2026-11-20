@@ -29,6 +29,17 @@ type Session struct {
 	// empty until the harness has saved enough to resume it.
 	ResumeToken string
 	CreatedAt   time.Time
+	// Child is set for a child session, nil for a top-level one.
+	Child *Child
+}
+
+// Child is what makes a session a child: its parent, its name among the
+// parent's children, its title, and the directory it runs in.
+type Child struct {
+	ParentID  string
+	Name      string
+	Title     string
+	Directory string
 }
 
 // Event is one recorded session update, as JSON.
@@ -58,6 +69,14 @@ CREATE TABLE IF NOT EXISTS events (
 	session_id TEXT NOT NULL REFERENCES sessions ON DELETE CASCADE,
 	created_at TEXT NOT NULL,
 	data       TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS children (
+	session_id TEXT PRIMARY KEY REFERENCES sessions ON DELETE CASCADE,
+	parent_id  TEXT NOT NULL REFERENCES sessions,
+	name       TEXT NOT NULL,
+	title      TEXT NOT NULL,
+	directory  TEXT NOT NULL,
+	UNIQUE (parent_id, name)
 );
 CREATE INDEX IF NOT EXISTS events_session ON events (session_id, id);
 `
@@ -121,8 +140,9 @@ func (s *Store) Workspaces() ([]*Workspace, error) {
 		return nil, err
 	}
 
-	rows, err = s.db.Query(`SELECT id, workspace_id, harness, model, effort, permission_mode, resume_token, created_at
-		FROM sessions ORDER BY created_at, rowid`)
+	rows, err = s.db.Query(`SELECT s.id, s.workspace_id, s.harness, s.model, s.effort, s.permission_mode, s.resume_token, s.created_at,
+			c.parent_id, c.name, c.title, c.directory
+		FROM sessions s LEFT JOIN children c ON c.session_id = s.id ORDER BY s.created_at, s.rowid`)
 	if err != nil {
 		return nil, err
 	}
@@ -130,8 +150,13 @@ func (s *Store) Workspaces() ([]*Workspace, error) {
 	for rows.Next() {
 		r := &Session{}
 		var workspaceID, created string
-		if err := rows.Scan(&r.ID, &workspaceID, &r.Harness, &r.Model, &r.Effort, &r.PermissionMode, &r.ResumeToken, &created); err != nil {
+		var parentID, name, title, directory sql.NullString
+		if err := rows.Scan(&r.ID, &workspaceID, &r.Harness, &r.Model, &r.Effort, &r.PermissionMode, &r.ResumeToken, &created,
+			&parentID, &name, &title, &directory); err != nil {
 			return nil, err
+		}
+		if parentID.Valid {
+			r.Child = &Child{ParentID: parentID.String, Name: name.String, Title: title.String, Directory: directory.String}
 		}
 		if r.CreatedAt, err = parseTime(created); err != nil {
 			return nil, err
@@ -148,11 +173,25 @@ func (s *Store) AddWorkspace(w *Workspace) error {
 	return err
 }
 
+// AddSession stores a session, and a child session's child row with it.
 func (s *Store) AddSession(workspaceID string, r *Session) error {
-	_, err := s.db.Exec(`INSERT INTO sessions (id, workspace_id, harness, model, effort, permission_mode, resume_token, created_at)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO sessions (id, workspace_id, harness, model, effort, permission_mode, resume_token, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, workspaceID, r.Harness, r.Model, r.Effort, r.PermissionMode, r.ResumeToken, formatTime(r.CreatedAt))
-	return err
+		r.ID, workspaceID, r.Harness, r.Model, r.Effort, r.PermissionMode, r.ResumeToken, formatTime(r.CreatedAt)); err != nil {
+		return err
+	}
+	if c := r.Child; c != nil {
+		if _, err := tx.Exec(`INSERT INTO children (session_id, parent_id, name, title, directory) VALUES (?, ?, ?, ?, ?)`,
+			r.ID, c.ParentID, c.Name, c.Title, c.Directory); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) SaveSession(r *Session) error {

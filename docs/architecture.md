@@ -32,7 +32,7 @@ cmd/oxd            socket, database, and configuration paths, signals, the harne
 | `paths` | The XDG locations of the configuration, database, and socket, which `cmd/oxd` uses unless a flag overrides them and `cmd/ox` uses for the socket. |
 | `config` | Reading the configuration file, or the built-in default, into each harness's models, efforts, and permission modes and the new-session defaults, and checking settings against them. |
 | `server` | Client and MCP connections, each session's goroutine and the agent it runs, and the mapping from each method to a session operation and its error codes. Each connection writes through its own queue, so sessions never wait on a client. |
-| `store` | The SQLite database of workspaces, sessions, and session events. |
+| `store` | The SQLite database of workspaces, sessions, child sessions' `children` rows, and session events. |
 | `jsonrpc` | Request validation and the response and notification types. |
 | `agent` | The `Agent` interface a harness implements, its `Start` function and options, and the updates, snapshots, settings, and errors they share. |
 | `fake` | A harness that runs no process and echoes each prompt back, a word at a time. A prompt `approve <tool> <input JSON>` first asks to approve that tool call, and the call's result is the answer. |
@@ -75,6 +75,19 @@ input untaken. `send_message` posts to the recipient's goroutine and
 `list_sessions` captures each entry on its owning goroutine. `read_session`
 reads the target's snapshot and history on the target's goroutine and starts
 nothing. No session goroutine posts to another.
+
+A child session holds a `child` value, fixed at creation and stored in the
+same transaction as its session row, naming its parent, name, title, and
+directory; a top-level session has none. The directory its harness runs in is
+derived: the child's directory, else the workspace's. `create_session` checks
+its arguments on the call goroutine, then posts to the parent's goroutine,
+which resolves the child's settings from its own, then under `Server.mu`
+checks shutdown and name uniqueness, stores the child, starts its goroutine,
+and adds it to membership. The call goroutine then posts the first message to
+the child's goroutine, which deletes the child again when its harness cannot
+be launched. A session's destroy operation refuses while any session is its
+child; since children are created only on the parent's goroutine, none
+appears while it runs.
 
 The session arms a park timer whenever its agent is `Parkable` and stops it
 when the agent stops being parkable, so the full period restarts each time. If

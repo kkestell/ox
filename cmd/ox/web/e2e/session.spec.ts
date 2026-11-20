@@ -1,7 +1,9 @@
 // The web client against the real relay and oxd, with the fake harness,
 // which echoes each prompt back a word at a time, or first asks to approve a
 // tool call for a prompt "approve <tool> <input JSON>".
+import { mkdtempSync } from "node:fs";
 import { createConnection } from "node:net";
+import { basename } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { expect, type Page, test } from "@playwright/test";
 import { fakeConfig, haikuConfig, type Services, startServices } from "./services";
@@ -444,9 +446,9 @@ test("a dropped prompt returns only to the page that sent it", async ({ page, co
   await expect(prompt(other)).toHaveValue("");
 });
 
-// sendMessage calls send_message as session from's Claude does, through an
-// MCP connection attached to it, and returns the tool's text.
-function sendMessage(from: string, to: string, text: string) {
+// callTool calls an MCP tool as session from's Claude does, through an MCP
+// connection attached to it, and returns the tool's text.
+function callTool(from: string, name: string, args: Record<string, string>) {
   return new Promise<string>((resolve, reject) => {
     const socket = createConnection(services.socket);
     const call = (id: number, method: string, params: object) =>
@@ -465,7 +467,7 @@ function sendMessage(from: string, to: string, text: string) {
     });
     socket.on("error", reject);
     call(1, "mcp/attach", { session_id: from });
-    call(2, "tools/call", { name: "send_message", arguments: { to, text } });
+    call(2, "tools/call", { name, arguments: args });
   });
 }
 
@@ -490,8 +492,8 @@ test("all waiting inputs show in order with their send-time labels", async ({ pa
   await prompt(page).press("Enter");
   const queued = page.locator(".prompt.queued");
   await expect(queued).toHaveText(["steer"]);
-  expect(await sendMessage(a, b, "hello from A")).toBe(`Message queued for ${b}.`);
-  await sendMessage(a, b, "another from A");
+  expect(await callTool(a, "send_message", { to: b, text: "hello from A" })).toBe(`Message queued for ${b}.`);
+  await callTool(a, "send_message", { to: b, text: "another from A" });
   const checkPending = async () => {
     const expected = ["steer", "first from Ahello from A", "first from Aanother from A"];
     await expect(queued).toHaveText(expected);
@@ -529,7 +531,7 @@ test("a recorded message without a saved label still shows its sender", async ({
   const sender = sessionId(page);
   await newSession(page, "legacy recipient");
   const recipient = sessionId(page);
-  await sendMessage(sender, recipient, "older message");
+  await callTool(sender, "send_message", { to: recipient, text: "older message" });
   await expect(page.locator(".reply").last()).toContainText("older message");
   await expect(stop(page)).toHaveCount(0);
 
@@ -558,8 +560,8 @@ test("a recorded message without a saved label still shows its sender", async ({
 test("Stop drops a pending message without touching the composer", async ({ page }) => {
   const { a, b } = await messaging(page);
   await prompt(page).fill("draft");
-  await sendMessage(a, b, "hello from A");
-  await sendMessage(a, b, "another from A");
+  await callTool(a, "send_message", { to: b, text: "hello from A" });
+  await callTool(a, "send_message", { to: b, text: "another from A" });
   await expect(page.locator(".prompt.queued.message")).toHaveCount(2);
   await stop(page).click();
   await expect(page.locator(".prompt.queued")).toHaveCount(0);
@@ -883,4 +885,46 @@ test("on reconnect each session waits for its own settings", async ({ page, cont
     "written while reloading",
     "written after reloading",
   ]);
+});
+
+test("a child session shows beneath its parent with its title", async ({ page }) => {
+  await open(page, services);
+  await newSession(page, "child parent");
+  const parent = sessionId(page);
+  // A later top-level session lists after the parent's children.
+  await newSession(page, "after the parent");
+  const name = basename(mkdtempSync(`${services.workspace}/child-`));
+  const created = JSON.parse(
+    await callTool(parent, "create_session", {
+      name: "helper",
+      title: "Helper child",
+      message: "hello child",
+      dir: name,
+    }),
+  );
+  const directory = `${services.workspace}/${name}`;
+  expect(created.directory).toBe(directory);
+
+  const parentRow = page.locator("nav li").filter({ hasText: "child parent" });
+  const childRow = page.locator("nav li:has-text('child parent') + li");
+  const check = async () => {
+    await expect(childRow).toHaveClass(/child/);
+    await expect(childRow.locator(".title")).toHaveText("Helper child");
+    await expect(sessionButton(page, "Helper child")).toHaveCount(1);
+    await expect(parentRow.getByRole("button", { name: "Delete session" })).toHaveCount(0);
+    await childRow.locator("button.open").click();
+    await expect(page.locator(".context h1")).toHaveText("Helper child");
+    expect(sessionId(page)).toBe(created.session_id);
+    await expect(page.locator(".context .path")).toHaveText(directory);
+    await expect(page.locator(".prompt.message .from")).toHaveText("child parent");
+    await expect(page.locator(".prompt.message")).toHaveText("child parenthello child");
+  };
+  await check();
+  await page.reload();
+  await check();
+
+  await childRow.getByRole("button", { name: "Delete session" }).click();
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(sessionButton(page, "Helper child")).toHaveCount(0);
+  await expect(parentRow.getByRole("button", { name: "Delete session" })).toHaveCount(1);
 });

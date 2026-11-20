@@ -2,8 +2,10 @@ package server
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"time"
 
 	"github.com/kkestell/ox/internal/agent"
@@ -20,7 +22,8 @@ type session struct {
 	server    *Server
 	id        string
 	harness   string
-	workspace string // the directory the harness runs in
+	workspace string // the workspace's path
+	child     *child // nil for a top-level session
 	createdAt time.Time
 	ops       chan func()
 	done      chan struct{} // closed once run returns
@@ -34,9 +37,21 @@ type session struct {
 	ended       bool
 }
 
+// child is what makes a session a child of another, fixed at creation.
+type child struct {
+	ParentID  string `json:"parent_id"`
+	Name      string `json:"name"`
+	Title     string `json:"title"`
+	Directory string `json:"directory"`
+}
+
 func (s *Server) newSession(record *store.Session, workspace string) *session {
+	var c *child
+	if r := record.Child; r != nil {
+		c = &child{ParentID: r.ParentID, Name: r.Name, Title: r.Title, Directory: r.Directory}
+	}
 	sess := &session{
-		server: s, id: record.ID, harness: record.Harness, workspace: workspace, createdAt: record.CreatedAt,
+		server: s, id: record.ID, harness: record.Harness, workspace: workspace, child: c, createdAt: record.CreatedAt,
 		ops: make(chan func()), done: make(chan struct{}),
 		settings:    agent.Settings{Model: record.Model, Effort: record.Effort, PermissionMode: record.PermissionMode},
 		resumeToken: record.ResumeToken,
@@ -46,6 +61,15 @@ func (s *Server) newSession(record *store.Session, workspace string) *session {
 	sess.history.recordEnd()
 	go sess.run()
 	return sess
+}
+
+// directory is where the harness runs: a child's own directory, or the
+// workspace's.
+func (sess *session) directory() string {
+	if sess.child != nil {
+		return sess.child.Directory
+	}
+	return sess.workspace
 }
 
 func (sess *session) run() {
@@ -148,7 +172,7 @@ func (sess *session) start() error {
 	}
 	a, err := start(agent.Options{
 		SessionID: sess.id,
-		Workspace: sess.workspace,
+		Workspace: sess.directory(),
 		Resume:    sess.resumeToken,
 		Settings:  sess.settings,
 		MCP: agent.MCPServer{
@@ -178,6 +202,37 @@ func (sess *session) stop() {
 func (sess *session) parked() {
 	sess.agent = nil
 	sess.update(agent.Update{Type: agent.UpdateParked, Time: time.Now()})
+}
+
+// destroy stops the agent, deletes the session, and removes it from every
+// client. It refuses while the session has children; a child is created only
+// on its parent's goroutine, so none appears while destroy runs.
+func (sess *session) destroy() error {
+	s := sess.server
+	s.mu.Lock()
+	children := s.children(sess)
+	s.mu.Unlock()
+	if len(children) > 0 {
+		return errors.New("session has child sessions")
+	}
+	// The process stops first, so it records nothing after the events are gone.
+	if sess.agent != nil {
+		sess.stop()
+	}
+	if err := s.store.DeleteSession(sess.id); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	delete(s.sessions, sess.id)
+	for _, w := range s.workspaces {
+		w.sessions = slices.DeleteFunc(w.sessions, func(other *session) bool { return other == sess })
+	}
+	s.broadcast("session/destroyed", struct {
+		SessionID string `json:"session_id"`
+	}{sess.id})
+	s.mu.Unlock()
+	sess.ended = true
+	return nil
 }
 
 func (sess *session) end() {
