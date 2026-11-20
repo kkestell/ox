@@ -18,7 +18,7 @@ Write a plan for one change to Ox without changing the code. Whoever implements 
 ## Explore the code
 
 3. Read the code to change, its callers, nearby examples, and its tests. Look beyond the files to change: whether Ox already does this, whether an existing owner or abstraction has the wrong shape for the change, and whether the change extends the architecture or sits bolted on. Follow an existing pattern when it is sound. For a defect, find its structural cause: the representation, duplicated fact, scattered rule, or owner that let the wrong state exist. Search the code for every other place with the same structure; those places belong to this change.
-4. Trace the change across every boundary it crosses: page, relay, `oxd` connection, session goroutine, harness agent, and Claude process. Name the owner of each piece of state it reads or writes.
+4. Trace the change across every boundary it crosses: page, relay, `oxd` connection, session goroutine, harness agent, and Claude process. Name the owner of each piece of state it reads or writes. Treat the documented design as earlier choices, open to question: for each piece of state, list every component the docs or code say owns, holds, tracks, or decides it, find which component observes the events that change it, and ask which single owner would make the wrong states impossible to build. Plan for that owner, even when the docs name another.
 
 ## Settle the request
 
