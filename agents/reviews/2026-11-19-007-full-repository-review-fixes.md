@@ -2,7 +2,7 @@
 
 ## Scope and coverage
 
-This applies the review's outcomes to the findings of `.agents/reviews/2026-11-19-006-full-repository-review.md`. That review covered the whole repository at `f2c49fd` and was written by three independent reviewers (code-review-and-quality, code-review-expert, codebase-design), with every retained finding checked against the source. Each finding is fixed here, recorded in `docs/known-issues.md`, or rejected with its reason, as `AGENTS.md` describes. No brief applies.
+This applies the review's outcomes to the findings of `agents/reviews/2026-11-19-006-full-repository-review.md`. That review covered the whole repository at `f2c49fd` and was written by three independent reviewers (code-review-and-quality, code-review-expert, codebase-design), with every retained finding checked against the source. Each finding is fixed here, recorded in `docs/known-issues.md`, or rejected with its reason, as `AGENTS.md` describes. No brief applies.
 
 Gaps:
 

@@ -8,7 +8,7 @@ Claude takes it, the prompt shows as a pending bubble at the end of the
 transcript and Send is unavailable. Once Claude takes it, it becomes a normal
 prompt and the user can send another. Stop drops a pending prompt and puts
 its text back in the composer of the page that sent it. Phase 2 of
-`.agents/scratch/agent-tools.md` (messages between sessions) will deliver
+`agents/scratch/agent-tools.md` (messages between sessions) will deliver
 through the same path. This plan covers steering only.
 
 ## Related code

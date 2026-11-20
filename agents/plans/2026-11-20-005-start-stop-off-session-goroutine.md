@@ -2,7 +2,7 @@
 
 ## Goal
 
-Audit finding F1 (`.agents/audits/2026-11-20-001-whole-repository.md`):
+Audit finding F1 (`agents/audits/2026-11-20-001-whole-repository.md`):
 `agent.Harness.Start` returns only once Claude has answered `initialize`, and
 `Agent.Stop` returns only once the process has exited. Both run on the
 session's goroutine, so every read of that session waits for them: a page's

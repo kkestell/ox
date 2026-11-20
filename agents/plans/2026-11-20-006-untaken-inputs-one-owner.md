@@ -2,7 +2,7 @@
 
 ## Goal
 
-Audit finding F2 (`.agents/audits/2026-11-20-001-whole-repository.md`): an
+Audit finding F2 (`agents/audits/2026-11-20-001-whole-repository.md`): an
 input Claude has not taken lives in one of two places. The agent holds at most
 one, and the session's inbox holds the messages behind it. Each owner
 announces its own, so a message is announced twice and the session filters the

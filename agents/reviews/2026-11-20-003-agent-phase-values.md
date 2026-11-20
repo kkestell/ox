@@ -6,7 +6,7 @@ Reviewed the uncommitted changes to `internal/claude/agent.go`,
 `internal/claude/prompt.go`, `internal/claude/configure.go`,
 `internal/claude/configure_test.go`, `internal/claude/prompt_test.go`, and
 `docs/architecture.md` on base `f7d4459`, against
-`.agents/plans/2026-11-20-003-agent-phase-values.md`. The uncommitted changes
+`agents/plans/2026-11-20-003-agent-phase-values.md`. The uncommitted changes
 to `.claude/skills/ox-plan/SKILL.md` and `.claude/skills/ox-review/SKILL.md`
 are outside the scope. Callers traced: `internal/server/session.go`
 (`sendPrompt`, inbox delivery) and `internal/server/methods.go`

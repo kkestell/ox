@@ -3,7 +3,7 @@
 ## Scope and coverage
 
 The uncommitted changes on `main` over base `ecb15ff` (24 modified files, no
-untracked files), against `.agents/plans/2026-11-19-001-session-messaging.md`.
+untracked files), against `agents/plans/2026-11-19-001-session-messaging.md`.
 The user took the plan's recommendation on both "Check your assumptions"
 questions and approved its Requirement changes word for word.
 `docs/functional-requirements.md` carries exactly those changes.

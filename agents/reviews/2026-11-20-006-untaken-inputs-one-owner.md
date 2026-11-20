@@ -4,7 +4,7 @@
 
 The uncommitted changes to the 15 tracked files under `docs` and `internal`,
 on base revision `38e421a`, against the plan
-`.agents/plans/2026-11-20-006-untaken-inputs-one-owner.md` (audit finding F2).
+`agents/plans/2026-11-20-006-untaken-inputs-one-owner.md` (audit finding F2).
 The plan's product question is settled as the plan proposes, and its
 **Message delivery** change is approved as written. The untracked plans and
 `.claude/skills/README.md` were not reviewed.

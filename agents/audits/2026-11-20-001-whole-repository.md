@@ -2,9 +2,9 @@
 
 ## Scope and evidence
 
-The whole repository at `aab647d` ("Let Claude read other sessions' transcripts"). The working tree had uncommitted edits to `AGENTS.md` and the `ox-plan` and `ox-review` skills, and the untracked `ox-audit` skill; no code differed from `aab647d`. There is no earlier audit in `.agents/audits/`, so the history covers every commit from `2dd4034` to `aab647d` (102 commits).
+The whole repository at `aab647d` ("Let Claude read other sessions' transcripts"). The working tree had uncommitted edits to `AGENTS.md` and the `ox-plan` and `ox-review` skills, and the untracked `ox-audit` skill; no code differed from `aab647d`. There is no earlier audit in `agents/audits/`, so the history covers every commit from `2dd4034` to `aab647d` (102 commits).
 
-Evidence read: `AGENTS.md`, `cmd/ox/web/AGENTS.md`, `docs/functional-requirements.md`, `docs/known-issues.md`, `docs/architecture.md`, the startup, turn, and failure sections of `docs/claude-code.md`; the 15 reviews and 12 plans in `.agents/`; the two deslop audits deleted from `.agents/reviews/` (at `c51bf80` and `7790725`); and the messages of every fix commit, with the diffs of those the reviews did not explain.
+Evidence read: `AGENTS.md`, `cmd/ox/web/AGENTS.md`, `docs/functional-requirements.md`, `docs/known-issues.md`, `docs/architecture.md`, the startup, turn, and failure sections of `docs/claude-code.md`; the 15 reviews and 12 plans in `agents/`; the two deslop audits deleted from `agents/reviews/` (at `c51bf80` and `7790725`); and the messages of every fix commit, with the diffs of those the reviews did not explain.
 
 Gaps:
 

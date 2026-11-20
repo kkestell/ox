@@ -2,7 +2,7 @@
 
 ## Goal
 
-Task 2 of Phase 1 in `.agents/scratch/agent-tools.md`. Every Claude process a
+Task 2 of Phase 1 in `agents/scratch/agent-tools.md`. Every Claude process a
 session starts, resumes included, registers `ox-mcp` as its `ox` MCP server,
 so Claude can call `mcp__ox__list_models` and get the catalog Ox offers. The
 call runs without an approval prompt in every permission mode Ox offers. The

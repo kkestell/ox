@@ -6,7 +6,7 @@ Reviewed the uncommitted changes on `main` over base `80598b4` (the files in
 `git status`: `Markdown.tsx` new; `SessionView.tsx`, `ApprovalRequest.tsx`,
 `ox.tsx`, `style.css`, `package.json`, `package-lock.json`, the e2e specs and
 `services.ts`, `docs/architecture.md`, `docs/todo.md` modified), against
-`.agents/plans/2026-11-19-001-markdown-replies.md`.
+`agents/plans/2026-11-19-001-markdown-replies.md`.
 
 The change delivers the plan's Goal and keeps its Decisions: markdown-it 15
 with `html: false`, default `validateLink`, `linkify`, images disabled, and a

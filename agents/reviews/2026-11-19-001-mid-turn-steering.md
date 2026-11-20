@@ -2,7 +2,7 @@
 
 ## Scope and coverage
 
-Reviewed the uncommitted changes on `main` over base `30aed41`: the 18 modified files in `internal/agent`, `internal/claude`, `internal/fake`, `internal/server` tests, `cmd/ox/web`, and `docs`. Checked against `.agents/plans/2026-11-19-002-mid-turn-steering.md`, whose requirement changes ("One prompt at a time", "Stop", with Stop beside Send) the user approved. Traced the callers the change depends on: `sendSession`, `session.update` and history recording, the relay's event stream (send replies and notifications share one ordered oxd connection, so a send's reply reaches the page before that prompt's `prompt_cancelled`), `load`, `receive`, and `createSessionControl`.
+Reviewed the uncommitted changes on `main` over base `30aed41`: the 18 modified files in `internal/agent`, `internal/claude`, `internal/fake`, `internal/server` tests, `cmd/ox/web`, and `docs`. Checked against `agents/plans/2026-11-19-002-mid-turn-steering.md`, whose requirement changes ("One prompt at a time", "Stop", with Stop beside Send) the user approved. Traced the callers the change depends on: `sendSession`, `session.update` and history recording, the relay's event stream (send replies and notifications share one ordered oxd connection, so a send's reply reaches the page before that prompt's `prompt_cancelled`), `load`, `receive`, and `createSessionControl`.
 
 `docs/functional-requirements.md` carries the two approved texts word for word and nothing else.
 

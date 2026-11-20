@@ -3,7 +3,7 @@
 ## Scope and coverage
 
 Uncommitted changes on `main` at base `96d4e3c`, reviewed against
-`.agents/plans/2026-11-20-002-written-input-one-owner.md`. The working tree
+`agents/plans/2026-11-20-002-written-input-one-owner.md`. The working tree
 held the plan and changes to `docs/architecture.md`, `internal/agent/agent.go`,
 `internal/claude/agent.go`, `internal/claude/prompt.go`,
 `internal/claude/prompt_test.go`, `internal/fake/fake.go`,

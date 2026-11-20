@@ -2,7 +2,7 @@
 
 ## Goal
 
-Task 1 of Phase 1 in `.agents/scratch/agent-tools.md`. Ship `ox-mcp`, a stdio
+Task 1 of Phase 1 in `agents/scratch/agent-tools.md`. Ship `ox-mcp`, a stdio
 forwarder that connects a harness's MCP client to `oxd`'s Unix socket on
 behalf of one session, and have `oxd` serve `initialize`, `ping`,
 `tools/list`, and `tools/call` on that connection, with `list_models` as the

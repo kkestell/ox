@@ -2,7 +2,7 @@
 
 ## Scope and coverage
 
-The change from `733ac2a` to `4c96a77` ("Keep session queues, settings, and process state in sync"). It was staged when this review was requested and was committed before the review began, so the commit was reviewed. The working tree adds one uncommitted edit, the **Setting commands** requirement in `docs/functional-requirements.md`. The plan is `.agents/reviews/2026-11-19-004-full-repository-multi-lens.md`: its 37 findings and fixes, the user's F3 decision, and the user-approved text of **Setting commands**, which the working tree carries word for word.
+The change from `733ac2a` to `4c96a77` ("Keep session queues, settings, and process state in sync"). It was staged when this review was requested and was committed before the review began, so the commit was reviewed. The working tree adds one uncommitted edit, the **Setting commands** requirement in `docs/functional-requirements.md`. The plan is `agents/reviews/2026-11-19-004-full-repository-multi-lens.md`: its 37 findings and fixes, the user's F3 decision, and the user-approved text of **Setting commands**, which the working tree carries word for word.
 
 The review traced the session's pending-input queue (`written`, `inbox`, `agentUpdate`, `startForInput`, `deliver`), `agent.Harness.CheckPrompt`, conversation-ID tracking, the `children` registry and `KillAll`, `read` and `deliverOutput`, the settings path through `OnConfigured` and `adopt`, `oxd`'s socket and signal handling, the client's `load` state, `reconcilePrompt`, the relay's ordering of responses and notifications, and the `column-reverse` transcript.
 

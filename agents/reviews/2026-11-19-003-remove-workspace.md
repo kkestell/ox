@@ -3,7 +3,7 @@
 ## Scope and coverage
 
 Uncommitted changes on `main` at `0cde03c` (12 modified files, nothing staged),
-checked against `.agents/plans/2026-11-19-003-remove-workspace.md` and the
+checked against `agents/plans/2026-11-19-003-remove-workspace.md` and the
 user's decision that removal is refused while the workspace has any session.
 
 The server side (`removeWorkspace`, `DeleteWorkspace`), the page's handling of

@@ -195,7 +195,7 @@ agent, which carries it through child sessions:
    findings or new regressions go back to the implementing session, until
    the verdict is Ready to commit.
 7. The top-level agent sanity-checks the result, including the requirements
-   diff, and commits the change with its plan and review in `.agents/`.
+   diff, and commits the change with its plan and review in `agents/`.
 
 The user owns `docs/functional-requirements.md`. It changes only when a change
 adds, alters, or removes behavior the user can observe, and only with the text

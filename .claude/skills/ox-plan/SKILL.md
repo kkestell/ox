@@ -1,6 +1,6 @@
 ---
 name: ox-plan
-description: Plan a change to Ox, given a request, bug report, todo item, known issue, or audit finding, and write the plan in `.agents/plans/`. The plan settles every decision except product questions, which the user answers, and accounts for the functional requirements, state owners, Claude Code behavior, and tests the change depends on. Use before implementing a code or behavior change to Ox, not for standalone documentation edits. Never use it unless the user, or an agent acting on the user's request, invokes it.
+description: Plan a change to Ox, given a request, bug report, todo item, known issue, or audit finding, and write the plan in `agents/plans/`. The plan settles every decision except product questions, which the user answers, and accounts for the functional requirements, state owners, Claude Code behavior, and tests the change depends on. Use before implementing a code or behavior change to Ox, not for standalone documentation edits. Never use it unless the user, or an agent acting on the user's request, invokes it.
 argument-hint: "[request, bug report, todo item, known issue, or audit finding]"
 ---
 
@@ -12,7 +12,7 @@ Write a plan for one change to Ox without changing the code. Whoever implements 
 
 ## Establish the work
 
-1. Read `<request> $ARGUMENTS </request>`. If it is empty, ask the user what to plan and stop. If it names an item in `docs/todo.md` or `docs/known-issues.md`, read that item. If it names a finding in an audit in `.agents/audits/`, read the finding; the change replaces its structure at every place the finding names.
+1. Read `<request> $ARGUMENTS </request>`. If it is empty, ask the user what to plan and stop. If it names an item in `docs/todo.md` or `docs/known-issues.md`, read that item. If it names a finding in an audit in `agents/audits/`, read the finding; the change replaces its structure at every place the finding names.
 2. Read `AGENTS.md`, `docs/functional-requirements.md`, and `docs/known-issues.md`. For web client work, also read `cmd/ox/web/AGENTS.md`. Read the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/claude-code.md` that cover the code the change touches.
 
 ## Explore the code
@@ -48,7 +48,7 @@ Write a plan for one change to Ox without changing the code. Whoever implements 
 
 ## Write
 
-10. Read this skill's `assets/_template.md` and write the plan in `.agents/plans/`, named `YYYY-MM-DD-NNN-slug.md` with the next sequence for the day. Do not stage or commit it.
+10. Read this skill's `assets/_template.md` and write the plan in `agents/plans/`, named `YYYY-MM-DD-NNN-slug.md` with the next sequence for the day. Do not stage or commit it.
 11. Keep the plan to relevant code references, decisions that need explaining, tasks tied to files, names, and tests. Leave out repository rules, standard validation commands, conversation history, rejected options, and work for a later change.
 12. Use the protocol's names in tasks, code, comments, and documentation. Do not give one concept several names or give an existing term a new meaning.
 13. Under Requirement changes, give the exact text of each requirement the change adds, changes, or removes in `docs/functional-requirements.md`, in that file's form: a short bold title, then one or two plain sentences about what the user sees or relies on. A change alters the requirements only when it adds, alters, or removes behavior the user can observe; a bug fix changes none unless it shows a requirement was wrong. Write `None.` when nothing changes.
@@ -68,7 +68,7 @@ Reply in the form below and nothing else. Lead with the main point, write plainl
 ```markdown
 Two to four sentences explaining, at a high level, what the change does and how.
 
-**Plan:** `.agents/plans/YYYY-MM-DD-NNN-slug.md`
+**Plan:** `agents/plans/YYYY-MM-DD-NNN-slug.md`
 
 **Requirements touched:** Stop, Lost connection
 

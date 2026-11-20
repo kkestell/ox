@@ -6,8 +6,8 @@ Uncommitted changes on base `099f708` (main): `AGENTS.md`, `Makefile`,
 `cmd/ox/web/e2e/global-setup.ts`, `docs/architecture.md`, `docs/protocol.md`,
 `internal/server/server.go`, and the new `cmd/ox-mcp/` and
 `internal/server/mcp.go`. Checked against
-`.agents/plans/2026-11-19-004-oxd-mcp-forwarder.md` (Task 1 of
-`.agents/scratch/agent-tools.md`), with the callers and state the change
+`agents/plans/2026-11-19-004-oxd-mcp-forwarder.md` (Task 1 of
+`agents/scratch/agent-tools.md`), with the callers and state the change
 reaches: `serveConn`, `broadcast`, `conn.queue`, `handle`, `Server.Close`,
 `jsonrpc.Parse`, and the relay's `/events` and `/rpc` in `cmd/ox/main.go`.
 

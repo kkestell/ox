@@ -1,6 +1,6 @@
 ---
 name: ox-review
-description: Review Ox code in uncommitted changes, a commit, a branch, named files, or the whole repository, against its plan, Ox's functional requirements, and `AGENTS.md`, and write the review in `.agents/reviews/`, marking each confirmed finding to fix or to record, and each rejected one with its reason. Fixes nothing. Run again with an existing review to verify the fixes made for it. Do not use for plan critiques or standalone documentation reviews. Never use it unless the user, or an agent acting on the user's request, invokes it.
+description: Review Ox code in uncommitted changes, a commit, a branch, named files, or the whole repository, against its plan, Ox's functional requirements, and `AGENTS.md`, and write the review in `agents/reviews/`, marking each confirmed finding to fix or to record, and each rejected one with its reason. Fixes nothing. Run again with an existing review to verify the fixes made for it. Do not use for plan critiques or standalone documentation reviews. Never use it unless the user, or an agent acting on the user's request, invokes it.
 argument-hint: "[review scope and the plan it implements, or verify <review path>]"
 ---
 
@@ -22,7 +22,7 @@ Correctness matters for what happens in normal use and for the requirements in `
 
 1. Read `<review_scope> $ARGUMENTS </review_scope>`. If it asks to verify an existing review, go to [Verify fixes](#verify-fixes). Ask the user only when the answer would change what you review.
 2. For uncommitted changes, a commit, or a branch, review the changes and the code that calls or depends on them. For named files or the whole repository, review that full scope; for the whole repository, check every requirement in `docs/functional-requirements.md`. Record the base revision and the state of the working tree you reviewed.
-3. Read `AGENTS.md`, `docs/functional-requirements.md`, and `docs/known-issues.md`; for web client code, also `cmd/ox/web/AGENTS.md`. Read the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/claude-code.md` that cover the code under review. If the scope names a plan in `.agents/plans/`, read it: its Goal, its Decisions, its Requirement changes, and its settled Check your assumptions entries are the requirements.
+3. Read `AGENTS.md`, `docs/functional-requirements.md`, and `docs/known-issues.md`; for web client code, also `cmd/ox/web/AGENTS.md`. Read the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/claude-code.md` that cover the code under review. If the scope names a plan in `agents/plans/`, read it: its Goal, its Decisions, its Requirement changes, and its settled Check your assumptions entries are the requirements.
 
 ## Review
 
@@ -50,7 +50,7 @@ Correctness matters for what happens in normal use and for the requirements in `
 ## Write the review
 
 10. Give each finding its action, as the Objective defines them. When the right fix raises a product question, a choice that changes what the user sees or does in everyday use that the plan and the user's answers do not settle, ask the user, one focused question at a time: what they would see happen, the options as they would experience them, and your recommendation, without code names. Wait for the answer, and make it the finding's `Fix`. Design, interface, and internal behavior choices, and how a rare case behaves, are yours; severity, size, and file count alone do not make a product question.
-11. Read this skill's `assets/_template.md` and write the review in `.agents/reviews/`, named `YYYY-MM-DD-NNN-slug.md` with the next sequence for the day.
+11. Read this skill's `assets/_template.md` and write the review in `agents/reviews/`, named `YYYY-MM-DD-NNN-slug.md` with the next sequence for the day.
 12. For each `Fix`, state the change to make at the cause, and the test to keep: its layer, the behavior it guards, and the existing test that should carry it when one already reaches the case. For each `Record`, state the entry: its worst cost, how it was confirmed, and what it waits on. For a fix the user decided, state their decision.
 13. Give the final response and stop.
 
@@ -75,7 +75,7 @@ One or two sentences: the verdict, and the number of findings by action and, aft
 | F1 | High     | Fix      | Open   | Relay accepts requests from any host | `cmd/ox/main.go:41`         |
 | F2 | Low      | Rejected | —      | Reconnect reloads every history      | `cmd/ox/web/src/ox.tsx:285` |
 
-**Review:** `.agents/reviews/YYYY-MM-DD-NNN-slug.md`
+**Review:** `agents/reviews/YYYY-MM-DD-NNN-slug.md`
 
 **Views changed:** the session view, the new-session view.
 

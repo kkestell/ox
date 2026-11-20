@@ -4,7 +4,7 @@
 
 Reviewed the uncommitted changes to the 19 tracked files under `cmd/oxd`,
 `docs`, and `internal` on base `2ce2769`, against
-`.agents/plans/2026-11-20-005-start-stop-off-session-goroutine.md` (audit
+`agents/plans/2026-11-20-005-start-stop-off-session-goroutine.md` (audit
 finding F1), with the plan's settled product answer: a send to a parked
 session replies at once, and a failed start drops the prompt and returns its
 text to the composer. The plan's two requirement changes, **Failed startup**

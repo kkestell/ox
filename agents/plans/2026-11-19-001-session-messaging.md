@@ -2,10 +2,10 @@
 
 ## Goal
 
-Phase 2 of `.agents/scratch/agent-tools.md`. Claude in one session can list
+Phase 2 of `agents/scratch/agent-tools.md`. Claude in one session can list
 Ox's other sessions and send any of them a message, addressed by session ID.
 A message reaches the recipient through the mid-turn steering path from
-`ecb15ff` (`.agents/plans/2026-11-19-002-mid-turn-steering.md`). The harness
+`ecb15ff` (`agents/plans/2026-11-19-002-mid-turn-steering.md`). The harness
 writes it with priority `next`. Claude takes it into the running turn after
 its current step, or runs it next. While Claude has not taken it, it is the
 session's one queued input. A parked recipient is started first. Claude

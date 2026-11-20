@@ -2,7 +2,7 @@
 
 ## Scope and coverage
 
-Uncommitted changes on base `7ffb38f` (16 modified files, nothing staged), checked against `.agents/plans/2026-11-19-005-claude-list-models.md` (Task 2 of `.agents/scratch/agent-tools.md`). Reviewed the diff and what it reaches: `session.start` (the only builder of `agent.Options`), `startProcess` and its callers, `cmd/oxd` startup, `handleMCP`/`attach` in `internal/server/mcp.go`, `cmd/ox-mcp`, the test client helpers behind `TestLive`, and the build scripts that place `ox-mcp` beside `oxd` (`Makefile`, `e2e/global-setup.ts`, `dev.mjs`).
+Uncommitted changes on base `7ffb38f` (16 modified files, nothing staged), checked against `agents/plans/2026-11-19-005-claude-list-models.md` (Task 2 of `agents/scratch/agent-tools.md`). Reviewed the diff and what it reaches: `session.start` (the only builder of `agent.Options`), `startProcess` and its callers, `cmd/oxd` startup, `handleMCP`/`attach` in `internal/server/mcp.go`, `cmd/ox-mcp`, the test client helpers behind `TestLive`, and the build scripts that place `ox-mcp` beside `oxd` (`Makefile`, `e2e/global-setup.ts`, `dev.mjs`).
 
 The requirement edit matches the plan's text word for word and sits after **Questions from Claude**. The documentation edits match the plan's Documentation updates.
 
