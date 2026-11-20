@@ -29,11 +29,11 @@ Change Ox exactly as the plan or review says, and hand off changes whose tests a
 
 7. Run each test that reproduces a defect once against the base revision, in a detached worktree that you remove afterwards, and confirm it fails there. Failing at its first assertion is enough. Step 8 covers every other new or changed test.
 8. Remove each condition the change adds, one at a time, and confirm a test fails. Add or strengthen a test for each removal no test catches. Revert every such edit.
-9. Run the checks `AGENTS.md` ("Verification") requires for the change, and fix each failure it causes. Report a check as blocked only when something you cannot change prevents it, and name the blocker.
+9. Run the checks `AGENTS.md` ("Verification") requires for the change on the final tree, after your last edit, and fix each failure it causes. Report a check as blocked only when something you cannot change prevents it, and name the blocker.
 
 ## Final response
 
-If you stopped at step 5, reply with the contradiction, its evidence in the code, and the decision you need, and nothing else. Otherwise reply in the form below and nothing else. Lead with the main point, write plainly, and leave out the steps you took and the checks that passed.
+If you stopped at step 5, reply with the contradiction, its evidence in the code, and the decision you need, and nothing else. Otherwise reply in the form below and nothing else. Lead with the main point, write plainly, and leave out the steps you took.
 
 ```markdown
 One or two sentences: what the change does, and whether it is ready for review.
@@ -51,7 +51,9 @@ One or two sentences: what the change does, and whether it is ready for review.
 
 **Open choices:** each choice the plan or review left open that a reviewer should check.
 
+**Checks:** `make test` passed; `make e2e` passed; `make live` passed; headless Chrome through `make dev` passed.
+
 **Blocked:** `make live`: what blocks it.
 ```
 
-List every file created or modified. Under Tests proved, list each test run against the base revision, and each condition removed in step 8 with the test that caught it. Write `None.` for Requirement changes when the plan has none. Include Findings only when fixing a review. Omit Open choices when there are none, and Blocked when every check ran.
+List every file created or modified. Under Tests proved, list each test run against the base revision, and each condition removed in step 8 with the test that caught it. Under Checks, list each check from step 9 with its result on the final tree. Write `None.` for Requirement changes when the plan has none. Include Findings only when fixing a review. Omit Open choices when there are none, and Blocked when every check ran.

@@ -45,7 +45,7 @@ Correctness matters for what happens in normal use and for the requirements in `
 6. Confirm each suspected finding by tracing the code, reproducing it, or running a focused check: a stand-in `claude` script, an injected `/rpc` delay or failure in an e2e spec, or a probe against built binaries on a temporary socket, database, and port. Report missing handling only when a requirement or a reachable failure needs it. Do not ask for tests of hypothetical cases. Leave out what you cannot confirm. Revert every edit a check needs before you finish.
 7. Skip a defect `docs/known-issues.md` records unless what its entry waits on has changed.
 8. Check the Tests proved results from `/ox-work`'s final response, which the request passes on, against the change: each test that reproduces a defect failed on the base revision, and each condition the change adds has a test that catches its removal. Spot-check a few added conditions by removing them one at a time and confirming a test fails. A test that passes on the base revision, and a condition no test protects, is a `Testing` finding.
-9. Run the checks that cover the change: `make test` and `make e2e`; `make live` when the change alters how Ox drives Claude Code; and headless Chrome with Playwright through the `make dev` stack on spare ports when it changes how the page reaches `oxd`. Each failure is a finding. Report a check as blocked only when something you cannot change prevents it, and name the blocker.
+9. Run `make test`. Take the other checks from the Checks in `/ox-work`'s final response: each check `AGENTS.md` ("Verification") requires for the change ran on the final tree and passed. A required check that is missing, failed, or blocked by something the implementer could change is a finding. Run another suite only to confirm or reject a finding, as step 6 describes.
 
 ## Write the review
 
@@ -60,7 +60,7 @@ Run this when asked to verify the fixes for an existing review.
 
 14. Read the review. Inspect the changes made since it was written, and the code each `Fix` and `Record` finding names.
 15. For each `Fix` and `Record` finding, confirm the change addresses its cause, and that its test exists, fails with the fix removed, and passes with it. A `Record` finding is resolved by its `docs/known-issues.md` entry. Mark each finding `Resolved` or `Open`, with the evidence. Do not raise a `Rejected` finding again.
-16. Review the changes made since the review as in [Review](#review), for regressions and new defects, and run the checks in step 9 again. Add each new finding with the next ID and its action.
+16. Review the changes made since the review as in [Review](#review), for regressions and new defects, and apply step 9 to the final response of the fixes. Add each new finding with the next ID and its action.
 17. Add a verification round to the review: the revision you checked, each finding's status, the new findings, and the checks run. Then give the final response and stop.
 
 ## Final response
