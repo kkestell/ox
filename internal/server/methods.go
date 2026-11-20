@@ -454,10 +454,7 @@ func (s *Server) destroySession(reply replyFunc, id, params json.RawMessage) {
 	s.onSession(reply, id, input.SessionID, func(sess *session) {
 		// The process stops first, so it records nothing after the events are gone.
 		if sess.agent != nil {
-			if err := sess.stop(); err != nil {
-				reply(failure(id, err))
-				return
-			}
+			sess.stop()
 		}
 		if err := s.store.DeleteSession(sess.id); err != nil {
 			reply(failure(id, err))

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -20,13 +21,23 @@ func (r *recorder) record(update agent.Update) {
 	*r = append(*r, update)
 }
 
-// agentWriting returns an agent that writes to input and runs proc, whose
-// exit arrives on events.
-func agentWriting(input io.Writer, events chan agent.Event, proc *process) (*Agent, *recorder) {
+// startingAgent returns an agent that writes to input and runs proc, whose
+// exit arrives on events, before Claude has answered initialize.
+func startingAgent(input io.Writer, events chan agent.Event, proc *process) (*Agent, *recorder) {
 	updates := new(recorder)
 	options := agent.Options{OnUpdate: updates.record, OnConfigured: func(agent.Settings) {}, OnError: func(err error) { panic(err) }}
-	return newAgent(newWriter(input), events, proc, options), updates
+	return newAgent(newWriter(input), events, make(chan struct{}), proc, options), updates
 }
+
+// agentWriting is a startingAgent that Claude has answered.
+func agentWriting(input io.Writer, events chan agent.Event, proc *process) (*Agent, *recorder) {
+	a, updates := startingAgent(input, events, proc)
+	a.Handle(initialized)
+	return a, updates
+}
+
+// initialized is Claude's answer to initialize.
+var initialized = message{Type: "control_response", Response: controlReply{Subtype: "success", RequestID: "initialize"}}
 
 func testAgent() (*Agent, *bytes.Buffer, *recorder) {
 	input := new(bytes.Buffer)
@@ -38,22 +49,31 @@ func testAgent() (*Agent, *bytes.Buffer, *recorder) {
 // delivers its exit as Claude's does.
 func stoppableAgent(t *testing.T) (*Agent, *bytes.Buffer, *recorder) {
 	t.Helper()
+	a, input, updates := stoppableStartingAgent(t)
+	a.Handle(initialized)
+	return a, input, updates
+}
+
+// stoppableStartingAgent is a stoppableAgent before Claude has answered
+// initialize.
+func stoppableStartingAgent(t *testing.T) (*Agent, *bytes.Buffer, *recorder) {
+	t.Helper()
 	cmd := exec.Command("sleep", "60")
-	if err := cmd.Start(); err != nil {
+	if err := spawn(cmd); err != nil {
 		t.Fatal(err)
 	}
 	return agentRunning(t, cmd)
 }
 
-// agentRunning is a testAgent whose process is the started cmd, delivering
-// its exit as Claude's does.
+// agentRunning is a starting testAgent whose process is the spawned cmd,
+// delivering its exit as Claude's does.
 func agentRunning(t *testing.T, cmd *exec.Cmd) (*Agent, *bytes.Buffer, *recorder) {
 	t.Helper()
 	t.Cleanup(func() { cmd.Process.Kill() })
 	events := make(chan agent.Event, 1)
-	go func() { events <- processExit{err: cmd.Wait()} }()
+	go func() { events <- processExit{err: wait(cmd)} }()
 	input := new(bytes.Buffer)
-	a, updates := agentWriting(input, events, &process{cmd: cmd})
+	a, updates := startingAgent(input, events, &process{cmd: cmd})
 	return a, input, updates
 }
 
@@ -265,11 +285,10 @@ func TestStopDropsQueuedPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	*updates = nil
-	if err := a.Stop(); err != nil {
-		t.Fatal(err)
-	}
-	if len(*updates) != 2 || (*updates)[0].Type != "prompt_cancelled" || (*updates)[0].MessageID != id || (*updates)[0].Text != "hello" || (*updates)[1].Type != "exited" {
-		t.Fatalf("an exit did not drop the queued prompt first: %+v", *updates)
+	a.Stop()
+	if len(*updates) != 2 || (*updates)[0].Type != "prompt_cancelled" || (*updates)[0].MessageID != id || (*updates)[0].Text != "hello" ||
+		(*updates)[1].Type != "exited" || (*updates)[1].MessageID != id || (*updates)[1].Error != "Claude was stopped" {
+		t.Fatalf("a stop did not drop the queued prompt, then end it: %+v", *updates)
 	}
 	if queued := a.Snapshot().Queued; queued != nil {
 		t.Fatalf("the snapshot reports an input after exit: %+v", queued)
@@ -288,23 +307,36 @@ func TestSnapshotReturnsStateAndApprovals(t *testing.T) {
 	}
 }
 
+// A turn Claude starts itself is published, including one a resumed
+// conversation starts before Claude has answered initialize.
 func TestTurnsClaudeStartsArePublished(t *testing.T) {
-	a, _, updates := testAgent()
-	state(t, a, "running")
-	output(t, a, `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"tick"}}}`)
-	output(t, a, `{"type":"result","subtype":"success","result":"tick"}`)
-	output(t, a, `{"type":"result","subtype":"success","result":""}`)
-	state(t, a, "idle")
-	a.Handle(processExit{})
-	types := []string{}
-	for _, u := range *updates {
-		if u.MessageID != "" {
-			t.Fatalf("self-started turn update has a message ID: %+v", u)
+	for _, starting := range []bool{false, true} {
+		var a *Agent
+		var updates *recorder
+		if starting {
+			a, updates = startingAgent(io.Discard, make(chan agent.Event), nil)
+		} else {
+			a, _, updates = testAgent()
 		}
-		types = append(types, u.Type)
-	}
-	if strings.Join(types, ",") != "state,text_delta,result,state,exited" {
-		t.Fatalf("unexpected updates: %v", types)
+		state(t, a, "running")
+		output(t, a, `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"tick"}}}`)
+		output(t, a, `{"type":"result","subtype":"success","result":"tick"}`)
+		output(t, a, `{"type":"result","subtype":"success","result":""}`)
+		state(t, a, "idle")
+		if starting {
+			a.Handle(initialized)
+		}
+		a.Handle(processExit{})
+		types := []string{}
+		for _, u := range *updates {
+			if u.MessageID != "" {
+				t.Fatalf("starting %v: self-started turn update has a message ID: %+v", starting, u)
+			}
+			types = append(types, u.Type)
+		}
+		if strings.Join(types, ",") != "state,text_delta,result,state,exited" {
+			t.Fatalf("starting %v: unexpected updates: %v", starting, types)
+		}
 	}
 }
 
@@ -352,40 +384,148 @@ func TestUnexpectedExitIsReported(t *testing.T) {
 	}
 
 	a, _, updates = stoppableAgent(t)
-	if err := a.Stop(); err != nil {
-		t.Fatal(err)
-	}
+	a.Stop()
 	if !a.Exited() || len(*updates) != 0 {
 		t.Fatalf("a requested stop was reported as a failure: %+v", *updates)
 	}
 }
 
-// Stop finishes even when Claude ignores SIGTERM: Ox kills it.
+// Stop ends the agent at once, even when Claude ignores SIGTERM: Ox kills it
+// in the background, and WaitAll waits for that.
 func TestStopKillsClaudeIgnoringSIGTERM(t *testing.T) {
 	saved := killAfter
-	killAfter = 100 * time.Millisecond
+	killAfter = 500 * time.Millisecond
 	t.Cleanup(func() { killAfter = saved })
 	cmd := exec.Command("sh", "-c", "trap '' TERM; echo ready; exec sleep 60")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cmd.Start(); err != nil {
+	if err := spawn(cmd); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := bufio.NewReader(stdout).ReadString('\n'); err != nil {
 		t.Fatal(err)
 	}
 	a, _, _ := agentRunning(t, cmd)
-	stopped := make(chan error, 1)
-	go func() { stopped <- a.Stop() }()
+	a.Handle(initialized)
+	a.Stop()
+	if !a.Exited() {
+		t.Fatal("Stop did not end the agent")
+	}
+	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("Stop waited for Claude to exit: %v", err)
+	}
+	waited := make(chan struct{})
+	go func() {
+		WaitAll()
+		close(waited)
+	}()
 	select {
-	case err := <-stopped:
-		if err != nil || !a.Exited() {
-			t.Fatalf("stop failed: %v", err)
-		}
+	case <-waited:
 	case <-time.After(5 * time.Second):
-		t.Fatal("Stop waited for a Claude that ignores SIGTERM")
+		t.Fatal("WaitAll waited past the kill of a Claude that ignores SIGTERM")
+	}
+	if err := cmd.Process.Signal(syscall.Signal(0)); err == nil {
+		t.Fatal("WaitAll returned while Claude was running")
+	}
+}
+
+// Input sent while Claude starts is held, and written once Claude has
+// answered initialize with the session's flags.
+func TestInputWaitsForStartup(t *testing.T) {
+	input := new(bytes.Buffer)
+	a, updates := startingAgent(input, make(chan agent.Event), nil)
+	held := agent.Input{MessageID: newUUID(), Text: "steer", From: "other", FromLabel: "Other", Content: "wrapped steer"}
+	if err := a.Send(held); err != nil {
+		t.Fatal(err)
+	}
+	if len(*updates) != 2 || (*updates)[0].Type != "prompt_queued" || (*updates)[0].MessageID != held.MessageID || (*updates)[0].From != "other" ||
+		(*updates)[1].State != "running" || (*updates)[1].MessageID != held.MessageID || input.Len() != 0 {
+		t.Fatalf("held input was not published as queued and running, or was written: %+v, %q", *updates, input)
+	}
+	if snapshot := a.Snapshot(); snapshot.State != "running" || snapshot.Queued == nil || *snapshot.Queued != held {
+		t.Fatalf("the snapshot does not report the held input: %+v", snapshot)
+	}
+	if err := a.Send(prompt("again")); !errors.Is(err, agent.ErrBusy) {
+		t.Fatalf("a second input was accepted while Claude starts: %v", err)
+	}
+	result := make(chan error, 1)
+	if a.Configure(agent.SettingsPatch{Model: new("haiku")}, replyTo(result)); !errors.Is(<-result, agent.ErrBusy) {
+		t.Fatal("a configuration ran while Claude starts")
+	}
+	if a.Parkable() {
+		t.Fatal("a starting agent is parkable")
+	}
+	state(t, a, "idle")
+	if a.Snapshot().State != "running" || input.Len() != 0 {
+		t.Fatalf("Claude's idle during startup released the held input: %+v, %q", a.Snapshot(), input)
+	}
+	*updates = nil
+
+	a.Handle(initialized)
+	var wire map[string]any
+	if err := json.Unmarshal(input.Bytes(), &wire); err != nil || wire["uuid"] != held.MessageID || wire["priority"] != "next" {
+		t.Fatalf("the held input was not written once Claude answered: %q", input)
+	}
+	if len(*updates) != 0 || a.Snapshot().Queued == nil {
+		t.Fatalf("writing the held input republished it or released it: %+v", *updates)
+	}
+	output(t, a, `{"type":"command_lifecycle","command_uuid":"`+held.MessageID+`","state":"started"}`)
+	if len(*updates) != 1 || (*updates)[0].Type != "prompt" || (*updates)[0].MessageID != held.MessageID || a.Snapshot().Queued != nil {
+		t.Fatalf("Claude did not take the held input: %+v", *updates)
+	}
+
+	// Interrupt drops the held input, writes nothing, and the start's end
+	// releases the agent.
+	input = new(bytes.Buffer)
+	a, updates = startingAgent(input, make(chan agent.Event), nil)
+	id, err := sendTestPrompt(a, "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	*updates = nil
+	if err := a.Interrupt(); err != nil {
+		t.Fatal(err)
+	}
+	if len(*updates) != 1 || (*updates)[0].Type != "prompt_cancelled" || (*updates)[0].MessageID != id || input.Len() != 0 ||
+		a.Snapshot().State != "running" || a.Snapshot().Queued != nil {
+		t.Fatalf("an interrupt while Claude starts did not drop the held input alone: %+v, %q, %+v", *updates, input, a.Snapshot())
+	}
+	*updates = nil
+	a.Handle(initialized)
+	if len(*updates) != 1 || (*updates)[0].State != "idle" || input.Len() != 0 || a.Snapshot().State != "idle" {
+		t.Fatalf("Claude's answer did not release the agent: %+v, %q", *updates, input)
+	}
+	if err := a.Send(prompt("next")); err != nil {
+		t.Fatalf("the started agent refused a prompt: %v", err)
+	}
+
+	// A held input Claude's pipe refuses is dropped once Claude answers, and
+	// the exit that follows reports the process.
+	var failures []error
+	a = newAgent(newWriter(failingWriter{}), make(chan agent.Event), make(chan struct{}), nil, agent.Options{
+		OnUpdate: updates.record, OnError: func(err error) { failures = append(failures, err) },
+	})
+	if id, err = sendTestPrompt(a, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	*updates = nil
+	a.Handle(initialized)
+	if len(*updates) != 2 || (*updates)[0].Type != "prompt_cancelled" || (*updates)[0].MessageID != id ||
+		(*updates)[1].State != "idle" || a.Snapshot().Queued != nil || len(failures) != 1 {
+		t.Fatalf("a held input that could not be written was not dropped: %+v, %v", *updates, failures)
+	}
+
+	// Stop drops the held input without reporting a failure.
+	a, _, updates = stoppableStartingAgent(t)
+	if id, err = sendTestPrompt(a, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	*updates = nil
+	a.Stop()
+	if !a.Exited() || len(*updates) != 1 || (*updates)[0].Type != "prompt_cancelled" || (*updates)[0].MessageID != id {
+		t.Fatalf("a stop while Claude starts did not drop the held input alone: %+v", *updates)
 	}
 }
 

@@ -22,41 +22,65 @@ func checkPrompt(text string) error {
 }
 
 // Send writes an input, which Claude takes into the running turn after its
-// current tool call, or runs next if the turn ends first.
+// current tool call, or runs next if the turn ends first. While Claude
+// starts, it holds the input until Claude has answered initialize.
 func (a *Agent) Send(input agent.Input) error {
-	var p *prompting
 	switch phase := a.phase.(type) {
+	case *starting:
+		if phase.input != nil {
+			return agent.ErrBusy
+		}
+		phase.input = &input
 	case available:
+		if err := a.write(input); err != nil {
+			return err
+		}
 	case *prompting:
 		if phase.queued {
 			return agent.ErrBusy
 		}
-		p = phase
+		if err := a.write(input); err != nil {
+			return err
+		}
 	default:
 		return agent.ErrBusy
 	}
-	id := input.MessageID
-	if err := a.input.Prompt(id, input.Content); err != nil {
+	a.publish(input.Update(agent.UpdatePromptQueued))
+	if a.state == agent.StateIdle {
+		a.state = agent.StateRunning
+		a.publish(agent.Update{MessageID: input.MessageID, Type: agent.UpdateState, State: a.state})
+	}
+	return nil
+}
+
+// write writes input to Claude, which holds the agent in prompting with the
+// input queued until Claude takes or drops it.
+func (a *Agent) write(input agent.Input) error {
+	if err := a.input.Prompt(input.MessageID, input.Content); err != nil {
 		return fmt.Errorf("send prompt to Claude: %w", err)
 	}
-	if p == nil {
+	p, ok := a.phase.(*prompting)
+	if !ok {
 		p = &prompting{}
 		a.phase = p
 	}
 	p.input, p.queued = input, true
-	a.publish(input.Update(agent.UpdatePromptQueued))
-	if a.state == agent.StateIdle {
-		a.state = agent.StateRunning
-		a.publish(agent.Update{MessageID: id, Type: agent.UpdateState, State: a.state})
-	}
 	return nil
 }
 
 // Interrupt asks Claude to stop the running turn and to drop a prompt it has
 // not taken yet. Claude ends the turn with an error result and an idle state,
 // which end the prompts as usual. Its control response carries nothing Ox
-// uses.
+// uses. While Claude starts, Interrupt drops the held input and writes
+// nothing.
 func (a *Agent) Interrupt() error {
+	if s, ok := a.phase.(*starting); ok {
+		if s.input != nil {
+			a.publish(s.input.Update(agent.UpdatePromptCancelled))
+			s.input = nil
+		}
+		return nil
+	}
 	if a.state == agent.StateIdle {
 		return nil
 	}
@@ -70,11 +94,22 @@ func (a *Agent) Interrupt() error {
 	return nil
 }
 
-// queued returns a copy of the input Claude has not taken yet, or nil.
+// queued returns a copy of the input Claude has not taken yet, held or
+// written, or nil.
 func (a *Agent) queued() *agent.Input {
-	if p, ok := a.phase.(*prompting); ok && p.queued {
-		input := p.input
-		return &input
+	switch p := a.phase.(type) {
+	case *starting:
+		if p.input != nil {
+			input := *p.input
+			return &input
+		}
+	case *prompting:
+		if p.queued {
+			input := p.input
+			return &input
+		}
+	case available, *configuring, timedOut, exited:
+		// No input waits.
 	}
 	return nil
 }
@@ -117,6 +152,10 @@ func (a *Agent) sessionState(state string) {
 		return
 	}
 	a.withdrawApprovals()
+	if _, starting := a.phase.(*starting); starting {
+		// The start's end sets the state.
+		return
+	}
 	p, ok := a.phase.(*prompting)
 	switch {
 	case ok && p.queued:

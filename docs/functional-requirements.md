@@ -38,7 +38,7 @@ What the person using Ox can see and rely on. Each requirement is cited by its t
 - **Surviving restarts.** Workspaces, sessions, their settings, and their transcripts survive parking and `oxd` restarts.
 - **Resuming the conversation.** A parked session resumes its Claude conversation on the next send or message.
 - **Database failures.** Saved state, including transcripts, persists only while Ox can write its database. `oxd` logs a failed write, and the page does not show it. A session whose conversation could not be saved still resumes it until `oxd` restarts.
-- **Lost conversation.** If Claude can no longer resume the conversation, the send fails with a notice in the transcript, and the next send starts a new conversation without the earlier context.
+- **Lost conversation.** If Claude can no longer resume the conversation, the prompt is dropped with a notice in the transcript and its text returns to the composer, and the next send starts a new conversation without the earlier context.
 - **Parking.** An idle session parks after five minutes; the period is configurable, and parking can be turned off. It does not park while a prompt, setting change, approval, background task, or schedule is pending.
 - **Parked schedules.** A parked session runs no schedules until the next prompt or message starts it.
 - **Settings shown are settings used.** The settings shown for a session are the ones Claude runs with.
@@ -65,7 +65,7 @@ What the person using Ox can see and rely on. Each requirement is cited by its t
 - **Lost connection.** When the connection drops, the page says so, fails its pending requests, and holds Send and settings until each session has reloaded. It reconnects by itself, unless `oxd` is still down when it tries, in which case it asks for a reload.
 - **Work outlives the page.** Closing every page leaves prompts, approvals, and Claude's own turns running.
 - **Deleting a session.** Deleting a session asks first, then stops Claude, deletes Ox's history of it, leaves Claude's transcript and the workspace on disk, and removes it from every page.
-- **Failed startup.** A failed Claude startup fails the send within a minute and shows why, in Claude's own words when it gives a reason.
+- **Failed startup.** A failed Claude startup ends within a minute and shows why, in Claude's own words when it gives a reason. The prompt that started it is dropped, and its text returns to the composer of the page that sent it.
 - **Working directory.** Claude works in the session's workspace directory.
 - **Subscription billing.** Claude's work is billed to the user's Claude subscription, never to an API key or token in Ox's environment.
 - **Ox's instructions.** Claude runs with Ox's appended instructions: its style, and that it is an Ox session, which one, and how to reach the other sessions.

@@ -58,7 +58,8 @@ func main() {
 
 func run(dbPath string, cfg *config.Config, parkAfter time.Duration, harnesses map[string]agent.Harness, mcp server.MCP) error {
 	// Loading the server repairs the history of a stopped daemon. Hold the
-	// socket from before that repair until every session has stopped.
+	// socket from before that repair until every session has stopped and
+	// every Claude process has exited.
 	listener, err := listen(mcp.Socket)
 	if err != nil {
 		return err
@@ -86,6 +87,7 @@ func run(dbPath string, cfg *config.Config, parkAfter time.Duration, harnesses m
 	stopped := make(chan struct{})
 	go func() {
 		s.Close()
+		claude.WaitAll()
 		close(stopped)
 	}()
 	select {

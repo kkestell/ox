@@ -32,9 +32,10 @@ func acknowledge(t *testing.T, a *Agent, requestID, subtype string) {
 func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 	input := new(bytes.Buffer)
 	var applied []agent.Settings
-	a := newAgent(newWriter(input), make(chan agent.Event), nil, agent.Options{
+	a := newAgent(newWriter(input), make(chan agent.Event), make(chan struct{}), nil, agent.Options{
 		OnUpdate: func(agent.Update) {}, OnConfigured: func(s agent.Settings) { applied = append(applied, s) },
 	})
+	a.Handle(initialized)
 	decoder := json.NewDecoder(input)
 	patch := agent.SettingsPatch{Model: new("haiku"), Effort: new("low"), PermissionMode: new("plan")}
 	result := make(chan error, 1)
@@ -154,9 +155,10 @@ func TestConfigureFailure(t *testing.T) {
 func TestPartialConfigurationReportsAppliedSettings(t *testing.T) {
 	input := new(bytes.Buffer)
 	var applied []agent.Settings
-	a := newAgent(newWriter(input), make(chan agent.Event), nil, agent.Options{
+	a := newAgent(newWriter(input), make(chan agent.Event), make(chan struct{}), nil, agent.Options{
 		OnUpdate: func(agent.Update) {}, OnConfigured: func(s agent.Settings) { applied = append(applied, s) },
 	})
+	a.Handle(initialized)
 	result := make(chan error, 1)
 	a.Configure(agent.SettingsPatch{Model: new("sonnet"), Effort: new("high")}, replyTo(result))
 	acknowledge(t, a, controlRequestID(t, input), "success")
@@ -167,7 +169,7 @@ func TestPartialConfigurationReportsAppliedSettings(t *testing.T) {
 }
 
 func TestConfigureTimeoutStopsProcess(t *testing.T) {
-	a, input, _ := stoppableAgent(t)
+	a, input, updates := stoppableAgent(t)
 	var reported []agent.Settings
 	a.onConfigured = func(s agent.Settings) { reported = append(reported, s) }
 	result := make(chan error, 1)
@@ -193,6 +195,9 @@ func TestConfigureTimeoutStopsProcess(t *testing.T) {
 	a.Handle(exit)
 	if err := <-result; !errors.Is(err, agent.ErrExited) {
 		t.Fatalf("process exit did not end configuration: %v", err)
+	}
+	if !a.Exited() || len(*updates) != 0 {
+		t.Fatalf("the exit Ox asked for was reported: %+v", *updates)
 	}
 }
 
@@ -221,11 +226,12 @@ func TestConfigureRequiresIdle(t *testing.T) {
 func TestClaudeReportsPermissionMode(t *testing.T) {
 	input := new(bytes.Buffer)
 	var adopted []agent.Settings
-	a := newAgent(newWriter(input), make(chan agent.Event), nil, agent.Options{
+	a := newAgent(newWriter(input), make(chan agent.Event), make(chan struct{}), nil, agent.Options{
 		Settings:     agent.Settings{Model: "haiku", Effort: "low", PermissionMode: "plan"},
 		OnUpdate:     func(agent.Update) {},
 		OnConfigured: func(s agent.Settings) { adopted = append(adopted, s) },
 	})
+	a.Handle(initialized)
 
 	output(t, a, `{"type":"system","subtype":"status","status":null,"permissionMode":"default"}`)
 	if want := []agent.Settings{{Model: "haiku", Effort: "low", PermissionMode: "manual"}}; !reflect.DeepEqual(adopted, want) {

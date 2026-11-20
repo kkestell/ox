@@ -89,10 +89,7 @@ func (a *Agent) controlTimedOut(requestID string) {
 	if !ok || requestID != c.requestID {
 		return
 	}
-	if err := a.terminate(); err != nil {
-		a.endConfiguration(c.done, c.fail(err))
-		return
-	}
+	a.proc.Terminate()
 	a.phase = timedOut{c.done, c.fail(agent.ErrExited)}
 }
 

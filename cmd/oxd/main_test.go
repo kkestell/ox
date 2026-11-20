@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -259,15 +260,22 @@ exec sleep 60
 		t.Fatal(err)
 	}
 	defer st.Close()
-	checkHistory := func() {
+	checkHistory := func(types ...string) {
 		t.Helper()
 		events, err := st.Events(session)
-		if err != nil || len(events) != 1 || !strings.Contains(string(events[0].Data), `"type":"prompt"`) {
-			t.Fatalf("the live session's history changed: %+v, %v", events, err)
+		var got []string
+		for _, e := range events {
+			var u struct{ Type string }
+			json.Unmarshal(e.Data, &u)
+			got = append(got, u.Type)
+		}
+		if err != nil || !slices.Equal(got, types) {
+			t.Fatalf("the live session's history is %q, not %q: %v", got, types, err)
 		}
 	}
-	checkHistory()
+	checkHistory("prompt")
 
+	// The first stop ends the sessions at once and waits for Claude.
 	oxd.Process.Signal(syscall.SIGINT)
 	select {
 	case <-exited:
@@ -275,7 +283,7 @@ exec sleep 60
 	case <-time.After(time.Second):
 	}
 	refusesSecond()
-	checkHistory()
+	checkHistory("prompt", "exited", "parked")
 	oxd.Process.Signal(syscall.SIGINT)
 	select {
 	case <-exited:

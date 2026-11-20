@@ -28,7 +28,7 @@ cmd/oxd            socket, database, and configuration paths, signals, the harne
 | Package | Owns |
 | --- | --- |
 | `cmd/ox-mcp` | Connecting a harness's MCP client, over stdio, to `oxd`'s socket for one session: attaching, then copying each line between stdin and the socket and the socket and stdout. |
-| `cmd/oxd` | Choosing the socket, database, and configuration, checking the configured harnesses, and holding the socket from before database startup until sessions have stopped. A second stop signal kills all registered Claude processes, including those still initializing, and ends the daemon. |
+| `cmd/oxd` | Choosing the socket, database, and configuration, checking the configured harnesses, and holding the socket from before database startup until sessions have stopped and every Claude process has exited. A second stop signal kills all registered Claude processes, including those still initializing, and ends the daemon. |
 | `paths` | The XDG locations of the configuration, database, and socket, which `cmd/oxd` uses unless a flag overrides them and `cmd/ox` uses for the socket. |
 | `config` | Reading the configuration file, or the built-in default, into each harness's models, efforts, and permission modes and the new-session defaults, and checking settings against them. |
 | `server` | Client and MCP connections, each session's goroutine and the agent it runs, and the mapping from each method to a session operation and its error codes. Each connection writes through its own queue, so sessions never wait on a client. |
@@ -42,8 +42,8 @@ cmd/oxd            socket, database, and configuration paths, signals, the harne
 
 The server loads the stored workspaces and sessions at startup, all parked. A
 session's ID is Ox's own. The session stores the harness's conversation token
-when it receives `OnResumable` and supplies it at later starts. It clears the
-token when `Start` returns `ErrNoConversation`, so the next start begins a new
+when it receives `OnResumable` and supplies it at later starts. An empty
+token from `OnResumable` clears it, so the next start begins a new
 conversation. See the
 [session lifecycle](protocol.md#workspaces-and-sessions) for client behavior.
 
@@ -68,8 +68,8 @@ The session owns the history buffer and writes conversation events to the
 store. See [the snapshot and history contract](protocol.md#sessionget).
 
 The session owns the inbox: messages, with their IDs and attribution, wait
-there until written to the agent. The agent owns a written input, with its
-text and attribution, until it is taken or dropped. One operation starts a
+there until sent to the agent. The agent owns an input it has accepted, with
+its text and attribution, until it is taken or dropped. One operation starts a
 parked session for either input source. After each operation and event,
 `deliver` tries the oldest waiting message; a busy agent leaves it for the
 next try. `send_message` posts to the recipient's goroutine and
@@ -79,21 +79,24 @@ starts nothing. No session goroutine posts to another.
 
 The session arms a park timer whenever its agent is `Parkable` and stops it
 when the agent stops being parkable, so the full period restarts each time. If
-the timer fires, the session stops the agent, which returns once its process
-has exited.
+the timer fires, the session stops the agent, which ends at once while its
+process exits in the background.
 
 ## Agents
 
-An `Agent` runs one harness instance. The session goroutine drives it by
-calling its methods and passing each event from `Events` to `Handle`. The
-agent publishes through `OnUpdate` during those calls, and reports failures no
-call returns, such as a failed write to its process, through `OnError`, which
-the session logs under its ID. `Send` receives the input with its
-session-assigned ID, text, and attribution. The agent publishes the lifecycle
-updates for when it is written, taken, or dropped with that text and
-attribution, and reports the untaken input in `Snapshot`. The agent reports
-settings changes through `OnConfigured`, as they happen, separately from the
-outcome of a `Configure` request. See the [update contract](protocol.md#session-updates).
+An `Agent` runs one harness instance. `Start` returns at once with the agent
+starting, and fails only when the harness cannot be launched; a start that
+fails later ends the agent with its reason. `Stop` ends the agent at once. The
+session goroutine drives it by calling its methods and passing each event from
+`Events` to `Handle`. The agent publishes through `OnUpdate` during those
+calls, and reports failures no call returns, such as a failed write to its
+process, through `OnError`, which the session logs under its ID. `Send`
+receives the input with its session-assigned ID, text, and attribution. The
+agent publishes the lifecycle updates for when it is accepted, taken, or
+dropped with that text and attribution, and reports the untaken input in
+`Snapshot`. The agent reports settings changes through `OnConfigured`, as they
+happen, separately from the outcome of a `Configure` request. See the [update
+contract](protocol.md#session-updates).
 
 Each harness receives Ox's MCP server for its session: the `ox-mcp` beside
 `oxd`, its environment naming the socket and the session, and the tools that
@@ -107,30 +110,36 @@ changed ID is known to be resumable. See Claude's [transcript timing](claude-cod
 On every launch, resumes included, it registers Ox's MCP server as `ox` and
 pre-approves its tools; see Claude's [launch flags](claude-code.md#persistent-session).
 
-A stdout reader drains the pipe into a delivery queue independently of the
-session. The reader's inherited-descriptor cutoff does not limit delivery;
-all captured output arrives before the exit event, which includes the stderr
-tail. The output queue and control-request timers deliver through `Events`.
-The session publishes updates in the order it handles operations and events.
+One stdout reader, from spawn to exit, drains the pipe into a delivery queue
+independently of the session, delivering each JSON line and each other
+nonblank line as plain text. The reader's inherited-descriptor cutoff does
+not limit delivery; all captured output arrives before the exit event, which
+includes the stderr tail. Once the agent has ended, delivery discards the
+rest. The output queue, the startup limit, and control-request timers
+deliver through `Events`. The session publishes updates in the order it
+handles operations and events.
 
 The phase identifies the current operation and holds the fields valid
 only during it:
 
 | Phase | Meaning | Leaves on |
 | --- | --- | --- |
+| `starting` | Claude has not answered `initialize`. It holds at most one input, written once Claude answers, and Claude's last failure output. | The `initialize` response, a refusal, the startup limit, the process's exit, or `Stop`. |
 | `available` | Available for a prompt or configuration. | A prompt or configuration starts. |
 | `prompting` | Client prompts hold the agent. It holds at most one prompt Claude has not taken yet, which `command_lifecycle started` or `cancelled` ends. | Claude reports `idle` with no prompt queued. |
 | `configuring` | Control requests are in flight, one at a time. | The last acknowledgement, a refusal, a write failure, or a timeout. |
 | `timedOut` | A control request went unanswered and Ox asked the process to exit. | The process exits. |
-| `exited` | The Claude process has exited. | — |
+| `exited` | The agent has ended. | — |
 
-Process exit moves any live phase to `exited`. Alongside the phase, the agent
-keeps the execution state it publishes: Claude's reported state, except that a
-prompt is `running` from the moment it is written until Claude reports `idle`
-with no prompt queued. A prompt is written in `available`, or in `prompting`
-while no prompt is queued. Both `available` and `idle` are required
-to take a configuration. An interrupt is sent whenever the state is not
-`idle`, and drops a queued prompt.
+The process's exit, `Stop`, or a failed start moves any live phase to
+`exited`. Alongside the phase, the agent keeps the execution state it
+publishes: Claude's reported state, except that a prompt is `running` from
+the moment it is accepted until Claude reports `idle` with no prompt queued.
+A prompt is held in `starting`, and written in `available`, or in
+`prompting` while no prompt is queued. Both `available` and `idle` are
+required to take a configuration. An interrupt is sent whenever the state is
+not `idle`, and drops a queued prompt; in `starting` it drops the held input
+and sends nothing.
 
 The agent derives `Parkable` from its phase, its state, pending approvals,
 and [Claude's reports of background work](claude-code.md#8-background-work-and-schedules).

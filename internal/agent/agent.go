@@ -10,7 +10,6 @@ var (
 	ErrExited           = errors.New("agent has exited")
 	ErrBusy             = errors.New("agent is busy")
 	ErrApprovalNotFound = errors.New("approval request is no longer pending")
-	ErrNoConversation   = errors.New("the conversation to resume no longer exists")
 )
 
 // Agent runs one harness instance. The session goroutine owns all method
@@ -21,12 +20,13 @@ type Agent interface {
 	Events() <-chan Event
 	Handle(Event)
 	Snapshot() Snapshot
-	// Send writes input's Content with its session-assigned ID. It publishes
-	// prompt_queued after writing, then prompt or prompt_cancelled on uptake
-	// or drop. Each update is built with Input.Update, so it carries the
-	// input's Text, From, and FromLabel. Snapshot().Queued reports the input
-	// from the write until it is taken or dropped. Send returns ErrBusy
-	// during configuration or with an untaken input.
+	// Send writes input's Content with its session-assigned ID, or holds the
+	// input until the harness has started. It publishes prompt_queued once it
+	// accepts the input, then prompt or prompt_cancelled on uptake or drop.
+	// Each update is built with Input.Update, so it carries the input's Text,
+	// From, and FromLabel. Snapshot().Queued reports the input from its
+	// acceptance until it is taken or dropped. Send returns ErrBusy during
+	// configuration or with an untaken input.
 	Send(input Input) error
 	// Approve answers a pending approval, or returns ErrApprovalNotFound.
 	Approve(requestID string, response json.RawMessage) error
@@ -42,12 +42,10 @@ type Agent interface {
 	// Parkable reports that nothing is using the process, so stopping it
 	// loses no work.
 	Parkable() bool
-	// Stop shuts the process down and returns once it has exited and the
-	// agent has published its last update. A process that does not exit when
-	// asked is killed.
-	Stop() error
-	// Exited reports that the process has exited and the agent has
-	// published its last update.
+	// Stop ends the agent at once, publishing its last update, and asks the
+	// process to exit. A process that does not exit when asked is killed.
+	Stop()
+	// Exited reports that the agent has ended and published its last update.
 	Exited() bool
 }
 
@@ -55,6 +53,8 @@ type Agent interface {
 type Event any
 
 // Harness starts an agent and may check user prompts before starting it.
+// Start returns at once with the agent starting, and an error only when the
+// harness cannot be launched; a start that fails later ends the agent.
 type Harness struct {
 	Start       func(Options) (Agent, error)
 	CheckPrompt func(string) error // nil means the harness accepts all prompts
@@ -64,14 +64,15 @@ type Options struct {
 	SessionID string // the session's ID, which the harness's own log lines name
 	Workspace string
 	// Resume is the harness's token for the conversation to continue; empty
-	// starts a new one. Start returns ErrNoConversation when the harness has
-	// no conversation for it.
+	// starts a new one.
 	Resume   string
 	Settings Settings
 	MCP      MCPServer
 	OnUpdate func(Update)
 	// OnResumable receives the token when a newly observed conversation is
-	// saved and can be resumed, including when the conversation changes.
+	// saved and can be resumed, including when the conversation changes, and
+	// an empty token when the harness no longer has the conversation to
+	// resume.
 	OnResumable func(token string)
 	// OnConfigured receives every settings change the harness makes, whether
 	// it makes the change itself or acknowledges a Configure control.

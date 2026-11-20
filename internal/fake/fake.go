@@ -239,7 +239,7 @@ func (a *Agent) Parkable() bool {
 	return a.idle()
 }
 
-func (a *Agent) Stop() error {
+func (a *Agent) Stop() {
 	a.withdraw()
 	a.drop()
 	if a.prompt != "" {
@@ -252,7 +252,6 @@ func (a *Agent) Stop() error {
 	}
 	a.exited = true
 	close(a.done)
-	return nil
 }
 
 func (a *Agent) Exited() bool {

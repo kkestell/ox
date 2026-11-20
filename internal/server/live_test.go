@@ -1,8 +1,8 @@
 package server
 
 import (
+	"crypto/rand"
 	"encoding/json"
-	"errors"
 	"net"
 	"os"
 	"os/exec"
@@ -15,6 +15,7 @@ import (
 	"github.com/kkestell/ox/internal/agent"
 	"github.com/kkestell/ox/internal/claude"
 	"github.com/kkestell/ox/internal/config"
+	"github.com/kkestell/ox/internal/store"
 )
 
 const haiku = "claude-haiku-5-5"
@@ -34,6 +35,17 @@ func TestLive(t *testing.T) {
 	cfg.Harnesses["claude"] = h
 	st := openStore(t)
 	dir := t.TempDir()
+	// A stored session whose conversation Claude does not have.
+	const lost = "lost-session"
+	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: dir, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSession("w", &store.Session{
+		ID: lost, Harness: "claude", Model: haiku, Effort: "low", PermissionMode: "manual",
+		ResumeToken: "00000000-0000-4000-8000-000000000000", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	// t.TempDir is too long for a socket path on macOS.
 	bin, err := os.MkdirTemp("", "oxlive")
 	if err != nil {
@@ -141,28 +153,6 @@ func TestLive(t *testing.T) {
 		return false
 	}
 
-	t.Log("a failed start reports Claude's reason")
-	missing := "00000000-0000-4000-8000-000000000000"
-	_, err = claude.Start(agent.Options{
-		Workspace: dir, Resume: missing, Settings: agent.Settings{Model: haiku, Effort: "low", PermissionMode: "manual"},
-		MCP: agent.MCPServer{
-			Command: mcp.Forwarder, Env: map[string]string{"OX_SOCKET": mcp.Socket, "OX_SESSION_ID": missing},
-			Approved: approvedTools,
-		},
-		OnUpdate: func(agent.Update) {}, OnError: func(error) {},
-	})
-	if err == nil || !strings.Contains(err.Error(), missing) {
-		t.Errorf("resuming a missing conversation failed without Claude's reason: %v", err)
-	} else if !errors.Is(err, agent.ErrNoConversation) {
-		t.Errorf("resuming a missing conversation was not recognized as one: %v", err)
-	}
-	r := c.request("session/send", map[string]string{"session_id": create("acceptEdit"), "text": "Reply with just the word ok."})
-	if r.Error == nil || !strings.Contains(r.Error.Message, "'acceptEdit' is invalid") {
-		t.Errorf("a start Claude refused on stderr failed without its reason: %+v", r.Error)
-	} else {
-		t.Logf("session/send: %s", r.Error.Message)
-	}
-
 	resumeToken := func(id string) string {
 		t.Helper()
 		workspaces, err := st.Workspaces()
@@ -178,6 +168,95 @@ func TestLive(t *testing.T) {
 		}
 		t.Fatalf("session %s not found in the database", id)
 		return ""
+	}
+
+	t.Log("a failed start reports Claude's reason")
+	var lostSend struct {
+		MessageID string `json:"message_id"`
+	}
+	json.Unmarshal(c.call("session/send", map[string]string{"session_id": lost, "text": "Reply with just the word ok."}), &lostSend)
+	if u := c.update(lost, "prompt_cancelled"); u.MessageID != lostSend.MessageID {
+		t.Errorf("resuming a missing conversation did not drop the prompt: %+v", u)
+	}
+	if u := c.update(lost, "exited"); !strings.Contains(u.Error, "could not resume the earlier conversation") {
+		t.Errorf("resuming a missing conversation did not say so: %+v", u)
+	}
+	c.update(lost, "parked")
+	if token := resumeToken(lost); token != "" {
+		t.Errorf("the missing conversation's token was kept: %q", token)
+	}
+	misspelled := create("acceptEdit")
+	c.call("session/send", map[string]string{"session_id": misspelled, "text": "Reply with just the word ok."})
+	if u := c.update(misspelled, "exited"); !strings.Contains(u.Error, "'acceptEdit' is invalid") {
+		t.Errorf("a start Claude refused on stderr failed without its reason: %+v", u)
+	} else {
+		t.Logf("exited: %s", u.Error)
+	}
+
+	t.Log("a conversation resumes at once after its process is stopped")
+	var direct []agent.Update
+	var conversation string
+	options := agent.Options{
+		Workspace: dir, Settings: agent.Settings{Model: haiku, Effort: "low", PermissionMode: "manual"},
+		MCP: agent.MCPServer{
+			Command: mcp.Forwarder, Env: map[string]string{"OX_SOCKET": mcp.Socket, "OX_SESSION_ID": "direct"},
+			Approved: approvedTools,
+		},
+		OnUpdate:     func(u agent.Update) { direct = append(direct, u) },
+		OnResumable:  func(token string) { conversation = token },
+		OnConfigured: func(agent.Settings) {},
+		OnError:      func(err error) { t.Log(err) },
+	}
+	// ask sends text to a and handles its events until Claude is idle, and
+	// returns the turn's result.
+	ask := func(a agent.Agent, text string) string {
+		t.Helper()
+		id := rand.Text()
+		if err := a.Send(agent.Input{MessageID: id, Text: text, Content: text}); err != nil {
+			t.Fatal(err)
+		}
+		timeout := time.After(3 * time.Minute)
+		var reply string
+		for seen := len(direct); ; {
+			select {
+			case e := <-a.Events():
+				a.Handle(e)
+			case <-timeout:
+				t.Fatal("Claude did not finish the turn")
+			}
+			for ; seen < len(direct); seen++ {
+				switch u := direct[seen]; {
+				case u.Type == agent.UpdateResult:
+					reply = u.Result.Text
+				case u.Type == agent.UpdateExited:
+					t.Fatalf("Claude exited: %s", u.Error)
+				case u.Type == agent.UpdateState && u.State == agent.StateIdle && u.MessageID == id:
+					return reply
+				}
+			}
+		}
+	}
+	first, err := claude.Start(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ask(first, "Remember the word heliotrope. Reply with just ok.")
+	if conversation == "" {
+		t.Fatal("the conversation was not resumable")
+	}
+	first.Stop()
+	exiting := exec.Command("pgrep", "-f", "session-id="+conversation).Run() == nil
+	options.Resume = conversation
+	second, err := claude.Start(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply := ask(second, "What word did I ask you to remember? Reply with just the word."); !strings.Contains(strings.ToLower(reply), "heliotrope") {
+		t.Errorf("the resumed conversation answered %q", reply)
+	}
+	second.Stop()
+	if !exiting {
+		t.Errorf("the stopped process had exited before the next one started")
 	}
 
 	t.Log("the first approval can be pending when the daemon restarts")

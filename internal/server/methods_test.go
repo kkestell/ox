@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -436,34 +439,157 @@ while [ ! -e '` + exit + `' ]; do sleep .02; done
 	checkSettings(nextConfigured(), afterExit)
 	c.update(id, "parked")
 	checkSettings(c.call("session/get", map[string]string{"session_id": id}), afterExit)
+	c.forget(id)
 	c.call("session/send", map[string]string{"session_id": id, "text": "again"})
+	c.update(id, "prompt")
 	if lines := starts(t, args); len(lines) != 2 || !strings.Contains(lines[1], "--model=new --permission-mode=manual --effort=high") {
 		t.Fatalf("the next process did not use the current settings: %q", lines)
 	}
 }
 
+// lostNotice is the wording of the notice that Claude could not resume the
+// conversation.
+const lostNotice = "could not resume the earlier conversation"
+
+// lost checks that the send that found the conversation gone succeeded, and
+// that the prompt was then dropped with the lost notice and the session
+// parked.
+func lost(t *testing.T, c *client, sent message) {
+	t.Helper()
+	if sent.Error != nil {
+		t.Fatalf("the send failed: %+v", sent.Error)
+	}
+	var reply struct {
+		MessageID string `json:"message_id"`
+	}
+	json.Unmarshal(sent.Result, &reply)
+	if cancelled := c.update("s", "prompt_cancelled"); cancelled.MessageID != reply.MessageID || cancelled.Text != "hi" {
+		t.Fatalf("the prompt was not dropped: %+v", cancelled)
+	}
+	if notice := c.update("s", "exited"); notice.MessageID != reply.MessageID || !strings.Contains(notice.Error, lostNotice) {
+		t.Fatalf("the transcript has no notice: %+v", notice)
+	}
+	c.update("s", "parked")
+}
+
+// One session starting or stopping Claude holds up no request to another: a
+// send replies before Claude has answered initialize, and a destroy replies
+// while Claude, ignoring SIGTERM, is still running.
+func TestStartAndStopHoldUpNoOtherSession(t *testing.T) {
+	dir := t.TempDir()
+	gate, pidFile := filepath.Join(dir, "gate"), filepath.Join(dir, "pid")
+	// A stand-in for Claude that ignores SIGTERM and answers initialize only
+	// once the gate exists.
+	script := "#!/bin/sh\ntrap '' TERM\necho $$ > " + pidFile + "\nread line\n" +
+		"while [ ! -e " + gate + " ]; do sleep .02; done\n" +
+		`echo '{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}'` + "\n" +
+		takePrompt +
+		"exec cat >/dev/null\n"
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	st := openStore(t)
+	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: dir, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"session-a", "session-b"} {
+		if err := st.AddSession("w", &store.Session{ID: id, Harness: "claude", Model: "m", PermissionMode: "manual", CreatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := New(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	pid := func() int {
+		data, err := os.ReadFile(pidFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pid
+	}
+	t.Cleanup(func() {
+		if data, err := os.ReadFile(pidFile); err == nil {
+			exec.Command("kill", "-9", strings.TrimSpace(string(data))).Run()
+		}
+	})
+	c := connect(t, s)
+	fromA := attach(t, s, "session-a")
+	// stateOfB is B's state as A's list_sessions reports it, or empty when it
+	// is not listed.
+	stateOfB := func() string {
+		t.Helper()
+		text, refused := fromA.tool("list_sessions", map[string]any{})
+		var sessions []struct {
+			SessionID string `json:"session_id"`
+			State     string `json:"state"`
+		}
+		if err := json.Unmarshal([]byte(text), &sessions); refused || err != nil {
+			t.Fatalf("list_sessions returned %q", text)
+		}
+		for _, l := range sessions {
+			if l.SessionID == "session-b" {
+				return l.State
+			}
+		}
+		return ""
+	}
+
+	var sent struct {
+		MessageID string `json:"message_id"`
+	}
+	json.Unmarshal(c.call("session/send", map[string]string{"session_id": "session-b", "text": "hi"}), &sent)
+	var got struct {
+		State  string        `json:"state"`
+		Queued []agent.Input `json:"queued"`
+	}
+	json.Unmarshal(c.call("session/get", map[string]string{"session_id": "session-b"}), &got)
+	if got.State != "running" || len(got.Queued) != 1 || got.Queued[0].MessageID != sent.MessageID {
+		t.Fatalf("a starting session does not show its prompt pending: %+v", got)
+	}
+	if state := stateOfB(); state != "running" {
+		t.Fatalf("list_sessions listed the starting session as %q", state)
+	}
+
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if taken := c.update("session-b", "prompt"); taken.MessageID != sent.MessageID {
+		t.Fatalf("the prompt held while Claude started was not taken: %+v", taken)
+	}
+
+	c.call("session/destroy", map[string]string{"session_id": "session-b"})
+	if state := stateOfB(); state != "" {
+		t.Fatalf("the destroyed session is listed as %q", state)
+	}
+	if err := syscall.Kill(pid(), 0); err != nil {
+		t.Fatalf("Claude exited before the destroy and list_sessions answered: %v", err)
+	}
+}
+
 // A resume token whose conversation Claude no longer has, such as one whose
-// transcript Claude deleted, fails one send with a notice in the transcript;
-// the next send starts a new conversation.
+// transcript Claude deleted, drops one prompt with a notice in the
+// transcript; the next send starts a new conversation.
 func TestUnresumableConversationStartsAnew(t *testing.T) {
 	st, _, c, args := unresumableSession(t)
 
-	failed := c.request("session/send", map[string]string{"session_id": "s", "text": "hi"})
-	if failed.Error == nil || failed.Error.Message != lostConversation {
-		t.Fatalf("a send that found the conversation gone did not say so: %+v", failed.Error)
-	}
-	if notice := c.update("s", "exited"); notice.Error != lostConversation {
-		t.Fatalf("the transcript has no notice: %+v", notice)
-	}
+	lost(t, c, c.request("session/send", map[string]string{"session_id": "s", "text": "hi"}))
 	var got struct {
 		History []agent.Update `json:"history"`
 	}
 	json.Unmarshal(c.call("session/get", map[string]string{"session_id": "s"}), &got)
-	if len(got.History) != 1 || got.History[0].Error != lostConversation {
+	if len(got.History) != 2 || !strings.Contains(got.History[0].Error, lostNotice) || got.History[1].Type != "parked" {
 		t.Fatalf("the notice was not recorded: %+v", got.History)
 	}
 
 	c.call("session/send", map[string]string{"session_id": "s", "text": "hi"})
+	c.update("s", "prompt")
 	if lines := starts(t, args); len(lines) != 2 || strings.Contains(lines[1], "--resume") || !strings.Contains(lines[1], "--session-id=") {
 		t.Fatalf("the next send did not start a new conversation: %q", lines)
 	}
@@ -478,13 +604,9 @@ func TestUnresumableConversationStartsAnew(t *testing.T) {
 func TestUnresumableConversationForgottenWhenNotStored(t *testing.T) {
 	st, _, c, args := unresumableSession(t)
 	st.Close()
-	if failed := c.request("session/send", map[string]string{"session_id": "s", "text": "hi"}); failed.Error == nil || failed.Error.Message != lostConversation {
-		t.Fatalf("a send that found the conversation gone did not say so: %+v", failed.Error)
-	}
-	if notice := c.update("s", "exited"); notice.Error != lostConversation {
-		t.Fatalf("the transcript has no notice: %+v", notice)
-	}
+	lost(t, c, c.request("session/send", map[string]string{"session_id": "s", "text": "hi"}))
 	c.call("session/send", map[string]string{"session_id": "s", "text": "hi"})
+	c.update("s", "prompt")
 	if lines := starts(t, args); len(lines) != 2 || strings.Contains(lines[1], "--resume") {
 		t.Fatalf("the next send did not start a new conversation: %q", lines)
 	}
@@ -500,18 +622,27 @@ func TestMessageToUnresumableConversationLeavesOneNotice(t *testing.T) {
 	if u := c.update("s", "prompt_cancelled"); u.MessageID != queued.MessageID {
 		t.Fatalf("the message was not cancelled: %+v", u)
 	}
+	c.update("s", "parked")
 	var got struct {
 		Queued  []agent.Input  `json:"queued"`
 		History []agent.Update `json:"history"`
 	}
 	json.Unmarshal(c.call("session/get", map[string]string{"session_id": "s"}), &got)
-	if len(got.Queued) != 0 || len(got.History) != 1 || got.History[0].Type != "exited" || got.History[0].Error != lostConversation {
+	if len(got.Queued) != 0 || len(got.History) != 2 || got.History[0].Type != "exited" || !strings.Contains(got.History[0].Error, lostNotice) ||
+		got.History[1].Type != "parked" {
 		t.Fatalf("a failed resume for a message left extra notices or pending messages: %+v", got)
 	}
 	if lines := starts(t, args); len(lines) != 1 {
 		t.Fatalf("the process start was retried: %q", lines)
 	}
 }
+
+// takePrompt is a step of a stand-in claude script: it reads a prompt and
+// takes it, as Claude reports with command_lifecycle.
+const takePrompt = `read prompt
+uuid=${prompt##*'"uuid":"'}; uuid=${uuid%%'"'*}
+printf '{"type":"command_lifecycle","state":"started","command_uuid":"%s"}\n' "$uuid"
+`
 
 // logStarts is the head of a stand-in claude script: it appends each start's
 // arguments to the file args as one line, which starts reads.
@@ -542,6 +673,7 @@ func unresumableSession(t *testing.T) (*store.Store, *Server, *client, string) {
 		`case "$*" in *--resume=*) echo '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["No conversation found with session ID: gone"]}'; exit 1;; esac` + "\n" +
 		"read line\n" +
 		`echo '{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}'` + "\n" +
+		takePrompt +
 		"exec cat >/dev/null\n"
 	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -600,7 +732,9 @@ func TestResumeTokenKeptWhenNotStored(t *testing.T) {
 	c.call("session/send", map[string]string{"session_id": "s", "text": "hi"})
 	c.update("s", "exited")
 	c.update("s", "parked")
+	c.forget("s")
 	c.call("session/send", map[string]string{"session_id": "s", "text": "again"})
+	c.update("s", "result")
 	lines := starts(t, args)
 	if len(lines) != 2 || !strings.Contains(lines[1], "--resume=") {
 		t.Fatalf("the next process did not resume the conversation: %q", lines)

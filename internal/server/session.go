@@ -71,9 +71,7 @@ func (sess *session) run() {
 			}
 		case <-park:
 			sess.parkTimer = nil
-			if err := sess.stop(); err != nil {
-				log.Printf("park session %s: %v", sess.id, err)
-			}
+			sess.stop()
 		}
 		sess.deliver()
 		sess.armPark()
@@ -112,8 +110,8 @@ func (sess *session) snapshot() agent.Snapshot {
 	return sess.agent.Snapshot()
 }
 
-// queued lists the inputs the agent has not taken: the one written to the
-// harness, then the inbox, oldest first.
+// queued lists the inputs the agent has not taken: the one the agent holds
+// or has written, then the inbox, oldest first.
 func (sess *session) queued() []agent.Input {
 	queued := make([]agent.Input, 0, len(sess.inbox)+1)
 	if written := sess.snapshot().Queued; written != nil {
@@ -194,23 +192,16 @@ func (sess *session) armPark() {
 }
 
 // startForInput starts a parked session for either source of input and owns
-// the effects of a failed start. A user send also receives the start error.
+// the effects of a harness that cannot be launched. A user send also
+// receives the error. A start that fails later ends the agent, which drops
+// its input and reports why.
 func (sess *session) startForInput() error {
 	if sess.agent != nil {
 		return nil
 	}
 	err := sess.start()
-	if err == nil {
-		return nil
-	}
-	hadMessages := len(sess.inbox) > 0
-	sess.cancelInbox()
-	switch {
-	case errors.Is(err, agent.ErrNoConversation):
-		sess.forgetConversation(err)
-		err = errors.New(lostConversation)
-		sess.update(agent.Update{Type: agent.UpdateExited, Error: err.Error(), Time: time.Now()})
-	case hadMessages:
+	if err != nil && len(sess.inbox) > 0 {
+		sess.cancelInbox()
 		sess.update(agent.Update{Type: agent.UpdateExited, Error: "messages not delivered: " + err.Error(), Time: time.Now()})
 	}
 	return err
@@ -243,16 +234,14 @@ func (sess *session) start() error {
 	return nil
 }
 
-func (sess *session) stop() error {
-	if err := sess.agent.Stop(); err != nil {
-		return err
-	}
+// stop ends the agent at once; its process exits in the background.
+func (sess *session) stop() {
+	sess.agent.Stop()
 	sess.parked()
-	return nil
 }
 
-// parked drops the agent whose process has exited, with the messages waiting
-// for it, and tells every client.
+// parked drops the agent that has ended, with the messages waiting for it,
+// and tells every client.
 func (sess *session) parked() {
 	sess.agent = nil
 	sess.cancelInbox()
@@ -261,9 +250,7 @@ func (sess *session) parked() {
 
 func (sess *session) end() {
 	if sess.agent != nil {
-		if err := sess.stop(); err != nil {
-			log.Printf("stop session %s: %v", sess.id, err)
-		}
+		sess.stop()
 	}
 	sess.ended = true
 }
@@ -299,26 +286,12 @@ func (sess *session) adopt(settings agent.Settings) {
 }
 
 // markResumable keeps the token even when storing it fails, as adopt keeps
-// settings: Claude has already started the conversation.
+// settings: Claude has already started the conversation. An empty token,
+// for a conversation the harness no longer has, is kept the same way, since
+// resuming it can only fail again.
 func (sess *session) markResumable(token string) {
 	sess.resumeToken = token
 	if err := sess.save(sess.settings, token); err != nil {
 		log.Printf("mark session %s resumable: %v", sess.id, err)
-	}
-}
-
-// lostConversation tells the user that the next prompt starts a new
-// conversation. The send that found the conversation gone fails with it, so
-// the user decides whether to send the prompt without the earlier context.
-const lostConversation = "Claude could not resume the earlier conversation; the next prompt starts a new one without its context"
-
-// forgetConversation clears a resume token the harness can no longer resume,
-// such as one whose transcript Claude has deleted. The session forgets the
-// token even when storing that fails, since resuming it can only fail again.
-func (sess *session) forgetConversation(cause error) {
-	log.Printf("session %s: %v", sess.id, cause)
-	sess.resumeToken = ""
-	if err := sess.save(sess.settings, ""); err != nil {
-		log.Printf("session %s: forget conversation: %v", sess.id, err)
 	}
 }

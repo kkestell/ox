@@ -1,6 +1,8 @@
 package claude
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -16,6 +18,14 @@ type phase interface{ isPhase() }
 
 type available struct{}
 type exited struct{}
+
+// starting holds the agent from spawn until Claude answers initialize, the
+// start fails, or Ox stops the agent.
+type starting struct {
+	input          *agent.Input // the one input accepted while starting, or nil
+	reason         string       // Claude's last failure output: a failed result or a plain-text line
+	noConversation bool         // reason is Claude's report that the conversation to resume is gone
+}
 
 // prompting holds the agent from the first client input written until Claude
 // reports idle with none queued.
@@ -42,6 +52,7 @@ type timedOut struct {
 
 func (available) isPhase()    {}
 func (exited) isPhase()       {}
+func (*starting) isPhase()    {}
 func (*prompting) isPhase()   {}
 func (*configuring) isPhase() {}
 func (timedOut) isPhase()     {}
@@ -50,11 +61,11 @@ type Agent struct {
 	proc   *process
 	input  *writer
 	events chan agent.Event
-	done   chan struct{} // closed on exit, so late timers deliver nothing
+	done   chan struct{} // closed when the agent ends, so late timers and output deliver nothing
 
 	phase phase
 	// state is the execution state clients see: Claude's report, except that
-	// a prompt is running from the moment it is written.
+	// a prompt is running from the moment it is accepted.
 	state            string
 	approvals        []agent.Approval // pending, in arrival order
 	settings         agent.Settings   // the settings the process is using
@@ -65,7 +76,6 @@ type Agent struct {
 	conversationID   string // most recently reported on stdout
 	resumable        string // token last passed to OnResumable, or supplied at startup
 	streamedText     bool   // the current turn published a text delta
-	stopping         bool   // Ox asked the process to exit
 	background       int    // Claude's live background tasks
 	mayHaveSchedules bool   // true until Stop reports an empty schedule list
 }
@@ -77,25 +87,46 @@ type processExit struct {
 
 type controlTimeout struct{ requestID string }
 
+// startupTimeout fires when Claude has had startupLimit to answer initialize.
+type startupTimeout struct{}
+
+// initializeRequest is Claude's handshake. It declares Stop to receive
+// pending schedules at the end of each completed turn.
+const initializeRequest = `{"subtype":"initialize","hooks":{"Stop":[{"hookCallbackIds":["stop"]}]}}`
+
+// lostConversation tells the user that the next prompt starts a new
+// conversation. The prompt that found the conversation gone is dropped, so
+// the user decides whether to send it without the earlier context.
+const lostConversation = "Claude could not resume the earlier conversation; the next prompt starts a new one without its context"
+
+// Start launches Claude and returns the agent starting, before Claude has
+// answered initialize.
 func Start(options agent.Options) (agent.Agent, error) {
 	sessionID, resume := options.Resume, options.Resume != ""
 	if !resume {
 		sessionID = newUUID()
 	}
-	events := make(chan agent.Event)
-	proc, input, err := startProcess(options.Workspace, options.SessionID, sessionID, resume, options.Settings, options.MCP, events)
+	events, done := make(chan agent.Event), make(chan struct{})
+	proc, input, err := startProcess(options.Workspace, options.SessionID, sessionID, resume, options.Settings, options.MCP, events, done)
 	if err != nil {
 		return nil, err
 	}
-	return newAgent(input, events, proc, options), nil
+	a := newAgent(input, events, done, proc, options)
+	// A failed write means Claude has exited or is exiting; its exit ends
+	// the start.
+	if err := input.Control("initialize", json.RawMessage(initializeRequest)); err != nil {
+		a.onError(fmt.Errorf("initialize Claude: %w", err))
+	}
+	a.after(startupLimit, startupTimeout{})
+	return a, nil
 }
 
-// newAgent runs the process proc, whose output arrives on events and whose
-// input is input.
-func newAgent(input *writer, events chan agent.Event, proc *process, options agent.Options) *Agent {
+// newAgent runs the process proc, starting, whose output arrives on events
+// until done is closed and whose input is input.
+func newAgent(input *writer, events chan agent.Event, done chan struct{}, proc *process, options agent.Options) *Agent {
 	return &Agent{
-		proc: proc, input: input, events: events, done: make(chan struct{}),
-		phase: available{}, state: agent.StateIdle,
+		proc: proc, input: input, events: events, done: done,
+		phase: &starting{}, state: agent.StateIdle,
 		settings: options.Settings, onUpdate: options.OnUpdate, onConfigured: options.OnConfigured, onError: options.OnError,
 		onResumable: options.OnResumable, resumable: options.Resume, mayHaveSchedules: options.Resume != "",
 	}
@@ -109,10 +140,18 @@ func (a *Agent) Handle(event agent.Event) {
 	switch e := event.(type) {
 	case message:
 		a.handleOutput(e)
+	case plainText:
+		if s, ok := a.phase.(*starting); ok {
+			s.reason, s.noConversation = string(e), false
+		}
 	case processExit:
 		a.exit(e)
 	case controlTimeout:
 		a.controlTimedOut(e.requestID)
+	case startupTimeout:
+		if s, ok := a.phase.(*starting); ok {
+			a.giveUp(s, "no startup response within one minute")
+		}
 	}
 }
 
@@ -126,6 +165,9 @@ func (a *Agent) after(d time.Duration, event agent.Event) {
 }
 
 func (a *Agent) handleOutput(m message) {
+	if s, ok := a.phase.(*starting); ok && a.startupOutput(s, m) {
+		return
+	}
 	if m.SessionID != "" {
 		a.conversationID = m.SessionID
 	}
@@ -244,22 +286,125 @@ func (a *Agent) Snapshot() agent.Snapshot {
 	return agent.Snapshot{State: a.state, Approvals: append([]agent.Approval{}, a.approvals...), Queued: a.queued()}
 }
 
+// startupOutput handles the output that ends or explains a start, and
+// reports whether it did. Claude can fail at startup with an error result or
+// plain text and exit, sometimes before it reads initialize, and can report
+// a missing conversation before answering initialize.
+func (a *Agent) startupOutput(s *starting, m message) bool {
+	switch {
+	case m.Type == "result" && m.failed():
+		s.reason = m.errorText()
+		s.noConversation = m.Subtype == "error_during_execution" && len(m.Errors) > 0 &&
+			strings.HasPrefix(m.Errors[0], "No conversation found with session ID")
+	case m.Type == "control_response" && m.Response.RequestID == "initialize":
+		switch {
+		case m.Response.Subtype != "success":
+			a.giveUp(s, fmt.Sprintf("Claude refused initialization (%s): %s", m.Response.Subtype, m.Response.Error))
+		case s.noConversation:
+			a.giveUp(s, s.reason)
+		default:
+			a.started(s)
+		}
+	default:
+		return false
+	}
+	return true
+}
+
+// started makes the agent available once Claude has answered initialize,
+// and writes the input held while it started.
+func (a *Agent) started(s *starting) {
+	a.phase = available{}
+	if s.input == nil {
+		a.setState(agent.StateIdle)
+		return
+	}
+	if err := a.write(*s.input); err != nil {
+		a.publish(s.input.Update(agent.UpdatePromptCancelled))
+		a.setState(agent.StateIdle)
+		a.onError(err)
+	}
+}
+
+// giveUp asks the process to exit and ends a start that failed with reason.
+func (a *Agent) giveUp(s *starting, reason string) {
+	a.proc.Terminate()
+	a.startFailed(s, reason)
+}
+
+// startFailed ends the start s with reason, or with the lost conversation
+// notice when Claude reported that the conversation to resume is gone.
+func (a *Agent) startFailed(s *starting, reason string) {
+	if s.noConversation {
+		a.onError(fmt.Errorf("resume conversation: %s", s.reason))
+		if a.onResumable != nil {
+			a.onResumable("")
+		}
+		reason = lostConversation
+	}
+	a.end(reason)
+}
+
 func (a *Agent) exit(exit processExit) {
-	reason := "Claude exited"
-	if exit.err != nil {
-		reason += ": " + exit.err.Error()
-	}
-	if exit.stderr != "" {
-		reason += "\n" + exit.stderr
-	}
-	reported := false
 	switch p := a.phase.(type) {
+	case *starting:
+		reason := p.reason
+		if reason == "" {
+			reason = exit.stderr
+		}
+		if reason == "" {
+			reason = exitReason(exit)
+		}
+		a.startFailed(p, reason)
+	case timedOut:
+		// Ox asked the process to exit.
+		a.end("")
+	default:
+		// Claude exits on its own only when something has gone wrong, which
+		// can cut short a turn it started itself.
+		reason := exitReason(exit)
+		if exit.stderr != "" {
+			reason += "\n" + exit.stderr
+		}
+		a.end(reason)
+	}
+}
+
+func exitReason(exit processExit) string {
+	if exit.err != nil {
+		return "Claude exited: " + exit.err.Error()
+	}
+	return "Claude exited"
+}
+
+// Stop asks Claude to exit and ends the agent at once. The process exits,
+// or is killed, in the background.
+func (a *Agent) Stop() {
+	a.proc.Terminate()
+	reason := ""
+	if _, prompting := a.phase.(*prompting); prompting {
+		reason = "Claude was stopped"
+	}
+	a.end(reason)
+}
+
+// end ends the agent, for its process's exit, Stop, or a start Ox gave up
+// on. It drops the input Claude has not taken, withdraws approvals, and ends
+// a configuration. A nonempty reason is published as exited, naming the
+// latest input of an active prompt or failed start.
+func (a *Agent) end(reason string) {
+	final := agent.Update{Type: agent.UpdateExited, Error: reason}
+	switch p := a.phase.(type) {
+	case *starting:
+		if p.input != nil {
+			a.publish(p.input.Update(agent.UpdatePromptCancelled))
+			final.MessageID = p.input.MessageID
+		}
 	case *prompting:
 		if p.queued {
 			a.dropQueued(p)
 		}
-		a.endPrompt(p, agent.Update{Type: agent.UpdateExited, Error: reason})
-		reported = true
+		final.MessageID = p.input.MessageID
 	case *configuring:
 		a.endConfiguration(p.done, p.fail(agent.ErrExited))
 	case timedOut:
@@ -268,30 +413,11 @@ func (a *Agent) exit(exit processExit) {
 		// No operation holds the agent.
 	}
 	a.withdrawApprovals()
-	// Claude exits on its own only when something has gone wrong, which can
-	// cut short a turn it started itself.
-	if !reported && !a.stopping {
-		a.publish(agent.Update{Type: agent.UpdateExited, Error: reason})
+	if reason != "" {
+		a.publish(final)
 	}
 	a.phase = exited{}
 	close(a.done)
-}
-
-// Stop asks Claude to exit and handles its events until it has.
-func (a *Agent) Stop() error {
-	if err := a.terminate(); err != nil {
-		return err
-	}
-	for !a.Exited() {
-		a.Handle(<-a.events)
-	}
-	return nil
-}
-
-// terminate asks Claude to exit; its exit event completes the shutdown.
-func (a *Agent) terminate() error {
-	a.stopping = true
-	return a.proc.Terminate()
 }
 
 func (a *Agent) Exited() bool {

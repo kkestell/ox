@@ -1,7 +1,6 @@
 package claude
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"io"
@@ -19,35 +18,170 @@ import (
 	"github.com/kkestell/ox/internal/agent"
 )
 
+// startLog records what a starting agent reports.
+type startLog struct {
+	updates recorder
+	errors  []error
+	tokens  []string // each token passed to OnResumable
+}
+
+func (l *startLog) options() agent.Options {
+	return agent.Options{
+		OnUpdate: l.updates.record, OnConfigured: func(agent.Settings) {},
+		OnError:     func(err error) { l.errors = append(l.errors, err) },
+		OnResumable: func(token string) { l.tokens = append(l.tokens, token) },
+	}
+}
+
+// failingStart returns a starting agent holding a prompt, with its ID and
+// what the agent reports after the prompt's acceptance. Its process waits to
+// be stopped and delivers its exit on the returned events.
+func failingStart(t *testing.T) (*Agent, string, *startLog, chan agent.Event) {
+	t.Helper()
+	cmd := exec.Command("sleep", "60")
+	if err := spawn(cmd); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cmd.Process.Kill() })
+	events := make(chan agent.Event, 1)
+	go func() { events <- processExit{err: wait(cmd)} }()
+	log := new(startLog)
+	a := newAgent(newWriter(io.Discard), make(chan agent.Event), make(chan struct{}), &process{cmd: cmd}, log.options())
+	id, err := sendTestPrompt(a, "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.updates = nil
+	return a, id, log, events
+}
+
+// dropped checks that the start ended, dropping the prompt id and reporting
+// reason in an exited update that names it.
+func (l *startLog) dropped(t *testing.T, a agent.Agent, id, reason string) {
+	t.Helper()
+	u := l.updates
+	if !a.Exited() || len(u) != 2 || u[0].Type != "prompt_cancelled" || u[0].MessageID != id ||
+		u[1].Type != "exited" || u[1].MessageID != id || u[1].Error != reason {
+		t.Fatalf("the start did not drop the prompt and report %q: %+v", reason, u)
+	}
+}
+
+// handleUntilEnded handles a's events until it ends.
+func handleUntilEnded(t *testing.T, a agent.Agent, within time.Duration) {
+	t.Helper()
+	timeout := time.After(within)
+	for !a.Exited() {
+		select {
+		case e := <-a.Events():
+			a.Handle(e)
+		case <-timeout:
+			t.Fatalf("the start did not end within %v", within)
+		}
+	}
+}
+
 // Claude reports a startup failure as an error result or plain text before
-// it exits, sometimes before reading initialize.
+// it exits, sometimes before reading initialize, or refuses initialize. The
+// prompt that started it is dropped with Claude's reason. When Claude no
+// longer has the conversation to resume, the reason is the lost
+// conversation, and the agent gives up the conversation.
 func TestStartupFailureKeepsClaudesReason(t *testing.T) {
-	for name, output := range map[string]string{
-		"error result": `{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["No conversation found with session ID: 1111"]}` + "\n",
-		"error result before initialize response": `{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["No conversation found with session ID: 1111"]}` + "\n" +
-			`{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}` + "\n",
-		"plain text":  "No conversation found with session ID: 1111\n",
-		"line at EOF": "No conversation found with session ID: 1111",
+	const missing = "No conversation found with session ID: 1111"
+	gone := message{Type: "result", Subtype: "error_during_execution", IsError: true, Errors: []string{missing}}
+	exit := processExit{err: errors.New("exit status 1")}
+	for name, c := range map[string]struct {
+		output []agent.Event
+		reason string
+	}{
+		"error result": {[]agent.Event{gone, exit}, lostConversation},
+		"error result before initialize response": {[]agent.Event{gone, initialized}, lostConversation},
+		"other error result": {[]agent.Event{
+			message{Type: "result", Subtype: "error_during_execution", IsError: true, Errors: []string{"API Error: Connection refused"}}, exit,
+		}, "API Error: Connection refused"},
+		"plain text":                    {[]agent.Event{plainText(missing), exit}, missing},
+		"plain text after error result": {[]agent.Event{gone, plainText("Not logged in"), exit}, "Not logged in"},
+		"stderr":                        {[]agent.Event{processExit{err: exit.err, stderr: "error: bad option"}}, "error: bad option"},
+		"no reason":                     {[]agent.Event{exit}, "Claude exited: exit status 1"},
+		"refused initialize": {[]agent.Event{
+			message{Type: "control_response", Response: controlReply{Subtype: "error", RequestID: "initialize", Error: "bad flags"}},
+		}, "Claude refused initialization (error): bad flags"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			for _, input := range []io.Writer{io.Discard, closedPipe(t)} {
-				err := initialize(input, bufio.NewReader(strings.NewReader(output)), func() string { return "" })
-				if err == nil || !strings.Contains(err.Error(), "No conversation found with session ID: 1111") {
-					t.Fatalf("startup failure lost Claude's reason: %v", err)
-				}
-				if errors.Is(err, agent.ErrNoConversation) != strings.HasPrefix(name, "error result") {
-					t.Fatalf("only Claude's documented result means the conversation is gone: %v", err)
-				}
+			a, id, log, _ := failingStart(t)
+			for _, e := range c.output {
+				a.Handle(e)
+			}
+			log.dropped(t, a, id, c.reason)
+			lost := c.reason == lostConversation
+			if lost != (len(log.tokens) == 1 && log.tokens[0] == "") || !lost && len(log.tokens) != 0 {
+				t.Fatalf("only Claude's documented result gives up the conversation: %q", log.tokens)
+			}
+			if lost && (len(log.errors) != 1 || !strings.Contains(log.errors[0].Error(), missing)) {
+				t.Fatalf("Claude's reason for the lost conversation was not logged: %v", log.errors)
+			}
+		})
+	}
+
+	// Claude's own stdout, read from spawn to exit.
+	for name, c := range map[string]struct{ printf, reason string }{
+		"line at EOF":           {missing, missing},
+		"blank line after text": {`Not logged in\n\n`, "Not logged in"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			script(t, "#!/bin/sh\nprintf '"+c.printf+"'\nexit 1\n")
+			log := new(startLog)
+			options := log.options()
+			options.Workspace = t.TempDir()
+			a, err := Start(options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id, err := sendTestPrompt(a.(*Agent), "hello")
+			if err != nil {
+				t.Fatal(err)
+			}
+			log.updates = nil
+			handleUntilEnded(t, a, 5*time.Second)
+			log.dropped(t, a, id, c.reason)
+			if len(log.tokens) != 0 {
+				t.Fatalf("plain text gave up the conversation: %q", log.tokens)
 			}
 		})
 	}
 }
 
-func closedPipe(t *testing.T) io.Writer {
-	t.Helper()
-	r, w := io.Pipe()
-	r.Close()
-	return w
+// A start that Claude neither answers nor fails ends after the startup
+// limit, and its process is asked to exit.
+func TestStartupLimit(t *testing.T) {
+	saved := startupLimit
+	startupLimit = 200 * time.Millisecond
+	t.Cleanup(func() { startupLimit = saved })
+	script(t, "#!/bin/sh\nexec sleep 60\n")
+	log := new(startLog)
+	options := log.options()
+	options.Workspace = t.TempDir()
+	a, err := Start(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := sendTestPrompt(a.(*Agent), "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.updates = nil
+	handleUntilEnded(t, a, 5*time.Second)
+	log.dropped(t, a, id, "no startup response within one minute")
+	waited := make(chan struct{})
+	go func() {
+		WaitAll()
+		close(waited)
+	}()
+	select {
+	case <-waited:
+	case <-time.After(5 * time.Second):
+		KillAll()
+		t.Fatal("Claude was not asked to exit after the startup limit")
+	}
 }
 
 // A child that inherits Claude's stdout keeps the pipe open after Claude
@@ -61,7 +195,7 @@ func TestExitReportedWhileAChildHoldsStdout(t *testing.T) {
 		}
 	})
 	events := make(chan agent.Event)
-	if _, _, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, agent.Settings{}, agent.MCPServer{}, events); err != nil {
+	if _, _, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, agent.Settings{}, agent.MCPServer{}, events, nil); err != nil {
 		t.Fatal(err)
 	}
 	timeout := time.After(5 * time.Second)
@@ -103,7 +237,7 @@ printf '%s\n' 'Claude diagnostic' >&2
 exit 3
 `)
 	events := make(chan agent.Event)
-	p, in, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, agent.Settings{}, agent.MCPServer{}, events)
+	p, in, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, agent.Settings{}, agent.MCPServer{}, events, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,6 +272,9 @@ exit 3
 	}
 	time.Sleep(1100 * time.Millisecond) // let the pipe deadline pass before accepting delivery
 	timeout := time.After(5 * time.Second)
+	if m, ok := (<-events).(message); !ok || m.Type != "control_response" {
+		t.Fatalf("the initialize response did not arrive first: %+v", m)
+	}
 	for i := range 258 {
 		select {
 		case e := <-events:
@@ -182,23 +319,49 @@ func TestStartupFailureOnStderr(t *testing.T) {
 				}
 			})
 			script(t, "#!/bin/sh\necho \"warning: a warning\" >&2\n"+before+"echo \""+refusal+"\" >&2\nexit 1\n")
-			start := time.Now()
-			_, _, err := startProcess(workspace, "ox-session", newUUID(), false, agent.Settings{}, agent.MCPServer{}, make(chan agent.Event))
-			if err == nil || !strings.Contains(err.Error(), refusal) {
-				t.Fatalf("startup failure lost Claude's stderr: %v", err)
+			log := new(startLog)
+			options := log.options()
+			options.Workspace = workspace
+			a, err := Start(options)
+			if err != nil {
+				t.Fatal(err)
 			}
-			if elapsed := time.Since(start); elapsed > 3*time.Second {
-				t.Fatalf("startup failure took %v", elapsed)
+			if _, err := sendTestPrompt(a.(*Agent), "hello"); err != nil {
+				t.Fatal(err)
+			}
+			handleUntilEnded(t, a, 3*time.Second)
+			if exited := log.updates[len(log.updates)-1]; exited.Type != "exited" || !strings.Contains(exited.Error, refusal) {
+				t.Fatalf("startup failure lost Claude's stderr: %+v", log.updates)
 			}
 		})
 	}
 }
 
-// standIn puts a claude script on PATH that answers the handshake and then
-// runs rest.
+// Once the agent has ended, delivery discards Claude's output, so the reader
+// and delivery end with the process.
+func TestDeliveryEndsWithTheAgent(t *testing.T) {
+	captured, events, done := make(chan agent.Event), make(chan agent.Event), make(chan struct{})
+	returned := make(chan struct{})
+	go func() {
+		deliverOutput(captured, events, done)
+		close(returned)
+	}()
+	captured <- message{Type: "result"}
+	close(done)
+	captured <- processExit{}
+	close(captured)
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("delivery waited for an agent that has ended")
+	}
+}
+
+// standIn puts a claude script on PATH that writes Claude's answer to
+// initialize, without waiting for the request, and then runs rest.
 func standIn(t *testing.T, rest string) {
 	t.Helper()
-	script(t, "#!/bin/sh\nread line\n"+
+	script(t, "#!/bin/sh\n"+
 		`echo '{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}'`+"\n"+rest)
 }
 
@@ -221,7 +384,7 @@ func TestClaudeStartsWithoutAnAPIKey(t *testing.T) {
 	env := filepath.Join(t.TempDir(), "env")
 	standIn(t, "env > "+env+"\n")
 	events := make(chan agent.Event, 1)
-	if _, _, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, agent.Settings{}, agent.MCPServer{}, events); err != nil {
+	if _, _, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, agent.Settings{}, agent.MCPServer{}, events, nil); err != nil {
 		t.Fatal(err)
 	}
 	for e := range events {
@@ -250,7 +413,7 @@ func TestClaudeRunsAsAnOxSession(t *testing.T) {
 		standIn(t, "pwd -P > "+cwd+"\nfor a in \"$@\"; do printf '%s\\0' \"$a\"; done > "+argv+"\n")
 		events := make(chan agent.Event, 1)
 		workspace := t.TempDir()
-		if _, _, err := startProcess(workspace, "ox-session", newUUID(), resume, agent.Settings{}, mcp, events); err != nil {
+		if _, _, err := startProcess(workspace, "ox-session", newUUID(), resume, agent.Settings{}, mcp, events, nil); err != nil {
 			t.Fatal(err)
 		}
 		for e := range events {
@@ -324,7 +487,7 @@ func TestClaudeRunsAsAnOxSession(t *testing.T) {
 func TestUnknownEffortFailsToStart(t *testing.T) {
 	standIn(t, "exec sleep 15\n")
 	for effort, known := range map[string]bool{"": true, "high": true, "hgih": false} {
-		p, input, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, agent.Settings{Effort: effort}, agent.MCPServer{}, make(chan agent.Event, 1))
+		p, input, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, agent.Settings{Effort: effort}, agent.MCPServer{}, make(chan agent.Event, 1), nil)
 		if p != nil {
 			input.w.(io.Closer).Close()
 			p.cmd.Process.Kill()

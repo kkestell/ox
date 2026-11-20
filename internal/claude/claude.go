@@ -50,12 +50,26 @@ func spawn(cmd *exec.Cmd) error {
 	return nil
 }
 
+// childExited is signalled each time a Claude process is reaped.
+var childExited = sync.NewCond(&children.Mutex)
+
 func wait(cmd *exec.Cmd) error {
 	err := cmd.Wait()
 	children.Lock()
 	delete(children.live, cmd.Process)
+	childExited.Broadcast()
 	children.Unlock()
 	return err
+}
+
+// WaitAll returns once every Claude process has exited. The daemon calls it
+// after its sessions have ended, which asked each process to exit.
+func WaitAll() {
+	children.Lock()
+	defer children.Unlock()
+	for len(children.live) != 0 {
+		childExited.Wait()
+	}
 }
 
 // KillAll kills all Claude processes and prevents new ones from starting.
@@ -107,9 +121,10 @@ func CheckEffort(effort string) error {
 }
 
 // startProcess starts Claude for the conversation sessionID, with Ox's MCP
-// server registered as ox. oxSessionID is the Ox session's ID: Claude's
-// instructions and the log of its stderr name it.
-func startProcess(workspace, oxSessionID, sessionID string, resume bool, settings agent.Settings, mcp agent.MCPServer, events chan<- agent.Event) (*process, *writer, error) {
+// server registered as ox, and delivers its output and exit on events until
+// done is closed. oxSessionID is the Ox session's ID: Claude's instructions
+// and the log of its stderr name it.
+func startProcess(workspace, oxSessionID, sessionID string, resume bool, settings agent.Settings, mcp agent.MCPServer, events chan<- agent.Event, done <-chan struct{}) (*process, *writer, error) {
 	if err := CheckEffort(settings.Effort); err != nil {
 		return nil, nil, err
 	}
@@ -185,90 +200,11 @@ func startProcess(workspace, oxSessionID, sessionID string, resume bool, setting
 	}
 	stderrTail := make(chan string, 1)
 	go logStderr(stderr, oxSessionID, stderrTail)
-
-	output := bufio.NewReader(stdout)
-	// The deadline ends the read even when a child of Claude holds stdout.
-	timeout := time.AfterFunc(time.Minute, func() {
-		cmd.Process.Kill()
-		stdout.SetReadDeadline(time.Now())
-	})
-	// Claude prints some refusals, such as an invalid option, only on stderr.
-	// Its stdout has closed, so it has exited or is exiting.
-	diagnostic := func() string {
-		stderr.SetReadDeadline(time.Now().Add(time.Second))
-		return <-stderrTail
-	}
-	err = initialize(stdin, output, diagnostic)
-	if !timeout.Stop() {
-		err = errors.New("no startup response within one minute")
-	}
-	if err != nil {
-		cmd.Process.Kill()
-		wait(cmd)
-		stdout.Close()
-		stderr.SetReadDeadline(time.Now().Add(time.Second))
-		return nil, nil, fmt.Errorf("initialize Claude: %w", err)
-	}
-
 	p := &process{cmd: cmd, output: stdout, stderr: stderr}
 	captured := make(chan agent.Event)
-	go p.read(output, stderrTail, captured)
-	go deliverOutput(captured, events)
+	go p.read(stderrTail, captured)
+	go deliverOutput(captured, events, done)
 	return p, newWriter(stdin), nil
-}
-
-// initialize sends Claude's handshake and waits for its answer. Claude can
-// fail at startup with an error result or plain text and exit, sometimes
-// before it reads the handshake; the last such output is the error. Without
-// one, the error is what diagnostic returns, Claude's stderr, if any. A
-// resume whose conversation Claude no longer has fails with
-// agent.ErrNoConversation, even when Claude answers the handshake after
-// reporting it.
-func initialize(input io.Writer, output *bufio.Reader, diagnostic func() string) error {
-	// Declare Stop to receive pending schedules at the end of each completed turn.
-	const request = `{"type":"control_request","request_id":"initialize","request":{"subtype":"initialize","hooks":{"Stop":[{"hookCallbackIds":["stop"]}]}}}`
-	_, writeErr := io.WriteString(input, request+"\n")
-	var reason string
-	noConversation := false
-	for {
-		// A line that ends at EOF is still a line.
-		line, err := output.ReadBytes('\n')
-		var m message
-		switch {
-		case strings.TrimSpace(string(line)) == "":
-		case json.Unmarshal(line, &m) != nil:
-			reason = strings.TrimSpace(string(line))
-			noConversation = false
-		case m.Type == "result" && m.failed():
-			reason = m.errorText()
-			noConversation = m.Subtype == "error_during_execution" && len(m.Errors) > 0 &&
-				strings.HasPrefix(m.Errors[0], "No conversation found with session ID")
-		case m.Type == "control_response" && m.Response.RequestID == "initialize":
-			if m.Response.Subtype != "success" {
-				return fmt.Errorf("Claude refused initialization (%s): %s", m.Response.Subtype, m.Response.Error)
-			}
-			// Claude can report the missing conversation before its
-			// response, then exit.
-			if noConversation {
-				return fmt.Errorf("%w: %s", agent.ErrNoConversation, reason)
-			}
-			return nil
-		}
-		if err != nil {
-			if reason == "" {
-				reason = diagnostic()
-			}
-			switch {
-			case noConversation:
-				return fmt.Errorf("%w: %s", agent.ErrNoConversation, reason)
-			case reason != "":
-				return errors.New(reason)
-			case writeErr != nil:
-				return writeErr
-			}
-			return fmt.Errorf("read startup response: %w", err)
-		}
-	}
 }
 
 // stderrKept is how much of Claude's stderr a failed start or exit reports.
@@ -311,10 +247,15 @@ func logStderr(stderr *os.File, logID string, tail chan<- string) {
 	tail <- text
 }
 
-// read drains Claude's output into the delivery queue, then records its exit.
-// A second after Claude exits, the pipe reads stop even if an inherited
-// descriptor is open; delivery from the queue is independent of that limit.
-func (p *process) read(output *bufio.Reader, stderrTail <-chan string, captured chan<- agent.Event) {
+// plainText is a line of Claude's stdout that is not JSON, such as a
+// startup failure.
+type plainText string
+
+// read drains Claude's output, from spawn to exit, into the delivery queue,
+// then records its exit. A second after Claude exits, the pipe reads stop
+// even if an inherited descriptor is open; delivery from the queue is
+// independent of that limit.
+func (p *process) read(stderrTail <-chan string, captured chan<- agent.Event) {
 	defer close(captured)
 	exited := make(chan error, 1)
 	go func() {
@@ -323,12 +264,17 @@ func (p *process) read(output *bufio.Reader, stderrTail <-chan string, captured 
 		p.stderr.SetReadDeadline(time.Now().Add(time.Second))
 		exited <- err
 	}()
+	output := bufio.NewReader(p.output)
 	for {
 		// A line that ends at EOF is still a line.
 		line, err := output.ReadBytes('\n')
 		var m message
-		if json.Unmarshal(line, &m) == nil {
+		switch text := strings.TrimSpace(string(line)); {
+		case text == "":
+		case json.Unmarshal(line, &m) == nil:
 			captured <- m
+		default:
+			captured <- plainText(text)
 		}
 		if err != nil {
 			break
@@ -339,8 +285,9 @@ func (p *process) read(output *bufio.Reader, stderrTail <-chan string, captured 
 }
 
 // deliverOutput never makes the reader wait for the session, which may be
-// writing to Claude's stdin while Claude writes stdout.
-func deliverOutput(captured <-chan agent.Event, events chan<- agent.Event) {
+// writing to Claude's stdin while Claude writes stdout. Once done is closed,
+// the agent has ended and its output is discarded.
+func deliverOutput(captured <-chan agent.Event, events chan<- agent.Event, done <-chan struct{}) {
 	var queue []agent.Event
 	for captured != nil || len(queue) != 0 {
 		var next agent.Event
@@ -358,6 +305,12 @@ func deliverOutput(captured <-chan agent.Event, events chan<- agent.Event) {
 		case ready <- next:
 			queue[0] = nil
 			queue = queue[1:]
+		case <-done:
+			if captured != nil {
+				for range captured {
+				}
+			}
+			return
 		}
 	}
 }
@@ -365,14 +318,19 @@ func deliverOutput(captured <-chan agent.Event, events chan<- agent.Event) {
 // killAfter is how long Claude has to exit once asked before it is killed.
 var killAfter = 10 * time.Second
 
+// startupLimit is how long Claude has to answer initialize.
+var startupLimit = time.Minute
+
 // Terminate asks Claude to exit so it can clean up its tool processes, and
-// kills it if it is still running after killAfter.
-func (p *process) Terminate() error {
-	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		return fmt.Errorf("stop Claude: %w", err)
+// kills it if it is still running after killAfter, or at once if it cannot
+// be asked.
+func (p *process) Terminate() {
+	switch err := p.cmd.Process.Signal(syscall.SIGTERM); {
+	case err == nil:
+		time.AfterFunc(killAfter, func() { p.cmd.Process.Kill() })
+	case !errors.Is(err, os.ErrProcessDone):
+		p.cmd.Process.Kill()
 	}
-	time.AfterFunc(killAfter, func() { p.cmd.Process.Kill() })
-	return nil
 }
 
 // writer writes messages to Claude's stdin. It is not safe for concurrent use.

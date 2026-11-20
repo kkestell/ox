@@ -134,6 +134,8 @@ Permission modes: `manual` (alias `default`), `auto`, `acceptEdits`, `plan`, `do
 
 Closing stdin lets Claude exit on its own.
 
+A new process can `--resume` a conversation at once after the process running it receives SIGTERM, while that process is still exiting; the resumed conversation keeps the earlier turns (2.1.329).
+
 ## 3. The stdout protocol
 
 Stdout carries JSON lines and can carry plain text on [failure](#startup-failures).
