@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -43,7 +42,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	harnesses := map[string]agent.Start{"claude": claude.Start, "fake": fake.Start}
+	harnesses := map[string]agent.Harness{"claude": claude.Harness, "fake": {Start: fake.Start}}
 	if err := checkConfig(cfg, harnesses); err != nil {
 		log.Fatalf("%s: %v", *configPath, err)
 	}
@@ -52,33 +51,50 @@ func main() {
 		log.Fatalf("ox-mcp not found beside oxd: %v", err)
 	}
 
-	st, err := store.Open(*dbPath)
+	if err := run(*dbPath, cfg, *parkAfter, harnesses, server.MCP{Forwarder: forwarder, Socket: socket}); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run(dbPath string, cfg *config.Config, parkAfter time.Duration, harnesses map[string]agent.Harness, mcp server.MCP) error {
+	// Loading the server repairs the history of a stopped daemon. Hold the
+	// socket from before that repair until every session has stopped.
+	listener, err := listen(mcp.Socket)
 	if err != nil {
-		log.Fatalf("open database: %v", err)
+		return err
+	}
+	defer listener.Close()
+	st, err := store.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
 	}
 	defer st.Close()
-	s, err := server.New(st, cfg, *parkAfter, harnesses, server.MCP{Forwarder: forwarder, Socket: socket})
+	s, err := server.New(st, cfg, parkAfter, harnesses, mcp)
 	if err != nil {
-		log.Fatalf("load database: %v", err)
+		return fmt.Errorf("load database: %w", err)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	listener, err := listen(socket)
-	if err != nil {
-		log.Fatal(err)
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	serving := make(chan error, 1)
+	go func() { serving <- s.Serve(listener) }()
+	select {
+	case err = <-serving:
+	case <-signals:
 	}
-	// Once shutdown starts, a second signal kills oxd.
-	context.AfterFunc(ctx, func() {
-		stop()
-		listener.Close()
-	})
-
-	err = s.Serve(listener)
-	s.Close()
-	if err != nil {
-		log.Fatal(err)
+	stopped := make(chan struct{})
+	go func() {
+		s.Close()
+		close(stopped)
+	}()
+	select {
+	case <-signals:
+		claude.KillAll()
+		os.Exit(1)
+	case <-stopped:
 	}
+	return err
 }
 
 // findForwarder returns the ox-mcp executable beside oxd's own. Without it,
@@ -95,14 +111,17 @@ func findForwarder() (string, error) {
 }
 
 // checkConfig refuses a configuration that offers a harness oxd does not
-// have, or a Claude effort level Claude does not take.
-func checkConfig(cfg *config.Config, harnesses map[string]agent.Start) error {
+// have, a Claude effort level Claude does not take, or Claude's alias for manual.
+func checkConfig(cfg *config.Config, harnesses map[string]agent.Harness) error {
 	for name, harness := range cfg.Harnesses {
-		if harnesses[name] == nil {
+		if harnesses[name].Start == nil {
 			return fmt.Errorf("unknown harness %q", name)
 		}
 		if name != "claude" {
 			continue
+		}
+		if harness.CheckPermissionMode("default") == nil {
+			return errors.New("use permission mode \"manual\" instead of \"default\" for Claude")
 		}
 		for _, model := range harness.Models {
 			for _, effort := range model.Efforts {

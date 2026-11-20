@@ -19,12 +19,17 @@ export const stop = (page: Page) => page.getByRole("button", { name: "Stop" });
 export const sessionButton = (page: Page, title: string) => page.locator("nav button.open").filter({ hasText: title });
 
 // hold intercepts the page's next request for method until release passes it
-// on, or fail answers it as a relay error.
+// on (optionally with changed parameters), or fail answers it as a relay error.
 export async function hold(page: Page, method: string, sessionId?: string) {
-  let release!: () => void;
+  let release!: (params?: Record<string, unknown>) => void;
   let fail!: (message: string) => void;
   const answer = new Promise<(route: Route) => Promise<void>>((resolve) => {
-    release = () => resolve((route) => route.continue());
+    release = (params) =>
+      resolve((route) => {
+        if (!params) return route.continue();
+        const request = route.request().postDataJSON();
+        return route.continue({ postData: { ...request, params: { ...request.params, ...params } } });
+      });
     fail = (message) => resolve((route) => route.fulfill({ status: 502, body: message }));
   });
   let held!: () => void;

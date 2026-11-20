@@ -18,7 +18,7 @@ import (
 type Server struct {
 	store     *store.Store
 	config    *config.Config
-	harnesses map[string]agent.Start
+	harnesses map[string]agent.Harness
 	parkAfter time.Duration
 	mcp       MCP
 
@@ -46,7 +46,7 @@ type workspace struct {
 // socket it reaches oxd on.
 type MCP struct{ Forwarder, Socket string }
 
-func New(st *store.Store, cfg *config.Config, parkAfter time.Duration, harnesses map[string]agent.Start, mcp MCP) (*Server, error) {
+func New(st *store.Store, cfg *config.Config, parkAfter time.Duration, harnesses map[string]agent.Harness, mcp MCP) (*Server, error) {
 	stored, err := st.Workspaces()
 	if err != nil {
 		return nil, err

@@ -348,7 +348,7 @@ func TestForwarderWithoutOxd(t *testing.T) {
 	socket := filepath.Join(t.TempDir(), "none.sock")
 	f := startForwarder(t, "OX_SOCKET="+socket, "OX_SESSION_ID=x")
 	f.stdout.ends()
-	if code := f.exit(t); code != 1 || !bytes.Contains(f.stderr.Bytes(), []byte(socket)) {
+	if code := f.exit(t); code != 1 || !bytes.Contains(f.stderr.Bytes(), []byte("session x:")) || !bytes.Contains(f.stderr.Bytes(), []byte(socket)) {
 		t.Fatalf("exit %d, stderr %q", code, f.stderr)
 	}
 }

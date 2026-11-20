@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	"github.com/kkestell/ox/internal/agent"
 	"github.com/kkestell/ox/internal/claude"
 	"github.com/kkestell/ox/internal/config"
+	"github.com/kkestell/ox/internal/store"
 )
 
 func TestListenReplacesOnlyAStaleSocket(t *testing.T) {
@@ -60,7 +62,7 @@ func TestConfigOffersOnlyClaudesEfforts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	harnesses := map[string]agent.Start{"claude": claude.Start}
+	harnesses := map[string]agent.Harness{"claude": claude.Harness}
 	if err := checkConfig(builtIn, harnesses); err != nil {
 		t.Fatalf("the built-in configuration was refused: %v", err)
 	}
@@ -69,6 +71,15 @@ func TestConfigOffersOnlyClaudesEfforts(t *testing.T) {
 	}}}
 	if err := checkConfig(misspelled, harnesses); err == nil {
 		t.Error("a Claude effort level Claude does not take was accepted")
+	}
+}
+
+func TestConfigRefusesClaudesDefaultPermissionModeAlias(t *testing.T) {
+	cfg := &config.Config{Harnesses: map[string]config.Harness{"claude": {
+		PermissionModes: []config.Option{{ID: "default"}},
+	}}}
+	if err := checkConfig(cfg, map[string]agent.Harness{"claude": claude.Harness}); err == nil || !strings.Contains(err.Error(), "manual") {
+		t.Fatalf("Claude's alias default was not refused in favor of manual: %v", err)
 	}
 }
 
@@ -110,9 +121,9 @@ func TestRefusesToStartWithoutForwarder(t *testing.T) {
 	}
 }
 
-// Shutdown waits for each Claude to exit, which takes up to Ox's kill
-// timeout when Claude ignores SIGTERM. A second interrupt stops oxd at once.
-func TestSecondInterruptStopsShutdown(t *testing.T) {
+// The socket excludes a second daemon while oxd is serving or still
+// stopping. A second signal kills both running and initializing children.
+func TestDaemonOwnsSocketUntilShutdown(t *testing.T) {
 	// t.TempDir is too long for a socket path on macOS.
 	dir, err := os.MkdirTemp("", "oxd")
 	if err != nil {
@@ -123,8 +134,19 @@ func TestSecondInterruptStopsShutdown(t *testing.T) {
 	if err := os.Mkdir(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	standIn := "#!/bin/sh\ntrap '' TERM\nread line\n" +
-		`echo '{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}'` + "\nexec sleep 20\n"
+	standIn := `#!/bin/sh
+trap '' TERM
+case "$*" in
+  *--permission-mode=plan*) echo $$ > initializing; exec sleep 60;;
+esac
+echo $$ > running
+read line
+printf '%s\n' '{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}'
+read line
+uuid=${line##*'"uuid":"'}; uuid=${uuid%%'"'*}
+printf '{"type":"command_lifecycle","state":"started","command_uuid":"%s"}\n' "$uuid"
+exec sleep 60
+`
 	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(standIn), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -139,9 +161,13 @@ func TestSecondInterruptStopsShutdown(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bin, "oxd"), self, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	socket := filepath.Join(dir, "oxd.sock")
-	oxd := exec.Command(filepath.Join(bin, "oxd"), "-socket="+socket, "-db="+filepath.Join(dir, "ox.db"), "-config="+filepath.Join(dir, "none.json"))
-	oxd.Env = append(os.Environ(), "OXD_TEST_MAIN=1", "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	socket, database := filepath.Join(dir, "oxd.sock"), filepath.Join(dir, "ox.db")
+	command := func(ctx context.Context) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, filepath.Join(bin, "oxd"), "-socket="+socket, "-db="+database, "-config="+filepath.Join(dir, "none.json"))
+		cmd.Env = append(os.Environ(), "OXD_TEST_MAIN=1", "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+		return cmd
+	}
+	oxd := command(t.Context())
 	if err := oxd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -159,10 +185,18 @@ func TestSecondInterruptStopsShutdown(t *testing.T) {
 		}
 	}
 	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(25 * time.Second))
 	lines := bufio.NewScanner(conn)
-	call := func(id int, method string, params map[string]string) map[string]string {
+	send := func(id int, method string, params map[string]string) {
+		t.Helper()
 		request, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
-		fmt.Fprintf(conn, "%s\n", request)
+		if _, err := fmt.Fprintf(conn, "%s\n", request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	call := func(id int, method string, params map[string]string) map[string]string {
+		t.Helper()
+		send(id, method, params)
 		for lines.Scan() {
 			var r struct {
 				ID     *int              `json:"id"`
@@ -185,6 +219,54 @@ func TestSecondInterruptStopsShutdown(t *testing.T) {
 		"workspace_id": workspace, "harness": "claude", "model": "claude-haiku-5-5", "effort": "low", "permission_mode": "manual",
 	})["session_id"]
 	call(3, "session/send", map[string]string{"session_id": session, "text": "hello"})
+	for lines.Scan() {
+		if strings.Contains(lines.Text(), `"type":"prompt"`) {
+			break
+		}
+	}
+	if err := lines.Err(); err != nil {
+		t.Fatal(err)
+	}
+	loading := call(4, "session/create", map[string]string{
+		"workspace_id": workspace, "harness": "claude", "model": "claude-haiku-5-5", "effort": "low", "permission_mode": "plan",
+	})["session_id"]
+	send(5, "session/send", map[string]string{"session_id": loading, "text": "hello"})
+	pid := func(name string) int {
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+			data, _ := os.ReadFile(filepath.Join(dir, name))
+			if p, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && p > 0 {
+				t.Cleanup(func() { syscall.Kill(p, syscall.SIGKILL) })
+				return p
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("Claude's %s process did not start", name)
+		return 0
+	}
+	pids := []int{pid("running"), pid("initializing")}
+	refusesSecond := func() {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		defer cancel()
+		out, err := command(ctx).CombinedOutput()
+		if err == nil || !strings.Contains(string(out), "another oxd is serving") {
+			t.Fatalf("a second daemon was not refused: %v, %s", err, out)
+		}
+	}
+	refusesSecond()
+	st, err := store.Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	checkHistory := func() {
+		t.Helper()
+		events, err := st.Events(session)
+		if err != nil || len(events) != 1 || !strings.Contains(string(events[0].Data), `"type":"prompt"`) {
+			t.Fatalf("the live session's history changed: %+v, %v", events, err)
+		}
+	}
+	checkHistory()
 
 	oxd.Process.Signal(syscall.SIGINT)
 	select {
@@ -192,10 +274,20 @@ func TestSecondInterruptStopsShutdown(t *testing.T) {
 		t.Fatal("shutdown finished without waiting for Claude")
 	case <-time.After(time.Second):
 	}
+	refusesSecond()
+	checkHistory()
 	oxd.Process.Signal(syscall.SIGINT)
 	select {
 	case <-exited:
 	case <-time.After(3 * time.Second):
 		t.Fatal("a second interrupt did not stop oxd")
+	}
+	for _, p := range pids {
+		for deadline := time.Now().Add(3 * time.Second); !errors.Is(syscall.Kill(p, 0), syscall.ESRCH); {
+			if time.Now().After(deadline) {
+				t.Fatalf("Claude PID %d survived a second interrupt", p)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 }

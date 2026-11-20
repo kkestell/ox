@@ -69,7 +69,7 @@ func TestApprovalSurvivesResult(t *testing.T) {
 	a, input, updates, _ := promptingAgent(t)
 	output(t, a, `{"type":"control_request","request_id":"background","request":{"subtype":"can_use_tool"}}`)
 	output(t, a, `{"type":"result","subtype":"success","result":"Background agent launched"}`)
-	if len(*updates) != 2 || (*updates)[1].Type != "result" {
+	if pending := a.Snapshot().Approvals; len(pending) != 1 || pending[0].RequestID != "background" {
 		t.Fatalf("result withdrew a background approval: %+v", *updates)
 	}
 	if err := a.Approve("background", json.RawMessage(`{"behavior":"allow"}`)); err != nil {
@@ -121,7 +121,7 @@ func TestFailedAnswerLeavesApprovalPending(t *testing.T) {
 		t.Fatalf("a failed answer removed the approval: %+v", a.Snapshot())
 	}
 	*updates = nil
-	a.Handle(processExit{errors.New("signal: broken pipe")})
+	a.Handle(processExit{err: errors.New("signal: broken pipe")})
 	if len(*updates) == 0 || (*updates)[0].Type != "approval_cancelled" || (*updates)[0].RequestID != "request" {
 		t.Fatalf("exit did not withdraw the approval: %+v", *updates)
 	}

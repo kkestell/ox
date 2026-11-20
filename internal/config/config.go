@@ -9,7 +9,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"slices"
 )
 
 //go:embed default.json
@@ -77,17 +76,39 @@ func (h Harness) check() error {
 	if len(h.Models) == 0 || len(h.PermissionModes) == 0 {
 		return errors.New("needs models and permission_modes")
 	}
+	models := make(map[string]bool)
 	for i, m := range h.Models {
+		if err := addChoice(models, "model", m.ID); err != nil {
+			return err
+		}
 		if m.Efforts == nil {
 			h.Models[i].Efforts = []Option{}
 		}
-		if m.ID == "" || slices.ContainsFunc(m.Efforts, func(o Option) bool { return o.ID == "" }) {
-			return errors.New("every model and effort level needs an id")
+		if err := checkOptions("effort level", m.Efforts); err != nil {
+			return fmt.Errorf("model %q: %w", m.ID, err)
 		}
 	}
-	if slices.ContainsFunc(h.PermissionModes, func(o Option) bool { return o.ID == "" }) {
-		return errors.New("every permission mode needs an id")
+	return checkOptions("permission mode", h.PermissionModes)
+}
+
+func checkOptions(kind string, options []Option) error {
+	seen := make(map[string]bool)
+	for _, o := range options {
+		if err := addChoice(seen, kind, o.ID); err != nil {
+			return err
+		}
 	}
+	return nil
+}
+
+func addChoice(seen map[string]bool, kind, id string) error {
+	if id == "" {
+		return fmt.Errorf("every %s needs an id", kind)
+	}
+	if seen[id] {
+		return fmt.Errorf("duplicate %s id %q", kind, id)
+	}
+	seen[id] = true
 	return nil
 }
 

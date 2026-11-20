@@ -48,6 +48,7 @@ export type Services = {
   workspace: string;
   // socket is oxd's socket, which a session's MCP forwarder attaches to.
   socket: string;
+  database: string;
   restartRelay(): Promise<void>;
   // restartDaemon restarts oxd over the same database with config. SIGKILL
   // stops it without its shutdown, as a crash does.
@@ -61,13 +62,14 @@ export async function startServices(config: object): Promise<Services> {
   const dir = mkdtempSync(join(tmpdir(), "ox-e2e-"));
   const workspace = mkdtempSync(join(tmpdir(), "ox-e2e-workspace-"));
   const socket = join(dir, "oxd.sock");
+  const database = join(dir, "ox.db");
   writeFileSync(join(dir, "config.json"), JSON.stringify(config));
   const port = await freePort();
   const url = `http://127.0.0.1:${port}`;
   const env = { ...process.env, GORACE: "halt_on_error=1" };
 
   const startDaemon = () =>
-    run(join(bin, "oxd"), [`-socket=${socket}`, `-db=${join(dir, "ox.db")}`, `-config=${join(dir, "config.json")}`]);
+    run(join(bin, "oxd"), [`-socket=${socket}`, `-db=${database}`, `-config=${join(dir, "config.json")}`]);
   let daemon = startDaemon();
   let relay: ChildProcess | undefined;
   const startRelay = async () => {
@@ -89,6 +91,7 @@ export async function startServices(config: object): Promise<Services> {
     url,
     workspace,
     socket,
+    database,
     async restartRelay() {
       if (relay) await stopProcess(relay);
       await startRelay();

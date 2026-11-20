@@ -6,6 +6,9 @@ export type Harness = { models: Model[]; permission_modes: Option[] };
 export type Defaults = { harness: string; model: string; effort: string; permission_mode: string };
 
 export type Settings = { model: string; effort: string; permission_mode: string };
+export type SettingsPatch = {
+  [K in keyof Settings]: Pick<Settings, K> & Partial<Omit<Settings, K>>;
+}[keyof Settings];
 
 export const notFound = -32001;
 
@@ -21,12 +24,17 @@ export type ApprovalResponse =
 
 // Prompt is a client prompt, named by the message ID session/send returned,
 // or a message from the session from.
-export type Prompt = { message_id: string; text: string; from?: string };
+export type Prompt = { message_id: string; text: string } & (
+  | { from?: never; from_label?: never }
+  | { from: string; from_label?: string }
+);
 
 export type Update = { time: string } & (
-  | ({ type: "prompt" } & Prompt)
-  | ({ type: "prompt_queued" } & Prompt)
-  | ({ type: "prompt_cancelled" } & Prompt)
+  | ({ type: "prompt" | "prompt_queued" | "prompt_cancelled" } & Prompt)
+  | (OtherUpdate & { message_id?: string })
+);
+
+type OtherUpdate =
   | { type: "text_delta"; text: string }
   | { type: "tool_use"; tool_use_id: string; tool_name: string; input: Record<string, unknown> }
   | { type: "tool_result"; tool_use_id: string; result: ToolResult }
@@ -36,8 +44,7 @@ export type Update = { time: string } & (
   | { type: "approval"; request_id: string; request: ApprovalRequest }
   | { type: "approval_answered"; request_id: string }
   | { type: "approval_cancelled"; request_id: string }
-  | { type: "exited"; error: string }
-);
+  | { type: "exited"; error: string };
 
 export type Notification =
   | { method: "session/update"; params: Update & { session_id: string } }
@@ -68,7 +75,7 @@ export type Methods = {
   ];
   "workspace/remove": [{ workspace_id: string }, Empty];
   "session/create": [
-    Settings & { session_id?: string; workspace_id: string; harness: string },
+    Omit<Settings, "effort"> & { effort?: string; session_id?: string; workspace_id: string; harness: string },
     { session_id: string; existing?: boolean },
   ];
   "session/get": [
@@ -76,13 +83,13 @@ export type Methods = {
     Settings & {
       state: SessionState;
       approvals: { request_id: string; request: ApprovalRequest }[];
-      queued?: Prompt;
+      queued: Prompt[];
       history: Update[];
     },
   ];
   "session/send": [{ session_id: string; text: string }, { message_id: string }];
   "session/interrupt": [{ session_id: string }, Empty];
-  "session/configure": [Partial<Settings> & { session_id: string }, Empty];
+  "session/configure": [SettingsPatch & { session_id: string }, Empty];
   "session/approve": [{ session_id: string; request_id: string; response: ApprovalResponse }, Empty];
   "session/destroy": [{ session_id: string }, Empty];
 };

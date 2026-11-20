@@ -111,7 +111,9 @@ func (s *Server) createWorkspace(reply replyFunc, id, params json.RawMessage) {
 		reply(invalidParams(id, "path must be an absolute directory path"))
 		return
 	}
-	path := filepath.Clean(input.Path)
+	// Keep the path as given: the filesystem resolves a symlink before any
+	// following .., unlike filepath.Clean.
+	path := input.Path
 	info, err := os.Stat(path)
 	if err != nil || !info.IsDir() {
 		reply(invalidParams(id, "path must be an existing directory"))
@@ -309,8 +311,9 @@ func (s *Server) getSession(reply replyFunc, id, params json.RawMessage) {
 		reply(jsonrpc.Success(id, struct {
 			agent.Snapshot
 			agent.Settings
+			Queued  []pendingInput `json:"queued"`
 			History []agent.Update `json:"history"`
-		}{snapshot, sess.settings, history}))
+		}{snapshot, sess.settings, sess.pending(), history}))
 	})
 }
 
@@ -323,14 +326,18 @@ func (s *Server) sendSession(reply replyFunc, id, params json.RawMessage) {
 		reply(invalidParams(id, "session_id and text are required"))
 		return
 	}
+	if len(input.Text) > 1<<20 {
+		reply(invalidParams(id, "prompt is larger than 1 MiB"))
+		return
+	}
 	s.onSession(reply, id, input.SessionID, func(sess *session) {
-		if sess.agent == nil {
-			if err := sess.start(); err != nil {
-				reply(failure(id, err))
+		if check := s.harnesses[sess.harness].CheckPrompt; check != nil {
+			if err := check(input.Text); err != nil {
+				reply(invalidParams(id, err.Error()))
 				return
 			}
 		}
-		messageID, err := sess.agent.Send(promptInput(input.Text))
+		messageID, err := sess.sendPrompt(input.Text)
 		if err != nil {
 			reply(failure(id, err))
 			return
@@ -339,11 +346,6 @@ func (s *Server) sendSession(reply replyFunc, id, params json.RawMessage) {
 			MessageID string `json:"message_id"`
 		}{messageID}))
 	})
-}
-
-// promptInput is the user's prompt as the harness's input.
-func promptInput(text string) agent.Input {
-	return agent.Input{Text: text, Content: text}
 }
 
 func (s *Server) approveSession(reply replyFunc, id, params json.RawMessage) {
@@ -378,9 +380,7 @@ func (s *Server) interruptSession(reply replyFunc, id, params json.RawMessage) {
 		return
 	}
 	s.onSession(reply, id, input.SessionID, func(sess *session) {
-		// Stop drops every message Claude has not taken: those waiting here,
-		// and the queued one, which Interrupt drops.
-		sess.inbox = nil
+		sess.cancelInbox()
 		if sess.agent != nil {
 			if err := sess.agent.Interrupt(); err != nil {
 				reply(failure(id, err))
@@ -393,10 +393,8 @@ func (s *Server) interruptSession(reply replyFunc, id, params json.RawMessage) {
 
 func (s *Server) configureSession(reply replyFunc, id, params json.RawMessage) {
 	var input struct {
-		SessionID      string  `json:"session_id"`
-		Model          *string `json:"model"`
-		Effort         *string `json:"effort"`
-		PermissionMode *string `json:"permission_mode"`
+		SessionID string `json:"session_id"`
+		agent.SettingsPatch
 	}
 	if err := json.Unmarshal(params, &input); err != nil || input.SessionID == "" ||
 		(input.Model == nil && input.Effort == nil && input.PermissionMode == nil) {
@@ -404,16 +402,7 @@ func (s *Server) configureSession(reply replyFunc, id, params json.RawMessage) {
 		return
 	}
 	s.onSession(reply, id, input.SessionID, func(sess *session) {
-		settings := sess.settings
-		if input.Model != nil {
-			settings.Model = *input.Model
-		}
-		if input.Effort != nil {
-			settings.Effort = *input.Effort
-		}
-		if input.PermissionMode != nil {
-			settings.PermissionMode = *input.PermissionMode
-		}
+		settings := input.Apply(sess.settings)
 		// Only the settings the request changes are checked, so a stored
 		// setting the configuration no longer offers can stay.
 		harness := s.config.Harnesses[sess.harness]
@@ -428,31 +417,20 @@ func (s *Server) configureSession(reply replyFunc, id, params json.RawMessage) {
 			reply(invalidParams(id, err.Error()))
 			return
 		}
+		if len(sess.inbox) != 0 {
+			reply(failure(id, agent.ErrBusy))
+			return
+		}
 		if sess.agent == nil {
-			if err := sess.save(settings, sess.resumeToken); err != nil {
-				reply(failure(id, err))
-				return
-			}
-			sess.configured(settings)
+			sess.adopt(settings)
 			reply(jsonrpc.Success(id, struct{}{}))
 			return
 		}
-		sess.agent.Configure(settings, func(applied agent.Settings, err error) {
-			if errors.Is(err, agent.ErrBusy) {
-				reply(failure(id, err))
-				return
-			}
-			// A process that exits first is replaced by one started with the
-			// requested settings.
+		sess.agent.Configure(input.SettingsPatch, func(err error) {
 			if errors.Is(err, agent.ErrExited) {
-				applied, err = settings, nil
-			}
-			// The session takes the settings its process uses, even after a
-			// failure, so every client and later process match it; storing
-			// them can fail on its own.
-			if applied != sess.settings {
-				err = cmp.Or(err, sess.save(applied, sess.resumeToken))
-				sess.configured(applied)
+				// Retain any changes the harness made in the meantime.
+				sess.adopt(input.Apply(sess.settings))
+				err = nil
 			}
 			if err != nil {
 				reply(failure(id, err))

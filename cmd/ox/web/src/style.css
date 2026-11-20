@@ -5,7 +5,6 @@ html, body { height: 100%; }
 body { -webkit-font-smoothing: antialiased; }
 input, button, textarea, select { font: inherit; color: inherit; }
 p { overflow-wrap: break-word; }
-ul, ol { list-style: none; }
 
 /* The neutral palette of shadcn/ui. */
 :root {
@@ -128,7 +127,7 @@ nav > p:hover { background: var(--accent); }
 nav > p .name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 nav > p button.icon { position: absolute; right: 0.125rem; width: 1.5rem; height: 1.5rem; color: var(--text); }
 nav > p button.icon.trash { right: 1.625rem; }
-nav ul { margin-bottom: 0.5rem; }
+nav ul { margin-bottom: 0.5rem; list-style: none; }
 nav li { position: relative; display: flex; align-items: center; gap: 0.375rem; height: 2rem; padding: 0 0.5rem; border-radius: var(--radius-md); cursor: default; }
 nav li:hover { background: var(--accent); }
 nav li.selected { background: var(--secondary); color: var(--secondary-foreground); }
@@ -153,7 +152,10 @@ main { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: colum
 main > [role="alert"] { padding: 0.5rem 1rem; font-size: 0.75rem; }
 .context { flex: none; display: flex; align-items: center; gap: 0.375rem; height: 2rem; padding: 0 0.75rem; border-bottom: 1px solid var(--border); font-size: 0.75rem; color: var(--text); }
 .context::before { color: var(--muted-foreground); }
-.log { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 0.75rem; padding: 1rem var(--transcript-inset); }
+/* Zero scroll offset follows the bottom through content and viewport changes.
+   After scrolling up, native scroll anchoring keeps the visible content in view. */
+.log { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column-reverse; }
+.transcript { flex: none; min-height: 100%; display: flex; flex-direction: column; gap: 0.75rem; padding: 1rem var(--transcript-inset); }
 .log ~ [role="alert"], .log ~ [role="status"] { padding: 0 var(--transcript-inset); font-size: 0.75rem; text-align: right; }
 .prompt, .error { white-space: pre-wrap; overflow-wrap: break-word; }
 .log .prompt { align-self: flex-end; max-width: 75%; margin: 0.75rem 0; padding: 0.75rem 1rem; border-radius: calc(var(--radius) + 4px); background: var(--secondary); color: var(--secondary-foreground); box-shadow: var(--shadow-sm); }

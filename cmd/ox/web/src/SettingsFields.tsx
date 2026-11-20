@@ -36,9 +36,10 @@ export function ModelPicker(props: {
     current()?.model.efforts.find((e) => e.id === props.value.effort)?.name ?? props.value.effort;
 
   const choose = (entry: Entry) => {
-    if (props.disabled || isCurrent(entry)) return;
+    if (props.disabled) return;
     const efforts = entry.model.efforts;
     const effort = efforts.some((e) => e.id === props.value.effort) ? props.value.effort : (efforts[0]?.id ?? "");
+    if (isCurrent(entry) && effort === props.value.effort) return;
     props.onChange({ harness: entry.harness, model: entry.model.id, effort });
   };
   const move = (step: number) => {

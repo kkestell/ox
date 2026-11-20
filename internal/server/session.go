@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log"
@@ -29,12 +30,23 @@ type session struct {
 	settings    agent.Settings
 	resumeToken string
 	history     history
-	agent       agent.Agent // nil while parked
-	parkTimer   *time.Timer // armed while the agent is parkable
-	// inbox holds messages from other sessions, oldest first, while the
-	// agent refuses them as busy or has yet to start.
-	inbox []agent.Input
-	ended bool
+	agent       agent.Agent    // nil while parked
+	parkTimer   *time.Timer    // armed while the agent is parkable
+	written     *pendingInput  // written to the agent but not taken
+	inbox       []pendingInput // waiting to be written, oldest first
+	ended       bool
+}
+
+type pendingInput struct {
+	MessageID string `json:"message_id"`
+	Text      string `json:"text"`
+	From      string `json:"from,omitempty"`
+	FromLabel string `json:"from_label,omitempty"`
+	content   string
+}
+
+func (p pendingInput) update(kind string, at time.Time) agent.Update {
+	return agent.Update{Type: kind, MessageID: p.MessageID, Text: p.Text, From: p.From, FromLabel: p.FromLabel, Time: at}
 }
 
 func (s *Server) newSession(record *store.Session, workspace string) *session {
@@ -88,21 +100,79 @@ func (sess *session) deliver() {
 	if sess.ended || len(sess.inbox) == 0 {
 		return
 	}
-	if sess.agent == nil {
-		if err := sess.start(); err != nil {
-			sess.inbox = nil
-			sess.update(agent.Update{Type: agent.UpdateExited, Error: "messages not delivered: " + err.Error(), Time: time.Now()})
-			return
-		}
+	if sess.written != nil || sess.startForInput() != nil {
+		return
 	}
-	_, err := sess.agent.Send(sess.inbox[0])
+	message := sess.inbox[0]
+	err := sess.writeInput(message)
 	if errors.Is(err, agent.ErrBusy) {
 		return // retried after the next operation or event
 	}
+	sess.inbox[0] = pendingInput{}
 	sess.inbox = sess.inbox[1:]
 	if err != nil {
+		sess.update(message.update(agent.UpdatePromptCancelled, time.Now()))
 		log.Printf("session %s: deliver message: %v", sess.id, err)
 	}
+}
+
+func (sess *session) sendPrompt(text string) (string, error) {
+	if sess.written != nil || len(sess.inbox) != 0 {
+		return "", agent.ErrBusy
+	}
+	if err := sess.startForInput(); err != nil {
+		return "", err
+	}
+	p := pendingInput{MessageID: rand.Text(), Text: text, content: text}
+	return p.MessageID, sess.writeInput(p)
+}
+
+func (sess *session) writeInput(p pendingInput) error {
+	// Send can publish uptake synchronously, so it must see who sent this
+	// input before it calls back. A refused write publishes nothing.
+	sess.written = &p
+	err := sess.agent.Send(agent.Input{MessageID: p.MessageID, Content: p.content})
+	if err != nil {
+		sess.written = nil
+	}
+	return err
+}
+
+func (sess *session) acceptMessage(p pendingInput) {
+	p.MessageID = rand.Text()
+	sess.inbox = append(sess.inbox, p)
+	sess.update(p.update(agent.UpdatePromptQueued, time.Now()))
+}
+
+func (sess *session) cancelInbox() {
+	for _, p := range sess.inbox {
+		sess.update(p.update(agent.UpdatePromptCancelled, time.Now()))
+	}
+	sess.inbox = nil
+}
+
+func (sess *session) pending() []pendingInput {
+	queue := make([]pendingInput, 0, len(sess.inbox)+1)
+	if sess.written != nil {
+		queue = append(queue, *sess.written)
+	}
+	return append(queue, sess.inbox...)
+}
+
+func (sess *session) agentUpdate(u agent.Update) {
+	switch u.Type {
+	case agent.UpdatePromptQueued:
+		if sess.written.From != "" {
+			return // already published on inbox acceptance
+		}
+		u = sess.written.update(u.Type, u.Time)
+	case agent.UpdatePrompt, agent.UpdatePromptCancelled:
+		u = sess.written.update(u.Type, u.Time)
+		sess.written = nil
+	case agent.UpdateExited:
+		sess.cancelInbox()
+	}
+	sess.update(u)
 }
 
 // post runs op on the session's goroutine. It reports false once the session
@@ -129,8 +199,31 @@ func (sess *session) armPark() {
 	}
 }
 
+// startForInput starts a parked session for either source of input and owns
+// the effects of a failed start. A user send also receives the start error.
+func (sess *session) startForInput() error {
+	if sess.agent != nil {
+		return nil
+	}
+	err := sess.start()
+	if err == nil {
+		return nil
+	}
+	hadMessages := len(sess.inbox) > 0
+	sess.cancelInbox()
+	switch {
+	case errors.Is(err, agent.ErrNoConversation):
+		sess.forgetConversation(err)
+		err = errors.New(lostConversation)
+		sess.update(agent.Update{Type: agent.UpdateExited, Error: err.Error(), Time: time.Now()})
+	case hadMessages:
+		sess.update(agent.Update{Type: agent.UpdateExited, Error: "messages not delivered: " + err.Error(), Time: time.Now()})
+	}
+	return err
+}
+
 func (sess *session) start() error {
-	start := sess.server.harnesses[sess.harness]
+	start := sess.server.harnesses[sess.harness].Start
 	if start == nil {
 		return fmt.Errorf("unknown harness %q", sess.harness)
 	}
@@ -144,14 +237,11 @@ func (sess *session) start() error {
 			Env:      map[string]string{"OX_SOCKET": sess.server.mcp.Socket, "OX_SESSION_ID": sess.id},
 			Approved: approvedTools,
 		},
-		OnUpdate:     sess.update,
+		OnUpdate:     sess.agentUpdate,
 		OnResumable:  sess.markResumable,
 		OnConfigured: sess.adopt,
 		OnError:      func(err error) { log.Printf("session %s: %v", sess.id, err) },
 	})
-	if errors.Is(err, agent.ErrNoConversation) {
-		return sess.forgetConversation(err)
-	}
 	if err != nil {
 		return err
 	}
@@ -171,7 +261,7 @@ func (sess *session) stop() error {
 // for it, and tells every client.
 func (sess *session) parked() {
 	sess.agent = nil
-	sess.inbox = nil
+	sess.cancelInbox()
 	sess.update(agent.Update{Type: agent.UpdateParked, Time: time.Now()})
 }
 
@@ -199,22 +289,19 @@ func (sess *session) save(settings agent.Settings, resumeToken string) error {
 	})
 }
 
-// configured makes settings the session's own and tells every client.
-func (sess *session) configured(settings agent.Settings) {
+// adopt keeps settings in use even when storing them fails.
+func (sess *session) adopt(settings agent.Settings) {
+	if settings == sess.settings {
+		return
+	}
 	sess.settings = settings
+	if err := sess.save(settings, sess.resumeToken); err != nil {
+		log.Printf("session %s: store settings: %v", sess.id, err)
+	}
 	sess.server.broadcast("session/configured", struct {
 		SessionID string `json:"session_id"`
 		agent.Settings
 	}{sess.id, settings})
-}
-
-// adopt takes settings the harness changed itself. The session adopts them
-// even when storing fails, as session/configure does.
-func (sess *session) adopt(settings agent.Settings) {
-	if err := sess.save(settings, sess.resumeToken); err != nil {
-		log.Printf("session %s: store settings: %v", sess.id, err)
-	}
-	sess.configured(settings)
 }
 
 // markResumable keeps the token even when storing it fails, as adopt keeps
@@ -232,15 +319,12 @@ func (sess *session) markResumable(token string) {
 const lostConversation = "Claude could not resume the earlier conversation; the next prompt starts a new one without its context"
 
 // forgetConversation clears a resume token the harness can no longer resume,
-// such as one whose transcript Claude has deleted, and leaves a notice in the
-// transcript. The session forgets the token even when storing that fails,
-// since resuming it can only fail again.
-func (sess *session) forgetConversation(cause error) error {
+// such as one whose transcript Claude has deleted. The session forgets the
+// token even when storing that fails, since resuming it can only fail again.
+func (sess *session) forgetConversation(cause error) {
 	log.Printf("session %s: %v", sess.id, cause)
 	sess.resumeToken = ""
 	if err := sess.save(sess.settings, ""); err != nil {
 		log.Printf("session %s: forget conversation: %v", sess.id, err)
 	}
-	sess.update(agent.Update{Type: agent.UpdateExited, Error: lostConversation, Time: time.Now()})
-	return errors.New(lostConversation)
 }

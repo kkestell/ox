@@ -138,9 +138,10 @@ func (r *relay) rpc(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "unknown connection", http.StatusNotFound)
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, 1<<20))
+	// A 1 MiB prompt can take six times that as JSON escapes, plus the envelope.
+	body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, 8<<20))
 	if _, tooLarge := errors.AsType[*http.MaxBytesError](err); tooLarge {
-		http.Error(w, "request is larger than 1 MiB", http.StatusRequestEntityTooLarge)
+		http.Error(w, "request is larger than 8 MiB", http.StatusRequestEntityTooLarge)
 		return
 	}
 	if err != nil {

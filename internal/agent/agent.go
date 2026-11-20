@@ -21,22 +21,21 @@ type Agent interface {
 	Events() <-chan Event
 	Handle(Event)
 	Snapshot() Snapshot
-	// Send writes input's Content and returns its message ID. The harness
-	// takes it into the running turn, or starts a turn with it, and publishes
-	// its Text and From. Send returns ErrBusy while an input the harness has
-	// not taken yet is queued, or while a configuration is in progress.
-	Send(input Input) (string, error)
+	// Send writes input's Content with its session-assigned ID. It publishes
+	// prompt_queued after writing, then prompt or prompt_cancelled on uptake
+	// or drop. Send returns ErrBusy during configuration or with an untaken input.
+	Send(input Input) error
 	// Approve answers a pending approval, or returns ErrApprovalNotFound.
 	Approve(requestID string, response json.RawMessage) error
 	// Interrupt stops the running turn and drops a queued input with
 	// prompt_cancelled. The turn's end arrives as updates; an idle agent has
 	// nothing to stop.
 	Interrupt() error
-	// Configure applies settings to the running process and calls done, now
-	// or from a later Handle, with the settings the process then uses and the
-	// outcome: ErrBusy unless the agent is idle, and ErrExited if the process
-	// exits first. A failure can leave some of the settings applied.
-	Configure(settings Settings, done func(applied Settings, err error))
+	// Configure applies the changed fields and calls done with the outcome,
+	// now or from a later Handle. Already applied changes are reported through
+	// OnConfigured even if a later change fails. Configure reports ErrBusy unless
+	// idle, or ErrExited if the process exits first.
+	Configure(patch SettingsPatch, done func(error))
 	// Parkable reports that nothing is using the process, so stopping it
 	// loses no work.
 	Parkable() bool
@@ -52,7 +51,11 @@ type Agent interface {
 // Event is a harness's own input, opaque to the server.
 type Event any
 
-type Start func(Options) (Agent, error)
+// Harness starts an agent and may check user prompts before starting it.
+type Harness struct {
+	Start       func(Options) (Agent, error)
+	CheckPrompt func(string) error // nil means the harness accepts all prompts
+}
 
 type Options struct {
 	SessionID string // the session's ID, which the harness's own log lines name
@@ -64,12 +67,11 @@ type Options struct {
 	Settings Settings
 	MCP      MCPServer
 	OnUpdate func(Update)
-	// OnResumable receives the token that resumes a new conversation, once
-	// the harness has saved enough to resume it. It is called at most once.
+	// OnResumable receives the token when a newly observed conversation is
+	// saved and can be resumed, including when the conversation changes.
 	OnResumable func(token string)
-	// OnConfigured receives the settings the process now uses when the harness
-	// changes them itself, without a Configure call, such as leaving plan mode
-	// once its plan is approved. It is called during Handle.
+	// OnConfigured receives every settings change the harness makes, whether
+	// it makes the change itself or acknowledges a Configure control.
 	OnConfigured func(Settings)
 	// OnError receives failures that no call returns, for the session's log.
 	OnError func(error)
@@ -89,10 +91,30 @@ type Settings struct {
 	PermissionMode string `json:"permission_mode"`
 }
 
+// SettingsPatch names only the fields the request changes.
+type SettingsPatch struct {
+	Model          *string `json:"model"`
+	Effort         *string `json:"effort"`
+	PermissionMode *string `json:"permission_mode"`
+}
+
+func (p SettingsPatch) Apply(s Settings) Settings {
+	if p.Model != nil {
+		s.Model = *p.Model
+	}
+	if p.Effort != nil {
+		s.Effort = *p.Effort
+	}
+	if p.PermissionMode != nil {
+		s.PermissionMode = *p.PermissionMode
+	}
+	return s
+}
+
 // Update types.
 const (
 	UpdatePrompt            = "prompt"           // the harness took an input
-	UpdatePromptQueued      = "prompt_queued"    // an input was written; the harness has not taken it yet
+	UpdatePromptQueued      = "prompt_queued"    // an input was accepted; the harness has not taken it yet
 	UpdatePromptCancelled   = "prompt_cancelled" // a queued input was dropped before the harness took it
 	UpdateState             = "state"
 	UpdateTextDelta         = "text_delta"
@@ -119,6 +141,7 @@ type Update struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
 	From      string          `json:"from,omitempty"` // the sending session of a message's prompt updates
+	FromLabel string          `json:"from_label,omitempty"`
 	State     string          `json:"state,omitempty"`
 	Result    *Result         `json:"result,omitempty"`
 	Error     string          `json:"error,omitempty"`
@@ -138,22 +161,12 @@ type Result struct {
 type Snapshot struct {
 	State     string     `json:"state"`
 	Approvals []Approval `json:"approvals"`
-	Queued    *Prompt    `json:"queued,omitempty"`
 }
 
-// Input is what a session gives its harness: the user's prompt, or a
-// message from another session.
+// Input is the user prompt or wrapped message the harness writes to the model.
 type Input struct {
-	Text    string // as the transcript shows it
-	From    string // the sending session's ID; empty for the user's prompt
-	Content string // what the model receives: Text for a prompt, Text wrapped with its sender for a message
-}
-
-// Prompt is an input the harness has written, named by its message ID.
-type Prompt struct {
-	MessageID string `json:"message_id"`
-	Text      string `json:"text"`
-	From      string `json:"from,omitempty"`
+	MessageID string
+	Content   string
 }
 
 type Approval struct {

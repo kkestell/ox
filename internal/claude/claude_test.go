@@ -10,7 +10,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -80,6 +82,83 @@ func TestExitReportedWhileAChildHoldsStdout(t *testing.T) {
 			}
 		case <-timeout:
 			t.Fatal("Claude's exit was not reported while its child held stdout")
+		}
+	}
+}
+
+// The session cannot read events while it writes a prompt. Claude may write
+// more than a pipe holds before reading the prompt, then exit while the
+// session is still busy. Every buffered event must arrive before the exit.
+func TestOutputDrainsBeforeSlowDelivery(t *testing.T) {
+	standIn(t, `
+i=0
+while [ "$i" -lt 256 ]; do
+  printf '{"type":"%s","result":"%02048d"}\n' "$i" 0
+  i=$((i + 1))
+done
+read prompt
+printf '%s\n' '{"type":"result"}'
+printf '%s\n' 'Claude diagnostic' >&2
+exit 3
+`)
+	events := make(chan agent.Event)
+	p, in, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, agent.Settings{}, agent.MCPServer{}, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drained := false
+	t.Cleanup(func() {
+		if !drained {
+			p.cmd.Process.Kill()
+			go func() {
+				for e := range events {
+					if _, ok := e.(processExit); ok {
+						return
+					}
+				}
+			}()
+		}
+	})
+	sent := make(chan error, 1)
+	go func() { sent <- in.Prompt(newUUID(), strings.Repeat("x", 256<<10)) }()
+	select {
+	case err := <-sent:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("prompt write stalled behind unread Claude stdout")
+	}
+	for deadline := time.Now().Add(5 * time.Second); !errors.Is(syscall.Kill(p.cmd.Process.Pid, 0), syscall.ESRCH); {
+		if time.Now().After(deadline) {
+			t.Fatal("Claude could not exit with unread output")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(1100 * time.Millisecond) // let the pipe deadline pass before accepting delivery
+	timeout := time.After(5 * time.Second)
+	for i := range 258 {
+		select {
+		case e := <-events:
+			if _, ok := e.(processExit); ok {
+				drained = true
+			}
+			switch {
+			case i < 256:
+				if m, ok := e.(message); !ok || m.Type != strconv.Itoa(i) || len(m.Result) != 2048 {
+					t.Fatalf("output was lost or reordered at %d", i)
+				}
+			case i == 256:
+				if m, ok := e.(message); !ok || m.Type != "result" {
+					t.Fatalf("the final result did not arrive: %+v", e)
+				}
+			default:
+				if exit, ok := e.(processExit); !ok || exit.err == nil || exit.stderr != "Claude diagnostic" {
+					t.Fatalf("the exit or its diagnostic did not arrive: %+v", e)
+				}
+			}
+		case <-timeout:
+			t.Fatalf("delivery stalled at output %d", i)
 		}
 	}
 }
@@ -164,7 +243,8 @@ func TestClaudeRunsAsAnOxSession(t *testing.T) {
 	}
 	for _, resume := range []bool{false, true} {
 		argv := filepath.Join(t.TempDir(), "argv")
-		standIn(t, "for a in \"$@\"; do printf '%s\\0' \"$a\"; done > "+argv+"\n")
+		cwd := filepath.Join(t.TempDir(), "cwd")
+		standIn(t, "pwd -P > "+cwd+"\nfor a in \"$@\"; do printf '%s\\0' \"$a\"; done > "+argv+"\n")
 		events := make(chan agent.Event, 1)
 		workspace := t.TempDir()
 		if _, _, err := startProcess(workspace, "ox-session", newUUID(), resume, agent.Settings{}, mcp, events); err != nil {
@@ -175,7 +255,18 @@ func TestClaudeRunsAsAnOxSession(t *testing.T) {
 				break
 			}
 		}
-		data, err := os.ReadFile(argv)
+		data, err := os.ReadFile(cwd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := filepath.EvalSymlinks(workspace)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.TrimSpace(string(data)); got != want {
+			t.Errorf("resume %v: cwd %q, want %q", resume, got, want)
+		}
+		data, err = os.ReadFile(argv)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -13,8 +13,8 @@ import (
 
 func main() {
 	log.SetFlags(0)
-	log.SetPrefix("ox-mcp: ")
 	socket, sessionID := os.Getenv("OX_SOCKET"), os.Getenv("OX_SESSION_ID")
+	log.SetPrefix("ox-mcp: session " + sessionID + ": ")
 
 	conn, err := net.Dial("unix", socket)
 	if err != nil {

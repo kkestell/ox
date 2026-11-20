@@ -1,59 +1,66 @@
-import { createSignal, For, Show } from "solid-js";
+import { createSignal, For, onSettled, Show } from "solid-js";
 import type { Selection } from "./App";
-import { createAttempt, type Session, sessionLabel, useOx, type Workspace } from "./ox";
+import { createAttempt, type Session, sessionLabel, useOx } from "./ox";
+
+type DialogRequest =
+  | { kind: "add" }
+  | { kind: "delete"; id: string; label: string }
+  | { kind: "remove"; id: string; path: string };
+
+// The keyed view gives each opening its own element, target, and attempt.
+function WorkspaceDialog(props: { request: DialogRequest; onClose(): void }) {
+  const ox = useOx();
+  const [error, attempt] = createAttempt();
+  const [busy, setBusy] = createSignal(false);
+  const request = props.request;
+  let dialog!: HTMLDialogElement;
+  onSettled(() => dialog.showModal());
+
+  const submit = (event: SubmitEvent & { currentTarget: HTMLFormElement }) => {
+    event.preventDefault();
+    if (busy()) return;
+    const operation =
+      request.kind === "add"
+        ? ox.addWorkspace(String(new FormData(event.currentTarget).get("path")))
+        : request.kind === "delete"
+          ? ox.destroy(request.id)
+          : ox.removeWorkspace(request.id);
+    setBusy(true);
+    attempt(operation.then(() => dialog.close())).finally(() => setBusy(false));
+  };
+
+  return (
+    <dialog ref={dialog} role={request.kind === "add" ? undefined : "alertdialog"} onClose={props.onClose}>
+      <form onSubmit={submit}>
+        {request.kind === "add" ? (
+          <input name="path" placeholder="/absolute/path/to/directory" size="40" required autofocus />
+        ) : request.kind === "delete" ? (
+          <>
+            <h2>Delete session?</h2>
+            <p class="description">This deletes "{request.label}" and its history.</p>
+          </>
+        ) : (
+          <>
+            <h2>Remove workspace?</h2>
+            <p class="description">This removes "{request.path}" from Ox. The directory stays on disk.</p>
+          </>
+        )}
+        <button type="button" onClick={() => dialog.close()}>
+          Cancel
+        </button>
+        <button type="submit" class={{ destructive: request.kind === "delete" }} disabled={busy()}>
+          {request.kind === "add" ? "Add" : request.kind === "delete" ? "Delete" : "Remove"}
+        </button>
+      </form>
+      <Show when={error()}>{(message) => <p role="alert">{message()}</p>}</Show>
+    </dialog>
+  );
+}
 
 export function Sidebar(props: { selected?: Selection; onSelect(selection: Selection): void }) {
   const ox = useOx();
-  const [addError, attemptAdd, clearAddError] = createAttempt();
-  const [deleteError, attemptDelete, clearDeleteError] = createAttempt();
-  const [removeError, attemptRemove, clearRemoveError] = createAttempt();
-  const [deleting, setDeleting] = createSignal<Session>();
-  const [removing, setRemoving] = createSignal<Workspace>();
-  let addDialog!: HTMLDialogElement;
-  let deleteDialog!: HTMLDialogElement;
-  let removeDialog!: HTMLDialogElement;
-
-  const add = (event: SubmitEvent & { currentTarget: HTMLFormElement }) => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    attemptAdd(
-      ox.addWorkspace(String(new FormData(form).get("path"))).then(() => {
-        form.reset();
-        addDialog.close();
-      }),
-    );
-  };
-
-  const sessionsOf = (workspaceId: string) =>
-    Object.values(ox.state.sessions)
-      .filter((s) => s.workspaceId === workspaceId)
-      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
-
+  const [request, setRequest] = createSignal<DialogRequest>();
   const isSelected = (session: Session) => props.selected?.kind === "session" && props.selected.id === session.id;
-
-  const confirmDelete = (session: Session) => {
-    clearDeleteError();
-    setDeleting(session);
-    deleteDialog.showModal();
-  };
-
-  const destroy = (event: SubmitEvent) => {
-    event.preventDefault();
-    const session = deleting();
-    if (session) attemptDelete(ox.destroy(session.id).then(() => deleteDialog.close()));
-  };
-
-  const confirmRemove = (workspace: Workspace) => {
-    clearRemoveError();
-    setRemoving(workspace);
-    removeDialog.showModal();
-  };
-
-  const remove = (event: SubmitEvent) => {
-    event.preventDefault();
-    const workspace = removing();
-    if (workspace) attemptRemove(ox.removeWorkspace(workspace.id).then(() => removeDialog.close()));
-  };
 
   return (
     <nav>
@@ -62,63 +69,23 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
         class="icon folder-plus"
         aria-label="Add workspace"
         title="Add workspace"
-        onClick={() => {
-          clearAddError();
-          addDialog.showModal();
-        }}
+        onClick={() => setRequest({ kind: "add" })}
       />
-      <dialog ref={addDialog}>
-        <form onSubmit={add}>
-          <input name="path" placeholder="/absolute/path/to/directory" size="40" required autofocus />
-          <button type="button" onClick={() => addDialog.close()}>
-            Cancel
-          </button>
-          <button type="submit">Add</button>
-        </form>
-        <Show when={addError()}>{(error) => <p role="alert">{error()}</p>}</Show>
-      </dialog>
-      <dialog ref={deleteDialog} role="alertdialog">
-        <form onSubmit={destroy}>
-          <h2>Delete session?</h2>
-          <Show when={deleting()}>
-            {(session) => <p class="description">This deletes "{sessionLabel(session())}" and its history.</p>}
-          </Show>
-          <button type="button" onClick={() => deleteDialog.close()}>
-            Cancel
-          </button>
-          <button type="submit" class="destructive">
-            Delete
-          </button>
-        </form>
-        <Show when={deleteError()}>{(error) => <p role="alert">{error()}</p>}</Show>
-      </dialog>
-      <dialog ref={removeDialog} role="alertdialog">
-        <form onSubmit={remove}>
-          <h2>Remove workspace?</h2>
-          <Show when={removing()}>
-            {(workspace) => (
-              <p class="description">This removes "{workspace().path}" from Ox. The directory stays on disk.</p>
-            )}
-          </Show>
-          <button type="button" onClick={() => removeDialog.close()}>
-            Cancel
-          </button>
-          <button type="submit">Remove</button>
-        </form>
-        <Show when={removeError()}>{(error) => <p role="alert">{error()}</p>}</Show>
-      </dialog>
+      <Show when={request()} keyed>
+        {(current) => <WorkspaceDialog request={current} onClose={() => setRequest(undefined)} />}
+      </Show>
       <For each={ox.state.workspaces}>
         {(workspace) => (
           <>
             <p title={workspace.path}>
               <span class="name">{workspace.path.split("/").at(-1) || workspace.path}</span>
-              <Show when={sessionsOf(workspace.id).length === 0}>
+              <Show when={workspace.sessions.length === 0}>
                 <button
                   type="button"
                   class="icon trash"
                   aria-label="Remove workspace"
                   title="Remove workspace"
-                  onClick={() => confirmRemove(workspace)}
+                  onClick={() => setRequest({ kind: "remove", id: workspace.id, path: workspace.path })}
                 />
               </Show>
               <button
@@ -130,7 +97,7 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
               />
             </p>
             <ul>
-              <For each={sessionsOf(workspace.id)}>
+              <For each={workspace.sessions}>
                 {(session) => (
                   <li class={{ selected: isSelected(session) }}>
                     <button
@@ -139,12 +106,11 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
                       aria-current={isSelected(session) ? "page" : undefined}
                       onClick={() => props.onSelect({ kind: "session", id: session.id })}
                     >
-                      <span
-                        class={["status", session.state]}
-                        role="img"
-                        title={session.state}
-                        aria-label={session.state}
-                      />
+                      <Show when={session.load.snapshot?.state}>
+                        {(status) => (
+                          <span class={["status", status()]} role="img" title={status()} aria-label={status()} />
+                        )}
+                      </Show>
                       <span class="title">{sessionLabel(session)}</span>
                     </button>
                     <button
@@ -152,7 +118,7 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
                       class="icon trash"
                       aria-label="Delete session"
                       title="Delete session"
-                      onClick={() => confirmDelete(session)}
+                      onClick={() => setRequest({ kind: "delete", id: session.id, label: sessionLabel(session) })}
                     />
                   </li>
                 )}

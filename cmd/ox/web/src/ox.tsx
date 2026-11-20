@@ -11,19 +11,19 @@ import {
   type Prompt,
   type SessionState,
   type Settings,
+  type SettingsPatch,
   type ToolResult,
   type Update,
 } from "./protocol";
 
-export type Workspace = { id: string; path: string };
+type Workspace = { id: string; path: string; sessions: Session[] };
 
 // A session's entries are its conversation, in order. A message is a prompt
 // from another session. A reply is Claude's
 // text up to its next tool call or the end of its turn; a result entry ends a
 // turn. A tool is stopped when its process exited before its result.
 export type Entry =
-  | { kind: "prompt"; text: string }
-  | { kind: "message"; from: string; text: string }
+  | { kind: "prompt"; input: Prompt }
   | { kind: "reply"; text: string }
   | { kind: "tool"; id: string; name: string; input: Record<string, unknown>; result?: ToolResult; stopped?: boolean }
   | { kind: "result"; result: ToolResult }
@@ -33,17 +33,16 @@ export type Approval = { id: string; request: ApprovalRequest };
 
 export type Session = {
   id: string;
-  workspaceId: string;
   harness: string;
-  createdAt: string;
+  load: { kind: "reloading"; snapshot?: SessionSnapshot } | { kind: "live"; snapshot: SessionSnapshot };
+};
+
+export type SessionSnapshot = {
   state: SessionState;
   settings: Settings;
   entries: Entry[];
   approvals: Approval[];
-  // queued is the prompt or message sent while Claude works, until Claude
-  // takes it.
-  queued?: Prompt;
-  synced: boolean;
+  queued: Prompt[];
 };
 
 const settingsOf = (p: Settings): Settings => ({
@@ -55,27 +54,25 @@ const settingsOf = (p: Settings): Settings => ({
 // sessionLabel is the first line of the first prompt the user sent the
 // session, or the start of its ID before it has one.
 export function sessionLabel(session: Session) {
-  const prompt = session.entries.find((e) => e.kind === "prompt");
-  return prompt?.kind === "prompt" ? prompt.text.trim().split("\n")[0] : session.id.slice(0, 8);
+  const prompt = session.load.snapshot?.entries.find((e) => e.kind === "prompt" && e.input.from === undefined);
+  return prompt?.kind === "prompt" ? prompt.input.text.trim().split("\n")[0] : session.id.slice(0, 8);
 }
 
-function stopTools(session: Session) {
+function stopTools(session: SessionSnapshot) {
   for (const e of session.entries) if (e.kind === "tool" && !e.result) e.stopped = true;
 }
 
-function apply(session: Session, u: Update) {
+function apply(session: SessionSnapshot, u: Update) {
   switch (u.type) {
     case "prompt":
-      session.entries.push(
-        u.from === undefined ? { kind: "prompt", text: u.text } : { kind: "message", from: u.from, text: u.text },
-      );
-      if (session.queued?.message_id === u.message_id) session.queued = undefined;
+      session.entries.push({ kind: "prompt", input: u });
+      session.queued = session.queued.filter((p) => p.message_id !== u.message_id);
       break;
     case "prompt_queued":
-      session.queued = { message_id: u.message_id, text: u.text, from: u.from };
+      session.queued.push(u);
       break;
     case "prompt_cancelled":
-      if (session.queued?.message_id === u.message_id) session.queued = undefined;
+      session.queued = session.queued.filter((p) => p.message_id !== u.message_id);
       break;
     case "text_delta": {
       const last = session.entries.at(-1);
@@ -150,21 +147,32 @@ function createSessionControl(
 ) {
   const [text, setText] = createSignal("");
   const [sending, setSending] = createSignal(false);
-  const [requested, setRequested] = createSignal<Settings>();
+  const [requested, setRequested] = createSignal<SettingsPatch>();
   const [error, attempt, clearError] = createAttempt();
   const [notice, setNotice] = createSignal<string>();
   const [creating, setCreating] = createSignal(false);
-  // sent is the message ID of the latest prompt this page sent.
-  let sent: string | undefined;
-  const ready = () => connected() && (session()?.synced ?? true);
-  // idle is whether the session can take a settings change.
-  const idle = () => session()?.state === "idle" || session()?.state === "parked";
-  const free = () => ready() && !creating() && !sending() && requested() === undefined;
-  const canSend = () => {
-    const s = session();
-    return free() && s !== undefined && s.queued === undefined;
+  // Keep a successfully sent prompt only until Claude takes it or it drops.
+  let sent: { id: string; text: string } | undefined;
+  const live = () => {
+    const load = session()?.load;
+    return load?.kind === "live" ? load.snapshot : undefined;
   };
-  const canConfigure = () => free() && idle();
+  const free = () => connected() && !creating() && !sending() && requested() === undefined;
+  const canSend = () => free() && live()?.queued.length === 0;
+  const canConfigure = () => free() && (live()?.state === "idle" || live()?.state === "parked");
+
+  function finishPrompt(id: string, dropped: boolean) {
+    if (sent?.id !== id) return;
+    const { text: prompt } = sent;
+    sent = undefined;
+    if (dropped) setText((draft) => (draft ? `${prompt}\n${draft}` : prompt));
+  }
+
+  function reconcilePrompt(snapshot: SessionSnapshot) {
+    const id = sent?.id;
+    if (id === undefined || snapshot.queued.some((p) => p.message_id === id)) return;
+    finishPrompt(id, !snapshot.entries.some((e) => e.kind === "prompt" && e.input.message_id === id));
+  }
   const start = (request: Promise<unknown>) => {
     setNotice(undefined);
     return attempt(request);
@@ -173,8 +181,12 @@ function createSessionControl(
   function post(prompt: string) {
     setSending(true);
     const request = rpc("session/send", { session_id: id, text: prompt }).then((result) => {
-      sent = result.message_id;
-      if (text() === prompt) setText("");
+      sent = { id: result.message_id, text: prompt };
+      setText((draft) => (draft === prompt ? "" : draft));
+      // The daemon publishes the input before replying, so a live snapshot
+      // already knows whether it was queued, taken, or dropped.
+      const snapshot = live();
+      if (snapshot) reconcilePrompt(snapshot);
     });
     start(request).finally(() => setSending(false));
   }
@@ -191,7 +203,6 @@ function createSessionControl(
     // notice is information about the session that is not an error.
     notice,
     creating,
-    idle,
     canSend,
     canConfigure,
     // requested is the settings a configuration in flight asks for.
@@ -201,36 +212,39 @@ function createSessionControl(
     // create already reached oxd, it recovers instead of sending.
     create(workspaceId: string, harness: string, settings: Settings, onCreated: () => void) {
       const prompt = text();
-      if (!ready() || creating() || !prompt.trim()) return;
+      if (!connected() || creating() || !prompt.trim()) return;
       setCreating(true);
-      const request = rpc("session/create", { session_id: id, workspace_id: workspaceId, harness, ...settings }).then(
-        (result) => {
-          setCreating(false);
-          if (result.existing) recover();
-          else post(prompt);
-          onCreated();
-        },
-      );
+      const { effort, ...required } = settings;
+      const request = rpc("session/create", {
+        session_id: id,
+        workspace_id: workspaceId,
+        harness,
+        ...required,
+        ...(effort ? { effort } : {}),
+      }).then((result) => {
+        setCreating(false);
+        if (result.existing) recover();
+        else post(prompt);
+        onCreated();
+      });
       start(request).finally(() => setCreating(false));
     },
     recover,
     send(prompt: string) {
       if (canSend() && prompt.trim()) post(prompt);
     },
-    // restore returns a dropped prompt this page sent to the composer, ahead
-    // of text typed since.
-    restore(messageId: string, prompt: string) {
-      if (messageId === sent) setText(text() ? `${prompt}\n${text()}` : prompt);
-    },
-    configure(changes: Partial<Settings>) {
-      const current = session()?.settings;
+    finishPrompt,
+    reconcilePrompt,
+    configure(changes: SettingsPatch) {
+      const current = live()?.settings;
       if (!canConfigure() || !current) return;
-      const changed = Object.fromEntries(
-        Object.entries(changes).filter(([key, value]) => current[key as keyof Settings] !== value),
-      ) as Partial<Settings>;
-      if (!Object.keys(changed).length) return;
-      setRequested({ ...current, ...changed });
-      const request = rpc("session/configure", { session_id: id, ...changed });
+      const changed = Object.entries(changes).filter(
+        ([key, value]) => value !== undefined && current[key as keyof Settings] !== value,
+      );
+      if (!changed.length) return;
+      const patch = Object.fromEntries(changed) as SettingsPatch;
+      setRequested(patch);
+      const request = rpc("session/configure", { session_id: id, ...patch });
       start(request).finally(() => setRequested(undefined));
     },
     interrupt: () => start(rpc("session/interrupt", { session_id: id })),
@@ -246,16 +260,21 @@ function createOx() {
     harnesses: Record<string, Harness>;
     defaults?: Defaults;
     workspaces: Workspace[];
-    sessions: Record<string, Session>;
   }>({
     harnesses: {},
     workspaces: [],
-    sessions: {},
   });
   const [error, setError] = createSignal<string>();
   const controls = new Map<string, SessionControl>();
   const [ready, setReady] = createSignal(false);
   let connection!: Connection;
+
+  const workspaceOf = (id: string) => containing(state.workspaces, id);
+  const containing = (workspaces: Workspace[], id: string) =>
+    workspaces.find((w) => w.sessions.some((s) => s.id === id));
+  const sessionIn = (workspaces: Workspace[], id: string) =>
+    containing(workspaces, id)?.sessions.find((s) => s.id === id);
+  const session = (id: string) => sessionIn(state.workspaces, id);
 
   // control returns the page's control of a session, which may not be loaded
   // yet.
@@ -265,7 +284,7 @@ function createOx() {
       c = createSessionControl(
         id,
         (method, params) => connection.rpc(method, params),
-        () => state.sessions[id],
+        () => session(id),
         ready,
       );
       controls.set(id, c);
@@ -273,12 +292,9 @@ function createOx() {
     return c;
   }
 
-  // load adds a session, or brings a loaded one up to date in place, which
-  // keeps its view and the view's state. Its settings and earlier updates
-  // come in the session/get response, and its updates apply from the response
-  // onward. A session destroyed before the response is not added; its
-  // destroyed event has already arrived.
-  async function load(id: string, workspaceId: string, harness: string, createdAt: string) {
+  // Install the snapshot without replacing the session's view or its open
+  // tool details. Live updates start at the session/get response boundary.
+  async function load(id: string) {
     let result: Methods["session/get"][1];
     try {
       result = await connection.rpc("session/get", { session_id: id });
@@ -286,36 +302,32 @@ function createOx() {
       if (e instanceof RpcError && e.code === notFound) return;
       throw e;
     }
-    const session: Session = {
-      id,
-      workspaceId,
-      harness,
-      createdAt,
+    const snapshot: SessionSnapshot = {
       state: result.state,
       settings: settingsOf(result),
       entries: [],
       approvals: [],
-      synced: true,
+      queued: [],
     };
-    for (const u of result.history) apply(session, u);
-    // The history's parked updates set the state as they did live; the
-    // response's state is the current one.
-    session.state = result.state;
-    for (const a of result.approvals) session.approvals.push({ id: a.request_id, request: a.request });
-    session.queued = result.queued;
+    for (const u of result.history) apply(snapshot, u);
+    // History can include old parked updates. The response has current state.
+    snapshot.state = result.state;
+    snapshot.approvals = result.approvals.map((a) => ({ id: a.request_id, request: a.request }));
+    snapshot.queued = result.queued;
     setState((s) => {
-      const loaded = s.sessions[id];
-      if (!loaded) {
-        s.sessions[id] = session;
-        return;
+      const loaded = sessionIn(s.workspaces, id);
+      if (!loaded) return;
+      const previous = loaded.load.snapshot;
+      if (previous) {
+        previous.state = snapshot.state;
+        previous.settings = snapshot.settings;
+        previous.queued = snapshot.queued;
+        reconcile(snapshot.entries, null)(previous.entries);
+        reconcile(snapshot.approvals, "id")(previous.approvals);
       }
-      loaded.synced = true;
-      loaded.state = session.state;
-      loaded.settings = session.settings;
-      loaded.queued = session.queued;
-      reconcile(session.entries, null)(loaded.entries);
-      reconcile(session.approvals, "id")(loaded.approvals);
+      loaded.load = { kind: "live", snapshot: previous ?? snapshot };
     });
+    controls.get(id)?.reconcilePrompt(snapshot);
   }
 
   // A new oxd connection has missed every notification sent while the page
@@ -328,52 +340,61 @@ function createOx() {
     setState((s) => {
       s.harnesses = harnesses;
       s.defaults = defaults;
-      reconcile(
-        workspaces.map((w) => ({ id: w.workspace_id, path: w.path })),
-        "id",
-      )(s.workspaces);
-      for (const id of Object.keys(s.sessions)) {
-        if (!listed.has(id)) {
-          delete s.sessions[id];
-          controls.delete(id);
-        }
+      const previous = new Map(
+        s.workspaces.flatMap((w) => w.sessions.map((session) => [session.id, session] as const)),
+      );
+      for (const id of previous.keys()) {
+        if (!listed.has(id)) controls.delete(id);
       }
+      s.workspaces = workspaces.map((w) => ({
+        id: w.workspace_id,
+        path: w.path,
+        sessions: w.sessions.map(
+          ({ session_id: id, harness }) => previous.get(id) ?? { id, harness, load: { kind: "reloading" } },
+        ),
+      }));
     });
     setReady(true);
-    await Promise.all(
-      workspaces.flatMap((w) => w.sessions.map((s) => load(s.session_id, w.workspace_id, s.harness, s.created_at))),
-    );
+    await Promise.all([...listed].map(load));
   }
 
   function receive({ method, params }: Notification) {
     switch (method) {
-      case "session/update":
-        if (params.type === "prompt_cancelled")
-          controls.get(params.session_id)?.restore(params.message_id, params.text);
-        // Updates for a session not loaded yet are in the history it loads with.
+      case "session/update": {
+        if (session(params.session_id)?.load.kind !== "live") return;
+        if (params.type === "prompt" || params.type === "prompt_cancelled") {
+          controls.get(params.session_id)?.finishPrompt(params.message_id, params.type === "prompt_cancelled");
+        }
         return setState((s) => {
-          const session = s.sessions[params.session_id];
-          if (session) apply(session, params);
+          const load = sessionIn(s.workspaces, params.session_id)?.load;
+          if (load?.kind === "live") apply(load.snapshot, params);
         });
+      }
       case "workspace/created":
         return setState((s) => {
-          s.workspaces.push({ id: params.workspace_id, path: params.path });
+          s.workspaces.push({ id: params.workspace_id, path: params.path, sessions: [] });
         });
       case "workspace/removed":
         return setState((s) => {
           s.workspaces = s.workspaces.filter((w) => w.id !== params.workspace_id);
         });
       case "session/created":
-        return void load(params.session_id, params.workspace_id, params.harness, params.created_at).catch(fail);
+        setState((s) => {
+          const workspace = s.workspaces.find((w) => w.id === params.workspace_id);
+          workspace?.sessions.push({ id: params.session_id, harness: params.harness, load: { kind: "reloading" } });
+        });
+        if (ready()) void load(params.session_id).catch(fail);
+        return;
       case "session/configured":
         return setState((s) => {
-          const session = s.sessions[params.session_id];
-          if (session) session.settings = settingsOf(params);
+          const load = sessionIn(s.workspaces, params.session_id)?.load;
+          if (load?.kind === "live") load.snapshot.settings = settingsOf(params);
         });
       case "session/destroyed":
         controls.delete(params.session_id);
         return setState((s) => {
-          delete s.sessions[params.session_id];
+          const workspace = containing(s.workspaces, params.session_id);
+          if (workspace) workspace.sessions = workspace.sessions.filter((s) => s.id !== params.session_id);
         });
     }
   }
@@ -389,7 +410,11 @@ function createOx() {
       onError: (error) => {
         setReady(false);
         setState((s) => {
-          for (const session of Object.values(s.sessions)) session.synced = false;
+          for (const workspace of s.workspaces) {
+            for (const session of workspace.sessions) {
+              session.load = { kind: "reloading", snapshot: session.load.snapshot };
+            }
+          }
         });
         fail(error);
       },
@@ -401,6 +426,8 @@ function createOx() {
     state,
     error,
     ready,
+    workspaceOf,
+    session,
     addWorkspace: (path: string) => connection.rpc("workspace/create", { path }),
     removeWorkspace: (id: string) => connection.rpc("workspace/remove", { workspace_id: id }),
     control,

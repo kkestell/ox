@@ -2,6 +2,7 @@
 // which echoes each prompt back a word at a time, or first asks to approve a
 // tool call for a prompt "approve <tool> <input JSON>".
 import { createConnection } from "node:net";
+import { DatabaseSync } from "node:sqlite";
 import { expect, type Page, test } from "@playwright/test";
 import { fakeConfig, haikuConfig, type Services, startServices } from "./services";
 import { hold, open, prompt, send, sessionButton, stop } from "./ui";
@@ -51,6 +52,9 @@ test("a reply renders as Markdown and its prompt stays plain", async ({ page }) 
     "",
     "- one",
     "- two",
+    "",
+    "1. first",
+    "2. second",
   ].join("\n");
   await prompt(page).fill(text);
   await prompt(page).press("Enter");
@@ -58,7 +62,10 @@ test("a reply renders as Markdown and its prompt stays plain", async ({ page }) 
   const reply = page.locator(".reply");
   await expect(reply.locator("strong")).toHaveText("bold");
   await expect(reply.locator("code")).toHaveText("code");
-  await expect(reply.locator("li")).toHaveText(["one", "two"]);
+  await expect(reply.locator("ul li")).toHaveText(["one", "two"]);
+  await expect(reply.locator("ul")).toHaveCSS("list-style-type", "disc");
+  await expect(reply.locator("ol li")).toHaveText(["first", "second"]);
+  await expect(reply.locator("ol")).toHaveCSS("list-style-type", "decimal");
   await expect(reply.locator("b")).toHaveCount(0);
   await expect(reply).toContainText("<b>raw</b>");
   await expect(reply.locator("img")).toHaveCount(0);
@@ -116,16 +123,49 @@ test("a session created after the user moves on leaves the selection alone", asy
   await expect(page.locator(".reply")).toHaveText("You said: background start");
 });
 
-test("a pending configuration shows as pending and holds Send until it is confirmed", async ({ page }) => {
+test("a rejected creation keeps the draft and its settings after switching views", async ({ page }) => {
+  await open(page, services);
+  await newSession(page, "existing conversation");
+  await page.getByRole("button", { name: "New session" }).click();
+  const mode = page.locator("select[name=permission_mode]");
+  await mode.selectOption("plan");
+  const create = await hold(page, "session/create");
+  await prompt(page).fill("keep this draft");
+  await prompt(page).press("Enter");
+  await create.arrived;
+  await sessionButton(page, "existing conversation").click();
+  create.release({ model: "not-offered" });
+  const error = page.getByRole("alert").filter({ hasText: "not-offered" });
+  await expect(error).toBeVisible();
+  await expect(page.locator(".prompt")).toHaveText(["existing conversation"]);
+  await error.getByRole("button", { name: "Reopen draft" }).click();
+  await expect(page.getByRole("alert")).toContainText("not-offered");
+  await expect(prompt(page)).toHaveValue("keep this draft");
+  await expect(mode).toHaveValue("plan");
+  await send(page).click();
+  await expect(page.locator(".prompt")).toHaveText(["keep this draft"]);
+  await expect(mode).toHaveValue("plan");
+});
+
+test("a pending configuration shows as pending and holds Send until it is confirmed", async ({ page, context }) => {
   await open(page, services);
   await newSession(page, "configure me");
+  const other = await context.newPage();
+  await other.goto(page.url());
   const mode = page.locator("select[name=permission_mode]");
   const configure = await hold(page, "session/configure");
   await mode.selectOption("plan");
   await configure.arrived;
   await expect(mode).toHaveAttribute("aria-busy", "true");
   await expect(page.locator(".select .loader")).toBeVisible();
-  await expect(page.locator("button.picker")).not.toHaveAttribute("aria-busy");
+  const picker = page.locator("button.picker");
+  await expect(picker).not.toHaveAttribute("aria-busy");
+  await other.locator("button.picker").click();
+  await other.getByRole("slider", { name: "Effort" }).press("End");
+  await expect(picker).toContainText("High");
+  await expect(picker).not.toHaveAttribute("aria-busy");
+  await expect(mode).toHaveValue("plan");
+  await expect(mode).toHaveAttribute("aria-busy", "true");
   await prompt(page).fill("after configuring");
   await expect(send(page)).toBeDisabled();
   await prompt(page).press("Enter");
@@ -161,13 +201,110 @@ test("a reconnect keeps typed text and sends nothing again", async ({ page }) =>
   await expect(page.locator(".prompt")).toHaveText(["sent once"]);
 });
 
+test("a send cut off after acceptance shows an error without resending", async ({ page }) => {
+  await cutReply(page, "message_id");
+  await open(page, services);
+  await newSession(page, "before disconnection");
+  const sends: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() !== "POST" || !request.url().includes("/rpc")) return;
+    const body = request.postDataJSON();
+    if (body.method === "session/send") sends.push(body.params.text);
+  });
+  await armCutReply(page);
+  await prompt(page).fill("accepted once");
+  await prompt(page).press("Enter");
+  await expect(page.locator("body")).toHaveAttribute("data-cut-reply", "held");
+  await services.restartRelay();
+  await expect(page.locator(".log ~ [role=alert]")).toContainText("Lost the connection");
+  await expect(send(page)).toBeEnabled();
+  await expect(page.locator(".prompt")).toHaveText(["before disconnection", "accepted once"]);
+  expect(sends).toEqual(["accepted once"]);
+});
+
+test("Shift+Enter inserts a newline and Enter during composition doesn't send", async ({ page }) => {
+  await open(page, services);
+  await newSession(page, "keyboard test");
+  await prompt(page).fill("first line");
+  await prompt(page).press("Shift+Enter");
+  await prompt(page).pressSequentially("second line");
+  await expect(prompt(page)).toHaveValue("first line\nsecond line");
+  // Enter must reach the IME rather than being consumed by the send handler.
+  const reachesIME = await prompt(page).evaluate((input) =>
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true, cancelable: true }),
+    ),
+  );
+  expect(reachesIME).toBe(true);
+  await expect(page.locator(".prompt")).toHaveText(["keyboard test"]);
+  await expect(prompt(page)).toHaveValue("first line\nsecond line");
+  await prompt(page).press("Enter");
+  await expect(page.locator(".prompt")).toHaveText(["keyboard test", "first line second line"]);
+});
+
+test("overflowing output follows only while the reader is at the bottom", async ({ page }) => {
+  await open(page, services);
+  await newSession(page, Array.from({ length: 90 }, (_, i) => `line${i}`).join("\n"));
+  const log = page.locator(".log");
+  // Measure viewport positions rather than depending on the scroll origin.
+  const distance = () =>
+    log.evaluate((el) =>
+      Math.round(el.firstElementChild!.getBoundingClientRect().bottom - el.getBoundingClientRect().bottom),
+    );
+  const firstPromptY = () =>
+    log
+      .locator(".prompt")
+      .first()
+      .evaluate((el) => el.getBoundingClientRect().top);
+  await expect.poll(firstPromptY).toBeLessThan(-100);
+  await expect.poll(distance).toBeLessThanOrEqual(1);
+
+  // Growing and shrinking the composer changes the transcript viewport, but
+  // is not a scroll gesture and must not stop it following the bottom.
+  const height = () => log.evaluate((el) => el.clientHeight);
+  const originalHeight = await height();
+  await prompt(page).fill("draft line\n".repeat(8));
+  await expect.poll(height).toBeLessThan(originalHeight);
+  await expect.poll(distance).toBeLessThanOrEqual(1);
+  await prompt(page).clear();
+  await expect.poll(height).toBe(originalHeight);
+  await expect.poll(distance).toBeLessThanOrEqual(1);
+
+  await prompt(page).fill("follow this output");
+  await prompt(page).press("Enter");
+  await expect(page.locator(".reply").last()).toHaveText("You said: follow this output");
+  await expect(stop(page)).toHaveCount(0);
+  await expect.poll(distance).toBeLessThanOrEqual(1);
+
+  await log.hover();
+  await page.mouse.wheel(0, -20);
+  await expect.poll(distance).toBe(20);
+  const scrolledUp = await firstPromptY();
+  await prompt(page).fill("do not follow this output");
+  await prompt(page).press("Enter");
+  await expect(page.locator(".reply").last()).toHaveText("You said: do not follow this output");
+  await expect(stop(page)).toHaveCount(0);
+  await expect.poll(firstPromptY).toBe(scrolledUp);
+  expect(await distance()).toBeGreaterThan(20);
+
+  await log.hover();
+  await page.mouse.wheel(0, 500);
+  await expect.poll(distance).toBeLessThanOrEqual(1);
+  await prompt(page).fill("follow again");
+  await prompt(page).press("Enter");
+  await expect(page.locator(".reply").last()).toHaveText("You said: follow again");
+  await expect(stop(page)).toHaveCount(0);
+  await expect.poll(distance).toBeLessThanOrEqual(1);
+});
+
 test("an oversized prompt fails visibly and stays in the box", async ({ page }) => {
   await open(page, services);
   await newSession(page, "small prompt");
-  const large = "x".repeat(1 << 20);
+  // The limit is UTF-8 bytes of text, not the length of the JSON request.
+  const large = `${"é".repeat(1 << 19)}x`;
   await prompt(page).fill(large);
   await prompt(page).press("Enter");
-  await expect(page.getByRole("alert")).toHaveText("request is larger than 1 MiB");
+  await expect(page.getByRole("alert")).toHaveText("prompt is larger than 1 MiB");
   await expect(send(page)).toBeEnabled();
   await expect(prompt(page)).toHaveValue(large);
 });
@@ -347,35 +484,83 @@ async function messaging(page: Page) {
   return { a, b };
 }
 
-test("a message from another session shows its sender, pending until Claude takes it", async ({ page }) => {
+test("all waiting inputs show in order with their send-time labels", async ({ page }) => {
   const { a, b } = await messaging(page);
+  await prompt(page).fill("steer");
+  await prompt(page).press("Enter");
+  const queued = page.locator(".prompt.queued");
+  await expect(queued).toHaveText(["steer"]);
   expect(await sendMessage(a, b, "hello from A")).toBe(`Message queued for ${b}.`);
-  const pending = page.locator(".prompt.queued.message");
-  await expect(pending.locator(".from")).toHaveText("first from A");
-  await expect(pending).toContainText("hello from A");
-  await expect(send(page)).toBeDisabled();
+  await sendMessage(a, b, "another from A");
+  const checkPending = async () => {
+    const expected = ["steer", "first from Ahello from A", "first from Aanother from A"];
+    await expect(queued).toHaveText(expected);
+    await expect(page.locator(".transcript > :nth-last-child(-n+3)")).toHaveText(expected);
+    await expect(send(page)).toBeDisabled();
+  };
+  await checkPending();
 
+  // Even deleting the sender doesn't change the label recorded on its messages.
+  const sender = page.locator("nav li").filter({ hasText: "first from A" });
+  await sender.getByRole("button", { name: "Delete session" }).click();
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(sender).toHaveCount(0);
+  await page.reload();
+  await checkPending();
   const card = page.locator(".approval");
   await card.getByLabel("Allow").check();
   await card.getByRole("button", { name: "Submit" }).click();
   await expect(page.locator(".prompt.queued")).toHaveCount(0);
   const message = page.locator(".prompt.message");
-  await expect(message.locator(".from")).toHaveText("first from A");
-  await expect(message).toContainText("hello from A");
-  await expect(page.locator(".reply").last()).toContainText("hello from A");
+  await expect(message.locator(".from")).toHaveText(["first from A", "first from A"]);
+  await expect(message).toHaveText(["first from Ahello from A", "first from Aanother from A"]);
+  await expect(page.locator(".reply").last()).toContainText("another from A");
   await expect(stop(page)).toHaveCount(0);
 
   await page.reload();
-  await expect(message.locator(".from")).toHaveText("first from A");
-  await expect(message).toContainText("hello from A");
+  await expect(message.locator(".from")).toHaveText(["first from A", "first from A"]);
+  await expect(message).toHaveText(["first from Ahello from A", "first from Aanother from A"]);
   await expect(sessionButton(page, "first from B")).toHaveCount(1);
+});
+
+test("a recorded message without a saved label still shows its sender", async ({ page }) => {
+  await open(page, services);
+  await newSession(page, "legacy sender");
+  const sender = sessionId(page);
+  await newSession(page, "legacy recipient");
+  const recipient = sessionId(page);
+  await sendMessage(sender, recipient, "older message");
+  await expect(page.locator(".reply").last()).toContainText("older message");
+  await expect(stop(page)).toHaveCount(0);
+
+  const database = new DatabaseSync(services.database);
+  try {
+    const changed = database
+      .prepare(
+        "UPDATE events SET data = json_remove(data, '$.from_label') WHERE session_id = ? AND data ->> 'from' = ?",
+      )
+      .run(recipient, sender);
+    expect(changed.changes).toBe(1);
+  } finally {
+    database.close();
+  }
+
+  const from = page.locator(".prompt.message .from");
+  await page.reload();
+  await expect(from).toHaveText("legacy sender");
+
+  const row = page.locator("nav li").filter({ hasText: "legacy sender" });
+  await row.getByRole("button", { name: "Delete session" }).click();
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(from).toHaveText(sender.slice(0, 8));
 });
 
 test("Stop drops a pending message without touching the composer", async ({ page }) => {
   const { a, b } = await messaging(page);
   await prompt(page).fill("draft");
   await sendMessage(a, b, "hello from A");
-  await expect(page.locator(".prompt.queued.message")).toContainText("hello from A");
+  await sendMessage(a, b, "another from A");
+  await expect(page.locator(".prompt.queued.message")).toHaveCount(2);
   await stop(page).click();
   await expect(page.locator(".prompt.queued")).toHaveCount(0);
   await expect(page.locator(".prompt.message")).toHaveCount(0);
@@ -383,37 +568,56 @@ test("Stop drops a pending message without touching the composer", async ({ page
   await expect(page.locator(".error")).toHaveText("Interrupted");
 });
 
-test("a reconnect clears a pending prompt Claude took while the page was away", async ({ page, context }) => {
-  await open(page, services);
-  await page.getByRole("button", { name: "New session" }).click();
-  await ask(page, "Bash", "{}");
-  await prompt(page).fill("steer");
-  await prompt(page).press("Enter");
-  await expect(page.locator(".prompt.queued")).toHaveText("steer");
-  const other = await context.newPage();
-  await other.goto(page.url());
-  await expect(other.locator(".prompt.queued")).toHaveText("steer");
+for (const outcome of ["taken", "dropped"] as const) {
+  test(`a reconnect reconciles a prompt ${outcome} while the page was away`, async ({ page, context }) => {
+    await open(page, services);
+    await page.getByRole("button", { name: "New session" }).click();
+    await ask(page, "Bash", "{}");
+    await prompt(page).fill("steer");
+    await prompt(page).press("Enter");
+    await expect(page.locator(".prompt.queued")).toHaveText("steer");
+    const other = await context.newPage();
+    await other.goto(page.url());
+    await expect(other.locator(".prompt.queued")).toHaveText("steer");
 
-  // The page stays disconnected while the other page reconnects and lets
-  // the harness take the prompt.
-  await page.route("**/events", (route) => route.abort());
-  const reloaded = other.waitForResponse(
-    (r) => r.url().includes("/rpc") && r.request().postDataJSON()?.method === "session/get",
-  );
-  await services.restartRelay();
-  await reloaded;
-  const card = other.locator(".approval");
-  await card.getByLabel("Allow").check();
-  await card.getByRole("button", { name: "Submit" }).click();
-  await expect(other.locator(".reply").last()).toHaveText("You said: steer");
-  await expect(page.locator(".prompt.queued")).toHaveText("steer");
+    await expect(prompt(page)).toHaveValue("");
+    await prompt(page).fill("next draft");
+    // The page stays disconnected while the other page resolves the prompt.
+    await page.route("**/events", (route) => route.abort());
+    await services.restartRelay();
+    await expect(page.getByRole("alert").filter({ hasText: "Lost the connection" })).toBeVisible();
+    // Wait for the other page's new snapshot, not its old approval card or
+    // the HTTP acknowledgement of a session/get for some other session.
+    await other.reload();
+    await expect(other.locator(".prompt.queued")).toHaveText("steer");
+    if (outcome === "taken") {
+      const card = other.locator(".approval");
+      await card.getByLabel("Allow").check();
+      await card.getByRole("button", { name: "Submit" }).click();
+      await expect(other.locator(".reply").last()).toHaveText("You said: steer");
+    } else {
+      await stop(other).click();
+      await expect(other.locator(".error")).toHaveText("Interrupted");
+      await expect(prompt(other)).toHaveValue("");
+    }
+    await expect(page.locator(".prompt.queued")).toHaveText("steer");
 
-  await page.unroute("**/events");
-  await expect(page.locator(".reply").last()).toHaveText("You said: steer", { timeout: 15_000 });
-  await expect(page.locator(".prompt.queued")).toHaveCount(0);
-  await expect(page.locator(".prompt")).toHaveText(["approve Bash {}", "steer"]);
-  await expect(send(page)).toBeEnabled();
-});
+    await page.unroute("**/events");
+    await expect(send(page)).toBeEnabled({ timeout: 15_000 });
+    const expected = outcome === "taken" ? ["approve Bash {}", "steer"] : ["approve Bash {}"];
+    const composer = outcome === "taken" ? "next draft" : "steer\nnext draft";
+    await expect(page.locator(".prompt")).toHaveText(expected);
+    await expect(prompt(page)).toHaveValue(composer);
+    // A later reload of the session must not restore the same input again.
+    const snapshot = await hold(page, "session/get", sessionId(page));
+    await services.restartRelay();
+    await snapshot.arrived;
+    snapshot.release();
+    await expect(send(page)).toBeEnabled();
+    await expect(prompt(page)).toHaveValue(composer);
+    await expect(page.locator(".prompt")).toHaveText(expected);
+  });
+}
 
 test("AskUserQuestion is answered from a form", async ({ page }) => {
   await open(page, services);
@@ -517,30 +721,69 @@ test("a session whose harness is no longer offered shows its settings", async ({
   }
 });
 
-test("a lost creation reply is recovered after leaving the draft", async ({ page }) => {
-  await page.addInitScript(() => {
+test("reselecting a model repairs a retired effort when there is only one choice", async ({ page }) => {
+  await open(page, services);
+  await newSession(page, "retired effort");
+  const picker = page.locator(".settings .picker");
+  const effort = page.getByRole("slider", { name: "Effort" });
+  await picker.click();
+  await effort.press("End");
+  await expect(picker).toContainText("High");
+  await expect(picker).not.toHaveAttribute("aria-busy");
+  await page.keyboard.press("Escape");
+  const model = fakeConfig.harnesses.fake.models[0];
+  const config = {
+    ...fakeConfig,
+    harnesses: { fake: { ...fakeConfig.harnesses.fake, models: [{ ...model, efforts: model.efforts.slice(0, 1) }] } },
+  };
+  await services.restartDaemon(config);
+  try {
+    await expect(picker).toContainText("high");
+    await picker.click();
+    await expect(effort).toBeDisabled();
+    await page.getByRole("option", { name: "Echo" }).click();
+    await expect(picker).toContainText("Low");
+    await expect(picker).not.toHaveAttribute("aria-busy");
+    await page.reload();
+    await expect(picker).toContainText("Low");
+  } finally {
+    await services.restartDaemon(fakeConfig);
+  }
+});
+
+// Withhold an accepted reply at the SSE boundary, leaving the call pending.
+async function cutReply(page: Page, field: "session_id" | "message_id") {
+  await page.addInitScript((field) => {
     const Original = window.EventSource;
     window.EventSource = class extends Original {
       constructor(url: string | URL, init?: EventSourceInit) {
         super(url, init);
         this.addEventListener("message", (event) => {
-          if (document.body.dataset.dropCreate && JSON.parse(event.data).result?.session_id) {
-            delete document.body.dataset.dropCreate;
+          if (document.body.dataset.cutReply === "armed" && JSON.parse(event.data).result?.[field]) {
+            document.body.dataset.cutReply = "held";
             event.stopImmediatePropagation();
           }
         });
       }
     };
+  }, field);
+}
+
+const armCutReply = (page: Page) =>
+  page.evaluate(() => {
+    document.body.dataset.cutReply = "armed";
   });
+
+test("a lost creation reply is recovered after leaving the draft", async ({ page }) => {
+  await cutReply(page, "session_id");
   await open(page, services);
   await newSession(page, "another conversation");
   const before = await page.locator("nav button.open").count();
   await page.getByRole("button", { name: "New session" }).click();
-  await page.evaluate(() => {
-    document.body.dataset.dropCreate = "true";
-  });
+  await armCutReply(page);
   await prompt(page).fill("recover my prompt");
   await prompt(page).press("Enter");
+  await expect(page.locator("body")).toHaveAttribute("data-cut-reply", "held");
   await expect(page.locator("nav button.open")).toHaveCount(before + 1);
   await prompt(page).fill("recover my edited prompt");
   await sessionButton(page, "another conversation").click();
@@ -552,6 +795,57 @@ test("a lost creation reply is recovered after leaving the draft", async ({ page
   await send(page).click();
   await expect(page.locator(".reply")).toHaveText("You said: recover my edited prompt");
   await expect(page.locator("nav button.open")).toHaveCount(before + 1);
+});
+
+test("session list membership and ordering don't wait for transcripts", async ({ page }) => {
+  const isolated = await startServices(fakeConfig);
+  try {
+    await open(page, isolated);
+    const firstSnapshot = await hold(page, "session/get");
+    await page.getByRole("button", { name: "New session" }).click();
+    await prompt(page).fill("older session");
+    await prompt(page).press("Enter");
+    await firstSnapshot.arrived;
+    await expect(page.locator("nav li .title")).toHaveCount(1);
+    await expect(page.getByRole("button", { name: "Remove workspace" })).toHaveCount(0);
+    await expect(page.getByRole("status")).toHaveText("Loading session…");
+    const id = sessionId(page);
+    await newSession(page, "younger session");
+    await expect(page.locator("nav li .title")).toHaveText([id.slice(0, 8), "younger session"]);
+    firstSnapshot.release();
+    await expect(page.locator("nav li .title")).toHaveText(["older session", "younger session"]);
+
+    const reloadSnapshot = await hold(page, "session/get", id);
+    await page.reload();
+    await reloadSnapshot.arrived;
+    await expect(page.locator(".reply")).toHaveText("You said: younger session");
+    await expect(page.locator("nav li .title")).toHaveText([id.slice(0, 8), "younger session"]);
+    reloadSnapshot.release();
+    await expect(page.locator("nav li .title")).toHaveText(["older session", "younger session"]);
+  } finally {
+    await isolated.stop();
+  }
+});
+
+test("a cancelled deletion's reply cannot close the next confirmation", async ({ page }) => {
+  await open(page, services);
+  await newSession(page, "old deletion");
+  await newSession(page, "new deletion");
+  const remove = (label: string) =>
+    page.locator("nav li").filter({ hasText: label }).getByRole("button", { name: "Delete session" });
+  const first = await hold(page, "session/destroy");
+  const dialog = page.getByRole("alertdialog");
+  await remove("old deletion").click();
+  await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+  await first.arrived;
+  await page.keyboard.press("Escape");
+  await remove("new deletion").click();
+  first.release();
+  await expect(sessionButton(page, "old deletion")).toHaveCount(0);
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("new deletion");
+  await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(sessionButton(page, "new deletion")).toHaveCount(0);
 });
 
 test("on reconnect each session waits for its own settings", async ({ page, context }) => {
@@ -568,6 +862,11 @@ test("on reconnect each session waits for its own settings", async ({ page, cont
   await snapshot.arrived;
   await other.locator("select[name=permission_mode]").selectOption("plan");
   await expect(other.locator("select[name=permission_mode]")).not.toHaveAttribute("aria-busy");
+  await prompt(other).fill("written while reloading");
+  await prompt(other).press("Enter");
+  await expect(other.locator(".reply").last()).toHaveText("You said: written while reloading");
+  await expect(page.locator("select[name=permission_mode]")).toHaveValue("manual");
+  await expect(page.locator(".prompt")).toHaveText(["refresh my settings"]);
   await prompt(page).fill("after reload");
   await expect(send(page)).toBeDisabled();
   await sessionButton(page, "available independently").click();
@@ -575,5 +874,13 @@ test("on reconnect each session waits for its own settings", async ({ page, cont
   await sessionButton(page, "refresh my settings").click();
   snapshot.release();
   await expect(page.locator("select[name=permission_mode]")).toHaveValue("plan");
+  await expect(page.locator(".prompt")).toHaveText(["refresh my settings", "written while reloading"]);
   await expect(send(page)).toBeEnabled();
+  await prompt(other).fill("written after reloading");
+  await prompt(other).press("Enter");
+  await expect(page.locator(".prompt")).toHaveText([
+    "refresh my settings",
+    "written while reloading",
+    "written after reloading",
+  ]);
 });

@@ -1,8 +1,8 @@
-import { For, Match, onSettled, Show, Switch } from "solid-js";
+import { For, Match, Show, Switch, untrack } from "solid-js";
 import { ApprovalRequest } from "./ApprovalRequest";
 import { Markdown } from "./Markdown";
-import { type Entry, type Session, type SessionControl, sessionLabel, useOx } from "./ox";
-import type { Settings } from "./protocol";
+import { type Entry, type Session, type SessionControl, type SessionSnapshot, sessionLabel, useOx } from "./ox";
+import type { Prompt, Settings } from "./protocol";
 import { ModelPicker, Select } from "./SettingsFields";
 import { planOf, toolInputJSON, toolSubject } from "./toolInput";
 
@@ -15,44 +15,13 @@ export function sendOnEnter(event: KeyboardEvent & { currentTarget: HTMLTextArea
   }
 }
 
-// pinToBottom keeps log scrolled to the bottom as content arrives or the log
-// shrinks, as when an approval grows the composer, unless the user has
-// scrolled up.
-function pinToBottom(log: HTMLElement) {
-  let pinned = true;
-  let top = log.scrollTop;
-  // Chrome also fires scroll when the log shrinks without moving; only a
-  // move counts as the user scrolling.
-  log.addEventListener("scroll", () => {
-    if (log.scrollTop === top) return;
-    top = log.scrollTop;
-    pinned = log.scrollHeight - log.scrollTop - log.clientHeight < 32;
-  });
-  const follow = () => {
-    if (pinned) log.scrollTop = log.scrollHeight;
-  };
-  const mutations = new MutationObserver(follow);
-  mutations.observe(log, { childList: true, subtree: true, characterData: true });
-  const resizes = new ResizeObserver(follow);
-  resizes.observe(log);
-  log.scrollTop = log.scrollHeight;
-  return () => {
-    mutations.disconnect();
-    resizes.disconnect();
-  };
-}
-
-export function SessionView(props: { session: Session }) {
+export function SessionView(props: { session: Session; snapshot: SessionSnapshot }) {
   const ox = useOx();
-  const control = ox.control(props.session.id);
-  const workspace = () => ox.state.workspaces.find((w) => w.id === props.session.workspaceId)?.path;
-  // Stop shows once oxd reports the prompt running. oxd can take a stop sent
-  // before the page's send is accepted ahead of the send, and it stops nothing.
-  const running = () => !control.idle();
-  let log!: HTMLDivElement;
-
-  onSettled(() => pinToBottom(log));
-
+  // Layout keys this view by session, so the control is stable for its lifetime.
+  const control = ox.control(untrack(() => props.session.id));
+  const workspace = () => ox.workspaceOf(props.session.id)?.path;
+  // A stop sent before oxd reports a prompt running can overtake the send.
+  const running = () => props.snapshot.state === "running" || props.snapshot.state === "requires_action";
   const send = (event: SubmitEvent) => {
     event.preventDefault();
     control.send(control.text());
@@ -63,15 +32,17 @@ export function SessionView(props: { session: Session }) {
       <p class="context">
         {workspace()} · {props.session.harness} · {props.session.id}
       </p>
-      <div class="log" ref={log}>
-        <Transcript session={props.session} />
+      <div class="log">
+        <div class="transcript">
+          <Transcript snapshot={props.snapshot} />
+        </div>
       </div>
       <Show when={control.error()}>{(error) => <p role="alert">{error()}</p>}</Show>
       <Show when={control.notice()}>{(notice) => <p role="status">{notice()}</p>}</Show>
       <div class="composer">
-        <Show when={props.session.approvals.length}>
+        <Show when={props.snapshot.approvals.length}>
           <section class="pending" aria-label="Waiting on you">
-            <For each={props.session.approvals}>
+            <For each={props.snapshot.approvals}>
               {(approval) => (
                 <ApprovalRequest approval={approval} onAnswer={(response) => control.approve(approval.id, response)} />
               )}
@@ -99,24 +70,20 @@ export function SessionView(props: { session: Session }) {
           </Show>
           <button type="submit" class="icon send" aria-label="Send" title="Send" disabled={!control.canSend()} />
         </form>
-        <SettingsForm session={props.session} control={control} />
+        <SettingsForm harness={props.session.harness} settings={props.snapshot.settings} control={control} />
       </div>
     </>
   );
 }
 
-// Transcript shows a session's entries, then the prompt or message Claude has
-// not taken yet.
-function Transcript(props: { session: Session }) {
+// Transcript shows the conversation followed by every pending input, in order.
+function Transcript(props: { snapshot: SessionSnapshot }) {
   return (
     <>
-      <For each={props.session.entries}>
+      <For each={props.snapshot.entries}>
         {(entry) => (
           <Switch>
-            <Match when={entry.kind === "prompt" && entry}>{(prompt) => <PromptBubble text={prompt().text} />}</Match>
-            <Match when={entry.kind === "message" && entry}>
-              {(message) => <PromptBubble text={message().text} from={message().from} />}
-            </Match>
+            <Match when={entry.kind === "prompt" && entry}>{(prompt) => <PromptBubble input={prompt().input} />}</Match>
             <Match when={entry.kind === "reply" && entry}>
               {(reply) => <Markdown class="reply" text={reply().text} />}
             </Match>
@@ -131,24 +98,23 @@ function Transcript(props: { session: Session }) {
           </Switch>
         )}
       </For>
-      <Show when={props.session.queued}>
-        {(queued) => <PromptBubble text={queued().text} from={queued().from} queued />}
-      </Show>
+      <For each={props.snapshot.queued}>{(input) => <PromptBubble input={input} queued />}</For>
     </>
   );
 }
 
 // PromptBubble shows a prompt, or a message headed with its sender's label.
-function PromptBubble(props: { text: string; from?: string; queued?: boolean }) {
+function PromptBubble(props: { input: Prompt; queued?: boolean }) {
   const ox = useOx();
-  const sender = (id: string) => {
-    const session = ox.state.sessions[id];
-    return session ? sessionLabel(session) : id.slice(0, 8);
+  const senderLabel = (id: string) => {
+    if (props.input.from_label !== undefined) return props.input.from_label;
+    const sender = ox.session(id);
+    return sender ? sessionLabel(sender) : id.slice(0, 8);
   };
   return (
-    <div class={["prompt", { queued: props.queued, message: props.from !== undefined }]}>
-      <Show when={props.from}>{(from) => <div class="from">{sender(from())}</div>}</Show>
-      {props.text}
+    <div class={["prompt", { queued: props.queued, message: props.input.from !== undefined }]}>
+      <Show when={props.input.from}>{(from) => <div class="from">{senderLabel(from())}</div>}</Show>
+      {props.input.text}
     </div>
   );
 }
@@ -179,20 +145,20 @@ function ToolCall(props: { tool: Tool }) {
 // SettingsForm changes a session's settings through its control, which shows
 // a change as pending while it is in flight and the stored settings once it
 // settles.
-function SettingsForm(props: { session: Session; control: SessionControl }) {
+function SettingsForm(props: { harness: string; settings: Settings; control: SessionControl }) {
   const ox = useOx();
-  const shown = () => props.control.requested() ?? props.session.settings;
-  const pending = (key: keyof Settings) => shown()[key] !== props.session.settings[key];
+  const shown = () => ({ ...props.settings, ...props.control.requested() });
+  const pending = (key: keyof Settings) => props.control.requested()?.[key] !== undefined;
   // A harness the configuration no longer offers has no choices, and its
   // session still shows the settings it has.
-  const harness = () => ox.state.harnesses[props.session.harness] ?? { models: [], permission_modes: [] };
+  const harness = () => ox.state.harnesses[props.harness] ?? { models: [], permission_modes: [] };
 
   // Once the session starts, the picker offers only its harness's models.
   return (
     <div class="settings">
       <ModelPicker
-        harnesses={{ [props.session.harness]: harness() }}
-        value={{ harness: props.session.harness, model: shown().model, effort: shown().effort }}
+        harnesses={{ [props.harness]: harness() }}
+        value={{ harness: props.harness, model: shown().model, effort: shown().effort }}
         disabled={!props.control.canConfigure()}
         pending={pending("model") || pending("effort")}
         onChange={(value) => props.control.configure({ model: value.model, effort: value.effort })}

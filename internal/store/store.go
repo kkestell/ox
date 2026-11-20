@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -69,7 +70,17 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path+"?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)")
+	// SQLite's file URI decodes the path, rather than treating its punctuation
+	// as the start of the DSN's options. ./ keeps special names like :memory:
+	// from being interpreted as anything other than relative filenames.
+	uri := "file:"
+	if filepath.IsAbs(path) {
+		uri += "//" // empty authority, then the absolute path
+	} else {
+		uri += "./"
+	}
+	dsn := uri + (&url.URL{Path: path}).EscapedPath() + "?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}

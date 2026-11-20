@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -23,6 +24,49 @@ type process struct {
 	cmd    *exec.Cmd
 	output *os.File // the read end of Claude's stdout
 	stderr *os.File // the read end of Claude's stderr
+}
+
+// children tracks Claude processes from spawn through Wait, including those
+// still initializing or waiting for SIGTERM's kill timer.
+var children struct {
+	sync.Mutex
+	live   map[*os.Process]struct{}
+	killed bool
+}
+
+func spawn(cmd *exec.Cmd) error {
+	children.Lock()
+	defer children.Unlock()
+	if children.killed {
+		return errors.New("daemon is shutting down")
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	if children.live == nil {
+		children.live = make(map[*os.Process]struct{})
+	}
+	children.live[cmd.Process] = struct{}{}
+	return nil
+}
+
+func wait(cmd *exec.Cmd) error {
+	err := cmd.Wait()
+	children.Lock()
+	delete(children.live, cmd.Process)
+	children.Unlock()
+	return err
+}
+
+// KillAll kills all Claude processes and prevents new ones from starting.
+// The daemon calls it before exiting on a second stop signal.
+func KillAll() {
+	children.Lock()
+	defer children.Unlock()
+	children.killed = true
+	for p := range children.live {
+		p.Kill()
+	}
 }
 
 // systemPrompt is the instructions appended to Claude's system prompt: Ox's
@@ -130,10 +174,11 @@ func startProcess(workspace, oxSessionID, sessionID string, resume bool, setting
 	}
 	cmd.Stdout = childStdout
 	cmd.Stderr = childStderr
-	err = cmd.Start()
+	err = spawn(cmd)
 	childStdout.Close()
 	childStderr.Close()
 	if err != nil {
+		stdin.Close()
 		stdout.Close()
 		stderr.Close()
 		return nil, nil, err
@@ -159,14 +204,16 @@ func startProcess(workspace, oxSessionID, sessionID string, resume bool, setting
 	}
 	if err != nil {
 		cmd.Process.Kill()
-		cmd.Wait()
+		wait(cmd)
 		stdout.Close()
 		stderr.SetReadDeadline(time.Now().Add(time.Second))
 		return nil, nil, fmt.Errorf("initialize Claude: %w", err)
 	}
 
 	p := &process{cmd: cmd, output: stdout, stderr: stderr}
-	go p.read(output, events)
+	captured := make(chan agent.Event)
+	go p.read(output, stderrTail, captured)
+	go deliverOutput(captured, events)
 	return p, newWriter(stdin), nil
 }
 
@@ -224,7 +271,7 @@ func initialize(input io.Writer, output *bufio.Reader, diagnostic func() string)
 	}
 }
 
-// stderrKept is how much of Claude's stderr a failed start reports.
+// stderrKept is how much of Claude's stderr a failed start or exit reports.
 const stderrKept = 2048
 
 // logStderr logs each line of Claude's stderr under logID until the pipe
@@ -264,13 +311,14 @@ func logStderr(stderr *os.File, logID string, tail chan<- string) {
 	tail <- text
 }
 
-// read delivers Claude's output, then its exit. Output Claude wrote before
-// exiting is already in the pipes; a second after the exit, reading them stops
-// even if a child still holds them open.
-func (p *process) read(output *bufio.Reader, events chan<- agent.Event) {
+// read drains Claude's output into the delivery queue, then records its exit.
+// A second after Claude exits, the pipe reads stop even if an inherited
+// descriptor is open; delivery from the queue is independent of that limit.
+func (p *process) read(output *bufio.Reader, stderrTail <-chan string, captured chan<- agent.Event) {
+	defer close(captured)
 	exited := make(chan error, 1)
 	go func() {
-		err := p.cmd.Wait()
+		err := wait(p.cmd)
 		p.output.SetReadDeadline(time.Now().Add(time.Second))
 		p.stderr.SetReadDeadline(time.Now().Add(time.Second))
 		exited <- err
@@ -280,14 +328,38 @@ func (p *process) read(output *bufio.Reader, events chan<- agent.Event) {
 		line, err := output.ReadBytes('\n')
 		var m message
 		if json.Unmarshal(line, &m) == nil {
-			events <- m
+			captured <- m
 		}
 		if err != nil {
 			break
 		}
 	}
 	p.output.Close()
-	events <- processExit{<-exited}
+	captured <- processExit{err: <-exited, stderr: <-stderrTail}
+}
+
+// deliverOutput never makes the reader wait for the session, which may be
+// writing to Claude's stdin while Claude writes stdout.
+func deliverOutput(captured <-chan agent.Event, events chan<- agent.Event) {
+	var queue []agent.Event
+	for captured != nil || len(queue) != 0 {
+		var next agent.Event
+		var ready chan<- agent.Event
+		if len(queue) != 0 {
+			next, ready = queue[0], events
+		}
+		select {
+		case event, ok := <-captured:
+			if ok {
+				queue = append(queue, event)
+			} else {
+				captured = nil
+			}
+		case ready <- next:
+			queue[0] = nil
+			queue = queue[1:]
+		}
+	}
 }
 
 // killAfter is how long Claude has to exit once asked before it is killed.

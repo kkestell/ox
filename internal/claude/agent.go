@@ -33,16 +33,21 @@ type Agent struct {
 	config           *configuration
 	settings         agent.Settings // the settings the process is using
 	onUpdate         func(agent.Update)
-	onResumable      func(string) // set until the new conversation's first result
+	onResumable      func(string)
 	onConfigured     func(agent.Settings)
 	onError          func(error)
-	sessionID        string
-	stopping         bool // Ox asked the process to exit
-	background       int  // Claude's live background tasks
-	mayHaveSchedules bool // true until Stop reports an empty schedule list
+	conversationID   string // most recently reported on stdout
+	resumable        string // token last passed to OnResumable, or supplied at startup
+	streamedText     bool   // the current turn published a text delta
+	stopping         bool   // Ox asked the process to exit
+	background       int    // Claude's live background tasks
+	mayHaveSchedules bool   // true until Stop reports an empty schedule list
 }
 
-type processExit struct{ err error }
+type processExit struct {
+	err    error
+	stderr string
+}
 
 type controlTimeout struct{ requestID string }
 
@@ -56,23 +61,18 @@ func Start(options agent.Options) (agent.Agent, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newAgent(input, events, proc, sessionID, options), nil
+	return newAgent(input, events, proc, options), nil
 }
 
 // newAgent runs the process proc, whose output arrives on events and whose
 // input is input.
-func newAgent(input *writer, events chan agent.Event, proc *process, sessionID string, options agent.Options) *Agent {
-	a := &Agent{
+func newAgent(input *writer, events chan agent.Event, proc *process, options agent.Options) *Agent {
+	return &Agent{
 		proc: proc, input: input, events: events, done: make(chan struct{}),
 		phase: available, state: agent.StateIdle,
-		settings: options.Settings, onUpdate: options.OnUpdate, onConfigured: options.OnConfigured, onError: options.OnError, sessionID: sessionID,
+		settings: options.Settings, onUpdate: options.OnUpdate, onConfigured: options.OnConfigured, onError: options.OnError,
+		onResumable: options.OnResumable, resumable: options.Resume, mayHaveSchedules: options.Resume != "",
 	}
-	if options.Resume == "" {
-		a.onResumable = options.OnResumable
-	} else {
-		a.mayHaveSchedules = true
-	}
-	return a
 }
 
 func (a *Agent) Events() <-chan agent.Event {
@@ -84,7 +84,7 @@ func (a *Agent) Handle(event agent.Event) {
 	case message:
 		a.handleOutput(e)
 	case processExit:
-		a.exit(e.err)
+		a.exit(e)
 	case controlTimeout:
 		a.controlTimedOut(e.requestID)
 	}
@@ -100,6 +100,21 @@ func (a *Agent) after(d time.Duration, event agent.Event) {
 }
 
 func (a *Agent) handleOutput(m message) {
+	if m.SessionID != "" {
+		a.conversationID = m.SessionID
+	}
+	switch m.Type {
+	case "stream_event", "assistant", "user", "result":
+		// The command lifecycle and system/init can precede a resumable
+		// transcript. Model output follows the saved prompt, and even an
+		// empty result completes a local command like /clear.
+		if a.conversationID != "" && a.conversationID != a.resumable {
+			a.resumable = a.conversationID
+			if a.onResumable != nil {
+				a.onResumable(a.resumable)
+			}
+		}
+	}
 	switch m.Type {
 	case "control_response":
 		a.controlResponse(m.Response)
@@ -146,6 +161,7 @@ func (a *Agent) handleOutput(m message) {
 	case "stream_event":
 		delta := m.Event.Delta
 		if m.ParentToolUseID == "" && m.Event.Type == "content_block_delta" && delta.Type == "text_delta" && delta.Text != "" {
+			a.streamedText = true
 			a.publish(agent.Update{Type: agent.UpdateTextDelta, Text: delta.Text})
 		}
 	case "result":
@@ -156,14 +172,13 @@ func (a *Agent) handleOutput(m message) {
 		} else if result.IsError {
 			result.Text = m.errorText()
 		}
+		if !result.IsError && !a.streamedText && result.Text != "" {
+			a.publish(agent.Update{Type: agent.UpdateTextDelta, Text: result.Text})
+		}
+		a.streamedText = false
 		// Claude follows an automatic turn with an empty bookkeeping result.
 		if result.Text != "" || result.IsError {
 			a.publish(agent.Update{Type: agent.UpdateResult, Result: &result})
-			// Claude has written the transcript by its first result.
-			if a.onResumable != nil {
-				a.onResumable(a.sessionID)
-				a.onResumable = nil
-			}
 		}
 		// A later turn before idle, such as one reporting a background
 		// subagent's findings, is Claude's own.
@@ -178,11 +193,18 @@ func (a *Agent) permissionMode(reported string) {
 	if reported == "default" {
 		reported = "manual"
 	}
-	if reported == a.settings.PermissionMode {
-		return
+	settings := a.settings
+	settings.PermissionMode = reported
+	a.configured(settings)
+}
+
+func (a *Agent) configured(settings agent.Settings) {
+	if settings != a.settings {
+		a.settings = settings
+		if a.onConfigured != nil {
+			a.onConfigured(settings)
+		}
 	}
-	a.settings.PermissionMode = reported
-	a.onConfigured(a.settings)
 }
 
 func (a *Agent) idle() bool {
@@ -190,23 +212,21 @@ func (a *Agent) idle() bool {
 }
 
 func (a *Agent) Snapshot() agent.Snapshot {
-	snapshot := agent.Snapshot{State: a.state, Approvals: append([]agent.Approval{}, a.approvals...)}
-	if queued := a.queued(); queued != nil {
-		copied := *queued
-		snapshot.Queued = &copied
-	}
-	return snapshot
+	return agent.Snapshot{State: a.state, Approvals: append([]agent.Approval{}, a.approvals...)}
 }
 
-func (a *Agent) exit(err error) {
+func (a *Agent) exit(exit processExit) {
 	reason := "Claude exited"
-	if err != nil {
-		reason += ": " + err.Error()
+	if exit.err != nil {
+		reason += ": " + exit.err.Error()
+	}
+	if exit.stderr != "" {
+		reason += "\n" + exit.stderr
 	}
 	reported := a.phase == prompting
 	switch a.phase {
 	case prompting:
-		if a.queued() != nil {
+		if a.queued() != "" {
 			a.dropQueued()
 		}
 		a.endPrompt(agent.Update{Type: agent.UpdateExited, Error: reason})

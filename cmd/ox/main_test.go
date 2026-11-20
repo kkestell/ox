@@ -87,7 +87,7 @@ func TestRPCRefusesOversizedBody(t *testing.T) {
 		forwarded <- len(data)
 	}()
 	body := `{"jsonrpc":"2.0","id":1,"method":"session/send","params":{"session_id":"s","text":"` +
-		strings.Repeat("x", 1<<20) + `"}}`
+		strings.Repeat("x", 8<<20) + `"}}`
 	response := httptest.NewRecorder()
 	r.rpc(response, httptest.NewRequest("POST", "/rpc?connection=page", strings.NewReader(body)))
 	relayEnd.Close()
@@ -96,5 +96,24 @@ func TestRPCRefusesOversizedBody(t *testing.T) {
 	}
 	if n := <-forwarded; n != 0 {
 		t.Errorf("an oversized request forwarded %d bytes to oxd", n)
+	}
+}
+
+func TestRPCRelaysOneMiBOfEscapedText(t *testing.T) {
+	relayEnd, daemonEnd := net.Pipe()
+	defer daemonEnd.Close()
+	r := &relay{conns: map[string]net.Conn{"page": relayEnd}}
+	forwarded := make(chan []byte, 1)
+	go func() {
+		data, _ := io.ReadAll(daemonEnd)
+		forwarded <- data
+	}()
+	body := `{"jsonrpc":"2.0","id":1,"method":"session/send","params":{"session_id":"s","text":"` +
+		strings.Repeat(`\u003c`, 1<<20) + `"}}`
+	response := httptest.NewRecorder()
+	r.rpc(response, httptest.NewRequest("POST", "/rpc?connection=page", strings.NewReader(body)))
+	relayEnd.Close()
+	if data := <-forwarded; response.Code != http.StatusNoContent || string(data) != body+"\n" {
+		t.Fatalf("a 1 MiB escaped prompt returned %d and relayed %d bytes", response.Code, len(data))
 	}
 }

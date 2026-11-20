@@ -13,7 +13,7 @@ import (
 type configuration struct {
 	requests  []control
 	requestID string
-	done      func(agent.Settings, error)
+	done      func(error)
 }
 
 type control struct {
@@ -25,11 +25,12 @@ func (c *configuration) fail(err error) error {
 	return fmt.Errorf("configure Claude (%s): %w", c.requests[0].request["subtype"], err)
 }
 
-func (a *Agent) Configure(settings agent.Settings, done func(agent.Settings, error)) {
+func (a *Agent) Configure(patch agent.SettingsPatch, done func(error)) {
 	if !a.idle() {
-		done(a.settings, agent.ErrBusy)
+		done(agent.ErrBusy)
 		return
 	}
+	settings := patch.Apply(a.settings)
 	var requests []control
 	if settings.Model != a.settings.Model {
 		requests = append(requests, control{
@@ -50,7 +51,7 @@ func (a *Agent) Configure(settings agent.Settings, done func(agent.Settings, err
 		})
 	}
 	if len(requests) == 0 {
-		done(a.settings, nil)
+		done(nil)
 		return
 	}
 	a.config = &configuration{requests: requests, done: done}
@@ -77,7 +78,9 @@ func (a *Agent) controlResponse(response controlReply) {
 		a.endConfiguration(a.config.fail(err))
 		return
 	}
-	a.config.requests[0].apply(&a.settings)
+	settings := a.settings
+	a.config.requests[0].apply(&settings)
+	a.configured(settings)
 	a.config.requests = a.config.requests[1:]
 	if len(a.config.requests) == 0 {
 		a.endConfiguration(nil)
@@ -104,7 +107,7 @@ func (a *Agent) endConfiguration(err error) {
 	done := a.config.done
 	a.config = nil
 	a.phase = available
-	done(a.settings, err)
+	done(err)
 }
 
 // effortLevel is the effortLevel flag setting for effort: null clears it for

@@ -69,6 +69,80 @@ func TestSettingsValidation(t *testing.T) {
 	}
 }
 
+func TestClaudeRefusesSettingCommandsBeforeStarting(t *testing.T) {
+	st := openStore(t)
+	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: t.TempDir(), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	starts := make(chan struct{}, 1)
+	h := claude.Harness
+	h.Start = func(o agent.Options) (agent.Agent, error) {
+		starts <- struct{}{}
+		return fake.Start(o)
+	}
+	s, err := New(st, &config.Config{}, 0, map[string]agent.Harness{"claude": h}, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c := connect(t, s)
+	send := func(text string) message {
+		return c.request("session/send", map[string]string{"session_id": "s", "text": text})
+	}
+	for _, text := range []string{"/model", "/model sonnet", "  \t/effort\nhigh"} {
+		if r := send(text); r.Error == nil || r.Error.Code != jsonrpc.InvalidParams || r.Error.Message != "change the model and effort in the session's settings" {
+			t.Fatalf("%q returned %+v", text, r.Error)
+		}
+	}
+	select {
+	case <-starts:
+		t.Fatal("a prohibited command started a parked session")
+	default:
+	}
+	for _, text := range []string{"/clear", "/compact", "/effortless", "say /model sonnet"} {
+		if r := send(text); r.Error != nil {
+			t.Fatalf("%q was refused: %+v", text, r.Error)
+		}
+		for c.update("s", "state").State != "idle" {
+		}
+	}
+	if r := send("/effort high"); r.Error == nil || r.Error.Code != jsonrpc.InvalidParams {
+		t.Fatalf("a running session accepted a prohibited command: %+v", r.Error)
+	}
+}
+
+func TestSendPromptSizeCountsDecodedBytes(t *testing.T) {
+	st := openStore(t)
+	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: t.TempDir(), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "fake", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(st, &config.Config{}, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	send := func(text string) *jsonrpc.Response {
+		p, err := json.Marshal(map[string]string{"session_id": "s", "text": text})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return answer(s, `{"jsonrpc":"2.0","id":1,"method":"session/send","params":`+string(p)+`}`)
+	}
+	text := strings.Repeat("é<", (1<<20)/3) + "<"
+	if got := send(text + "x"); got.Error == nil || got.Error.Code != jsonrpc.InvalidParams {
+		t.Fatalf("a prompt over 1 MiB was not refused: %+v", got.Error)
+	}
+	if got := send(text); got.Error != nil {
+		t.Fatalf("a 1 MiB prompt was refused: %+v", got.Error)
+	}
+}
+
 // A client that missed its create reply can identify the same parked
 // session without overwriting settings another page has since changed.
 func TestRepeatSessionCreation(t *testing.T) {
@@ -105,8 +179,14 @@ func TestRepeatSessionCreation(t *testing.T) {
 		}
 	}
 	check(false)
+	c.call("session/configure", map[string]string{"session_id": id, "permission_mode": "plan"})
 	params["permission_mode"] = "obsolete"
 	check(true)
+	var settings agent.Settings
+	json.Unmarshal(c.call("session/get", map[string]string{"session_id": id}), &settings)
+	if settings.PermissionMode != "plan" {
+		t.Fatalf("a retried creation changed existing settings: %+v", settings)
+	}
 	params["workspace_id"] = workspace()
 	if r := c.request("session/create", params); r.Error == nil || r.Error.Code != jsonrpc.InvalidParams {
 		t.Fatal("a different workspace claimed the session")
@@ -119,7 +199,7 @@ func TestSessionLifecycle(t *testing.T) {
 		PermissionModes: []config.Option{{ID: "plan"}},
 	}}}
 	st := openStore(t)
-	s, err := New(st, cfg, 300*time.Millisecond, map[string]agent.Start{"fake": fake.Start}, MCP{})
+	s, err := New(st, cfg, 300*time.Millisecond, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +308,7 @@ func TestSessionLifecycle(t *testing.T) {
 	}
 
 	// The removal is stored: a daemon over the same store loads no workspace.
-	restarted, err := New(st, cfg, 0, map[string]agent.Start{"fake": fake.Start}, MCP{})
+	restarted, err := New(st, cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +326,7 @@ func TestConfigurationTakenButNotStored(t *testing.T) {
 		PermissionModes: []config.Option{{ID: "plan"}},
 	}}}
 	st := openStore(t)
-	s, err := New(st, cfg, 0, map[string]agent.Start{"fake": fake.Start}, MCP{})
+	s, err := New(st, cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,59 +343,101 @@ func TestConfigurationTakenButNotStored(t *testing.T) {
 		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "effort": "low", "permission_mode": "plan",
 	}), &created)
 	id := created.SessionID
+	json.Unmarshal(c.call("session/create", map[string]string{
+		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "effort": "low", "permission_mode": "plan",
+	}), &created)
 	c.call("session/send", map[string]string{"session_id": id, "text": "hi"})
 	for c.update(id, "state").State != "idle" {
 	}
 
 	st.Close()
-	if failed := c.request("session/configure", map[string]string{"session_id": id, "effort": "high"}); failed.Error == nil {
-		t.Fatal("configuration succeeded without being stored")
-	}
-	configured := c.next(func(m message) bool { return m.Method == "session/configured" })
-	if !strings.Contains(string(configured.Params), `"effort":"high"`) {
-		t.Fatalf("clients were not told the settings the process took: %s", configured.Params)
+	for _, id := range []string{id, created.SessionID} {
+		c.call("session/configure", map[string]string{"session_id": id, "effort": "high"})
+		configured := c.next(func(m message) bool { return m.Method == "session/configured" && m.sessionID() == id })
+		if !strings.Contains(string(configured.Params), `"effort":"high"`) {
+			t.Fatalf("clients were not told the settings taken: %s", configured.Params)
+		}
 	}
 }
 
 // A process that exits during a configuration is replaced by one started with
 // the requested settings, so the configuration succeeds.
 func TestConfigurationOutlivesItsProcess(t *testing.T) {
-	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
-		Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}}},
-		PermissionModes: []config.Option{{ID: "plan"}},
+	dir := t.TempDir()
+	args, exit := filepath.Join(dir, "args"), filepath.Join(dir, "exit")
+	// Acknowledge the model but hold the effort control until told to exit.
+	script := logStarts(args) + `
+read initialize
+printf '%s\n' '{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}'
+read prompt
+uuid=${prompt##*'"uuid":"'}; uuid=${uuid%%'"'*}
+printf '{"type":"command_lifecycle","state":"started","command_uuid":"%s"}\n' "$uuid"
+printf '%s\n' '{"type":"system","subtype":"session_state_changed","state":"idle"}'
+read model
+request=${model#*'"request_id":"'}; request=${request%%'"'*}
+printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s"}}\n' "$request"
+read effort
+printf '%s\n' '{"type":"system","subtype":"status","permissionMode":"default"}'
+while [ ! -e '` + exit + `' ]; do sleep .02; done
+`
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	efforts := []config.Option{{ID: "low"}, {ID: "high"}}
+	cfg := &config.Config{Harnesses: map[string]config.Harness{"claude": {
+		Models:          []config.Model{{ID: "m", Efforts: efforts}, {ID: "new", Efforts: efforts}},
+		PermissionModes: []config.Option{{ID: "plan"}, {ID: "manual"}},
 	}}}
-	s, err := New(openStore(t), cfg, 0, map[string]agent.Start{"fake": fake.Start}, MCP{})
+	s, err := New(openStore(t), cfg, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(s.Close)
 	c := connect(t, s)
 	var workspace struct {
-		WorkspaceID string `json:"workspace_id"`
+		ID string `json:"workspace_id"`
 	}
-	json.Unmarshal(c.call("workspace/create", map[string]string{"path": t.TempDir()}), &workspace)
+	json.Unmarshal(c.call("workspace/create", map[string]string{"path": dir}), &workspace)
 	var created struct {
-		SessionID string `json:"session_id"`
+		ID string `json:"session_id"`
 	}
 	json.Unmarshal(c.call("session/create", map[string]string{
-		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "effort": "low", "permission_mode": "plan",
+		"workspace_id": workspace.ID, "harness": "claude", "model": "m", "effort": "low", "permission_mode": "plan",
 	}), &created)
-	id := created.SessionID
+	id := created.ID
 	c.call("session/send", map[string]string{"session_id": id, "text": "hi"})
 	for c.update(id, "state").State != "idle" {
 	}
 
-	// The fake acknowledges a tick after the request, so the destroy stops
-	// its process first.
-	configure := c.send("session/configure", map[string]string{"session_id": id, "effort": "high"})
-	time.Sleep(10 * time.Millisecond)
-	c.call("session/destroy", map[string]string{"session_id": id})
+	configure := c.send("session/configure", map[string]string{"session_id": id, "model": "new", "effort": "high"})
+	checkSettings := func(data []byte, want agent.Settings) {
+		t.Helper()
+		var got agent.Settings
+		if err := json.Unmarshal(data, &got); err != nil || got != want {
+			t.Fatalf("settings %+v, want %+v (%v)", got, want, err)
+		}
+	}
+	nextConfigured := func() []byte {
+		return c.next(func(m message) bool { return m.Method == "session/configured" && m.sessionID() == id }).Params
+	}
+	checkSettings(nextConfigured(), agent.Settings{Model: "new", Effort: "low", PermissionMode: "plan"})
+	beforeExit := agent.Settings{Model: "new", Effort: "low", PermissionMode: "manual"}
+	checkSettings(nextConfigured(), beforeExit)
+	checkSettings(c.call("session/get", map[string]string{"session_id": id}), beforeExit)
+	if err := os.WriteFile(exit, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if r := c.response(configure); r.Error != nil {
 		t.Fatalf("a configuration whose process exited failed: %+v", r.Error)
 	}
-	configured := c.next(func(m message) bool { return m.Method == "session/configured" })
-	if !strings.Contains(string(configured.Params), `"effort":"high"`) {
-		t.Fatalf("the requested settings were not taken: %s", configured.Params)
+	afterExit := agent.Settings{Model: "new", Effort: "high", PermissionMode: "manual"}
+	checkSettings(nextConfigured(), afterExit)
+	c.update(id, "parked")
+	checkSettings(c.call("session/get", map[string]string{"session_id": id}), afterExit)
+	c.call("session/send", map[string]string{"session_id": id, "text": "again"})
+	if lines := starts(t, args); len(lines) != 2 || !strings.Contains(lines[1], "--model=new --permission-mode=manual --effort=high") {
+		t.Fatalf("the next process did not use the current settings: %q", lines)
 	}
 }
 
@@ -323,7 +445,7 @@ func TestConfigurationOutlivesItsProcess(t *testing.T) {
 // transcript Claude deleted, fails one send with a notice in the transcript;
 // the next send starts a new conversation.
 func TestUnresumableConversationStartsAnew(t *testing.T) {
-	st, c, args := unresumableSession(t)
+	st, _, c, args := unresumableSession(t)
 
 	failed := c.request("session/send", map[string]string{"session_id": "s", "text": "hi"})
 	if failed.Error == nil || failed.Error.Message != lostConversation {
@@ -353,7 +475,7 @@ func TestUnresumableConversationStartsAnew(t *testing.T) {
 // A session forgets a conversation Claude no longer has even when storing
 // that fails, so the next send starts a new one instead of failing again.
 func TestUnresumableConversationForgottenWhenNotStored(t *testing.T) {
-	st, c, args := unresumableSession(t)
+	st, _, c, args := unresumableSession(t)
 	st.Close()
 	if failed := c.request("session/send", map[string]string{"session_id": "s", "text": "hi"}); failed.Error == nil || failed.Error.Message != lostConversation {
 		t.Fatalf("a send that found the conversation gone did not say so: %+v", failed.Error)
@@ -364,6 +486,29 @@ func TestUnresumableConversationForgottenWhenNotStored(t *testing.T) {
 	c.call("session/send", map[string]string{"session_id": "s", "text": "hi"})
 	if lines := starts(t, args); len(lines) != 2 || strings.Contains(lines[1], "--resume") {
 		t.Fatalf("the next send did not start a new conversation: %q", lines)
+	}
+}
+
+func TestMessageToUnresumableConversationLeavesOneNotice(t *testing.T) {
+	_, s, c, args := unresumableSession(t)
+	sender := attach(t, s, "sender-session")
+	if text, refused := sender.tool("send_message", map[string]string{"to": "s", "text": "hi"}); refused {
+		t.Fatal(text)
+	}
+	queued := c.update("s", "prompt_queued")
+	if u := c.update("s", "prompt_cancelled"); u.MessageID != queued.MessageID {
+		t.Fatalf("the message was not cancelled: %+v", u)
+	}
+	var got struct {
+		Queued  []pendingInput `json:"queued"`
+		History []agent.Update `json:"history"`
+	}
+	json.Unmarshal(c.call("session/get", map[string]string{"session_id": "s"}), &got)
+	if len(got.Queued) != 0 || len(got.History) != 1 || got.History[0].Type != "exited" || got.History[0].Error != lostConversation {
+		t.Fatalf("a failed resume for a message left extra notices or pending messages: %+v", got)
+	}
+	if lines := starts(t, args); len(lines) != 1 {
+		t.Fatalf("the process start was retried: %q", lines)
 	}
 }
 
@@ -386,7 +531,7 @@ func starts(t *testing.T, args string) []string {
 // unresumableSession serves a stored session whose resume token Claude no
 // longer has. It returns the store, a client, and the file where the
 // stand-in Claude records its arguments.
-func unresumableSession(t *testing.T) (*store.Store, *client, string) {
+func unresumableSession(t *testing.T) (*store.Store, *Server, *client, string) {
 	dir := t.TempDir()
 	args := filepath.Join(dir, "args")
 	// A stand-in for Claude, which fails a resume as Claude does when it has
@@ -408,12 +553,15 @@ func unresumableSession(t *testing.T) (*store.Store, *client, string) {
 	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Model: "m", PermissionMode: "plan", ResumeToken: "gone", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(st, &config.Config{}, 0, map[string]agent.Start{"claude": claude.Start}, MCP{})
+	if err := st.AddSession("w", &store.Session{ID: "sender-session", Harness: "claude", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(s.Close)
-	return st, connect(t, s), args
+	return st, s, connect(t, s), args
 }
 
 // A session keeps its conversation's resume token even when storing it fails,
@@ -426,7 +574,7 @@ func TestResumeTokenKeptWhenNotStored(t *testing.T) {
 		"read line\n" +
 		`echo '{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}'` + "\n" +
 		"read prompt\n" +
-		`echo '{"type":"result","subtype":"success","is_error":false,"result":"done"}'` + "\n"
+		`echo '{"type":"result","subtype":"success","session_id":"11111111-1111-4111-8111-111111111111","is_error":false,"result":"done"}'` + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -439,7 +587,7 @@ func TestResumeTokenKeptWhenNotStored(t *testing.T) {
 	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Model: "m", PermissionMode: "plan", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(st, &config.Config{}, 0, map[string]agent.Start{"claude": claude.Start}, MCP{})
+	s, err := New(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -480,7 +628,7 @@ func TestClaudeModeChangeIsAdopted(t *testing.T) {
 	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Model: "m", Effort: "low", PermissionMode: "plan", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(st, &config.Config{}, 0, map[string]agent.Start{"claude": claude.Start}, MCP{})
+	s, err := New(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -514,7 +662,7 @@ func TestApprovalAnsweredOnce(t *testing.T) {
 		Models:          []config.Model{{ID: "m"}},
 		PermissionModes: []config.Option{{ID: "manual"}},
 	}}}
-	s, err := New(openStore(t), cfg, 0, map[string]agent.Start{"fake": fake.Start}, MCP{})
+	s, err := New(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -572,7 +720,7 @@ func TestPromptQueuedWhileClaudeWorks(t *testing.T) {
 		Models:          []config.Model{{ID: "m"}},
 		PermissionModes: []config.Option{{ID: "manual"}},
 	}}}
-	s, err := New(openStore(t), cfg, 0, map[string]agent.Start{"fake": fake.Start}, MCP{})
+	s, err := New(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -608,10 +756,10 @@ func TestPromptQueuedWhileClaudeWorks(t *testing.T) {
 				t.Fatalf("a second prompt was queued: %+v", busy.Error)
 			}
 			var snapshot struct {
-				Queued *agent.Prompt `json:"queued"`
+				Queued []pendingInput `json:"queued"`
 			}
 			json.Unmarshal(c.call("session/get", map[string]string{"session_id": id}), &snapshot)
-			if snapshot.Queued == nil || snapshot.Queued.MessageID != sent.MessageID || snapshot.Queued.Text != "steer" {
+			if len(snapshot.Queued) != 1 || snapshot.Queued[0].MessageID != sent.MessageID || snapshot.Queued[0].Text != "steer" {
 				t.Fatalf("the snapshot does not hold the queued prompt: %+v", snapshot.Queued)
 			}
 
@@ -668,6 +816,9 @@ func TestSameDirectoryIsOneWorkspace(t *testing.T) {
 	if first, again := add(dir), add(link); first != again {
 		t.Fatalf("the directory and a symlink to it are two workspaces: %s, %s", first, again)
 	}
+	if first, viaParent := add(filepath.Dir(dir)), add(link+"/.."); first != viaParent {
+		t.Fatalf("the path through a symlink followed by .. named another workspace: %s, %s", first, viaParent)
+	}
 }
 
 // Claude in one session lists the others and sends them messages, which
@@ -678,7 +829,7 @@ func TestSendMessage(t *testing.T) {
 		"broken": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
 	}}
 	broken := func(agent.Options) (agent.Agent, error) { return nil, errors.New("no such harness binary") }
-	s, err := New(openStore(t), cfg, 0, map[string]agent.Start{"fake": fake.Start, "broken": broken}, MCP{})
+	s, err := New(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}, "broken": {Start: broken}}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -743,7 +894,8 @@ func TestSendMessage(t *testing.T) {
 	if text, refused := fromA.tool("send_message", map[string]string{"to": b, "text": "hello B"}); refused || text != "Message queued for "+b+"." {
 		t.Fatalf("send_message returned %q, %v", text, refused)
 	}
-	if taken := c.update(b, "prompt"); taken.From != a || taken.Text != "hello B" || taken.MessageID == "" {
+	queued := c.update(b, "prompt_queued")
+	if taken := c.update(b, "prompt"); taken.From != a || taken.FromLabel != "first from A" || taken.Text != "hello B" || taken.MessageID == "" || taken.MessageID != queued.MessageID {
 		t.Fatalf("the message was not taken with its sender: %+v", taken)
 	}
 	reply := c.update(b, "result").Result.Text
@@ -754,57 +906,60 @@ func TestSendMessage(t *testing.T) {
 	}
 	idle(b)
 	var got struct {
-		Queued  *agent.Prompt  `json:"queued"`
+		Queued  []pendingInput `json:"queued"`
 		History []agent.Update `json:"history"`
 	}
 	json.Unmarshal(c.call("session/get", map[string]string{"session_id": b}), &got)
-	if first := got.History[0]; first.Type != "prompt" || first.From != a || first.Text != "hello B" {
+	if first := got.History[0]; got.Queued == nil || len(got.Queued) != 0 || first.Type != "prompt" || first.From != a || first.FromLabel != "first from A" || first.Text != "hello B" {
 		t.Fatalf("the history does not hold the message as sent: %+v", got.History)
 	}
 
 	// waiting has B wait on an approval with A's message queued and C's
 	// waiting behind it, and returns the approval and A's message's ID.
-	waiting := func(fromAText, fromCText string) (agent.Update, string) {
+	waiting := func(fromAText, fromCText string) (agent.Update, [2]agent.Update) {
 		t.Helper()
 		c.forget(b)
 		c.call("session/send", map[string]string{"session_id": b, "text": "approve T {}"})
 		asked := c.update(b, "approval")
+		c.forget(b)
 		fromA.tool("send_message", map[string]string{"to": b, "text": fromAText})
 		queued := c.update(b, "prompt_queued")
-		if queued.From != a || queued.Text != fromAText {
+		if queued.From != a || queued.FromLabel != "first from A" || queued.Text != fromAText {
 			t.Fatalf("prompt_queued is not A's message: %+v", queued)
 		}
 		fromC.tool("send_message", map[string]string{"to": b, "text": fromCText})
+		waiting := c.update(b, "prompt_queued")
+		if waiting.MessageID == "" || waiting.From != cs || waiting.FromLabel != cs[:8] || waiting.Text != fromCText {
+			t.Fatalf("prompt_queued is not C's inbox message: %+v", waiting)
+		}
 		var got struct {
-			Queued *agent.Prompt `json:"queued"`
+			Queued []pendingInput `json:"queued"`
 		}
 		json.Unmarshal(c.call("session/get", map[string]string{"session_id": b}), &got)
-		if got.Queued == nil || got.Queued.MessageID != queued.MessageID || got.Queued.From != a {
-			t.Fatalf("the snapshot does not hold A's message: %+v", got.Queued)
-		}
-		for _, m := range c.received(b) {
-			if strings.Contains(string(m.Params), fromCText) {
-				t.Fatalf("C's message passed A's: %s", m.Params)
-			}
+		if len(got.Queued) != 2 || got.Queued[0].MessageID != queued.MessageID || got.Queued[1].MessageID != waiting.MessageID || got.Queued[1].FromLabel != cs[:8] {
+			t.Fatalf("the snapshot does not hold the full queue in order: %+v", got.Queued)
 		}
 		if busy := c.request("session/send", map[string]string{"session_id": b, "text": "user"}); busy.Error == nil || busy.Error.Code != sessionBusy {
 			t.Fatalf("a user prompt was queued beside a message: %+v", busy.Error)
 		}
 		c.forget(b)
-		return asked, queued.MessageID
+		return asked, [2]agent.Update{queued, waiting}
 	}
 
 	t.Log("messages wait their turn in order")
-	asked, _ := waiting("one from A", "one from C")
+	asked, waitingInputs := waiting("one from A", "one from C")
 	c.call("session/approve", map[string]any{"session_id": b, "request_id": asked.RequestID, "response": json.RawMessage(`{"behavior":"allow"}`)})
-	if taken := c.update(b, "prompt"); taken.From != a || taken.Text != "one from A" {
-		t.Fatalf("A's message was not taken first: %+v", taken)
+	for _, want := range waitingInputs {
+		if taken := c.update(b, "prompt"); taken.MessageID != want.MessageID || taken.From != want.From || taken.Text != want.Text || taken.FromLabel != want.FromLabel {
+			t.Fatalf("the next message %+v was not taken: %+v", want, taken)
+		}
 	}
-	if queued := c.update(b, "prompt_queued"); queued.From != cs || queued.Text != "one from C" {
-		t.Fatalf("C's message was not queued next: %+v", queued)
-	}
-	if taken := c.update(b, "prompt"); taken.From != cs || taken.Text != "one from C" {
-		t.Fatalf("C's message was not taken: %+v", taken)
+	for _, m := range c.received(b) {
+		var u agent.Update
+		json.Unmarshal(m.Params, &u)
+		if u.Type == "prompt_queued" {
+			t.Fatalf("the inbox message was announced again at delivery: %+v", u)
+		}
 	}
 	c.call("session/interrupt", map[string]string{"session_id": b})
 	idle(b)
@@ -812,16 +967,15 @@ func TestSendMessage(t *testing.T) {
 	t.Log("Stop drops every message Claude has not taken")
 	_, dropped := waiting("two from A", "two from C")
 	c.call("session/interrupt", map[string]string{"session_id": b})
-	if cancelled := c.update(b, "prompt_cancelled"); cancelled.MessageID != dropped || cancelled.From != a {
-		t.Fatalf("prompt_cancelled is not A's message: %+v", cancelled)
+	for _, want := range []agent.Update{dropped[1], dropped[0]} {
+		if cancelled := c.update(b, "prompt_cancelled"); cancelled.MessageID != want.MessageID || cancelled.From != want.From || cancelled.FromLabel != want.FromLabel {
+			t.Fatalf("prompt_cancelled does not name %+v: %+v", want, cancelled)
+		}
 	}
 	idle(b)
-	time.Sleep(100 * time.Millisecond)
 	json.Unmarshal(c.call("session/get", map[string]string{"session_id": b}), &got)
-	for _, m := range c.received(b) {
-		if strings.Contains(string(m.Params), "two from C") {
-			t.Fatalf("C's message outlived Stop: %s", m.Params)
-		}
+	if len(got.Queued) != 0 {
+		t.Fatalf("messages outlived Stop: %+v", got.Queued)
 	}
 	for _, u := range got.History {
 		if strings.HasPrefix(u.Text, "two from") {
@@ -851,6 +1005,10 @@ func TestSendMessage(t *testing.T) {
 
 	t.Log("a failed start drops the messages")
 	fromA.tool("send_message", map[string]string{"to": d, "text": "hello D"})
+	failed := c.update(d, "prompt_queued")
+	if cancelled := c.update(d, "prompt_cancelled"); cancelled.MessageID != failed.MessageID || cancelled.FromLabel != "first from A" {
+		t.Fatalf("a message whose process did not start was not cancelled: %+v", cancelled)
+	}
 	if exited := c.update(d, "exited"); !strings.Contains(exited.Error, "no such harness binary") {
 		t.Fatalf("the failed start was reported as %+v", exited)
 	}
@@ -878,6 +1036,11 @@ func TestSendMessage(t *testing.T) {
 	if got := sessions[cs]; got.Label != cs[:8] || got.State != "parked" {
 		t.Fatalf("C is listed as %+v", got)
 	}
+	c.call("session/destroy", map[string]string{"session_id": a})
+	json.Unmarshal(c.call("session/get", map[string]string{"session_id": b}), &got)
+	if first := got.History[0]; first.FromLabel != "first from A" {
+		t.Fatalf("deleting the sender lost its label in the recipient's history: %+v", first)
+	}
 }
 
 // Messages waiting when Claude exits by itself are dropped, and Claude is not
@@ -892,7 +1055,7 @@ func TestExitDropsWaitingMessages(t *testing.T) {
 		"read line\n" +
 		`echo '{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}'` + "\n" +
 		"read message\n" +
-		"while [ ! -e " + exit + " ]; do sleep 0.05; done\n"
+		"while [ ! -e " + exit + " ]; do sleep 0.05; done\necho 'tool runtime failed' >&2\nexit 1\n"
 	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -908,7 +1071,7 @@ func TestExitDropsWaitingMessages(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s, err := New(st, &config.Config{}, 0, map[string]agent.Start{"claude": claude.Start}, MCP{})
+	s, err := New(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -916,22 +1079,40 @@ func TestExitDropsWaitingMessages(t *testing.T) {
 	c := connect(t, s)
 	mcp := attach(t, s, sender)
 
-	mcp.tool("send_message", map[string]string{"to": recipient, "text": "first"})
-	if queued := c.update(recipient, "prompt_queued"); queued.Text != "first" {
-		t.Fatalf("the first message was not queued in the harness: %+v", queued)
+	var queued []agent.Update
+	for _, text := range []string{"first", "second"} {
+		mcp.tool("send_message", map[string]string{"to": recipient, "text": text})
+		u := c.update(recipient, "prompt_queued")
+		if u.Text != text || u.MessageID == "" {
+			t.Fatalf("the message was not queued: %+v", u)
+		}
+		queued = append(queued, u)
 	}
-	mcp.tool("send_message", map[string]string{"to": recipient, "text": "second"})
 	if err := os.WriteFile(exit, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	for _, want := range queued {
+		if u := c.update(recipient, "prompt_cancelled"); u.MessageID != want.MessageID {
+			t.Fatalf("exit did not cancel %+v: %+v", want, u)
+		}
+	}
+	const reason = "Claude exited: exit status 1\ntool runtime failed"
+	if notice := c.update(recipient, "exited"); notice.Error != reason {
+		t.Fatalf("the exit notice omitted Claude's stderr: %+v", notice)
+	}
 	c.update(recipient, "parked")
-	c.call("session/get", map[string]string{"session_id": recipient})
+	var got struct {
+		Queued  []pendingInput `json:"queued"`
+		History []agent.Update `json:"history"`
+	}
+	json.Unmarshal(c.call("session/get", map[string]string{"session_id": recipient}), &got)
+	if len(got.History) != 2 || got.History[0].Error != reason {
+		t.Fatalf("the exit reason was not recorded: %+v", got.History)
+	}
+	if got.Queued == nil || len(got.Queued) != 0 {
+		t.Fatalf("messages outlived the exit: %+v", got.Queued)
+	}
 	if lines := starts(t, args); len(lines) != 1 {
 		t.Fatalf("Claude was started again for a waiting message: %q", lines)
-	}
-	for _, m := range c.received(recipient) {
-		if strings.Contains(string(m.Params), `"text":"second"`) {
-			t.Fatalf("the waiting message outlived the exit: %s", m.Params)
-		}
 	}
 }

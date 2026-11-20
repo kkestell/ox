@@ -75,13 +75,15 @@ func TestCatalogListsArePresent(t *testing.T) {
 	}
 }
 
-// An empty ID reaches the harness as an empty flag: Claude given --model=
-// starts with its default model, which the page shows under the choice's name.
-func TestChoicesHaveIDs(t *testing.T) {
+// A choice ID must identify exactly one option in its own list.
+func TestChoiceIDs(t *testing.T) {
 	for _, harness := range []string{
 		`{"models":[{"id":"","name":"M","efforts":[{"id":"low","name":"Low"}]},{"id":"m","name":"M","efforts":[{"id":"low","name":"Low"}]}],"permission_modes":[{"id":"auto","name":"Auto"}]}`,
 		`{"models":[{"id":"m","name":"M","efforts":[{"id":"low","name":"Low"},{"id":"","name":"High"}]}],"permission_modes":[{"id":"auto","name":"Auto"}]}`,
 		`{"models":[{"id":"m","name":"M","efforts":[{"id":"low","name":"Low"}]}],"permission_modes":[{"id":"auto","name":"Auto"},{"id":"","name":"Plan"}]}`,
+		`{"models":[{"id":"m","name":"M","efforts":[{"id":"low","name":"Low"}]},{"id":"m","name":"Other"}],"permission_modes":[{"id":"auto","name":"Auto"}]}`,
+		`{"models":[{"id":"m","name":"M","efforts":[{"id":"low","name":"Low"},{"id":"low","name":"Other"}]}],"permission_modes":[{"id":"auto","name":"Auto"}]}`,
+		`{"models":[{"id":"m","name":"M","efforts":[{"id":"low","name":"Low"}]}],"permission_modes":[{"id":"auto","name":"Auto"},{"id":"auto","name":"Other"}]}`,
 	} {
 		path := filepath.Join(t.TempDir(), "config.json")
 		data := `{"harnesses":{"h":` + harness + `},"defaults":{"harness":"h","model":"m","effort":"low","permission_mode":"auto"}}`
@@ -89,7 +91,7 @@ func TestChoicesHaveIDs(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := Load(path); err == nil {
-			t.Errorf("a choice without an ID loaded: %s", harness)
+			t.Errorf("a missing or duplicate choice ID loaded: %s", harness)
 		}
 	}
 }

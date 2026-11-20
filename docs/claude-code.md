@@ -108,7 +108,7 @@ The response carries the slash-command catalog and the model list. No model turn
   - While a `can_use_tool` request waits, the prompt stays untaken. Claude takes it after the answer's `tool_result`.
   - A turn with no further tool calls does not take it. After the turn's `result`, Claude starts the prompt as its own turn (`started`, a new `system init`, its own `result`) with no `idle` in between. `idle` follows only the last turn.
 - A message cannot be withdrawn once written, short of an interrupt with `cancel_queued`.
-- Slash commands and user-invocable skills are plain prompt text: `/review src/main.rs`. Local commands such as `/model` and `/clear` complete without a model call. An unknown command reaches the model as ordinary text. `--disable-slash-commands` disables both commands and skills; streamed `client_composed: true` bypasses slash dispatch.
+- Slash commands and user-invocable skills are plain prompt text: `/review src/main.rs`. Local commands such as `/model` and `/clear` complete without a model call. `/model sonnet` and `/effort high` change the process's settings with confirmation in reply text, not a structured settings acknowledgement (2.1.328). An unknown command reaches the model as ordinary text. `--disable-slash-commands` disables both commands and skills; streamed `client_composed: true` bypasses slash dispatch.
 
 ### Control requests to Claude
 
@@ -204,6 +204,7 @@ Answer `can_use_tool`, and answer a `hook_callback` for a hook declared in `init
 - `is_error: true` can occur with `subtype: "success"`, e.g. `"result":"API Error: 529 overloaded","terminal_reason":"model_error"`. Check both fields.
 - Error text: `result` if non-empty, else `errors[]` joined, else `subtype`. `errors` can hold diagnostics such as `"[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"`.
 - An empty bookkeeping result (`"result":""`, no `terminal_reason`) can follow an automatic turn.
+- A local command can return text in a successful `result` without any `text_delta` lines, as `/cost` and `/effort` usage do (2.1.328).
 - `total_cost_usd` is a running total for the process.
 - `modelUsage` is cumulative, keyed by resolved model ID, and gains an entry per model used (including subagents' and after model switches).
 
@@ -260,9 +261,17 @@ A prompt written during a turn and not yet taken, with `cancel_queued: true` (2.
 
 ### Session IDs
 
-Claude names the session at startup and writes the transcript once a turn
-runs. `--resume` needs a saved transcript; a fork can be resumed once its
-first turn has saved one.
+`--resume` needs a saved transcript. `command_lifecycle started` and
+`system/init` come before the first user entry is written; `system/init` can
+already have a transcript file with only metadata. In a new Haiku conversation
+on 2.1.328, the prompt was on disk by the first model stream event, before an
+approval and before any `result`. A fork also needs its first saved turn.
+
+`/clear` emits `conversation_reset` under the old `session_id`. The following
+`system/init` and empty successful `result` carry the new `session_id`, whose
+transcript has user entries by that result (2.1.328). `--resume` can continue
+that new conversation. The `new_conversation_id` in the reset event is not the
+new `session_id`.
 
 ## 5. Permissions and questions
 

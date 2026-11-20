@@ -44,7 +44,7 @@ func TestLive(t *testing.T) {
 	if out, err := exec.Command("go", "build", "-o", mcp.Forwarder, "../../cmd/ox-mcp").CombinedOutput(); err != nil {
 		t.Fatalf("build ox-mcp: %v\n%s", err, out)
 	}
-	s, err := New(st, cfg, parkAfter, map[string]agent.Start{"claude": claude.Start}, mcp)
+	s, err := New(st, cfg, parkAfter, map[string]agent.Harness{"claude": claude.Harness}, mcp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,6 +61,19 @@ func TestLive(t *testing.T) {
 	listener := serve(s)
 	c := connect(t, s)
 	c.timeout = 3 * time.Minute
+	restart := func(park time.Duration) {
+		t.Helper()
+		s.Close()
+		listener.Close()
+		restarted, err := New(st, cfg, park, map[string]agent.Harness{"claude": claude.Harness}, mcp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(restarted.Close)
+		s, listener = restarted, serve(restarted)
+		c = connect(t, s)
+		c.timeout = 3 * time.Minute
+	}
 
 	var workspace struct {
 		WorkspaceID string `json:"workspace_id"`
@@ -148,6 +161,78 @@ func TestLive(t *testing.T) {
 		t.Errorf("a start Claude refused on stderr failed without its reason: %+v", r.Error)
 	} else {
 		t.Logf("session/send: %s", r.Error.Message)
+	}
+
+	resumeToken := func(id string) string {
+		t.Helper()
+		workspaces, err := st.Workspaces()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, w := range workspaces {
+			for _, record := range w.Sessions {
+				if record.ID == id {
+					return record.ResumeToken
+				}
+			}
+		}
+		t.Fatalf("session %s not found in the database", id)
+		return ""
+	}
+
+	t.Log("the first approval can be pending when the daemon restarts")
+	pendingID := create("manual")
+	const marker = "unfinished-ox-test-49"
+	c.call("session/send", map[string]string{"session_id": pendingID, "text": "Use Bash to run `touch " + marker + "`."})
+	if approval := c.update(pendingID, "approval"); !strings.Contains(string(approval.Request), marker) {
+		t.Fatalf("unexpected approval: %s", approval.Request)
+	}
+	pendingToken := resumeToken(pendingID)
+	if pendingToken == "" {
+		t.Fatal("the first prompt left no resume token while waiting on an approval")
+	}
+	configDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	if configDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		configDir = filepath.Join(home, ".claude")
+	}
+	files, err := filepath.Glob(filepath.Join(configDir, "projects", "*", pendingToken+".jsonl"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("no transcript for %s: %v, %v", pendingToken, files, err)
+	}
+	transcript, err := os.ReadFile(files[0])
+	if err != nil || !strings.Contains(string(transcript), "Use Bash to run `touch "+marker+"`.") {
+		t.Fatalf("Claude did not write the first prompt before the approval: %v", err)
+	}
+
+	t.Log("/clear replaces the resume token even with an empty result")
+	cleared := create("manual")
+	turn(cleared, "Reply with just the word ok.", allow)
+	old := resumeToken(cleared)
+	turn(cleared, "/clear", allow)
+	clearedToken := resumeToken(cleared)
+	if old == "" || clearedToken == "" || clearedToken == old {
+		t.Fatalf("/clear did not replace the resume token: %q -> %q", old, clearedToken)
+	}
+
+	restart(parkAfter)
+	turn(pendingID, "What exact filename did my first prompt ask to create? Reply with just the filename; do not call tools.", allow)
+	if r := c.update(pendingID, "result").Result; r.IsError || !strings.Contains(r.Text, marker) || resumeToken(pendingID) != pendingToken {
+		t.Fatalf("the reply did not resume the unfinished conversation: %+v", r)
+	}
+	turn(cleared, "Reply with just the word ok.", allow)
+	if r := c.update(cleared, "result").Result; r.IsError || resumeToken(cleared) != clearedToken {
+		t.Fatalf("the cleared conversation did not resume: %+v", r)
+	}
+
+	t.Log("/cost output is visible as reply text even without deltas from Claude")
+	turn(cleared, "/cost", allow)
+	delta, result := c.update(cleared, "text_delta"), c.update(cleared, "result")
+	if result.Result.IsError || delta.Text == "" || delta.Text != result.Result.Text || delta.MessageID != result.MessageID {
+		t.Fatalf("local command output was not published as the reply: %+v, %+v", delta, result)
 	}
 
 	t.Log("configuring one setting keeps the others")
@@ -479,16 +564,7 @@ func TestLive(t *testing.T) {
 	listModels(listed)
 
 	t.Log("a resumed session keeps restored schedules through an interrupted first turn")
-	s.Close()
-	listener.Close()
-	restarted, err := New(st, cfg, 2*time.Second, map[string]agent.Start{"claude": claude.Start}, mcp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(restarted.Close)
-	serve(restarted)
-	c = connect(t, restarted)
-	c.timeout = 3 * time.Minute
+	restart(2 * time.Second)
 	// Use the session whose completed turn created a recurring job. Deny
 	// the first tool on resume so Claude never sends a Stop schedule report.
 	deniedBash = false

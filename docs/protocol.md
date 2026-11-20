@@ -34,7 +34,7 @@ loses its connection.
 | `id` | Client-chosen JSON-RPC request identifier, echoed in its response. |
 | `workspace_id` | Opaque identifier returned by `workspace/create`. |
 | `session_id` | Opaque identifier returned by `session/create`. |
-| `message_id` | Prompt identifier returned by `session/send` and included in its [updates](#session-updates). |
+| `message_id` | Input identifier returned by `session/send` for a user prompt, and included in [updates](#session-updates) for prompts and messages. |
 | `request_id` | Claude's identifier for an approval, used to answer or withdraw it. |
 
 ## Workspaces and sessions
@@ -72,8 +72,9 @@ The daemon reads the harnesses it offers from `ox/config.json` beneath
 the built-in Claude Code catalog. The daemon validates harness names at startup.
 
 Each harness lists at least one model, each with the effort levels it takes,
-and at least one permission mode. Every choice has a nonempty `id`, passed to
-the harness, and a `name` to show. A model with no effort levels omits `efforts`
+and at least one permission mode. Every choice has a nonempty `id`, unique
+within its list and passed to the harness, and a `name` to show. For Claude,
+use `manual`, not its alias `default`. A model with no effort levels omits `efforts`
 or lists none, and takes an empty `effort`. The
 required `defaults` name the harness, model, effort, and permission mode a new
 session starts with, each one of the configured choices; the daemon refuses to
@@ -181,10 +182,14 @@ stored settings.
 ### `session/send`
 
 Requires `session_id` and nonblank `text`. Sends a prompt to an idle or
-working session and returns the prompt's `message_id`. A parked session first starts a process, which has a one-minute
-initialization timeout; startup failure returns an operation error. Success
+working session and returns the prompt's `message_id`. Text over 1,048,576
+bytes after JSON decoding returns `-32602`. A parked session first starts a
+process, which has a one-minute initialization timeout; startup failure
+returns an operation error. Success
 means the prompt was written to Claude; its output and eventual result arrive
-through `session/update` notifications.
+through `session/update` notifications. For Claude, a prompt whose first word
+is `/model` or `/effort` is refused with `-32602`, without starting a parked
+session. Use [`session/configure`](#sessionconfigure) to change those settings.
 
 ```json
 {"jsonrpc":"2.0","id":4,"method":"session/send","params":{"session_id":"session-id","text":"Explain this repository."}}
@@ -194,13 +199,12 @@ through `session/update` notifications.
 {"jsonrpc":"2.0","id":4,"result":{"message_id":"prompt-id"}}
 ```
 
-A prompt sent while Claude works joins the running turn, as
-[User messages](claude-code.md#user-messages) describes. Until Claude takes
-it, the prompt is queued: a `prompt_queued` update reports it, and
-`session/get` returns it as `queued`. Its `prompt` update reports that Claude
-took it. A session holds one queued prompt; a send while one is queued, or
-while a configuration runs, returns `-32002`. A message from another session
-([`send_message`](#tools)) takes the same queue and updates, with `from`.
+A prompt sent while Claude works may join the running turn or start a new
+turn after the previous `result`, as [User messages](claude-code.md#user-messages)
+describes. A successful send publishes `prompt_queued` until Claude takes the
+prompt (`prompt`) or it is dropped (`prompt_cancelled`). A send while any
+input is still queued, including an inbox message from another session
+([`send_message`](#tools)), or while a configuration runs, returns `-32002`.
 
 ### `session/get`
 
@@ -215,15 +219,15 @@ response arrives.
 ```
 
 ```json
-{"jsonrpc":"2.0","id":5,"result":{"model":"claude-haiku-5-5","effort":"low","permission_mode":"manual","state":"requires_action","approvals":[{"request_id":"claude-request-id","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch notes.txt"}}}],"history":[{"message_id":"prompt-id","type":"prompt","text":"Create notes.txt.","time":"2026-11-18T19:53:50Z"},{"message_id":"prompt-id","type":"text_delta","text":"I'll create the file.","time":"2026-11-18T19:53:51Z"}]}}
+{"jsonrpc":"2.0","id":5,"result":{"model":"claude-haiku-5-5","effort":"low","permission_mode":"manual","state":"requires_action","queued":[],"approvals":[{"request_id":"claude-request-id","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch notes.txt"}}}],"history":[{"message_id":"prompt-id","type":"prompt","text":"Create notes.txt.","time":"2026-11-18T19:53:50Z"},{"message_id":"prompt-id","type":"text_delta","text":"I'll create the file.","time":"2026-11-18T19:53:51Z"}]}}
 ```
 
 | Field | Meaning |
 | --- | --- |
-| `model`, `effort`, `permission_mode` | The session's stored settings. |
+| `model`, `effort`, `permission_mode` | The settings the session now uses. |
 | `state` | `parked`, or the execution state: `running`, `requires_action`, or `idle`. A prompt is `running` from the moment `session/send` writes it. |
 | `approvals` | Pending approvals in the order they arrived, each with `request_id` and Claude's `request`, whether or not a prompt is active. |
-| `queued` | The prompt sent but not yet taken by Claude, with `message_id`, `text`, and, for a message, `from`; absent when there is none. |
+| `queued` | All inputs Claude has not taken, oldest first: the one written to Claude, if any, followed by messages in the session's inbox. Each has `message_id` and `text`, with `from` and `from_label` for a message. An empty queue is `[]`. |
 | `history` | The session's recorded updates, oldest first, in the form of `session/update` params without `session_id`. |
 
 The daemon records every session's `prompt`, `text_delta`, `tool_use`,
@@ -250,22 +254,23 @@ setting the configuration no longer offers stays until it is changed.
 {"jsonrpc":"2.0","id":6,"result":{}}
 ```
 
-A parked session stores the settings and applies them when its next process
-starts. A running session must be idle with no pending prompt. Configuration
-reserves it until completion; sends and other configuration requests during
-that time return `-32002`.
+A parked session adopts the changed settings for its next process. A running
+session must be idle with no queued input. Configuration reserves it until
+completion; sends and other configuration requests then return `-32002`.
 
-For a running session, success means Claude acknowledged each setting that
-differs from its process's, and only then are they stored. Model, effort, and permission
-mode are applied in that order. If a change fails, earlier changes remain
-applied to the process and later changes are skipped. Claude refusals and
-write failures return an operation error. The session takes whatever settings
-its process now uses, even when the request fails or they cannot be stored,
-and a `session/configured` event reports them before the response. Settings
-that could not be stored last until the daemon restarts. A change Claude has not acknowledged
-after one minute stops the process. If the process exits first, including by
-that stop, the settings are stored for the next process and the request
-succeeds. See [Claude's model validation](claude-code.md#initialize-first).
+On a running process, Claude acknowledges changes to model, effort, and
+permission mode in that order. Each change the session adopts, including a
+change Claude makes on its own, is stored and broadcast as `session/configured`
+when it happens. One request can produce several notifications before its
+response. If a change fails, earlier changes remain applied and later ones
+are skipped. The response is success or the harness's error; failed database
+writes are logged, not returned. Changes that could not be stored last until
+the daemon restarts.
+
+A control Claude has not acknowledged after one minute stops the process.
+If it exits first, including by that stop, the session applies just the
+request's changed fields to its current settings for the next process and
+the request succeeds. See [Claude's model validation](claude-code.md#initialize-first).
 
 ### `session/approve`
 
@@ -300,9 +305,9 @@ it runs, using Claude's [interrupt](claude-code.md#interrupt). Success means
 the request was written; a session that is idle or parked has nothing to stop
 and also succeeds. The stopped turn ends with an error `result` whose text is
 `Interrupted`, and an `idle` state, which release a prompt as usual. A queued
-prompt is dropped with a `prompt_cancelled` update, and messages waiting
-behind it are dropped without updates. When no turn is running,
-that update and `idle` end the interrupt, with no `result`.
+prompt and all untaken messages, including those still in the inbox, are
+dropped with a `prompt_cancelled` update each. When no turn is running,
+cancellation and `idle` end the interrupt, with no `result`.
 
 ```json
 {"jsonrpc":"2.0","id":8,"method":"session/interrupt","params":{"session_id":"session-id"}}
@@ -350,10 +355,10 @@ can run after a prompt's `result` and before the `idle` that releases it:
 
 | `type` | Additional fields | Meaning |
 | --- | --- | --- |
-| `prompt_queued` | `text`: string; `from`: string for a message | A client sent this prompt, or the session `from` sent this message; Claude has not taken it yet. |
-| `prompt` | `text`: string; `from`: string for a message | Claude took this prompt or message into its conversation. |
-| `prompt_cancelled` | `text`: string; `from`: string for a message | The queued prompt or message was dropped before Claude took it, by an interrupt or the process exiting. |
-| `text_delta` | `text`: string | Append this fragment of top-level assistant text. |
+| `prompt_queued` | `text`: string; `from`, `from_label`: strings for a message | The prompt was written to Claude, or a message was accepted into the inbox. Claude has not taken it yet. A message is announced only at acceptance, not again when written. |
+| `prompt` | `text`: string; `from`, `from_label`: strings for a message | Claude took this prompt or message into its conversation. |
+| `prompt_cancelled` | `text`: string; `from`, `from_label`: strings for a message | This input was dropped before Claude took it, on interrupt, process exit, or a failed start. |
+| `text_delta` | `text`: string | Append this fragment of top-level assistant text. If a successful turn result has text but none was streamed, the daemon publishes its text here before the result. |
 | `tool_use` | `tool_use_id`: string; `tool_name`: string; `input`: object | Claude called a tool at the top level. |
 | `tool_result` | `tool_use_id`: string; `result`: object with `text` and `is_error` | The outcome of the top-level tool call with this `tool_use_id`. `text` joins the result's text blocks. |
 | `state` | `state`: `running`, `requires_action`, or `idle` | The session's execution state: Claude's report, or `running` for a prompt Claude has not taken yet. |
@@ -361,8 +366,12 @@ can run after a prompt's `result` and before the `idle` that releases it:
 | `approval` | `request_id`: string; `request`: object | A pending Claude request needing a client decision. |
 | `approval_answered` | `request_id`: string | A client answered the approval. |
 | `approval_cancelled` | `request_id`: string | Withdraw an unanswered approval. Discard any later answer. |
-| `exited` | `error`: string | The process exited during an active prompt, which has ended, or exited without being stopped, or could not resume the session's conversation, or could not start for a message, whose waiting messages are dropped. |
+| `exited` | `error`: string | The process exited during an active prompt or without being stopped, or it could not resume or start for a message. The text includes the available reason, including Claude's stderr tail for an unexpected exit. |
 | `parked` | — | The session's process has exited, for any reason. The session's last update until its next process starts. |
+
+For a message, `from` is the sender's session ID and `from_label` is its
+label when the message was sent. The recorded `prompt` keeps this label even
+if the sender is deleted. Older recorded prompts can omit `from_label`.
 
 `running` means Claude is working. `requires_action` means it is waiting for
 user action; read the approval notifications to obtain the requests. `idle`
@@ -450,15 +459,17 @@ notification the connection was sent precedes the result. On any later line,
 An attached connection serves `initialize`, `ping`, `tools/list`, and
 `tools/call`; any other method returns `-32601`. A notification is ignored.
 Each request returns `-32001` when the session does not exist, and `-32000`
-when the daemon is shutting down. `initialize` requires a string
-`protocolVersion`, returns it unchanged, and advertises the `tools`
-capability.
+when the daemon is shutting down. `initialize` requires a nonempty string
+`protocolVersion` (`-32602` otherwise), returns it unchanged, and advertises
+the `tools` capability.
 
 ### Tools
 
-Each tool returns one text content item. A refusal sets `isError` and gives
-the reason as the text. A call to an unknown tool, or with malformed params,
-returns `-32602`. Every tool is in the harness's pre-approved list, so it runs
+In a valid JSON-RPC envelope, `tools/call` returns `-32602` if `params` is
+omitted or an array, or `name` is missing, invalid, or unknown. A recognized
+tool returns a result with one text content item; if it refuses its arguments
+or cannot perform the operation, the result sets `isError: true` and gives
+the reason as the text. Every tool is in the harness's pre-approved list, so it runs
 without an approval prompt where the permission mode allows; plan mode asks
 for a tool not annotated `readOnlyHint`.
 
@@ -474,9 +485,10 @@ prompt the user sent it, or the first 8 characters of its ID), `workspace`
 
 `send_message` takes `to`, a session ID, and `text`. It queues the text for
 that session and returns `Message queued for <to>.` without waiting for
-delivery. The session takes each message in order, once nothing else is
-queued and no configuration runs, starting first when parked; the message
-then follows a prompt's lifecycle, with `from` set to the caller's ID. A
+delivery. Inbox acceptance assigns `message_id` and publishes `prompt_queued`.
+The session writes each message in order, starting first when parked, once
+no input written to Claude is still waiting and no configuration runs. See
+[Session updates](#session-updates) for uptake, cancellation, and attribution. A
 blank `to` or `text`, `to` naming the caller, or a session that does not
 exist is refused with `to and text are required`,
 `cannot send a message to yourself`, or `session not found`. The model

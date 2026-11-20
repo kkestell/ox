@@ -5,7 +5,7 @@ clients over a Unix socket. `ox` serves the [web UI](#web-ui).
 
 Each package of `oxd` depends only on the packages beneath it. The server and each
 harness meet only at `internal/agent`; `cmd/oxd` gives the server each
-harness's `Start` function by name.
+harness by name, with its `Start` function and any prompt validation.
 
 ```
 cmd/ox-mcp         stdio forwarder from a harness's MCP client to the socket
@@ -28,7 +28,7 @@ cmd/oxd            socket, database, and configuration paths, signals, the harne
 | Package | Owns |
 | --- | --- |
 | `cmd/ox-mcp` | Connecting a harness's MCP client, over stdio, to `oxd`'s socket for one session: attaching, then copying each line between stdin and the socket and the socket and stdout. |
-| `cmd/oxd` | Choosing the socket, database, and configuration, checking the configured harnesses, starting the server, and stopping it on a signal, or at once on a second. |
+| `cmd/oxd` | Choosing the socket, database, and configuration, checking the configured harnesses, and holding the socket from before database startup until sessions have stopped. A second stop signal kills all registered Claude processes, including those still initializing, and ends the daemon. |
 | `paths` | The XDG locations of the configuration, database, and socket, which `cmd/oxd` uses unless a flag overrides them and `cmd/ox` uses for the socket. |
 | `config` | Reading the configuration file, or the built-in default, into each harness's models, efforts, and permission modes and the new-session defaults, and checking settings against them. |
 | `server` | Client and MCP connections, each session's goroutine and the agent it runs, and the mapping from each method to a session operation and its error codes. Each connection writes through its own queue, so sessions never wait on a client. |
@@ -55,10 +55,9 @@ at once, or, for a configuration Claude must acknowledge, from the event that
 finishes it. Nothing else touches a session's state, and a response lands in a
 connection's queue after every update it reflects and before every update it
 does not. The server handles each connection's requests on separate goroutines.
-Changes are written to the database before they are applied in memory,
-except settings a running process has already taken, the resume token of a
-conversation Claude has started, and the clearing of a token Claude can no
-longer resume, which the session keeps even when storing them fails.
+Workspace and session membership changes are stored before they are applied
+in memory. The session keeps the settings it adopts and the resume token it
+receives or clears even when storing them fails.
 
 `Server.mu` guards workspace and session membership and the shutdown flag.
 Membership changes and `workspace/list` queue their messages under the same
@@ -68,15 +67,13 @@ while holding it.
 The session owns the history buffer and writes conversation events to the
 store. See [the snapshot and history contract](protocol.md#sessionget).
 
-The session's inbox holds messages from other sessions, in order, while its
-agent cannot take them: another input is queued, a configuration runs, or the
-session has yet to start. After each operation and event, the session's
-`deliver` sends the oldest message to the agent, starting a parked session
-first; a refusal as busy leaves it for the next try. A failed start, Stop, and
-the end of the process clear the inbox. `send_message` posts the message to
-the recipient's goroutine and `list_sessions` posts a read to each session,
-so an MCP request waits only on the sessions it reads, and no session
-goroutine posts to another.
+The session owns pending inputs and their IDs and attribution from acceptance
+through uptake or cancellation: one can be written to the agent, and messages
+waiting to be written sit in the inbox. One operation starts a parked session
+for either input source. After each operation and event, `deliver` tries the
+oldest waiting message; a busy agent leaves it for the next try. `send_message`
+posts to the recipient's goroutine and `list_sessions` captures each entry on
+its owning goroutine. No session goroutine posts to another.
 
 The session arms a park timer whenever its agent is `Parkable` and stops it
 when the agent stops being parkable, so the full period restarts each time. If
@@ -89,10 +86,11 @@ An `Agent` runs one harness instance. The session goroutine drives it by
 calling its methods and passing each event from `Events` to `Handle`. The
 agent publishes through `OnUpdate` during those calls, and reports failures no
 call returns, such as a failed write to its process, through `OnError`, which
-the session logs under its ID. `Send` takes an `Input`: the agent writes its
-`Content`, which for a message wraps the text with its sender, and publishes
-its `Text` and `From`. See the
-[update contract](protocol.md#session-updates) for the wire format and ordering.
+the session logs under its ID. `Send` writes the input with its session-assigned
+ID and reports when it is written, taken, or dropped. The session publishes
+those lifecycle updates with the input's text and attribution. The agent
+reports settings changes through `OnConfigured`, as they happen, separately
+from the outcome of a `Configure` request. See the [update contract](protocol.md#session-updates).
 
 Each harness receives Ox's MCP server for its session: the `ox-mcp` beside
 `oxd`, its environment naming the socket and the session, and the tools that
@@ -100,14 +98,17 @@ run without an approval prompt where the permission mode allows.
 
 ### The Claude agent
 
-Ox assigns a fresh UUID to a new Claude conversation and reports it through
-`OnResumable` with the first published result. On every launch, resumes
-included, it registers Ox's MCP server as `ox` and pre-approves its tools. See Claude's
-[launch flags](claude-code.md#persistent-session) and
-[transcript timing](claude-code.md#session-ids).
+Ox assigns a fresh UUID when launching a new Claude conversation. The agent
+tracks the conversation ID Claude reports and calls `OnResumable` once a
+changed ID is known to be resumable. See Claude's [transcript timing](claude-code.md#session-ids).
+On every launch, resumes included, it registers Ox's MCP server as `ox` and
+pre-approves its tools; see Claude's [launch flags](claude-code.md#persistent-session).
 
-The stdout reader and control-request timers deliver through `Events`. The
-session publishes updates in the order it handles operations and events.
+A stdout reader drains the pipe into a delivery queue independently of the
+session. The reader's inherited-descriptor cutoff does not limit delivery;
+all captured output arrives before the exit event, which includes the stderr
+tail. The output queue and control-request timers deliver through `Events`.
+The session publishes updates in the order it handles operations and events.
 
 The phase identifies the current operation:
 
@@ -141,7 +142,8 @@ and `/rpc` to `ox`.
 
 Each page gets an `oxd` connection through `ox`: `/events` relays socket lines
 as Server-Sent Events, and `/rpc` posts the page's JSON-RPC requests to the socket.
-`ox` answers both only when the request's `Host` names `localhost`, `127.0.0.1`,
+Its 8 MiB request body cap leaves space for JSON escaping under the
+[decoded prompt limit](protocol.md#sessionsend). `ox` answers both only when the request's `Host` names `localhost`, `127.0.0.1`,
 `[::1]`, or the host given to `-addr`, and refuses an `/rpc` post from another
 origin, so a page whose domain rebinds to the relay's address cannot reach `oxd`.
 

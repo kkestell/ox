@@ -41,8 +41,7 @@ function Layout() {
   const session = () => {
     const s = selected();
     if (s?.kind !== "session") return;
-    const session = ox.state.sessions[s.id];
-    return session?.id === s.id ? session : undefined;
+    return ox.session(s.id);
   };
   // A removed workspace's draft goes with it.
   const liveDrafts = () => drafts().filter((d) => ox.state.workspaces.some((w) => w.id === d.workspaceId));
@@ -61,7 +60,7 @@ function Layout() {
   createEffect(
     () =>
       liveDrafts().find(
-        (d) => d.control.error() && ox.state.sessions[d.id]?.synced && (d === draft() || session()?.id === d.id),
+        (d) => d.control.error() && ox.session(d.id)?.load.kind === "live" && (d === draft() || session()?.id === d.id),
       ),
     (recovered) => {
       if (recovered) {
@@ -89,7 +88,11 @@ function Layout() {
         {/* Keyed, so each session and draft gets its own view and view state. */}
         <Switch>
           <Match when={session()} keyed>
-            {(session) => <SessionView session={session} />}
+            {(session) => (
+              <Show when={session.load.snapshot} fallback={<p role="status">Loading session…</p>}>
+                {(snapshot) => <SessionView session={session} snapshot={snapshot()} />}
+              </Show>
+            )}
           </Match>
           <Match when={draft()} keyed>
             {(current) => <NewSessionView draft={current} onCreated={() => finish(current)} />}

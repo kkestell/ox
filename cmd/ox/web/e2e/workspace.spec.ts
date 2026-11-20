@@ -4,7 +4,11 @@ import { fakeConfig, startServices } from "./services";
 import { hold, open, prompt, send, sessionButton } from "./ui";
 
 test("the workspace sidebar works after opening a malformed session link", async ({ page }) => {
-  const services = await startServices(fakeConfig);
+  const fake = fakeConfig.harnesses.fake;
+  const services = await startServices({
+    harnesses: { fake: { ...fake, models: fake.models.map((model) => ({ ...model, efforts: [] })) } },
+    defaults: { ...fakeConfig.defaults, effort: "" },
+  });
   try {
     const list = await hold(page, "workspace/list");
     await page.goto(`${services.url}/#%`);
@@ -26,8 +30,54 @@ test("the workspace sidebar works after opening a malformed session link", async
     reconnect.release();
     await expect(send(page)).toBeEnabled();
     await expect(mode).toHaveValue("plan");
+    const create = page.waitForRequest(
+      (r) => r.url().includes("/rpc") && r.postDataJSON()?.method === "session/create",
+    );
     await send(page).click();
+    expect((await create).postDataJSON().params).not.toHaveProperty("effort");
     await expect(page.locator(".reply")).toHaveText("You said: draft before catalog");
+  } finally {
+    await services.stop();
+  }
+});
+
+test("a cancelled add or remove cannot settle the next dialog", async ({ page }) => {
+  const services = await startServices(fakeConfig);
+  try {
+    await page.goto(services.url);
+    const add = page.getByRole("button", { name: "Add workspace" });
+    const addDialog = page.getByRole("dialog");
+    const path = addDialog.getByPlaceholder("/absolute/path/to/directory");
+    const submit = addDialog.getByRole("button", { name: "Add", exact: true });
+    const firstAdd = await hold(page, "workspace/create");
+    await add.click();
+    await path.fill("/");
+    await submit.click();
+    await firstAdd.arrived;
+    await addDialog.getByRole("button", { name: "Cancel" }).click();
+    await add.click();
+    await path.fill(services.workspace);
+    firstAdd.release();
+    await expect(page.getByTitle("/", { exact: true })).toBeVisible();
+    await expect(path).toHaveValue(services.workspace);
+    await submit.click();
+    await expect(page.getByTitle(services.workspace)).toBeVisible();
+
+    const remove = (path: string) =>
+      page.getByTitle(path, { exact: true }).getByRole("button", { name: "Remove workspace" });
+    const removeDialog = page.getByRole("alertdialog");
+    const confirm = removeDialog.getByRole("button", { name: "Remove", exact: true });
+    const firstRemove = await hold(page, "workspace/remove");
+    await remove("/").click();
+    await confirm.click();
+    await firstRemove.arrived;
+    await removeDialog.getByRole("button", { name: "Cancel" }).click();
+    await remove(services.workspace).click();
+    firstRemove.release();
+    await expect(page.getByTitle("/", { exact: true })).toHaveCount(0);
+    await expect(removeDialog).toContainText(services.workspace);
+    await confirm.click();
+    await expect(page.getByTitle(services.workspace)).toHaveCount(0);
   } finally {
     await services.stop();
   }
