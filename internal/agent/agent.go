@@ -23,7 +23,10 @@ type Agent interface {
 	Snapshot() Snapshot
 	// Send writes input's Content with its session-assigned ID. It publishes
 	// prompt_queued after writing, then prompt or prompt_cancelled on uptake
-	// or drop. Send returns ErrBusy during configuration or with an untaken input.
+	// or drop. Each update is built with Input.Update, so it carries the
+	// input's Text, From, and FromLabel. Snapshot().Queued reports the input
+	// from the write until it is taken or dropped. Send returns ErrBusy
+	// during configuration or with an untaken input.
 	Send(input Input) error
 	// Approve answers a pending approval, or returns ErrApprovalNotFound.
 	Approve(requestID string, response json.RawMessage) error
@@ -161,12 +164,25 @@ type Result struct {
 type Snapshot struct {
 	State     string     `json:"state"`
 	Approvals []Approval `json:"approvals"`
+	// Queued is the input written to the harness and not yet taken. It is not
+	// a snapshot field in the protocol: session/get lists it in queued, ahead
+	// of the session's waiting messages.
+	Queued *Input `json:"-"`
 }
 
 // Input is the user prompt or wrapped message the harness writes to the model.
 type Input struct {
-	MessageID string
-	Content   string
+	MessageID string `json:"message_id"`
+	Text      string `json:"text"`
+	From      string `json:"from,omitempty"` // the sending session of a message
+	FromLabel string `json:"from_label,omitempty"`
+	Content   string `json:"-"` // what the model receives
+}
+
+// Update builds a lifecycle update of kind for the input. Its Time is left for
+// the publisher.
+func (i Input) Update(kind string) Update {
+	return Update{Type: kind, MessageID: i.MessageID, Text: i.Text, From: i.From, FromLabel: i.FromLabel}
 }
 
 type Approval struct {

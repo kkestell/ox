@@ -67,13 +67,14 @@ while holding it.
 The session owns the history buffer and writes conversation events to the
 store. See [the snapshot and history contract](protocol.md#sessionget).
 
-The session owns pending inputs and their IDs and attribution from acceptance
-through uptake or cancellation: one can be written to the agent, and messages
-waiting to be written sit in the inbox. One operation starts a parked session
-for either input source. After each operation and event, `deliver` tries the
-oldest waiting message; a busy agent leaves it for the next try. `send_message`
-posts to the recipient's goroutine and `list_sessions` captures each entry on
-its owning goroutine. No session goroutine posts to another.
+The session owns the inbox: messages, with their IDs and attribution, wait
+there until written to the agent. The agent owns a written input, with its
+text and attribution, until it is taken or dropped. One operation starts a
+parked session for either input source. After each operation and event,
+`deliver` tries the oldest waiting message; a busy agent leaves it for the
+next try. `send_message` posts to the recipient's goroutine and
+`list_sessions` captures each entry on its owning goroutine. No session
+goroutine posts to another.
 
 The session arms a park timer whenever its agent is `Parkable` and stops it
 when the agent stops being parkable, so the full period restarts each time. If
@@ -86,11 +87,12 @@ An `Agent` runs one harness instance. The session goroutine drives it by
 calling its methods and passing each event from `Events` to `Handle`. The
 agent publishes through `OnUpdate` during those calls, and reports failures no
 call returns, such as a failed write to its process, through `OnError`, which
-the session logs under its ID. `Send` writes the input with its session-assigned
-ID and reports when it is written, taken, or dropped. The session publishes
-those lifecycle updates with the input's text and attribution. The agent
-reports settings changes through `OnConfigured`, as they happen, separately
-from the outcome of a `Configure` request. See the [update contract](protocol.md#session-updates).
+the session logs under its ID. `Send` receives the input with its
+session-assigned ID, text, and attribution. The agent publishes the lifecycle
+updates for when it is written, taken, or dropped with that text and
+attribution, and reports the untaken input in `Snapshot`. The agent reports
+settings changes through `OnConfigured`, as they happen, separately from the
+outcome of a `Configure` request. See the [update contract](protocol.md#session-updates).
 
 Each harness receives Ox's MCP server for its session: the `ox-mcp` beside
 `oxd`, its environment naming the socket and the session, and the tools that

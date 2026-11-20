@@ -57,7 +57,7 @@ func agentRunning(t *testing.T, cmd *exec.Cmd) (*Agent, *bytes.Buffer, *recorder
 
 // prompt is the user's prompt text as an input.
 func prompt(text string) agent.Input {
-	return agent.Input{MessageID: newUUID(), Content: text}
+	return agent.Input{MessageID: newUUID(), Text: text, Content: text}
 }
 
 func sendTestPrompt(a *Agent, text string) (string, error) {
@@ -146,8 +146,9 @@ func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
 
 func TestPromptSentWhileClaudeWorks(t *testing.T) {
 	a, input, updates, first := promptingAgent(t)
-	id, err := sendTestPrompt(a, "steer")
-	if err != nil {
+	steer := agent.Input{MessageID: newUUID(), Text: "steer", From: "other", FromLabel: "Other", Content: "wrapped steer"}
+	id := steer.MessageID
+	if err := a.Send(steer); err != nil {
 		t.Fatal(err)
 	}
 	var wire map[string]any
@@ -156,6 +157,12 @@ func TestPromptSentWhileClaudeWorks(t *testing.T) {
 	}
 	if len(*updates) != 1 || (*updates)[0].Type != "prompt_queued" || (*updates)[0].MessageID != id {
 		t.Fatalf("a prompt sent while Claude works was not published as queued: %+v", *updates)
+	}
+	if q := (*updates)[0]; q.Text != "steer" || q.From != "other" || q.FromLabel != "Other" {
+		t.Fatalf("prompt_queued lost the input's text or attribution: %+v", q)
+	}
+	if queued := a.Snapshot().Queued; queued == nil || *queued != steer {
+		t.Fatalf("the snapshot does not report the untaken input: %+v", queued)
 	}
 	if err := a.Send(prompt("again")); !errors.Is(err, agent.ErrBusy) {
 		t.Fatalf("a second prompt was queued: %v", err)
@@ -174,6 +181,12 @@ func TestPromptSentWhileClaudeWorks(t *testing.T) {
 	output(t, a, `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"steered"}}}`)
 	if len(*updates) != 3 || (*updates)[1].Type != "prompt" || (*updates)[1].MessageID != id || (*updates)[2].MessageID != id {
 		t.Fatalf("the taken prompt did not take over the turn: %+v", *updates)
+	}
+	if p := (*updates)[1]; p.Text != "steer" || p.From != "other" || p.FromLabel != "Other" {
+		t.Fatalf("prompt lost the input's text or attribution: %+v", p)
+	}
+	if queued := a.Snapshot().Queued; queued != nil {
+		t.Fatalf("the snapshot reports a taken input: %+v", queued)
 	}
 	*updates = nil
 
@@ -215,8 +228,11 @@ func TestStopDropsQueuedPrompt(t *testing.T) {
 		t.Fatalf("cancelling the taken prompt published updates: %+v", *updates)
 	}
 	output(t, a, `{"type":"command_lifecycle","command_uuid":"`+id+`","state":"cancelled"}`)
-	if len(*updates) != 1 || (*updates)[0].Type != "prompt_cancelled" || (*updates)[0].MessageID != id {
+	if len(*updates) != 1 || (*updates)[0].Type != "prompt_cancelled" || (*updates)[0].MessageID != id || (*updates)[0].Text != "steer" {
 		t.Fatalf("the dropped prompt was not published: %+v", *updates)
+	}
+	if queued := a.Snapshot().Queued; queued != nil {
+		t.Fatalf("the snapshot reports a dropped input: %+v", queued)
 	}
 	state(t, a, "idle")
 	if err := a.Send(prompt("next")); err != nil {
@@ -237,8 +253,11 @@ func TestStopDropsQueuedPrompt(t *testing.T) {
 	if err := a.Stop(); err != nil {
 		t.Fatal(err)
 	}
-	if len(*updates) != 2 || (*updates)[0].Type != "prompt_cancelled" || (*updates)[0].MessageID != id || (*updates)[1].Type != "exited" {
+	if len(*updates) != 2 || (*updates)[0].Type != "prompt_cancelled" || (*updates)[0].MessageID != id || (*updates)[0].Text != "hello" || (*updates)[1].Type != "exited" {
 		t.Fatalf("an exit did not drop the queued prompt first: %+v", *updates)
+	}
+	if queued := a.Snapshot().Queued; queued != nil {
+		t.Fatalf("the snapshot reports an input after exit: %+v", queued)
 	}
 }
 

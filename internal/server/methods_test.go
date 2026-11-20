@@ -500,7 +500,7 @@ func TestMessageToUnresumableConversationLeavesOneNotice(t *testing.T) {
 		t.Fatalf("the message was not cancelled: %+v", u)
 	}
 	var got struct {
-		Queued  []pendingInput `json:"queued"`
+		Queued  []agent.Input  `json:"queued"`
 		History []agent.Update `json:"history"`
 	}
 	json.Unmarshal(c.call("session/get", map[string]string{"session_id": "s"}), &got)
@@ -755,8 +755,11 @@ func TestPromptQueuedWhileClaudeWorks(t *testing.T) {
 			if busy := c.request("session/send", map[string]string{"session_id": id, "text": "again"}); busy.Error == nil || busy.Error.Code != sessionBusy {
 				t.Fatalf("a second prompt was queued: %+v", busy.Error)
 			}
+			if busy := c.request("session/configure", map[string]string{"session_id": id, "model": "m"}); busy.Error == nil || busy.Error.Code != sessionBusy {
+				t.Fatalf("a configuration ran while a prompt was untaken: %+v", busy.Error)
+			}
 			var snapshot struct {
-				Queued []pendingInput `json:"queued"`
+				Queued []agent.Input `json:"queued"`
 			}
 			json.Unmarshal(c.call("session/get", map[string]string{"session_id": id}), &snapshot)
 			if len(snapshot.Queued) != 1 || snapshot.Queued[0].MessageID != sent.MessageID || snapshot.Queued[0].Text != "steer" {
@@ -906,7 +909,7 @@ func TestSendMessage(t *testing.T) {
 	}
 	idle(b)
 	var got struct {
-		Queued  []pendingInput `json:"queued"`
+		Queued  []agent.Input  `json:"queued"`
 		History []agent.Update `json:"history"`
 	}
 	json.Unmarshal(c.call("session/get", map[string]string{"session_id": b}), &got)
@@ -933,7 +936,7 @@ func TestSendMessage(t *testing.T) {
 			t.Fatalf("prompt_queued is not C's inbox message: %+v", waiting)
 		}
 		var got struct {
-			Queued []pendingInput `json:"queued"`
+			Queued []agent.Input `json:"queued"`
 		}
 		json.Unmarshal(c.call("session/get", map[string]string{"session_id": b}), &got)
 		if len(got.Queued) != 2 || got.Queued[0].MessageID != queued.MessageID || got.Queued[1].MessageID != waiting.MessageID || got.Queued[1].FromLabel != cs[:8] {
@@ -1102,7 +1105,7 @@ func TestExitDropsWaitingMessages(t *testing.T) {
 	}
 	c.update(recipient, "parked")
 	var got struct {
-		Queued  []pendingInput `json:"queued"`
+		Queued  []agent.Input  `json:"queued"`
 		History []agent.Update `json:"history"`
 	}
 	json.Unmarshal(c.call("session/get", map[string]string{"session_id": recipient}), &got)

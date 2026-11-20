@@ -212,7 +212,7 @@ func (a *Agent) idle() bool {
 }
 
 func (a *Agent) Snapshot() agent.Snapshot {
-	return agent.Snapshot{State: a.state, Approvals: append([]agent.Approval{}, a.approvals...)}
+	return agent.Snapshot{State: a.state, Approvals: append([]agent.Approval{}, a.approvals...), Queued: a.queued()}
 }
 
 func (a *Agent) exit(exit processExit) {
@@ -226,7 +226,7 @@ func (a *Agent) exit(exit processExit) {
 	reported := a.phase == prompting
 	switch a.phase {
 	case prompting:
-		if a.queued() != "" {
+		if a.queued() != nil {
 			a.dropQueued()
 		}
 		a.endPrompt(agent.Update{Type: agent.UpdateExited, Error: reason})

@@ -30,23 +30,10 @@ type session struct {
 	settings    agent.Settings
 	resumeToken string
 	history     history
-	agent       agent.Agent    // nil while parked
-	parkTimer   *time.Timer    // armed while the agent is parkable
-	written     *pendingInput  // written to the agent but not taken
-	inbox       []pendingInput // waiting to be written, oldest first
+	agent       agent.Agent   // nil while parked
+	parkTimer   *time.Timer   // armed while the agent is parkable
+	inbox       []agent.Input // messages waiting to be written, oldest first
 	ended       bool
-}
-
-type pendingInput struct {
-	MessageID string `json:"message_id"`
-	Text      string `json:"text"`
-	From      string `json:"from,omitempty"`
-	FromLabel string `json:"from_label,omitempty"`
-	content   string
-}
-
-func (p pendingInput) update(kind string, at time.Time) agent.Update {
-	return agent.Update{Type: kind, MessageID: p.MessageID, Text: p.Text, From: p.From, FromLabel: p.FromLabel, Time: at}
 }
 
 func (s *Server) newSession(record *store.Session, workspace string) *session {
@@ -104,82 +91,61 @@ func (sess *session) deliver() {
 		return
 	}
 	message := sess.inbox[0]
-	err := sess.writeInput(message)
+	err := sess.agent.Send(message)
 	if errors.Is(err, agent.ErrBusy) {
 		return // retried after the next operation or event
 	}
-	sess.inbox[0] = pendingInput{}
+	sess.inbox[0] = agent.Input{}
 	sess.inbox = sess.inbox[1:]
 	if err != nil {
-		sess.update(message.update(agent.UpdatePromptCancelled, time.Now()))
+		sess.inboxUpdate(message, agent.UpdatePromptCancelled)
 		log.Printf("session %s: deliver message: %v", sess.id, err)
 	}
 }
 
-// inputPending reports that an input the harness has not taken is written
-// or waiting, which holds the session for sends and configuration.
-func (sess *session) inputPending() bool {
-	return sess.written != nil || len(sess.inbox) != 0
+// messagesWaiting reports that messages wait in the inbox, which go ahead of
+// a user prompt and hold off a configuration.
+func (sess *session) messagesWaiting() bool {
+	return len(sess.inbox) != 0
 }
 
 func (sess *session) sendPrompt(text string) (string, error) {
-	if sess.inputPending() {
+	if sess.messagesWaiting() {
 		return "", agent.ErrBusy
 	}
 	if err := sess.startForInput(); err != nil {
 		return "", err
 	}
-	p := pendingInput{MessageID: rand.Text(), Text: text, content: text}
-	return p.MessageID, sess.writeInput(p)
+	input := agent.Input{MessageID: rand.Text(), Text: text, Content: text}
+	return input.MessageID, sess.agent.Send(input)
 }
 
-// writeInput writes p to the agent, refusing with agent.ErrBusy while
-// another written input has not been taken.
-func (sess *session) writeInput(p pendingInput) error {
-	if sess.written != nil {
-		return agent.ErrBusy
-	}
-	// Send can publish uptake synchronously, so it must see who sent this
-	// input before it calls back. A refused write publishes nothing.
-	sess.written = &p
-	err := sess.agent.Send(agent.Input{MessageID: p.MessageID, Content: p.content})
-	if err != nil {
-		sess.written = nil
-	}
-	return err
-}
-
-func (sess *session) acceptMessage(p pendingInput) {
-	p.MessageID = rand.Text()
-	sess.inbox = append(sess.inbox, p)
-	sess.update(p.update(agent.UpdatePromptQueued, time.Now()))
+func (sess *session) acceptMessage(message agent.Input) {
+	message.MessageID = rand.Text()
+	sess.inbox = append(sess.inbox, message)
+	sess.inboxUpdate(message, agent.UpdatePromptQueued)
 }
 
 func (sess *session) cancelInbox() {
-	for _, p := range sess.inbox {
-		sess.update(p.update(agent.UpdatePromptCancelled, time.Now()))
+	for _, message := range sess.inbox {
+		sess.inboxUpdate(message, agent.UpdatePromptCancelled)
 	}
 	sess.inbox = nil
 }
 
-func (sess *session) pending() []pendingInput {
-	queue := make([]pendingInput, 0, len(sess.inbox)+1)
-	if sess.written != nil {
-		queue = append(queue, *sess.written)
-	}
-	return append(queue, sess.inbox...)
+// inboxUpdate publishes a lifecycle update for a message the agent has not
+// received.
+func (sess *session) inboxUpdate(message agent.Input, kind string) {
+	update := message.Update(kind)
+	update.Time = time.Now()
+	sess.update(update)
 }
 
+// agentUpdate publishes the agent's updates, except the announcement of a
+// message the inbox already made on acceptance.
 func (sess *session) agentUpdate(u agent.Update) {
-	switch u.Type {
-	case agent.UpdatePromptQueued:
-		if sess.written.From != "" {
-			return // already published on inbox acceptance
-		}
-		u = sess.written.update(u.Type, u.Time)
-	case agent.UpdatePrompt, agent.UpdatePromptCancelled:
-		u = sess.written.update(u.Type, u.Time)
-		sess.written = nil
+	if u.Type == agent.UpdatePromptQueued && u.From != "" {
+		return
 	}
 	sess.update(u)
 }

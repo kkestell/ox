@@ -111,7 +111,7 @@ func (a *Agent) finish(result agent.Result) {
 }
 
 func (a *Agent) Snapshot() agent.Snapshot {
-	snapshot := agent.Snapshot{State: a.state, Approvals: []agent.Approval{}}
+	snapshot := agent.Snapshot{State: a.state, Approvals: []agent.Approval{}, Queued: a.queued}
 	if a.approval != nil {
 		snapshot.Approvals = append(snapshot.Approvals, *a.approval)
 	}
@@ -128,13 +128,13 @@ func (a *Agent) Send(input agent.Input) error {
 	if a.config != nil || a.queued != nil {
 		return agent.ErrBusy
 	}
-	a.publish(agent.Update{MessageID: input.MessageID, Type: agent.UpdatePromptQueued})
+	a.publish(input.Update(agent.UpdatePromptQueued))
 	if a.state != agent.StateIdle {
 		a.queued = &input
 		return nil
 	}
 	a.prompt = input.MessageID
-	a.publish(agent.Update{Type: agent.UpdatePrompt})
+	a.publish(input.Update(agent.UpdatePrompt))
 	a.state = agent.StateRunning
 	a.publish(agent.Update{Type: agent.UpdateState, State: a.state})
 	a.reply = "You said: " + input.Content
@@ -153,7 +153,7 @@ func (a *Agent) take() {
 	taken := a.queued
 	a.queued = nil
 	a.prompt = taken.MessageID
-	a.publish(agent.Update{Type: agent.UpdatePrompt})
+	a.publish(taken.Update(agent.UpdatePrompt))
 	a.reply = "You said: " + taken.Content
 	a.words = strings.SplitAfter(a.reply, " ")
 	a.after(tick{a.prompt})
@@ -162,7 +162,7 @@ func (a *Agent) take() {
 // drop cancels the queued input, if any.
 func (a *Agent) drop() {
 	if a.queued != nil {
-		a.publish(agent.Update{MessageID: a.queued.MessageID, Type: agent.UpdatePromptCancelled})
+		a.publish(a.queued.Update(agent.UpdatePromptCancelled))
 		a.queued = nil
 	}
 }

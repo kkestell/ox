@@ -24,14 +24,14 @@ func checkPrompt(text string) error {
 // submission holds the agent in the prompting phase, from the first client
 // prompt written until Claude reports idle with none queued.
 type submission struct {
-	queued string // written; Claude has not taken it yet
-	last   string // the latest client prompt Claude took or dropped, which the releasing update names
+	queued *agent.Input // written; Claude has not taken it yet
+	last   string       // the latest client prompt Claude took or dropped, which the releasing update names
 }
 
 // Send writes an input, which Claude takes into the running turn after its
 // current tool call, or runs next if the turn ends first.
 func (a *Agent) Send(input agent.Input) error {
-	if a.phase == configuring || a.phase == exited || a.queued() != "" {
+	if a.phase == configuring || a.phase == exited || a.queued() != nil {
 		return agent.ErrBusy
 	}
 	id := input.MessageID
@@ -42,8 +42,8 @@ func (a *Agent) Send(input agent.Input) error {
 		a.prompt = &submission{}
 		a.phase = prompting
 	}
-	a.prompt.queued = id
-	a.publish(agent.Update{MessageID: id, Type: agent.UpdatePromptQueued})
+	a.prompt.queued = &input
+	a.publish(input.Update(agent.UpdatePromptQueued))
 	if a.state == agent.StateIdle {
 		a.state = agent.StateRunning
 		a.publish(agent.Update{MessageID: id, Type: agent.UpdateState, State: a.state})
@@ -60,7 +60,7 @@ func (a *Agent) Interrupt() error {
 		return nil
 	}
 	request := map[string]any{"subtype": "interrupt"}
-	if a.queued() != "" {
+	if a.queued() != nil {
 		request["cancel_queued"] = true
 	}
 	if err := a.input.Control(newUUID(), request); err != nil {
@@ -69,28 +69,29 @@ func (a *Agent) Interrupt() error {
 	return nil
 }
 
-// queued returns the ID of the prompt Claude has not taken yet, or empty.
-func (a *Agent) queued() string {
+// queued returns the input Claude has not taken yet, or nil.
+func (a *Agent) queued() *agent.Input {
 	if a.phase != prompting {
-		return ""
+		return nil
 	}
 	return a.prompt.queued
 }
 
 func (a *Agent) commandStarted(id string) {
-	if id == "" || id != a.queued() {
+	queued := a.queued()
+	if id == "" || queued == nil || id != queued.MessageID {
 		return
 	}
-	a.prompt.queued = ""
+	a.prompt.queued = nil
 	a.prompt.last = id
 	a.turn = id
-	a.publish(agent.Update{MessageID: id, Type: agent.UpdatePrompt})
+	a.publish(queued.Update(agent.UpdatePrompt))
 }
 
 // commandCancelled handles Claude dropping a prompt. Claude also reports a
 // taken prompt whose turn it interrupted as cancelled, which changes nothing.
 func (a *Agent) commandCancelled(id string) {
-	if id != "" && id == a.queued() {
+	if queued := a.queued(); id != "" && queued != nil && id == queued.MessageID {
 		a.dropQueued()
 	}
 }
@@ -98,9 +99,9 @@ func (a *Agent) commandCancelled(id string) {
 // dropQueued ends the queued prompt before Claude took it.
 func (a *Agent) dropQueued() {
 	dropped := a.queued()
-	a.prompt.queued = ""
-	a.prompt.last = dropped
-	a.publish(agent.Update{MessageID: dropped, Type: agent.UpdatePromptCancelled})
+	a.prompt.queued = nil
+	a.prompt.last = dropped.MessageID
+	a.publish(dropped.Update(agent.UpdatePromptCancelled))
 }
 
 func (a *Agent) sessionState(state string) {
@@ -110,7 +111,7 @@ func (a *Agent) sessionState(state string) {
 	}
 	a.withdrawApprovals()
 	switch {
-	case a.queued() != "":
+	case a.queued() != nil:
 		// Claude can report idle before it takes a prompt; keep waiting.
 	case a.phase == prompting:
 		a.state = state
