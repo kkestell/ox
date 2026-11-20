@@ -1,4 +1,4 @@
-.PHONY: dev web test live lint e2e
+.PHONY: dev web test live lint e2e metrics hooks
 
 dev: web
 	go build -race -o bin/ ./cmd/ox ./cmd/ox-mcp ./cmd/oxd
@@ -26,6 +26,14 @@ e2e: cmd/ox/web/node_modules
 
 web: cmd/ox/web/node_modules
 	npm --prefix cmd/ox/web run build
+
+# metrics writes docs/metrics.md from the files staged for commit. The
+# pre-commit hook runs it on every commit.
+metrics: cmd/ox/web/node_modules
+	python3 scripts/metrics.py
+
+hooks:
+	git config core.hooksPath .githooks
 
 cmd/ox/web/node_modules: cmd/ox/web/package-lock.json
 	npm --prefix cmd/ox/web ci

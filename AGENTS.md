@@ -11,6 +11,8 @@ We test with `make dev`. Ox's test state is disposable.
 ```
 .
 ├── AGENTS.md                  # agent instructions
+├── .githooks
+│   └── pre-commit             # records metrics with each commit
 ├── .golangci.yml              # Go linters
 ├── bin                        # build output
 │   ├── ox
@@ -32,6 +34,7 @@ We test with `make dev`. Ox's test state is disposable.
 │   ├── claude-code.md         # observed Claude Code behavior
 │   ├── functional-requirements.md # what users see and rely on
 │   ├── known-issues.md        # unfixed defects
+│   ├── metrics.md             # size and complexity, generated
 │   ├── protocol.md            # the interface oxd serves
 │   └── todo.md                # planned work
 ├── go.mod                     # Go module
@@ -75,7 +78,9 @@ We test with `make dev`. Ox's test state is disposable.
 │   │   └── session.go         # session goroutine and lifecycle
 │   └── store
 │       └── store.go           # SQLite persistence
-└── Makefile                   # build, test, and run
+├── Makefile                   # build, test, and run
+└── scripts
+    └── metrics.py             # writes docs/metrics.md
 ```
 
 ## Implementation
@@ -243,6 +248,8 @@ facts listed for it:
 - `docs/known-issues.md`: defects that cannot be fixed yet, kept as the
   Defects section describes.
 - `docs/todo.md`: planned work, by priority.
+- `docs/metrics.md`: line counts and cognitive complexity, written by
+  `make metrics` and the pre-commit hook. Nobody edits it by hand.
 
 Every fact lives in one place. A document that needs a fact owned by another
 links to it instead of restating it. Most changes need no doc edits: edit a

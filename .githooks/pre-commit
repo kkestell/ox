@@ -1,0 +1,5 @@
+#!/bin/sh
+# Record the metrics of the commit being made.
+set -e
+python3 scripts/metrics.py
+git add docs/metrics.md
