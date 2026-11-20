@@ -37,6 +37,7 @@ type client struct {
 }
 
 func connect(t *testing.T, s *Server) *client {
+	t.Helper()
 	serverSide, clientSide := net.Pipe()
 	go s.serveConn(serverSide)
 	c := &client{t: t, conn: clientSide, messages: make(chan message, 1024), timeout: 5 * time.Second}
@@ -162,6 +163,7 @@ func (c *client) update(sessionID, kind string) agent.Update {
 
 // attach connects as the MCP forwarder of a session.
 func attach(t *testing.T, s *Server, sessionID string) *client {
+	t.Helper()
 	c := connect(t, s)
 	c.call("mcp/attach", map[string]string{"session_id": sessionID})
 	return c

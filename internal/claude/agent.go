@@ -10,6 +10,8 @@ import (
 // phase is what Ox is doing with the process, tracked separately from
 // Claude's reported state. Each phase's fields exist only while the agent is
 // in it.
+//
+//sumtype:decl
 type phase interface{ isPhase() }
 
 type available struct{}
@@ -262,6 +264,8 @@ func (a *Agent) exit(exit processExit) {
 		a.endConfiguration(p.done, p.fail(agent.ErrExited))
 	case timedOut:
 		a.endConfiguration(p.done, p.err)
+	case available, exited:
+		// No operation holds the agent.
 	}
 	a.withdrawApprovals()
 	// Claude exits on its own only when something has gone wrong, which can

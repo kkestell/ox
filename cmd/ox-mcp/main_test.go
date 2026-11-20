@@ -45,6 +45,7 @@ type lines struct {
 }
 
 func readLines(t *testing.T, r io.Reader) *lines {
+	t.Helper()
 	l := &lines{t: t, ch: make(chan reply, 100)}
 	go func() {
 		scanner := bufio.NewScanner(r)
@@ -118,6 +119,7 @@ func itoa(n int) string { b, _ := json.Marshal(n); return string(b) }
 // startOxd serves a real socket in-process and returns its path and a page
 // connected to it, with a parked session.
 func startOxd(t *testing.T) (s *server.Server, socket string, p *page, sessionID string) {
+	t.Helper()
 	// t.TempDir is too long for a socket path on macOS.
 	dir, err := os.MkdirTemp("", "oxmcp")
 	if err != nil {
@@ -177,6 +179,7 @@ type forwarder struct {
 }
 
 func startForwarder(t *testing.T, env ...string) *forwarder {
+	t.Helper()
 	cmd := exec.Command(os.Args[0])
 	cmd.Env = append(os.Environ(), append([]string{"OX_MCP_TEST_MAIN=1"}, env...)...)
 	stdin, err := cmd.StdinPipe()

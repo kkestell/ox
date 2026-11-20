@@ -44,6 +44,7 @@ func TestStartupFailureKeepsClaudesReason(t *testing.T) {
 }
 
 func closedPipe(t *testing.T) io.Writer {
+	t.Helper()
 	r, w := io.Pipe()
 	r.Close()
 	return w
@@ -196,12 +197,14 @@ func TestStartupFailureOnStderr(t *testing.T) {
 // standIn puts a claude script on PATH that answers the handshake and then
 // runs rest.
 func standIn(t *testing.T, rest string) {
+	t.Helper()
 	script(t, "#!/bin/sh\nread line\n"+
 		`echo '{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}'`+"\n"+rest)
 }
 
 // script puts a claude script on PATH.
 func script(t *testing.T, script string) {
+	t.Helper()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)

@@ -11,6 +11,7 @@ We test with `make dev`. Ox's test state is disposable.
 ```
 .
 ├── AGENTS.md                  # agent instructions
+├── .golangci.yml              # Go linters
 ├── bin                        # build output
 │   ├── ox
 │   ├── ox-mcp

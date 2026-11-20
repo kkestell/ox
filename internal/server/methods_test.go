@@ -18,6 +18,7 @@ import (
 )
 
 func openStore(t *testing.T) *store.Store {
+	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "ox.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -532,6 +533,7 @@ func starts(t *testing.T, args string) []string {
 // longer has. It returns the store, a client, and the file where the
 // stand-in Claude records its arguments.
 func unresumableSession(t *testing.T) (*store.Store, *Server, *client, string) {
+	t.Helper()
 	dir := t.TempDir()
 	args := filepath.Join(dir, "args")
 	// A stand-in for Claude, which fails a resume as Claude does when it has
@@ -888,7 +890,7 @@ func TestSendMessage(t *testing.T) {
 		return byID
 	}
 	if got := list()[b]; got != (listed{SessionID: b, Label: b[:8], Workspace: dir, Harness: "fake",
-		Settings: agent.Settings{Model: "m", PermissionMode: "manual"}, State: "parked"}) {
+		Model: "m", PermissionMode: "manual", State: "parked"}) {
 		t.Fatalf("list_sessions listed %+v", got)
 	}
 

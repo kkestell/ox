@@ -11,8 +11,6 @@ import (
 	"github.com/kkestell/ox/internal/agent"
 )
 
-func ptr(s string) *string { return &s }
-
 func replyTo(result chan error) func(error) { return func(err error) { result <- err } }
 
 func controlRequestID(t *testing.T, input *bytes.Buffer) string {
@@ -38,7 +36,7 @@ func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 		OnUpdate: func(agent.Update) {}, OnConfigured: func(s agent.Settings) { applied = append(applied, s) },
 	})
 	decoder := json.NewDecoder(input)
-	patch := agent.SettingsPatch{Model: ptr("haiku"), Effort: ptr("low"), PermissionMode: ptr("plan")}
+	patch := agent.SettingsPatch{Model: new("haiku"), Effort: new("low"), PermissionMode: new("plan")}
 	result := make(chan error, 1)
 	a.Configure(patch, replyTo(result))
 
@@ -100,7 +98,7 @@ func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 func TestConfigureSendsOnlyChangedSettings(t *testing.T) {
 	a, input, _ := testAgent()
 	result := make(chan error, 1)
-	patch := agent.SettingsPatch{Effort: ptr("high")}
+	patch := agent.SettingsPatch{Effort: new("high")}
 	a.Configure(patch, replyTo(result))
 	var wire struct {
 		RequestID string         `json:"request_id"`
@@ -131,7 +129,7 @@ func TestConfigureFailure(t *testing.T) {
 		t.Run(ending, func(t *testing.T) {
 			a, input, _ := testAgent()
 			result := make(chan error, 1)
-			a.Configure(agent.SettingsPatch{Model: ptr("haiku")}, replyTo(result))
+			a.Configure(agent.SettingsPatch{Model: new("haiku")}, replyTo(result))
 			requestID := controlRequestID(t, input)
 			switch ending {
 			case "rejected":
@@ -160,7 +158,7 @@ func TestPartialConfigurationReportsAppliedSettings(t *testing.T) {
 		OnUpdate: func(agent.Update) {}, OnConfigured: func(s agent.Settings) { applied = append(applied, s) },
 	})
 	result := make(chan error, 1)
-	a.Configure(agent.SettingsPatch{Model: ptr("sonnet"), Effort: ptr("high")}, replyTo(result))
+	a.Configure(agent.SettingsPatch{Model: new("sonnet"), Effort: new("high")}, replyTo(result))
 	acknowledge(t, a, controlRequestID(t, input), "success")
 	acknowledge(t, a, controlRequestID(t, input), "error")
 	if err := <-result; err == nil || !reflect.DeepEqual(applied, []agent.Settings{{Model: "sonnet"}}) {
@@ -173,7 +171,7 @@ func TestConfigureTimeoutStopsProcess(t *testing.T) {
 	var reported []agent.Settings
 	a.onConfigured = func(s agent.Settings) { reported = append(reported, s) }
 	result := make(chan error, 1)
-	a.Configure(agent.SettingsPatch{PermissionMode: ptr("plan")}, replyTo(result))
+	a.Configure(agent.SettingsPatch{PermissionMode: new("plan")}, replyTo(result))
 	requestID := controlRequestID(t, input)
 
 	a.Handle(controlTimeout{"stale"})
@@ -213,7 +211,7 @@ func TestConfigureRequiresIdle(t *testing.T) {
 				state(t, a, busy)
 			}
 			result := make(chan error, 1)
-			if a.Configure(agent.SettingsPatch{Model: ptr("haiku")}, replyTo(result)); !errors.Is(<-result, agent.ErrBusy) {
+			if a.Configure(agent.SettingsPatch{Model: new("haiku")}, replyTo(result)); !errors.Is(<-result, agent.ErrBusy) {
 				t.Fatalf("configuration accepted in %s", busy)
 			}
 		})
@@ -240,7 +238,7 @@ func TestClaudeReportsPermissionMode(t *testing.T) {
 	}
 
 	result := make(chan error, 1)
-	a.Configure(agent.SettingsPatch{PermissionMode: ptr("plan")}, replyTo(result))
+	a.Configure(agent.SettingsPatch{PermissionMode: new("plan")}, replyTo(result))
 	var wire struct {
 		RequestID string         `json:"request_id"`
 		Request   map[string]any `json:"request"`

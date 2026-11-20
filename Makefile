@@ -8,6 +8,10 @@ test: lint web
 	go test -race ./...
 
 lint: cmd/ox/web/node_modules
+	gofmt -l . | (! grep .)
+	go mod tidy -diff
+	go fix -diff ./...
+	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run ./...
 	npm --prefix cmd/ox/web run lint
 
 # live drives real Claude Code processes with Haiku, through oxd and through

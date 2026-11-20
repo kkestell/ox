@@ -52,8 +52,7 @@ func Parse(line []byte) (Request, *Response) {
 		Params  json.RawMessage `json:"params"`
 	}
 	if err := json.Unmarshal(line, &envelope); err != nil {
-		var syntax *json.SyntaxError
-		if errors.As(err, &syntax) {
+		if _, ok := errors.AsType[*json.SyntaxError](err); ok {
 			return Request{}, Failure(nil, ParseError, "Parse error")
 		}
 		return Request{}, Failure(nil, InvalidRequest, "Invalid Request")

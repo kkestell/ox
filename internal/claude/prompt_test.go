@@ -37,6 +37,7 @@ func testAgent() (*Agent, *bytes.Buffer, *recorder) {
 // stoppableAgent is a testAgent whose process waits to be stopped and
 // delivers its exit as Claude's does.
 func stoppableAgent(t *testing.T) (*Agent, *bytes.Buffer, *recorder) {
+	t.Helper()
 	cmd := exec.Command("sleep", "60")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -47,6 +48,7 @@ func stoppableAgent(t *testing.T) (*Agent, *bytes.Buffer, *recorder) {
 // agentRunning is a testAgent whose process is the started cmd, delivering
 // its exit as Claude's does.
 func agentRunning(t *testing.T, cmd *exec.Cmd) (*Agent, *bytes.Buffer, *recorder) {
+	t.Helper()
 	t.Cleanup(func() { cmd.Process.Kill() })
 	events := make(chan agent.Event, 1)
 	go func() { events <- processExit{err: cmd.Wait()} }()
@@ -68,6 +70,7 @@ func sendTestPrompt(a *Agent, text string) (string, error) {
 // promptingAgent returns an agent running a prompt Claude has taken, with
 // its input and updates so far cleared.
 func promptingAgent(t *testing.T) (*Agent, *bytes.Buffer, *recorder, string) {
+	t.Helper()
 	a, input, updates := testAgent()
 	id, err := sendTestPrompt(a, "hello")
 	if err != nil {
@@ -408,7 +411,7 @@ func TestTurnAfterPromptResultIsClaudes(t *testing.T) {
 	output(t, a, `{"type":"result","subtype":"success","result":"found it"}`)
 	output(t, a, `{"type":"result","subtype":"success","result":""}`)
 	result := make(chan error, 1)
-	if a.Configure(agent.SettingsPatch{Model: ptr("haiku")}, replyTo(result)); !errors.Is(<-result, agent.ErrBusy) {
+	if a.Configure(agent.SettingsPatch{Model: new("haiku")}, replyTo(result)); !errors.Is(<-result, agent.ErrBusy) {
 		t.Fatal("the prompt released the session before Claude was idle")
 	}
 	state(t, a, "idle")
