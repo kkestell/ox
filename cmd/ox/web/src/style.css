@@ -135,7 +135,17 @@ nav ul { margin-bottom: 0.5rem; list-style: none; }
 nav li { position: relative; display: flex; align-items: center; gap: 0.375rem; height: 2rem; padding: 0 0.5rem; border-radius: var(--radius-md); cursor: default; }
 nav li:hover { background: var(--accent); }
 nav li.selected { background: var(--secondary); color: var(--secondary-foreground); }
-nav li.child { padding-left: 1.5rem; }
+/* A child's guide runs down from its parent's status dot and branches into
+   its own, curving only into the last child. Rows are 2rem tall and dots sit
+   1rem in, so the previous row's dot is 1rem above a row's top. A later
+   sibling's guide continues from where the one before it branches. */
+nav li.child { padding-left: 1.75rem; font-size: 13px; }
+nav li.child::before {
+  content: ""; position: absolute; left: calc(1rem - 0.5px); top: calc(-1rem + 4px); bottom: calc(50% - 0.5px); width: calc(1rem + 0.5px);
+  border: solid light-dark(oklch(0.87 0 0), oklch(0.35 0 0)); border-width: 0 0 1px 1px; border-bottom-left-radius: 6px; pointer-events: none;
+}
+nav li.child + li.child::before { top: -1rem; }
+nav li.child:has(+ li.child)::before { border-bottom-left-radius: 0; }
 nav li button.open { flex: 1; min-width: 0; height: 100%; display: flex; justify-content: flex-start; align-items: center; gap: 0.375rem; cursor: default; padding: 0; border: 0; background: transparent; box-shadow: none; color: inherit; font: inherit; text-align: left; }
 nav li button.open:hover { background: transparent; }
 nav li .title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }

@@ -10,7 +10,7 @@ Lines counted by cloc. Files, Comment, and Code cover production files; Tests is
 |---|---:|---:|---:|---:|
 | Go | 23 | 416 | 3,849 | 5,119 |
 | TypeScript | 14 | 107 | 1,704 | 1,340 |
-| CSS | 1 | 13 | 281 | 0 |
+| CSS | 1 | 17 | 287 | 0 |
 
 ## High complexity
 
