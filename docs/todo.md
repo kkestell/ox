@@ -52,3 +52,10 @@ the evidence and the correction.
 - [ ] **Allow always.** Decide whether to persist grants in the workspace or in
       Ox before exposing
       [Claude's persistent permission option](harnesses/claude-code.md#can_use_tool).
+
+## Configuration
+
+- [ ] **Write the default config on first start.** When `oxd` starts and finds
+      no config file, it copies the built-in default into the config directory
+      (`internal/paths` resolves it) instead of only using it in memory, so the
+      user can begin editing it.
