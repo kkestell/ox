@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -38,9 +41,14 @@ type recorded struct {
 // run is an agent driven from the test goroutine against a canned server.
 type run struct {
 	t          *testing.T
+	harness    agent.Harness
+	dir        string
+	settings   agent.Settings // the settings the next launch starts with
 	agent      agent.Agent
 	updates    []agent.Update
 	configured []agent.Settings
+	tokens     []string // every token OnResumable received
+	errors     []error  // every error OnError received
 	requests   chan recorded
 }
 
@@ -50,7 +58,7 @@ type handler func(w http.ResponseWriter, req *http.Request, n int)
 func start(t *testing.T, settings agent.Settings, providers map[string][]string, handle handler) *run {
 	t.Helper()
 	t.Setenv("OPENROUTER_API_KEY", "test-key")
-	r := &run{t: t, requests: make(chan recorded, 16)}
+	r := &run{t: t, dir: filepath.Join(t.TempDir(), "ur"), settings: settings, requests: make(chan recorded, 16)}
 	var count atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		data, _ := io.ReadAll(req.Body)
@@ -60,21 +68,46 @@ func start(t *testing.T, settings agent.Settings, providers map[string][]string,
 		handle(w, req, int(count.Add(1))-1)
 	}))
 	t.Cleanup(server.Close)
-	a, err := Harness(server.URL, providers).Start(agent.Options{
-		Settings:     settings,
-		OnUpdate:     func(u agent.Update) { r.updates = append(r.updates, u) },
-		OnConfigured: func(s agent.Settings) { r.configured = append(r.configured, s) },
-	})
-	if err != nil {
+	r.harness = Harness(server.URL, r.dir, providers)
+	if err := r.launch(""); err != nil {
 		t.Fatal(err)
 	}
+	return r
+}
+
+// launch starts the run's agent with the latest settings, resuming the
+// conversation token names, as the server does after parking.
+func (r *run) launch(token string) error {
+	a, err := r.harness.Start(agent.Options{
+		Resume:      token,
+		Settings:    r.settings,
+		OnUpdate:    func(u agent.Update) { r.updates = append(r.updates, u) },
+		OnResumable: func(token string) { r.tokens = append(r.tokens, token) },
+		OnConfigured: func(s agent.Settings) {
+			r.configured = append(r.configured, s)
+			r.settings = s
+		},
+		OnError: func(err error) { r.errors = append(r.errors, err) },
+	})
+	if err != nil {
+		return err
+	}
 	r.agent = a
-	t.Cleanup(func() {
+	r.t.Cleanup(func() {
 		if !a.Exited() {
 			a.Stop()
 		}
 	})
-	return r
+	return nil
+}
+
+// file is the conversation file of the run's only conversation.
+func (r *run) file() string {
+	r.t.Helper()
+	if len(r.tokens) != 1 {
+		r.t.Fatalf("OnResumable got %q, not one token", r.tokens)
+	}
+	return filepath.Join(r.dir, r.tokens[0]+".jsonl")
 }
 
 func (r *run) send(id, content string) {
@@ -128,11 +161,20 @@ func (r *run) request() recorded {
 }
 
 func roles(body map[string]any) []string {
-	var roles []string
+	return field(body, "role")
+}
+
+func contents(body map[string]any) []string {
+	return field(body, "content")
+}
+
+// field is the given field of each of a request's messages.
+func field(body map[string]any, name string) []string {
+	var values []string
 	for _, m := range body["messages"].([]any) {
-		roles = append(roles, m.(map[string]any)["role"].(string))
+		values = append(values, m.(map[string]any)[name].(string))
 	}
-	return roles
+	return values
 }
 
 func TestTwoTurns(t *testing.T) {
@@ -327,13 +369,8 @@ func TestInterrupt(t *testing.T) {
 			break
 		}
 	}
-	messages := r.request().body["messages"].([]any)
-	var contents []string
-	for _, m := range messages {
-		contents = append(contents, m.(map[string]any)["content"].(string))
-	}
-	if !slices.Equal(contents, []string{"hi", "partial", "again"}) {
-		t.Errorf("history after the interrupt %q", contents)
+	if got := contents(r.request().body); !slices.Equal(got, []string{"hi", "partial", "again"}) {
+		t.Errorf("history after the interrupt %q", got)
 	}
 	r.updates = nil
 	if err := r.agent.Interrupt(); err != nil || len(r.updates) != 0 {
@@ -349,9 +386,18 @@ func TestInputDuringTurnRunsNext(t *testing.T) {
 		}
 		sse(w, fmt.Sprint("reply ", n))
 	})
+	if !r.agent.Parkable() {
+		t.Error("a new agent is not parkable")
+	}
 	r.send("p1", "first")
 	r.request()
+	if r.agent.Parkable() {
+		t.Error("parkable while a turn runs")
+	}
 	r.send("p2", "second")
+	if r.agent.Parkable() {
+		t.Error("parkable while an input waits")
+	}
 	if snapshot := r.agent.Snapshot(); snapshot.State != agent.StateRunning || len(snapshot.Queued) != 1 || snapshot.Queued[0].MessageID != "p2" {
 		t.Errorf("snapshot during the turn: %+v", snapshot)
 	}
@@ -376,6 +422,9 @@ func TestInputDuringTurnRunsNext(t *testing.T) {
 	}
 	if snapshot := r.agent.Snapshot(); snapshot.State != agent.StateIdle || len(snapshot.Queued) != 0 {
 		t.Errorf("snapshot after the turns: %+v", snapshot)
+	}
+	if !r.agent.Parkable() {
+		t.Error("not parkable once idle")
 	}
 }
 
@@ -421,19 +470,27 @@ func TestConfigure(t *testing.T) {
 
 func TestStartWithoutKey(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "")
-	_, err := Harness("http://unused", nil).Start(agent.Options{})
+	_, err := Harness("http://unused", t.TempDir(), nil).Start(agent.Options{})
 	if err == nil || !strings.Contains(err.Error(), "OPENROUTER_API_KEY") {
 		t.Fatalf("Start without a key: %v", err)
 	}
 }
 
-// Stop ends the running turn and drops the inputs waiting behind it.
+// Stop ends the running turn, keeping its reply as far as it streamed, and
+// drops the inputs waiting behind it.
 func TestStopDuringTurn(t *testing.T) {
-	r := start(t, agent.Settings{Model: model}, nil, func(_ http.ResponseWriter, req *http.Request, _ int) {
+	r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, req *http.Request, n int) {
+		if n > 0 {
+			sse(w, "ok")
+			return
+		}
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
+		w.(http.Flusher).Flush()
 		<-req.Context().Done()
 	})
 	r.send("p1", "hi")
 	r.request()
+	r.until(func(u agent.Update) bool { return u.Type == agent.UpdateTextDelta })
 	r.send("p2", "waiting")
 	r.updates = nil
 	r.agent.Stop()
@@ -448,4 +505,196 @@ func TestStopDuringTurn(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("Stop published %q, not %q", got, want)
 	}
+	if len(r.errors) != 0 {
+		t.Errorf("Stop reported %v", r.errors)
+	}
+
+	if err := r.launch(r.tokens[0]); err != nil {
+		t.Fatal(err)
+	}
+	r.send("p3", "next")
+	r.idle()
+	if got := contents(r.request().body); !slices.Equal(got, []string{"hi", "partial", "next"}) {
+		t.Errorf("the resumed request's messages %q", got)
+	}
+}
+
+// A conversation survives a new agent: the file holds every message, with the
+// model of each reply, and the request sends the messages alone.
+func TestResume(t *testing.T) {
+	r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, _ *http.Request, n int) {
+		sse(w, []string{"one", "two", "three"}[n])
+	})
+	r.send("p1", "hi")
+	if len(r.tokens) != 1 || r.tokens[0] == "" {
+		t.Fatalf("OnResumable got %q before the first request", r.tokens)
+	}
+	r.idle()
+	r.request()
+	other := "other/model"
+	r.agent.Configure(agent.SettingsPatch{Model: &other}, func(err error) {
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	r.send("p2", "again")
+	r.idle()
+	r.request()
+	r.agent.Stop()
+
+	if err := r.launch(r.tokens[0]); err != nil {
+		t.Fatal(err)
+	}
+	r.send("p3", "third")
+	r.idle()
+	body := r.request().body
+	if got := contents(body); !slices.Equal(got, []string{"hi", "one", "again", "two", "third"}) {
+		t.Errorf("the resumed request's messages %q", got)
+	}
+	if got := roles(body); !slices.Equal(got, []string{"user", "assistant", "user", "assistant", "user"}) {
+		t.Errorf("the resumed request's roles %q", got)
+	}
+	for _, m := range body["messages"].([]any) {
+		if _, ok := m.(map[string]any)["model"]; ok {
+			t.Errorf("a message sent its model: %v", m)
+		}
+	}
+	if len(r.tokens) != 1 {
+		t.Errorf("OnResumable got %q, not the one token", r.tokens)
+	}
+
+	data, err := os.ReadFile(r.file())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for line := range strings.Lines(string(data)) {
+		var e entry
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("line %q: %v", line, err)
+		}
+		lines = append(lines, e.Role+" "+e.Content+" "+e.Model)
+	}
+	want := []string{"user hi ", "assistant one " + model, "user again ", "assistant two " + other, "user third ", "assistant three " + other}
+	if !slices.Equal(lines, want) {
+		t.Errorf("the conversation file holds %q, not %q", lines, want)
+	}
+}
+
+// A conversation whose file is gone or damaged refuses the start and clears
+// the token.
+func TestResumeLost(t *testing.T) {
+	for name, c := range map[string]struct {
+		content *string
+		cause   error
+	}{
+		"missing file":        {nil, fs.ErrNotExist},
+		"truncated last line": {new("{\"role\":\"user\",\"content\":\"hi\"}\n{\"role\":\"assis"), io.ErrUnexpectedEOF},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
+				sse(w, "ok")
+			})
+			if c.content != nil {
+				os.MkdirAll(r.dir, 0o700)
+				if err := os.WriteFile(filepath.Join(r.dir, "lost.jsonl"), []byte(*c.content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := r.launch("lost"); !errors.Is(err, errLost) {
+				t.Errorf("Start with a lost conversation: %v", err)
+			}
+			if !slices.Equal(r.tokens, []string{""}) {
+				t.Errorf("OnResumable got %q, not the empty token", r.tokens)
+			}
+			if len(r.errors) != 1 || !strings.HasPrefix(r.errors[0].Error(), "resume conversation: ") || !errors.Is(r.errors[0], c.cause) {
+				t.Errorf("OnError got %v, not the resume failing with %v", r.errors, c.cause)
+			}
+		})
+	}
+}
+
+// A message that cannot be saved never reaches the model.
+func TestSaveFailure(t *testing.T) {
+	t.Run("prompt", func(t *testing.T) {
+		r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
+			sse(w, "ok")
+		})
+		if err := os.WriteFile(r.dir, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		r.send("p1", "hi")
+		if result := r.result(); !result.IsError || !strings.HasPrefix(result.Text, "Ur could not save the prompt: ") {
+			t.Errorf("result %+v", result)
+		}
+		r.idle()
+		os.Remove(r.dir)
+		r.send("p2", "again")
+		r.idle()
+		if got := contents(r.request().body); !slices.Equal(got, []string{"again"}) {
+			t.Errorf("the first request's messages %q", got)
+		}
+	})
+
+	// The reply is written as the turn ends, after the file was made read-only.
+	for name, c := range map[string]struct {
+		handle handler
+		want   string // the result's text before the save failure
+	}{
+		"completed reply": {func(w http.ResponseWriter, _ *http.Request, _ int) {
+			sse(w, "one")
+		}, ""},
+		"failed reply": {func(w http.ResponseWriter, _ *http.Request, _ int) {
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"par\"}}]}\n\n")
+			fmt.Fprint(w, "data: {\"error\":{\"message\":\"provider went away\"}}\n\n")
+		}, "OpenRouter: provider went away\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			release := make(chan struct{})
+			r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, req *http.Request, n int) {
+				if n == 0 {
+					<-release
+					c.handle(w, req, n)
+					return
+				}
+				sse(w, "ok")
+			})
+			r.send("p1", "hi")
+			r.request()
+			if err := os.Chmod(r.file(), 0o400); err != nil {
+				t.Fatal(err)
+			}
+			close(release)
+			result := r.result()
+			prefix := c.want + "Ur could not save the reply: "
+			if !result.IsError || !strings.HasPrefix(result.Text, prefix) || !strings.Contains(result.Text, "permission denied") {
+				t.Errorf("result %+v, not an error starting %q that names the denied write", result, prefix)
+			}
+			r.idle()
+			os.Chmod(r.file(), 0o600)
+			r.send("p2", "again")
+			r.idle()
+			if got := roles(r.request().body); !slices.Equal(got, []string{"user", "user"}) {
+				t.Errorf("the next request's messages %q", got)
+			}
+		})
+	}
+
+	t.Run("stop", func(t *testing.T) {
+		r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, req *http.Request, _ int) {
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
+			w.(http.Flusher).Flush()
+			<-req.Context().Done()
+		})
+		r.send("p1", "hi")
+		r.request()
+		r.until(func(u agent.Update) bool { return u.Type == agent.UpdateTextDelta })
+		if err := os.Chmod(r.file(), 0o400); err != nil {
+			t.Fatal(err)
+		}
+		r.agent.Stop()
+		if len(r.errors) != 1 || !strings.HasPrefix(r.errors[0].Error(), "save the reply: ") {
+			t.Errorf("OnError got %v", r.errors)
+		}
+	})
 }

@@ -31,14 +31,14 @@ cmd/oxd            socket, database, and configuration paths, signals, the harne
 | --- | --- |
 | `cmd/ox-mcp` | Connecting a harness's MCP client, over stdio, to `oxd`'s socket for one session: attaching, then copying each line between stdin and the socket and the socket and stdout. |
 | `cmd/oxd` | Choosing the socket, database, and configuration, checking the configured harnesses, and holding the socket from before database startup until sessions have stopped and every Claude process has exited. A second stop signal kills all registered Claude processes, including those still initializing, and ends the daemon. |
-| `paths` | The XDG locations of the configuration, database, and socket, which `cmd/oxd` uses unless a flag overrides them and `cmd/ox` uses for the socket. |
+| `paths` | The XDG locations of the configuration, database, socket, and Ur's conversation directory, which `cmd/oxd` uses unless a flag overrides them and `cmd/ox` uses for the socket. |
 | `config` | Reading the configuration file, or the built-in default, into each harness's models, efforts, and permission modes and the new-session defaults, and checking settings against them. |
 | `server` | Client and MCP connections, each session's goroutine and the agent it runs, and the mapping from each method to a session operation and its error codes. Each connection writes through its own queue, so sessions never wait on a client. |
 | `store` | The SQLite database of workspaces, sessions, child sessions' `children` rows, archived sessions' `archived` rows, and session events. |
 | `jsonrpc` | Request validation and the response and notification types. |
 | `agent` | The `Agent` interface a harness implements, its `Start` function, prompt and configuration checks, and options, and the updates, snapshots, settings, and errors they share. |
 | `fake` | A harness that runs no process and echoes each prompt back, a word at a time. A prompt `approve <tool> <input JSON>` first asks to approve that tool call, and the call's result is the answer. A prompt `background <milliseconds>` also runs a background task that long. |
-| `ur` | A harness that runs no process and chats through OpenRouter's chat completions API. It keeps the conversation in memory and streams each turn's reply from one request, so it never reports itself parkable. |
+| `ur` | A harness that runs no process and chats through OpenRouter's chat completions API. It appends each message of its conversation to a JSONL file named by its resume token, reads the file back to resume, streams each turn's reply from one request, and reports itself parkable when idle. |
 | `claude` | The Claude Code harness: starting and initializing Claude, its stream-json wire format, and the state machine that runs it as an `Agent`. |
 
 ## Sessions

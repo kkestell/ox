@@ -12,6 +12,11 @@ import (
 	"strings"
 )
 
+type message struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
 type request struct {
 	Model     string     `json:"model"`
 	Messages  []message  `json:"messages"`

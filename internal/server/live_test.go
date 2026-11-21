@@ -763,7 +763,8 @@ func TestLive(t *testing.T) {
 	}
 }
 
-// TestLiveUr chats with the built-in Ur model through OpenRouter.
+// TestLiveUr chats with the built-in Ur model through OpenRouter, and parks
+// the session between two turns that share the conversation.
 func TestLiveUr(t *testing.T) {
 	if os.Getenv("OX_LIVE") == "" {
 		t.Skip("set OX_LIVE=1 to run against OpenRouter, as make live does")
@@ -775,8 +776,8 @@ func TestLiveUr(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	harnesses := map[string]agent.Harness{"ur": ur.Harness(ur.Endpoint, cfg.Harnesses["ur"].Providers())}
-	s, err := New(openStore(t), cfg, 0, harnesses, MCP{})
+	harnesses := map[string]agent.Harness{"ur": ur.Harness(ur.Endpoint, t.TempDir(), cfg.Harnesses["ur"].Providers())}
+	s, err := New(openStore(t), cfg, time.Second, harnesses, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -808,6 +809,7 @@ func TestLiveUr(t *testing.T) {
 		return result.Text
 	}
 	turn("Remember the number 7341. Reply with just the word ok.")
+	c.update(id, "parked")
 	if reply := turn("What number did I ask you to remember? Reply with just the number."); !strings.Contains(reply, "7341") {
 		t.Errorf("the second turn forgot the first: %q", reply)
 	}

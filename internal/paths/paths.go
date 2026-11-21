@@ -17,6 +17,12 @@ func Database() (string, error) {
 	return file("XDG_STATE_HOME", filepath.Join(".local", "state"), "ox.db")
 }
 
+// Ur is the directory of Ur's conversation files, beneath $XDG_STATE_HOME or
+// ~/.local/state.
+func Ur() (string, error) {
+	return file("XDG_STATE_HOME", filepath.Join(".local", "state"), "ur")
+}
+
 // Socket is oxd's socket, beneath $XDG_RUNTIME_DIR, or beside the database
 // when that is unset, as it is on macOS.
 func Socket() (string, error) {

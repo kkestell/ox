@@ -44,10 +44,14 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	urDir, err := paths.Ur()
+	if err != nil {
+		log.Fatal(err)
+	}
 	harnesses := map[string]agent.Harness{
 		"claude": claude.Harness,
 		"fake":   {Start: fake.Start},
-		"ur":     ur.Harness(ur.Endpoint, cfg.Harnesses["ur"].Providers()),
+		"ur":     ur.Harness(ur.Endpoint, urDir, cfg.Harnesses["ur"].Providers()),
 	}
 	if err := checkConfig(cfg, harnesses); err != nil {
 		log.Fatalf("%s: %v", *configPath, err)

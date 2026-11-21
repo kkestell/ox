@@ -113,7 +113,7 @@ func TestConfigOffersOnlyWhatHarnessesTake(t *testing.T) {
 	refuse := func(string) error { return errors.New("refused") }
 	harnesses := map[string]agent.Harness{
 		"claude": claude.Harness,
-		"ur":     ur.Harness(ur.Endpoint, nil),
+		"ur":     ur.Harness(ur.Endpoint, t.TempDir(), nil),
 		"picky":  {Start: fake.Start, CheckEffort: refuse, CheckPermissionMode: refuse},
 		"plain":  {Start: fake.Start},
 	}

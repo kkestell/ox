@@ -12,7 +12,7 @@ What the person using Ox can see and rely on. Each requirement is cited by its t
 - **New-session choices.** Before sending, the user can pick any offered harness, model, effort, and permission mode for a new session.
 - **Built-in catalog.** Without a configuration file, Ox offers Claude Opus, Sonnet, and Haiku 5.5 with their effort levels and the manual, auto, acceptEdits, and plan modes, and Ur with DeepSeek V4.1 Flash and GLM 5.3 Flash at low, high, and max effort and Muse Spark 1.3 Contributor at minimal, low, medium, high, xhigh, and max effort, in manual mode.
 - **Configuration checks.** `oxd` refuses to start with a malformed configuration, defaults it does not offer, an unknown harness, or an effort level, permission mode, or provider order its harness does not take, and says why.
-- **File locations.** Ox reads its configuration and keeps its database and socket in the user's XDG directories, and the user can choose other paths.
+- **File locations.** Ox reads its configuration and keeps its database, socket, and Ur's saved conversations in the user's XDG directories, and the user can choose other paths.
 - **Creating a session.** Submitting a new session creates it and sends the prompt exactly once.
 - **Creation keeps the user's view.** A session whose creation finishes after the user has moved to another view does not take them away from it.
 - **Failed creation.** If creating a session fails, the draft keeps its text and settings and shows the error, with a way back to the draft from any other view, and the user can submit again.
@@ -65,7 +65,7 @@ What the person using Ox can see and rely on. Each requirement is cited by its t
 - **Independent sessions.** One session starting, changing settings, or running never holds up another session.
 - **Lost connection.** When the connection drops, the page says so, fails its pending requests, and holds Send and settings until each session has reloaded. It reconnects by itself, unless `oxd` is still down when it tries, in which case it asks for a reload.
 - **Work outlives the page.** Closing every page leaves prompts, approvals, and Claude's own turns running.
-- **Deleting a session.** A session, archived or not, can be deleted only when it has no child sessions. Deleting it asks first, then stops Claude, deletes Ox's history of it, leaves Claude's transcript and the workspace on disk, and removes it from every page.
+- **Deleting a session.** A session, archived or not, can be deleted only when it has no child sessions. Deleting it asks first, then stops Claude, deletes Ox's history of it, leaves Claude's transcript, Ur's saved conversation, and the workspace on disk, and removes it from every page.
 - **Archiving a session.** While a session and its child sessions are idle or parked, the user can archive it from its menu without confirmation, which archives its children too and stops their Claude processes, schedules, and background tasks. Unarchiving a session unarchives its children; a child can be archived alone, but not unarchived while its parent is archived.
 - **Archived sessions.** An archived session keeps its transcript and shows it with an Unarchive button in place of the composer and settings, refuses prompts, messages, and setting changes, and stays archived through `oxd` restarts and on every page. Its unsent text returns when it is unarchived.
 - **Showing archived sessions.** A workspace's archived sessions are hidden until the user shows them from the workspace's menu, a choice that lasts until the page reloads; shown, they keep their place, dimmed, with an archived marker in place of their status. An archived session's URL opens it even while it is hidden.
@@ -85,6 +85,6 @@ What the person using Ox can see and rely on. Each requirement is cited by its t
 - **Prompt size limit.** A prompt over 1 MiB is refused with an error and stays in the composer.
 - **Stopping oxd.** Stopping `oxd` stops every Claude process it runs; a second stop request ends it at once.
 - **Socket safety.** A socket left by an `oxd` that has exited does not block the next start; `oxd` will not replace a socket another `oxd` is serving, or a file that is not a socket.
-- **Ox's own files.** Ox's own bookkeeping writes only its database and socket.
+- **Ox's own files.** Ox's own bookkeeping writes only its database, its socket, and Ur's saved conversations.
 - **Claude's workspace access.** Claude changes the workspace only as its permission mode and the user's approvals allow.
-- **Ur sessions.** Ur chats through OpenRouter with the user's `OPENROUTER_API_KEY`, streaming text replies with no tools; a send to an Ur session without the key is refused with an error. An Ur session never parks while `oxd` runs, and after an `oxd` restart or unarchiving it keeps its transcript, but its next prompt starts a new conversation without the earlier context.
+- **Ur sessions.** Ur chats through OpenRouter with the user's `OPENROUTER_API_KEY`, streaming text replies with no tools; a send to an Ur session without the key is refused with an error. Ur saves each prompt, and each reply as far as it streamed, so an Ur session parks and resumes its conversation like a Claude session. If its saved conversation can no longer be read, the send is refused with an error saying so, and the next send starts a new conversation without the earlier context.
