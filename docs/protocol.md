@@ -527,14 +527,15 @@ Every connection is told when workspaces and sessions come and go:
 | --- | --- | --- |
 | `workspace/created` | `workspace_id`, `path`, `created_at` | A workspace was registered. |
 | `workspace/removed` | `workspace_id` | A workspace was removed. |
-| `session/created` | `session_id`, `workspace_id`, `harness`, `created_at`, and a child's `child` | A session was created, parked. |
+| `session/created` | `session_id`, `workspace_id`, `label` (a child's title, or the first 8 characters of its ID), `harness`, `created_at`, and a child's `child` | A session was created, parked. |
+| `session/labeled` | `session_id`, `label` | A top-level session took the first prompt the user sent it, and `label` is its first line. Sent once per session. |
 | `session/configured` | `session_id`, `model`, `effort`, `permission_mode` | A session's settings changed, by `session/configure` or by the harness itself, such as Claude leaving plan mode; the fields are the settings the session now uses. |
 | `session/destroyed` | `session_id` | A session was destroyed, after its last update. |
 | `session/archived` | `session_id` | A session was archived, before the `parked` update that stops its process. |
 | `session/unarchived` | `session_id` | A session was unarchived. |
 
 ```json
-{"jsonrpc":"2.0","method":"session/created","params":{"session_id":"session-id","workspace_id":"workspace-id","harness":"claude","created_at":"2026-11-18T19:53:48.416Z"}}
+{"jsonrpc":"2.0","method":"session/created","params":{"session_id":"session-id","workspace_id":"workspace-id","label":"session-","harness":"claude","created_at":"2026-11-18T19:53:48.416Z"}}
 ```
 
 ## Connections

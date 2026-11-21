@@ -394,6 +394,105 @@ func TestConfigurationTakenButNotStored(t *testing.T) {
 	}
 }
 
+// A top-level session is labeled once, with the first line of the first prompt
+// the user sent it, through a restart and a prompt that could not be stored.
+func TestSessionLabel(t *testing.T) {
+	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
+		Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}},
+	}}}
+	harnesses := map[string]agent.Harness{"fake": {Start: fake.Start}}
+	st := openStore(t)
+	s, err := New(st, cfg, 0, harnesses, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c := connect(t, s)
+	var workspace struct {
+		WorkspaceID string `json:"workspace_id"`
+	}
+	json.Unmarshal(c.call("workspace/create", map[string]string{"path": t.TempDir()}), &workspace)
+	type labeled struct {
+		SessionID string `json:"session_id"`
+		Label     string `json:"label"`
+	}
+	create := func() string {
+		var created labeled
+		json.Unmarshal(c.call("session/create", map[string]string{
+			"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "permission_mode": "manual",
+		}), &created)
+		event := c.next(func(m message) bool { return m.Method == "session/created" && m.sessionID() == created.SessionID })
+		json.Unmarshal(event.Params, &created)
+		if created.Label != created.SessionID[:8] {
+			t.Fatalf("session/created labeled %s %q", created.SessionID, created.Label)
+		}
+		return created.SessionID
+	}
+	a, b := create(), create()
+	labelOf := func(c *client, id string) string {
+		t.Helper()
+		label := c.next(func(m message) bool { return m.Method == "session/labeled" && m.sessionID() == id })
+		var params labeled
+		json.Unmarshal(label.Params, &params)
+		return params.Label
+	}
+	listed := func(c *client, id string) string {
+		t.Helper()
+		var list struct {
+			Workspaces []struct {
+				Sessions []labeled `json:"sessions"`
+			} `json:"workspaces"`
+		}
+		json.Unmarshal(c.call("workspace/list", struct{}{}), &list)
+		for _, w := range list.Workspaces {
+			for _, sess := range w.Sessions {
+				if sess.SessionID == id {
+					return sess.Label
+				}
+			}
+		}
+		t.Fatalf("workspace/list did not list %s", id)
+		return ""
+	}
+	idle := func(c *client, id string) {
+		for c.update(id, "state").State != "idle" {
+		}
+	}
+
+	c.call("session/send", map[string]string{"session_id": a, "text": "\u0085\nActual title\nmore"})
+	if got := labelOf(c, a); got != "Actual title" {
+		t.Fatalf("session/labeled labeled A %q", got)
+	}
+	idle(c, a)
+	c.call("session/send", map[string]string{"session_id": a, "text": "second"})
+	idle(c, a)
+	if got := listed(c, a); got != "Actual title" {
+		t.Fatalf("a later prompt relabeled A %q", got)
+	}
+
+	t.Log("a restart labels A from its stored history")
+	s.Close()
+	s, err = New(st, cfg, 0, harnesses, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c = connect(t, s)
+	if got := listed(c, a); got != "Actual title" {
+		t.Fatalf("after a restart, A is labeled %q", got)
+	}
+
+	t.Log("a prompt that could not be stored labels B")
+	st.Close()
+	c.call("session/send", map[string]string{"session_id": b, "text": "Unsaved title"})
+	if got := labelOf(c, b); got != "Unsaved title" {
+		t.Fatalf("session/labeled labeled B %q", got)
+	}
+	if got := listed(c, b); got != "Unsaved title" {
+		t.Fatalf("workspace/list labeled B %q", got)
+	}
+}
+
 // A process that exits during a configuration is replaced by one started with
 // the requested settings, so the configuration succeeds.
 func TestConfigurationOutlivesItsProcess(t *testing.T) {

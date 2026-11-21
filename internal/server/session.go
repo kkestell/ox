@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/kkestell/ox/internal/agent"
@@ -31,6 +32,9 @@ type session struct {
 	// Guarded by Server.mu. An archived session has no agent, and the child
 	// of an archived session is archived.
 	archived bool
+	// The first line of the first prompt the user sent a top-level session,
+	// empty before it has one. Written only by run.
+	firstLine string
 
 	// Owned by run.
 	settings    agent.Settings
@@ -49,14 +53,35 @@ type child struct {
 	Directory string `json:"directory"`
 }
 
-func (s *Server) newSession(record *store.Session, workspace string) *session {
+// firstLine is the line of a prompt that labels its session.
+func firstLine(text string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(text), "\n")
+	return line
+}
+
+// labelLocked is the session's label: a child's title, or else the first line
+// of the first prompt the user sent it, or the start of its ID before it has
+// one. The caller holds Server.mu.
+func (sess *session) labelLocked() string {
+	switch {
+	case sess.child != nil:
+		return sess.child.Title
+	case sess.firstLine != "":
+		return sess.firstLine
+	}
+	return sess.id[:8]
+}
+
+// newSession starts a stored session's goroutine. firstLine is the first line
+// of the first prompt the user sent it, or "".
+func (s *Server) newSession(record *store.Session, workspace, firstLine string) *session {
 	var c *child
 	if r := record.Child; r != nil {
 		c = &child{ParentID: r.ParentID, Name: r.Name, Title: r.Title, Directory: r.Directory}
 	}
 	sess := &session{
 		server: s, id: record.ID, harness: record.Harness, workspace: workspace, child: c, createdAt: record.CreatedAt,
-		ops: make(chan func()), done: make(chan struct{}), archived: record.Archived,
+		ops: make(chan func()), done: make(chan struct{}), archived: record.Archived, firstLine: firstLine,
 		settings:    agent.Settings{Model: record.Model, Effort: record.Effort, PermissionMode: record.PermissionMode},
 		resumeToken: record.ResumeToken,
 		history:     history{store: s.store, sessionID: record.ID},
@@ -370,6 +395,25 @@ func (sess *session) update(update agent.Update) {
 		SessionID string `json:"session_id"`
 		agent.Update
 	}{sess.id, update})
+	if update.Type == agent.UpdatePrompt && update.From == "" && sess.child == nil {
+		sess.labelFrom(update.Text)
+	}
+}
+
+// labelFrom labels a top-level session with the first prompt the user sent it
+// and tells every client. Later prompts leave the label as it is.
+func (sess *session) labelFrom(prompt string) {
+	s := sess.server
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess.firstLine != "" {
+		return
+	}
+	sess.firstLine = firstLine(prompt)
+	s.broadcast("session/labeled", struct {
+		SessionID string `json:"session_id"`
+		Label     string `json:"label"`
+	}{sess.id, sess.labelLocked()})
 }
 
 func (sess *session) save(settings agent.Settings, resumeToken string) error {

@@ -1,6 +1,6 @@
 import { createSignal, For, onSettled, Show } from "solid-js";
 import type { Selection } from "./App";
-import { createAttempt, type Session, sessionLabel, useOx, type Workspace, workspaceName } from "./ox";
+import { createAttempt, type Session, useOx, type Workspace, workspaceName } from "./ox";
 import { settled } from "./protocol";
 
 type DialogRequest =
@@ -83,7 +83,7 @@ function SessionRow(props: { session: Session; selected: boolean; onSelect(): vo
             {(status) => <span class={["status", status()]} role="img" title={status()} aria-label={status()} />}
           </Show>
         </Show>
-        <span class="title">{sessionLabel(props.session)}</span>
+        <span class="title">{props.session.label}</span>
       </button>
       <MenuButton label="Session actions" onMenu={props.onMenu} />
     </li>
@@ -187,7 +187,7 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
       {
         label: "Delete",
         disabledBecause: childrenOf(session).length ? "Delete its child sessions first" : undefined,
-        onChoose: () => setRequest({ kind: "delete", id: session.id, label: sessionLabel(session) }),
+        onChoose: () => setRequest({ kind: "delete", id: session.id, label: session.label }),
       },
     ];
   };

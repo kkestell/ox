@@ -46,7 +46,7 @@ export type Session = {
   id: string;
   harness: string;
   child?: Child;
-  // label is oxd's label from the session listing, shown until a snapshot loads.
+  // label is the session's label, as oxd lists and announces it.
   label: string;
   archived: boolean;
   load: { kind: "reloading"; snapshot?: SessionSnapshot } | { kind: "live"; snapshot: SessionSnapshot };
@@ -68,17 +68,6 @@ const settingsOf = (p: Settings): Settings => ({
 
 // workspaceName is the name of a workspace's directory.
 export const workspaceName = (path: string) => path.split("/").at(-1) || path;
-
-// sessionLabel is a child's title, or else the first line of the first prompt
-// the user sent the session, or the start of its ID before it has one. Before
-// its snapshot loads, it is the label oxd listed.
-export function sessionLabel(session: Session) {
-  if (session.child) return session.child.title;
-  const snapshot = session.load.snapshot;
-  if (!snapshot) return session.label;
-  const prompt = snapshot.entries.find((e) => e.kind === "prompt" && e.input.from === undefined);
-  return prompt?.kind === "prompt" ? prompt.input.text.trim().split("\n")[0] : session.id.slice(0, 8);
-}
 
 function stopTools(session: SessionSnapshot) {
   for (const e of session.entries) if (e.kind === "tool" && !e.result) e.stopped = true;
@@ -429,7 +418,7 @@ function createOx() {
             id: params.session_id,
             harness: params.harness,
             child: params.child,
-            label: params.session_id.slice(0, 8),
+            label: params.label,
             archived: false,
             load: { kind: "reloading" },
           });
@@ -440,6 +429,11 @@ function createOx() {
         return setState((s) => {
           const load = sessionIn(s.workspaces, params.session_id)?.load;
           if (load?.kind === "live") load.snapshot.settings = settingsOf(params);
+        });
+      case "session/labeled":
+        return setState((s) => {
+          const session = sessionIn(s.workspaces, params.session_id);
+          if (session) session.label = params.label;
         });
       case "session/archived":
       case "session/unarchived":

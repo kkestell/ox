@@ -831,7 +831,7 @@ test("session list membership and ordering don't wait for transcripts", async ({
     await expect(page.getByRole("status")).toHaveText("Loading session…");
     const id = sessionId(page);
     await newSession(page, "younger session");
-    await expect(page.locator("nav li .title")).toHaveText([id.slice(0, 8), "younger session"]);
+    await expect(page.locator("nav li .title")).toHaveText(["older session", "younger session"]);
     firstSnapshot.release();
     await expect(page.locator("nav li .title")).toHaveText(["older session", "younger session"]);
 

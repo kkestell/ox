@@ -61,8 +61,16 @@ export type Notification =
   | { method: "workspace/removed"; params: { workspace_id: string } }
   | {
       method: "session/created";
-      params: { session_id: string; workspace_id: string; harness: string; created_at: string; child?: Child };
+      params: {
+        session_id: string;
+        workspace_id: string;
+        label: string;
+        harness: string;
+        created_at: string;
+        child?: Child;
+      };
     }
+  | { method: "session/labeled"; params: { session_id: string; label: string } }
   | { method: "session/configured"; params: Settings & { session_id: string } }
   | { method: "session/destroyed"; params: { session_id: string } }
   | { method: "session/archived"; params: { session_id: string } }

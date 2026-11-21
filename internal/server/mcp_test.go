@@ -27,7 +27,7 @@ func (a snapshotReadAgent) Snapshot() agent.Snapshot {
 	return a.Agent.Snapshot()
 }
 
-func TestListSessionsCapturesLabelWithOwnerRead(t *testing.T) {
+func TestListSessionsReadsEachSessionFromItsOwner(t *testing.T) {
 	st := openStore(t)
 	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: t.TempDir(), CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
@@ -54,6 +54,7 @@ func TestListSessionsCapturesLabelWithOwnerRead(t *testing.T) {
 	t.Cleanup(unblock)
 	c := connect(t, s)
 	c.call("session/send", map[string]string{"session_id": first, "text": "label for " + first})
+	c.next(func(m message) bool { return m.Method == "session/labeled" && m.sessionID() == first })
 	c.call("session/send", map[string]string{"session_id": last, "text": "background 60000"})
 	for c.update(last, "state").State != agent.StateBackground {
 	}
@@ -81,7 +82,7 @@ func TestListSessionsCapturesLabelWithOwnerRead(t *testing.T) {
 	if response.Error != nil || json.Unmarshal(response.Result, &result) != nil || result.IsError || len(result.Content) != 1 ||
 		json.Unmarshal([]byte(result.Content[0].Text), &sessions) != nil || len(sessions) != 2 ||
 		sessions[0].SessionID != first || sessions[0].Label != "label for "+first {
-		t.Fatalf("listing lost the label captured before deletion: %+v (%s)", sessions, response.Result)
+		t.Fatalf("listing lost the session read before deletion: %+v (%s)", sessions, response.Result)
 	}
 	if sessions[1].SessionID != last || sessions[1].State != agent.StateBackground {
 		t.Fatalf("listing did not report the background state: %+v", sessions[1])
@@ -295,11 +296,15 @@ func TestCreateSession(t *testing.T) {
 	createdChild := func(c *client, id string) child {
 		t.Helper()
 		var params struct {
+			Label string `json:"label"`
 			Child *child `json:"child"`
 		}
 		json.Unmarshal(c.next(func(m message) bool { return m.Method == "session/created" && m.sessionID() == id }).Params, &params)
 		if params.Child == nil {
 			t.Fatalf("session/created for %s has no child", id)
+		}
+		if params.Label != params.Child.Title {
+			t.Fatalf("session/created labeled child %s %q, not its title %q", id, params.Label, params.Child.Title)
 		}
 		return *params.Child
 	}
@@ -321,6 +326,13 @@ func TestCreateSession(t *testing.T) {
 		t.Fatalf("the child started in %q, not %q", got, dir)
 	}
 	idle(c, worker.SessionID)
+	c.call("session/send", map[string]string{"session_id": worker.SessionID, "text": "from the user"})
+	idle(c, worker.SessionID)
+	for _, m := range c.received(worker.SessionID) {
+		if m.Method == "session/labeled" {
+			t.Fatalf("a prompt relabeled the child: %s", m.Params)
+		}
+	}
 
 	type listedSession struct {
 		SessionID string `json:"session_id"`

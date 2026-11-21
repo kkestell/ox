@@ -59,7 +59,15 @@ func New(st *store.Store, cfg *config.Config, parkAfter time.Duration, harnesses
 	for _, w := range stored {
 		ws := &workspace{id: w.ID, path: w.Path, createdAt: w.CreatedAt}
 		for _, record := range w.Sessions {
-			sess := s.newSession(record, w.Path)
+			var first string
+			if record.Child == nil {
+				text, err := st.FirstPrompt(record.ID)
+				if err != nil {
+					return nil, err
+				}
+				first = firstLine(text)
+			}
+			sess := s.newSession(record, w.Path, first)
 			ws.sessions = append(ws.sessions, sess)
 			s.sessions[record.ID] = sess
 		}

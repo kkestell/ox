@@ -1,7 +1,7 @@
 import { For, Match, Show, Switch, untrack } from "solid-js";
 import { ApprovalRequest } from "./ApprovalRequest";
 import { Markdown } from "./Markdown";
-import { type Entry, type Session, type SessionControl, type SessionSnapshot, sessionLabel, useOx } from "./ox";
+import { type Entry, type Session, type SessionControl, type SessionSnapshot, useOx } from "./ox";
 import type { Prompt, Settings } from "./protocol";
 import { ModelPicker, Select } from "./SettingsFields";
 import { planOf, toolInputJSON, toolSubject } from "./toolInput";
@@ -35,7 +35,7 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
   return (
     <>
       <header class="context">
-        <h1>{sessionLabel(props.session)}</h1>
+        <h1>{props.session.label}</h1>
         <p class="path">{directory()}</p>
       </header>
       <div class="log">
@@ -130,7 +130,7 @@ function PromptBubble(props: { input: Prompt; queued?: boolean }) {
   const senderLabel = (id: string) => {
     if (props.input.from_label !== undefined) return props.input.from_label;
     const sender = ox.session(id);
-    return sender ? sessionLabel(sender) : id.slice(0, 8);
+    return sender ? sender.label : id.slice(0, 8);
   };
   return (
     <div class={["prompt", { queued: props.queued, message: props.input.from !== undefined }]}>

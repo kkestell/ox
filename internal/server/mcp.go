@@ -241,26 +241,25 @@ func listSessions(s *Server, caller *session, _ json.RawMessage, respond func(st
 	}
 	s.mu.Lock()
 	var sessions []*session
+	var labels []string
 	for _, w := range s.workspaces {
 		for _, sess := range w.sessions {
 			if sess != caller && !sess.archived {
 				sessions = append(sessions, sess)
+				labels = append(labels, sess.labelLocked())
 			}
 		}
 	}
 	s.mu.Unlock()
 
 	entries := make([]*entry, len(sessions))
-	readErrors := make([]error, len(sessions))
 	var wg sync.WaitGroup
 	for i, sess := range sessions {
 		wg.Go(func() {
 			done := make(chan struct{})
 			if !sess.post(func() {
 				defer close(done)
-				label, err := s.label(sess)
-				readErrors[i] = err
-				entries[i] = &entry{SessionID: sess.id, Label: label, Workspace: sess.workspace, Harness: sess.harness, Settings: sess.settings, State: sess.snapshot().State}
+				entries[i] = &entry{SessionID: sess.id, Label: labels[i], Workspace: sess.workspace, Harness: sess.harness, Settings: sess.settings, State: sess.snapshot().State}
 			}) {
 				return // destroyed
 			}
@@ -269,11 +268,7 @@ func listSessions(s *Server, caller *session, _ json.RawMessage, respond func(st
 	}
 	wg.Wait()
 	listed := []*entry{}
-	for i, e := range entries {
-		if readErrors[i] != nil {
-			respond("", readErrors[i])
-			return
-		}
+	for _, e := range entries {
 		if e != nil {
 			listed = append(listed, e)
 		}
@@ -297,14 +292,10 @@ func sendMessage(s *Server, caller *session, arguments json.RawMessage, respond 
 	}
 	s.mu.Lock()
 	recipient := s.sessions[input.To]
+	label := caller.labelLocked()
 	s.mu.Unlock()
 	if recipient == nil {
 		respond("", errors.New("session not found"))
-		return
-	}
-	label, err := s.label(caller)
-	if err != nil {
-		respond("", err)
 		return
 	}
 	message := messageInput(caller, label, input.Text)
@@ -386,10 +377,6 @@ func createSession(s *Server, caller *session, arguments json.RawMessage, respon
 	done := make(chan struct{})
 	if !caller.post(func() {
 		defer close(done)
-		var label string
-		if label, err = s.label(caller); err != nil {
-			return
-		}
 		var record *store.Session
 		if record, err = s.childRecord(caller, input.Harness, input.Model, input.Effort); err != nil {
 			return
@@ -415,7 +402,7 @@ func createSession(s *Server, caller *session, arguments json.RawMessage, respon
 			return
 		}
 		created = s.addSession(w, record)
-		message = messageInput(caller, label, input.Message)
+		message = messageInput(caller, caller.labelLocked(), input.Message)
 		answer = result{record.ID, input.Name, record.Harness,
 			agent.Settings{Model: record.Model, Effort: record.Effort, PermissionMode: record.PermissionMode}, directory}
 	}) {
@@ -636,25 +623,4 @@ func messageInput(sender *session, label, text string) agent.Input {
 			"Your reply here does not reach that session; to answer, call send_message with to set to %s.",
 			sender.id, label, sender.workspace, text, sender.id),
 	}
-}
-
-// label is a session's label: a child's title, or else the first line of the
-// first prompt the user sent it, or the start of its ID before it has one.
-func (s *Server) label(sess *session) (string, error) {
-	if sess.child != nil {
-		return sess.child.Title, nil
-	}
-	data, err := s.store.FirstPrompt(sess.id)
-	if err != nil {
-		return "", err
-	}
-	if data == nil {
-		return sess.id[:8], nil
-	}
-	var first agent.Update
-	if err := json.Unmarshal(data, &first); err != nil {
-		return "", err
-	}
-	line, _, _ := strings.Cut(strings.TrimSpace(first.Text), "\n")
-	return line, nil
 }
