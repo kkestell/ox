@@ -1,4 +1,5 @@
-import { Show, untrack } from "solid-js";
+import { createMemo, Show, untrack } from "solid-js";
+import { highlight } from "./highlight";
 import { useOx } from "./ox";
 import { createPoll } from "./poll";
 
@@ -11,10 +12,15 @@ export function FileView(props: { workspaceId: string; path: string; onClose: ()
   const path = untrack(() => props.path);
   const name = path.slice(path.lastIndexOf("/") + 1);
   const read = createPoll(() => ox.readFile(workspaceId, path));
-  const text = () => {
+  // A memo, so an unchanged read is not highlighted again.
+  const text = createMemo(() => {
     const current = read();
     return current?.kind === "value" ? current.value.text : undefined;
-  };
+  });
+  const html = createMemo(() => {
+    const current = text();
+    return current === undefined ? "" : highlight(path, current);
+  });
   const error = () => {
     const current = read();
     return current?.kind === "error" ? current.message : undefined;
@@ -38,7 +44,7 @@ export function FileView(props: { workspaceId: string; path: string; onClose: ()
           </div>
         </div>
       </header>
-      <Show when={error()} fallback={<pre role="tabpanel">{text()}</pre>}>
+      <Show when={error()} fallback={<pre role="tabpanel" innerHTML={html()} />}>
         {(message) => <p role="tabpanel">{message()}</p>}
       </Show>
     </section>

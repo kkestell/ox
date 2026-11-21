@@ -628,7 +628,7 @@ for (const outcome of ["taken", "dropped"] as const) {
     await expect(page.locator(".prompt")).toHaveText(expected);
     await expect(prompt(page)).toHaveValue(composer);
     // A later reload of the session must not restore the same input again.
-    const snapshot = await hold(page, "session/get", sessionId(page));
+    const snapshot = await hold(page, "session/get", { session_id: sessionId(page) });
     await services.restartRelay();
     await snapshot.arrived;
     snapshot.release();
@@ -835,7 +835,7 @@ test("session list membership and ordering don't wait for transcripts", async ({
     firstSnapshot.release();
     await expect(page.locator("nav li .title")).toHaveText(["older session", "younger session"]);
 
-    const reloadSnapshot = await hold(page, "session/get", id);
+    const reloadSnapshot = await hold(page, "session/get", { session_id: id });
     await page.reload();
     await reloadSnapshot.arrived;
     await expect(page.locator(".reply")).toHaveText("You said: younger session");
@@ -876,7 +876,7 @@ test("on reconnect each session waits for its own settings", async ({ page, cont
   await other.goto(page.url());
   await expect(other.locator(".reply")).toHaveText("You said: refresh my settings");
 
-  const snapshot = await hold(page, "session/get", id);
+  const snapshot = await hold(page, "session/get", { session_id: id });
   await services.restartRelay();
   await snapshot.arrived;
   await other.locator("select[name=permission_mode]").selectOption("plan");

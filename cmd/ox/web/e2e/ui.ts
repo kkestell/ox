@@ -34,15 +34,16 @@ export const menuItem = (menu: Locator, label: string) => menu.getByRole("menuit
 
 // hold intercepts the page's next request for method until release passes it
 // on (optionally with changed parameters), or fail answers it as a relay error.
-export async function hold(page: Page, method: string, sessionId?: string) {
-  let release!: (params?: Record<string, unknown>) => void;
+// Only a request whose parameters include every key of params is held.
+export async function hold(page: Page, method: string, params?: Record<string, unknown>) {
+  let release!: (changes?: Record<string, unknown>) => void;
   let fail!: (message: string) => void;
   const answer = new Promise<(route: Route) => Promise<void>>((resolve) => {
-    release = (params) =>
+    release = (changes) =>
       resolve((route) => {
-        if (!params) return route.continue();
+        if (!changes) return route.continue();
         const request = route.request().postDataJSON();
-        return route.continue({ postData: { ...request, params: { ...request.params, ...params } } });
+        return route.continue({ postData: { ...request, params: { ...request.params, ...changes } } });
       });
     fail = (message) => resolve((route) => route.fulfill({ status: 502, body: message }));
   });
@@ -53,8 +54,8 @@ export async function hold(page: Page, method: string, sessionId?: string) {
   let taken = false;
   await page.route("**/rpc*", async (route) => {
     const request = route.request().postDataJSON();
-    if (taken || request?.method !== method || (sessionId && request.params.session_id !== sessionId))
-      return route.fallback();
+    const matches = Object.entries(params ?? {}).every(([key, value]) => request?.params?.[key] === value);
+    if (taken || request?.method !== method || !matches) return route.fallback();
     taken = true;
     held();
     await (await answer)(route);

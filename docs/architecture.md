@@ -200,6 +200,7 @@ origin, so a page whose domain rebinds to the relay's address cannot reach `oxd`
 | `connection.ts` | Opening the event stream, sending requests, matching replies, and reporting stream errors. |
 | `ox.tsx` | A provider that reloads the catalog, workspaces, and sessions on each connection, updating loaded sessions in place so their views keep their state, applies notifications, and exposes RPC calls; each session's control; `createAttempt`, which shows a request's error. |
 | `poll.ts` | The page's polling: a request repeated on each tick of the provider's clock, one in flight at a time. |
+| `highlight.ts` | Syntax highlighting: the registered languages and the file names that choose them. |
 | `toolInput.ts` | Readers of Claude's tool calls: a call's subject, an `ExitPlanMode` plan, `AskUserQuestion` questions, and a call's input as JSON. |
 | `App.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `NewSessionView.tsx`, `FileTree.tsx`, `FileView.tsx`, `ApprovalRequest.tsx`, `SettingsFields.tsx`, `HarnessIcon.tsx`, `Markdown.tsx` | The components. |
 

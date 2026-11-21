@@ -12,6 +12,7 @@
   "dependencies": {
     "@solidjs/web": "^2.0.1",
     "@ungap/raw-json": "^0.4.4",
+    "highlight.js": "^11.12.0",
     "markdown-it": "^15.0.3",
     "solid-js": "^2.0.1"
   },

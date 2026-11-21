@@ -285,6 +285,9 @@ test("the file viewer shows each session's open file", async ({ page }) => {
     mkdirSync(join(services.workspace, "src"));
     writeFileSync(a, `first\n${`${"long line ".repeat(200)}\n`.repeat(400)}`);
     writeFileSync(join(services.workspace, "bin.dat"), "a\0b");
+    const main = join(services.workspace, "src", "main.go");
+    writeFileSync(main, "package main\n\n// note\nfunc main() {}\n");
+    writeFileSync(join(services.workspace, "src", "main.txt"), "package main\n\n// note\nfunc main() {}\n");
     await open(page, services);
     for (const text of ["first", "second"]) {
       await page.getByRole("button", { name: "New session" }).click();
@@ -339,6 +342,34 @@ test("the file viewer shows each session's open file", async ({ page }) => {
     await expect(tab).toHaveText("a.txt");
     writeFileSync(a, "back\n");
     await expect(panel).toHaveText("back\n", { timeout: 3000 });
+
+    // A file of a language Ox does not register shows as plain text; a Go file
+    // is colored for the page's scheme and re-highlighted only when it changes.
+    await expect(panel.locator("span")).toHaveCount(0);
+    await files.getByRole("button", { name: "main.txt", exact: true }).click();
+    await expect(panel).toContainText("package main");
+    await expect(panel.locator("span")).toHaveCount(0);
+    const firstRead = await hold(page, "workspace/read_file", { path: "src/main.go" });
+    await files.getByRole("button", { name: "main.go", exact: true }).click();
+    await expect(tab).toHaveText("main.go");
+    await firstRead.arrived;
+    await expect(panel).toHaveText("");
+    firstRead.release();
+    const keyword = panel.locator(".hljs-keyword").first();
+    const comment = panel.locator(".hljs-comment");
+    await expect(keyword).toHaveText("package");
+    await expect(comment).toHaveText("// note");
+    await expect(keyword).toHaveCSS("color", "rgb(215, 58, 73)");
+    await page.emulateMedia({ colorScheme: "dark" });
+    await expect(keyword).toHaveCSS("color", "rgb(255, 123, 114)");
+    await page.emulateMedia({ colorScheme: "light" });
+    await comment.evaluate((span) => {
+      span.dataset.marked = "true";
+    });
+    await page.waitForTimeout(1500);
+    await expect(panel.locator("span[data-marked]")).toHaveCount(1);
+    writeFileSync(main, "// changed\n");
+    await expect(comment).toHaveText("// changed", { timeout: 3000 });
 
     await binRow.click();
     await expect(tab).toHaveText("bin.dat");
