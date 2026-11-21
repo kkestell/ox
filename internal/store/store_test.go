@@ -3,6 +3,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -22,12 +23,14 @@ func testLiteralPath(t *testing.T, path string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
 	if err := st.AddWorkspace(&Workspace{ID: "w", Path: t.TempDir(), CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("SQLite did not open the literal database path: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
 	}
 	other, err := Open(path)
 	if err != nil {
@@ -83,4 +86,26 @@ func TestChildren(t *testing.T) {
 	if err := add("second", "worker"); err != nil {
 		t.Fatalf("a deleted child's name stayed taken: %v", err)
 	}
+}
+
+func TestStoreHoldsDatabaseUntilClose(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ox.db")
+	first, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second, err := Open(path); err == nil || !strings.Contains(err.Error(), "another oxd is using") {
+		if second != nil {
+			second.Close()
+		}
+		t.Fatalf("a second store opened a held database: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	again, err := Open(path)
+	if err != nil {
+		t.Fatalf("a closed store still holds its database: %v", err)
+	}
+	again.Close()
 }

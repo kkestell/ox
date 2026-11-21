@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stopProcess } from "../stack.mjs";
 
 const fake = {
   models: [
@@ -106,21 +107,14 @@ export async function startServices(config: object): Promise<Services> {
     },
     async stop() {
       const exited = daemon.exitCode;
-      if (relay) await stopProcess(relay);
-      await stopProcess(daemon);
+      // Both stop even when one exits badly, so a failure leaves neither running.
+      const stopped = await Promise.allSettled([relay && stopProcess(relay), stopProcess(daemon)]);
+      for (const result of stopped) if (result.status === "rejected") throw result.reason;
       if (exited !== null) throw new Error(`oxd exited during the tests with status ${exited}`);
       rmSync(dir, { recursive: true, force: true });
       rmSync(workspace, { recursive: true, force: true });
     },
   };
-}
-
-function stopProcess(child: ChildProcess, signal: NodeJS.Signals = "SIGTERM") {
-  return new Promise<void>((resolve) => {
-    if (child.exitCode !== null || child.signalCode !== null) return resolve();
-    child.once("exit", () => resolve());
-    child.kill(signal);
-  });
 }
 
 function freePort() {

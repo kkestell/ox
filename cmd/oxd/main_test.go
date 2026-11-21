@@ -207,9 +207,10 @@ func TestRefusesToStartWithoutForwarder(t *testing.T) {
 	}
 }
 
-// The socket excludes a second daemon while oxd is serving or still
-// stopping. A second signal kills both running and initializing children.
-func TestDaemonOwnsSocketUntilShutdown(t *testing.T) {
+// The socket and the database each exclude a second daemon while oxd is
+// serving or still stopping. A second signal kills both running and
+// initializing children.
+func TestDaemonOwnsSocketAndDatabaseUntilShutdown(t *testing.T) {
 	// t.TempDir is too long for a socket path on macOS.
 	dir, err := os.MkdirTemp("", "oxd")
 	if err != nil {
@@ -248,12 +249,12 @@ exec sleep 60
 		t.Fatal(err)
 	}
 	socket, database := filepath.Join(dir, "oxd.sock"), filepath.Join(dir, "ox.db")
-	command := func(ctx context.Context) *exec.Cmd {
+	command := func(ctx context.Context, socket string) *exec.Cmd {
 		cmd := exec.CommandContext(ctx, filepath.Join(bin, "oxd"), "-socket="+socket, "-db="+database, "-config="+filepath.Join(dir, "none.json"))
 		cmd.Env = append(os.Environ(), "OXD_TEST_MAIN=1", "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 		return cmd
 	}
-	oxd := command(t.Context())
+	oxd := command(t.Context(), socket)
 	if err := oxd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -332,33 +333,22 @@ exec sleep 60
 	pids := []int{pid("running"), pid("initializing")}
 	refusesSecond := func() {
 		t.Helper()
-		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
-		defer cancel()
-		out, err := command(ctx).CombinedOutput()
-		if err == nil || !strings.Contains(string(out), "another oxd is serving") {
-			t.Fatalf("a second daemon was not refused: %v, %s", err, out)
+		// A daemon on another socket in the same directory is refused by the
+		// database before it loads anything; one still running at the
+		// deadline was not refused, and is killed.
+		for socket, refusal := range map[string]string{
+			socket:                         "another oxd is serving",
+			filepath.Join(dir, "two.sock"): "another oxd is using",
+		} {
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			out, err := command(ctx, socket).CombinedOutput()
+			cancel()
+			if err == nil || !strings.Contains(string(out), refusal) {
+				t.Fatalf("a second daemon on %s was not refused: %v, %s", socket, err, out)
+			}
 		}
 	}
 	refusesSecond()
-	st, err := store.Open(database)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	checkHistory := func(types ...string) {
-		t.Helper()
-		events, err := st.Events(session)
-		var got []string
-		for _, e := range events {
-			var u struct{ Type string }
-			json.Unmarshal(e.Data, &u)
-			got = append(got, u.Type)
-		}
-		if err != nil || !slices.Equal(got, types) {
-			t.Fatalf("the live session's history is %q, not %q: %v", got, types, err)
-		}
-	}
-	checkHistory("prompt")
 
 	// The first stop ends the sessions at once and waits for Claude.
 	oxd.Process.Signal(syscall.SIGINT)
@@ -368,7 +358,6 @@ exec sleep 60
 	case <-time.After(time.Second):
 	}
 	refusesSecond()
-	checkHistory("prompt", "exited", "parked")
 	oxd.Process.Signal(syscall.SIGINT)
 	select {
 	case <-exited:
@@ -382,5 +371,21 @@ exec sleep 60
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
+	}
+
+	st, err := store.Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	events, err := st.Events(session)
+	var got []string
+	for _, e := range events {
+		var u struct{ Type string }
+		json.Unmarshal(e.Data, &u)
+		got = append(got, u.Type)
+	}
+	if err != nil || !slices.Equal(got, []string{"prompt", "exited", "parked"}) {
+		t.Fatalf("the stopped session's history is %q: %v", got, err)
 	}
 }

@@ -9,25 +9,16 @@ import (
 	"github.com/kkestell/ox/internal/store"
 )
 
+// history is a session's recorded updates. The store is its only copy, so
+// every recorded update survives oxd being killed.
 type history struct {
 	store     *store.Store
 	sessionID string
-	pending   *agent.Update
 }
 
 func (h *history) record(update agent.Update) {
-	if update.Type == agent.UpdateTextDelta {
-		if h.pending != nil && h.pending.MessageID == update.MessageID {
-			h.pending.Text += update.Text
-			return
-		}
-		h.flush()
-		h.pending = &update
-		return
-	}
-	h.flush()
 	switch update.Type {
-	case agent.UpdatePrompt, agent.UpdateToolUse, agent.UpdateToolResult, agent.UpdateResult, agent.UpdateExited, agent.UpdateParked:
+	case agent.UpdatePrompt, agent.UpdateTextDelta, agent.UpdateToolUse, agent.UpdateToolResult, agent.UpdateResult, agent.UpdateExited, agent.UpdateParked:
 		h.append(update)
 	}
 }
@@ -47,13 +38,6 @@ func (h *history) recordEnd() {
 	}
 }
 
-func (h *history) flush() {
-	if h.pending != nil {
-		h.append(*h.pending)
-		h.pending = nil
-	}
-}
-
 func (h *history) append(update agent.Update) {
 	at := update.Time
 	update.Time = time.Time{}
@@ -66,22 +50,28 @@ func (h *history) append(update agent.Update) {
 	}
 }
 
+// entries returns the recorded updates, with consecutive text_delta
+// fragments of one message joined into one timed by its first fragment, as
+// the page joins them live.
 func (h *history) entries() ([]agent.Update, error) {
 	events, err := h.store.Events(h.sessionID)
 	if err != nil {
 		return nil, err
 	}
-	updates := make([]agent.Update, 0, len(events)+1)
+	updates := make([]agent.Update, 0, len(events))
 	for _, e := range events {
 		var update agent.Update
 		if err := json.Unmarshal(e.Data, &update); err != nil {
 			return nil, err
 		}
 		update.Time = e.CreatedAt
+		if n := len(updates); n > 0 && update.Type == agent.UpdateTextDelta {
+			if last := &updates[n-1]; last.Type == agent.UpdateTextDelta && last.MessageID == update.MessageID {
+				last.Text += update.Text
+				continue
+			}
+		}
 		updates = append(updates, update)
-	}
-	if h.pending != nil {
-		updates = append(updates, *h.pending)
 	}
 	return updates, nil
 }

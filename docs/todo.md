@@ -6,24 +6,10 @@ the evidence and the correction.
 
 ## Defects
 
-- [ ] **Reply text lost on an abrupt exit.** Text shown live is not stored until
-      the next non-text update, so a killed `oxd` loses it. Bound the unstored
-      text, or reword **Surviving restarts**; the user decides.
-      [Deslop F1](../agents/audits/2026-11-20-002-deslop.md#f1-reply-text-shown-live-is-lost-on-an-abrupt-oxd-exit)
-- [ ] **One Ctrl-C forces `oxd` past graceful shutdown under `make dev`.** The
-      terminal's `SIGINT` and the stack's `SIGTERM` both reach `oxd`.
-      [Deslop F2](../agents/audits/2026-11-20-002-deslop.md#f2-one-ctrl-c-under-make-dev-forces-oxd-past-graceful-shutdown)
 - [ ] **Archive and unarchive act on a stale session.** Unarchive can flip a
       recreated session's stored flag, and archive replies before its members
       have stopped.
       [Deslop F4](../agents/audits/2026-11-20-002-deslop.md#f4-archive-and-unarchive-act-outside-the-owner-of-session-membership)
-- [ ] **A second `oxd` can share the database.** Only the socket is exclusive,
-      so a daemon on another socket repairs and archives the first one's
-      sessions.
-      [Deslop F6](../agents/audits/2026-11-20-002-deslop.md#f6-only-the-socket-not-the-database-has-one-owner)
-- [ ] **A race report from a stopping `oxd` is lost.** e2e and dev restarts
-      ignore the exit status of the daemon they stop.
-      [Deslop F7](../agents/audits/2026-11-20-002-deslop.md#f7-a-race-report-from-a-stopping-oxd-is-lost-in-e2e-and-dev-restarts)
 - [ ] **Tests that pass when their behavior breaks.** Six tests, from the
       settings passed to the next start to `TestLive`'s ordering.
       [Deslop F8](../agents/audits/2026-11-20-002-deslop.md#f8-tests-that-pass-when-the-behavior-they-name-breaks)

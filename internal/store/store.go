@@ -3,9 +3,11 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -85,12 +87,29 @@ CREATE TABLE IF NOT EXISTS archived (
 CREATE INDEX IF NOT EXISTS events_session ON events (session_id, id);
 `
 
+// Store holds its database exclusively, through a lock on a file beside it,
+// from Open until Close.
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	lock *os.File
 }
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	// SQLite's own locks on the database file are POSIX locks, which a flock
+	// on the same file conflicts with on macOS, so the lock has its own file.
+	// The kernel releases it when the process exits.
+	lock, err := os.OpenFile(path+".lock", os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		lock.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, fmt.Errorf("another oxd is using %s", path)
+		}
 		return nil, err
 	}
 	// SQLite's file URI decodes the path, rather than treating its punctuation
@@ -102,22 +121,28 @@ func Open(path string) (*Store, error) {
 	} else {
 		uri += "./"
 	}
-	dsn := uri + (&url.URL{Path: path}).EscapedPath() + "?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)"
+	dsn := uri + (&url.URL{Path: path}).EscapedPath() + "?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
+	// In WAL mode, synchronous(NORMAL) keeps every commit through a killed
+	// process without waiting on fsync; only a power loss drops the latest.
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
+		lock.Close()
 		return nil, err
 	}
 	// Serialize this store's operations on one SQLite connection.
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
+		lock.Close()
 		return nil, err
 	}
-	return &Store{db}, nil
+	return &Store{db, lock}, nil
 }
 
 func (s *Store) Close() error {
-	return s.db.Close()
+	err := s.db.Close()
+	s.lock.Close()
+	return err
 }
 
 func (s *Store) Workspaces() ([]*Workspace, error) {

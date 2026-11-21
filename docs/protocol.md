@@ -297,9 +297,9 @@ The daemon records every session's `prompt`, `text_delta`, `tool_use`,
 `tool_result`, `result`, `exited`, and `parked` updates, including those of
 turns Claude starts itself, and keeps them across parking and daemon restarts. A
 daemon that exited without recording a session's last `parked` update records it
-when it next starts. Consecutive `text_delta` fragments are recorded as one.
-Applying the history the same way as live updates reproduces the conversation.
-Deleting the session deletes its history.
+when it next starts. The history returns consecutive `text_delta` fragments of
+one message as one. Applying the history the same way as live updates reproduces
+the conversation. Deleting the session deletes its history.
 
 ### `session/configure`
 

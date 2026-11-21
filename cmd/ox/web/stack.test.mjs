@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
-import { runStack } from "./stack.mjs";
+import { runStack, stopProcess } from "./stack.mjs";
 
 let dir;
 let stack;
@@ -25,9 +27,14 @@ afterEach(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function script(name, body = "exec sleep 1000") {
+// script writes a service that sleeps until killed, or, given trap, sets the
+// trap before writing its PID and then waits in a loop that lets it run.
+function script(name, trap) {
   const path = join(dir, name);
-  writeFileSync(path, `#!/bin/sh\necho $$ > ${path}.pid\n${body}\n`, { mode: 0o755 });
+  const body = trap
+    ? `${trap}\necho $$ > ${path}.pid\nwhile :; do sleep 0.05; done`
+    : `echo $$ > ${path}.pid\nexec sleep 1000`;
+  writeFileSync(path, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
   return path;
 }
 
@@ -50,9 +57,10 @@ async function until(condition) {
 
 // start runs the stack with a build that appends a comment to each script
 // named in changed, or exits nonzero when fail is set. The build waits
-// buildDelay seconds first, and ox runs oxBody.
-async function start({ changed = [], fail = false, restart = {}, buildDelay = 0, oxBody } = {}) {
-  const paths = { oxd: script("oxd"), ox: script("ox", oxBody), vite: script("vite") };
+// buildDelay seconds first. Each service runs with the trap traps names for
+// it, and the stack takes signals.
+async function start({ changed = [], fail = false, restart = {}, buildDelay = 0, traps = {}, signals } = {}) {
+  const paths = Object.fromEntries(["oxd", "ox", "vite"].map((name) => [name, script(name, traps[name])]));
   const edits = changed.map((name) => `echo '#' >> ${paths[name]}`).join("; ");
   stack = runStack({
     services: Object.entries(paths).map(([name, command]) => ({
@@ -62,6 +70,7 @@ async function start({ changed = [], fail = false, restart = {}, buildDelay = 0,
     })),
     build: fail ? "exit 1" : `sleep ${buildDelay}; ${edits || ":"}`,
     input,
+    signals,
     log: (line) => lines.push(line),
   });
   await until(() => Object.values(paths).every((path) => pid(path)));
@@ -131,6 +140,59 @@ test("an exit after a restart stops the stack", async () => {
   assert.notEqual(await stack, 0);
 });
 
+test("a retiring service that fails stops the stack", async () => {
+  const paths = await start({ changed: ["oxd"], traps: { oxd: "trap 'exit 66' TERM" } });
+  const before = pid(paths.oxd);
+  input.write("\n");
+  assert.notEqual(await stack, 0);
+  assert.ok(lines.includes(`${paths.oxd} exited with status 66`));
+  assert.equal(lines.includes("restarted oxd"), false);
+  await sleep(200);
+  assert.equal(pid(paths.oxd), before);
+});
+
+// signalStack sends signal to the stack, after sending it to every service
+// too when the terminal delivers it, and expects each service to have received
+// it alone.
+async function signalStack(signal, terminal) {
+  const names = ["oxd", "ox", "vite"];
+  const signals = new EventEmitter();
+  const record = "trap 'echo INT >> $0.log; exit 0' INT; trap 'echo TERM >> $0.log; exit 0' TERM";
+  const paths = await start({ traps: Object.fromEntries(names.map((name) => [name, record])), signals });
+  const pids = names.map((name) => Number(pid(paths[name])));
+  if (terminal) for (const id of pids) process.kill(id, signal);
+  signals.emit(signal);
+  const code = await stack;
+  await until(() => pids.every((id) => !alive(id)));
+  for (const name of names) assert.equal(readFileSync(`${paths[name]}.log`, "utf8"), `${signal.slice(3)}\n`);
+  return code;
+}
+
+test("one terminal Ctrl-C signals each service once", async () => {
+  // A terminal Ctrl-C reaches every process in the foreground group.
+  assert.equal(await signalStack("SIGINT", true), 130);
+});
+
+test("SIGTERM to the stack signals every service", async () => {
+  assert.equal(await signalStack("SIGTERM", false), 143);
+});
+
+test("stopProcess accepts only status 0 or the signal it sent", async () => {
+  const spawned = (path) => {
+    const proc = spawn(path, { stdio: "ignore" });
+    return until(() => pid(path)).then(() => proc);
+  };
+  await assert.rejects(stopProcess(await spawned(script("failing", "trap 'exit 66' TERM"))), /status 66$/);
+  await stopProcess(await spawned(script("killed", "trap 'exit 66' TERM")), "SIGKILL");
+  await stopProcess(await spawned(script("terminated")));
+  await stopProcess(await spawned(script("clean", "trap 'exit 0' TERM")));
+  const crashing = await spawned(script("crashing", "trap 'kill -KILL $$' TERM"));
+  await assert.rejects(stopProcess(crashing), /exited on SIGKILL$/);
+  const exited = spawn("sh", ["-c", "exit 3"]);
+  await new Promise((resolve) => exited.once("exit", resolve));
+  await assert.rejects(stopProcess(exited), /^Error: sh exited with status 3$/);
+});
+
 test("a second Enter during a rebuild does not start another", async () => {
   const paths = await start({ changed: ["ox"], buildDelay: 0.3 });
   const before = pid(paths.ox);
@@ -144,7 +206,7 @@ test("a second Enter during a rebuild does not start another", async () => {
 test("stopping during a restart starts no new process", async () => {
   const paths = await start({
     changed: ["ox"],
-    oxBody: "trap 'sleep 0.5; exit 0' TERM\nwhile :; do sleep 0.05; done",
+    traps: { ox: "trap 'sleep 0.5; exit 0' TERM" },
   });
   const before = pid(paths.ox);
   input.write("\n");

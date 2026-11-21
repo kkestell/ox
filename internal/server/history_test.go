@@ -24,21 +24,25 @@ func TestHistoryMergesTextAndKeepsConversation(t *testing.T) {
 		{MessageID: "p", Type: "prompt", Text: "hi"},
 		{MessageID: "p", Type: "state", State: "running"},
 		{MessageID: "p", Type: "text_delta", Text: "hel", Time: replyStarted},
+		{MessageID: "p", Type: "state", State: "requires_action"},
 		{MessageID: "p", Type: "text_delta", Text: "lo", Time: replyStarted.Add(time.Second)},
 	} {
 		h.record(u)
 	}
-	entries, err := h.entries()
+	// A fresh history reads only what reached the store, as after oxd is
+	// killed mid-reply.
+	entries, err := (&history{store: st, sessionID: "s"}).entries()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 2 || entries[1].Text != "hello" {
-		t.Fatalf("history mid-reply lacks the pending text: %+v", entries)
+	if len(entries) != 2 || entries[1].Text != "hello" || !entries[1].Time.Equal(replyStarted) {
+		t.Fatalf("history mid-reply lacks the reply text so far, timed by its first fragment: %+v", entries)
 	}
 
 	h.record(agent.Update{MessageID: "p", Type: "result", Result: &agent.Result{Text: "hello"}})
 	h.record(agent.Update{MessageID: "p", Type: "state", State: "idle"})
 	h.record(agent.Update{Type: "text_delta", Text: "tick"})
+	h.record(agent.Update{MessageID: "q", Type: "text_delta", Text: "tock"})
 	h.record(agent.Update{Type: "parked"})
 	// A fresh history reads only what reached the store, as after a restart.
 	if entries, err = (&history{store: st, sessionID: "s"}).entries(); err != nil {
@@ -48,7 +52,7 @@ func TestHistoryMergesTextAndKeepsConversation(t *testing.T) {
 	for _, e := range entries {
 		got = append(got, e.Type+":"+e.Text)
 	}
-	if strings.Join(got, ",") != "prompt:hi,text_delta:hello,result:,text_delta:tick,parked:" {
+	if strings.Join(got, ",") != "prompt:hi,text_delta:hello,result:,text_delta:tick,text_delta:tock,parked:" {
 		t.Fatalf("unexpected history: %v", got)
 	}
 	if !entries[1].Time.Equal(replyStarted) {

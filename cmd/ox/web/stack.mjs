@@ -7,8 +7,20 @@ function fileHash(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-function exited(proc) {
-  return new Promise((resolve) => proc.once("exit", resolve));
+// stopProcess sends signal to proc unless it has already exited, and resolves
+// once it exits with status 0 or on signal. Any other exit rejects, such as
+// the status 66 of a race report.
+export function stopProcess(proc, signal = "SIGTERM") {
+  return new Promise((resolve, reject) => {
+    const judge = (code, received) => {
+      if (code === 0 || received === signal) resolve();
+      else if (code !== null) reject(new Error(`${proc.spawnfile} exited with status ${code}`));
+      else reject(new Error(`${proc.spawnfile} exited on ${received}`));
+    };
+    if (proc.exitCode !== null || proc.signalCode !== null) return judge(proc.exitCode, proc.signalCode);
+    proc.once("exit", judge);
+    proc.kill(signal);
+  });
 }
 
 // runStack runs the services as one stack and returns a promise of its exit
@@ -16,7 +28,11 @@ function exited(proc) {
 // service. Each line of input rebuilds with the build command line and
 // restarts the services whose binary changed. A service's current process and
 // hash belong to its record here, and only a restart replaces them.
-export function runStack({ services, build, input, log = console.log }) {
+//
+// signals, such as process, delivers the stack's own SIGINT and SIGTERM. The
+// services share the terminal's process group, so a terminal Ctrl-C has
+// already sent them SIGINT, and the stack stops without signalling them again.
+export function runStack({ services, build, input, signals, log = console.log }) {
   let stopping = false;
   let busy = false;
   let resolveCode;
@@ -27,11 +43,11 @@ export function runStack({ services, build, input, log = console.log }) {
 
   const records = services.map((spec) => ({ spec, proc: null, hash: null }));
 
-  function stop(code) {
+  function stop(code, signal = "SIGTERM") {
     if (stopping) return;
     stopping = true;
     lines.close();
-    for (const record of records) record.proc?.kill();
+    if (signal) for (const record of records) record.proc?.kill(signal);
     resolveCode(code);
   }
 
@@ -61,9 +77,13 @@ export function runStack({ services, build, input, log = console.log }) {
   async function restart(record) {
     const old = record.proc;
     record.proc = null;
-    const gone = exited(old);
-    old.kill();
-    await gone;
+    try {
+      await stopProcess(old);
+    } catch (error) {
+      log(error.message);
+      stop(1);
+      return;
+    }
     if (stopping) return;
     start(record);
     log(`restarted ${record.spec.name}`);
@@ -99,6 +119,8 @@ export function runStack({ services, build, input, log = console.log }) {
     }
   });
 
+  signals?.on("SIGINT", () => stop(130, null));
+  signals?.on("SIGTERM", () => stop(143));
   for (const record of records) start(record);
   return Object.assign(result, { stop });
 }

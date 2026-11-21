@@ -10,9 +10,8 @@ const stack = runStack({
   ],
   build: "make build",
   input: process.stdin,
+  signals: process,
 });
 
-process.on("SIGINT", () => stack.stop(130));
-process.on("SIGTERM", () => stack.stop(143));
 console.log("Press Enter to rebuild and restart what changed.");
 process.exitCode = await stack;

@@ -67,9 +67,9 @@ func main() {
 }
 
 func run(dbPath string, cfg *config.Config, parkAfter time.Duration, harnesses map[string]agent.Harness, mcp server.MCP) error {
-	// Loading the server repairs the history of a stopped daemon. Hold the
-	// socket from before that repair until every session has stopped and
-	// every Claude process has exited.
+	// Hold the socket until every session has stopped and every Claude
+	// process has exited. The store's lock on the database protects the
+	// history repair that loading the server does.
 	listener, err := listen(mcp.Socket)
 	if err != nil {
 		return err
