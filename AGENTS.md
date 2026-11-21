@@ -41,7 +41,9 @@ We test with `make dev`. Ox's test state is disposable.
 ├── go.sum                     # dependency checksums
 ├── internal
 │   ├── agent
-│   │   └── agent.go           # harness interface
+│   │   ├── agent.go           # harness interface
+│   │   ├── tracker_test.go    # tracker tests
+│   │   └── tracker.go         # untaken inputs and published state
 │   ├── claude
 │   │   ├── agent.go           # Claude agent state machine
 │   │   ├── approval_test.go   # approval tests

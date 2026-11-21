@@ -6,7 +6,7 @@ import (
 )
 
 func (a *Agent) Parkable() bool {
-	return a.idle() && len(a.approvals) == 0 && a.background == 0 && !a.mayHaveSchedules
+	return a.idle() && len(a.approvals) == 0 && a.tracker.Tasks() == 0 && !a.mayHaveSchedules
 }
 
 // Only a Stop report with a schedule list settles whether Claude has work pending.

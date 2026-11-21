@@ -520,7 +520,12 @@ func TestArchive(t *testing.T) {
 		Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}}},
 		PermissionModes: []config.Option{{ID: "manual"}},
 	}}}
-	harnesses := map[string]agent.Harness{"fake": {Start: fake.Start}}
+	configuring := make(chan struct{}, 1)
+	start := func(o agent.Options) (agent.Agent, error) {
+		a, err := fake.Start(o)
+		return configuringAgent{a, configuring}, err
+	}
+	harnesses := map[string]agent.Harness{"fake": {Start: start}}
 	st := openStore(t)
 	s, err := New(st, cfg, 0, harnesses, MCP{})
 	if err != nil {
@@ -596,6 +601,23 @@ func TestArchive(t *testing.T) {
 	c.call("session/send", map[string]string{"session_id": b, "text": "bystander"})
 	idle(b)
 	fromB := attach(t, s, b)
+
+	t.Log("a session with a prompt held through a configuration is not archived")
+	c.forget(b)
+	configure := c.send("session/configure", map[string]string{"session_id": b, "effort": "high"})
+	<-configuring
+	var held struct {
+		MessageID string `json:"message_id"`
+	}
+	json.Unmarshal(c.call("session/send", map[string]string{"session_id": b, "text": "held"}), &held)
+	refused(c.request("session/archive", map[string]string{"session_id": b}), sessionBusy, "session is busy")
+	if response := c.response(configure); response.Error != nil {
+		t.Fatalf("the configuration failed: %+v", response.Error)
+	}
+	if taken := c.update(b, "prompt"); taken.MessageID != held.MessageID {
+		t.Fatalf("the configuration's end took %s, not the held prompt %s", taken.MessageID, held.MessageID)
+	}
+	idle(b)
 
 	t.Log("a family with a busy member is not archived")
 	c.call("session/send", map[string]string{"session_id": a, "text": "approve Bash {}"})

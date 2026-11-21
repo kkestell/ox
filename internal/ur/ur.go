@@ -49,11 +49,13 @@ func Harness(endpoint string, providers map[string][]string) agent.Harness {
 			if key == "" {
 				return nil, errors.New("OPENROUTER_API_KEY is not set")
 			}
-			return &Agent{
+			a := &Agent{
 				endpoint: endpoint, key: key, providers: providers,
 				events: make(chan agent.Event), done: make(chan struct{}),
 				onUpdate: options.OnUpdate, onConfigured: options.OnConfigured, settings: options.Settings,
-			}, nil
+			}
+			a.tracker = agent.NewTracker(a.publish)
+			return a, nil
 		},
 		CheckEffort:         checkEffort,
 		CheckPermissionMode: checkPermissionMode,
@@ -74,8 +76,8 @@ type Agent struct {
 
 	settings agent.Settings
 	history  []message
-	queue    []agent.Input // accepted and not taken, oldest first
-	turn     *turn         // the running turn; nil while idle
+	tracker  *agent.Tracker // inputs not taken and the reported state
+	turn     *turn          // the running turn; nil while idle
 	exited   bool
 }
 
@@ -146,17 +148,12 @@ func (a *Agent) Handle(event agent.Event) {
 }
 
 func (a *Agent) Snapshot() agent.Snapshot {
-	state := agent.StateIdle
-	if a.turn != nil {
-		state = agent.StateRunning
-	}
-	return agent.Snapshot{State: state, Approvals: []agent.Approval{}, Queued: append([]agent.Input{}, a.queue...)}
+	return agent.Snapshot{State: a.tracker.State(), Approvals: []agent.Approval{}, Queued: a.tracker.Queued()}
 }
 
 // Send queues the input, and starts a turn with it when no turn is running.
 func (a *Agent) Send(input agent.Input) error {
-	a.queue = append(a.queue, input)
-	a.publish(input.Update(agent.UpdatePromptQueued))
+	a.tracker.Accept(input)
 	if a.turn == nil {
 		a.begin()
 	}
@@ -166,13 +163,10 @@ func (a *Agent) Send(input agent.Input) error {
 // begin starts a turn with the first queued input. An input sent during a turn
 // waits for it to end: a turn is one request, with no step at which to take it.
 func (a *Agent) begin() {
-	input := a.queue[0]
-	a.queue = a.queue[1:]
+	input := a.tracker.Take()
 	ctx, cancel := context.WithCancel(context.Background())
 	t := &turn{prompt: input.MessageID, cancel: cancel}
 	a.turn = t
-	a.publish(input.Update(agent.UpdatePrompt))
-	a.publish(agent.Update{Type: agent.UpdateState, State: agent.StateRunning})
 	a.history = append(a.history, message{Role: "user", Content: input.Content})
 	go a.stream(ctx, t, a.request())
 }
@@ -198,20 +192,11 @@ func (a *Agent) finish(result agent.Result) {
 		a.history = append(a.history, message{Role: "assistant", Content: reply})
 	}
 	a.publish(agent.Update{Type: agent.UpdateResult, Result: &result})
-	a.publish(agent.Update{Type: agent.UpdateState, State: agent.StateIdle})
+	a.tracker.Report(agent.StateIdle, "")
 	a.turn.cancel()
 	a.turn = nil
-	if len(a.queue) > 0 {
+	if a.tracker.Len() > 0 {
 		a.begin()
-	}
-}
-
-// drop cancels every queued input, oldest first.
-func (a *Agent) drop() {
-	dropped := a.queue
-	a.queue = nil
-	for _, input := range dropped {
-		a.publish(input.Update(agent.UpdatePromptCancelled))
 	}
 }
 
@@ -221,7 +206,7 @@ func (a *Agent) Approve(string, json.RawMessage) error {
 }
 
 func (a *Agent) Interrupt() error {
-	a.drop()
+	a.tracker.DropFrom(0)
 	if a.turn != nil {
 		a.finish(agent.Result{Text: "Interrupted", IsError: true})
 	}
@@ -230,7 +215,7 @@ func (a *Agent) Interrupt() error {
 
 // Configure applies the patch at once; the next request reads the settings.
 func (a *Agent) Configure(patch agent.SettingsPatch, done func(error)) {
-	if a.turn != nil {
+	if !a.tracker.Idle() {
 		done(agent.ErrBusy)
 		return
 	}
@@ -247,7 +232,7 @@ func (a *Agent) Parkable() bool {
 }
 
 func (a *Agent) Stop() {
-	a.drop()
+	a.tracker.DropFrom(0)
 	if a.turn != nil {
 		a.turn.cancel()
 		a.publish(agent.Update{Type: agent.UpdateExited, Error: "stopped"})

@@ -166,7 +166,7 @@ func TestTwoTurns(t *testing.T) {
 			break
 		}
 	}
-	want := []string{"prompt_queued", "prompt", "state running", "text_delta", "result", "state idle"}
+	want := []string{"prompt_queued", "state running", "prompt", "text_delta", "result", "state idle"}
 	if !slices.Equal(kinds, want) {
 		t.Errorf("updates %q, not %q", kinds, want)
 	}
@@ -367,7 +367,7 @@ func TestInputDuringTurnRunsNext(t *testing.T) {
 			break
 		}
 	}
-	want := []string{"prompt_queued p1 ", "prompt p1 ", "state p1 running", "prompt_queued p2 ", "result p1 ", "state p1 idle", "prompt p2 ", "state p2 running", "result p2 ", "state p2 idle"}
+	want := []string{"prompt_queued p1 ", "state p1 running", "prompt p1 ", "prompt_queued p2 ", "result p1 ", "prompt p2 ", "result p2 ", "state p2 idle"}
 	if !slices.Equal(kinds, want) {
 		t.Errorf("updates %q, not %q", kinds, want)
 	}

@@ -239,18 +239,18 @@ func TestPromptSentWhileClaudeWorks(t *testing.T) {
 
 	state(t, a, "requires_action")
 	state(t, a, "idle")
-	if len(*updates) != 1 || (*updates)[0].State != "requires_action" || len(a.Snapshot().Queued) != 3 {
-		t.Fatalf("a stale idle released a queued prompt: %+v", *updates)
+	if len(*updates) != 2 || (*updates)[0].State != "requires_action" || (*updates)[1].State != "running" || len(a.Snapshot().Queued) != 3 {
+		t.Fatalf("a stale idle released a queued prompt or left it idle: %+v", *updates)
 	}
 	*updates = nil
 
 	state(t, a, "running")
 	output(t, a, `{"type":"command_lifecycle","command_uuid":"`+id+`","state":"started"}`)
 	output(t, a, `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"steered"}}}`)
-	if len(*updates) != 3 || (*updates)[1].Type != "prompt" || (*updates)[1].MessageID != id || (*updates)[2].MessageID != id {
+	if len(*updates) != 2 || (*updates)[0].Type != "prompt" || (*updates)[0].MessageID != id || (*updates)[1].MessageID != id {
 		t.Fatalf("the taken prompt did not take over the turn: %+v", *updates)
 	}
-	if p := (*updates)[1]; p.Text != "steer" || p.From != "other" || p.FromLabel != "Other" {
+	if p := (*updates)[0]; p.Text != "steer" || p.From != "other" || p.FromLabel != "Other" {
 		t.Fatalf("prompt lost the input's text or attribution: %+v", p)
 	}
 	if ids := written(t, input); !slices.Equal(ids, []string{held.MessageID}) || !slices.Equal(queuedIDs(a), []string{held.MessageID, message.MessageID}) {
@@ -373,14 +373,14 @@ func TestStopDropsQueuedPrompt(t *testing.T) {
 	ids := sendHeld(t, a)
 	*updates = nil
 	a.Stop()
-	if len(*updates) != 3 || !cancelled((*updates)[:2], ids) || (*updates)[0].Text != "hello" ||
-		(*updates)[2].Type != "exited" || (*updates)[2].MessageID != ids[0] || (*updates)[2].Error != "Claude was stopped" {
+	if len(*updates) != 4 || !cancelledToIdle((*updates)[:3], ids) || (*updates)[0].Text != "hello" ||
+		(*updates)[3].Type != "exited" || (*updates)[3].MessageID != ids[0] || (*updates)[3].Error != "Claude was stopped" {
 		t.Fatalf("a stop did not drop the untaken inputs, oldest first, then end the written one: %+v", *updates)
 	}
 	if queued := a.Snapshot().Queued; len(queued) != 0 {
 		t.Fatalf("the snapshot reports an input after exit: %+v", queued)
 	}
-	if err := a.Send(prompt("late")); !errors.Is(err, agent.ErrExited) || len(*updates) != 3 {
+	if err := a.Send(prompt("late")); !errors.Is(err, agent.ErrExited) || len(*updates) != 4 {
 		t.Fatalf("an agent that has ended accepted an input: %v, %+v", err, *updates)
 	}
 }
@@ -574,8 +574,8 @@ func TestInputWaitsForStartup(t *testing.T) {
 		t.Fatalf("taking the first held input did not write the second: %v, %v", ids, queuedIDs(a))
 	}
 
-	// Interrupt drops the held inputs, oldest first, writes nothing, and the
-	// start's end releases the agent.
+	// Interrupt drops the held inputs, oldest first, which leaves the agent
+	// idle, and writes nothing.
 	input = new(bytes.Buffer)
 	a, updates = startingAgent(input, make(chan agent.Event), nil)
 	ids := sendHeld(t, a)
@@ -583,12 +583,12 @@ func TestInputWaitsForStartup(t *testing.T) {
 	if err := a.Interrupt(); err != nil {
 		t.Fatal(err)
 	}
-	if !cancelled(*updates, ids) || input.Len() != 0 || a.Snapshot().State != "running" || len(a.Snapshot().Queued) != 0 {
+	if !cancelledToIdle(*updates, ids) || input.Len() != 0 || a.Snapshot().State != "idle" || len(a.Snapshot().Queued) != 0 {
 		t.Fatalf("an interrupt while Claude starts did not drop the held inputs alone: %+v, %q, %+v", *updates, input, a.Snapshot())
 	}
 	*updates = nil
 	a.Handle(initialized)
-	if len(*updates) != 1 || (*updates)[0].State != "idle" || input.Len() != 0 || a.Snapshot().State != "idle" {
+	if len(*updates) != 0 || input.Len() != 0 || !a.idle() {
 		t.Fatalf("Claude's answer did not release the agent: %+v, %q", *updates, input)
 	}
 	if err := a.Send(prompt("next")); err != nil {
@@ -604,7 +604,7 @@ func TestInputWaitsForStartup(t *testing.T) {
 	ids = sendHeld(t, a)
 	*updates = nil
 	a.Handle(initialized)
-	if len(*updates) != 3 || !cancelled((*updates)[:2], ids) || (*updates)[2].State != "idle" || len(a.Snapshot().Queued) != 0 || len(failures) != 1 {
+	if !cancelledToIdle(*updates, ids) || len(a.Snapshot().Queued) != 0 || len(failures) != 1 {
 		t.Fatalf("held inputs that could not be written were not dropped: %+v, %v", *updates, failures)
 	}
 
@@ -613,7 +613,7 @@ func TestInputWaitsForStartup(t *testing.T) {
 	ids = sendHeld(t, a)
 	*updates = nil
 	a.Stop()
-	if !a.Exited() || !cancelled(*updates, ids) {
+	if !a.Exited() || !cancelledToIdle(*updates, ids) {
 		t.Fatalf("a stop while Claude starts did not drop the held inputs alone: %+v", *updates)
 	}
 
@@ -622,7 +622,7 @@ func TestInputWaitsForStartup(t *testing.T) {
 	ids = sendHeld(t, a)
 	*updates = nil
 	a.Handle(processExit{err: errors.New("exit status 1")})
-	if len(*updates) != 3 || !cancelled((*updates)[:2], ids) || (*updates)[2].Type != "exited" || (*updates)[2].MessageID != ids[1] {
+	if len(*updates) != 4 || !cancelledToIdle((*updates)[:3], ids) || (*updates)[3].Type != "exited" || (*updates)[3].MessageID != ids[1] {
 		t.Fatalf("a failed start did not drop the held inputs and name the latest: %+v", *updates)
 	}
 }
@@ -653,6 +653,13 @@ func cancelled(updates []agent.Update, ids []string) bool {
 		}
 	}
 	return true
+}
+
+// cancelledToIdle reports that updates are exactly prompt_cancelled for ids,
+// in order, then the idle state that dropping the last untaken input leaves.
+func cancelledToIdle(updates []agent.Update, ids []string) bool {
+	last := len(updates) - 1
+	return last >= 0 && cancelled(updates[:last], ids) && updates[last].Type == "state" && updates[last].State == "idle"
 }
 
 // A background subagent's findings arrive in a turn Claude starts after the

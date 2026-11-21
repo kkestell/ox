@@ -60,8 +60,8 @@ func failingStart(t *testing.T) (*Agent, string, *startLog, chan agent.Event) {
 func (l *startLog) dropped(t *testing.T, a agent.Agent, id, reason string) {
 	t.Helper()
 	u := l.updates
-	if !a.Exited() || len(u) != 2 || u[0].Type != "prompt_cancelled" || u[0].MessageID != id ||
-		u[1].Type != "exited" || u[1].MessageID != id || u[1].Error != reason {
+	if !a.Exited() || len(u) != 3 || !cancelledToIdle(u[:2], []string{id}) ||
+		u[2].Type != "exited" || u[2].MessageID != id || u[2].Error != reason {
 		t.Fatalf("the start did not drop the prompt and report %q: %+v", reason, u)
 	}
 }

@@ -63,12 +63,10 @@ type Agent struct {
 	done   chan struct{} // closed when the agent ends, so late timers and output deliver nothing
 
 	phase phase
-	// untaken is every input Claude has not taken, oldest first. Only the
-	// first is ever written, and only in prompting.
-	untaken []agent.Input
-	// state is Claude's execution state, except that a prompt is running from
-	// the moment it is accepted. Clients see it as published reports it.
-	state            string
+	// tracker holds every input Claude has not taken, oldest first, and
+	// Claude's reported state. Only the first input is ever written, and only
+	// in prompting.
+	tracker          *agent.Tracker
 	approvals        []agent.Approval // pending, in arrival order
 	settings         agent.Settings   // the settings the process is using
 	onUpdate         func(agent.Update)
@@ -78,7 +76,6 @@ type Agent struct {
 	conversationID   string // most recently reported on stdout
 	resumable        string // token last passed to OnResumable, or supplied at startup
 	streamedText     bool   // the current turn published a text delta
-	background       int    // Claude's live background tasks
 	mayHaveSchedules bool   // true until Stop reports an empty schedule list
 }
 
@@ -126,12 +123,14 @@ func Start(options agent.Options) (agent.Agent, error) {
 // newAgent runs the process proc, starting, whose output arrives on events
 // until done is closed and whose input is input.
 func newAgent(input *writer, events chan agent.Event, done chan struct{}, proc *process, options agent.Options) *Agent {
-	return &Agent{
+	a := &Agent{
 		proc: proc, input: input, events: events, done: done,
-		phase: &starting{}, state: agent.StateIdle,
+		phase:    &starting{},
 		settings: options.Settings, onUpdate: options.OnUpdate, onConfigured: options.OnConfigured, onError: options.OnError,
 		onResumable: options.OnResumable, resumable: options.Resume, mayHaveSchedules: options.Resume != "",
 	}
+	a.tracker = agent.NewTracker(a.publish)
+	return a
 }
 
 func (a *Agent) Events() <-chan agent.Event {
@@ -210,9 +209,7 @@ func (a *Agent) handleOutput(m message) {
 				a.sessionState(m.State)
 			}
 		case "background_tasks_changed":
-			was := a.published()
-			a.background = len(m.Tasks)
-			a.publishState(was)
+			a.tracker.SetTasks(len(m.Tasks))
 		}
 	case "assistant":
 		for _, use := range m.toolUses() {
@@ -283,11 +280,11 @@ func (a *Agent) configured(settings agent.Settings) {
 
 func (a *Agent) idle() bool {
 	_, available := a.phase.(available)
-	return available && a.state == agent.StateIdle
+	return available && a.tracker.Idle()
 }
 
 func (a *Agent) Snapshot() agent.Snapshot {
-	return agent.Snapshot{State: a.published(), Approvals: append([]agent.Approval{}, a.approvals...), Queued: append([]agent.Input{}, a.untaken...)}
+	return agent.Snapshot{State: a.tracker.State(), Approvals: append([]agent.Approval{}, a.approvals...), Queued: a.tracker.Queued()}
 }
 
 // startupOutput handles the output that ends or explains a start, and
@@ -386,15 +383,15 @@ func (a *Agent) end(reason string) {
 	final := agent.Update{Type: agent.UpdateExited, Error: reason}
 	switch p := a.phase.(type) {
 	case *starting:
-		if len(a.untaken) > 0 {
-			final.MessageID = a.untaken[len(a.untaken)-1].MessageID
+		if queued := a.tracker.Queued(); len(queued) > 0 {
+			final.MessageID = queued[len(queued)-1].MessageID
 		}
 	case *prompting:
 		final.MessageID = p.input.MessageID
 	case available, *configuring, timedOut, exited:
 		// No input names the end.
 	}
-	a.dropUntaken(0)
+	a.tracker.DropFrom(0)
 	// Ending writes nothing, so a configuration ends here rather than
 	// through endConfiguration.
 	switch p := a.phase.(type) {

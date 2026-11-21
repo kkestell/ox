@@ -119,10 +119,14 @@ session goroutine drives it by calling its methods and passing each event from
 calls, and reports failures no call returns, such as a failed write to its
 process, through `OnError`, which the session logs under its ID. `Send`
 receives the input with its session-assigned ID, text, and attribution, and
-queues it behind every input the harness has not taken. The agent publishes
-the lifecycle updates for when it is accepted, taken, or dropped with that
-text and attribution, and reports every untaken input, oldest first, in
-`Snapshot`. The agent reports settings changes through `OnConfigured`, as they
+queues it behind every input the harness has not taken. The harness decides
+when an input is written, taken, or dropped, and records each take and drop,
+with its own reported execution state, in an `agent.Tracker`. The tracker
+keeps the untaken inputs, oldest first, and publishes their lifecycle updates
+with the input's text and attribution. It derives the published state: the
+harness's report, except that an idle harness is `running` while any input
+is untaken, and otherwise `background` while background tasks run.
+`Snapshot` reports both from the tracker. The agent reports settings changes through `OnConfigured`, as they
 happen, separately from the outcome of a `Configure` request. See the [update
 contract](protocol.md#session-updates).
 
@@ -160,19 +164,17 @@ only during it:
 | `exited` | The agent has ended. | — |
 
 The process's exit, `Stop`, or a failed start moves any live phase to
-`exited`, dropping every untaken input. Alongside the phase, the agent keeps
-Claude's execution state: its report, except that a prompt is `running`
-from the moment it is accepted until Claude reports `idle` with no input
-untaken. It publishes that state, or `background` while the state is `idle`
-and Claude reports live background tasks.
+`exited`, dropping every untaken input. Alongside the phase, the agent's
+tracker keeps Claude's last reported execution state and the count of
+background tasks Claude reports.
 
-The agent keeps every untaken input in one queue, oldest first, and writes
-only the first. An input is written at once in `available`, or in
+The agent writes only the first untaken input. An input is written at once in `available`, or in
 `prompting` when nothing is untaken; otherwise it waits. When Claude answers
 `initialize`, a configuration ends, or Claude takes or drops the written
-input, the agent writes the next. Both `available` and `idle` are required to
-take a configuration. An interrupt drops every input not yet written; in
-`available` or `prompting` with the state not `idle` it is then sent to
+input, the agent writes the next. Both `available` and an `idle` or
+`background` published state are required to take a configuration. An
+interrupt drops every input not yet written; in `available` or `prompting`
+with the published state not `idle` or `background` it is then sent to
 Claude, dropping the written input Claude has not taken. In `starting`,
 `configuring`, and `timedOut` it sends nothing.
 

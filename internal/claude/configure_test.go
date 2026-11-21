@@ -165,7 +165,7 @@ func TestConfigureFailure(t *testing.T) {
 				}
 			case "exited":
 				a.Handle(processExit{})
-				if len(*updates) != 2 || !cancelled((*updates)[:1], []string{id}) || (*updates)[1].Type != "exited" || input.Len() != 0 {
+				if len(*updates) != 3 || !cancelledToIdle((*updates)[:2], []string{id}) || (*updates)[2].Type != "exited" || input.Len() != 0 {
 					t.Fatalf("the exit did not drop the held prompt and end alone: %+v, %q", *updates, input)
 				}
 			}
@@ -180,8 +180,8 @@ func TestConfigureFailure(t *testing.T) {
 	}
 }
 
-// An interrupt during a configuration drops the inputs held for it and
-// writes nothing, and the configuration's end releases the agent.
+// An interrupt during a configuration drops the inputs held for it, which
+// leaves the agent idle, and writes nothing.
 func TestInterruptDuringConfiguration(t *testing.T) {
 	a, input, updates := testAgent()
 	result := make(chan error, 1)
@@ -190,13 +190,42 @@ func TestInterruptDuringConfiguration(t *testing.T) {
 	input.Reset()
 	ids := sendHeld(t, a)
 	*updates = nil
-	if err := a.Interrupt(); err != nil || input.Len() != 0 || !cancelled(*updates, ids) {
+	if err := a.Interrupt(); err != nil || input.Len() != 0 || !cancelledToIdle(*updates, ids) {
 		t.Fatalf("an interrupt during configuration wrote %q or did not drop the held inputs: %v, %+v", input, err, *updates)
 	}
 	*updates = nil
 	acknowledge(t, a, requestID, "success")
-	if err := <-result; err != nil || input.Len() != 0 || len(*updates) != 1 || (*updates)[0].State != "idle" {
-		t.Fatalf("the configuration's end after an interrupt wrote %q or did not release the agent: %v, %+v", input, err, *updates)
+	if err := <-result; err != nil || input.Len() != 0 || len(*updates) != 0 || !a.idle() {
+		t.Fatalf("the configuration's end after an interrupt wrote %q, published, or did not release the agent: %v, %+v", input, err, *updates)
+	}
+}
+
+// A turn Claude starts during a configuration keeps the agent running after
+// the acknowledgement, until Claude reports idle.
+func TestConfigurationKeepsReportedState(t *testing.T) {
+	a, input, updates := testAgent()
+	result := make(chan error, 1)
+	a.Configure(agent.SettingsPatch{Model: new("haiku")}, replyTo(result))
+	requestID := controlRequestID(t, input)
+	state(t, a, "running")
+	*updates = nil
+	acknowledge(t, a, requestID, "success")
+	if err := <-result; err != nil || len(*updates) != 0 || a.Snapshot().State != "running" || a.Parkable() {
+		t.Fatalf("the acknowledgement did not keep Claude's running state: %v, %+v, %+v", err, *updates, a.Snapshot())
+	}
+	if a.Configure(agent.SettingsPatch{Model: new("sonnet")}, replyTo(result)); !errors.Is(<-result, agent.ErrBusy) {
+		t.Fatal("a running agent accepted a configuration")
+	}
+	if err := a.Interrupt(); err != nil || !strings.Contains(input.String(), `"subtype":"interrupt"`) {
+		t.Fatalf("an interrupt of the running agent wrote %q: %v", input, err)
+	}
+	input.Reset()
+	state(t, a, "idle")
+	if len(*updates) != 1 || (*updates)[0].State != "idle" || !a.Parkable() {
+		t.Fatalf("Claude's idle did not release the agent: %+v", *updates)
+	}
+	if err := a.Interrupt(); err != nil || input.Len() != 0 {
+		t.Fatalf("an interrupt of the idle agent wrote %q: %v", input, err)
 	}
 }
 
@@ -246,7 +275,7 @@ func TestConfigureTimeoutStopsProcess(t *testing.T) {
 	if err := <-result; !errors.Is(err, agent.ErrExited) {
 		t.Fatalf("process exit did not end configuration: %v", err)
 	}
-	if !a.Exited() || !cancelled(*updates, []string{id}) {
+	if !a.Exited() || !cancelledToIdle(*updates, []string{id}) {
 		t.Fatalf("the exit did not drop the held prompt alone, or the exit Ox asked for was reported: %+v", *updates)
 	}
 }

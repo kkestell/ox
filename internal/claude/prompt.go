@@ -35,7 +35,7 @@ func checkPrompt(text string) error {
 func (a *Agent) Send(input agent.Input) error {
 	switch a.phase.(type) {
 	case available, *prompting:
-		if len(a.untaken) == 0 {
+		if a.tracker.Len() == 0 {
 			if err := a.write(input); err != nil {
 				return err
 			}
@@ -45,12 +45,7 @@ func (a *Agent) Send(input agent.Input) error {
 	case exited:
 		return agent.ErrExited
 	}
-	a.untaken = append(a.untaken, input)
-	a.publish(input.Update(agent.UpdatePromptQueued))
-	if a.state == agent.StateIdle {
-		a.state = agent.StateRunning
-		a.publish(agent.Update{MessageID: input.MessageID, Type: agent.UpdateState, State: a.state})
-	}
+	a.tracker.Accept(input)
 	return nil
 }
 
@@ -72,33 +67,22 @@ func (a *Agent) write(input agent.Input) error {
 // writeNext writes the first untaken input. A failed write means Claude is
 // exiting, and its exit ends the agent, so every untaken input is dropped.
 func (a *Agent) writeNext() {
-	if len(a.untaken) == 0 {
+	next, ok := a.tracker.First()
+	if !ok {
 		return
 	}
-	if err := a.write(a.untaken[0]); err != nil {
+	if err := a.write(next); err != nil {
 		a.onError(err)
-		a.dropUntaken(0)
+		a.tracker.DropFrom(0)
 	}
 }
 
 // ready makes the agent available, once Claude has answered initialize, a
 // configuration has ended, or a prompt has been released, and writes the
-// first untaken input. With none, the agent is idle.
+// first untaken input.
 func (a *Agent) ready() {
 	a.phase = available{}
 	a.writeNext()
-	if _, available := a.phase.(available); available {
-		a.setState(agent.StateIdle)
-	}
-}
-
-// dropUntaken drops the untaken inputs from index from on, oldest first.
-func (a *Agent) dropUntaken(from int) {
-	dropped := a.untaken[from:]
-	a.untaken = a.untaken[:from:from]
-	for _, input := range dropped {
-		a.publish(input.Update(agent.UpdatePromptCancelled))
-	}
 }
 
 // Interrupt drops every input not yet written to Claude, then asks Claude to
@@ -108,13 +92,13 @@ func (a *Agent) dropUntaken(from int) {
 // Claude starts or a configuration runs, Interrupt writes nothing.
 func (a *Agent) Interrupt() error {
 	written := 0
-	if _, prompting := a.phase.(*prompting); prompting && len(a.untaken) > 0 {
+	if _, prompting := a.phase.(*prompting); prompting && a.tracker.Len() > 0 {
 		written = 1
 	}
-	a.dropUntaken(written)
+	a.tracker.DropFrom(written)
 	switch a.phase.(type) {
 	case available, *prompting:
-		if a.state == agent.StateIdle {
+		if a.tracker.Idle() {
 			return nil
 		}
 	case *starting, *configuring, timedOut, exited:
@@ -132,7 +116,8 @@ func (a *Agent) Interrupt() error {
 
 // waiting returns the prompting phase whose written input is id, or nil.
 func (a *Agent) waiting(id string) *prompting {
-	if p, ok := a.phase.(*prompting); ok && len(a.untaken) > 0 && id != "" && id == a.untaken[0].MessageID {
+	p, ok := a.phase.(*prompting)
+	if first, _ := a.tracker.First(); ok && id != "" && id == first.MessageID {
 		return p
 	}
 	return nil
@@ -143,10 +128,8 @@ func (a *Agent) commandStarted(id string) {
 	if p == nil {
 		return
 	}
-	taken := a.untaken[0]
-	a.untaken = a.untaken[1:]
 	p.turn = id
-	a.publish(taken.Update(agent.UpdatePrompt))
+	a.tracker.Take()
 	a.writeNext()
 }
 
@@ -156,65 +139,22 @@ func (a *Agent) commandCancelled(id string) {
 	if a.waiting(id) == nil {
 		return
 	}
-	dropped := a.untaken[0]
-	a.untaken = a.untaken[1:]
-	a.publish(dropped.Update(agent.UpdatePromptCancelled))
+	a.tracker.DropFirst()
 	a.writeNext()
 }
 
+// sessionState records Claude's state. Idle with nothing untaken releases a
+// prompt, naming the latest input written.
 func (a *Agent) sessionState(state string) {
-	if state != agent.StateIdle {
-		a.setState(state)
-		return
+	if state == agent.StateIdle {
+		a.withdrawApprovals()
+		if p, ok := a.phase.(*prompting); ok && a.tracker.Len() == 0 {
+			a.tracker.Report(state, p.input.MessageID)
+			a.ready()
+			return
+		}
 	}
-	a.withdrawApprovals()
-	if _, starting := a.phase.(*starting); starting {
-		// The start's end sets the state.
-		return
-	}
-	p, ok := a.phase.(*prompting)
-	switch {
-	case len(a.untaken) > 0:
-		// Claude can report idle before it takes a prompt, and inputs wait
-		// through a configuration; they keep the agent running.
-	case ok:
-		a.endPrompt(p)
-	default:
-		a.setState(state)
-	}
-}
-
-// setState sets Claude's state and publishes a change to the state clients
-// see.
-func (a *Agent) setState(state string) {
-	was := a.published()
-	a.state = state
-	a.publishState(was)
-}
-
-// published is the execution state clients see: background while Claude is
-// idle with background tasks running, otherwise state.
-func (a *Agent) published() string {
-	if a.state == agent.StateIdle && a.background > 0 {
-		return agent.StateBackground
-	}
-	return a.state
-}
-
-// publishState publishes the state clients see when it differs from was.
-func (a *Agent) publishState(was string) {
-	if now := a.published(); now != was {
-		a.publish(agent.Update{Type: agent.UpdateState, State: now})
-	}
-}
-
-// endPrompt releases the agent with an idle state, or background, naming the
-// latest input written.
-func (a *Agent) endPrompt(p *prompting) {
-	a.withdrawApprovals()
-	a.state = agent.StateIdle
-	a.publish(agent.Update{MessageID: p.input.MessageID, Type: agent.UpdateState, State: a.published()})
-	a.ready()
+	a.tracker.Report(state, "")
 }
 
 // publish reports an update, tagged with the client prompt whose turn
