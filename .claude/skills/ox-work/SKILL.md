@@ -28,7 +28,11 @@ Change Ox exactly as the plan or review says, and hand off changes whose tests a
 ## Prove the tests
 
 7. Run each test that reproduces a defect once against the base revision, in a detached worktree that you remove afterwards, and confirm it fails there. Failing at its first assertion is enough. Step 8 covers every other new or changed test.
-8. Remove each condition the change adds, one at a time, and confirm a test fails. Add or strengthen a test for each removal no test catches. Revert every such edit.
+8. Remove each condition the change adds, one at a time, and confirm a test fails. Add or strengthen a test for each removal no test catches.
+   - For Go, first run the changed packages' tests once with `-coverprofile`. A condition on a line no test runs has no test yet: write one before removing anything.
+   - Then run each removal as its own `go test -count=1 -overlay=<json> <package>`, where the overlay maps the source file to a copy holding the removal, written in a temporary directory. The working tree stays as it is, so run the removals in parallel. Leave out `-race`, which step 9 covers.
+   - A removal counts as caught only when a test fails. Rewrite a removal that fails to build until it builds.
+   - For code outside Go, edit the file, run its tests, and revert the edit.
 9. Run the checks `AGENTS.md` ("Verification") requires for the change on the final tree, after your last edit, and fix each failure it causes. Report a check as blocked only when something you cannot change prevents it, and name the blocker.
 
 ## Final response
