@@ -18,6 +18,8 @@ cmd/oxd            socket, database, and configuration paths, signals, the harne
    │      └── internal/agent
    ├── internal/fake      a harness that echoes prompts
    │      └── internal/agent
+   ├── internal/ur        a harness that chats through OpenRouter
+   │      └── internal/agent
    └── internal/server    connections, sessions, JSON-RPC methods
           ├── internal/config    the catalog that harness/list serves
           ├── internal/store     workspaces, sessions, and events in SQLite
@@ -36,6 +38,7 @@ cmd/oxd            socket, database, and configuration paths, signals, the harne
 | `jsonrpc` | Request validation and the response and notification types. |
 | `agent` | The `Agent` interface a harness implements, its `Start` function and options, and the updates, snapshots, settings, and errors they share. |
 | `fake` | A harness that runs no process and echoes each prompt back, a word at a time. A prompt `approve <tool> <input JSON>` first asks to approve that tool call, and the call's result is the answer. A prompt `background <milliseconds>` also runs a background task that long. |
+| `ur` | A harness that runs no process and chats through OpenRouter's chat completions API. It keeps the conversation in memory and streams each turn's reply from one request, so it never reports itself parkable. |
 | `claude` | The Claude Code harness: starting and initializing Claude, its stream-json wire format, and the state machine that runs it as an `Agent`. |
 
 ## Sessions

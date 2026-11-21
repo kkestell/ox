@@ -21,6 +21,7 @@ import (
 	"github.com/kkestell/ox/internal/paths"
 	"github.com/kkestell/ox/internal/server"
 	"github.com/kkestell/ox/internal/store"
+	"github.com/kkestell/ox/internal/ur"
 )
 
 func main() {
@@ -42,7 +43,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	harnesses := map[string]agent.Harness{"claude": claude.Harness, "fake": {Start: fake.Start}}
+	harnesses := map[string]agent.Harness{
+		"claude": claude.Harness,
+		"fake":   {Start: fake.Start},
+		"ur":     ur.Harness(ur.Endpoint, cfg.Harnesses["ur"].Providers()),
+	}
 	if err := checkConfig(cfg, harnesses); err != nil {
 		log.Fatalf("%s: %v", *configPath, err)
 	}
@@ -113,21 +118,35 @@ func findForwarder() (string, error) {
 }
 
 // checkConfig refuses a configuration that offers a harness oxd does not
-// have, a Claude effort level Claude does not take, or Claude's alias for manual.
+// have, or a choice its harness does not take: a Claude effort level Claude
+// does not take, Claude's alias for manual, an Ur effort level or permission
+// mode Ur does not take, or a provider order for a harness other than Ur.
 func checkConfig(cfg *config.Config, harnesses map[string]agent.Harness) error {
 	for name, harness := range cfg.Harnesses {
 		if harnesses[name].Start == nil {
 			return fmt.Errorf("unknown harness %q", name)
 		}
-		if name != "claude" {
-			continue
-		}
-		if harness.CheckPermissionMode("default") == nil {
-			return errors.New("use permission mode \"manual\" instead of \"default\" for Claude")
+		checkEffort := func(string) error { return nil }
+		switch name {
+		case "claude":
+			if harness.CheckPermissionMode("default") == nil {
+				return errors.New("use permission mode \"manual\" instead of \"default\" for Claude")
+			}
+			checkEffort = claude.CheckEffort
+		case "ur":
+			for _, mode := range harness.PermissionModes {
+				if err := ur.CheckPermissionMode(mode.ID); err != nil {
+					return err
+				}
+			}
+			checkEffort = ur.CheckEffort
 		}
 		for _, model := range harness.Models {
+			if len(model.Providers) > 0 && name != "ur" {
+				return fmt.Errorf("model %q: providers is only for ur", model.ID)
+			}
 			for _, effort := range model.Efforts {
-				if err := claude.CheckEffort(effort.ID); err != nil {
+				if err := checkEffort(effort.ID); err != nil {
 					return fmt.Errorf("model %q: %w", model.ID, err)
 				}
 			}

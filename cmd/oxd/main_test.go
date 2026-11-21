@@ -22,6 +22,7 @@ import (
 	"github.com/kkestell/ox/internal/claude"
 	"github.com/kkestell/ox/internal/config"
 	"github.com/kkestell/ox/internal/store"
+	"github.com/kkestell/ox/internal/ur"
 )
 
 func TestListenReplacesOnlyAStaleSocket(t *testing.T) {
@@ -58,20 +59,35 @@ func TestListenReplacesOnlyAStaleSocket(t *testing.T) {
 	}
 }
 
-func TestConfigOffersOnlyClaudesEfforts(t *testing.T) {
+func TestConfigOffersOnlyWhatHarnessesTake(t *testing.T) {
 	builtIn, err := config.Load(filepath.Join(t.TempDir(), "none.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	harnesses := map[string]agent.Harness{"claude": claude.Harness}
+	harnesses := map[string]agent.Harness{"claude": claude.Harness, "ur": ur.Harness(ur.Endpoint, nil)}
 	if err := checkConfig(builtIn, harnesses); err != nil {
 		t.Fatalf("the built-in configuration was refused: %v", err)
 	}
-	misspelled := &config.Config{Harnesses: map[string]config.Harness{"claude": {
-		Models: []config.Model{{ID: "claude-haiku-5-5", Efforts: []config.Option{{ID: "hgih"}}}},
-	}}}
-	if err := checkConfig(misspelled, harnesses); err == nil {
-		t.Error("a Claude effort level Claude does not take was accepted")
+	for name, cfg := range map[string]*config.Config{
+		"a Claude effort level Claude does not take": {Harnesses: map[string]config.Harness{"claude": {
+			Models: []config.Model{{ID: "claude-haiku-5-5", Efforts: []config.Option{{ID: "hgih"}}}},
+		}}},
+		"an Ur effort level Ur does not take": {Harnesses: map[string]config.Harness{"ur": {
+			Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "extreme"}}}},
+			PermissionModes: []config.Option{{ID: "manual"}},
+		}}},
+		"an Ur permission mode Ur does not take": {Harnesses: map[string]config.Harness{"ur": {
+			Models:          []config.Model{{ID: "m"}},
+			PermissionModes: []config.Option{{ID: "manual"}, {ID: "auto"}},
+		}}},
+		"a provider order on a Claude model": {Harnesses: map[string]config.Harness{"claude": {
+			Models:          []config.Model{{ID: "claude-haiku-5-5", Providers: []string{"anthropic"}}},
+			PermissionModes: []config.Option{{ID: "manual"}},
+		}}},
+	} {
+		if err := checkConfig(cfg, harnesses); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/kkestell/ox/internal/claude"
 	"github.com/kkestell/ox/internal/config"
 	"github.com/kkestell/ox/internal/store"
+	"github.com/kkestell/ox/internal/ur"
 )
 
 const haiku = "claude-haiku-5-5"
@@ -759,5 +760,55 @@ func TestLive(t *testing.T) {
 	time.Sleep(4 * time.Second)
 	if parked(completed) {
 		t.Error("the interrupted first turn let the resumed session park")
+	}
+}
+
+// TestLiveUr chats with the built-in Ur model through OpenRouter.
+func TestLiveUr(t *testing.T) {
+	if os.Getenv("OX_LIVE") == "" {
+		t.Skip("set OX_LIVE=1 to run against OpenRouter, as make live does")
+	}
+	if os.Getenv("OPENROUTER_API_KEY") == "" {
+		t.Fatal("OPENROUTER_API_KEY is not set; make live loads it from .env")
+	}
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "none.json")) // the built-in configuration
+	if err != nil {
+		t.Fatal(err)
+	}
+	harnesses := map[string]agent.Harness{"ur": ur.Harness(ur.Endpoint, cfg.Harnesses["ur"].Providers())}
+	s, err := New(openStore(t), cfg, 0, harnesses, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c := connect(t, s)
+	c.timeout = time.Minute
+	var workspace struct {
+		WorkspaceID string `json:"workspace_id"`
+	}
+	json.Unmarshal(c.call("workspace/create", map[string]string{"path": t.TempDir()}), &workspace)
+	var created struct {
+		SessionID string `json:"session_id"`
+	}
+	json.Unmarshal(c.call("session/create", map[string]string{
+		"workspace_id": workspace.WorkspaceID, "harness": "ur", "model": "deepseek/deepseek-v4.1-flash-1017", "effort": "low", "permission_mode": "manual",
+	}), &created)
+	id := created.SessionID
+	turn := func(text string) string {
+		t.Helper()
+		c.forget(id)
+		c.call("session/send", map[string]string{"session_id": id, "text": text})
+		c.update(id, "text_delta")
+		result := c.update(id, "result").Result
+		if result.IsError {
+			t.Fatalf("%q failed: %s", text, result.Text)
+		}
+		for c.update(id, "state").State != "idle" {
+		}
+		return result.Text
+	}
+	turn("Remember the number 7341. Reply with just the word ok.")
+	if reply := turn("What number did I ask you to remember? Reply with just the number."); !strings.Contains(reply, "7341") {
+		t.Errorf("the second turn forgot the first: %q", reply)
 	}
 }

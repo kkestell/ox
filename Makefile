@@ -1,5 +1,9 @@
 .PHONY: dev build web test live lint e2e metrics hooks
 
+# .env holds OPENROUTER_API_KEY for Ur. Only that key reaches oxd and tests.
+-include .env
+export OPENROUTER_API_KEY
+
 dev: web build
 	GORACE=halt_on_error=1 node cmd/ox/web/dev.mjs
 
@@ -18,7 +22,7 @@ lint: cmd/ox/web/node_modules
 	npm --prefix cmd/ox/web run lint
 
 # live drives real Claude Code processes with Haiku, through oxd and through
-# the web client.
+# the web client, and Ur through OpenRouter.
 live: cmd/ox/web/node_modules
 	OX_LIVE=1 go test -race -count=1 -run TestLive -v ./internal/server
 	OX_LIVE=1 npm --prefix cmd/ox/web run e2e -- approval

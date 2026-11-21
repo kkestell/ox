@@ -70,14 +70,18 @@ We test with `make dev`. Ox's test state is disposable.
 │   │   ├── conn.go            # client connections
 │   │   ├── history_test.go    # history tests
 │   │   ├── history.go         # session history
-│   │   ├── live_test.go       # live Claude tests
+│   │   ├── live_test.go       # live Claude and Ur tests
 │   │   ├── mcp.go             # MCP connections
 │   │   ├── methods_test.go    # method tests
 │   │   ├── methods.go         # RPC methods
 │   │   ├── server.go          # listener, workspaces, and sessions
 │   │   └── session.go         # session goroutine and lifecycle
-│   └── store
-│       └── store.go           # SQLite persistence
+│   ├── store
+│   │   └── store.go           # SQLite persistence
+│   └── ur
+│       ├── stream.go          # OpenRouter requests and streams
+│       ├── ur_test.go         # Ur tests
+│       └── ur.go              # Ur agent
 ├── Makefile                   # build, test, and run
 └── scripts
     └── metrics.py             # writes docs/metrics.md
@@ -218,7 +222,8 @@ as the request for `/ox-plan`.
 - Prefer small live tests against real Claude Code processes, using Haiku only.
   Check observable protocol behavior rather than exact model wording. They live
   in `TestLive` and the web client's `approval.spec.ts`, and run with
-  `make live`.
+  `make live`. Ur's live test, `TestLiveUr`, uses the built-in DeepSeek model
+  through OpenRouter with `OPENROUTER_API_KEY` from `.env`.
 - Keep test setup simple; avoid elaborate mocks and fake runtimes.
 - `make test`, `make e2e`, and `make dev` build with the race detector. A data race fails
   the test, or stops `oxd` with the race's report.

@@ -40,8 +40,8 @@ loses its connection.
 ## Workspaces and sessions
 
 A workspace is a directory. A session is a conversation with a harness in a
-workspace. Its harness is chosen at creation. The daemon recognizes `claude`
-and `fake`; see [architecture](architecture.md#ox-architecture) for their
+workspace. Its harness is chosen at creation. The daemon recognizes `claude`,
+`ur`, and `fake`; see [architecture](architecture.md#ox-architecture) for their
 implementations. The daemon stores workspaces, sessions, and session history in
 `ox/ox.db` beneath `$XDG_STATE_HOME`, or beneath `~/.local/state` when that
 is unset;
@@ -77,12 +77,16 @@ tool call or a resumed conversation keeps the harness active until its next
 The daemon reads the harnesses it offers from `ox/config.json` beneath
 `$XDG_CONFIG_HOME`, or beneath `~/.config` when that is unset; `-config
 /absolute/path/to/config.json` chooses a different file. A missing file selects
-the built-in Claude Code catalog. The daemon validates harness names at startup.
+the built-in catalog of Claude Code and Ur. The daemon validates harness names at startup.
 
 Each harness lists at least one model, each with the effort levels it takes,
 and at least one permission mode. Every choice has a nonempty `id`, unique
 within its list and passed to the harness, and a `name` to show. For Claude,
-use `manual`, not its alias `default`. A model with no effort levels omits `efforts`
+use `manual`, not its alias `default`. Ur takes only the permission mode
+`manual`, and the effort levels `max`, `xhigh`, `high`, `medium`, `low`,
+`minimal`, and `none`, which it sends to OpenRouter as the reasoning effort.
+An Ur model may list `providers`, the OpenRouter providers that serve it, in
+order; its requests go to those alone. A model with no effort levels omits `efforts`
 or lists none, and takes an empty `effort`. The
 required `defaults` name the harness, model, effort, and permission mode a new
 session starts with, each one of the configured choices; the daemon refuses to

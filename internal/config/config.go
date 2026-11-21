@@ -35,6 +35,8 @@ type Model struct {
 	ID      string   `json:"id"`
 	Name    string   `json:"name"`
 	Efforts []Option `json:"efforts"`
+	// Providers is the order of providers that serve the model, for Ur.
+	Providers []string `json:"providers,omitempty"`
 }
 
 type Option struct {
@@ -154,6 +156,17 @@ func (h Harness) Effort(model, current string) string {
 		}
 	}
 	return ""
+}
+
+// Providers maps each of h's models that sets a provider order to that order.
+func (h Harness) Providers() map[string][]string {
+	providers := make(map[string][]string)
+	for _, m := range h.Models {
+		if len(m.Providers) > 0 {
+			providers[m.ID] = m.Providers
+		}
+	}
+	return providers
 }
 
 // CheckPermissionMode reports whether mode is one of h's permission modes.

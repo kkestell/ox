@@ -10,8 +10,8 @@ What the person using Ox can see and rely on. Each requirement is cited by its t
 - **Session URL.** The URL names the selected session, so reloading the page reopens it.
 - **New-session defaults.** A new session starts with the configured default harness, model, effort, and permission mode.
 - **New-session choices.** Before sending, the user can pick any offered harness, model, effort, and permission mode for a new session.
-- **Built-in catalog.** Without a configuration file, Ox offers Claude Opus, Sonnet, and Haiku 5.5 with their effort levels and the manual, auto, acceptEdits, and plan modes.
-- **Configuration checks.** `oxd` refuses to start with a malformed configuration, defaults it does not offer, an unknown harness, or an effort level Claude does not take, and says why.
+- **Built-in catalog.** Without a configuration file, Ox offers Claude Opus, Sonnet, and Haiku 5.5 with their effort levels and the manual, auto, acceptEdits, and plan modes, and Ur with DeepSeek V4.1 Flash and GLM 5.3 Flash at low, high, and max effort and Muse Spark 1.3 Contributor at minimal, low, medium, high, xhigh, and max effort, in manual mode.
+- **Configuration checks.** `oxd` refuses to start with a malformed configuration, defaults it does not offer, an unknown harness, or an effort level, permission mode, or provider order its harness does not take, and says why.
 - **File locations.** Ox reads its configuration and keeps its database and socket in the user's XDG directories, and the user can choose other paths.
 - **Creating a session.** Submitting a new session creates it and sends the prompt exactly once.
 - **Creation keeps the user's view.** A session whose creation finishes after the user has moved to another view does not take them away from it.
@@ -87,3 +87,4 @@ What the person using Ox can see and rely on. Each requirement is cited by its t
 - **Socket safety.** A socket left by an `oxd` that has exited does not block the next start; `oxd` will not replace a socket another `oxd` is serving, or a file that is not a socket.
 - **Ox's own files.** Ox's own bookkeeping writes only its database and socket.
 - **Claude's workspace access.** Claude changes the workspace only as its permission mode and the user's approvals allow.
+- **Ur sessions.** Ur chats through OpenRouter with the user's `OPENROUTER_API_KEY`, streaming text replies with no tools; a send to an Ur session without the key is refused with an error. An Ur session never parks while `oxd` runs, and after an `oxd` restart or unarchiving it keeps its transcript, but its next prompt starts a new conversation without the earlier context.

@@ -75,6 +75,18 @@ func TestCatalogListsArePresent(t *testing.T) {
 	}
 }
 
+// Providers serves Ur the provider order of each model that sets one.
+func TestProviders(t *testing.T) {
+	h := Harness{Models: []Model{
+		{ID: "pinned", Providers: []string{"a/x", "b/y"}},
+		{ID: "free"},
+	}}
+	providers := h.Providers()
+	if len(providers) != 1 || strings.Join(providers["pinned"], ",") != "a/x,b/y" {
+		t.Errorf("Providers() = %v", providers)
+	}
+}
+
 // A choice ID must identify exactly one option in its own list.
 func TestChoiceIDs(t *testing.T) {
 	for _, harness := range []string{

@@ -69,6 +69,7 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: 
 .x { --icon: url(lucide-static/icons/x.svg); }
 .search-icon { --icon: url(lucide-static/icons/search.svg); }
 .check { --icon: url(lucide-static/icons/check.svg); }
+.bot { --icon: url(lucide-static/icons/bot.svg); }
 .loader { --icon: url(lucide-static/icons/loader-circle.svg); }
 .loader::before { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -256,6 +257,7 @@ details.tool pre + pre { border-top: 1px solid var(--border); }
 .composer .select select:disabled { cursor: default; }
 
 .harness-icon { flex: none; width: 1rem; height: 1rem; }
+.harness-icon.icon { display: block; }
 
 /* Pending approvals sit on the composer, their card tucked beneath it. */
 .pending {

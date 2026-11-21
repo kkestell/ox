@@ -1,6 +1,7 @@
 import type { JSX } from "@solidjs/web";
+import { Show } from "solid-js";
 
-const names: Record<string, string> = { claude: "Claude", fake: "Fake" };
+const names: Record<string, string> = { claude: "Claude", fake: "Fake", ur: "Ur" };
 
 export const harnessName = (harness: string) => names[harness] ?? harness;
 
@@ -26,11 +27,21 @@ const icons: Record<string, { viewBox: string; paths: () => JSX.Element }> = {
   },
 };
 
+// Lucide icons, drawn as a mask like the app's other icons.
+const lucide: Record<string, string> = { ur: "bot" };
+
 export function HarnessIcon(props: { harness: string }) {
   const icon = () => icons[props.harness];
   return (
-    <svg class="harness-icon" viewBox={icon()?.viewBox} role="img" aria-label={harnessName(props.harness)}>
-      {icon()?.paths()}
-    </svg>
+    <Show
+      when={lucide[props.harness]}
+      fallback={
+        <svg class="harness-icon" viewBox={icon()?.viewBox} role="img" aria-label={harnessName(props.harness)}>
+          {icon()?.paths()}
+        </svg>
+      }
+    >
+      {(name) => <span class={`harness-icon icon ${name()}`} role="img" aria-label={harnessName(props.harness)} />}
+    </Show>
   );
 }
