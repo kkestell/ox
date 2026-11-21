@@ -51,6 +51,20 @@ the evidence and the correction.
 - [ ] **Protocol, architecture, and Claude notes misstate the code.**
       [Deslop F22](../agents/audits/2026-11-20-002-deslop.md#f22-protocol-architecture-and-claude-notes-misstate-the-code)
 
+- [ ] **Workspace headers shrink when archived sessions are shown.** The extra
+      rows overflow the sidebar, and its flex column shrinks each header below
+      its `1.75rem` height. Likely fix: `flex: none` on `nav > p` in
+      `cmd/ox/web/src/style.css`.
+
+## Sidebar
+
+- [ ] **Collapse a session's children.** A session with children gets a
+      disclosure control that hides and shows them. Decide whether the collapsed
+      state survives a reload.
+- [ ] **Newest sessions first.** List each workspace's top-level sessions newest
+      first. Decide whether children follow, or stay oldest first so a plan,
+      work, and review read in order. Changes **Session order**.
+
 ## Child sessions
 
 - [ ] **Consistent child titles.** Agents title children inconsistently
