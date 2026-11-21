@@ -6,7 +6,7 @@ import { createPoll } from "./poll";
 // FileView shows one file of a workspace under its tab, read when it appears
 // and on each tick of the page's clock. It is keyed by its workspace and path,
 // so its text is always that file's.
-export function FileView(props: { workspaceId: string; path: string; onClose: () => void }) {
+export function FileView(props: { workspaceId: string; path: string; share: number; onClose: () => void }) {
   const ox = useOx();
   const workspaceId = untrack(() => props.workspaceId);
   const path = untrack(() => props.path);
@@ -26,7 +26,7 @@ export function FileView(props: { workspaceId: string; path: string; onClose: ()
     return current?.kind === "error" ? current.message : undefined;
   };
   return (
-    <section class="viewer" aria-label="File">
+    <section class="viewer" aria-label="File" style={{ "flex-grow": props.share }}>
       <header>
         <div role="tablist" aria-label="Open files">
           <div class="tab">

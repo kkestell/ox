@@ -1,3 +1,4 @@
+import type { JSX } from "@solidjs/web";
 import { createSignal, Show } from "solid-js";
 import { useOx } from "./ox";
 import type { Defaults } from "./protocol";
@@ -15,7 +16,7 @@ export function createDraft(workspaceId: string, ox: ReturnType<typeof useOx>) {
 
 export type Draft = ReturnType<typeof createDraft>;
 
-export function NewSessionView(props: { draft: Draft; onCreated(): void }) {
+export function NewSessionView(props: { draft: Draft; onCreated(): void; toggles?: JSX.Element }) {
   const ox = useOx();
   const draft = props.draft;
   const workspace = () => ox.state.workspaces.find((w) => w.id === draft.workspaceId)?.path;
@@ -38,7 +39,10 @@ export function NewSessionView(props: { draft: Draft; onCreated(): void }) {
   return (
     <>
       <header class="context">
-        <h1>New session</h1>
+        <div class="title">
+          <h1>New session</h1>
+          {props.toggles}
+        </div>
         <p class="path">{workspace()}</p>
       </header>
       <div class="log" />

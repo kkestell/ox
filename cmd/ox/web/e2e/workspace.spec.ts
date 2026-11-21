@@ -304,6 +304,161 @@ test("the file tree lists the workspace and keeps each session's expanded folder
   }
 });
 
+test("panel toggles and drags change the layout, which lasts until reload", async ({ page }) => {
+  const services = await startServices(fakeConfig);
+  try {
+    mkdirSync(join(services.workspace, "src"));
+    writeFileSync(join(services.workspace, "src", "a.txt"), "a\n");
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await open(page, services);
+    const nav = page.locator("nav");
+    const main = page.locator("main");
+    const files = page.getByRole("complementary", { name: "Files" });
+    const viewer = page.getByRole("region", { name: "File" });
+    const toggleSessions = page.getByRole("button", { name: "Toggle sessions" });
+    const toggleFiles = page.getByRole("button", { name: "Toggle files" });
+    const width = async (locator: Locator) => (await locator.boundingBox())?.width ?? 0;
+    const color = (locator: Locator) => locator.evaluate((element) => getComputedStyle(element).color);
+    const addColor = await color(page.getByRole("button", { name: "Add workspace" }));
+    const openFile = async () => {
+      await files.getByRole("button", { name: "src" }).click();
+      await files.getByRole("button", { name: "a.txt", exact: true }).click();
+      await expect(viewer).toBeVisible();
+    };
+    // alone checks that the transcript fills the width between the panels.
+    const alone = async () =>
+      expect(Math.abs((await width(main)) - (1600 - (await width(nav)) - (await width(files))))).toBeLessThanOrEqual(1);
+    const even = async () => expect(Math.abs((await width(main)) - (await width(viewer)))).toBeLessThanOrEqual(1);
+    const cursor = () => page.evaluate(() => getComputedStyle(document.body).cursor);
+    // drag moves a sash dx pixels along the x axis with the given button.
+    const drag = async (label: string, dx: number, button: "left" | "right" = "left") => {
+      const box = await page.getByRole("separator", { name: label }).boundingBox();
+      if (!box) throw new Error(`no ${label} sash`);
+      const y = box.y + box.height / 2;
+      await page.mouse.move(box.x, y);
+      await page.mouse.down({ button });
+      await page.mouse.move(box.x + dx, y, { steps: 5 });
+      if (button === "left") expect(await cursor()).toBe("col-resize");
+      await page.mouse.up({ button });
+    };
+
+    // With nothing selected, the toggles sit in the main header.
+    await expect(main.locator("header.context").getByRole("button", { name: "Toggle sessions" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(main.locator("header.context").getByRole("button", { name: "Toggle files" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    for (const text of ["first", "second"]) {
+      await page.getByRole("button", { name: "New session" }).click();
+      await prompt(page).fill(text);
+      await send(page).click();
+      await expect(page.locator(".reply")).toHaveText(`You said: ${text}`);
+    }
+    await sessionButton(page, "first").click();
+    await alone();
+    await expect(files.getByRole("button", { name: "Toggle sessions" })).toHaveAttribute("aria-pressed", "true");
+    await expect(files.getByRole("button", { name: "Toggle files" })).toHaveAttribute("aria-pressed", "true");
+    expect(await color(toggleSessions)).toBe(addColor);
+    expect(await color(toggleFiles)).toBe(addColor);
+
+    // Hiding the file tree moves the toggles to the session's header and keeps
+    // the open file.
+    await openFile();
+    await toggleFiles.click();
+    await expect(files).toHaveCount(0);
+    await expect(page.locator("header.context").getByRole("button", { name: "Toggle files" })).toHaveCount(1);
+    await expect(viewer.getByRole("button", { name: "Toggle files" })).toHaveCount(0);
+    await expect(toggleFiles).toHaveAttribute("aria-pressed", "false");
+    expect(await color(toggleFiles)).not.toBe(addColor);
+    await expect(viewer).toBeVisible();
+    await expect(page.getByRole("separator", { name: "Resize files" })).toHaveCount(0);
+    await toggleSessions.click();
+    await expect(nav).toBeHidden();
+    await expect(toggleSessions).toHaveAttribute("aria-pressed", "false");
+    await expect(page.getByRole("separator", { name: "Resize sessions" })).toHaveCount(0);
+    await toggleSessions.click();
+    await toggleFiles.click();
+    await expect(nav).toBeVisible();
+    await expect(files).toBeVisible();
+
+    // Drags resize the panels within their bounds, and the split.
+    expect(await width(nav)).toBe(288);
+    await drag("Resize sessions", 100, "right");
+    expect(await width(nav)).toBe(288);
+    await drag("Resize sessions", 100);
+    expect(await width(nav)).toBe(388);
+    expect(await cursor()).not.toBe("col-resize");
+    // The drag ends with the button: a move over the sash leaves it in place.
+    const sash = await page.getByRole("separator", { name: "Resize sessions" }).boundingBox();
+    await page.mouse.move((sash?.x ?? 0) + 1, (sash?.y ?? 0) + 100);
+    expect(await width(nav)).toBe(388);
+    await drag("Resize sessions", 1000);
+    expect(await width(nav)).toBe(640);
+    await drag("Resize sessions", -252);
+    expect(await width(nav)).toBe(388);
+    await drag("Resize files", -100);
+    expect(await width(files)).toBe(388);
+    const [mainBefore, viewerBefore] = [await width(main), await width(viewer)];
+    await drag("Resize file viewer", -100);
+    expect(Math.abs((await width(main)) - (mainBefore - 100))).toBeLessThanOrEqual(1);
+    expect(Math.abs((await width(viewer)) - (viewerBefore + 100))).toBeLessThanOrEqual(1);
+    const firstSplit = await width(main);
+    // The split leaves each side at least 240 px.
+    await drag("Resize file viewer", -1000);
+    expect(Math.abs((await width(main)) - 240)).toBeLessThanOrEqual(1);
+    await drag("Resize file viewer", firstSplit - 240);
+    expect(Math.abs((await width(main)) - firstSplit)).toBeLessThanOrEqual(1);
+    // Closing the file leaves the transcript alone at full width; reopening it
+    // restores the split.
+    await viewer.getByRole("button", { name: "Close a.txt" }).click();
+    await alone();
+    await files.getByRole("button", { name: "a.txt", exact: true }).click();
+    expect(Math.abs((await width(main)) - firstSplit)).toBeLessThanOrEqual(1);
+
+    // Panels are page-wide; each session keeps its own split.
+    await sessionButton(page, "second").click();
+    await openFile();
+    await even();
+    expect(await width(nav)).toBe(388);
+    expect(await width(files)).toBe(388);
+    await sessionButton(page, "first").click();
+    const firstAgain = await width(main);
+    expect(Math.abs(firstAgain - firstSplit)).toBeLessThanOrEqual(1);
+    expect(await width(nav)).toBe(388);
+    expect(await width(files)).toBe(388);
+    await toggleFiles.click();
+    await sessionButton(page, "second").click();
+    await expect(files).toHaveCount(0);
+    await expect(toggleFiles).toHaveAttribute("aria-pressed", "false");
+    await toggleFiles.click();
+
+    // A draft's split carries to the session it creates.
+    await page.getByRole("button", { name: "New session" }).click();
+    await openFile();
+    await even();
+    await drag("Resize file viewer", -100);
+    const draftSplit = await width(main);
+    await prompt(page).fill("third");
+    await send(page).click();
+    await expect(page.locator(".reply")).toHaveText("You said: third");
+    await expect(viewer).toBeVisible();
+    expect(await width(main)).toBe(draftSplit);
+
+    await page.reload();
+    await expect(page.locator(".reply")).toHaveText("You said: third");
+    expect(await width(nav)).toBe(288);
+    expect(await width(files)).toBe(288);
+    await openFile();
+    await even();
+  } finally {
+    await services.stop();
+  }
+});
+
 test("the file viewer shows each session's open file", async ({ page }) => {
   const services = await startServices(fakeConfig);
   const a = join(services.workspace, "src", "a.txt");
@@ -339,7 +494,7 @@ test("the file viewer shows each session's open file", async ({ page }) => {
     await expect(panel).toContainText("first");
     await expect(aRow).toHaveAttribute("aria-current", "true");
     const height = async (locator: Locator) => (await locator.boundingBox())?.height;
-    expect(await height(viewer.locator("header"))).toBe(await height(page.locator("header.context h1")));
+    expect(await height(viewer.locator("header"))).toBe(await height(page.locator("header.context .title")));
     const width = async (locator: Locator) => (await locator.boundingBox())?.width ?? 0;
     expect(Math.abs((await width(page.locator("main"))) - (await width(viewer)))).toBeLessThanOrEqual(1);
     expect(await panel.evaluate((pre) => pre.scrollWidth > pre.clientWidth)).toBe(true);

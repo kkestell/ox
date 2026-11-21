@@ -1,3 +1,4 @@
+import type { JSX } from "@solidjs/web";
 import { For, Match, Show, Switch, untrack } from "solid-js";
 import { ApprovalRequest } from "./ApprovalRequest";
 import { Markdown } from "./Markdown";
@@ -15,7 +16,7 @@ export function sendOnEnter(event: KeyboardEvent & { currentTarget: HTMLTextArea
   }
 }
 
-export function SessionView(props: { session: Session; snapshot: SessionSnapshot }) {
+export function SessionView(props: { session: Session; snapshot: SessionSnapshot; toggles?: JSX.Element }) {
   const ox = useOx();
   // Layout keys this view by session, so the control is stable for its lifetime.
   const control = ox.control(untrack(() => props.session.id));
@@ -35,7 +36,10 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
   return (
     <>
       <header class="context">
-        <h1>{props.session.label}</h1>
+        <div class="title">
+          <h1>{props.session.label}</h1>
+          {props.toggles}
+        </div>
         <p class="path">{directory()}</p>
       </header>
       <div class="log">

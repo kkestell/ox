@@ -229,6 +229,21 @@ title.
 - **Local access only.** Only pages served from this machine (or from the host
   `ox` was told to serve) can reach `oxd`.
 
+## Layout
+
+- **Panel toggles.** Two buttons show and hide the session list and the file
+  tree, each in full color while its panel shows and dimmed while it is hidden.
+  They sit at the right of the file tree's header while the tree shows, and
+  otherwise at the right of the session's header, whether or not a file is open.
+- **Resizing panels.** Dragging the boundary beside the session list, the file
+  tree, or between the transcript and the file viewer resizes them.
+- **Layout through navigation.** Which panels show and their widths are the same
+  for every session. Each session and new-session draft keeps its own split
+  between the transcript and the file viewer, and a draft's split carries to the
+  session it creates. The layout lasts through switching views and reconnecting;
+  reloading the page shows both panels at their default widths, with the
+  transcript and file viewer splitting evenly.
+
 ## Files
 
 - **File tree.** Beside the transcript, a panel shows the selected session's

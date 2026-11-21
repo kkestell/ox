@@ -1,3 +1,4 @@
+import type { JSX } from "@solidjs/web";
 import { createMemo, For, Match, Show, Switch, untrack } from "solid-js";
 import { type SessionControl, useOx, workspaceName } from "./ox";
 import { createPoll } from "./poll";
@@ -15,13 +16,23 @@ const byFolderThenName = (a: FolderEntry, b: FolderEntry) =>
 // FileTree shows a workspace's directory. Each expanded folder lists itself
 // when it appears and on each tick of the page's clock, so the page asks only
 // for the folders it shows.
-export function FileTree(props: { workspace: { id: string; path: string }; control: SessionControl }) {
+export function FileTree(props: {
+  workspace: { id: string; path: string };
+  control: SessionControl;
+  width: number;
+  toggles: JSX.Element;
+}) {
   // The tree is keyed by its workspace, so the workspace ID never changes.
   const tree: Tree = { workspaceId: untrack(() => props.workspace.id), control: () => props.control };
   return (
-    <aside class="files" aria-label="Files">
-      <p>{workspaceName(props.workspace.path)}</p>
-      <Folder tree={tree} path="" depth={0} />
+    <aside class="files" aria-label="Files" style={{ width: `${props.width}px` }}>
+      <header>
+        <p>{workspaceName(props.workspace.path)}</p>
+        {props.toggles}
+      </header>
+      <div class="tree">
+        <Folder tree={tree} path="" depth={0} />
+      </div>
     </aside>
   );
 }

@@ -37,7 +37,6 @@ p { overflow-wrap: break-word; }
   --shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 10%), 0 1px 2px -1px rgb(0 0 0 / 10%);
   --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 10%), 0 2px 4px -2px rgb(0 0 0 / 10%);
   --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 10%), 0 4px 6px -4px rgb(0 0 0 / 10%);
-  --sidebar-width: 18rem;
   /* The session header's title row, which the file tree and viewer headers match. */
   --context-title: 2.75rem;
   /* The transcript's sides line up with the composer's icons. */
@@ -67,6 +66,8 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: 
 .folder-open { --icon: url(lucide-static/icons/folder-open.svg); }
 .file { --icon: url(lucide-static/icons/file.svg); }
 .x { --icon: url(lucide-static/icons/x.svg); }
+.panel-left { --icon: url(lucide-static/icons/panel-left.svg); }
+.panel-right { --icon: url(lucide-static/icons/panel-right.svg); }
 .search-icon { --icon: url(lucide-static/icons/search.svg); }
 .check { --icon: url(lucide-static/icons/check.svg); }
 .bot { --icon: url(lucide-static/icons/bot.svg); }
@@ -129,7 +130,7 @@ dialog .description { width: 100%; margin-bottom: 0.5rem; color: var(--muted-for
 dialog [role="alert"] { margin-top: 0.75rem; }
 
 /* Sidebar */
-nav { flex: none; width: var(--sidebar-width); height: 100%; overflow-y: auto; padding: 0 0.5rem 0.5rem; display: flex; flex-direction: column; background: var(--sidebar); border-right: 1px solid var(--border); }
+nav { flex: none; height: 100%; overflow-y: auto; padding: 0 0.5rem 0.5rem; display: flex; flex-direction: column; background: var(--sidebar); border-right: 1px solid var(--border); }
 nav > button.icon { align-self: flex-end; margin: 0.5rem 0; }
 nav > p { position: relative; display: flex; align-items: center; height: 1.75rem; padding: 0 0.5rem; border-radius: var(--radius-md); font-size: 11px; text-transform: uppercase; color: var(--muted-foreground); }
 nav > p:hover { background: var(--accent); }
@@ -163,6 +164,7 @@ nav li:has(.status.parked) button.open { opacity: 0.6; }
 nav li .archive { flex: none; width: 1rem; height: 1rem; display: flex; align-items: center; justify-content: center; color: var(--muted-foreground); }
 nav li .archive::before { width: 0.75rem; height: 0.75rem; }
 nav > [role="alert"] { padding: 0 0.5rem 0.5rem; font-size: 0.75rem; }
+nav[hidden] { display: none; }
 
 /* Sidebar menu, placed at its request's coordinates. */
 .menu {
@@ -188,11 +190,12 @@ nav > [role="alert"] { padding: 0 0.5rem 0.5rem; font-size: 0.75rem; }
 @keyframes breathe { from { color: #16a34a; } to { color: #4ade80; } }
 
 /* Session */
-main { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; background: var(--pane); }
+main { flex: 1 1 0; min-width: 0; height: 100%; display: flex; flex-direction: column; background: var(--pane); }
 main > [role="alert"] { padding: 0.5rem 1rem; font-size: 0.75rem; }
 .context { flex: none; }
 .context > * { display: flex; align-items: center; padding: 0 0.75rem; border-bottom: 1px solid var(--border); }
-.context h1 { display: block; height: var(--context-title); line-height: var(--context-title); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 0.875rem; font-weight: 600; color: var(--foreground); }
+.context .title { height: var(--context-title); }
+.context h1 { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 0.875rem; font-weight: 600; color: var(--foreground); }
 .context .path { gap: 0.5rem; height: 2.25rem; font-size: 0.8125rem; color: var(--muted-foreground); }
 /* Zero scroll offset follows the bottom through content and viewport changes.
    After scrolling up, native scroll anchoring keeps the visible content in view. */
@@ -332,8 +335,10 @@ details.tool pre + pre { border-top: 1px solid var(--border); }
 
 /* File tree: the sidebar's mirror. Rows indent by --depth; a file's icon sits
    under a folder's, past the chevron. Icons and notes are muted. */
-aside.files { flex: none; width: var(--sidebar-width); height: 100%; overflow-y: auto; padding: 0 0.5rem 0.5rem; background: var(--sidebar); border-left: 1px solid var(--border); }
-aside.files > p { height: var(--context-title); line-height: var(--context-title); padding: 0 0.5rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; text-transform: uppercase; color: var(--muted-foreground); }
+aside.files { flex: none; height: 100%; display: flex; flex-direction: column; background: var(--sidebar); border-left: 1px solid var(--border); }
+.files > header { flex: none; display: flex; align-items: center; height: var(--context-title); padding: 0 0.5rem 0 1rem; }
+aside.files .tree { flex: 1; min-height: 0; overflow-y: auto; padding: 0 0.5rem 0.5rem; }
+.files > header p { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; text-transform: uppercase; color: var(--muted-foreground); }
 aside.files ul { list-style: none; }
 aside.files .row {
   display: flex; align-items: center; justify-content: flex-start; gap: 0.25rem; width: 100%; height: 1.75rem;
@@ -348,9 +353,22 @@ aside.files .row .name { min-width: 0; color: var(--text); overflow: hidden; whi
 aside.files .row[aria-current="true"], aside.files .row[aria-current="true"] .name { background: var(--secondary); color: var(--secondary-foreground); }
 aside.files .chevron-right.open::before { transform: rotate(90deg); }
 
+/* Panel toggles, after VS Code's layout controls: a shown panel's toggle is in
+   full color, a hidden one's dimmed. */
+.panel-toggles { flex: none; display: flex; margin-left: auto; color: var(--text); }
+.panel-toggles button[aria-pressed="false"] { color: var(--muted-foreground); }
+
+/* Sash: a zero-width column between two others, after VS Code's, with a 4px
+   hit area on the boundary that shows after a short hover and while dragging. */
+.sash { flex: none; position: relative; z-index: 1; width: 0; overflow: visible; border: 0; }
+.sash::before { content: ""; position: absolute; inset: 0 -2px; cursor: col-resize; transition: background-color 0.1s ease-out; }
+.sash:hover::before { background: var(--ring); transition-delay: 0.3s; }
+.sash.resizing::before { background: var(--ring); transition-delay: 0s; }
+:root:has(.sash.resizing), :root:has(.sash.resizing) * { cursor: col-resize; user-select: none; }
+
 /* File viewer: a tab bar styled after Hypercube's editor tabs, over the file's
    text. The bar is as tall as the session header's title row. */
-.viewer { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; background: var(--pane); border-left: 1px solid var(--border); }
+.viewer { flex: 1 1 0; min-width: 0; height: 100%; display: flex; flex-direction: column; background: var(--pane); border-left: 1px solid var(--border); }
 .viewer header {
   flex: none; display: flex; align-items: center; height: var(--context-title);
   padding: 0 0.5rem; border-bottom: 1px solid var(--border);

@@ -1169,6 +1169,11 @@ test("an archived session is read-only and hidden until shown", async ({ page, c
 
   await menuItem(await openMenu(workspace), "Show archived").click();
   await expect(row).toHaveClass(/archived/);
+  // Hiding the session list keeps its choice to show archived sessions.
+  await page.getByRole("button", { name: "Toggle sessions" }).click();
+  await expect(row).toBeHidden();
+  await page.getByRole("button", { name: "Toggle sessions" }).click();
+  await expect(row).toHaveClass(/archived/);
   await expect(row.getByRole("img", { name: "archived" })).toHaveCount(1);
   const unarchive = page.getByRole("button", { name: "Unarchive", exact: true });
   const reconnect = await hold(page, "workspace/list");

@@ -172,8 +172,10 @@ function createSessionControl(
   const [creating, setCreating] = createSignal(false);
   // expanded holds the paths of the expanded folders in the file tree.
   const [expanded, setExpandedStore] = createStore<Record<string, true>>({});
-  // file is the path of the file open in the file viewer.
+  // file is the path of the file open in the file viewer, and split the
+  // transcript's share of the width it shares with the viewer.
   const [file, setFile] = createSignal<string>();
+  const [split, writeSplit] = createSignal(0.5);
   // Keep a successfully sent prompt only until Claude takes it or it drops.
   let sent: { id: string; text: string } | undefined;
   const live = () => {
@@ -243,6 +245,11 @@ function createSessionControl(
     },
     file,
     setFile: (path: string | undefined) => setFile(path),
+    split,
+    // setSplit gives the transcript the given width of the total it shares
+    // with the viewer, leaving each side at least 240 px.
+    setSplit: (transcript: number, total: number) =>
+      writeSplit(Math.min(Math.max(transcript, 240), total - 240) / total),
     // create creates the session with the composer's text as its first
     // prompt, and calls onCreated once the session exists. If an earlier
     // create already reached oxd, it recovers instead of sending.

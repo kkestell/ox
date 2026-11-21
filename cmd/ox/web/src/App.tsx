@@ -3,6 +3,7 @@ import { FileTree } from "./FileTree";
 import { FileView } from "./FileView";
 import { createDraft, type Draft, NewSessionView } from "./NewSessionView";
 import { OxProvider, useOx } from "./ox";
+import { createPanels, PanelToggles, Sash } from "./Panels";
 import { SessionView } from "./SessionView";
 import { Sidebar } from "./Sidebar";
 
@@ -79,6 +80,30 @@ function Layout() {
     return workspace && { workspace, control: d.control };
   };
 
+  const panels = createPanels();
+  // The file tree, when it shows. The toggles sit in its header then, and in
+  // the session's header otherwise.
+  const tree = () => (panels.right() ? files() : undefined);
+  // The transcript's share of the width, while the file viewer shows beside it.
+  // Alone, it fills the space.
+  const share = () => {
+    const current = files();
+    return current?.control.file() ? current.control.split() : undefined;
+  };
+  const Toggles = () => (
+    <Show when={!tree()}>
+      <PanelToggles panels={panels} />
+    </Show>
+  );
+  // The title row of a view that has no header of its own.
+  const BareHeader = () => (
+    <header class="context">
+      <div class="title">
+        <Toggles />
+      </div>
+    </header>
+  );
+
   const finish = (created: Draft) => {
     if (draft() === created) select({ kind: "session", id: created.id });
     setDrafts((all) => all.filter((d) => d !== created));
@@ -101,8 +126,11 @@ function Layout() {
 
   return (
     <>
-      <Sidebar selected={selected()} onSelect={select} />
-      <main>
+      <Sidebar selected={selected()} onSelect={select} width={panels.leftWidth()} hidden={!panels.left()} />
+      <Show when={panels.left()}>
+        <Sash label="Resize sessions" drag={(before) => (dx) => panels.setLeftWidth(before + dx)} />
+      </Show>
+      <main style={{ "flex-grow": share() }}>
         <Show when={ox.error()}>{(error) => <p role="alert">{error()}</p>}</Show>
         <For each={liveDrafts().filter((d) => d.control.error() && d !== draft())}>
           {(failed) => (
@@ -115,16 +143,24 @@ function Layout() {
           )}
         </For>
         {/* Keyed, so each session and draft gets its own view and view state. */}
-        <Switch>
+        <Switch fallback={<BareHeader />}>
           <Match when={session()} keyed>
             {(session) => (
-              <Show when={session.load.snapshot} fallback={<p role="status">Loading session…</p>}>
-                {(snapshot) => <SessionView session={session} snapshot={snapshot()} />}
+              <Show
+                when={session.load.snapshot}
+                fallback={
+                  <>
+                    <BareHeader />
+                    <p role="status">Loading session…</p>
+                  </>
+                }
+              >
+                {(snapshot) => <SessionView session={session} snapshot={snapshot()} toggles={<Toggles />} />}
               </Show>
             )}
           </Match>
           <Match when={draft()} keyed>
-            {(current) => <NewSessionView draft={current} onCreated={() => finish(current)} />}
+            {(current) => <NewSessionView draft={current} onCreated={() => finish(current)} toggles={<Toggles />} />}
           </Match>
         </Switch>
       </main>
@@ -132,16 +168,44 @@ function Layout() {
           and by path, so a file's view shows only that file. */}
       <Show when={files()?.workspace.id} keyed>
         {(workspaceId) => (
-          <>
-            <Show when={files()?.control.file()} keyed>
-              {(path) => (
-                <FileView workspaceId={workspaceId} path={path} onClose={() => files()?.control.setFile(undefined)} />
-              )}
-            </Show>
-            <Show when={files()}>
-              {(current) => <FileTree workspace={current().workspace} control={current().control} />}
-            </Show>
-          </>
+          <Show when={files()}>
+            {(current) => (
+              <>
+                <Show when={current().control.file()} keyed>
+                  {(path) => (
+                    <>
+                      <Sash
+                        label="Resize file viewer"
+                        drag={(before, after) => {
+                          const control = current().control;
+                          return (dx) => control.setSplit(before + dx, before + after);
+                        }}
+                      />
+                      <FileView
+                        workspaceId={workspaceId}
+                        path={path}
+                        share={1 - current().control.split()}
+                        onClose={() => current().control.setFile(undefined)}
+                      />
+                    </>
+                  )}
+                </Show>
+                <Show when={tree()}>
+                  {(shown) => (
+                    <>
+                      <Sash label="Resize files" drag={(_, after) => (dx) => panels.setRightWidth(after - dx)} />
+                      <FileTree
+                        workspace={shown().workspace}
+                        control={shown().control}
+                        width={panels.rightWidth()}
+                        toggles={<PanelToggles panels={panels} />}
+                      />
+                    </>
+                  )}
+                </Show>
+              </>
+            )}
+          </Show>
         )}
       </Show>
     </>

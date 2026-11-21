@@ -192,7 +192,12 @@ function Menu(props: { at: MenuAt; label: string; items: MenuItem[]; onClose(): 
   );
 }
 
-export function Sidebar(props: { selected?: Selection; onSelect(selection: Selection): void }) {
+export function Sidebar(props: {
+  selected?: Selection;
+  onSelect(selection: Selection): void;
+  width: number;
+  hidden: boolean;
+}) {
   const ox = useOx();
   const [request, setRequest] = createSignal<DialogRequest>();
   const [menu, setMenu] = createSignal<MenuRequest>();
@@ -273,7 +278,7 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
     setMenu({ target: { kind, id }, ...at });
 
   return (
-    <nav>
+    <nav hidden={props.hidden} style={{ width: `${props.width}px` }}>
       <button
         type="button"
         class="icon folder-plus"
