@@ -215,6 +215,12 @@ happen, drawing on past plans, reviews, and fixes as evidence. Each finding
 the user chooses to change goes through the workflow above, with the finding
 as the request for `/ox-plan`.
 
+Every audit finding marked to plan or to fix, from `/ox-audit` or any other
+audit, goes into `docs/todo.md` when the audit is written: one entry that
+names the defect and links its section in the audit. The change that fixes
+it removes the entry in the same commit. An audit or review that finds an
+entry stale corrects or removes it.
+
 ## Verification
 
 - Each behavior a change adds or fixes keeps a test that fails without it, at
@@ -254,7 +260,8 @@ facts listed for it:
   and rely on, each one a user would call a bug if it broke.
 - `docs/known-issues.md`: defects that cannot be fixed yet, kept as the
   Defects section describes.
-- `docs/todo.md`: planned work, by priority.
+- `docs/todo.md`: planned work, by priority, including every unfixed audit
+  finding marked to plan or to fix.
 - `docs/metrics.md`: line counts and cognitive complexity, written by
   `make metrics` and the pre-commit hook. Nobody edits it by hand.
 

@@ -13,13 +13,13 @@ Find the structures in Ox that let defects happen, and write an audit that tells
 - `Plan`: a confirmed structure whose replacement costs less than keeping it. The finding becomes the request for `/ox-plan`.
 - `Rejected`: speculative, a misreading of the intended design, or cheaper to keep than to replace. The reason is recorded so the next audit does not raise it again.
 
-Change no code, tests, or documentation, and stage or commit nothing. Edit only the audit file. Do not start other agents.
+Change no code, tests, or documentation other than `docs/todo.md`, and stage or commit nothing. Edit only the audit file and `docs/todo.md`. Do not start other agents.
 
 ## Gather the evidence
 
 1. Read `<audit_scope> $ARGUMENTS </audit_scope>`. With no scope, audit the whole repository since the last audit in `agents/audits/`, or all history if there is none. Record the revision and the state of the working tree you audit.
 2. Read `AGENTS.md`, `docs/functional-requirements.md`, `docs/known-issues.md`, and `docs/architecture.md`; for web client code, also `cmd/ox/web/AGENTS.md`. Read the sections of `docs/protocol.md` and `docs/claude-code.md` that cover the code in scope.
-3. Read the earlier audits in `agents/audits/`, and note which `Plan` findings have landed. Do not raise a finding an earlier audit or review rejected unless the evidence its reason rests on has changed.
+3. Read the earlier audits in `agents/audits/` and `docs/todo.md`, and note which earlier findings have landed and which are still open in `docs/todo.md`. Do not raise a finding an earlier audit or review rejected unless the evidence its reason rests on has changed.
 4. Collect the defects in scope, starting with the `Fix` and `Record` findings in `agents/reviews/` and the entries in `docs/known-issues.md`. Then read the messages of the commits in scope, and read the diff of a commit that fixes behavior only when no review explains it. For each defect, note what went wrong, where, and what the fix changed: the structure that allowed it, or a guard, special case, or retry at the symptom.
 
 ## Find the structures
@@ -38,7 +38,8 @@ Change no code, tests, or documentation, and stage or commit nothing. Edit only 
 
 10. Read this skill's `assets/_template.md` and write the audit in `agents/audits/`, named `YYYY-MM-DD-NNN-slug.md` with the next sequence for the day.
 11. Make each `Plan` finding stand on its own as a request for `/ox-plan`: the structure, every place it appears, the defects it caused, the wrong states it still permits, the owner or representation that replaces it, and what the replacement removes. Leave the design of the change to the plan. Record a candidate as a `Rejected` finding only when a later audit or review would otherwise raise it again: an earlier review raised it, or it has the shape of a structure this audit looks for. State the reason.
-12. Give the final response and stop.
+12. Add an entry to `docs/todo.md`, under Defects and in order of cost, for each `Plan` finding: a bold title naming the defect, one sentence on what goes wrong, and a link to the finding's section in the audit. Remove the entry of an earlier finding that has landed, and correct one this audit shows is stale.
+13. Give the final response and stop.
 
 ## Final response
 
@@ -54,7 +55,9 @@ One or two sentences: what the audit found, and the number of findings by action
 
 **Audit:** `agents/audits/YYYY-MM-DD-NNN-slug.md`
 
+**Still open in `docs/todo.md`:** 4 earlier findings, the highest-cost Archive acts on a stale session.
+
 **Next:** `/ox-plan agents/audits/YYYY-MM-DD-NNN-slug.md F1`
 ```
 
-List every finding, `Plan` findings first, each group by cost, highest first; if there are none, replace the table with `No findings.` and omit Next. Places is the number of places the structure appears. Give a Next line for the highest-cost `Plan` finding.
+List every finding, `Plan` findings first, each group by cost, highest first; if there are none, replace the table with `No findings.` and omit Next. Places is the number of places the structure appears. Give the number of earlier findings still open in `docs/todo.md` and the highest-cost one, or omit the line when none are. Give a Next line for the highest-cost `Plan` finding.
