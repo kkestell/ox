@@ -20,7 +20,7 @@ Choices that may not be clear from the tasks, and what each concern the change t
 - **Process I/O:** how output, exit, and failure reasons reach their reader.
 - **Construction:** each invariant and the type, owner, or single source that enforces it.
 - **Ownership:** for each new state, timer, retry, lock, or stored field, its owner, the user-visible behavior that needs it, its races, and its cleanup.
-- **Claude Code:** each assumption, with its `docs/claude-code.md` section and the variants it records, or the live check that settles it.
+- **Claude Code:** each assumption, with its `docs/harnesses/claude-code.md` section and the variants it records, or the live check that settles it.
 - **Trust boundaries:** who can reach a changed listener, path, or environment, and what it can touch.
 
 ## Check your assumptions

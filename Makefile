@@ -1,4 +1,4 @@
-.PHONY: dev build web test live lint e2e metrics hooks
+.PHONY: dev build web test live lint e2e metrics docs hooks
 
 # .env holds OPENROUTER_API_KEY for Ur. Only that key reaches oxd and tests.
 -include .env
@@ -38,6 +38,9 @@ web: cmd/ox/web/node_modules
 # pre-commit hook runs it on every commit.
 metrics: cmd/ox/web/node_modules
 	python3 scripts/metrics.py
+
+docs:
+	dprint fmt
 
 hooks:
 	git config core.hooksPath .githooks

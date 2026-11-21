@@ -13,7 +13,7 @@ Write a plan for one change to Ox without changing the code. Whoever implements 
 ## Establish the work
 
 1. Read `<request> $ARGUMENTS </request>`. If it is empty, ask the user what to plan and stop. If it names an item in `docs/todo.md` or `docs/known-issues.md`, read that item. If it names a finding in an audit in `agents/audits/`, read the finding; the change replaces its structure at every place the finding names.
-2. Read `AGENTS.md`, `docs/functional-requirements.md`, and `docs/known-issues.md`. For web client work, also read `cmd/ox/web/AGENTS.md`. Read the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/claude-code.md` that cover the code the change touches.
+2. Read `AGENTS.md`, `docs/functional-requirements.md`, and `docs/known-issues.md`. For web client work, also read `cmd/ox/web/AGENTS.md`. Read the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/harnesses/claude-code.md` that cover the code the change touches.
 
 ## Explore the code
 
@@ -35,7 +35,7 @@ Write a plan for one change to Ox without changing the code. Whoever implements 
    - **Process I/O.** Claude's output is read to its last line, including one that ends at EOF; Claude's exit is seen even while a child holds its pipes; a failure reason on stdout or stderr reaches the request that failed.
    - **Construction.** Each invariant the change adds or relies on, and the type, owner, or single source that enforces it, so that no reader has to check it.
    - **Ownership.** For each state, timer, retry, lock, or stored field the change adds: its owner, the user-visible behavior that needs it, the races it brings, and its cleanup. The commit body repeats this.
-   - **Claude Code.** Each assumption about Claude's output, ordering, timing, or flags, with the section of `docs/claude-code.md` that records it. The plan handles every variant that section records. An assumption it does not record becomes a live check task whose result goes into `docs/claude-code.md`. A fact inferred from Claude's tool calls or hooks names the event that clears it.
+   - **Claude Code.** Each assumption about Claude's output, ordering, timing, or flags, with the section of `docs/harnesses/claude-code.md` that records it. The plan handles every variant that section records. An assumption it does not record becomes a live check task whose result goes into `docs/harnesses/claude-code.md`. A fact inferred from Claude's tool calls or hooks names the event that clears it.
    - **Trust boundaries.** For a change to a listener, the relay, a file path, a process environment, or a file outside Ox's own directories: who can reach it and what it can touch.
 9. Choose the tests at the cheapest layer that observes each behavior:
     - Claude harness logic: `internal/claude` tests that build state through `Send` and `Handle` with real Claude messages and assert through the agent's public methods, recorded updates, and bytes written. Process I/O uses a stand-in `claude` script.

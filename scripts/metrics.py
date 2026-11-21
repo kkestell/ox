@@ -140,7 +140,7 @@ def main():
     ]
     suppression_rows = [(language, f"`{SUPPRESSION[language]}`", suppressions[language]) for language in LANGUAGES]
 
-    OUTPUT.write_text(
+    markdown = (
         "# Metrics\n\n"
         "Written by `make metrics` and the pre-commit hook from the files staged for commit.\n\n"
         "## Size\n\n"
@@ -160,6 +160,7 @@ def main():
         + "\n## Known issues\n\n"
         f"{known_issues} entries in `docs/known-issues.md`.\n"
     )
+    OUTPUT.write_text(run("dprint", "fmt", "--stdin", OUTPUT, input=markdown))
 
 
 if __name__ == "__main__":

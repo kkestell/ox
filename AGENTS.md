@@ -12,7 +12,7 @@ We test with `make dev`. Ox's test state is disposable.
 .
 ├── AGENTS.md                  # agent instructions
 ├── .githooks
-│   └── pre-commit             # records metrics with each commit
+│   └── pre-commit             # records metrics, checks docs formatting
 ├── .golangci.yml              # Go linters
 ├── bin                        # build output
 │   ├── ox
@@ -31,12 +31,14 @@ We test with `make dev`. Ox's test state is disposable.
 │       └── main.go            # daemon startup
 ├── docs
 │   ├── architecture.md        # how oxd and ox are built
-│   ├── claude-code.md         # observed Claude Code behavior
 │   ├── functional-requirements.md # what users see and rely on
+│   ├── harnesses
+│   │   └── claude-code.md     # observed Claude Code behavior
 │   ├── known-issues.md        # unfixed defects
 │   ├── metrics.md             # size and complexity, generated
 │   ├── protocol.md            # the interface oxd serves
 │   └── todo.md                # planned work
+├── dprint.json                # Markdown formatting for docs
 ├── go.mod                     # Go module
 ├── go.sum                     # dependency checksums
 ├── internal
@@ -84,7 +86,7 @@ We test with `make dev`. Ox's test state is disposable.
 │       ├── stream.go          # OpenRouter requests and streams
 │       ├── ur_test.go         # Ur tests
 │       └── ur.go              # Ur agent
-├── Makefile                   # build, test, and run
+├── Makefile                   # build, test, run, and format docs
 └── scripts
     └── metrics.py             # writes docs/metrics.md
 ```
@@ -254,7 +256,7 @@ facts listed for it:
   boundaries between them, and what each owns.
 - `docs/protocol.md`: the interface `oxd` serves: messages, methods, updates,
   events, and errors.
-- `docs/claude-code.md`: how Claude Code behaves when driven with `claude -p`
+- `docs/harnesses/claude-code.md`: how Claude Code behaves when driven with `claude -p`
   and stream-json, as observed.
 - `docs/functional-requirements.md`: the behavior the person using Ox can see
   and rely on, each one a user would call a bug if it broke.
@@ -269,3 +271,5 @@ Every fact lives in one place. A document that needs a fact owned by another
 links to it instead of restating it. Most changes need no doc edits: edit a
 document only when the change alters a fact it owns. Correct or delete a wrong
 passage without expanding it. Add a document or a section only when asked.
+`make docs` formats the documents in `docs/` with dprint, and the pre-commit
+hook refuses a commit whose documents are unformatted.
