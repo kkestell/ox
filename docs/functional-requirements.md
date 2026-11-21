@@ -15,7 +15,8 @@ title.
 ## Session list
 
 - **Session order.** Each workspace lists its top-level sessions oldest first,
-  each followed by its child sessions, oldest first and indented beneath it.
+  each followed by its child sessions, oldest first and indented beneath it; a
+  child's own children follow it the same way, indented one level further.
 - **Session labels.** A child session is labeled with the title it was created
   with. Any other session is labeled with the first line of the first prompt the
   user sent it, or a short identifier before it has one.
@@ -151,12 +152,12 @@ title.
 - **Claude can read other sessions.** Claude can read any other session's
   transcript and current status, a page at a time with the newest last, in any
   permission mode, without asking for approval.
-- **Claude can start child sessions.** A top-level session's Claude can start a
-  child session with a name, a title, and a first message, which reaches the
-  child as a message from its parent. The child takes its parent's harness,
-  model, effort, permission mode, and directory unless Claude picks others Ox
-  offers, cannot start children of its own, and is started without asking for
-  approval, except in plan mode, where Claude asks first.
+- **Claude can start child sessions.** A session's Claude can start a child
+  session with a name, a title, and a first message, which reaches the child as
+  a message from its parent, without asking for approval except in plan mode,
+  where Claude asks first. The child takes its parent's harness, model, effort,
+  permission mode, and directory unless Claude picks others Ox offers, and can
+  start children of its own up to the configured depth.
 - **Message delivery.** A message from another session reaches Claude as a
   prompt sent while it works does: Claude takes it into the running turn after
   its current step, or runs it next, and an idle session starts a turn with it.
@@ -196,11 +197,12 @@ title.
   it has no child sessions. Deleting it asks first, then stops Claude, deletes
   Ox's history of it, leaves Claude's transcript, Ur's saved conversation, and
   the workspace on disk, and removes it from every page.
-- **Archiving a session.** While a session and its child sessions are idle or
-  parked, the user can archive it from its menu without confirmation, which
-  archives its children too and stops their Claude processes, schedules, and
-  background tasks. Unarchiving a session unarchives its children; a child can
-  be archived alone, but not unarchived while its parent is archived.
+- **Archiving a session.** While a session and every session beneath it are idle
+  or parked, the user can archive it from its menu without confirmation, which
+  archives the sessions beneath it too and stops their Claude processes,
+  schedules, and background tasks. Unarchiving a session unarchives the sessions
+  beneath it; a child can be archived without its parent, but not unarchived
+  while its parent is archived.
 - **Archived sessions.** An archived session keeps its transcript and shows it
   with an Unarchive button in place of the composer and settings, refuses
   prompts, messages, and setting changes, and stays archived through `oxd`
@@ -286,9 +288,9 @@ title.
   at low, high, and max effort and Muse Spark 1.3 Contributor at minimal, low,
   medium, high, xhigh, and max effort, in manual mode.
 - **Configuration checks.** `oxd` refuses to start with a malformed
-  configuration, defaults it does not offer, an unknown harness, or an effort
-  level, permission mode, or provider order its harness does not take, and says
-  why.
+  configuration, defaults it does not offer, a maximum child depth below 1, an
+  unknown harness, or an effort level, permission mode, or provider order its
+  harness does not take, and says why.
 - **File locations.** Ox reads its configuration and keeps its database, socket,
   and Ur's saved conversations in the user's XDG directories, and the user can
   choose other paths.

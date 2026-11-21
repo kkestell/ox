@@ -219,9 +219,10 @@ func TestReadSession(t *testing.T) {
 	}
 }
 
-// Claude in a top-level session starts children, which take its settings and
-// directory unless the call overrides them, hear from it first, list beneath
-// it, and outlive a restart; a parent cannot be deleted while it has them.
+// Claude in a session starts children, down to the configured depth, which
+// take its settings and directory unless the call overrides them, hear from it
+// first, list beneath it, and outlive a restart; a parent cannot be deleted
+// while it has them.
 func TestCreateSession(t *testing.T) {
 	models := []config.Model{
 		{ID: "m", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}},
@@ -232,7 +233,7 @@ func TestCreateSession(t *testing.T) {
 		"fake":   {Models: models, PermissionModes: modes},
 		"broken": {Models: models, PermissionModes: modes},
 		"manual": {Models: models, PermissionModes: []config.Option{{ID: "manual"}}},
-	}}
+	}, MaxChildDepth: 2}
 	var startedMu sync.Mutex
 	started := map[string]string{} // each started session's Options.Workspace
 	startedIn := func(id string) string {
@@ -406,8 +407,22 @@ func TestCreateSession(t *testing.T) {
 			t.Fatalf("create_session %v returned %q, %v, not the refusal %q", refusal.arguments, text, refused, refusal.want)
 		}
 	}
-	if text, refused := attach(t, s, worker.SessionID).tool("create_session", map[string]string{"name": "x", "title": "T", "message": "hi"}); !refused || text != "a child session cannot create sessions" {
-		t.Fatalf("a child's create_session returned %q, %v", text, refused)
+
+	t.Log("a child starts a child of its own, down to the configured depth")
+	fromWorker := attach(t, s, worker.SessionID)
+	text, refused := fromWorker.tool("create_session", map[string]string{"name": "leaf", "title": "Leaf", "message": "hello grandchild"})
+	var leaf created
+	if err := json.Unmarshal([]byte(text), &leaf); refused || err != nil {
+		t.Fatalf("the child's create_session returned %q, %v", text, refused)
+	}
+	if got, want := createdChild(c, leaf.SessionID), (child{ParentID: worker.SessionID, Name: "leaf", Title: "Leaf", Directory: dir}); got != want {
+		t.Fatalf("session/created for the grandchild carried %+v, not %+v", got, want)
+	}
+	if taken := c.update(leaf.SessionID, "prompt"); taken.From != worker.SessionID || taken.FromLabel != "Worker" || taken.Text != "hello grandchild" {
+		t.Fatalf("the grandchild did not take the message from its parent: %+v", taken)
+	}
+	if text, refused := attach(t, s, leaf.SessionID).tool("create_session", map[string]string{"name": "x", "title": "T", "message": "hi"}); !refused || text != "child sessions nest at most 2 deep" {
+		t.Fatalf("the grandchild's create_session returned %q, %v", text, refused)
 	}
 
 	t.Log("a child whose harness cannot be launched leaves no trace")
@@ -457,10 +472,53 @@ func TestCreateSession(t *testing.T) {
 		response.Error.Code != -32000 || response.Error.Message != "session has child sessions" {
 		t.Fatalf("destroying a parent returned %+v", response)
 	}
-	for _, id := range after[1:] {
-		c.call("session/destroy", map[string]string{"session_id": id.SessionID})
+	for _, listed := range slices.Backward(after) {
+		c.call("session/destroy", map[string]string{"session_id": listed.SessionID})
 	}
-	c.call("session/destroy", map[string]string{"session_id": a})
+}
+
+// A create_session whose caller and the caller's parent are deleted before it
+// reaches the caller's goroutine is refused, since the caller is gone.
+func TestCreateSessionByDeletedCaller(t *testing.T) {
+	cfg := &config.Config{Harnesses: map[string]config.Harness{
+		"fake": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
+	}, MaxChildDepth: 2}
+	s, err := New(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c := connect(t, s)
+	var workspace struct {
+		WorkspaceID string `json:"workspace_id"`
+	}
+	json.Unmarshal(c.call("workspace/create", map[string]string{"path": t.TempDir()}), &workspace)
+	var parent struct {
+		SessionID string `json:"session_id"`
+	}
+	json.Unmarshal(c.call("session/create", map[string]string{
+		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "permission_mode": "manual",
+	}), &parent)
+	text, refused := attach(t, s, parent.SessionID).tool("create_session", map[string]string{"name": "kid", "title": "Kid", "message": "hi"})
+	var kid struct {
+		SessionID string `json:"session_id"`
+	}
+	if json.Unmarshal([]byte(text), &kid) != nil || refused {
+		t.Fatalf("create_session returned %q, %v", text, refused)
+	}
+	// The caller as handleMCP resolved it, before either deletion.
+	s.mu.Lock()
+	caller := s.sessions[kid.SessionID]
+	s.mu.Unlock()
+	c.call("session/destroy", map[string]string{"session_id": kid.SessionID})
+	c.call("session/destroy", map[string]string{"session_id": parent.SessionID})
+
+	arguments, _ := json.Marshal(map[string]string{"name": "late", "title": "Late", "message": "hi"})
+	var got error
+	createSession(s, caller, arguments, func(_ string, err error) { got = err })
+	if got == nil || got.Error() != "session not found" {
+		t.Fatalf("create_session by a deleted caller returned %v", got)
+	}
 }
 
 // lockedBuffer collects log output written from any goroutine.
@@ -486,7 +544,7 @@ func (b *lockedBuffer) String() string {
 func TestFailedLaunchKeepsItsErrorWhenDeleteFails(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{
 		"fake": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
-	}}
+	}, MaxChildDepth: 1}
 	st := openStore(t)
 	// The parent is never prompted, so the only start is the child's.
 	start := func(agent.Options) (agent.Agent, error) {
@@ -526,7 +584,7 @@ func TestFailedLaunchKeepsItsErrorWhenDeleteFails(t *testing.T) {
 func TestCreateSessionDuringShutdown(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{
 		"fake": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
-	}}
+	}, MaxChildDepth: 1}
 	// The parent is never prompted, so the only start is the child's.
 	starting, release := make(chan struct{}), make(chan struct{})
 	start := func(o agent.Options) (agent.Agent, error) {
@@ -613,13 +671,14 @@ func TestCreateSessionDuringShutdown(t *testing.T) {
 	}
 }
 
-// Archiving a parent archives its child, stops both, and leaves them
-// read-only, unlisted, and archived through a restart until unarchived.
+// Archiving a session archives every session beneath it, stops them all, and
+// leaves them read-only, unlisted, and archived through a restart until
+// unarchived.
 func TestArchive(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
 		Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}}},
 		PermissionModes: []config.Option{{ID: "manual"}},
-	}}}
+	}}, MaxChildDepth: 2}
 	configuring := make(chan struct{}, 1)
 	start := func(o agent.Options) (agent.Agent, error) {
 		a, err := fake.Start(o)
@@ -697,6 +756,16 @@ func TestArchive(t *testing.T) {
 	}
 	k := kid.SessionID
 	idle(k)
+	fromK := attach(t, s, k)
+	text, isError = fromK.tool("create_session", map[string]string{"name": "grandkid", "title": "Grandkid", "message": "hello"})
+	var grandkid struct {
+		SessionID string `json:"session_id"`
+	}
+	if json.Unmarshal([]byte(text), &grandkid) != nil || isError {
+		t.Fatalf("the child's create_session returned %q", text)
+	}
+	g := grandkid.SessionID
+	idle(g)
 	b := newSession(workspaceIn(c))
 	c.call("session/send", map[string]string{"session_id": b, "text": "bystander"})
 	idle(b)
@@ -719,9 +788,46 @@ func TestArchive(t *testing.T) {
 	}
 	idle(b)
 
+	t.Log("a family with a busy grandchild is not archived")
+	c.call("session/send", map[string]string{"session_id": g, "text": "approve Bash {}"})
+	asked := c.update(g, "approval")
+	refused(c.request("session/archive", map[string]string{"session_id": a}), sessionBusy, "session is busy")
+	for _, id := range []string{a, k, g} {
+		for _, m := range c.received(id) {
+			if m.Method == "session/archived" {
+				t.Fatalf("a refused archive told clients %s was archived", id)
+			}
+		}
+	}
+	if got := archivedIn(c); got[a] || got[k] || got[g] {
+		t.Fatalf("a refused archive archived %v", got)
+	}
+	c.call("session/approve", map[string]any{"session_id": g, "request_id": asked.RequestID, "response": json.RawMessage(`{"behavior":"allow"}`)})
+	idle(g)
+
+	t.Log("archiving a child archives its child, not its parent")
+	c.call("session/archive", map[string]string{"session_id": k})
+	for _, id := range []string{k, g} {
+		notified("session/archived", id)
+		c.update(id, "parked")
+	}
+	if got := archivedIn(c); got[a] || !got[k] || !got[g] {
+		t.Fatalf("archiving the child marked %v", got)
+	}
+	c.call("session/unarchive", map[string]string{"session_id": k})
+	notified("session/unarchived", k)
+	notified("session/unarchived", g)
+	if got := archivedIn(c); got[a] || got[k] || got[g] {
+		t.Fatalf("unarchiving the child marked %v", got)
+	}
+	for _, id := range []string{k, g} {
+		c.call("session/send", map[string]string{"session_id": id, "text": "back"})
+		idle(id)
+	}
+
 	t.Log("a family with a busy member is not archived")
 	c.call("session/send", map[string]string{"session_id": a, "text": "approve Bash {}"})
-	asked := c.update(a, "approval")
+	asked = c.update(a, "approval")
 	refused(c.request("session/archive", map[string]string{"session_id": a}), sessionBusy, "session is busy")
 	for _, id := range []string{a, k} {
 		for _, m := range c.received(id) {
@@ -745,13 +851,13 @@ func TestArchive(t *testing.T) {
 	notified("session/archived", bg)
 	c.update(bg, "parked")
 
-	t.Log("archiving the parent archives and stops its child")
+	t.Log("archiving the parent archives and stops every session beneath it")
 	c.call("session/archive", map[string]string{"session_id": a})
-	for _, id := range []string{a, k} {
+	for _, id := range []string{a, k, g} {
 		notified("session/archived", id)
 		c.update(id, "parked")
 	}
-	if got := archivedIn(c); !got[a] || !got[k] || got[b] {
+	if got := archivedIn(c); !got[a] || !got[k] || !got[g] || got[b] {
 		t.Fatalf("workspace/list marked %v", got)
 	}
 
@@ -785,28 +891,30 @@ func TestArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(restarted.Close)
-	if got := archivedIn(connect(t, restarted)); !got[a] || !got[k] || got[b] {
+	if got := archivedIn(connect(t, restarted)); !got[a] || !got[k] || !got[g] || got[b] {
 		t.Fatalf("after a restart workspace/list marked %v", got)
 	}
 
-	t.Log("unarchiving the parent unarchives its child")
+	t.Log("unarchiving the parent unarchives every session beneath it")
 	c.call("session/unarchive", map[string]string{"session_id": a})
-	notified("session/unarchived", a)
-	notified("session/unarchived", k)
+	for _, id := range []string{a, k, g} {
+		notified("session/unarchived", id)
+	}
 	c.call("session/send", map[string]string{"session_id": a, "text": "back"})
 	idle(a)
 
-	t.Log("a child is archived alone")
-	c.call("session/archive", map[string]string{"session_id": k})
-	notified("session/archived", k)
-	if got := archivedIn(c); got[a] || !got[k] {
-		t.Fatalf("archiving the child marked %v", got)
+	t.Log("a session without children is archived alone")
+	c.call("session/archive", map[string]string{"session_id": g})
+	notified("session/archived", g)
+	if got := archivedIn(c); got[a] || got[k] || !got[g] {
+		t.Fatalf("archiving the grandchild marked %v", got)
 	}
-	c.call("session/unarchive", map[string]string{"session_id": k})
-	notified("session/unarchived", k)
+	c.call("session/unarchive", map[string]string{"session_id": g})
+	notified("session/unarchived", g)
 
 	t.Log("an archived session can be deleted, and keeps its workspace")
 	c.call("session/archive", map[string]string{"session_id": k})
+	c.call("session/destroy", map[string]string{"session_id": g})
 	c.call("session/destroy", map[string]string{"session_id": k})
 	c.call("session/archive", map[string]string{"session_id": a})
 	refused(c.request("workspace/remove", map[string]string{"workspace_id": workspace}), operationFailed, "workspace has sessions")

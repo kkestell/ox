@@ -17,6 +17,9 @@ var defaultConfig []byte
 type Config struct {
 	Harnesses map[string]Harness `json:"harnesses"`
 	Defaults  Defaults           `json:"defaults"`
+	// MaxChildDepth is how many levels of child sessions a top-level session
+	// can have beneath it.
+	MaxChildDepth int `json:"max_child_depth"`
 }
 
 type Defaults struct {
@@ -67,6 +70,9 @@ func Load(path string) (*Config, error) {
 	}
 	if err := config.Defaults.check(config.Harnesses); err != nil {
 		return nil, fmt.Errorf("%s: defaults: %w", path, err)
+	}
+	if config.MaxChildDepth < 1 {
+		return nil, fmt.Errorf("%s: max_child_depth must be at least 1", path)
 	}
 	return &config, nil
 }

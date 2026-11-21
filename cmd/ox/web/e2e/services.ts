@@ -35,11 +35,13 @@ const claude = {
 export const fakeConfig = {
   harnesses: { fake },
   defaults: { harness: "fake", model: "echo", effort: "low", permission_mode: "manual" },
+  max_child_depth: 2,
 };
 
 export const haikuConfig = {
   harnesses: { claude },
   defaults: { harness: "claude", model: "claude-haiku-5-5", effort: "low", permission_mode: "manual" },
+  max_child_depth: 2,
 };
 
 export type Services = {

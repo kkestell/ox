@@ -234,20 +234,23 @@ func (sess *session) hold() (held, bool) {
 	return held{<-free, release}, true
 }
 
-// archive archives sess and, for a top-level session, its children, once
-// each is idle or parked, and stops their agents. It holds every member's
-// goroutine, the parent's first, while it checks them and sets their flags,
-// so none starts in between; a child is created only on its parent's
-// goroutine, so the children read while the parent is held are all of them.
+// archive archives sess and every session beneath it, once each is idle or
+// parked, and stops their agents. It walks the family breadth-first, holding
+// each member's goroutine before it reads that member's children, and holds
+// them all while it checks them and sets their flags, so none starts in
+// between. A child is created only on its parent's goroutine, so the children
+// read while their parent is held are all of them. Every archive holds
+// ancestors before descendants, so two in one family cannot wait on each
+// other.
 func (s *Server) archive(sess *session) error {
 	first, ok := sess.hold()
 	if !ok {
 		return errSessionNotFound
 	}
 	members, holds := []*session{sess}, []held{first}
-	if sess.child == nil {
+	for i := 0; i < len(members); i++ {
 		s.mu.Lock()
-		children := s.children(sess)
+		children := s.children(members[i])
 		s.mu.Unlock()
 		for _, c := range children {
 			if h, ok := c.hold(); ok {
@@ -267,8 +270,9 @@ func (s *Server) archive(sess *session) error {
 	return err
 }
 
-// unarchive unarchives sess and, for a top-level session, its children. A
-// child of an archived session stays archived.
+// unarchive unarchives sess and every session beneath it. A child of an
+// archived session stays archived, so an unarchived session's ancestors are
+// all unarchived.
 func (s *Server) unarchive(sess *session) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -277,7 +281,11 @@ func (s *Server) unarchive(sess *session) error {
 			return errors.New("parent session is archived")
 		}
 	}
-	return s.setArchivedLocked(append([]*session{sess}, s.children(sess)...), false)
+	members := []*session{sess}
+	for i := 0; i < len(members); i++ {
+		members = append(members, s.children(members[i])...)
+	}
+	return s.setArchivedLocked(members, false)
 }
 
 func (s *Server) setArchived(members []*session, archived bool) error {

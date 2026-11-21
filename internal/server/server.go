@@ -185,6 +185,19 @@ func (s *Server) children(parent *session) []*session {
 	return children
 }
 
+// depthLocked is the number of sess's ancestors. Every ancestor is a member
+// while its descendant is, since a session with children cannot be deleted,
+// so sess must be a member, as it is on its own goroutine. The caller holds
+// s.mu.
+func (s *Server) depthLocked(sess *session) int {
+	depth := 0
+	for sess.child != nil {
+		sess = s.sessions[sess.child.ParentID]
+		depth++
+	}
+	return depth
+}
+
 func (s *Server) broadcast(method string, params any) {
 	notification := jsonrpc.Notify(method, params)
 	s.connsMu.Lock()

@@ -24,9 +24,9 @@ func TestDefaultsMustBeConfiguredChoices(t *testing.T) {
 		`{"harness":"h","model":"m","effort":"low","permission_mode":"x"}`:        false,
 	} {
 		path := filepath.Join(t.TempDir(), "config.json")
-		data := `{` + harnesses + `}`
+		data := `{` + harnesses + `,"max_child_depth":2}`
 		if defaults != "" {
-			data = `{` + harnesses + `,"defaults":` + defaults + `}`
+			data = `{` + harnesses + `,"defaults":` + defaults + `,"max_child_depth":2}`
 		}
 		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 			t.Fatal(err)
@@ -36,8 +36,19 @@ func TestDefaultsMustBeConfiguredChoices(t *testing.T) {
 		}
 	}
 
+	const defaults = `"defaults":{"harness":"h","model":"m","effort":"low","permission_mode":"auto"}`
+	for _, depth := range []string{`,"max_child_depth":0`, ``} {
+		path := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(path, []byte(`{`+harnesses+`,`+defaults+depth+`}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil || !strings.HasSuffix(err.Error(), "max_child_depth must be at least 1") {
+			t.Errorf("max_child_depth %q: got %v", depth, err)
+		}
+	}
+
 	path := filepath.Join(t.TempDir(), "config.json")
-	data := `{` + harnesses + `,"defaults":{"harness":"h","model":"m","effort":"low","permission_mode":"auto"}}}`
+	data := `{` + harnesses + `,` + defaults + `,"max_child_depth":2}}`
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +63,7 @@ func TestCatalogListsArePresent(t *testing.T) {
 	load := func(other string) (*Config, error) {
 		path := filepath.Join(t.TempDir(), "config.json")
 		data := `{"harnesses":{"h":{"models":[{"id":"m","name":"M"}],"permission_modes":[{"id":"auto","name":"Auto"}]},` +
-			`"other":` + other + `},"defaults":{"harness":"h","model":"m","effort":"","permission_mode":"auto"}}`
+			`"other":` + other + `},"defaults":{"harness":"h","model":"m","effort":"","permission_mode":"auto"},"max_child_depth":2}`
 		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -104,7 +115,7 @@ func TestChoiceIDsAndNames(t *testing.T) {
 		`{"models":[{"id":"m","name":"M","efforts":[{"id":"low","name":"Low"}]}],"permission_modes":[{"id":"auto"}]}`,
 	} {
 		path := filepath.Join(t.TempDir(), "config.json")
-		data := `{"harnesses":{"h":` + harness + `},"defaults":{"harness":"h","model":"m","effort":"low","permission_mode":"auto"}}`
+		data := `{"harnesses":{"h":` + harness + `},"defaults":{"harness":"h","model":"m","effort":"low","permission_mode":"auto"},"max_child_depth":2}`
 		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 			t.Fatal(err)
 		}

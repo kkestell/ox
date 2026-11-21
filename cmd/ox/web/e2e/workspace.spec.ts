@@ -9,6 +9,7 @@ import { hold, menuItem, open, openMenu, prompt, send, sessionButton, sessionRow
 test("the workspace sidebar works after opening a malformed session link", async ({ page }) => {
   const fake = fakeConfig.harnesses.fake;
   const services = await startServices({
+    ...fakeConfig,
     harnesses: { fake: { ...fake, models: fake.models.map((model) => ({ ...model, efforts: [] })) } },
     defaults: { ...fakeConfig.defaults, effort: "" },
   });

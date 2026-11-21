@@ -1000,37 +1000,125 @@ test("a child session shows beneath its parent with its title", async ({ page })
   await page.reload();
   await check();
 
-  // A child archived alone hides beneath its parent.
+  // The child's own child follows it, indented one level further, and keeps
+  // the family from being archived while it waits on an approval.
+  await callTool(created.session_id, "create_session", {
+    name: "leaf",
+    title: "Leaf grandchild",
+    message: "hello grandchild",
+  });
+  const grandchildRow = page.locator("nav li:has-text('child parent') + li + li");
+  await expect(grandchildRow.locator(".title")).toHaveText("Leaf grandchild");
+  const childTitle = await childRow.locator(".title").boundingBox();
+  const grandchildTitle = await grandchildRow.locator(".title").boundingBox();
+  expect(grandchildTitle?.x).toBeGreaterThan(childTitle?.x ?? Infinity);
+  await grandchildRow.locator("button.open").click();
+  await expect(page.locator(".context h1")).toHaveText("Leaf grandchild");
+  await expect(stop(page)).toHaveCount(0);
+  await prompt(page).fill("approve Bash {}");
+  await prompt(page).press("Enter");
+  const card = page.locator(".approval");
+  await expect(card).toBeVisible();
+  const blocked = menuItem(await openMenu(parentRow), "Archive");
+  await expect(blocked).toHaveAccessibleName("Archive Wait until it and its child sessions are idle");
+  await expect(blocked).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await card.getByLabel("Allow").check();
+  await card.getByRole("button", { name: "Submit" }).click();
+  await expect(stop(page)).toHaveCount(0);
+  await childRow.locator("button.open").click();
+
+  // A child archived without its parent hides beneath it, with its own child.
   const archiveChild = menuItem(await openMenu(childRow), "Archive");
   await expect(archiveChild).toBeEnabled();
   await archiveChild.click();
   await expect(sessionButton(page, "Helper child")).toHaveCount(0);
+  await expect(sessionButton(page, "Leaf grandchild")).toHaveCount(0);
   await expect(sessionButton(page, "child parent")).toHaveCount(1);
   await expect(page.locator(".composer.archived p")).toHaveText("This session is archived.");
 
-  // Archiving the parent archives its child, and both rows hide until shown.
+  // Archiving the parent archives the sessions beneath it, and every row hides
+  // until shown.
   const archive = menuItem(await openMenu(parentRow), "Archive");
   await expect(archive).toBeEnabled();
   await archive.click();
   await expect(sessionButton(page, "child parent")).toHaveCount(0);
   await expect(sessionButton(page, "Helper child")).toHaveCount(0);
+  await expect(sessionButton(page, "Leaf grandchild")).toHaveCount(0);
   await expect(page.locator(".composer.archived p")).toHaveText("This session is archived with its parent.");
   await expect(page.getByRole("button", { name: "Unarchive", exact: true })).toBeDisabled();
   const workspace = workspaceRow(page, services.workspace);
   await menuItem(await openMenu(workspace), "Show archived").click();
   await expect(parentRow).toHaveClass(/archived/);
   await expect(childRow).toHaveClass(/archived/);
+  await expect(grandchildRow).toHaveClass(/archived/);
   await expect(childRow.getByRole("img", { name: "archived" })).toHaveCount(1);
   const childMenu = await openMenu(childRow);
   await expect(menuItem(childMenu, "Unarchive")).toHaveAccessibleName("Unarchive Unarchive its parent first");
   await expect(menuItem(childMenu, "Unarchive")).toBeDisabled();
-  await menuItem(childMenu, "Delete").click();
+  await expect(menuItem(childMenu, "Delete")).toHaveAccessibleName("Delete Delete its child sessions first");
+  await page.keyboard.press("Escape");
+  await menuItem(await openMenu(grandchildRow), "Delete").click();
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(sessionButton(page, "Leaf grandchild")).toHaveCount(0);
+  await menuItem(await openMenu(childRow), "Delete").click();
   await page.getByRole("button", { name: "Delete", exact: true }).click();
   await expect(sessionButton(page, "Helper child")).toHaveCount(0);
   await expect(menuItem(await openMenu(parentRow), "Delete")).toBeEnabled();
   await menuItem(page.getByRole("menu"), "Unarchive").click();
   await expect(parentRow).not.toHaveClass(/archived/);
   await menuItem(await openMenu(workspace), "Hide archived").click();
+});
+
+test("a child's guide starts at its parent's dot or where its previous sibling branches", async ({ page }) => {
+  await open(page, services);
+  await newSession(page, "tree root");
+  const root = sessionId(page);
+  const first = JSON.parse(
+    await callTool(root, "create_session", { name: "first", title: "Tree first", message: "hi" }),
+  );
+  await callTool(first.session_id, "create_session", { name: "leaf", title: "Tree leaf", message: "hi" });
+  await callTool(root, "create_session", { name: "second", title: "Tree second", message: "hi" });
+  await expect(page.locator("nav li:has-text('tree root') ~ li .title").first()).toHaveText("Tree first");
+  await expect(page.locator("nav li:has-text('Tree first') + li .title")).toHaveText("Tree leaf");
+  await expect(page.locator("nav li:has-text('Tree leaf') + li .title")).toHaveText("Tree second");
+
+  const dot = (title: string) =>
+    sessionRow(page, title)
+      .locator(".status")
+      .evaluate((status) => {
+        const box = status.getBoundingClientRect();
+        return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+      });
+  const middle = (title: string) =>
+    sessionRow(page, title).evaluate((row) => {
+      const box = row.getBoundingClientRect();
+      return box.top + box.height / 2;
+    });
+  const guide = (title: string) =>
+    sessionRow(page, title).evaluate((row) => {
+      const box = row.getBoundingClientRect();
+      const style = getComputedStyle(row, "::before");
+      return {
+        x: box.left + Number.parseFloat(style.left) + 0.5,
+        top: box.top + Number.parseFloat(style.top),
+        radius: style.borderBottomLeftRadius,
+      };
+    });
+  const rootDot = await dot("tree root");
+  const firstDot = await dot("Tree first");
+  const firstGuide = await guide("Tree first");
+  expect(firstGuide.x).toBeCloseTo(rootDot.x, 0);
+  expect(firstGuide.top).toBeCloseTo(rootDot.y + 4, 0);
+  expect(firstGuide.radius).toBe("0px");
+  const leafGuide = await guide("Tree leaf");
+  expect(leafGuide.x).toBeCloseTo(firstDot.x, 0);
+  expect(leafGuide.top).toBeCloseTo(firstDot.y + 4, 0);
+  expect(leafGuide.radius).toBe("6px");
+  const secondGuide = await guide("Tree second");
+  expect(secondGuide.x).toBeCloseTo(rootDot.x, 0);
+  expect(secondGuide.top).toBeCloseTo(await middle("Tree first"), 0);
+  expect(secondGuide.radius).toBe("6px");
 });
 
 test("an archived session is read-only and hidden until shown", async ({ page, context }) => {

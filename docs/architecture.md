@@ -79,15 +79,18 @@ queue their messages under the same lock so every connection sees them in one
 order. Nothing posts to a session while holding it.
 
 An archived session has no agent, and a child of an archived session is
-archived. An archive holds each family member's goroutine, the parent's first,
-with an operation that reports whether the session is idle or parked and then
-waits. Holding the parent fixes its children, since they are created only on its
-goroutine. With every member idle or parked, the archive stores and sets the
+archived. An archive holds the session and every session beneath it,
+breadth-first, each with an operation that reports whether the session is idle
+or parked and then waits. Each member is held before its children are read,
+which fixes them, since they are created only on its goroutine; every archive
+holds ancestors before descendants, so two archives in one family cannot
+deadlock. With every member idle or parked, the archive stores and sets the
 flags under `Server.mu` and releases each member, which stops its agent before
 its operation ends; otherwise it releases them unchanged. Unarchiving touches no
 goroutine: under `Server.mu` it refuses a child whose parent is archived and
-clears the flags. The one place an input starts a parked session refuses an
-archived one, and so does `create_session` for an archived caller.
+clears the flags of the session and every session beneath it. The one place an
+input starts a parked session refuses an archived one, and so does
+`create_session` for an archived caller.
 
 The session owns the history buffer and writes conversation events to the store.
 See [the snapshot and history contract](protocol.md#sessionget).
@@ -106,13 +109,13 @@ transaction as its session row, naming its parent, name, title, and directory; a
 top-level session has none. The directory its harness runs in is derived: the
 child's directory, else the workspace's. `create_session` checks its arguments
 on the call goroutine, then posts to the parent's goroutine, which resolves the
-child's settings from its own, then under `Server.mu` checks shutdown and name
-uniqueness, stores the child, launches its harness, adds it to membership, hands
-its agent the first message, and then starts its goroutine. A harness that
-cannot be launched leaves the child unstored and unpublished. A session belongs
-to whoever builds it until its goroutine starts. A session's destroy operation
-refuses while any session is its child; since children are created only on the
-parent's goroutine, none appears while it runs.
+child's settings from its own, then under `Server.mu` checks name uniqueness,
+shutdown, and depth, stores the child, launches its harness, adds it to
+membership, hands its agent the first message, and then starts its goroutine. A
+harness that cannot be launched leaves the child unstored and unpublished. A
+session belongs to whoever builds it until its goroutine starts. A session's
+destroy operation refuses while any session is its child; since children are
+created only on the parent's goroutine, none appears while it runs.
 
 The session arms a park timer whenever its agent is `Parkable` and stops it when
 the agent stops being parkable, so the full period restarts each time. If the

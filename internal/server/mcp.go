@@ -180,7 +180,7 @@ func init() {
 		},
 		{
 			name: "create_session",
-			description: "Start a child Ox session and send it its first message. Use it only when the user asks for another session or agent. " +
+			description: "Start a child Ox session and send it its first message. Use it only when the user, or the session that gave you your task, asks for another session or agent. " +
 				"name is the child's address among your children: lowercase letters, digits, and hyphens. title is its label in Ox. " +
 				"The child runs with your harness, model, effort, permission mode, and directory unless harness, model, effort, or dir is given; " +
 				"list_models lists the choices. dir is an existing directory, absolute or relative to yours. " +
@@ -335,9 +335,6 @@ func createSession(s *Server, caller *session, arguments json.RawMessage, respon
 	case strings.TrimSpace(input.Message) == "":
 		respond("", errors.New("message is required"))
 		return
-	case caller.child != nil:
-		respond("", errors.New("a child session cannot create sessions"))
-		return
 	}
 	// Kept as given, as workspace/create keeps its path.
 	directory := caller.directory()
@@ -391,6 +388,9 @@ func (s *Server) addChild(parent *session, record *store.Session, text string) e
 	}
 	if parent.archived {
 		return errArchived
+	}
+	if s.depthLocked(parent) >= s.config.MaxChildDepth {
+		return fmt.Errorf("child sessions nest at most %d deep", s.config.MaxChildDepth)
 	}
 	message := messageInput(parent, parent.labelLocked(), text)
 	// The parent is a member while its goroutine runs.

@@ -51,8 +51,8 @@ A child session is one a session's Claude started with
 `parent_id`, the session that started it; `name`, unique among that parent's
 children; `title`, its label; and `directory`, where its harness runs. A child
 belongs to its parent's workspace, whatever its directory. A session without
-`child` is top-level and runs in its workspace's directory. Only a top-level
-session has children.
+`child` is top-level and runs in its workspace's directory. Children nest at
+most [`max_child_depth`](#configuration) levels below a top-level session.
 
 A new session starts parked. `session/send` starts its harness and resumes its
 conversation when a resume token is available. When Claude no longer has the
@@ -87,10 +87,12 @@ Ur model may list `providers`, the OpenRouter providers that serve it, in order;
 its requests go to those alone. A model with no effort levels omits `efforts` or
 lists none, and takes an empty `effort`. The required `defaults` name the
 harness, model, effort, and permission mode a new session starts with, each one
-of the configured choices; the daemon refuses to start otherwise.
+of the configured choices; the daemon refuses to start otherwise. The required
+`max_child_depth`, at least 1, is how many levels of child sessions a top-level
+session can have beneath it; the built-in configuration sets 2.
 
 ```json
-{"harnesses":{"claude":{"models":[{"id":"claude-haiku-5-5","name":"Haiku 5.5","efforts":[{"id":"low","name":"Low"},{"id":"high","name":"High"}]}],"permission_modes":[{"id":"manual","name":"Manual"},{"id":"plan","name":"Plan"}]}},"defaults":{"harness":"claude","model":"claude-haiku-5-5","effort":"low","permission_mode":"plan"}}
+{"harnesses":{"claude":{"models":[{"id":"claude-haiku-5-5","name":"Haiku 5.5","efforts":[{"id":"low","name":"Low"},{"id":"high","name":"High"}]}],"permission_modes":[{"id":"manual","name":"Manual"},{"id":"plan","name":"Plan"}]}},"defaults":{"harness":"claude","model":"claude-haiku-5-5","effort":"low","permission_mode":"plan"},"max_child_depth":2}
 ```
 
 Clients offer these choices, and the daemon accepts only these in
@@ -103,14 +105,15 @@ with one and a session stored with one fails to start; see
 
 ### `harness/list`
 
-Returns the configuration's harnesses and new-session defaults.
+Returns the configuration's harnesses, new-session defaults, and
+`max_child_depth`.
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"harness/list","params":{}}
 ```
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"harnesses":{"claude":{"models":[{"id":"claude-haiku-5-5","name":"Haiku 5.5","efforts":[{"id":"low","name":"Low"}]}],"permission_modes":[{"id":"manual","name":"Manual"}]}},"defaults":{"harness":"claude","model":"claude-haiku-5-5","effort":"low","permission_mode":"manual"}}}
+{"jsonrpc":"2.0","id":1,"result":{"harnesses":{"claude":{"models":[{"id":"claude-haiku-5-5","name":"Haiku 5.5","efforts":[{"id":"low","name":"Low"}]}],"permission_modes":[{"id":"manual","name":"Manual"}]}},"defaults":{"harness":"claude","model":"claude-haiku-5-5","effort":"low","permission_mode":"manual"},"max_child_depth":2}}
 ```
 
 ## Workspace methods
@@ -400,14 +403,14 @@ returns `-32000` `session has child sessions`.
 
 ### `session/archive`
 
-Requires `session_id`. Archives the session and, for a top-level session, each
-of its children, and stops each one's process as parking does, with a `parked`
-update. Each archived session is announced with `session/archived` before the
-response. A session in the family that is not `idle`, `background`, or `parked`
-returns `-32002` and archives none. Archiving an archived family succeeds. An
-archived session keeps its history; it refuses `session/send`,
-`session/configure`, and [`send_message`](#tools), and [`list_sessions`](#tools)
-leaves it out. `session/get`, `session/interrupt`, `session/destroy`, and
+Requires `session_id`. Archives the session and every session beneath it, and
+stops each one's process as parking does, with a `parked` update. Each archived
+session is announced with `session/archived` before the response. A session in
+the family that is not `idle`, `background`, or `parked` returns `-32002` and
+archives none. Archiving an archived family succeeds. An archived session keeps
+its history; it refuses `session/send`, `session/configure`, and
+[`send_message`](#tools), and [`list_sessions`](#tools) leaves it out.
+`session/get`, `session/interrupt`, `session/destroy`, and
 [`read_session`](#tools) work on it as on any parked session. Archived sessions
 stay archived when the daemon restarts.
 
@@ -421,10 +424,10 @@ stay archived when the daemon restarts.
 
 ### `session/unarchive`
 
-Requires `session_id`. Unarchives the session and, for a top-level session, each
-of its children, announcing each with `session/unarchived` before the response.
-A child whose parent is archived returns `-32000` `parent session is archived`.
-Unarchiving a session that is not archived succeeds.
+Requires `session_id`. Unarchives the session and every session beneath it,
+announcing each with `session/unarchived` before the response. A child whose
+parent is archived returns `-32000` `parent session is archived`. Unarchiving a
+session that is not archived succeeds.
 
 ```json
 {"jsonrpc":"2.0","id":11,"method":"session/unarchive","params":{"session_id":"session-id"}}
@@ -631,7 +634,6 @@ Refusals, in the order they are checked:
 - `title` blank, longer than 48 characters, or more than one line: `title must
   be one line of 1 to 48 characters`;
 - a blank `message`: `message is required`;
-- a caller that is a child: `a child session cannot create sessions`;
 - `dir` not an existing directory: `dir must be an existing directory`;
 - `harness` not configured: `harness "<harness>" is not configured`;
 - another harness without `model`: `model is required with another harness`;
@@ -642,6 +644,8 @@ Refusals, in the order they are checked:
 - the daemon shutting down: `daemon is shutting down`; the caller gone first:
   `session not found`;
 - an archived caller: `session is archived`;
+- a caller already `max_child_depth` levels below a top-level session: `child
+  sessions nest at most <max_child_depth> deep`;
 - a harness that cannot be launched: the launch error; no child is created.
 
 `read_session` takes `to`, a session ID, and an optional integer `cursor`, and

@@ -670,7 +670,7 @@ func TestLive(t *testing.T) {
 	t.Log("Claude starts a child session without asking")
 	parent, childDir := create("manual"), t.TempDir()
 	tools = turn(parent, "Load and call the mcp__ox__create_session tool with name helper, title Helper, dir "+childDir+
-		`, and message "Reply with just the word ok, without calling any tool." Then reply with just ok.`, refuse)
+		`, and message "Load and call the mcp__ox__create_session tool with name leaf, title Leaf, and message 'Reply with just the word ok, without calling any tool.' Then reply with just ok." Then reply with just ok.`, refuse)
 	if !slices.Contains(tools, "mcp__ox__create_session") {
 		t.Fatalf("Haiku did not call create_session (%v); run again: %s", tools, describe(c.received(parent)))
 	}
@@ -704,7 +704,24 @@ func TestLive(t *testing.T) {
 	if u := c.update(started.SessionID, "result"); u.Result.IsError {
 		t.Errorf("the child's turn failed: %s", u.Result.Text)
 	}
+	t.Log("a child starts a child of its own on its parent's request")
+	// The grandchild is published before create_session answers the child.
+	var leaf string
+	for _, m := range c.notifications("session/created") {
+		var created struct {
+			Child *child `json:"child"`
+		}
+		json.Unmarshal(m.Params, &created)
+		if created.Child != nil && created.Child.ParentID == started.SessionID {
+			leaf = m.sessionID()
+		}
+	}
+	if leaf == "" {
+		t.Fatalf("the child started no child: %s", describe(c.received(started.SessionID)))
+	}
 	idle(started.SessionID)
+	idle(leaf)
+	c.call("session/destroy", map[string]string{"session_id": leaf})
 	c.call("session/destroy", map[string]string{"session_id": started.SessionID})
 
 	t.Log("pending schedules keep a session running, even after a failed turn")

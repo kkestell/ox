@@ -1,4 +1,4 @@
-import { createSignal, For, onSettled, Show } from "solid-js";
+import { createMemo, createSignal, For, onSettled, Show } from "solid-js";
 import type { Selection } from "./App";
 import { createAttempt, type Session, useOx, type Workspace, workspaceName } from "./ox";
 import { settled } from "./protocol";
@@ -58,12 +58,44 @@ function WorkspaceDialog(props: { request: DialogRequest; onClose(): void }) {
   );
 }
 
-// SessionRow is a session's row, indented for a child. An archived session
+// Row is a shown session in the sidebar's tree. depth counts its ancestors;
+// rise counts the rows up to where its guide starts, its parent's for its
+// first shown child, else its previous shown sibling's.
+type Row = { session: Session; depth: number; rise: number; first: boolean; last: boolean };
+
+// rowsOf flattens the shown sessions depth-first, oldest first at every
+// level. A shown session's ancestors are shown, since the sessions beneath an
+// archived session are archived.
+function rowsOf(shown: Session[]): Row[] {
+  const rows: Row[] = [];
+  const add = (parentId: string | undefined, depth: number, parentRow: number) => {
+    const children = shown.filter((session) => session.child?.parent_id === parentId);
+    let above = parentRow;
+    children.forEach((session, i) => {
+      const index = rows.length;
+      rows.push({ session, depth, rise: index - above, first: i === 0, last: i === children.length - 1 });
+      above = index;
+      add(session.id, depth + 1, index);
+    });
+  };
+  add(undefined, 0, -1);
+  return rows;
+}
+
+// SessionRow is a session's row, indented by its depth. An archived session
 // shows an archive icon in place of its status.
-function SessionRow(props: { session: Session; selected: boolean; onSelect(): void; onMenu(at: MenuAt): void }) {
+function SessionRow(props: { row: Row; selected: boolean; onSelect(): void; onMenu(at: MenuAt): void }) {
+  const session = () => props.row.session;
   return (
     <li
-      class={{ selected: props.selected, child: props.session.child !== undefined, archived: props.session.archived }}
+      class={{
+        selected: props.selected,
+        child: props.row.depth > 0,
+        first: props.row.first,
+        last: props.row.last,
+        archived: session().archived,
+      }}
+      style={{ "--depth": props.row.depth, "--rise": props.row.rise }}
       onContextMenu={(event) => {
         event.preventDefault();
         props.onMenu({ x: event.clientX, y: event.clientY });
@@ -76,14 +108,14 @@ function SessionRow(props: { session: Session; selected: boolean; onSelect(): vo
         onClick={() => props.onSelect()}
       >
         <Show
-          when={!props.session.archived}
+          when={!session().archived}
           fallback={<span class="icon archive" role="img" title="archived" aria-label="archived" />}
         >
-          <Show when={props.session.load.snapshot?.state}>
+          <Show when={session().load.snapshot?.state}>
             {(status) => <span class={["status", status()]} role="img" title={status()} aria-label={status()} />}
           </Show>
         </Show>
-        <span class="title">{props.session.label}</span>
+        <span class="title">{session().label}</span>
       </button>
       <MenuButton label="Session actions" onMenu={props.onMenu} />
     </li>
@@ -170,15 +202,17 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
   const isSelected = (session: Session) => props.selected?.kind === "session" && props.selected.id === session.id;
   const childrenOf = (session: Session) =>
     ox.workspaceOf(session.id)?.sessions.filter((other) => other.child?.parent_id === session.id) ?? [];
+  const descendantsOf = (session: Session): Session[] =>
+    childrenOf(session).flatMap((child) => [child, ...descendantsOf(child)]);
   const visible = (workspaceId: string, session: Session) => !session.archived || shown().has(workspaceId);
 
   // oxd archives a family only when each member is settled.
   const archiveBlocked = (session: Session) => {
     if (!ox.ready()) return "Not connected";
-    const children = childrenOf(session);
-    const free = [session, ...children].every((s) => s.load.kind === "live" && settled(s.load.snapshot.state));
+    const descendants = descendantsOf(session);
+    const free = [session, ...descendants].every((s) => s.load.kind === "live" && settled(s.load.snapshot.state));
     if (free) return undefined;
-    return children.length ? "Wait until it and its child sessions are idle" : "Wait until it is idle";
+    return descendants.length ? "Wait until it and its child sessions are idle" : "Wait until it is idle";
   };
   const sessionItems = (session: Session): MenuItem[] => {
     const parent = session.child && ox.session(session.child.parent_id);
@@ -268,51 +302,42 @@ export function Sidebar(props: { selected?: Selection; onSelect(selection: Selec
         )}
       </Show>
       <For each={ox.state.workspaces}>
-        {(workspace) => (
-          <>
-            <p
-              title={workspace.path}
-              onContextMenu={(event) => {
-                event.preventDefault();
-                menuOf("workspace", workspace.id)({ x: event.clientX, y: event.clientY });
-              }}
-            >
-              <span class="name">{workspaceName(workspace.path)}</span>
-              <MenuButton label="Workspace actions" onMenu={menuOf("workspace", workspace.id)} />
-              <button
-                type="button"
-                class="icon plus"
-                aria-label="New session"
-                title="New session"
-                onClick={() => props.onSelect({ kind: "draft", workspaceId: workspace.id })}
-              />
-            </p>
-            <ul>
-              <For each={workspace.sessions.filter((session) => !session.child && visible(workspace.id, session))}>
-                {(session) => (
-                  <>
+        {(workspace) => {
+          const rows = createMemo(() => rowsOf(workspace.sessions.filter((session) => visible(workspace.id, session))));
+          return (
+            <>
+              <p
+                title={workspace.path}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  menuOf("workspace", workspace.id)({ x: event.clientX, y: event.clientY });
+                }}
+              >
+                <span class="name">{workspaceName(workspace.path)}</span>
+                <MenuButton label="Workspace actions" onMenu={menuOf("workspace", workspace.id)} />
+                <button
+                  type="button"
+                  class="icon plus"
+                  aria-label="New session"
+                  title="New session"
+                  onClick={() => props.onSelect({ kind: "draft", workspaceId: workspace.id })}
+                />
+              </p>
+              <ul>
+                <For each={rows()} keyed={(row) => row.session.id}>
+                  {(row) => (
                     <SessionRow
-                      session={session}
-                      selected={isSelected(session)}
-                      onSelect={() => props.onSelect({ kind: "session", id: session.id })}
-                      onMenu={menuOf("session", session.id)}
+                      row={row()}
+                      selected={isSelected(row().session)}
+                      onSelect={() => props.onSelect({ kind: "session", id: row().session.id })}
+                      onMenu={menuOf("session", row().session.id)}
                     />
-                    <For each={childrenOf(session).filter((child) => visible(workspace.id, child))}>
-                      {(child) => (
-                        <SessionRow
-                          session={child}
-                          selected={isSelected(child)}
-                          onSelect={() => props.onSelect({ kind: "session", id: child.id })}
-                          onMenu={menuOf("session", child.id)}
-                        />
-                      )}
-                    </For>
-                  </>
-                )}
-              </For>
-            </ul>
-          </>
-        )}
+                  )}
+                </For>
+              </ul>
+            </>
+          );
+        }}
       </For>
     </nav>
   );
