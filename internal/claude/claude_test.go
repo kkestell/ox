@@ -100,8 +100,11 @@ func TestStartupFailureKeepsClaudesReason(t *testing.T) {
 		}, "API Error: Connection refused"},
 		"plain text":                    {[]agent.Event{plainText(missing), exit}, missing},
 		"plain text after error result": {[]agent.Event{gone, plainText("Not logged in"), exit}, "Not logged in"},
-		"stderr":                        {[]agent.Event{processExit{err: exit.err, stderr: "error: bad option"}}, "error: bad option"},
-		"no reason":                     {[]agent.Event{exit}, "Claude exited: exit status 1"},
+		"startup timeout after plain text": {[]agent.Event{plainText("Not logged in · Please run /login"), startupTimeout{}},
+			"no startup response within one minute\nNot logged in · Please run /login"},
+		"startup timeout after lost conversation": {[]agent.Event{gone, startupTimeout{}}, lostConversation},
+		"stderr":    {[]agent.Event{processExit{err: exit.err, stderr: "error: bad option"}}, "error: bad option"},
+		"no reason": {[]agent.Event{exit}, "Claude exited: exit status 1"},
 		"refused initialize": {[]agent.Event{
 			message{Type: "control_response", Response: controlReply{Subtype: "error", RequestID: "initialize", Error: "bad flags"}},
 		}, "Claude refused initialization (error): bad flags"},

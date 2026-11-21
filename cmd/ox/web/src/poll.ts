@@ -4,7 +4,7 @@ import { useOx } from "./ox";
 
 // Polled is a repeated request's latest answer from oxd: its value or the
 // error oxd answered.
-export type Polled<T> = { kind: "value"; value: T } | { kind: "error"; message: string };
+type Polled<T> = { kind: "value"; value: T } | { kind: "error"; message: string };
 
 // createPoll runs request now and on each tick of the page's clock, and
 // returns its latest answer, undefined until the first. Only oxd's answers

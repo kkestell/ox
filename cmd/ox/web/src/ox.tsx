@@ -321,6 +321,9 @@ function createOx() {
     return c;
   }
 
+  // release forgets the page's control of a session that will never exist.
+  const release = (id: string) => controls.delete(id);
+
   // Install the snapshot without replacing the session's view or its open
   // tool details. Live updates start at the session/get response boundary.
   async function load(id: string) {
@@ -497,6 +500,7 @@ function createOx() {
     readFile: (workspaceId: string, path: string) =>
       connection.rpc("workspace/read_file", { workspace_id: workspaceId, path }),
     control,
+    release,
     destroy: (id: string) => connection.rpc("session/destroy", { session_id: id }),
     archive: (id: string) => connection.rpc("session/archive", { session_id: id }),
     unarchive: (id: string) => connection.rpc("session/unarchive", { session_id: id }),

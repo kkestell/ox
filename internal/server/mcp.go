@@ -21,14 +21,13 @@ import (
 	"github.com/kkestell/ox/internal/store"
 )
 
-// attach handles a connection's first line when it is an mcp/attach request.
-// It reports whether the line was one, and the session ID it attached to,
+// attach handles a connection's first request when it is an mcp/attach
+// request. It reports whether the request was one, and the session ID it attached to,
 // empty when the request was refused. An attached connection leaves s.conns
 // before the result is queued, so every notification it was ever sent is
 // ahead of the result.
-func (s *Server) attach(c *conn, reply replyFunc, line []byte) (string, bool) {
-	request, invalid := jsonrpc.Parse(line)
-	if invalid != nil || request.Method != "mcp/attach" || len(request.ID) == 0 {
+func (s *Server) attach(c *conn, reply replyFunc, request jsonrpc.Request) (string, bool) {
+	if request.Method != "mcp/attach" {
 		return "", false
 	}
 	var input struct {
@@ -47,15 +46,7 @@ func (s *Server) attach(c *conn, reply replyFunc, line []byte) (string, bool) {
 
 // handleMCP answers one MCP request from the forwarder of a session. It waits
 // on no session's goroutine except to post to the sessions a tool reads.
-func (s *Server) handleMCP(reply replyFunc, sessionID string, line []byte) {
-	request, invalid := jsonrpc.Parse(line)
-	if invalid != nil {
-		reply(invalid)
-		return
-	}
-	if len(request.ID) == 0 {
-		return
-	}
+func (s *Server) handleMCP(reply replyFunc, sessionID string, request jsonrpc.Request) {
 	id := request.ID
 	s.mu.Lock()
 	closed, sess := s.closed, s.sessions[sessionID]

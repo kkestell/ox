@@ -32,9 +32,6 @@ which holds the evidence and the correction.
 - [ ] **Tests that pass when their behavior breaks.** Six tests, from the
   settings passed to the next start to `TestLive`'s ordering.
   [Deslop F8](../agents/audits/2026-11-20-002-deslop.md#f8-tests-that-pass-when-the-behavior-they-name-breaks)
-- [ ] **The startup timeout drops Claude's stated reason.**
-  [Deslop F9](../agents/audits/2026-11-20-002-deslop.md#f9-claude-startup-and-configuration-edge-outcomes),
-  first item.
 - [ ] **A send clears retyped text equal to the sent prompt.**
   [Deslop F10](../agents/audits/2026-11-20-002-deslop.md#f10-a-successful-send-clears-retyped-text-equal-to-the-sent-prompt)
 - [ ] **Tool calls with only structured input show a blank summary.**
@@ -48,21 +45,11 @@ which holds the evidence and the correction.
 - [ ] **The file viewer alters carriage returns and colors substitutions as
   strings.**
   [Deslop F17](../agents/audits/2026-11-20-002-deslop.md#f17-highlighting-alters-carriage-returns-colors-substitutions-as-strings-and-its-test-misses-recomputation)
-- [ ] **The configuration accepts choices with no name.**
-  [Deslop F18](../agents/audits/2026-11-20-002-deslop.md#f18-the-catalog-accepts-choices-with-no-name)
-- [ ] **`..` is cleaned before symlinks resolve** in `-socket` and the file
-  tree's link classification.
-  [Deslop F19](../agents/audits/2026-11-20-002-deslop.md#f19--is-cleaned-before-symlinks-resolve)
-- [ ] **`make test` fails on a fresh checkout, and the metrics hook fails on
-  duplicate files.**
-  [Deslop F20](../agents/audits/2026-11-20-002-deslop.md#f20-make-test-fails-on-a-fresh-checkout-and-the-metrics-hook-fails-on-duplicate-content)
 - [ ] **`ox-plan` lets an added requirement skip approval, and its dev check
   is not runnable.**
   [Deslop F21](../agents/audits/2026-11-20-002-deslop.md#f21-ox-plan-lets-a-new-requirement-skip-approval-and-its-dev-check-is-not-runnable)
 - [ ] **Protocol, architecture, and Claude notes misstate the code.**
   [Deslop F22](../agents/audits/2026-11-20-002-deslop.md#f22-protocol-architecture-and-claude-notes-misstate-the-code)
-- [ ] **Small dead code and retained state.**
-  [Deslop F23](../agents/audits/2026-11-20-002-deslop.md#f23-small-dead-code-and-retained-state)
 
 ## Approvals
 

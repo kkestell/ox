@@ -27,18 +27,9 @@ const (
 
 type replyFunc func(*jsonrpc.Response)
 
-// handle runs one request line. Each method queues its own response through
+// handle runs one request. Each method queues its own response through
 // reply, from wherever it holds the state the response reports.
-func (s *Server) handle(reply replyFunc, line []byte) {
-	request, invalid := jsonrpc.Parse(line)
-	if invalid != nil {
-		reply(invalid)
-		return
-	}
-	// Operations require a request ID so the client receives the outcome.
-	if len(request.ID) == 0 {
-		return
-	}
+func (s *Server) handle(reply replyFunc, request jsonrpc.Request) {
 	id, params := request.ID, request.Params
 	switch request.Method {
 	case "workspace/create":

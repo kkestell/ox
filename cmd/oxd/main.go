@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -35,7 +36,7 @@ func main() {
 	defaultPath(configPath, paths.Config)
 	// The forwarder runs in a session's workspace, so it needs an absolute
 	// socket path.
-	socket, err := filepath.Abs(*socketPath)
+	socket, err := absolute(*socketPath)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -160,12 +161,28 @@ func defaultPath(flag *string, path func() (string, error)) {
 	}
 }
 
+// absolute returns path made absolute with the working directory. It keeps
+// ".." so the filesystem resolves symlinks before it, as it does when ox and
+// ox-mcp dial the path.
+func absolute(path string) (string, error) {
+	if filepath.IsAbs(path) {
+		return path, nil
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return wd + string(filepath.Separator) + path, nil
+}
+
 // listen serves the socket at path. A socket file that refuses connections
 // was left by an oxd that exited without closing its listener, as a race
 // report or a closed terminal does, and is replaced. Any other file at path
 // is left alone: Linux also refuses connections to a regular file.
 func listen(path string) (net.Listener, error) {
-	dir := filepath.Dir(path)
+	// The directory is the path up to its last separator, with any ".." kept
+	// so the filesystem resolves symlinks first, as the bind does.
+	dir := path[:strings.LastIndexByte(path, filepath.Separator)+1]
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}

@@ -45,8 +45,16 @@ function Layout() {
     if (s?.kind !== "session") return;
     return ox.session(s.id);
   };
-  // A removed workspace's draft goes with it.
+  // A removed workspace's draft is hidden until the effect below drops it.
   const liveDrafts = () => drafts().filter((d) => ox.state.workspaces.some((w) => w.id === d.workspaceId));
+  createEffect(
+    () => drafts().filter((d) => !ox.state.workspaces.some((w) => w.id === d.workspaceId)),
+    (removed) => {
+      if (removed.length === 0) return;
+      setDrafts((all) => all.filter((d) => !removed.includes(d)));
+      for (const d of removed) ox.release(d.id);
+    },
+  );
   const draft = () => {
     const s = selected();
     return s?.kind === "draft" ? liveDrafts().find((d) => d.workspaceId === s.workspaceId) : undefined;

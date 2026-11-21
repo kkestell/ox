@@ -33,9 +33,63 @@ func openStore(t *testing.T) *store.Store {
 }
 
 func answer(s *Server, line string) *jsonrpc.Response {
+	request, invalid := jsonrpc.Parse([]byte(line))
+	if invalid != nil {
+		return invalid
+	}
 	responses := make(chan *jsonrpc.Response, 1)
-	s.handle(func(r *jsonrpc.Response) { responses <- r }, []byte(line))
+	s.handle(func(r *jsonrpc.Response) { responses <- r }, request)
 	return <-responses
+}
+
+// A line that is not a valid request is answered with the error jsonrpc.Parse
+// returns, on a plain connection and on a forwarder's, and a request without an
+// ID is dropped without ending the connection.
+func TestInvalidLines(t *testing.T) {
+	st := openStore(t)
+	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: t.TempDir(), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSession("w", &store.Session{ID: "session-one", Harness: "fake", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(st, &config.Config{}, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+
+	for name, c := range map[string]*client{"plain": connect(t, s), "mcp": attach(t, s, "session-one")} {
+		for line, code := range map[string]int{
+			"{not json":                                jsonrpc.ParseError,
+			`{"jsonrpc":"2.0","method":7}`:             jsonrpc.InvalidRequest,
+			`{"jsonrpc":"1.0","id":1,"method":"ping"}`: jsonrpc.InvalidRequest,
+		} {
+			if _, err := c.conn.Write([]byte(line + "\n")); err != nil {
+				t.Fatal(err)
+			}
+			response := c.next(func(m message) bool { return m.Error != nil && m.Error.Code == code })
+			if string(response.ID) != "null" {
+				t.Errorf("%s: %s was answered with ID %s", name, line, response.ID)
+			}
+		}
+		if _, err := c.conn.Write([]byte(`{"jsonrpc":"2.0","method":"ping"}` + "\n")); err != nil {
+			t.Fatal(err)
+		}
+		method := "workspace/list"
+		if name == "mcp" {
+			method = "ping"
+		}
+		if response := c.request(method, map[string]string{}); response.Error != nil {
+			t.Errorf("%s: %s after a request without an ID: %+v", name, method, response.Error)
+		}
+		// Any reply to the request without an ID would be handled by now.
+		time.Sleep(100 * time.Millisecond)
+		c.received("")
+		if len(c.backlog) != 0 {
+			t.Errorf("%s: a request without an ID was answered: %+v", name, c.backlog)
+		}
+	}
 }
 
 func TestSettingsValidation(t *testing.T) {
@@ -1099,7 +1153,7 @@ func TestWorkspaceFiles(t *testing.T) {
 	t.Cleanup(s.Close)
 	c := connect(t, s)
 	dir, outside := t.TempDir(), t.TempDir()
-	for _, folder := range []string{"src", ".git", "empty"} {
+	for _, folder := range []string{"src", "src/nested", ".git", "empty"} {
 		if err := os.Mkdir(filepath.Join(dir, folder), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -1127,6 +1181,12 @@ func TestWorkspaceFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if err := os.Symlink("nested", filepath.Join(dir, "src", "sibling")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("src", "nested"), filepath.Join(dir, "alias")); err != nil {
+		t.Fatal(err)
+	}
 	var w struct {
 		ID string `json:"workspace_id"`
 	}
@@ -1147,15 +1207,21 @@ func TestWorkspaceFiles(t *testing.T) {
 		return folders
 	}
 	want := map[string]bool{
-		"src": true, "empty": true, "inside": true, "outside": false, "absolute": false, "notes": false,
+		"src": true, "empty": true, "inside": true, "alias": true, "outside": false, "absolute": false, "notes": false,
 		".gitignore": false, "ignored.log": false, "bin.dat": false, "big.txt": false, "latin1.txt": false,
 		"pipe": false, "leak": false,
 	}
 	if got := list(""); !maps.Equal(got, want) {
 		t.Errorf("root listed %v, want %v", got, want)
 	}
-	if got := list("src"); !maps.Equal(got, map[string]bool{"main.go": false}) {
-		t.Errorf("src listed %v", got)
+	srcWant := map[string]bool{"main.go": false, "nested": true, "sibling": true}
+	if got := list("src"); !maps.Equal(got, srcWant) {
+		t.Errorf("src listed %v, want %v", got, srcWant)
+	}
+	// ".." after a link leaves the link's target, so a link beside the target is
+	// classified in the target's parent.
+	if got := list("alias/.."); !maps.Equal(got, srcWant) {
+		t.Errorf("alias/.. listed %v, want %v", got, srcWant)
 	}
 	if got := list("empty"); len(got) != 0 {
 		t.Errorf("empty folder listed %v", got)

@@ -2,7 +2,7 @@ import { createSignal, Show } from "solid-js";
 import { useOx } from "./ox";
 import type { Defaults } from "./protocol";
 import { sendOnEnter } from "./SessionView";
-import { defaultSettings, type ModelChoice, ModelPicker, Select } from "./SettingsFields";
+import { defaultPermissionMode, type ModelChoice, ModelPicker, Select } from "./SettingsFields";
 
 // A submitted draft lives on the page through navigation and reconnect. Its
 // composer belongs to the same control that the new session will use.
@@ -25,7 +25,7 @@ export function NewSessionView(props: { draft: Draft; onCreated(): void }) {
     const mode =
       currentMode && catalog.permission_modes.some((m) => m.id === currentMode)
         ? currentMode
-        : defaultSettings(value.harness, catalog, ox.state.defaults).permission_mode;
+        : defaultPermissionMode(value.harness, catalog, ox.state.defaults);
     draft.setChoice({ ...value, permission_mode: mode });
   };
   const create = (event: SubmitEvent) => {

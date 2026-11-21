@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"os"
-	"path"
 	"unicode/utf8"
 )
 
@@ -52,7 +51,7 @@ func listFolder(dir, folder string) ([]folderEntry, error) {
 		}
 		isFolder := e.IsDir()
 		if e.Type()&os.ModeSymlink != 0 {
-			info, err := root.Stat(path.Join(folder, e.Name()))
+			info, err := root.Stat(folder + "/" + e.Name())
 			isFolder = err == nil && info.IsDir()
 		}
 		list = append(list, folderEntry{e.Name(), isFolder})

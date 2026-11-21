@@ -30,8 +30,8 @@ type starting struct {
 // reports idle with nothing untaken. The first untaken input, if any, has
 // been written.
 type prompting struct {
-	input agent.Input // the latest input written, which the releasing update names
-	turn  string      // the client input whose turn is running, until its result
+	messageID string // the latest input written, which the releasing update names
+	turn      string // the client input whose turn is running, until its result
 }
 
 // configuring holds the agent while control requests are in flight, one at a
@@ -151,7 +151,11 @@ func (a *Agent) Handle(event agent.Event) {
 		a.controlTimedOut(e.requestID)
 	case startupTimeout:
 		if s, ok := a.phase.(*starting); ok {
-			a.giveUp(s, "no startup response within one minute")
+			reason := "no startup response within one minute"
+			if s.reason != "" {
+				reason += "\n" + s.reason
+			}
+			a.giveUp(s, reason)
 		}
 	}
 }
@@ -387,7 +391,7 @@ func (a *Agent) end(reason string) {
 			final.MessageID = queued[len(queued)-1].MessageID
 		}
 	case *prompting:
-		final.MessageID = p.input.MessageID
+		final.MessageID = p.messageID
 	case available, *configuring, timedOut, exited:
 		// No input names the end.
 	}

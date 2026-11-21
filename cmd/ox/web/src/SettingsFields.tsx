@@ -1,6 +1,6 @@
 import { createSignal, createUniqueId, For, flush, Show } from "solid-js";
 import { HarnessIcon, harnessName } from "./HarnessIcon";
-import type { Defaults, Harness, Model, Option, Settings } from "./protocol";
+import type { Defaults, Harness, Model, Option } from "./protocol";
 
 export type ModelChoice = { harness: string; model: string; effort: string };
 
@@ -216,14 +216,6 @@ export function Select(props: {
   );
 }
 
-export function defaultSettings(name: string, harness: Harness, defaults?: Defaults): Settings {
-  if (defaults?.harness === name) {
-    return { model: defaults.model, effort: defaults.effort, permission_mode: defaults.permission_mode };
-  }
-  const model = harness.models[0];
-  return {
-    model: model?.id ?? "",
-    effort: model?.efforts[0]?.id ?? "",
-    permission_mode: harness.permission_modes[0]?.id ?? "",
-  };
+export function defaultPermissionMode(name: string, harness: Harness, defaults?: Defaults): string {
+  return defaults?.harness === name ? defaults.permission_mode : (harness.permission_modes[0]?.id ?? "");
 }

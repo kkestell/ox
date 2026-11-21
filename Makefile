@@ -10,11 +10,11 @@ dev: web build
 build:
 	go build -race -o bin/ ./cmd/ox ./cmd/ox-mcp ./cmd/oxd
 
-test: lint web
+test: lint
 	go test -race ./...
 	node --test cmd/ox/web/stack.test.mjs
 
-lint: cmd/ox/web/node_modules
+lint: web
 	gofmt -l . | (! grep .)
 	go mod tidy -diff
 	go fix -diff ./...

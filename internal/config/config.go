@@ -71,8 +71,8 @@ func Load(path string) (*Config, error) {
 	return &config, nil
 }
 
-// check requires every list a client reads and an ID for every choice, which
-// the harness receives as a flag. A model without effort levels is served an
+// check requires every list a client reads, and an ID and a name for every
+// choice. The harness receives the ID as a flag. A model without effort levels is served an
 // empty list.
 func (h Harness) check() error {
 	if len(h.Models) == 0 || len(h.PermissionModes) == 0 {
@@ -80,7 +80,7 @@ func (h Harness) check() error {
 	}
 	models := make(map[string]bool)
 	for i, m := range h.Models {
-		if err := addChoice(models, "model", m.ID); err != nil {
+		if err := addChoice(models, "model", m.ID, m.Name); err != nil {
 			return err
 		}
 		if m.Efforts == nil {
@@ -96,16 +96,19 @@ func (h Harness) check() error {
 func checkOptions(kind string, options []Option) error {
 	seen := make(map[string]bool)
 	for _, o := range options {
-		if err := addChoice(seen, kind, o.ID); err != nil {
+		if err := addChoice(seen, kind, o.ID, o.Name); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func addChoice(seen map[string]bool, kind, id string) error {
+func addChoice(seen map[string]bool, kind, id, name string) error {
 	if id == "" {
 		return fmt.Errorf("every %s needs an id", kind)
+	}
+	if name == "" {
+		return fmt.Errorf("every %s needs a name, and %q has none", kind, id)
 	}
 	if seen[id] {
 		return fmt.Errorf("duplicate %s id %q", kind, id)

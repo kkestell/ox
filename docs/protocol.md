@@ -81,7 +81,7 @@ the built-in catalog of Claude Code and Ur. The daemon validates harness names a
 
 Each harness lists at least one model, each with the effort levels it takes,
 and at least one permission mode. Every choice has a nonempty `id`, unique
-within its list and passed to the harness, and a `name` to show. For Claude,
+within its list and passed to the harness, and a nonempty `name` to show. For Claude,
 use `manual`, not its alias `default`. Ur takes only the permission mode
 `manual`, and the effort levels `max`, `xhigh`, `high`, `medium`, `low`,
 `minimal`, and `none`, which it sends to OpenRouter as the reasoning effort.

@@ -60,7 +60,7 @@ func (a *Agent) write(input agent.Input) error {
 		p = &prompting{}
 		a.phase = p
 	}
-	p.input = input
+	p.messageID = input.MessageID
 	return nil
 }
 
@@ -149,7 +149,7 @@ func (a *Agent) sessionState(state string) {
 	if state == agent.StateIdle {
 		a.withdrawApprovals()
 		if p, ok := a.phase.(*prompting); ok && a.tracker.Len() == 0 {
-			a.tracker.Report(state, p.input.MessageID)
+			a.tracker.Report(state, p.messageID)
 			a.ready()
 			return
 		}

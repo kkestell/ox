@@ -105,7 +105,7 @@ def main():
         run("git", "checkout-index", "--all", f"--prefix={snapshot}/")
         measured = {p: c for p in run("git", "ls-files").splitlines() if (c := classify(p))}
 
-        by_file = json.loads(run("cloc", "--quiet", "--json", "--by-file", "--list-file=-",
+        by_file = json.loads(run("cloc", "--quiet", "--json", "--by-file", "--skip-uniqueness", "--list-file=-",
                                  cwd=snapshot, input="\n".join(measured)))
         size = {(language, test): {"files": 0, "comment": 0, "code": 0}
                 for language in LANGUAGES for test in (False, True)}

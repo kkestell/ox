@@ -87,8 +87,8 @@ func TestProviders(t *testing.T) {
 	}
 }
 
-// A choice ID must identify exactly one option in its own list.
-func TestChoiceIDs(t *testing.T) {
+// A choice needs a name and an ID that identifies exactly one option in its own list.
+func TestChoiceIDsAndNames(t *testing.T) {
 	for _, harness := range []string{
 		`{"models":[{"id":"","name":"M","efforts":[{"id":"low","name":"Low"}]},{"id":"m","name":"M","efforts":[{"id":"low","name":"Low"}]}],"permission_modes":[{"id":"auto","name":"Auto"}]}`,
 		`{"models":[{"id":"m","name":"M","efforts":[{"id":"low","name":"Low"},{"id":"","name":"High"}]}],"permission_modes":[{"id":"auto","name":"Auto"}]}`,
@@ -96,6 +96,12 @@ func TestChoiceIDs(t *testing.T) {
 		`{"models":[{"id":"m","name":"M","efforts":[{"id":"low","name":"Low"}]},{"id":"m","name":"Other"}],"permission_modes":[{"id":"auto","name":"Auto"}]}`,
 		`{"models":[{"id":"m","name":"M","efforts":[{"id":"low","name":"Low"},{"id":"low","name":"Other"}]}],"permission_modes":[{"id":"auto","name":"Auto"}]}`,
 		`{"models":[{"id":"m","name":"M","efforts":[{"id":"low","name":"Low"}]}],"permission_modes":[{"id":"auto","name":"Auto"},{"id":"auto","name":"Other"}]}`,
+		`{"models":[{"id":"m","name":"","efforts":[{"id":"low","name":"Low"}]}],"permission_modes":[{"id":"auto","name":"Auto"}]}`,
+		`{"models":[{"id":"m","efforts":[{"id":"low","name":"Low"}]}],"permission_modes":[{"id":"auto","name":"Auto"}]}`,
+		`{"models":[{"id":"m","name":"M","efforts":[{"id":"low","name":""}]}],"permission_modes":[{"id":"auto","name":"Auto"}]}`,
+		`{"models":[{"id":"m","name":"M","efforts":[{"id":"low"}]}],"permission_modes":[{"id":"auto","name":"Auto"}]}`,
+		`{"models":[{"id":"m","name":"M","efforts":[{"id":"low","name":"Low"}]}],"permission_modes":[{"id":"auto","name":""}]}`,
+		`{"models":[{"id":"m","name":"M","efforts":[{"id":"low","name":"Low"}]}],"permission_modes":[{"id":"auto"}]}`,
 	} {
 		path := filepath.Join(t.TempDir(), "config.json")
 		data := `{"harnesses":{"h":` + harness + `},"defaults":{"harness":"h","model":"m","effort":"low","permission_mode":"auto"}}`
@@ -103,7 +109,7 @@ func TestChoiceIDs(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := Load(path); err == nil {
-			t.Errorf("a missing or duplicate choice ID loaded: %s", harness)
+			t.Errorf("a choice with a missing ID or name, or a duplicate ID, loaded: %s", harness)
 		}
 	}
 }

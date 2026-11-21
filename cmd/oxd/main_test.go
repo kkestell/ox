@@ -26,6 +26,51 @@ import (
 	"github.com/kkestell/ox/internal/ur"
 )
 
+// A ".." after a symlink names the symlink target's parent, which is where
+// ox and ox-mcp find the socket when they dial the path.
+func TestSocketPathResolvesLinksBeforeDotDot(t *testing.T) {
+	// t.TempDir is too long for a socket path on macOS.
+	dir, err := os.MkdirTemp("", "oxd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	if dir, err = filepath.EvalSymlinks(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "other", "inner"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("other", "inner"), filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	for _, c := range []struct{ given, want string }{
+		{filepath.Join(dir, "link") + "/../a.sock", "other/a.sock"},
+		{"link/../b.sock", "other/b.sock"},
+		{"link/../sub/c.sock", "other/sub/c.sock"},
+	} {
+		socket, err := absolute(c.given)
+		if err != nil {
+			t.Fatal(err)
+		}
+		l, err := listen(socket)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, c.want)); err != nil {
+			t.Errorf("%s did not bind %s: %v", c.given, c.want, err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, filepath.Base(c.want))); err == nil {
+			t.Errorf("%s bound the socket in the directory that removes the link", c.given)
+		}
+		l.Close()
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sub")); err == nil {
+		t.Error("listen created the directory that removes the link")
+	}
+}
+
 func TestListenReplacesOnlyAStaleSocket(t *testing.T) {
 	// t.TempDir is too long for a socket path on macOS.
 	dir, err := os.MkdirTemp("", "oxd")

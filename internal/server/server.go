@@ -113,16 +113,25 @@ func (s *Server) serveConn(netConn net.Conn) {
 			}
 			return
 		}
+		request, invalid := jsonrpc.Parse(line)
+		if invalid != nil {
+			reply(invalid)
+			continue
+		}
+		// Operations require a request ID so the client receives the outcome.
+		if len(request.ID) == 0 {
+			continue
+		}
 		if first {
-			if id, handled := s.attach(c, reply, line); handled {
+			if id, handled := s.attach(c, reply, request); handled {
 				mcpSession = id
 				continue
 			}
 		}
 		if mcpSession != "" {
-			go s.handleMCP(reply, mcpSession, line)
+			go s.handleMCP(reply, mcpSession, request)
 		} else {
-			go s.handle(reply, line)
+			go s.handle(reply, request)
 		}
 	}
 }
