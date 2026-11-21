@@ -21,6 +21,7 @@ import (
 	"github.com/kkestell/ox/internal/agent"
 	"github.com/kkestell/ox/internal/claude"
 	"github.com/kkestell/ox/internal/config"
+	"github.com/kkestell/ox/internal/fake"
 	"github.com/kkestell/ox/internal/store"
 	"github.com/kkestell/ox/internal/ur"
 )
@@ -64,9 +65,22 @@ func TestConfigOffersOnlyWhatHarnessesTake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	harnesses := map[string]agent.Harness{"claude": claude.Harness, "ur": ur.Harness(ur.Endpoint, nil)}
+	refuse := func(string) error { return errors.New("refused") }
+	harnesses := map[string]agent.Harness{
+		"claude": claude.Harness,
+		"ur":     ur.Harness(ur.Endpoint, nil),
+		"picky":  {Start: fake.Start, CheckEffort: refuse, CheckPermissionMode: refuse},
+		"plain":  {Start: fake.Start},
+	}
 	if err := checkConfig(builtIn, harnesses); err != nil {
 		t.Fatalf("the built-in configuration was refused: %v", err)
+	}
+	plain := &config.Config{Harnesses: map[string]config.Harness{"plain": {
+		Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "any"}}}},
+		PermissionModes: []config.Option{{ID: "any"}},
+	}}}
+	if err := checkConfig(plain, harnesses); err != nil {
+		t.Fatalf("a harness without checks was refused: %v", err)
 	}
 	for name, cfg := range map[string]*config.Config{
 		"a Claude effort level Claude does not take": {Harnesses: map[string]config.Harness{"claude": {
@@ -79,6 +93,16 @@ func TestConfigOffersOnlyWhatHarnessesTake(t *testing.T) {
 		"an Ur permission mode Ur does not take": {Harnesses: map[string]config.Harness{"ur": {
 			Models:          []config.Model{{ID: "m"}},
 			PermissionModes: []config.Option{{ID: "manual"}, {ID: "auto"}},
+		}}},
+		"an effort level a harness's own check refuses": {Harnesses: map[string]config.Harness{"picky": {
+			Models: []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}}}},
+		}}},
+		"a permission mode a harness's own check refuses": {Harnesses: map[string]config.Harness{"picky": {
+			Models:          []config.Model{{ID: "m"}},
+			PermissionModes: []config.Option{{ID: "manual"}},
+		}}},
+		"a harness oxd does not have": {Harnesses: map[string]config.Harness{"nope": {
+			Models: []config.Model{{ID: "m"}},
 		}}},
 		"a provider order on a Claude model": {Harnesses: map[string]config.Harness{"claude": {
 			Models:          []config.Model{{ID: "claude-haiku-5-5", Providers: []string{"anthropic"}}},

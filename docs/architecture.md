@@ -5,7 +5,7 @@ clients over a Unix socket. `ox` serves the [web UI](#web-ui).
 
 Each package of `oxd` depends only on the packages beneath it. The server and each
 harness meet only at `internal/agent`; `cmd/oxd` gives the server each
-harness by name, with its `Start` function and any prompt validation.
+harness by name, with its `Start` function and its prompt and configuration checks.
 
 ```
 cmd/ox-mcp         stdio forwarder from a harness's MCP client to the socket
@@ -36,7 +36,7 @@ cmd/oxd            socket, database, and configuration paths, signals, the harne
 | `server` | Client and MCP connections, each session's goroutine and the agent it runs, and the mapping from each method to a session operation and its error codes. Each connection writes through its own queue, so sessions never wait on a client. |
 | `store` | The SQLite database of workspaces, sessions, child sessions' `children` rows, archived sessions' `archived` rows, and session events. |
 | `jsonrpc` | Request validation and the response and notification types. |
-| `agent` | The `Agent` interface a harness implements, its `Start` function and options, and the updates, snapshots, settings, and errors they share. |
+| `agent` | The `Agent` interface a harness implements, its `Start` function, prompt and configuration checks, and options, and the updates, snapshots, settings, and errors they share. |
 | `fake` | A harness that runs no process and echoes each prompt back, a word at a time. A prompt `approve <tool> <input JSON>` first asks to approve that tool call, and the call's result is the answer. A prompt `background <milliseconds>` also runs a background task that long. |
 | `ur` | A harness that runs no process and chats through OpenRouter's chat completions API. It keeps the conversation in memory and streams each turn's reply from one request, so it never reports itself parkable. |
 | `claude` | The Claude Code harness: starting and initializing Claude, its stream-json wire format, and the state machine that runs it as an `Agent`. |

@@ -56,12 +56,16 @@ type Agent interface {
 // Event is a harness's own input, opaque to the server.
 type Event any
 
-// Harness starts an agent and may check user prompts before starting it.
-// Start returns at once with the agent starting, and an error only when the
-// harness cannot be launched; a start that fails later ends the agent.
+// Harness starts an agent and may check user prompts and the configuration
+// offered for it. Start returns at once with the agent starting, and an error
+// only when the harness cannot be launched; a start that fails later ends the
+// agent.
 type Harness struct {
-	Start       func(Options) (Agent, error)
-	CheckPrompt func(string) error // nil means the harness accepts all prompts
+	Start               func(Options) (Agent, error)
+	CheckPrompt         func(string) error // nil means the harness accepts all prompts
+	CheckEffort         func(string) error // nil means the harness takes every effort level
+	CheckPermissionMode func(string) error // nil means the harness takes every permission mode
+	TakesProviders      bool               // whether a model may set a provider order
 }
 
 type Options struct {

@@ -111,11 +111,20 @@ func systemPrompt(oxSessionID, workspace string) string {
 // default effort with only a warning.
 var efforts = []string{"low", "medium", "high", "xhigh", "max"}
 
-// CheckEffort reports whether Claude takes effort; an empty effort leaves its
+// checkEffort reports whether Claude takes effort; an empty effort leaves its
 // default.
-func CheckEffort(effort string) error {
+func checkEffort(effort string) error {
 	if effort != "" && !slices.Contains(efforts, effort) {
 		return fmt.Errorf("Claude has no effort level %q", effort)
+	}
+	return nil
+}
+
+// checkPermissionMode refuses default, Claude's alias for manual, so that one
+// mode has one ID.
+func checkPermissionMode(mode string) error {
+	if mode == "default" {
+		return errors.New("use permission mode \"manual\" instead of \"default\" for Claude")
 	}
 	return nil
 }
@@ -125,7 +134,7 @@ func CheckEffort(effort string) error {
 // done is closed. oxSessionID is the Ox session's ID: Claude's instructions
 // and the log of its stderr name it.
 func startProcess(workspace, oxSessionID, sessionID string, resume bool, settings agent.Settings, mcp agent.MCPServer, events chan<- agent.Event, done <-chan struct{}) (*process, *writer, error) {
-	if err := CheckEffort(settings.Effort); err != nil {
+	if err := checkEffort(settings.Effort); err != nil {
 		return nil, nil, err
 	}
 	mcpConfig, err := json.Marshal(map[string]any{"mcpServers": map[string]any{

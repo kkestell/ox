@@ -118,35 +118,29 @@ func findForwarder() (string, error) {
 }
 
 // checkConfig refuses a configuration that offers a harness oxd does not
-// have, or a choice its harness does not take: a Claude effort level Claude
-// does not take, Claude's alias for manual, an Ur effort level or permission
-// mode Ur does not take, or a provider order for a harness other than Ur.
+// have, or a choice its harness does not take.
 func checkConfig(cfg *config.Config, harnesses map[string]agent.Harness) error {
-	for name, harness := range cfg.Harnesses {
-		if harnesses[name].Start == nil {
+	for name, offered := range cfg.Harnesses {
+		harness := harnesses[name]
+		if harness.Start == nil {
 			return fmt.Errorf("unknown harness %q", name)
 		}
-		checkEffort := func(string) error { return nil }
-		switch name {
-		case "claude":
-			if harness.CheckPermissionMode("default") == nil {
-				return errors.New("use permission mode \"manual\" instead of \"default\" for Claude")
-			}
-			checkEffort = claude.CheckEffort
-		case "ur":
-			for _, mode := range harness.PermissionModes {
-				if err := ur.CheckPermissionMode(mode.ID); err != nil {
-					return err
+		if harness.CheckPermissionMode != nil {
+			for _, mode := range offered.PermissionModes {
+				if err := harness.CheckPermissionMode(mode.ID); err != nil {
+					return fmt.Errorf("harness %q: %w", name, err)
 				}
 			}
-			checkEffort = ur.CheckEffort
 		}
-		for _, model := range harness.Models {
-			if len(model.Providers) > 0 && name != "ur" {
-				return fmt.Errorf("model %q: providers is only for ur", model.ID)
+		for _, model := range offered.Models {
+			if len(model.Providers) > 0 && !harness.TakesProviders {
+				return fmt.Errorf("model %q: harness %q takes no providers", model.ID, name)
+			}
+			if harness.CheckEffort == nil {
+				continue
 			}
 			for _, effort := range model.Efforts {
-				if err := checkEffort(effort.ID); err != nil {
+				if err := harness.CheckEffort(effort.ID); err != nil {
 					return fmt.Errorf("model %q: %w", model.ID, err)
 				}
 			}

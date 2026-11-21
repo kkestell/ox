@@ -22,18 +22,18 @@ const Endpoint = "https://openrouter.ai/api/v1/chat/completions"
 // efforts are the reasoning efforts OpenRouter takes.
 var efforts = []string{"max", "xhigh", "high", "medium", "low", "minimal", "none"}
 
-// CheckEffort reports whether OpenRouter takes effort; an empty effort sends
+// checkEffort reports whether OpenRouter takes effort; an empty effort sends
 // none.
-func CheckEffort(effort string) error {
+func checkEffort(effort string) error {
 	if effort != "" && !slices.Contains(efforts, effort) {
 		return fmt.Errorf("Ur has no effort level %q", effort)
 	}
 	return nil
 }
 
-// CheckPermissionMode reports whether Ur takes mode. Ur has no tools, so
+// checkPermissionMode reports whether Ur takes mode. Ur has no tools, so
 // manual, where every tool call asks first, is the one mode it honors.
-func CheckPermissionMode(mode string) error {
+func checkPermissionMode(mode string) error {
 	if mode != "manual" {
 		return fmt.Errorf("Ur has no permission mode %q", mode)
 	}
@@ -43,17 +43,22 @@ func CheckPermissionMode(mode string) error {
 // Harness starts agents that post to endpoint. providers maps a model ID to
 // the provider order its requests pin; a model without one routes freely.
 func Harness(endpoint string, providers map[string][]string) agent.Harness {
-	return agent.Harness{Start: func(options agent.Options) (agent.Agent, error) {
-		key := os.Getenv("OPENROUTER_API_KEY")
-		if key == "" {
-			return nil, errors.New("OPENROUTER_API_KEY is not set")
-		}
-		return &Agent{
-			endpoint: endpoint, key: key, providers: providers,
-			events: make(chan agent.Event), done: make(chan struct{}),
-			onUpdate: options.OnUpdate, onConfigured: options.OnConfigured, settings: options.Settings,
-		}, nil
-	}}
+	return agent.Harness{
+		Start: func(options agent.Options) (agent.Agent, error) {
+			key := os.Getenv("OPENROUTER_API_KEY")
+			if key == "" {
+				return nil, errors.New("OPENROUTER_API_KEY is not set")
+			}
+			return &Agent{
+				endpoint: endpoint, key: key, providers: providers,
+				events: make(chan agent.Event), done: make(chan struct{}),
+				onUpdate: options.OnUpdate, onConfigured: options.OnConfigured, settings: options.Settings,
+			}, nil
+		},
+		CheckEffort:         checkEffort,
+		CheckPermissionMode: checkPermissionMode,
+		TakesProviders:      true,
+	}
 }
 
 // Agent holds one conversation in memory. Every field is owned by the session

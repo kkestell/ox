@@ -9,7 +9,12 @@ import (
 	"github.com/kkestell/ox/internal/agent"
 )
 
-var Harness = agent.Harness{Start: Start, CheckPrompt: checkPrompt}
+var Harness = agent.Harness{
+	Start:               Start,
+	CheckPrompt:         checkPrompt,
+	CheckEffort:         checkEffort,
+	CheckPermissionMode: checkPermissionMode,
+}
 
 func checkPrompt(text string) error {
 	for first := range strings.FieldsSeq(text) {
