@@ -10,7 +10,7 @@ the code in `*_test.go` and `cmd/ox/web/e2e`.
 
 | Language   | Files | Comment |  Code | Tests |
 | ---------- | ----: | ------: | ----: | ----: |
-| Go         |    26 |     534 | 4,578 | 6,542 |
+| Go         |    26 |     542 | 4,570 | 6,633 |
 | TypeScript |    17 |     142 | 2,138 | 1,700 |
 | CSS        |     1 |      24 |   344 |     0 |
 
@@ -24,11 +24,10 @@ Go and Biome for TypeScript.
 |         47 | `(*Agent).handleOutput`      | `internal/claude/agent.go:172`   |
 |         29 | `read`                       | `internal/ur/stream.go:94`       |
 |         28 | `checkConfig`                | `cmd/oxd/main.go:127`            |
-|         27 | `createSession`              | `internal/server/mcp.go:313`     |
-|         21 | `(*Server).configureSession` | `internal/server/methods.go:475` |
-|         18 | `(*Server).serveConn`        | `internal/server/server.go:94`   |
+|         21 | `(*Server).configureSession` | `internal/server/methods.go:497` |
+|         18 | `(*Server).serveConn`        | `internal/server/server.go:95`   |
 |         17 | `deliverOutput`              | `internal/claude/claude.go:299`  |
-|         16 | `(*Server).createSession`    | `internal/server/methods.go:294` |
+|         16 | `(*Server).createSession`    | `internal/server/methods.go:295` |
 
 ## Long files
 
@@ -36,8 +35,8 @@ Production files with over 500 lines of code.
 
 | Code | File                         |
 | ---: | ---------------------------- |
-|  550 | `internal/server/mcp.go`     |
-|  517 | `internal/server/methods.go` |
+|  535 | `internal/server/methods.go` |
+|  524 | `internal/server/mcp.go`     |
 
 ## Lint suppressions
 

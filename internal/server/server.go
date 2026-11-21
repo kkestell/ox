@@ -68,6 +68,7 @@ func New(st *store.Store, cfg *config.Config, parkAfter time.Duration, harnesses
 				first = firstLine(text)
 			}
 			sess := s.newSession(record, w.Path, first)
+			go sess.run()
 			ws.sessions = append(ws.sessions, sess)
 			s.sessions[record.ID] = sess
 		}

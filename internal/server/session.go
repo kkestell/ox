@@ -17,7 +17,8 @@ import (
 // every call to its agent; other goroutines reach it only through post. Each
 // operation queues its own response there, at once or from the agent event
 // that finishes it, so a response lands in a connection's queue after every
-// update it reflects and before every update it does not.
+// update it reflects and before every update it does not. Until run starts,
+// the session belongs to whoever builds it.
 type session struct {
 	// Fixed at creation.
 	server    *Server
@@ -72,8 +73,8 @@ func (sess *session) labelLocked() string {
 	return sess.id[:8]
 }
 
-// newSession starts a stored session's goroutine. firstLine is the first line
-// of the first prompt the user sent it, or "".
+// newSession builds a stored session, whose goroutine its caller starts.
+// firstLine is the first line of the first prompt the user sent it, or "".
 func (s *Server) newSession(record *store.Session, workspace, firstLine string) *session {
 	var c *child
 	if r := record.Child; r != nil {
@@ -88,7 +89,6 @@ func (s *Server) newSession(record *store.Session, workspace, firstLine string) 
 	}
 	// A session starts parked, so any earlier process has ended.
 	sess.history.recordEnd()
-	go sess.run()
 	return sess
 }
 

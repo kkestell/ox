@@ -107,11 +107,12 @@ top-level session has none. The directory its harness runs in is derived: the
 child's directory, else the workspace's. `create_session` checks its arguments
 on the call goroutine, then posts to the parent's goroutine, which resolves the
 child's settings from its own, then under `Server.mu` checks shutdown and name
-uniqueness, stores the child, starts its goroutine, and adds it to membership.
-The call goroutine then posts the first message to the child's goroutine, which
-deletes the child again when its harness cannot be launched. A session's destroy
-operation refuses while any session is its child; since children are created
-only on the parent's goroutine, none appears while it runs.
+uniqueness, stores the child, launches its harness, adds it to membership, hands
+its agent the first message, and then starts its goroutine. A harness that
+cannot be launched leaves the child unstored and unpublished. A session belongs
+to whoever builds it until its goroutine starts. A session's destroy operation
+refuses while any session is its child; since children are created only on the
+parent's goroutine, none appears while it runs.
 
 The session arms a park timer whenever its agent is `Parkable` and stops it when
 the agent stops being parkable, so the full period restarts each time. If the

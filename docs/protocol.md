@@ -524,7 +524,7 @@ Every connection is told when workspaces and sessions come and go:
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `workspace/created`  | `workspace_id`, `path`, `created_at`                                                                                                         | A workspace was registered.                                                                                                                                        |
 | `workspace/removed`  | `workspace_id`                                                                                                                               | A workspace was removed.                                                                                                                                           |
-| `session/created`    | `session_id`, `workspace_id`, `label` (a child's title, or the first 8 characters of its ID), `harness`, `created_at`, and a child's `child` | A session was created, parked.                                                                                                                                     |
+| `session/created`    | `session_id`, `workspace_id`, `label` (a child's title, or the first 8 characters of its ID), `harness`, `created_at`, and a child's `child` | A session was created: a top-level session parked, a child started with its first message, whose updates follow.                                                   |
 | `session/labeled`    | `session_id`, `label`                                                                                                                        | A top-level session took the first prompt the user sent it, and `label` is its first line. Sent once per session.                                                  |
 | `session/configured` | `session_id`, `model`, `effort`, `permission_mode`                                                                                           | A session's settings changed, by `session/configure` or by the harness itself, such as Claude leaving plan mode; the fields are the settings the session now uses. |
 | `session/destroyed`  | `session_id`                                                                                                                                 | A session was destroyed, after its last update.                                                                                                                    |
@@ -639,11 +639,10 @@ Refusals, in the order they are checked:
   `session/create` error;
 - `name` already one of the caller's children's: `a child named "<name>" already
   exists`;
-- the daemon shutting down: `daemon is shutting down`; the caller or child gone
-  first: `session not found`;
+- the daemon shutting down: `daemon is shutting down`; the caller gone first:
+  `session not found`;
 - an archived caller: `session is archived`;
-- a harness that cannot be launched: the launch error, after the child is
-  deleted again with `session/destroyed`.
+- a harness that cannot be launched: the launch error; no child is created.
 
 `read_session` takes `to`, a session ID, and an optional integer `cursor`, and
 is annotated `readOnlyHint`. It returns a page of the session's history, newest

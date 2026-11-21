@@ -13,9 +13,6 @@ the evidence and the correction.
 - [ ] **One Ctrl-C forces `oxd` past graceful shutdown under `make dev`.** The
       terminal's `SIGINT` and the stack's `SIGTERM` both reach `oxd`.
       [Deslop F2](../agents/audits/2026-11-20-002-deslop.md#f2-one-ctrl-c-under-make-dev-forces-oxd-past-graceful-shutdown)
-- [ ] **`create_session` publishes the child before it owns its first message.**
-      An archive or shutdown in between deletes or strands the child.
-      [Deslop F3](../agents/audits/2026-11-20-002-deslop.md#f3-create_session-publishes-the-child-before-its-first-message-has-an-owner)
 - [ ] **Archive and unarchive act on a stale session.** Unarchive can flip a
       recreated session's stored flag, and archive replies before its members
       have stopped.

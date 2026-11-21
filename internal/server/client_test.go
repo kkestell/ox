@@ -86,18 +86,7 @@ func (c *client) next(matches func(message) bool) message {
 // received drains pending reads and returns this session's unmatched
 // notifications, oldest first.
 func (c *client) received(sessionID string) []message {
-	for {
-		select {
-		case m, ok := <-c.messages:
-			if !ok {
-				c.t.Fatal("connection closed")
-			}
-			c.backlog = append(c.backlog, m)
-			continue
-		default:
-		}
-		break
-	}
+	c.drain()
 	var mine []message
 	for _, m := range c.backlog {
 		if m.Method != "" && m.sessionID() == sessionID {
@@ -105,6 +94,35 @@ func (c *client) received(sessionID string) []message {
 		}
 	}
 	return mine
+}
+
+// notifications drains pending reads and returns the unmatched notifications
+// with method, oldest first.
+func (c *client) notifications(method string) []message {
+	c.drain()
+	var matched []message
+	for _, m := range c.backlog {
+		if m.Method == method {
+			matched = append(matched, m)
+		}
+	}
+	return matched
+}
+
+// drain moves every message already read into the backlog.
+func (c *client) drain() {
+	c.t.Helper()
+	for {
+		select {
+		case m, ok := <-c.messages:
+			if !ok {
+				c.t.Fatal("connection closed")
+			}
+			c.backlog = append(c.backlog, m)
+		default:
+			return
+		}
+	}
 }
 
 func (c *client) forget(sessionID string) {

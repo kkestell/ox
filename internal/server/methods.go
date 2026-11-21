@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"slices"
@@ -349,18 +350,33 @@ func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 		ID: sessionID, Harness: input.Harness, Model: input.Model, Effort: input.Effort, PermissionMode: input.PermissionMode,
 		CreatedAt: time.Now(),
 	}
-	if err := s.store.AddSession(w.id, record); err != nil {
+	sess, err := s.addSession(w, record, nil)
+	if err != nil {
 		reply(failure(id, err))
 		return
 	}
-	sess := s.addSession(w, record)
 	reply(jsonrpc.Success(id, result{SessionID: sess.id}))
 }
 
-// addSession starts a stored session in w and tells every client. The caller
-// holds s.mu.
-func (s *Server) addSession(w *workspace, record *store.Session) *session {
+// addSession stores a session in w, tells every client, and starts its
+// goroutine. With a first input, it launches the session's harness before
+// publishing it and hands the agent the input before the goroutine starts, so
+// no request reaches the session before it holds the input; a harness that
+// cannot be launched leaves nothing stored or published. A Send error is
+// returned with the published session. The caller holds s.mu.
+func (s *Server) addSession(w *workspace, record *store.Session, first *agent.Input) (*session, error) {
+	if err := s.store.AddSession(w.id, record); err != nil {
+		return nil, err
+	}
 	sess := s.newSession(record, w.path, "")
+	if first != nil {
+		if err := sess.start(); err != nil {
+			if err := s.store.DeleteSession(sess.id); err != nil {
+				log.Printf("session %s: delete after failed launch: %v", sess.id, err)
+			}
+			return nil, err
+		}
+	}
 	w.sessions = append(w.sessions, sess)
 	s.sessions[sess.id] = sess
 	s.broadcast("session/created", struct {
@@ -371,7 +387,13 @@ func (s *Server) addSession(w *workspace, record *store.Session) *session {
 		CreatedAt   time.Time `json:"created_at"`
 		Child       *child    `json:"child,omitempty"`
 	}{sess.id, w.id, sess.labelLocked(), sess.harness, sess.createdAt, sess.child})
-	return sess
+	var err error
+	if first != nil {
+		first.MessageID = rand.Text()
+		err = sess.agent.Send(*first)
+	}
+	go sess.run()
+	return sess, err
 }
 
 // getSession returns a session's settings, history, and current state. Every

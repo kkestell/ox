@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -408,18 +410,16 @@ func TestCreateSession(t *testing.T) {
 		t.Fatalf("a child's create_session returned %q, %v", text, refused)
 	}
 
-	t.Log("a child whose harness cannot be launched is deleted again")
+	t.Log("a child whose harness cannot be launched leaves no trace")
 	if text, refused := fromA.tool("create_session", map[string]string{"name": "doomed", "title": "Doomed", "message": "hi", "harness": "broken", "model": "m"}); !refused || text != "no such harness binary" {
 		t.Fatalf("create_session on a broken harness returned %q, %v", text, refused)
 	}
-	var doomed struct {
-		SessionID string `json:"session_id"`
-		Child     child  `json:"child"`
+	c.call("harness/list", map[string]any{})
+	for _, m := range c.notifications("session/created") {
+		if strings.Contains(string(m.Params), `"name":"doomed"`) {
+			t.Fatalf("a child whose harness cannot be launched was published: %s", m.Params)
+		}
 	}
-	json.Unmarshal(c.next(func(m message) bool {
-		return m.Method == "session/created" && strings.Contains(string(m.Params), `"name":"doomed"`)
-	}).Params, &doomed)
-	c.next(func(m message) bool { return m.Method == "session/destroyed" && m.sessionID() == doomed.SessionID })
 	createChild(map[string]string{"name": "doomed", "title": "Doomed", "message": "hi"})
 
 	t.Log("children outlive a restart")
@@ -463,19 +463,79 @@ func TestCreateSession(t *testing.T) {
 	c.call("session/destroy", map[string]string{"session_id": a})
 }
 
-// A child is not created once shutdown has begun, even when the call reached
-// its parent first, so Close ends every session there is.
+// lockedBuffer collects log output written from any goroutine.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// A child whose harness cannot be launched answers with the launch error even
+// when its row cannot be deleted again, and the failed delete is logged.
+func TestFailedLaunchKeepsItsErrorWhenDeleteFails(t *testing.T) {
+	cfg := &config.Config{Harnesses: map[string]config.Harness{
+		"fake": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
+	}}
+	st := openStore(t)
+	// The parent is never prompted, so the only start is the child's.
+	start := func(agent.Options) (agent.Agent, error) {
+		st.Close()
+		return nil, errors.New("no such harness binary")
+	}
+	s, err := New(st, cfg, 0, map[string]agent.Harness{"fake": {Start: start}}, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	logged := &lockedBuffer{}
+	log.SetOutput(logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	c := connect(t, s)
+	var workspace struct {
+		WorkspaceID string `json:"workspace_id"`
+	}
+	json.Unmarshal(c.call("workspace/create", map[string]string{"path": t.TempDir()}), &workspace)
+	var parent struct {
+		SessionID string `json:"session_id"`
+	}
+	json.Unmarshal(c.call("session/create", map[string]string{
+		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "permission_mode": "manual",
+	}), &parent)
+	if text, refused := attach(t, s, parent.SessionID).tool("create_session", map[string]string{"name": "doomed", "title": "Doomed", "message": "hi"}); !refused || text != "no such harness binary" {
+		t.Fatalf("create_session with an unlaunchable harness and a closed store returned %q, %v", text, refused)
+	}
+	if !strings.Contains(logged.String(), "delete after failed launch") {
+		t.Fatalf("the failed delete was not logged: %q", logged.String())
+	}
+}
+
+// A child is published only once its harness is launched. A shutdown that
+// races its creation waits for it, then ends the child like any member, and
+// the child keeps its first message through a restart.
 func TestCreateSessionDuringShutdown(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{
 		"fake": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
 	}}
+	// The parent is never prompted, so the only start is the child's.
 	starting, release := make(chan struct{}), make(chan struct{})
 	start := func(o agent.Options) (agent.Agent, error) {
 		close(starting)
 		<-release
 		return fake.Start(o)
 	}
-	s, err := New(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: start}}, MCP{})
+	st := openStore(t)
+	s, err := New(st, cfg, 0, map[string]agent.Harness{"fake": {Start: start}}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -490,38 +550,66 @@ func TestCreateSessionDuringShutdown(t *testing.T) {
 	json.Unmarshal(c.call("session/create", map[string]string{
 		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "permission_mode": "manual",
 	}), &parent)
-	fromParent, other := attach(t, s, parent.SessionID), attach(t, s, parent.SessionID)
+	fromParent := attach(t, s, parent.SessionID)
 
-	// The parent's goroutine is held in starting its harness, so the call
-	// waits for it, ahead of Close's end.
-	c.send("session/send", map[string]string{"session_id": parent.SessionID, "text": "hi"})
-	<-starting
 	creating := fromParent.send("tools/call", map[string]any{"name": "create_session",
 		"arguments": map[string]string{"name": "late", "title": "Late", "message": "hi"}})
-	time.Sleep(100 * time.Millisecond) // the call reaches the parent's queue
+	<-starting
+	c.call("harness/list", map[string]any{})
+	if created := c.notifications("session/created"); len(created) != 1 || created[0].sessionID() != parent.SessionID {
+		t.Fatalf("a child was published while its harness was launching: %+v", created)
+	}
 	closed := make(chan struct{})
 	go func() {
 		s.Close()
 		close(closed)
 	}()
-	for other.request("ping", map[string]any{}).Error == nil {
-	}
 	close(release)
+
 	var result struct {
 		Content []struct {
 			Text string `json:"text"`
 		} `json:"content"`
 		IsError bool `json:"isError"`
 	}
+	var late struct {
+		SessionID string `json:"session_id"`
+	}
 	json.Unmarshal(fromParent.response(creating).Result, &result)
-	if !result.IsError || len(result.Content) != 1 || result.Content[0].Text != "daemon is shutting down" {
-		t.Fatalf("create_session during shutdown returned %+v", result)
+	if result.IsError || len(result.Content) != 1 || json.Unmarshal([]byte(result.Content[0].Text), &late) != nil || late.SessionID == "" {
+		t.Fatalf("create_session racing shutdown returned %+v", result)
+	}
+	if first := c.next(func(m message) bool { return m.Method != "" && m.sessionID() == late.SessionID }); first.Method != "session/created" {
+		t.Fatalf("the page heard %s about the child before session/created", first.Method)
 	}
 	<-closed
-	for _, m := range c.received("") {
-		if m.Method == "session/created" {
-			t.Fatalf("a child was created during shutdown: %s", m.Params)
-		}
+	c.update(late.SessionID, agent.UpdateParked)
+
+	s, err = New(st, cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c = connect(t, s)
+	var listed struct {
+		Workspaces []struct {
+			Sessions []struct {
+				SessionID string `json:"session_id"`
+			} `json:"sessions"`
+		} `json:"workspaces"`
+	}
+	json.Unmarshal(c.call("workspace/list", map[string]any{}), &listed)
+	if sessions := listed.Workspaces[0].Sessions; len(sessions) != 2 || sessions[1].SessionID != late.SessionID {
+		t.Fatalf("after a restart workspace/list listed %+v", sessions)
+	}
+	var got struct {
+		History []agent.Update `json:"history"`
+	}
+	json.Unmarshal(c.call("session/get", map[string]string{"session_id": late.SessionID}), &got)
+	if !slices.ContainsFunc(got.History, func(u agent.Update) bool {
+		return u.Type == agent.UpdatePrompt && u.From == parent.SessionID && u.Text == "hi"
+	}) {
+		t.Fatalf("after a restart the child's history is %+v", got.History)
 	}
 }
 

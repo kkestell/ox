@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -306,10 +305,11 @@ var childName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 const titleRunes = 48
 
 // createSession starts a child of the caller and hands it its first message.
-// The call goroutine checks the arguments; the parent's goroutine, which owns
-// its settings, resolves the child's and creates it; the child's goroutine
-// accepts the message, and deletes the child again when its harness cannot be
-// launched.
+// The call goroutine checks the arguments. The parent's goroutine, which owns
+// its settings, resolves the child's, then stores the child, launches its
+// harness, publishes it, and hands its agent the first message before the
+// child's goroutine starts, so no request reaches the child before it holds
+// the message.
 func createSession(s *Server, caller *session, arguments json.RawMessage, respond func(string, error)) {
 	var input struct {
 		Name    string `json:"name"`
@@ -359,65 +359,43 @@ func createSession(s *Server, caller *session, arguments json.RawMessage, respon
 		agent.Settings
 		Directory string `json:"directory"`
 	}
-	var (
-		created *session
-		message agent.Input
-		answer  result
-		err     error
-	)
-	done := make(chan struct{})
 	if !caller.post(func() {
-		defer close(done)
-		var record *store.Session
-		if record, err = s.childRecord(caller, input.Harness, input.Model, input.Effort); err != nil {
-			return
-		}
-		record.Child = &store.Child{ParentID: caller.id, Name: input.Name, Title: title, Directory: directory}
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if slices.ContainsFunc(s.children(caller), func(other *session) bool { return other.child.Name == input.Name }) {
-			err = fmt.Errorf("a child named %q already exists", input.Name)
-			return
-		}
-		if s.closed {
-			err = errors.New("daemon is shutting down")
-			return
-		}
-		if caller.archived {
-			err = errArchived
-			return
-		}
-		// The caller is a member while its goroutine runs.
-		w := s.workspaceOf(caller)
-		if err = s.store.AddSession(w.id, record); err != nil {
-			return
-		}
-		created = s.addSession(w, record)
-		message = messageInput(caller, caller.labelLocked(), input.Message)
-		answer = result{record.ID, input.Name, record.Harness,
-			agent.Settings{Model: record.Model, Effort: record.Effort, PermissionMode: record.PermissionMode}, directory}
-	}) {
-		respond("", errors.New("session not found"))
-		return
-	}
-	<-done
-	if err != nil {
-		respond("", err)
-		return
-	}
-	if !created.post(func() {
-		if err := created.acceptMessage(message); err != nil {
-			if err := created.destroy(); err != nil {
-				log.Printf("session %s: delete after failed start: %v", created.id, err)
-			}
+		record, err := s.childRecord(caller, input.Harness, input.Model, input.Effort)
+		if err != nil {
 			respond("", err)
 			return
 		}
-		text, err := json.Marshal(answer)
+		record.Child = &store.Child{ParentID: caller.id, Name: input.Name, Title: title, Directory: directory}
+		if err := s.addChild(caller, record, input.Message); err != nil {
+			respond("", err)
+			return
+		}
+		text, err := json.Marshal(result{record.ID, input.Name, record.Harness,
+			agent.Settings{Model: record.Model, Effort: record.Effort, PermissionMode: record.PermissionMode}, directory})
 		respond(string(text), err)
 	}) {
 		respond("", errors.New("session not found"))
 	}
+}
+
+// addChild checks that parent may have the child record names now, then adds
+// it with text as its first message, on parent's goroutine.
+func (s *Server) addChild(parent *session, record *store.Session, text string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if slices.ContainsFunc(s.children(parent), func(other *session) bool { return other.child.Name == record.Child.Name }) {
+		return fmt.Errorf("a child named %q already exists", record.Child.Name)
+	}
+	if s.closed {
+		return errors.New("daemon is shutting down")
+	}
+	if parent.archived {
+		return errArchived
+	}
+	message := messageInput(parent, parent.labelLocked(), text)
+	// The parent is a member while its goroutine runs.
+	_, err := s.addSession(s.workspaceOf(parent), record, &message)
+	return err
 }
 
 // childRecord resolves the harness and settings of a child of parent, on
