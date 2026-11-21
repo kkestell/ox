@@ -51,6 +51,21 @@ which holds the evidence and the correction.
 - [ ] **Protocol, architecture, and Claude notes misstate the code.**
   [Deslop F22](../agents/audits/2026-11-20-002-deslop.md#f22-protocol-architecture-and-claude-notes-misstate-the-code)
 
+## Child sessions
+
+- [ ] **Consistent child titles.** Agents title children inconsistently
+  ("Implement" and "Work" for the same stage, "Plan F1: …" beside "Plan:
+  …"), and the sidebar truncates the topic that tells siblings apart. Give
+  `create_session`'s description in `internal/server/mcp.go` a title
+  convention.
+
+## Questions
+
+- [ ] **One question per page.** A form with several questions shows them
+  all in one scrolling container. Show one question at a time with Previous
+  and Next buttons, and submit from the last. Changes **Questions from
+  Claude**.
+
 ## Approvals
 
 - [ ] **Allow always.** Decide whether to persist grants in the workspace or
