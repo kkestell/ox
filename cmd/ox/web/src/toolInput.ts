@@ -1,11 +1,24 @@
 // Helpers that read Claude's tool calls, for the transcript and approval cards.
-import { stringify } from "@ungap/raw-json";
+import { isRawJSON, stringify } from "@ungap/raw-json";
 import { snapshot } from "solid-js";
 
 // toolSubject is what a tool call acts on, such as Bash's command or Edit's
-// file: the first string in its input.
-export const toolSubject = (input: Record<string, unknown>) =>
-  Object.values(input).find((v): v is string => typeof v === "string") ?? "";
+// file: the first string in its input at any depth, such as AskUserQuestion's
+// first question. An input with no string is shown as compact JSON.
+export function toolSubject(input: Record<string, unknown>): string {
+  const plain = snapshot(input);
+  return firstString(plain) ?? stringify(plain);
+}
+
+function firstString(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object" || isRawJSON(value)) return undefined;
+  for (const v of Object.values(value)) {
+    const found = firstString(v);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
 
 // planOf is the plan of an ExitPlanMode call, which is Markdown.
 export const planOf = (tool: string, input: Record<string, unknown>) =>

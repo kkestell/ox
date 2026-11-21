@@ -225,27 +225,52 @@ test("the file tree lists the workspace and keeps each session's expanded folder
     await answered;
     await page.unroute("**/rpc*", holdSrc);
 
-    // A relay failure keeps the last listing.
-    let failed = 0;
+    // A relay error shows in place of the folder's listing until the next
+    // listing replaces it.
     const failSrc = (route: Route) => {
       const body = route.request().postDataJSON();
       if (body?.method !== "workspace/list_folder" || body.params.path !== "src") return route.fallback();
-      failed++;
       return route.fulfill({ status: 502, body: "relay unavailable" });
     };
     await page.route("**/rpc*", failSrc);
-    await expect.poll(() => failed).toBeGreaterThanOrEqual(2);
-    await expect(rows).toHaveText(["empty", "locked", "src", "a.txt", "b.txt", ".gitignore"]);
+    await expect(rows).toHaveText(["empty", "locked", "src", "relay unavailable", ".gitignore"]);
     await page.unroute("**/rpc*", failSrc);
+    await expect(rows).toHaveText(["empty", "locked", "src", "a.txt", "b.txt", ".gitignore"]);
 
-    // A lost connection lists nothing and keeps the tree; listing waits until
+    // A request that cannot reach the relay, or that the relay answers after
+    // its oxd connection is gone, keeps the last listing.
+    for (const unreachable of [
+      (route: Route) => route.abort(),
+      (route: Route) => route.fulfill({ status: 503, body: "unknown connection" }),
+    ]) {
+      let answered = 0;
+      const answerSrc = (route: Route) => {
+        const body = route.request().postDataJSON();
+        if (body?.method !== "workspace/list_folder" || body.params.path !== "src") return route.fallback();
+        answered++;
+        return unreachable(route);
+      };
+      await page.route("**/rpc*", answerSrc);
+      await expect.poll(() => answered).toBeGreaterThanOrEqual(2);
+      await expect(rows).toHaveText(["empty", "locked", "src", "a.txt", "b.txt", ".gitignore"]);
+      await page.unroute("**/rpc*", answerSrc);
+    }
+
+    // A lost connection lists nothing and keeps the tree, including a listing
+    // in flight and a folder expanded while disconnected; listing waits until
     // the page has reloaded.
+    const lostListing = await hold(page, "workspace/list_folder", { path: "src" });
+    await lostListing.arrived;
     await page.route("**/events", (route) => route.abort());
     await services.restartRelay();
     await expect(page.getByRole("alert").filter({ hasText: "Lost the connection" })).toBeVisible();
+    const empty = files.getByRole("button", { name: "empty" });
+    await empty.click();
     await page.waitForTimeout(100);
     await quiet();
     await expect(rows).toHaveText(["empty", "locked", "src", "a.txt", "b.txt", ".gitignore"]);
+    await empty.click();
+    lostListing.release();
     const reload = await hold(page, "workspace/list");
     await page.unroute("**/events");
     await reload.arrived;
@@ -286,6 +311,8 @@ test("the file viewer shows each session's open file", async ({ page }) => {
     writeFileSync(a, `first\n${`${"long line ".repeat(200)}\n`.repeat(400)}`);
     writeFileSync(join(services.workspace, "bin.dat"), "a\0b");
     const main = join(services.workspace, "src", "main.go");
+    const template = `const s = \`a \${b}\`;\r\nlet c = 1;\rlet d = 2;\n`;
+    writeFileSync(join(services.workspace, "src", "template.ts"), template);
     writeFileSync(main, "package main\n\n// note\nfunc main() {}\n");
     writeFileSync(join(services.workspace, "src", "main.txt"), "package main\n\n// note\nfunc main() {}\n");
     await open(page, services);
@@ -344,7 +371,8 @@ test("the file viewer shows each session's open file", async ({ page }) => {
     await expect(panel).toHaveText("back\n", { timeout: 3000 });
 
     // A file of a language Ox does not register shows as plain text; a Go file
-    // is colored for the page's scheme and re-highlighted only when it changes.
+    // is colored for the page's scheme, and its pane is not re-rendered while
+    // the file is unchanged.
     await expect(panel.locator("span")).toHaveCount(0);
     await files.getByRole("button", { name: "main.txt", exact: true }).click();
     await expect(panel).toContainText("package main");
@@ -371,8 +399,22 @@ test("the file viewer shows each session's open file", async ({ page }) => {
     writeFileSync(main, "// changed\n");
     await expect(comment).toHaveText("// changed", { timeout: 3000 });
 
+    // The pane keeps the file's carriage returns, and a substitution inside a
+    // string keeps the pane's foreground.
+    await files.getByRole("button", { name: "template.ts", exact: true }).click();
+    await expect(tab).toHaveText("template.ts");
+    await expect(panel.locator(".hljs-subst")).toHaveCount(1);
+    expect(await panel.evaluate((pre) => pre.textContent)).toBe(template);
+    const color = (element: Element) => getComputedStyle(element).color;
+    expect(await panel.locator(".hljs-subst").evaluate(color)).toBe(await panel.evaluate(color));
+
+    // A relay error on a read shows in the pane until the next read replaces it.
+    const failedRead = await hold(page, "workspace/read_file", { path: "bin.dat" });
     await binRow.click();
     await expect(tab).toHaveText("bin.dat");
+    await failedRead.arrived;
+    failedRead.fail("relay unavailable");
+    await expect(panel).toHaveText("relay unavailable");
     await expect(panel).toHaveText("file is binary");
     await expect(aRow).not.toHaveAttribute("aria-current");
 

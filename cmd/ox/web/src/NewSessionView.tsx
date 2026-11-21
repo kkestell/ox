@@ -43,8 +43,8 @@ export function NewSessionView(props: { draft: Draft; onCreated(): void }) {
       </header>
       <div class="log" />
       <Show when={draft.control.error()}>{(error) => <p role="alert">{error()}</p>}</Show>
-      <form class="composer" onSubmit={create}>
-        <div class="box">
+      <div class="composer">
+        <form class="box" onSubmit={create}>
           <textarea
             value={draft.control.text()}
             onInput={(event) => draft.control.setText(event.currentTarget.value)}
@@ -62,7 +62,7 @@ export function NewSessionView(props: { draft: Draft; onCreated(): void }) {
             title="Send"
             disabled={draft.control.creating() || !ox.ready()}
           />
-        </div>
+        </form>
         <Show when={draft.choice()}>
           {(choice) => (
             <div class="settings">
@@ -82,7 +82,7 @@ export function NewSessionView(props: { draft: Draft; onCreated(): void }) {
             </div>
           )}
         </Show>
-      </form>
+      </div>
     </>
   );
 }

@@ -157,7 +157,14 @@ function createSessionControl(
   session: () => Session | undefined,
   connected: () => boolean,
 ) {
-  const [text, setText] = createSignal("");
+  const [text, writeText] = createSignal("");
+  // edits counts every write to the text, so a send can tell whether the box
+  // changed since its submit.
+  let edits = 0;
+  const setText = (next: string | ((draft: string) => string)) => {
+    edits++;
+    writeText(next);
+  };
   const [sending, setSending] = createSignal(false);
   const [requested, setRequested] = createSignal<SettingsPatch>();
   const [error, attempt, clearError] = createAttempt();
@@ -196,12 +203,13 @@ function createSessionControl(
     setNotice(undefined);
     return attempt(request);
   };
-  // post sends a prompt. Text typed while it is pending stays in the box.
-  function post(prompt: string) {
+  // post sends a prompt, submitted when the text had the given edit count.
+  // Text changed since the submit stays in the box.
+  function post(prompt: string, submitted: number) {
     setSending(true);
     const request = rpc("session/send", { session_id: id, text: prompt }).then((result) => {
       sent = { id: result.message_id, text: prompt };
-      setText((draft) => (draft === prompt ? "" : draft));
+      if (edits === submitted) setText("");
       // The daemon publishes the input before replying, so a live snapshot
       // already knows whether it was queued, taken, or dropped.
       const snapshot = live();
@@ -240,6 +248,7 @@ function createSessionControl(
     // create already reached oxd, it recovers instead of sending.
     create(workspaceId: string, harness: string, settings: Settings, onCreated: () => void) {
       const prompt = text();
+      const submitted = edits;
       if (!connected() || creating() || !prompt.trim()) return;
       setCreating(true);
       const { effort, ...required } = settings;
@@ -252,14 +261,14 @@ function createSessionControl(
       }).then((result) => {
         setCreating(false);
         if (result.existing) recover();
-        else post(prompt);
+        else post(prompt, submitted);
         onCreated();
       });
       start(request).finally(() => setCreating(false));
     },
     recover,
     send(prompt: string) {
-      if (canSend() && prompt.trim()) post(prompt);
+      if (canSend() && prompt.trim()) post(prompt, edits);
     },
     finishPrompt,
     reconcilePrompt,

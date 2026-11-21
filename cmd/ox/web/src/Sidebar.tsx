@@ -116,11 +116,18 @@ function Menu(props: { at: MenuAt; label: string; items: MenuItem[]; onClose(): 
   let menu!: HTMLDivElement;
   onSettled(() => {
     menu.showPopover();
-    // Keep the whole menu on screen, as near the request's point as it fits.
-    const { width, height } = menu.getBoundingClientRect();
-    menu.style.left = `${Math.max(0, Math.min(props.at.x, innerWidth - width))}px`;
-    menu.style.top = `${Math.max(0, Math.min(props.at.y, innerHeight - height))}px`;
+    // Keep the whole menu on screen, as near the request's point as it fits,
+    // as its size changes.
+    const place = () => {
+      const { width, height } = menu.getBoundingClientRect();
+      menu.style.left = `${Math.max(0, Math.min(props.at.x, innerWidth - width))}px`;
+      menu.style.top = `${Math.max(0, Math.min(props.at.y, innerHeight - height))}px`;
+    };
+    place();
+    const observer = new ResizeObserver(place);
+    observer.observe(menu);
     menu.querySelector<HTMLButtonElement>("[role=menuitem]:not(:disabled)")?.focus();
+    return () => observer.disconnect();
   });
   return (
     <div

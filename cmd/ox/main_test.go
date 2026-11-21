@@ -117,3 +117,18 @@ func TestRPCRelaysOneMiBOfEscapedText(t *testing.T) {
 		t.Fatalf("a 1 MiB escaped prompt returned %d and relayed %d bytes", response.Code, len(data))
 	}
 }
+
+// A post to a connection that is gone answers 503, which the page reads as a
+// lost connection rather than an error to show.
+func TestRPCAnswersGoneConnectionUnavailable(t *testing.T) {
+	relayEnd, daemonEnd := net.Pipe()
+	daemonEnd.Close()
+	r := &relay{conns: map[string]net.Conn{"closed": relayEnd}}
+	for _, connection := range []string{"unknown", "closed"} {
+		response := httptest.NewRecorder()
+		r.rpc(response, httptest.NewRequest("POST", "/rpc?connection="+connection, strings.NewReader(`{}`)))
+		if response.Code != http.StatusServiceUnavailable {
+			t.Errorf("a post to the %s connection returned %d: %s", connection, response.Code, response.Body)
+		}
+	}
+}

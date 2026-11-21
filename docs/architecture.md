@@ -208,7 +208,8 @@ socket. Its 8 MiB request body cap leaves space for JSON escaping under the
 [decoded prompt limit](protocol.md#sessionsend). `ox` answers both only when the
 request's `Host` names `localhost`, `127.0.0.1`, `[::1]`, or the host given to
 `-addr`, and refuses an `/rpc` post from another origin, so a page whose domain
-rebinds to the relay's address cannot reach `oxd`.
+rebinds to the relay's address cannot reach `oxd`. `/rpc` answers `503` when the
+page's `oxd` connection is gone, and the page treats it as a lost connection.
 
 | File                                                                                                                                                                              | Owns                                                                                                                                                                                                                                                                       |
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

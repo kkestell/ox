@@ -45,6 +45,32 @@ test("the first send hands its text and later edits to the new session", async (
   await expect(page.locator(".reply")).toHaveText("You said: first prompt");
   await expect(page.locator(".prompt")).toHaveText(["first prompt"]);
   await expect(prompt(page)).toHaveValue("first prompt and more again");
+
+  // Text retyped while a send is in flight stays, even when it equals the
+  // prompt sent.
+  const retyped = await hold(page, "session/send");
+  await prompt(page).fill("same text");
+  await prompt(page).press("Enter");
+  await retyped.arrived;
+  await prompt(page).fill("");
+  await prompt(page).fill("same text");
+  retyped.release();
+  await expect(page.locator(".reply").last()).toHaveText("You said: same text");
+  await expect(prompt(page)).toHaveValue("same text");
+
+  // So does text retyped while the session is being created.
+  await page.getByRole("button", { name: "New session" }).click();
+  const draftCreate = await hold(page, "session/create");
+  const draftSend = await hold(page, "session/send");
+  await prompt(page).fill("draft text");
+  await prompt(page).press("Enter");
+  await draftCreate.arrived;
+  await prompt(page).fill("");
+  await prompt(page).fill("draft text");
+  draftCreate.release();
+  draftSend.release();
+  await expect(page.locator(".reply")).toHaveText("You said: draft text");
+  await expect(prompt(page)).toHaveValue("draft text");
 });
 
 test("a reply renders as Markdown and its prompt stays plain", async ({ page }) => {
@@ -130,6 +156,21 @@ test("a rejected creation keeps the draft and its settings after switching views
   await open(page, services);
   await newSession(page, "existing conversation");
   await page.getByRole("button", { name: "New session" }).click();
+  // Enter in the draft's settings sends nothing.
+  const creates: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/rpc") && request.postDataJSON()?.method === "session/create") {
+      creates.push(request.url());
+    }
+  });
+  await prompt(page).fill("keep this draft");
+  await page.locator("button.picker").click();
+  await page.getByRole("slider", { name: "Effort" }).press("Enter");
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(500);
+  expect(creates).toEqual([]);
+  await expect(page.locator(".context h1")).toHaveText("New session");
+  await expect(prompt(page)).toHaveValue("keep this draft");
   const mode = page.locator("select[name=permission_mode]");
   await mode.selectOption("plan");
   const create = await hold(page, "session/create");
@@ -401,6 +442,8 @@ test("Allow sends the exact numbers displayed in the tool input", async ({ page 
   const card = await ask(page, "Example", input);
   await card.locator("summary").click();
   await expect(card.locator("pre")).toHaveText('{ "ids": [ 9007199254740993 ], "amount": 1.00000000000000001 }');
+  const exampleTool = page.locator("details.tool").filter({ has: page.locator(".name", { hasText: "Example" }) });
+  await expect(exampleTool.locator(".detail")).toHaveText(input);
   await card.getByLabel("Allow").check();
   await card.getByRole("button", { name: "Submit" }).click();
   await expect(card).toHaveCount(0);
@@ -674,6 +717,13 @@ test("AskUserQuestion is answered from a form", async ({ page }) => {
 
   await submit.click();
   await expect(card).toHaveCount(0);
+  await expect(
+    page
+      .locator("details.tool")
+      .filter({ has: page.locator(".name", { hasText: "AskUserQuestion" }) })
+      .last()
+      .locator(".detail"),
+  ).toHaveText("Which color?");
   await expect(toolResult(page, "AskUserQuestion")).toHaveText(
     `{"behavior":"allow","updatedInput":${input.slice(0, -1)},"answers":{"Which color?":"Red","Which sections?":"Introduction, Appendix, Glossary"}}}`,
   );
@@ -842,6 +892,13 @@ test("session list membership and ordering don't wait for transcripts", async ({
     await expect(page.locator("nav li .title")).toHaveText(["older session", "younger session"]);
     reloadSnapshot.release();
     await expect(page.locator("nav li .title")).toHaveText(["older session", "younger session"]);
+
+    // A hash change in the document selects the session it names.
+    await page.evaluate((hash) => {
+      location.hash = hash;
+    }, encodeURIComponent(id));
+    await expect(sessionButton(page, "older session")).toHaveAttribute("aria-current", "page");
+    await expect(page.locator(".reply")).toHaveText("You said: older session");
   } finally {
     await isolated.stop();
   }
@@ -1053,7 +1110,19 @@ test("an archived session is read-only and hidden until shown", async ({ page, c
   const menuBox = await menu.boundingBox();
   if (!menuBox) throw new Error("no menu box");
   expect(menuBox.y + menuBox.height).toBeCloseTo(height, 0);
+  // A reason that appears while the menu is open keeps it on screen.
+  const lost = await hold(page, "workspace/list");
+  await services.restartRelay();
+  await lost.arrived;
+  await expect(menuItem(menu, "Unarchive")).toHaveAccessibleName("Unarchive Not connected");
+  await expect
+    .poll(async () => {
+      const box = await menu.boundingBox();
+      return box && Math.abs(box.y + box.height - height);
+    })
+    .toBeLessThanOrEqual(1);
   await page.keyboard.press("Escape");
+  lost.release();
   await page.setViewportSize(viewport);
   await menuItem(await openMenu(workspace), "Hide archived").click();
   await expect(row).toHaveCount(0);

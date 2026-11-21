@@ -20,8 +20,6 @@ the evidence and the correction.
       recreated session's stored flag, and archive replies before its members
       have stopped.
       [Deslop F4](../agents/audits/2026-11-20-002-deslop.md#f4-archive-and-unarchive-act-outside-the-owner-of-session-membership)
-- [ ] **Enter on the new-session effort slider sends the draft.**
-      [Deslop F5](../agents/audits/2026-11-20-002-deslop.md#f5-enter-on-the-new-session-effort-slider-creates-the-session-and-sends-the-draft)
 - [ ] **A second `oxd` can share the database.** Only the socket is exclusive,
       so a daemon on another socket repairs and archives the first one's
       sessions.
@@ -32,19 +30,6 @@ the evidence and the correction.
 - [ ] **Tests that pass when their behavior breaks.** Six tests, from the
       settings passed to the next start to `TestLive`'s ordering.
       [Deslop F8](../agents/audits/2026-11-20-002-deslop.md#f8-tests-that-pass-when-the-behavior-they-name-breaks)
-- [ ] **A send clears retyped text equal to the sent prompt.**
-      [Deslop F10](../agents/audits/2026-11-20-002-deslop.md#f10-a-successful-send-clears-retyped-text-equal-to-the-sent-prompt)
-- [ ] **Tool calls with only structured input show a blank summary.**
-      [Deslop F13](../agents/audits/2026-11-20-002-deslop.md#f13-tool-calls-with-only-structured-input-show-a-blank-summary)
-- [ ] **A failed file request leaves the pane blank with no error.**
-      [Deslop F14](../agents/audits/2026-11-20-002-deslop.md#f14-a-failed-file-post-leaves-the-pane-blank-or-stale-with-no-error)
-- [ ] **An open sidebar menu grows past the viewport.**
-      [Deslop F15](../agents/audits/2026-11-20-002-deslop.md#f15-an-open-sidebar-menu-grows-past-the-viewport)
-- [ ] **Same-page hash navigation leaves the old session selected.**
-      [Deslop F16](../agents/audits/2026-11-20-002-deslop.md#f16-same-page-hash-navigation-leaves-the-old-session-selected)
-- [ ] **The file viewer alters carriage returns and colors substitutions as
-      strings.**
-      [Deslop F17](../agents/audits/2026-11-20-002-deslop.md#f17-highlighting-alters-carriage-returns-colors-substitutions-as-strings-and-its-test-misses-recomputation)
 - [ ] **`ox-plan` lets an added requirement skip approval, and its dev check is
       not runnable.**
       [Deslop F21](../agents/audits/2026-11-20-002-deslop.md#f21-ox-plan-lets-a-new-requirement-skip-approval-and-its-dev-check-is-not-runnable)

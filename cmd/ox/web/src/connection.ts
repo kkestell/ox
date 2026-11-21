@@ -9,6 +9,9 @@ export class RpcError extends Error {
   }
 }
 
+// Disconnected is a request's failure when the page could not reach ox.
+export class Disconnected extends Error {}
+
 export type Connection = {
   rpc<M extends keyof Methods>(method: M, params: Methods[M][0]): Promise<Methods[M][1]>;
   close(): void;
@@ -35,7 +38,7 @@ export function connect(handlers: {
   });
   source.onerror = () => {
     connection = undefined;
-    const error = new Error(
+    const error = new Disconnected(
       source.readyState === EventSource.CLOSED
         ? "Lost the connection to ox. Reload the page to reconnect."
         : "Lost the connection to ox. Reconnecting.",
@@ -61,7 +64,7 @@ export function connect(handlers: {
 
   return {
     rpc(method, params) {
-      if (!connection) return Promise.reject(new Error("Not connected to ox"));
+      if (!connection) return Promise.reject(new Disconnected("Not connected to ox"));
       const id = nextId++;
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject });
@@ -73,14 +76,17 @@ export function connect(handlers: {
           body: stringify({ jsonrpc: "2.0", id, method, params }),
         })
           .then(async (response) => {
-            if (!response.ok) fail(new Error((await response.text()).trim()));
+            if (response.ok) return;
+            const message = (await response.text()).trim();
+            // The relay answers 503 when the page's oxd connection is gone.
+            fail(response.status === 503 ? new Disconnected(message) : new Error(message));
           })
-          .catch(fail);
+          .catch((e: Error) => fail(new Disconnected(e.message)));
       });
     },
     close() {
       source.close();
-      failPending(new Error("Closed"));
+      failPending(new Disconnected("Closed"));
     },
   };
 }

@@ -129,13 +129,15 @@ func (r *relay) events(w http.ResponseWriter, req *http.Request) {
 }
 
 // rpc writes one JSON-RPC request from the page to its oxd connection. The
-// response arrives on the connection's event stream.
+// response arrives on the connection's event stream. A connection that is
+// unknown or fails to write is gone, which the page reads from 503 as a lost
+// connection.
 func (r *relay) rpc(w http.ResponseWriter, req *http.Request) {
 	r.mu.Lock()
 	conn := r.conns[req.URL.Query().Get("connection")]
 	r.mu.Unlock()
 	if conn == nil {
-		http.Error(w, "unknown connection", http.StatusNotFound)
+		http.Error(w, "unknown connection", http.StatusServiceUnavailable)
 		return
 	}
 	// A 1 MiB prompt can take six times that as JSON escapes, plus the envelope.
@@ -149,7 +151,7 @@ func (r *relay) rpc(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if _, err := conn.Write(append(body, '\n')); err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

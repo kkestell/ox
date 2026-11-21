@@ -67,7 +67,7 @@ function PermissionCard(props: Props) {
       {/* The subject summarizes the input; expanding shows all of it. */}
       <details class="input">
         <summary>
-          <span class="subject">{plan() ? "Input" : toolSubject(props.approval.request.input) || "Input"}</span>
+          <span class="subject">{plan() ? "Input" : toolSubject(props.approval.request.input)}</span>
           <span class="icon chevron-down" />
         </summary>
         <pre>{toolInputJSON(props.approval.request.input)}</pre>

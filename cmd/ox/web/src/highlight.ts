@@ -125,6 +125,8 @@ function languageFor(path: string): string {
 // highlight.js escapes the source text and emits only <span class="hljs-…">
 // elements, so the returned HTML adds no elements from the file and loads
 // nothing. A file name no language claims is plain text, escaped the same way.
+// A carriage return is written as a character reference, which the HTML
+// parser keeps where it would turn a raw one into a newline.
 export function highlight(path: string, text: string): string {
-  return hljs.highlight(text, { language: languageFor(path), ignoreIllegals: true }).value;
+  return hljs.highlight(text, { language: languageFor(path), ignoreIllegals: true }).value.replaceAll("\r", "&#13;");
 }

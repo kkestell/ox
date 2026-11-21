@@ -1,4 +1,4 @@
-import { createEffect, createSignal, For, Match, Show, Switch } from "solid-js";
+import { createEffect, createSignal, For, Match, onSettled, Show, Switch } from "solid-js";
 import { FileTree } from "./FileTree";
 import { FileView } from "./FileView";
 import { createDraft, type Draft, NewSessionView } from "./NewSessionView";
@@ -8,7 +8,8 @@ import { Sidebar } from "./Sidebar";
 
 export type Selection = { kind: "session"; id: string } | { kind: "draft"; workspaceId: string };
 
-// The URL's hash holds the selected session, so a reload keeps it.
+// The URL's hash holds the selected session, so a reload or a hash change
+// selects it.
 function selectionFromHash(): Selection | undefined {
   let id: string;
   try {
@@ -40,6 +41,11 @@ function Layout() {
     const hash = selection.kind === "session" ? `#${encodeURIComponent(selection.id)}` : "";
     history.replaceState(null, "", location.pathname + location.search + hash);
   };
+  onSettled(() => {
+    const follow = () => setSelected(selectionFromHash());
+    addEventListener("hashchange", follow);
+    return () => removeEventListener("hashchange", follow);
+  });
   const session = () => {
     const s = selected();
     if (s?.kind !== "session") return;
