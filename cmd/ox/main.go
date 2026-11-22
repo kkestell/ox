@@ -55,14 +55,12 @@ func main() {
 	}
 
 	addrs := webAddrs(*addr, cfg.TailscaleIP)
-	r := &relay{socket: *socketPath, conns: make(map[string]net.Conn)}
+	r, err := newRelay(*socketPath, addrs)
+	if err != nil {
+		log.Fatal(err)
+	}
 	listeners := make([]net.Listener, len(addrs))
 	for i, a := range addrs {
-		host, err := serveHost(a)
-		if err != nil {
-			log.Fatal(err)
-		}
-		r.hosts = append(r.hosts, host)
 		if listeners[i], err = net.Listen("tcp", a); err != nil {
 			log.Fatal(err)
 		}
@@ -102,9 +100,23 @@ func serveHost(addr string) (string, error) {
 
 type relay struct {
 	socket string
-	hosts  []string // the hosts of webAddrs
+	hosts  []string // the hosts of the addresses ox serves on
 	mu     sync.Mutex
 	conns  map[string]net.Conn
+}
+
+// newRelay returns a relay to the oxd socket that accepts requests addressed
+// to the hosts of addrs.
+func newRelay(socket string, addrs []string) (*relay, error) {
+	r := &relay{socket: socket, conns: make(map[string]net.Conn)}
+	for _, a := range addrs {
+		host, err := serveHost(a)
+		if err != nil {
+			return nil, err
+		}
+		r.hosts = append(r.hosts, host)
+	}
+	return r, nil
 }
 
 // handler serves the web UI, /events, and /rpc.

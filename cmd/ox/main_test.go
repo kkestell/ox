@@ -18,7 +18,8 @@ func TestRelayRefusesForeignPages(t *testing.T) {
 	relayEnd, daemonEnd := net.Pipe()
 	defer relayEnd.Close()
 	go io.Copy(io.Discard, daemonEnd)
-	r := &relay{hosts: []string{"ox.test", "100.64.1.2"}, conns: map[string]net.Conn{"page": relayEnd}}
+	r := tailnetRelay(t)
+	r.conns["page"] = relayEnd
 	h := r.handler(fstest.MapFS{})
 	body := `{"jsonrpc":"2.0","id":1,"method":"workspace/create","params":{"path":"/"}}`
 	for _, c := range []struct{ name, method, path, host, origin string }{
@@ -46,7 +47,8 @@ func TestRelayAcceptsItsPage(t *testing.T) {
 	relayEnd, daemonEnd := net.Pipe()
 	defer relayEnd.Close()
 	go io.Copy(io.Discard, daemonEnd)
-	r := &relay{hosts: []string{"localhost", "100.64.1.2"}, conns: map[string]net.Conn{"page": relayEnd}}
+	r := tailnetRelay(t)
+	r.conns["page"] = relayEnd
 	h := r.handler(fstest.MapFS{})
 	for _, c := range []struct{ name, host, origin string }{
 		{"direct", "localhost:8080", "http://localhost:8080"},
@@ -69,15 +71,26 @@ func TestRelayAcceptsItsPage(t *testing.T) {
 // reach oxd by sending a loopback name as Host.
 func TestRelayRefusesEveryInterface(t *testing.T) {
 	for _, addr := range []string{":8080", "0.0.0.0:8080", "[::]:8080"} {
-		if _, err := serveHost(addr); err == nil {
+		if _, err := newRelay("", webAddrs(addr, netip.Addr{})); err == nil {
 			t.Errorf("-addr %s was accepted", addr)
 		}
 	}
 	for _, addr := range []string{"localhost:8080", "127.0.0.1:8080", "[::1]:8080", "ox.test:8080"} {
-		if host, err := serveHost(addr); err != nil || host == "" {
-			t.Errorf("-addr %s: %q, %v", addr, host, err)
+		if _, err := newRelay("", webAddrs(addr, netip.Addr{})); err != nil {
+			t.Errorf("-addr %s: %v", addr, err)
 		}
 	}
+}
+
+// tailnetRelay returns the relay ox runs at the default -addr with a
+// tailscale_ip configured.
+func tailnetRelay(t *testing.T) *relay {
+	t.Helper()
+	r, err := newRelay("", webAddrs("localhost:8080", netip.MustParseAddr("100.64.1.2")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
 }
 
 // Ox serves the web UI on the configured Tailscale address at port 17840,
