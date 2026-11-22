@@ -8,7 +8,29 @@ Use this skill only when the user, or an agent acting on the user's request, inv
 
 ## Objective
 
-Change Ox exactly as the plan or review says, and hand off changes whose tests are proven, so that `/ox-review` finds nothing the implementer could have found. Leave the changes uncommitted. Edit no plan or review. Do not start other agents.
+Change Ox exactly as the plan or review says, and hand off changes whose tests are proven, so that `/ox-review` finds nothing the implementer could have found. Leave the changes uncommitted. Edit no plan or review. Start other agents only as [Child sessions](#child-sessions) describes.
+
+## Child sessions
+
+When a plan splits into parts that edit disjoint files, and no part needs code another part writes, implement the parts concurrently in child sessions started with Ox's `create_session`, one part each. Examples are a server change and a web client change against a protocol the plan fixes, or independent fixes in separate packages. A split pays off only when each part is substantial.
+
+Before you start the children:
+
+- Write the shared pieces the parts depend on yourself, such as a type, a protocol field, or a helper. If you cannot, keep the work in this session.
+- Brief each child with the plan's path, its steps from the Implementation plan and Test plan, and the files only it may edit.
+- Tell each child to run only its own package's tests or its own spec, reply with `send_message` listing the files it changed, and start no sessions of its own.
+
+Then end your turn until every child has answered.
+
+Afterwards, read the children's changes as one change, apply the Requirement changes, and prove the tests and run the checks yourself on the final tree, as steps 7 to 9 describe. Children do not run `make test`, `make e2e`, or `make live`. A run in a shared checkout sees the other children's unfinished edits, and the checks count only on the integrated tree.
+
+Keep this work in this session:
+
+- A plan whose steps build on each other.
+- Parts that edit the same file.
+- Edits to `docs/functional-requirements.md`.
+- A review's fixes, which are usually small and need the review's context.
+- Proving the tests.
 
 ## Establish the work
 

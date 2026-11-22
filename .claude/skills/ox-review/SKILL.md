@@ -14,7 +14,31 @@ Review the code and write a review that tells whoever implemented it exactly wha
 - `Record`: a confirmed defect that cannot be fixed yet, because it needs reproducing or depends on Claude Code behavior Ox cannot change. The implementer writes it into `docs/known-issues.md`.
 - `Rejected`: speculative, a misreading of the intended behavior, or cheaper to keep than to fix, such as an unmeasured scaling cost. The reason is recorded so the finding is not raised again.
 
-Change no code, tests, or documentation, and stage or commit nothing. Edit only the review file. Do not start other agents.
+Change no code, tests, or documentation, and stage or commit nothing. Edit only the review file. Start other agents only as [Child sessions](#child-sessions) describes.
+
+## Child sessions
+
+Most changes are small enough to review in one context. Start child sessions with Ox's `create_session` in two cases:
+
+- A review of the whole repository, or a change that spans the daemon, the relay, and the web client. Split it into separate areas, such as the session lifecycle, the Claude harness, the relay, and the web client's session view, and review them concurrently, one area per child.
+- A suspected finding whose confirmation needs a long reproduction, such as a stand-in `claude` script or a probe against built binaries on a temporary socket.
+
+Brief each child as follows:
+
+- Give it its area or its suspected finding, the plan's path when there is one, and the categories from step 5 that apply.
+- Tell it to report each suspected finding with its location and the evidence that confirms it, and to propose no action.
+- Tell it to change no files except temporary ones it removes, reply with `send_message`, and start no sessions of its own.
+- End your turn until every child has answered.
+
+A child proposes findings, and you decide them. Confirm every finding a child reports yourself, as step 6 describes, and give it its action.
+
+Keep this work in this session:
+
+- The plan's intent and the word-for-word requirements diff.
+- Product questions to the user.
+- Running the checks at step 9.
+- Verifying fixes, which works from the review's own findings.
+- Writing the review.
 
 Correctness matters for what happens in normal use and for the requirements in `docs/functional-requirements.md`. Handling every case that could occur does not.
 

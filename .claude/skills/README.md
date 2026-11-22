@@ -35,7 +35,10 @@ flowchart LR
 Each role runs in its own session with fresh context. The implementer never
 reviews its own work, and the reviewer never fixes what it finds, so every
 change is judged by a session that did not write it. The orchestrator carries
-the change between them and checks each handoff.
+the change between them and checks each handoff. A role may start child
+sessions for parts of its own work, such as research, a disjoint part of the
+implementation, or one area of a large review. The children report to the
+role, which keeps every decision.
 
 ```mermaid
 flowchart TB

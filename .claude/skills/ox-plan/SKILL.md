@@ -10,6 +10,30 @@ Use this skill only when the user, or an agent acting on the user's request, inv
 
 Write a plan for one change to Ox without changing the code. Whoever implements the plan follows it directly, and `/ox-review` checks the result against it.
 
+## Child sessions
+
+Start child sessions with Ox's `create_session` for research that is independent of your other reading and large enough to earn a fresh context. Start independent ones together. Good uses:
+
+- Tracing a flow through code the plan touches but you will not otherwise read, such as how a request reaches the harness through every layer.
+- Surveying every caller of a function, or every place a pattern or rule occurs, when the plan must account for all of them.
+- Gathering the evidence behind an audit finding across past plans, reviews, and commits.
+- Settling an assumption about Claude Code that `docs/harnesses/claude-code.md` does not record, with a small live probe using Haiku.
+
+Brief each child as follows:
+
+- Give it a question with a factual answer, the files and documents to start from, what you already know, and the form its answer should take.
+- Tell it to reply with `send_message`, change no files except temporary ones it removes, and start no sessions of its own.
+- End your turn until every child has answered.
+
+A child's answer is evidence. Before you record a decision that rests on a fact a child reported, confirm the fact in the code.
+
+Keep this work in this session:
+
+- Lookups you can finish in a few reads.
+- Every decision, including which owner a state gets and how a rare case behaves.
+- Product questions and every other exchange with the user. A child cannot reach the user.
+- Writing the plan. No child writes, critiques, or reviews it, or any part of it (step 16).
+
 ## Establish the work
 
 1. Read `<request> $ARGUMENTS </request>`. If it is empty, ask the user what to plan and stop. If it names an item in `docs/todo.md` or `docs/known-issues.md`, read that item. If it names a finding in an audit in `agents/audits/`, read the finding; the change replaces its structure at every place the finding names.
