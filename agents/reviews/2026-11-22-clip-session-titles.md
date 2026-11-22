@@ -16,6 +16,7 @@ Gaps:
 | -- | -------- | ----------- | -------- | ------ | ----------------------------------------------- |
 | F1 | Low      | Intent      | Rejected | —      | The CSS and the test depart from the plan       |
 | F2 | Low      | Conventions | Rejected | —      | New Biome noDescendingSpecificity warning       |
+| F3 | Low      | Testing     | Fix      | Resolved | No test fails without the fade before `.actions` |
 
 ## F1. The CSS and the test depart from the plan
 
@@ -55,6 +56,20 @@ Low · Conventions · Rejected · `cmd/ox/web/src/style.css:318`
 
 Rejected: the warning is a false positive for disjoint elements. Removing it would mean renaming one of the two `.actions` classes, which costs more than keeping a warning of a rule the stylesheet already triggers.
 
+## F3. No test fails without the fade before `.actions`
+
+Low · Testing · Fix · `cmd/ox/web/src/style.css:175`
+
+The fix after 59f8cd9 moves the fade into `nav :is(header, li) .actions::before`, a 0.25rem gradient just left of the solid `.actions`. The fade is the behavior #1 asks for, but no test fails without it. The strips in `session.spec.ts:1153` and `workspace.spec.ts:480` start at the ⋯ button's left edge, which now lies on the solid `.actions`. The chevron strip at `session.spec.ts:1164` lies on `.actions`'s solid padding beneath the chevron. The gap was already there in 59f8cd9, where removing only the gradient layer, and keeping the `content-box` fill, would also have passed. The first round did not catch it, because it removed the whole background.
+
+### Evidence
+
+Deleting the `.actions::before` rule leaves both `a session's chevron hides and shows every session beneath it` and `a long workspace name runs to its header's edge beneath its buttons' fade` passing.
+
+### Action
+
+Keep an e2e check that the fade changes the title's pixels just before the actions, in the long-child part of `a session's chevron hides and shows every session beneath it`. Make the row's color the same whether or not the actions show, for example by selecting the long child. With the row neither hovered nor focused, take the strip over the title in the 0.25rem just left of the ⋯ button's box. Hover the row, take the same strip again, and expect the two to differ. Keep the existing check that the strip at the ⋯ button's edge matches the empty row. The new check should fail with `.actions::before` removed.
+
 ## Checks run
 
 - `make test` (lint, Go tests with the race detector, Node tests): passed.
@@ -67,6 +82,45 @@ Rejected: the warning is a false positive for disjoint elements. Removing it wou
 - Headless Chrome screenshots of the sidebar at rest, hovering the long parent, the long child, a short row, and the workspace header, in light and dark themes, and with keyboard focus on a long title: titles and the workspace name run to the edge without an ellipsis, the fade sits behind ⋯ and +, no title shows between the chevron and ⋯, and the focus ring surrounds the whole row. The temporary spec was removed.
 - `make live` was not run: the change does not alter how Ox drives Claude Code.
 
+## Verification 1
+
+Checked the uncommitted fix on top of 59f8cd9 (`style.css`, `session.spec.ts`), which addresses a defect found live at deviceScaleFactor 2: on a hovered long parent, a sliver of title showed at the seam between the chevron and `.actions`, and a faint rectangle showed around the chevron's box. The chevron no longer has a background, and its z-index of 1 puts it above `.actions`. `.actions` is solid, takes its fade from `::before`, and on a parent's row extends 1.25rem left beneath the chevron. The fix supersedes F1's evidence about the layered background and the chevron's offset. F1 stays rejected. The parent's throwaway `e2e/zz-pr-shots.spec.ts` was ignored, as asked. It fails `biome check` on formatting, so it must not be committed.
+
+| ID | Status   | Evidence                                                                                          |
+| -- | -------- | ------------------------------------------------------------------------------------------------- |
+| F1 | —        | Rejected                                                                                          |
+| F2 | —        | Rejected. `biome check` still reports this warning and the one already on base, and nothing new. |
+| F3 | Open     | New finding: removing `.actions::before` fails no test                                            |
+
+The live defect is fixed:
+
+- The revised strip at `session.spec.ts:1164`, running from 2px inside the chevron's right edge across the seam, fails on 59f8cd9's `style.css` and passes with the fix.
+- Removing `nav li:has(button.chevron-right) .actions { padding-left: 1.25rem; }` fails the same check.
+- Removing the chevron's `z-index: 1` fails the test's click on the long parent's chevron (`locator.click` times out because `.actions` intercepts it).
+- Headless Chrome screenshots at deviceScaleFactor 2 of the hovered long parent, in light and dark themes, show no title at the seam and no box around the chevron. The hovered long child shows the fade before ⋯.
+- The ⋯ and + icons keep their places: `padding-right: 0.25rem` on a row and `0.125rem` on a header, as before.
+
+Checks: `biome check` on `src` and the two changed specs (2 warnings: the one already on base and F2), `tsc -p e2e`, and `npm run build` passed. `make e2e`: 117 passed, 4 skipped. No Go code changed since 59f8cd9, where `make test` passed. `make live` was not run, because the change does not alter how Ox drives Claude Code.
+
+## Verification 2
+
+Checked the uncommitted change on top of 59f8cd9. Besides Verification 1's fix, it now holds the F3 fix and two changes the user requested through the parent session. The workspace header is `height: var(--row)`, as tall as a session row. A selected row uses a new `--sidebar-selected` token, so it differs from a hovered row, and the selected color takes precedence over the hover color. It also holds a rule the user requested in `AGENTS.md`, Workflow step 7: a pull request that changes the UI ends with before-and-after screenshots. No functional requirement names these colors or heights, and `docs/functional-requirements.md` is unchanged. The throwaway `e2e/zz-pr-shots.spec.ts` is gone.
+
+| ID | Status   | Evidence                                                                                                         |
+| -- | -------- | ---------------------------------------------------------------------------------------------------------------- |
+| F1 | —        | Rejected                                                                                                         |
+| F2 | —        | Rejected                                                                                                         |
+| F3 | Resolved | `session.spec.ts:1161` compares the strip before ⋯ on a selected row, unhovered and hovered. Removing `.actions::before` fails it. |
+
+New tests, each failing without its change:
+
+- Making `nav li.selected` use `--sidebar-accent` again fails the hovered-versus-selected swatch at `session.spec.ts:1167`.
+- Setting `nav header` back to `height: 1.75rem` fails `a workspace header is as tall as a session row, with its buttons centered` at `workspace.spec.ts:466`.
+
+No new findings. The `AGENTS.md` rule is an instruction to agents, which is the file's own subject, and contradicts no other document.
+
+Checks: `make test` (lint with Biome's two warnings: the one already on base and F2; Go tests; Node tests) passed. `make e2e`: 117 passed, 4 skipped. `make live` was not run, because the change does not alter how Ox drives Claude Code.
+
 ## Verdict
 
-Ready to commit. F1 and F2 are rejected, and there are no `Fix` or `Record` findings.
+Ready to commit. F3 is resolved, and F1 and F2 are rejected.

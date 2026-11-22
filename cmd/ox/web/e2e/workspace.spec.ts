@@ -457,6 +457,21 @@ test("an unreadable folder says why, and an empty folder says Empty", async ({ o
   }
 });
 
+test("a workspace header is as tall as a session row, with its buttons centered", async ({ ox: page, services }) => {
+  await newSession(page, "first");
+  const section = workspaceSection(page, services.workspace);
+  const header = await section.locator("header").boundingBox();
+  const row = await sessionItem(page, "first").boundingBox();
+  if (!header || !row) throw new Error("the workspace's header or session is not shown");
+  expect(header.height).toBe(row.height);
+  await section.getByRole("heading").hover();
+  for (const name of ["Workspace actions", "New session"]) {
+    const button = await section.getByRole("button", { name }).boundingBox();
+    if (!button) throw new Error(`${name} is not shown`);
+    expect(button.y + button.height / 2).toBe(header.y + header.height / 2);
+  }
+});
+
 test("a long workspace name runs to its header's edge beneath its buttons' fade", async ({ ox: page }) => {
   const long = mkdtempSync(join(tmpdir(), `ox-e2e-${"long".repeat(24)}-`));
   try {
