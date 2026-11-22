@@ -430,7 +430,7 @@ func TestCreateSession(t *testing.T) {
 		t.Fatalf("create_session on a broken harness returned %q, %v", text, refused)
 	}
 	c.call("harness/list", map[string]any{})
-	for _, m := range c.notifications("session/created") {
+	for _, m := range c.created() {
 		if strings.Contains(string(m.Params), `"name":"doomed"`) {
 			t.Fatalf("a child whose harness cannot be launched was published: %s", m.Params)
 		}
@@ -573,101 +573,179 @@ func TestFailedLaunchKeepsItsErrorWhenDeleteFails(t *testing.T) {
 	if text, refused := attach(t, s, parent.SessionID).tool("create_session", map[string]string{"name": "doomed", "title": "Doomed", "message": "hi"}); !refused || text != "no such harness binary" {
 		t.Fatalf("create_session with an unlaunchable harness and a closed store returned %q, %v", text, refused)
 	}
-	if !strings.Contains(logged.String(), "delete after failed launch") {
+	if !strings.Contains(logged.String(), "delete unpublished child") {
 		t.Fatalf("the failed delete was not logged: %q", logged.String())
 	}
 }
 
+type sendGateAgent struct {
+	agent.Agent
+	gate func()
+}
+
+func (a sendGateAgent) Send(input agent.Input) error {
+	a.gate()
+	return a.Agent.Send(input)
+}
+
+// A child's launch and first message hold up no request to another session.
 // A child is published only once its harness is launched. A shutdown that
-// races its creation waits for it, then ends the child like any member, and
+// takes its snapshot during the launch refuses the child and leaves no trace;
+// one that takes it during the first Send ends the child like any member, and
 // the child keeps its first message through a restart.
-func TestCreateSessionDuringShutdown(t *testing.T) {
+func TestChildStartHoldsUpNoOtherSession(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{
 		"fake": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
 	}, MaxChildDepth: 1}
-	// The parent is never prompted, so the only start is the child's.
-	starting, release := make(chan struct{}), make(chan struct{})
-	start := func(o agent.Options) (agent.Agent, error) {
-		close(starting)
-		<-release
-		return fake.Start(o)
-	}
-	st := openStore(t)
-	s, err := New(st, cfg, 0, map[string]agent.Harness{"fake": {Start: start}}, MCP{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := connect(t, s)
-	var workspace struct {
-		WorkspaceID string `json:"workspace_id"`
-	}
-	json.Unmarshal(c.call("workspace/create", map[string]string{"path": t.TempDir()}), &workspace)
-	var parent struct {
-		SessionID string `json:"session_id"`
-	}
-	json.Unmarshal(c.call("session/create", map[string]string{
-		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "permission_mode": "manual",
-	}), &parent)
-	fromParent := attach(t, s, parent.SessionID)
+	for _, gateSend := range []bool{false, true} {
+		t.Run(map[bool]string{false: "start", true: "send"}[gateSend], func(t *testing.T) {
+			// The parent is never prompted, so the only start is the child's.
+			gated, release := make(chan struct{}), make(chan struct{})
+			gate := func() {
+				close(gated)
+				<-release
+			}
+			start := func(o agent.Options) (agent.Agent, error) {
+				if !gateSend {
+					gate()
+				}
+				a, err := fake.Start(o)
+				if gateSend && err == nil {
+					return sendGateAgent{a, gate}, nil
+				}
+				return a, err
+			}
+			st := openStore(t)
+			s, err := New(st, cfg, 0, map[string]agent.Harness{"fake": {Start: start}}, MCP{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(s.Close)
+			unblock := sync.OnceFunc(func() { close(release) })
+			t.Cleanup(unblock)
+			c := connect(t, s)
+			addSession := func() string {
+				var workspace, session struct {
+					WorkspaceID string `json:"workspace_id"`
+					SessionID   string `json:"session_id"`
+				}
+				json.Unmarshal(c.call("workspace/create", map[string]string{"path": t.TempDir()}), &workspace)
+				json.Unmarshal(c.call("session/create", map[string]string{
+					"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "permission_mode": "manual",
+				}), &session)
+				return session.SessionID
+			}
+			parent, unrelated := addSession(), addSession()
+			fromParent := attach(t, s, parent)
 
-	creating := fromParent.send("tools/call", map[string]any{"name": "create_session",
-		"arguments": map[string]string{"name": "late", "title": "Late", "message": "hi"}})
-	<-starting
-	c.call("harness/list", map[string]any{})
-	if created := c.notifications("session/created"); len(created) != 1 || created[0].sessionID() != parent.SessionID {
-		t.Fatalf("a child was published while its harness was launching: %+v", created)
-	}
-	closed := make(chan struct{})
-	go func() {
-		s.Close()
-		close(closed)
-	}()
-	close(release)
+			creating := fromParent.send("tools/call", map[string]any{"name": "create_session",
+				"arguments": map[string]string{"name": "late", "title": "Late", "message": "hi"}})
+			<-gated
+			c.call("session/get", map[string]string{"session_id": unrelated})
+			c.call("harness/list", map[string]any{})
+			created := c.created()
+			if !gateSend && len(created) != 2 {
+				t.Fatalf("a child was published while its harness was launching: %+v", created)
+			}
 
-	var result struct {
-		Content []struct {
-			Text string `json:"text"`
-		} `json:"content"`
-		IsError bool `json:"isError"`
-	}
-	var late struct {
-		SessionID string `json:"session_id"`
-	}
-	json.Unmarshal(fromParent.response(creating).Result, &result)
-	if result.IsError || len(result.Content) != 1 || json.Unmarshal([]byte(result.Content[0].Text), &late) != nil || late.SessionID == "" {
-		t.Fatalf("create_session racing shutdown returned %+v", result)
-	}
-	if first := c.next(func(m message) bool { return m.Method != "" && m.sessionID() == late.SessionID }); first.Method != "session/created" {
-		t.Fatalf("the page heard %s about the child before session/created", first.Method)
-	}
-	<-closed
-	c.update(late.SessionID, agent.UpdateParked)
+			closed := make(chan struct{})
+			go func() {
+				s.Close()
+				close(closed)
+			}()
+			for c.request("session/get", map[string]string{"session_id": unrelated}).Error == nil {
+			}
+			unblock()
 
-	s, err = New(st, cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+			var result struct {
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+				IsError bool `json:"isError"`
+			}
+			json.Unmarshal(fromParent.response(creating).Result, &result)
+			if len(result.Content) != 1 {
+				t.Fatalf("create_session racing shutdown returned %+v", result)
+			}
+			var late struct {
+				SessionID string `json:"session_id"`
+			}
+			if !gateSend {
+				if !result.IsError || result.Content[0].Text != "daemon is shutting down" {
+					t.Fatalf("create_session refused at publication returned %+v", result)
+				}
+				<-closed
+				if created := c.created(); len(created) != 2 {
+					t.Fatalf("a refused child was published: %+v", created)
+				}
+			} else {
+				if result.IsError || json.Unmarshal([]byte(result.Content[0].Text), &late) != nil || late.SessionID == "" {
+					t.Fatalf("create_session racing shutdown returned %+v", result)
+				}
+				if first := c.next(func(m message) bool { return m.Method != "" && m.sessionID() == late.SessionID }); first.Method != "session/created" {
+					t.Fatalf("the page heard %s about the child before session/created", first.Method)
+				}
+				<-closed
+				c.update(late.SessionID, agent.UpdateParked)
+			}
+
+			s, err = New(st, cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(s.Close)
+			c = connect(t, s)
+			var listed struct {
+				Workspaces []struct {
+					Sessions []struct {
+						SessionID string `json:"session_id"`
+					} `json:"sessions"`
+				} `json:"workspaces"`
+			}
+			json.Unmarshal(c.call("workspace/list", map[string]any{}), &listed)
+			var ids []string
+			for _, w := range listed.Workspaces {
+				for _, sess := range w.Sessions {
+					ids = append(ids, sess.SessionID)
+				}
+			}
+			want := []string{parent, unrelated}
+			if gateSend {
+				want = []string{parent, late.SessionID, unrelated}
+			}
+			if !slices.Equal(ids, want) {
+				t.Fatalf("after a restart workspace/list listed %v, want %v", ids, want)
+			}
+			if !gateSend {
+				return
+			}
+			var got struct {
+				History []agent.Update `json:"history"`
+			}
+			json.Unmarshal(c.call("session/get", map[string]string{"session_id": late.SessionID}), &got)
+			if !slices.ContainsFunc(got.History, func(u agent.Update) bool {
+				return u.Type == agent.UpdatePrompt && u.From == parent && u.Text == "hi"
+			}) {
+				t.Fatalf("after a restart the child's history is %+v", got.History)
+			}
+		})
+	}
+}
+
+// The MCP handshake answers without a session; a tool call needs one.
+func TestMCPHandshakeNeedsNoSession(t *testing.T) {
+	s, err := New(openStore(t), &config.Config{}, 0, map[string]agent.Harness{}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(s.Close)
-	c = connect(t, s)
-	var listed struct {
-		Workspaces []struct {
-			Sessions []struct {
-				SessionID string `json:"session_id"`
-			} `json:"sessions"`
-		} `json:"workspaces"`
-	}
-	json.Unmarshal(c.call("workspace/list", map[string]any{}), &listed)
-	if sessions := listed.Workspaces[0].Sessions; len(sessions) != 2 || sessions[1].SessionID != late.SessionID {
-		t.Fatalf("after a restart workspace/list listed %+v", sessions)
-	}
-	var got struct {
-		History []agent.Update `json:"history"`
-	}
-	json.Unmarshal(c.call("session/get", map[string]string{"session_id": late.SessionID}), &got)
-	if !slices.ContainsFunc(got.History, func(u agent.Update) bool {
-		return u.Type == agent.UpdatePrompt && u.From == parent.SessionID && u.Text == "hi"
-	}) {
-		t.Fatalf("after a restart the child's history is %+v", got.History)
+	mcp := attach(t, s, "no-such-session")
+	mcp.call("initialize", map[string]string{"protocolVersion": "2025-06-18"})
+	mcp.call("ping", map[string]any{})
+	mcp.call("tools/list", map[string]any{})
+	response := mcp.request("tools/call", map[string]any{"name": "list_sessions"})
+	if response.Error == nil || response.Error.Code != -32001 || response.Error.Message != "session not found" {
+		t.Fatalf("tools/call without a session returned %+v", response)
 	}
 }
 

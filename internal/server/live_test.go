@@ -768,7 +768,7 @@ func TestLive(t *testing.T) {
 		}
 		// The grandchild is published before create_session answers the child.
 		var leaf string
-		for _, m := range l.c.notifications("session/created") {
+		for _, m := range l.c.created() {
 			var created struct {
 				Child *child `json:"child"`
 			}

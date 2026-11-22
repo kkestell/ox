@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -44,20 +45,10 @@ func (s *Server) attach(c *conn, reply replyFunc, request jsonrpc.Request) (stri
 }
 
 // handleMCP answers one MCP request from the forwarder of a session. It waits
-// on no session's goroutine except to post to the sessions a tool reads.
+// on no session's goroutine except to post to the sessions a tool reads. Only
+// tools/call looks up the session; the handshake reads none.
 func (s *Server) handleMCP(reply replyFunc, sessionID string, request jsonrpc.Request) {
 	id := request.ID
-	s.mu.Lock()
-	closed, sess := s.closed, s.sessions[sessionID]
-	s.mu.Unlock()
-	switch {
-	case closed:
-		reply(shuttingDown(id))
-		return
-	case sess == nil:
-		reply(sessionNotFound(id))
-		return
-	}
 	switch request.Method {
 	case "initialize":
 		var input struct {
@@ -95,6 +86,19 @@ func (s *Server) handleMCP(reply replyFunc, sessionID string, request jsonrpc.Re
 		i := slices.IndexFunc(tools, func(t tool) bool { return t.name == input.Name })
 		if i < 0 {
 			reply(invalidParams(id, fmt.Sprintf("unknown tool %q", input.Name)))
+			return
+		}
+		// A child's first turn, and so its first tool call, starts after it
+		// is published; the handshake before needs no session.
+		s.mu.Lock()
+		closed, sess := s.closed, s.sessions[sessionID]
+		s.mu.Unlock()
+		switch {
+		case closed:
+			reply(shuttingDown(id))
+			return
+		case sess == nil:
+			reply(sessionNotFound(id))
 			return
 		}
 		tools[i].call(s, sess, input.Arguments, func(text string, err error) {
@@ -306,10 +310,11 @@ const titleRunes = 48
 
 // createSession starts a child of the caller and hands it its first message.
 // The call goroutine checks the arguments. The parent's goroutine, which owns
-// its settings, resolves the child's, then stores the child, launches its
-// harness, publishes it, and hands its agent the first message before the
-// child's goroutine starts, so no request reaches the child before it holds
-// the message.
+// its settings, resolves the child's and checks the child under Server.mu,
+// stores and launches the child without it, publishes the child under
+// Server.mu unless the daemon is shutting down, then hands its agent the first
+// message and starts the child's goroutine, so no request reaches the child
+// before it holds the message.
 func createSession(s *Server, caller *session, arguments json.RawMessage, respond func(string, error)) {
 	var input struct {
 		Name    string `json:"name"`
@@ -376,15 +381,53 @@ func createSession(s *Server, caller *session, arguments json.RawMessage, respon
 }
 
 // addChild checks that parent may have the child record names now, then adds
-// it with text as its first message, on parent's goroutine.
+// it with text as its first message, on parent's goroutine. The checks hold
+// until publication: only parent's goroutine creates its children or archives
+// it, and its depth is fixed. Only shutdown can intervene, so it is decided at
+// publication. The store write, launch, and first Send run without s.mu.
 func (s *Server) addChild(parent *session, record *store.Session, text string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if slices.ContainsFunc(s.children(parent), func(other *session) bool { return other.child.Name == record.Child.Name }) {
-		return fmt.Errorf("a child named %q already exists", record.Child.Name)
+	err := s.checkChildLocked(parent, record.Child.Name)
+	// The parent is a member while its goroutine runs.
+	w := s.workspaceOf(parent)
+	message := messageInput(parent, parent.labelLocked(), text)
+	s.mu.Unlock()
+	if err != nil {
+		return err
 	}
+
+	if err := s.store.AddSession(w.id, record); err != nil {
+		return err
+	}
+	sess := s.newSession(record, w.path, "")
+	if err := sess.start(); err != nil {
+		s.deleteUnpublished(sess)
+		return err
+	}
+
+	s.mu.Lock()
 	if s.closed {
+		s.mu.Unlock()
+		// sess.stop would publish parked for a session no client knows.
+		sess.agent.Stop()
+		s.deleteUnpublished(sess)
 		return errors.New("daemon is shutting down")
+	}
+	s.publishLocked(w, sess)
+	s.mu.Unlock()
+
+	// The child's goroutine starts only once its agent holds the message, so
+	// a request posted to the child waits until then.
+	err = sess.acceptMessage(message)
+	go sess.run()
+	return err
+}
+
+// checkChildLocked reports why parent may not have a child named name now.
+// The caller holds s.mu.
+func (s *Server) checkChildLocked(parent *session, name string) error {
+	if slices.ContainsFunc(s.children(parent), func(other *session) bool { return other.child.Name == name }) {
+		return fmt.Errorf("a child named %q already exists", name)
 	}
 	if parent.archived {
 		return errArchived
@@ -392,10 +435,15 @@ func (s *Server) addChild(parent *session, record *store.Session, text string) e
 	if s.depthLocked(parent) >= s.config.MaxChildDepth {
 		return fmt.Errorf("child sessions nest at most %d deep", s.config.MaxChildDepth)
 	}
-	message := messageInput(parent, parent.labelLocked(), text)
-	// The parent is a member while its goroutine runs.
-	_, err := s.addSession(s.workspaceOf(parent), record, &message)
-	return err
+	return nil
+}
+
+// deleteUnpublished removes the stored row of a child that was never
+// published.
+func (s *Server) deleteUnpublished(sess *session) {
+	if err := s.store.DeleteSession(sess.id); err != nil {
+		log.Printf("session %s: delete unpublished child: %v", sess.id, err)
+	}
 }
 
 // childRecord resolves the harness and settings of a child of parent, on

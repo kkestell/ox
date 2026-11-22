@@ -571,9 +571,10 @@ notification the connection was sent precedes the result. On any later line,
 ### MCP methods
 
 An attached connection serves `initialize`, `ping`, `tools/list`, and
-`tools/call`; any other method returns `-32601`. A notification is ignored. Each
-request returns `-32001` when the session does not exist, and `-32000` when the
-daemon is shutting down. `initialize` requires a nonempty string
+`tools/call`; any other method returns `-32601`. A notification is ignored.
+`initialize`, `ping`, and `tools/list` answer for any attached session.
+`tools/call` returns `-32001` when the session does not exist, and `-32000` when
+the daemon is shutting down. `initialize` requires a nonempty string
 `protocolVersion` (`-32602` otherwise), returns it unchanged, and advertises the
 `tools` capability.
 
@@ -645,12 +646,12 @@ Refusals, in the order they are checked:
   `session/create` error;
 - `name` already one of the caller's children's: `a child named "<name>" already
   exists`;
-- the daemon shutting down: `daemon is shutting down`; the caller gone first:
-  `session not found`;
+- the caller gone first: `session not found`;
 - an archived caller: `session is archived`;
 - a caller already `max_child_depth` levels below a top-level session: `child
   sessions nest at most <max_child_depth> deep`;
-- a harness that cannot be launched: the launch error; no child is created.
+- a harness that cannot be launched: the launch error; no child is created;
+- the daemon shutting down: `daemon is shutting down`; no child is created.
 
 `read_session` takes `to`, a session ID, and an optional integer `cursor`, and
 is annotated `readOnlyHint`. It returns a page of the session's history, newest

@@ -317,8 +317,8 @@ func TestForwarder(t *testing.T) {
 	}
 
 	s.Close()
-	if r := f.call("ping", map[string]any{}); r.Error == nil || r.Error.Code != -32000 || r.Error.Message != "daemon is shutting down" {
-		t.Fatalf("ping during shutdown answered %s, %+v", r.Result, r.Error)
+	if r := f.call("tools/call", map[string]any{"name": "list_models"}); r.Error == nil || r.Error.Code != -32000 || r.Error.Message != "daemon is shutting down" {
+		t.Fatalf("tools/call during shutdown answered %s, %+v", r.Result, r.Error)
 	}
 
 	f.stdin.Close()
@@ -331,13 +331,8 @@ func TestForwarder(t *testing.T) {
 func TestForwarderRefusesUnknownSession(t *testing.T) {
 	_, socket, _, _ := startOxd(t)
 	f := startForwarder(t, "OX_SOCKET="+socket, "OX_SESSION_ID=missing")
-	for _, r := range []reply{
-		f.call("initialize", map[string]any{"protocolVersion": "2025-06-18"}),
-		f.call("tools/call", map[string]any{"name": "list_models"}),
-	} {
-		if r.Error == nil || r.Error.Code != -32001 || r.Error.Message != "session not found" {
-			t.Fatalf("answered %s, %+v", r.Result, r.Error)
-		}
+	if r := f.call("tools/call", map[string]any{"name": "list_models"}); r.Error == nil || r.Error.Code != -32001 || r.Error.Message != "session not found" {
+		t.Fatalf("answered %s, %+v", r.Result, r.Error)
 	}
 
 	f = startForwarder(t, "OX_SOCKET="+socket, "OX_SESSION_ID=")

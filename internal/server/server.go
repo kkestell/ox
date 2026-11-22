@@ -26,7 +26,8 @@ type Server struct {
 	// mu guards which workspaces and sessions exist, which sessions are
 	// archived, and closed. A change to them is broadcast, and an answer
 	// listing them is queued, while it is held, so every connection sees both
-	// in one order. Nothing posts to a session while holding it.
+	// in one order. Nothing posts to a session, launches a harness, or hands
+	// an agent input while holding it.
 	mu         sync.Mutex
 	workspaces []*workspace
 	sessions   map[string]*session

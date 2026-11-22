@@ -79,7 +79,8 @@ it receives or clears even when storing them fails.
 flag, and the shutdown flag. Membership and archive changes and `workspace/list`
 queue their messages under the same lock so every connection sees them in one
 order. Unarchive looks its session up and queues its response under the lock.
-Nothing posts to a session while holding it.
+Nothing posts to a session, launches a harness, or hands an agent input while
+holding it.
 
 An archived session has no agent, and a child of an archived session is
 archived. An archive runs on the session's goroutine. It holds every session
@@ -113,13 +114,16 @@ transaction as its session row, naming its parent, name, title, and directory; a
 top-level session has none. The directory its harness runs in is derived: the
 child's directory, else the workspace's. `create_session` checks its arguments
 on the call goroutine, then posts to the parent's goroutine, which resolves the
-child's settings from its own, then under `Server.mu` checks name uniqueness,
-shutdown, and depth, stores the child, launches its harness, adds it to
-membership, hands its agent the first message, and then starts its goroutine. A
-harness that cannot be launched leaves the child unstored and unpublished. A
-session belongs to whoever builds it until its goroutine starts. A session's
-destroy operation refuses while any session is its child; since children are
-created only on the parent's goroutine, none appears while it runs.
+child's settings from its own. Under `Server.mu` it checks name uniqueness,
+archive, and depth; without the lock it stores the child and launches its
+harness; under `Server.mu` again it refuses if the daemon is shutting down,
+stopping the agent and deleting the row, and otherwise adds the child to
+membership; then it hands the child's agent the first message and starts its
+goroutine. A request posted to the child waits until then. A harness that cannot
+be launched leaves the child unstored and unpublished. A session belongs to
+whoever builds it until its goroutine starts. A session's destroy operation
+refuses while any session is its child; since children are created only on the
+parent's goroutine, none appears while it runs.
 
 The session arms a park timer whenever its agent is `Parkable` and stops it when
 the agent stops being parkable, so the full period restarts each time. If the

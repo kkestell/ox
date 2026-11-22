@@ -96,13 +96,13 @@ func (c *client) received(sessionID string) []message {
 	return mine
 }
 
-// notifications drains pending reads and returns the unmatched notifications
-// with method, oldest first.
-func (c *client) notifications(method string) []message {
+// created drains pending reads and returns the unmatched session/created
+// notifications, oldest first.
+func (c *client) created() []message {
 	c.drain()
 	var matched []message
 	for _, m := range c.backlog {
-		if m.Method == method {
+		if m.Method == "session/created" {
 			matched = append(matched, m)
 		}
 	}

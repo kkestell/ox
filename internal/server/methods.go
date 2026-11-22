@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"slices"
@@ -350,7 +349,7 @@ func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 		ID: sessionID, Harness: input.Harness, Model: input.Model, Effort: input.Effort, PermissionMode: input.PermissionMode,
 		CreatedAt: time.Now(),
 	}
-	sess, err := s.addSession(w, record, nil)
+	sess, err := s.addSession(w, record)
 	if err != nil {
 		reply(failure(id, err))
 		return
@@ -358,25 +357,21 @@ func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 	reply(jsonrpc.Success(id, result{SessionID: sess.id}))
 }
 
-// addSession stores a session in w, tells every client, and starts its
-// goroutine. With a first input, it launches the session's harness before
-// publishing it and hands the agent the input before the goroutine starts, so
-// no request reaches the session before it holds the input; a harness that
-// cannot be launched leaves nothing stored or published. A Send error is
-// returned with the published session. The caller holds s.mu.
-func (s *Server) addSession(w *workspace, record *store.Session, first *agent.Input) (*session, error) {
+// addSession stores a session in w, publishes it, and starts its goroutine.
+// The caller holds s.mu.
+func (s *Server) addSession(w *workspace, record *store.Session) (*session, error) {
 	if err := s.store.AddSession(w.id, record); err != nil {
 		return nil, err
 	}
 	sess := s.newSession(record, w.path, "")
-	if first != nil {
-		if err := sess.start(); err != nil {
-			if err := s.store.DeleteSession(sess.id); err != nil {
-				log.Printf("session %s: delete after failed launch: %v", sess.id, err)
-			}
-			return nil, err
-		}
-	}
+	s.publishLocked(w, sess)
+	go sess.run()
+	return sess, nil
+}
+
+// publishLocked adds sess to w and to the sessions requests reach, and tells
+// every client. The caller holds s.mu.
+func (s *Server) publishLocked(w *workspace, sess *session) {
 	w.sessions = append(w.sessions, sess)
 	s.sessions[sess.id] = sess
 	s.broadcast("session/created", struct {
@@ -387,13 +382,6 @@ func (s *Server) addSession(w *workspace, record *store.Session, first *agent.In
 		CreatedAt   time.Time `json:"created_at"`
 		Child       *child    `json:"child,omitempty"`
 	}{sess.id, w.id, sess.labelLocked(), sess.harness, sess.createdAt, sess.child})
-	var err error
-	if first != nil {
-		first.MessageID = rand.Text()
-		err = sess.agent.Send(*first)
-	}
-	go sess.run()
-	return sess, err
 }
 
 // getSession returns a session's settings, history, and current state. Every
