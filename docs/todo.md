@@ -23,6 +23,41 @@ the evidence and the correction.
       into one test; the page lacks the roles and names role-based locators
       need. [Audit](../agents/audits/2026-11-22-003-frontend-tests.md)
 
+## Workflow
+
+- [ ] **Code reaches main without review.** 7446420, 64d1e65, and 44cab72 were
+      committed unreviewed on 2026-11-22, and 2125f54 and a42b498 before them.
+      Have the pre-commit hook refuse a commit that changes `cmd/` or
+      `internal/` unless it adds or updates a review in `agents/reviews/` whose
+      verdict is Ready to commit.
+- [ ] **The top-level agent works from prose alone.** No skill carries the
+      workflow, so the coordinating agent decides for itself how to land work.
+      On 2026-11-22 it cut worktrees around the main checkout's uncommitted
+      work, stashed that work to fast-forward two branches past it, and removed
+      a worktree holding an uncommitted rewrite of the phone test, which was
+      lost. Write a skill that carries the Workflow steps of `AGENTS.md`: check
+      `git status` first, keep one change in the checkout, land only clean
+      worktrees, and sanity-check each result against "Correct by construction"
+      and the test rules.
+- [ ] **Reviews prescribe fixes.** The Codex tailnet review dictated a shadow
+      struct and fixed-port socket tests, and the implementer built them word
+      for word. Have each `/ox-review` finding state the defect and the rule it
+      breaks, and leave the fix's design to `/ox-work`.
+- [ ] **Reviewers share the implementer's blind spots.** Sol 6.2 planned,
+      implemented, and reviewed the tailnet change, and the review passed its
+      own prescriptions. The mobile review passed a phone test asserting
+      padding, font sizes, and CSS transitions. Run `/ox-review` on a different
+      model from `/ox-work`.
+- [ ] **A session went quiet with work pending.** The mobile implementer started
+      background test runs and resumed only after the user prompted it twice.
+      Find whether Ox lost the background task's completion or the session never
+      waited for it.
+- [ ] **Agents leave processes and files behind.** An `oxd` probe ran for four
+      days and a Vite server for a week after their sessions ended, and `/tmp`
+      held about 140 agent leftovers. Have each skill keep its scratch in one
+      temporary directory it removes, and stop every process it starts before
+      its final response.
+
 ## Sidebar
 
 - [ ] **Collapse a session's children.** A session with children gets a
