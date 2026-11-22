@@ -10,7 +10,7 @@ the code in `*_test.go` and `cmd/ox/web/e2e`.
 
 | Language   | Files | Comment |  Code | Tests |
 | ---------- | ----: | ------: | ----: | ----: |
-| Go         |    26 |     564 | 4,590 | 6,783 |
+| Go         |    26 |     569 | 4,608 | 6,810 |
 | TypeScript |    18 |     165 | 2,334 | 1,939 |
 | CSS        |     1 |      26 |   343 |     0 |
 
@@ -35,7 +35,7 @@ Production files with over 500 lines of code.
 
 | Code | File                         |
 | ---: | ---------------------------- |
-|  535 | `internal/server/methods.go` |
+|  542 | `internal/server/methods.go` |
 |  524 | `internal/server/mcp.go`     |
 
 ## Lint suppressions

@@ -208,12 +208,20 @@ func (sess *session) isArchived() bool {
 	return sess.archived
 }
 
+// free reports whether the session is idle, in the background, or parked.
+func (sess *session) free() bool {
+	state := sess.snapshot().State
+	return state == agent.StateIdle || state == agent.StateBackground || state == agent.StateParked
+}
+
 // held is a session whose goroutine waits in hold until it is released.
 type held struct {
-	// free is whether the session was idle, in the background, or parked when
-	// held.
+	// free is whether the session was free when held.
 	free    bool
 	release chan<- bool
+	// done is closed once the session has handled its release, including any
+	// stop.
+	done <-chan struct{}
 }
 
 // hold holds the session's goroutine until it is released through the result.
@@ -222,32 +230,31 @@ type held struct {
 func (sess *session) hold() (held, bool) {
 	free := make(chan bool)
 	release := make(chan bool, 1)
+	done := make(chan struct{})
 	if !sess.post(func() {
-		state := sess.snapshot().State
-		free <- state == agent.StateIdle || state == agent.StateBackground || state == agent.StateParked
+		defer close(done)
+		free <- sess.free()
 		if <-release && sess.agent != nil {
 			sess.stop()
 		}
 	}) {
 		return held{}, false
 	}
-	return held{<-free, release}, true
+	return held{<-free, release, done}, true
 }
 
-// archive archives sess and every session beneath it, once each is idle or
-// parked, and stops their agents. It walks the family breadth-first, holding
-// each member's goroutine before it reads that member's children, and holds
-// them all while it checks them and sets their flags, so none starts in
-// between. A child is created only on its parent's goroutine, so the children
-// read while their parent is held are all of them. Every archive holds
-// ancestors before descendants, so two in one family cannot wait on each
-// other.
-func (s *Server) archive(sess *session) error {
-	first, ok := sess.hold()
-	if !ok {
-		return errSessionNotFound
-	}
-	members, holds := []*session{sess}, []held{first}
+// archive archives sess and every session beneath it, once each is free, and
+// stops their agents, returning once every one has stopped. It runs on sess's
+// goroutine. It walks the family breadth-first, holding each descendant's
+// goroutine before it reads that descendant's children, and holds them all
+// while it checks them and sets their flags, so none starts in between. A
+// child is created only on its parent's goroutine, so the children read while
+// their parent is running this or held are all of them. An archive posts only
+// from an ancestor to its descendants, so two in one family cannot wait on
+// each other.
+func (sess *session) archive() error {
+	s := sess.server
+	members, holds := []*session{sess}, []held{}
 	for i := 0; i < len(members); i++ {
 		s.mu.Lock()
 		children := s.children(members[i])
@@ -259,23 +266,31 @@ func (s *Server) archive(sess *session) error {
 		}
 	}
 	err := func() error {
-		if slices.ContainsFunc(holds, func(h held) bool { return !h.free }) {
+		if !sess.free() || slices.ContainsFunc(holds, func(h held) bool { return !h.free }) {
 			return agent.ErrBusy
 		}
 		return s.setArchived(members, true)
 	}()
+	if err == nil && sess.agent != nil {
+		sess.stop()
+	}
 	for _, h := range holds {
 		h.release <- err == nil
+	}
+	for _, h := range holds {
+		<-h.done
 	}
 	return err
 }
 
-// unarchive unarchives sess and every session beneath it. A child of an
-// archived session stays archived, so an unarchived session's ancestors are
-// all unarchived.
-func (s *Server) unarchive(sess *session) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// unarchiveLocked unarchives the session with sessionID and every session
+// beneath it. A child of an archived session stays archived, so an unarchived
+// session's ancestors are all unarchived. The caller holds s.mu.
+func (s *Server) unarchiveLocked(sessionID string) error {
+	sess := s.sessions[sessionID]
+	if sess == nil {
+		return errSessionNotFound
+	}
 	if sess.child != nil {
 		if parent := s.sessions[sess.child.ParentID]; parent != nil && parent.archived {
 			return errors.New("parent session is archived")

@@ -682,7 +682,7 @@ func TestArchive(t *testing.T) {
 	configuring := make(chan struct{}, 1)
 	start := func(o agent.Options) (agent.Agent, error) {
 		a, err := fake.Start(o)
-		return configuringAgent{a, configuring}, err
+		return slowStop{configuringAgent{a, configuring}}, err
 	}
 	harnesses := map[string]agent.Harness{"fake": {Start: start}}
 	st := openStore(t)
@@ -851,11 +851,30 @@ func TestArchive(t *testing.T) {
 	notified("session/archived", bg)
 	c.update(bg, "parked")
 
-	t.Log("archiving the parent archives and stops every session beneath it")
-	c.call("session/archive", map[string]string{"session_id": a})
+	t.Log("archiving the parent archives and stops every session beneath it before it replies")
 	for _, id := range []string{a, k, g} {
+		c.forget(id)
+	}
+	archive := c.send("session/archive", map[string]string{"session_id": a})
+	parked := map[string]bool{}
+	response := c.next(func(m message) bool {
+		if m.Method == "session/update" {
+			var u agent.Update
+			json.Unmarshal(m.Params, &u)
+			if u.Type == agent.UpdateParked {
+				parked[m.sessionID()] = true
+			}
+		}
+		return string(m.ID) == archive
+	})
+	if response.Error != nil {
+		t.Fatalf("archiving the parent failed: %+v", response.Error)
+	}
+	for _, id := range []string{a, k, g} {
+		if !parked[id] {
+			t.Fatalf("the archive replied before %s parked; parked %v", id, parked)
+		}
 		notified("session/archived", id)
-		c.update(id, "parked")
 	}
 	if got := archivedIn(c); !got[a] || !got[k] || !got[g] || got[b] {
 		t.Fatalf("workspace/list marked %v", got)
@@ -918,4 +937,16 @@ func TestArchive(t *testing.T) {
 	c.call("session/destroy", map[string]string{"session_id": k})
 	c.call("session/archive", map[string]string{"session_id": a})
 	refused(c.request("workspace/remove", map[string]string{"workspace_id": workspace}), operationFailed, "workspace has sessions")
+	refused(c.request("session/unarchive", map[string]string{"session_id": g}), notFound, "session not found")
+}
+
+// slowStop delays each stop, so a reply that does not wait for its stops
+// arrives before them.
+type slowStop struct {
+	configuringAgent
+}
+
+func (a slowStop) Stop() {
+	time.Sleep(20 * time.Millisecond)
+	a.configuringAgent.Stop()
 }

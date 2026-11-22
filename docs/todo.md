@@ -6,10 +6,6 @@ the evidence and the correction.
 
 ## Defects
 
-- [ ] **Archive and unarchive act on a stale session.** Unarchive can flip a
-      recreated session's stored flag, and archive replies before its members
-      have stopped.
-      [Deslop F4](../agents/audits/2026-11-20-002-deslop.md#f4-archive-and-unarchive-act-outside-the-owner-of-session-membership)
 - [ ] **Tests that pass when their behavior breaks.** Six tests, from the
       settings passed to the next start to `TestLive`'s ordering.
       [Deslop F8](../agents/audits/2026-11-20-002-deslop.md#f8-tests-that-pass-when-the-behavior-they-name-breaks)

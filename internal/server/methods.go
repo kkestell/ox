@@ -60,9 +60,9 @@ func (s *Server) handle(reply replyFunc, request jsonrpc.Request) {
 	case "session/destroy":
 		s.destroySession(reply, id, params)
 	case "session/archive":
-		s.archiveSession(reply, id, params, s.archive)
+		s.archiveSession(reply, id, params)
 	case "session/unarchive":
-		s.archiveSession(reply, id, params, s.unarchive)
+		s.unarchiveSession(reply, id, params)
 	default:
 		reply(jsonrpc.Failure(id, jsonrpc.MethodNotFound, "Method not found"))
 	}
@@ -561,9 +561,28 @@ func (s *Server) destroySession(reply replyFunc, id, params json.RawMessage) {
 	})
 }
 
-// archiveSession archives or unarchives a session with change, which runs on
-// the request's goroutine.
-func (s *Server) archiveSession(reply replyFunc, id, params json.RawMessage, change func(*session) error) {
+// archiveSession archives a session on its goroutine, which replies once
+// every member has stopped.
+func (s *Server) archiveSession(reply replyFunc, id, params json.RawMessage) {
+	var input struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(params, &input); err != nil || input.SessionID == "" {
+		reply(invalidParams(id, "session_id is required"))
+		return
+	}
+	s.onSession(reply, id, input.SessionID, func(sess *session) {
+		if err := sess.archive(); err != nil {
+			reply(failure(id, err))
+			return
+		}
+		reply(jsonrpc.Success(id, struct{}{}))
+	})
+}
+
+// unarchiveSession unarchives a session and replies under s.mu, so the reply
+// follows the broadcasts it reflects and precedes any later one.
+func (s *Server) unarchiveSession(reply replyFunc, id, params json.RawMessage) {
 	var input struct {
 		SessionID string `json:"session_id"`
 	}
@@ -572,17 +591,8 @@ func (s *Server) archiveSession(reply replyFunc, id, params json.RawMessage, cha
 		return
 	}
 	s.mu.Lock()
-	closed, sess := s.closed, s.sessions[input.SessionID]
-	s.mu.Unlock()
-	switch {
-	case closed:
-		reply(shuttingDown(id))
-		return
-	case sess == nil:
-		reply(sessionNotFound(id))
-		return
-	}
-	if err := change(sess); err != nil {
+	defer s.mu.Unlock()
+	if err := s.unarchiveLocked(input.SessionID); err != nil {
 		reply(failure(id, err))
 		return
 	}

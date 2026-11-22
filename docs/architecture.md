@@ -62,34 +62,38 @@ the [session lifecycle](protocol.md#workspaces-and-sessions) for client
 behavior.
 
 Each session runs on its own goroutine, which owns its settings, resume token,
-history, agent, and park timer. Every request for a session is an operation
-posted to that goroutine, and the agent's events and the park timer are handled
-there between operations. An operation queues its own response there: at once,
-or, for a configuration Claude must acknowledge, from the event that finishes
-it. Nothing else touches a session's state, and a response lands in a
-connection's queue after every update it reflects and before every update it
-does not. The server handles each connection's requests on separate goroutines.
-Workspace and session membership changes are stored before they are applied in
-memory. The session keeps the settings it adopts and the resume token it
-receives or clears even when storing them fails.
+history, agent, and park timer. Every request that reads or changes that state,
+archive included, is an operation posted to that goroutine, and the agent's
+events and the park timer are handled there between operations. An operation
+queues its own response there: at once; for a configuration Claude must
+acknowledge, from the event that finishes it; and for an archive, once every
+member has stopped. Unarchive changes only state `Server.mu` guards and is not
+posted to a goroutine. Nothing else touches a session's state, and a response
+lands in a connection's queue after every update it reflects and before every
+update it does not. The server handles each connection's requests on separate
+goroutines. Workspace and session membership changes are stored before they are
+applied in memory. The session keeps the settings it adopts and the resume token
+it receives or clears even when storing them fails.
 
 `Server.mu` guards workspace and session membership, each session's archived
 flag, and the shutdown flag. Membership and archive changes and `workspace/list`
 queue their messages under the same lock so every connection sees them in one
-order. Nothing posts to a session while holding it.
+order. Unarchive looks its session up and queues its response under the lock.
+Nothing posts to a session while holding it.
 
 An archived session has no agent, and a child of an archived session is
-archived. An archive holds the session and every session beneath it,
-breadth-first, each with an operation that reports whether the session is idle
-or parked and then waits. Each member is held before its children are read,
-which fixes them, since they are created only on its goroutine; every archive
-holds ancestors before descendants, so two archives in one family cannot
-deadlock. With every member idle or parked, the archive stores and sets the
-flags under `Server.mu` and releases each member, which stops its agent before
-its operation ends; otherwise it releases them unchanged. Unarchiving touches no
-goroutine: under `Server.mu` it refuses a child whose parent is archived and
-clears the flags of the session and every session beneath it. The one place an
-input starts a parked session refuses an archived one, and so does
+archived. An archive runs on the session's goroutine. It holds every session
+beneath it, breadth-first, each with an operation that reports whether the
+session is idle, in the background, or parked and then waits. Each member is
+held before its children are read, which fixes them, since they are created only
+on its goroutine; an archive posts only from an ancestor to its descendants, so
+two archives in one family cannot deadlock. With every member free, the archive
+stores and sets the flags under `Server.mu`, stops its own agent, and releases
+the members, which stop theirs, and replies once each has stopped; otherwise it
+releases them unchanged. Unarchiving, in one critical section under `Server.mu`,
+looks the session up by ID, refuses a child whose parent is archived, clears the
+flags of the session and every session beneath it, and queues its response. The
+one place an input starts a parked session refuses an archived one, and so does
 `create_session` for an archived caller.
 
 The session writes each conversation event to the store as it arrives. See
