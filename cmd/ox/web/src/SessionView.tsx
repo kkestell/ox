@@ -44,7 +44,7 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
           <span class="directory">{directory()}</span>
         </p>
       </header>
-      <div class="log">
+      <div class="log" role="log" aria-label="Transcript">
         <div class="transcript">
           <Transcript snapshot={props.snapshot} />
         </div>
@@ -112,20 +112,36 @@ function Transcript(props: { snapshot: SessionSnapshot }) {
           <Switch>
             <Match when={entry.kind === "prompt" && entry}>{(prompt) => <PromptBubble input={prompt().input} />}</Match>
             <Match when={entry.kind === "reply" && entry}>
-              {(reply) => <Markdown class="reply" text={reply().text} />}
+              {(reply) => (
+                <article aria-label="Reply">
+                  <Markdown class="reply" text={reply().text} />
+                </article>
+              )}
             </Match>
             <Match when={entry.kind === "tool" && entry}>{(tool) => <ToolCall tool={tool()} />}</Match>
             {/* A successful result repeats the reply, so only a failed turn shows its result. */}
             <Match when={entry.kind === "result" && entry.result.is_error && entry}>
-              {(result) => <div class="error">{result().result.text}</div>}
+              {(result) => (
+                <article class="error" aria-label="Error">
+                  {result().result.text}
+                </article>
+              )}
             </Match>
             <Match when={entry.kind === "exited" && entry}>
-              {(exited) => <div class="error">{exited().error}</div>}
+              {(exited) => (
+                <article class="error" aria-label="Error">
+                  {exited().error}
+                </article>
+              )}
             </Match>
           </Switch>
         )}
       </For>
-      <For each={props.snapshot.queued}>{(input) => <PromptBubble input={input} queued />}</For>
+      <Show when={props.snapshot.queued.length}>
+        <section class="queue" aria-label="Pending">
+          <For each={props.snapshot.queued}>{(input) => <PromptBubble input={input} queued />}</For>
+        </section>
+      </Show>
     </>
   );
 }
@@ -133,12 +149,15 @@ function Transcript(props: { snapshot: SessionSnapshot }) {
 // PromptBubble shows a prompt, or a message headed with its sender's label.
 function PromptBubble(props: { input: Prompt; queued?: boolean }) {
   return (
-    <div class={["prompt", { queued: props.queued, message: props.input.from !== undefined }]}>
+    <article
+      class={["prompt", { queued: props.queued, message: props.input.from !== undefined }]}
+      aria-label={props.input.from === undefined ? "Prompt" : `Message from ${props.input.from_label}`}
+    >
       <Show when={props.input.from !== undefined}>
         <div class="from">{props.input.from_label}</div>
       </Show>
       {props.input.text}
-    </div>
+    </article>
   );
 }
 
@@ -149,7 +168,7 @@ function ToolCall(props: { tool: Tool }) {
     return props.tool.stopped ? "stopped" : "running";
   };
   return (
-    <details class="tool">
+    <details class="tool" aria-label={props.tool.name}>
       <summary>
         <span class={["marker", status()]} role="img" title={status()} aria-label={status()} />
         <span class="name">{props.tool.name}</span> <span class="detail">{detail()}</span>
@@ -188,6 +207,7 @@ function SettingsForm(props: { harness: string; settings: Settings; control: Ses
       />
       <Select
         name="permission_mode"
+        label="Permission mode"
         options={harness().permission_modes}
         value={shown().permission_mode}
         disabled={!props.control.canConfigure()}

@@ -3,45 +3,48 @@
 // tool call for a prompt "approve <tool> <input JSON>", or also runs a
 // background task for a prompt "background <milliseconds>".
 import { mkdtempSync } from "node:fs";
-import { createConnection } from "node:net";
 import { basename } from "node:path";
-import { expect, type Page, test } from "@playwright/test";
-import { fakeConfig, haikuConfig, type Services, startServices } from "./services";
+import type { Page } from "@playwright/test";
+import type { Services } from "./services";
+import { fakeConfig, haikuConfig } from "./services";
 import {
+  addWorkspace,
+  allow,
+  ask,
+  cutReply,
+  errors,
+  expect,
+  heading,
   hold,
   menuItem,
-  open,
+  model,
+  newSession,
+  newSessionButton,
   openMenu,
+  pending,
+  permissionMode,
   prompt,
+  prompts,
+  replies,
+  rpcCalls,
   send,
   sessionButton,
-  sessionRow,
+  sessionId,
+  sessionItem,
+  sessions,
   stop,
-  toolResult,
-  workspaceRow,
+  test,
+  toolCall,
+  transcript,
+  waiting,
+  workspaceSection,
 } from "./ui";
 
-let services: Services;
-test.beforeAll(async () => {
-  services = await startServices(fakeConfig);
-});
-test.afterAll(async () => {
-  await services.stop();
-});
+const main = (page: Page) => page.getByRole("main");
+const words = (n: number) => Array.from({ length: n }, (_, i) => `word${i}`).join(" ");
 
-// newSession sends text as a new session's first prompt and waits for the
-// reply.
-async function newSession(page: Page, text: string) {
-  await page.getByRole("button", { name: "New session" }).click();
-  await prompt(page).fill(text);
-  await prompt(page).press("Enter");
-  await expect(page.locator(".reply").last()).toHaveText(`You said: ${text}`);
-  await expect(stop(page)).toHaveCount(0);
-}
-
-test("the first send hands its text and later edits to the new session", async ({ page }) => {
-  await open(page, services);
-  await page.getByRole("button", { name: "New session" }).click();
+test("edits typed while a new session is created and sent stay in the composer", async ({ ox: page }) => {
+  await newSessionButton(page).click();
   const create = await hold(page, "session/create");
   const firstSend = await hold(page, "session/send");
   await prompt(page).fill("first prompt");
@@ -50,15 +53,16 @@ test("the first send hands its text and later edits to the new session", async (
   await prompt(page).pressSequentially(" and more");
   create.release();
   await firstSend.arrived;
-  await expect(page.locator(".context h1")).not.toHaveText("New session");
+  await expect(heading(page)).not.toHaveText("New session");
   await prompt(page).pressSequentially(" again");
   firstSend.release();
-  await expect(page.locator(".reply")).toHaveText("You said: first prompt");
-  await expect(page.locator(".prompt")).toHaveText(["first prompt"]);
+  await expect(replies(page)).toHaveText(["You said: first prompt"]);
+  await expect(prompts(page)).toHaveText(["first prompt"]);
   await expect(prompt(page)).toHaveValue("first prompt and more again");
+});
 
-  // Text retyped while a send is in flight stays, even when it equals the
-  // prompt sent.
+test("text retyped equal to the sent prompt stays after the send", async ({ ox: page }) => {
+  await newSession(page, "first prompt");
   const retyped = await hold(page, "session/send");
   await prompt(page).fill("same text");
   await prompt(page).press("Enter");
@@ -66,89 +70,95 @@ test("the first send hands its text and later edits to the new session", async (
   await prompt(page).fill("");
   await prompt(page).fill("same text");
   retyped.release();
-  await expect(page.locator(".reply").last()).toHaveText("You said: same text");
+  await expect(replies(page).last()).toHaveText("You said: same text");
   await expect(prompt(page)).toHaveValue("same text");
+});
 
-  // So does text retyped while the session is being created.
-  await page.getByRole("button", { name: "New session" }).click();
-  const draftCreate = await hold(page, "session/create");
-  const draftSend = await hold(page, "session/send");
+test("text retyped equal to the prompt stays after the creation", async ({ ox: page }) => {
+  await newSessionButton(page).click();
+  const create = await hold(page, "session/create");
+  const firstSend = await hold(page, "session/send");
   await prompt(page).fill("draft text");
   await prompt(page).press("Enter");
-  await draftCreate.arrived;
+  await create.arrived;
   await prompt(page).fill("");
   await prompt(page).fill("draft text");
-  draftCreate.release();
-  draftSend.release();
-  await expect(page.locator(".reply")).toHaveText("You said: draft text");
+  create.release();
+  firstSend.release();
+  await expect(replies(page)).toHaveText(["You said: draft text"]);
   await expect(prompt(page)).toHaveValue("draft text");
 });
 
-test("a reply renders as Markdown and its prompt stays plain", async ({ page }) => {
-  await open(page, services);
-  await page.getByRole("button", { name: "New session" }).click();
-  const text = [
-    "**bold** `code` <b>raw</b> [site](https://example.com) [bad](javascript:alert(1)) ![pic](https://example.com/p.png) https://example.org",
-    "",
-    "- one",
-    "- two",
-    "",
-    "1. first",
-    "2. second",
-  ].join("\n");
+// reply sends text as a new session's first prompt and returns its reply
+// once it has ended.
+async function reply(page: Page, text: string) {
+  await newSessionButton(page).click();
   await prompt(page).fill(text);
   await prompt(page).press("Enter");
   await expect(stop(page)).toHaveCount(0);
-  const reply = page.locator(".reply");
-  await expect(reply.locator("strong")).toHaveText("bold");
-  await expect(reply.locator("code")).toHaveText("code");
-  await expect(reply.locator("ul li")).toHaveText(["one", "two"]);
-  await expect(reply.locator("ol li")).toHaveText(["first", "second"]);
-  await expect(reply.locator("b")).toHaveCount(0);
-  await expect(reply).toContainText("<b>raw</b>");
-  await expect(reply.locator("img")).toHaveCount(0);
-  await expect(reply.getByRole("link", { name: "pic", exact: true })).toHaveAttribute(
+  await expect(replies(page)).toHaveCount(1);
+  return replies(page);
+}
+
+test("a reply renders Markdown", async ({ ox: page }) => {
+  const markdown = await reply(page, ["**bold** `code`", "", "- one", "- two", "", "1. first", "2. second"].join("\n"));
+  await expect(markdown.getByRole("strong")).toHaveText("bold");
+  await expect(markdown.getByRole("code")).toHaveText("code");
+  const lists = markdown.getByRole("list");
+  await expect(lists).toHaveCount(2);
+  await expect(lists.first().getByRole("listitem")).toHaveText(["one", "two"]);
+  await expect(lists.last().getByRole("listitem")).toHaveText(["first", "second"]);
+});
+
+test("a reply shows raw HTML as text, loads no images, and opens safe links in a new tab", async ({ ox: page }) => {
+  const markdown = await reply(
+    page,
+    "<b>raw</b> [site](https://example.com) [bad](javascript:alert(1)) ![pic](https://example.com/p.png) https://example.org",
+  );
+  await expect(markdown).toContainText("<b>raw</b>");
+  await expect(markdown.getByRole("img")).toHaveCount(0);
+  await expect(markdown.getByRole("link", { name: "pic", exact: true })).toHaveAttribute(
     "href",
     "https://example.com/p.png",
   );
-  const site = reply.getByRole("link", { name: "site", exact: true });
+  const site = markdown.getByRole("link", { name: "site", exact: true });
   await expect(site).toHaveAttribute("href", "https://example.com");
   await expect(site).toHaveAttribute("target", "_blank");
   await expect(site).toHaveAttribute("rel", "noopener noreferrer");
-  await expect(reply.locator("a[href^='javascript:']")).toHaveCount(0);
-  await expect(reply).toContainText("[bad](javascript:alert(1))");
-  await expect(reply.getByRole("link", { name: "https://example.org" })).toHaveAttribute(
+  await expect(markdown).toContainText("[bad](javascript:alert(1))");
+  await expect(markdown.getByRole("link", { name: "bad" })).toHaveCount(0);
+  await expect(markdown.getByRole("link", { name: "https://example.org" })).toHaveAttribute(
     "href",
     /^https:\/\/example\.org\/?$/,
   );
-  await expect(page.locator(".prompt")).toContainText("**bold**");
-  await expect(page.locator(".prompt")).toContainText("<b>raw</b>");
-  await expect(page.locator(".prompt strong")).toHaveCount(0);
 });
 
-test("a failed first send is retried in the session with its settings", async ({ page }) => {
-  await open(page, services);
-  await page.getByRole("button", { name: "New session" }).click();
-  await page.locator("select[name=permission_mode]").selectOption("plan");
+test("a prompt shows as the plain text sent", async ({ ox: page }) => {
+  await reply(page, "**bold** `code` <b>raw</b>");
+  await expect(prompts(page)).toHaveText(["**bold** `code` <b>raw</b>"]);
+});
+
+test("a failed first send is retried in the session with its settings", async ({ ox: page }) => {
+  await newSessionButton(page).click();
+  await permissionMode(page).selectOption("plan");
   const firstSend = await hold(page, "session/send");
   await prompt(page).fill("retry me");
   await prompt(page).press("Enter");
   await firstSend.arrived;
   firstSend.fail("relay unavailable");
-  await expect(page.getByRole("alert")).toHaveText("relay unavailable");
+  await expect(main(page).getByRole("alert")).toHaveText("relay unavailable");
   await expect(prompt(page)).toHaveValue("retry me");
-  await expect(page.locator("select[name=permission_mode]")).toHaveValue("plan");
+  await expect(permissionMode(page)).toHaveValue("plan");
   await send(page).click();
-  await expect(page.locator(".reply")).toHaveText("You said: retry me");
-  await expect(page.locator(".prompt")).toHaveText(["retry me"]);
-  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(replies(page)).toHaveText(["You said: retry me"]);
+  await expect(prompts(page)).toHaveText(["retry me"]);
+  await expect(main(page).getByRole("alert")).toHaveCount(0);
   await expect(prompt(page)).toHaveValue("");
 });
 
-test("a session created after the user moves on leaves the selection alone", async ({ page }) => {
-  await open(page, services);
+test("a session created after the user moves on leaves the selection alone", async ({ ox: page }) => {
   await newSession(page, "elsewhere");
-  await page.getByRole("button", { name: "New session" }).click();
+  await newSessionButton(page).click();
   const create = await hold(page, "session/create");
   await prompt(page).fill("background start");
   await prompt(page).press("Enter");
@@ -156,258 +166,242 @@ test("a session created after the user moves on leaves the selection alone", asy
   await sessionButton(page, "elsewhere").click();
   create.release();
   await expect(sessionButton(page, "background start")).toBeVisible();
-  await expect(page.locator(".prompt")).toHaveText(["elsewhere"]);
+  await expect(prompts(page)).toHaveText(["elsewhere"]);
   await sessionButton(page, "background start").click();
-  await expect(page.locator(".reply")).toHaveText("You said: background start");
+  await expect(replies(page)).toHaveText(["You said: background start"]);
 });
 
-test("a rejected creation keeps the draft and its settings after switching views", async ({ page }) => {
-  await open(page, services);
-  await newSession(page, "existing conversation");
-  await page.getByRole("button", { name: "New session" }).click();
-  // Enter in the draft's settings sends nothing.
-  const creates: string[] = [];
-  page.on("request", (request) => {
-    if (request.url().includes("/rpc") && request.postDataJSON()?.method === "session/create") {
-      creates.push(request.url());
-    }
-  });
+test("Enter in the new-session settings sends nothing", async ({ ox: page }) => {
+  await newSessionButton(page).click();
+  const creates = rpcCalls(page, "session/create");
   await prompt(page).fill("keep this draft");
-  await page.locator("button.picker").click();
+  await model(page).click();
   await page.getByRole("slider", { name: "Effort" }).press("Enter");
   await page.keyboard.press("Escape");
-  await page.waitForTimeout(500);
-  expect(creates).toEqual([]);
-  await expect(page.locator(".context h1")).toHaveText("New session");
+  await expect(heading(page)).toHaveText("New session");
   await expect(prompt(page)).toHaveValue("keep this draft");
-  const mode = page.locator("select[name=permission_mode]");
-  await mode.selectOption("plan");
+  await send(page).click();
+  await expect(replies(page)).toHaveText(["You said: keep this draft"]);
+  expect(creates).toHaveLength(1);
+});
+
+test("a rejected creation keeps the draft and its settings after switching views", async ({ ox: page }) => {
+  await newSession(page, "existing conversation");
+  await newSessionButton(page).click();
+  await permissionMode(page).selectOption("plan");
   const create = await hold(page, "session/create");
   await prompt(page).fill("keep this draft");
   await prompt(page).press("Enter");
   await create.arrived;
   await sessionButton(page, "existing conversation").click();
   create.release({ model: "not-offered" });
-  const error = page.getByRole("alert").filter({ hasText: "not-offered" });
+  const error = main(page).getByRole("alert").filter({ hasText: "not-offered" });
   await expect(error).toBeVisible();
-  await expect(page.locator(".prompt")).toHaveText(["existing conversation"]);
+  await expect(prompts(page)).toHaveText(["existing conversation"]);
   await error.getByRole("button", { name: "Reopen draft" }).click();
-  await expect(page.getByRole("alert")).toContainText("not-offered");
+  await expect(main(page).getByRole("alert")).toContainText("not-offered");
   await expect(prompt(page)).toHaveValue("keep this draft");
-  await expect(mode).toHaveValue("plan");
+  await expect(permissionMode(page)).toHaveValue("plan");
   await send(page).click();
-  await expect(page.locator(".prompt")).toHaveText(["keep this draft"]);
-  await expect(mode).toHaveValue("plan");
+  await expect(prompts(page)).toHaveText(["keep this draft"]);
+  await expect(permissionMode(page)).toHaveValue("plan");
 });
 
-test("a pending configuration shows as pending and holds Send until it is confirmed", async ({ page, context }) => {
-  await open(page, services);
+test("a pending setting is marked pending and holds Send until confirmed", async ({ ox: page }) => {
   await newSession(page, "configure me");
-  const other = await context.newPage();
-  await other.goto(page.url());
-  const mode = page.locator("select[name=permission_mode]");
+  const sends = rpcCalls(page, "session/send");
   const configure = await hold(page, "session/configure");
-  await mode.selectOption("plan");
+  await permissionMode(page).selectOption("plan");
   await configure.arrived;
-  await expect(mode).toHaveAttribute("aria-busy", "true");
-  await expect(page.locator(".select .loader")).toBeVisible();
-  const picker = page.locator("button.picker");
-  await expect(picker).not.toHaveAttribute("aria-busy");
-  await other.locator("button.picker").click();
-  await other.getByRole("slider", { name: "Effort" }).press("End");
-  await expect(picker).toContainText("High");
-  await expect(picker).not.toHaveAttribute("aria-busy");
-  await expect(mode).toHaveValue("plan");
-  await expect(mode).toHaveAttribute("aria-busy", "true");
+  await expect(permissionMode(page)).toHaveAttribute("aria-busy", "true");
   await prompt(page).fill("after configuring");
   await expect(send(page)).toBeDisabled();
   await prompt(page).press("Enter");
   configure.release();
-  await expect(mode).toHaveValue("plan");
-  await expect(mode).not.toHaveAttribute("aria-busy");
-  await expect(page.locator(".select .chevron-down")).toBeVisible();
+  await expect(permissionMode(page)).toHaveValue("plan");
+  await expect(permissionMode(page)).not.toHaveAttribute("aria-busy");
   await expect(send(page)).toBeEnabled();
-  await expect(page.locator(".prompt")).toHaveText(["configure me"]);
-
-  const failed = await hold(page, "session/configure");
-  await mode.selectOption("manual");
-  await failed.arrived;
-  await expect(mode).toHaveAttribute("aria-busy", "true");
-  await expect(send(page)).toBeDisabled();
-  failed.fail("configuration refused");
-  await expect(page.getByRole("alert")).toHaveText("configuration refused");
-  await expect(mode).toHaveValue("plan");
-  await expect(mode).not.toHaveAttribute("aria-busy");
-  await send(page).click();
-  await expect(page.locator(".reply").last()).toHaveText("You said: after configuring");
+  await expect(prompts(page)).toHaveText(["configure me"]);
+  expect(sends).toEqual([]);
 });
 
-test("a reconnect keeps typed text and sends nothing again", async ({ page }) => {
-  await open(page, services);
+test("a failed setting change shows the error and the settings Claude has", async ({ ox: page }) => {
+  await newSession(page, "configure me");
+  const failed = await hold(page, "session/configure");
+  await permissionMode(page).selectOption("plan");
+  await failed.arrived;
+  await expect(permissionMode(page)).toHaveAttribute("aria-busy", "true");
+  failed.fail("configuration refused");
+  await expect(main(page).getByRole("alert")).toHaveText("configuration refused");
+  await expect(permissionMode(page)).toHaveValue("manual");
+  await expect(permissionMode(page)).not.toHaveAttribute("aria-busy");
+});
+
+test("another page's change during a pending one shows without being marked pending", async ({ ox: page, context }) => {
+  await newSession(page, "configure me");
+  const other = await context.newPage();
+  await other.goto(page.url());
+  const configure = await hold(page, "session/configure");
+  await permissionMode(page).selectOption("plan");
+  await configure.arrived;
+  await expect(permissionMode(page)).toHaveAttribute("aria-busy", "true");
+  await expect(model(page)).not.toHaveAttribute("aria-busy");
+  await model(other).click();
+  await other.getByRole("slider", { name: "Effort" }).press("End");
+  await expect(model(page)).toContainText("High");
+  await expect(model(page)).not.toHaveAttribute("aria-busy");
+  await expect(permissionMode(page)).toHaveValue("plan");
+  await expect(permissionMode(page)).toHaveAttribute("aria-busy", "true");
+  configure.release();
+  await expect(permissionMode(page)).toHaveValue("plan");
+  await expect(permissionMode(page)).not.toHaveAttribute("aria-busy");
+});
+
+test("a reconnect keeps typed text and sends nothing again", async ({ ox: page, services }) => {
   await newSession(page, "sent once");
   await prompt(page).fill("unsent draft");
   await services.restartRelay();
-  await expect(page.getByRole("alert")).toHaveCount(0, { timeout: 10_000 });
+  await expect(main(page).getByRole("alert")).toHaveCount(0, { timeout: 10_000 });
   await expect(send(page)).toBeEnabled({ timeout: 10_000 });
   await expect(prompt(page)).toHaveValue("unsent draft");
-  await expect(page.locator(".prompt")).toHaveText(["sent once"]);
+  await expect(prompts(page)).toHaveText(["sent once"]);
   await page.reload();
-  await expect(page.locator(".prompt")).toHaveText(["sent once"]);
+  await expect(prompts(page)).toHaveText(["sent once"]);
 });
 
-test("a send cut off after acceptance shows an error without resending", async ({ page }) => {
-  await cutReply(page, "message_id");
+// open loads the page with the services' workspace added, for a test that
+// prepares the page before it loads.
+async function open(page: Page, services: Services) {
+  await page.goto(services.url);
+  await addWorkspace(page, services.workspace);
+}
+
+test("a send cut off after acceptance shows an error without resending", async ({ page, services }) => {
+  const cutoff = await cutReply(page, "message_id");
   await open(page, services);
   await newSession(page, "before disconnection");
-  const sends: string[] = [];
-  page.on("request", (request) => {
-    if (request.method() !== "POST" || !request.url().includes("/rpc")) return;
-    const body = request.postDataJSON();
-    if (body.method === "session/send") sends.push(body.params.text);
-  });
-  await armCutReply(page);
+  const sends = rpcCalls(page, "session/send");
+  await cutoff.arm();
   await prompt(page).fill("accepted once");
   await prompt(page).press("Enter");
-  await expect(page.locator("body")).toHaveAttribute("data-cut-reply", "held");
+  await cutoff.cut;
   await services.restartRelay();
-  await expect(page.locator(".log ~ [role=alert]")).toContainText("Lost the connection");
+  // Once reconnected, the send's error is the one left.
   await expect(send(page)).toBeEnabled();
-  await expect(page.locator(".prompt")).toHaveText(["before disconnection", "accepted once"]);
-  expect(sends).toEqual(["accepted once"]);
+  await expect(main(page).getByRole("alert")).toHaveText(["Lost the connection to ox. Reconnecting."]);
+  await expect(prompts(page)).toHaveText(["before disconnection", "accepted once"]);
+  expect(sends.map((params) => params.text)).toEqual(["accepted once"]);
 });
 
-test("Shift+Enter inserts a newline and Enter during composition doesn't send", async ({ page }) => {
-  await open(page, services);
+test("Shift+Enter starts a new line", async ({ ox: page }) => {
   await newSession(page, "keyboard test");
   await prompt(page).fill("first line");
   await prompt(page).press("Shift+Enter");
   await prompt(page).pressSequentially("second line");
   await expect(prompt(page)).toHaveValue("first line\nsecond line");
-  // Enter must reach the IME rather than being consumed by the send handler.
-  const reachesIME = await prompt(page).evaluate((input) =>
-    input.dispatchEvent(
-      new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true, cancelable: true }),
-    ),
-  );
-  expect(reachesIME).toBe(true);
-  await expect(page.locator(".prompt")).toHaveText(["keyboard test"]);
-  await expect(prompt(page)).toHaveValue("first line\nsecond line");
-  await prompt(page).press("Enter");
-  await expect(page.locator(".prompt")).toHaveText(["keyboard test", "first line second line"]);
+  await expect(prompts(page)).toHaveText(["keyboard test"]);
 });
 
-test("overflowing output follows only while the reader is at the bottom", async ({ page }) => {
-  await open(page, services);
+test("Enter during input-method composition does not send", async ({ ox: page }) => {
+  await newSession(page, "keyboard test");
+  const cdp = await page.context().newCDPSession(page);
+  await prompt(page).focus();
+  await cdp.send("Input.imeSetComposition", { text: "にほん", selectionStart: 3, selectionEnd: 3 });
+  await page.keyboard.press("Enter");
+  await cdp.send("Input.insertText", { text: "日本" });
+  await prompt(page).press("Enter");
+  await expect(prompts(page)).toHaveText(["keyboard test", "日本"]);
+});
+
+// overflowing starts a session whose first prompt overflows the transcript.
+async function overflowing(page: Page) {
   await newSession(page, Array.from({ length: 90 }, (_, i) => `line${i}`).join("\n"));
-  const log = page.locator(".log");
-  // Measure viewport positions rather than depending on the scroll origin.
-  const distance = () =>
-    log.evaluate((el) =>
-      Math.round(el.firstElementChild!.getBoundingClientRect().bottom - el.getBoundingClientRect().bottom),
-    );
-  const firstPromptY = () =>
-    log
-      .locator(".prompt")
-      .first()
-      .evaluate((el) => el.getBoundingClientRect().top);
-  await expect.poll(firstPromptY).toBeLessThan(-100);
-  await expect.poll(distance).toBeLessThanOrEqual(1);
+  await expect(replies(page).last()).toBeInViewport();
+  await expect(prompts(page).first()).not.toBeInViewport({ ratio: 1 });
+}
 
-  // Growing and shrinking the composer changes the transcript viewport, but
-  // is not a scroll gesture and must not stop it following the bottom.
-  const height = () => log.evaluate((el) => el.clientHeight);
-  const originalHeight = await height();
-  await prompt(page).fill("draft line\n".repeat(8));
-  await expect.poll(height).toBeLessThan(originalHeight);
-  await expect.poll(distance).toBeLessThanOrEqual(1);
-  await prompt(page).clear();
-  await expect.poll(height).toBe(originalHeight);
-  await expect.poll(distance).toBeLessThanOrEqual(1);
-
-  await prompt(page).fill("follow this output");
+// sendAndWait sends text in the current session and waits for its reply.
+async function sendAndWait(page: Page, text: string) {
+  await prompt(page).fill(text);
   await prompt(page).press("Enter");
-  await expect(page.locator(".reply").last()).toHaveText("You said: follow this output");
+  await expect(replies(page).last()).toHaveText(`You said: ${text}`);
   await expect(stop(page)).toHaveCount(0);
-  await expect.poll(distance).toBeLessThanOrEqual(1);
+}
 
-  await log.hover();
-  await page.mouse.wheel(0, -20);
-  await expect.poll(distance).toBe(20);
-  const scrolledUp = await firstPromptY();
-  await prompt(page).fill("do not follow this output");
-  await prompt(page).press("Enter");
-  await expect(page.locator(".reply").last()).toHaveText("You said: do not follow this output");
-  await expect(stop(page)).toHaveCount(0);
-  await expect.poll(firstPromptY).toBe(scrolledUp);
-  expect(await distance()).toBeGreaterThan(20);
-
-  await log.hover();
-  await page.mouse.wheel(0, 500);
-  await expect.poll(distance).toBeLessThanOrEqual(1);
-  await prompt(page).fill("follow again");
-  await prompt(page).press("Enter");
-  await expect(page.locator(".reply").last()).toHaveText("You said: follow again");
-  await expect(stop(page)).toHaveCount(0);
-  await expect.poll(distance).toBeLessThanOrEqual(1);
+test("output follows at the bottom", async ({ ox: page }) => {
+  await overflowing(page);
+  await sendAndWait(page, "follow this output");
+  await expect(replies(page).last()).toBeInViewport();
 });
 
-test("an oversized prompt fails visibly and stays in the box", async ({ page }) => {
-  await open(page, services);
+test("resizing the composer keeps following", async ({ ox: page }) => {
+  await overflowing(page);
+  await prompt(page).fill("draft line\n".repeat(8));
+  await expect(replies(page).last()).toBeInViewport();
+  await prompt(page).clear();
+  await expect(replies(page).last()).toBeInViewport();
+});
+
+test("output does not follow while scrolled up", async ({ ox: page }) => {
+  await overflowing(page);
+  await transcript(page).hover();
+  await page.mouse.wheel(0, -500);
+  await expect(replies(page).last()).not.toBeInViewport();
+  await sendAndWait(page, "do not follow this output");
+  await expect(replies(page).last()).not.toBeInViewport();
+});
+
+test("scrolling back to the bottom resumes following", async ({ ox: page }) => {
+  await overflowing(page);
+  await transcript(page).hover();
+  await page.mouse.wheel(0, -500);
+  await expect(replies(page).last()).not.toBeInViewport();
+  await page.mouse.wheel(0, 5000);
+  await expect(replies(page).last()).toBeInViewport();
+  await sendAndWait(page, "follow again");
+  await expect(replies(page).last()).toBeInViewport();
+});
+
+test("an oversized prompt fails visibly and stays in the box", async ({ ox: page }) => {
   await newSession(page, "small prompt");
   // The limit is UTF-8 bytes of text, not the length of the JSON request.
   const large = `${"é".repeat(1 << 19)}x`;
   await prompt(page).fill(large);
   await prompt(page).press("Enter");
-  await expect(page.getByRole("alert")).toHaveText("prompt is larger than 1 MiB");
+  await expect(main(page).getByRole("alert")).toHaveText("prompt is larger than 1 MiB");
   await expect(send(page)).toBeEnabled();
   await expect(prompt(page)).toHaveValue(large);
 });
 
-test("Stop interrupts a running reply", async ({ page }) => {
-  await open(page, services);
-  await page.getByRole("button", { name: "New session" }).click();
-  await prompt(page).fill(Array.from({ length: 200 }, (_, i) => `word${i}`).join(" "));
-  await prompt(page).press("Enter");
-  await expect(page.locator(".reply")).toContainText("You said:");
-  await stop(page).click();
-  await expect(page.locator(".error")).toHaveText("Interrupted");
-  await expect(stop(page)).toHaveCount(0);
-});
-
-test("a session in the background shows its status and stays configurable and archivable", async ({ page }) => {
-  await open(page, services);
-  await page.getByRole("button", { name: "New session" }).click();
-  await prompt(page).fill("background 2000");
-  await prompt(page).press("Enter");
-  await expect(page.locator(".reply")).toHaveText("You said: background 2000");
-  const status = sessionRow(page, "background 2000").locator(".status");
-  await expect(status).toHaveAttribute("aria-label", "background");
-  await expect(page.locator("select[name=permission_mode]")).toBeEnabled();
-  await expect(stop(page)).toHaveCount(0);
-  await expect(menuItem(await openMenu(sessionRow(page, "background 2000")), "Archive")).toBeEnabled();
-  await page.keyboard.press("Escape");
-  // Each check above passed while the task still ran.
-  expect(await status.getAttribute("aria-label")).toBe("background");
-  await expect(status).toHaveAttribute("aria-label", "idle");
-});
-
-test("Stop appears once the page's send is accepted, and stops it", async ({ page }) => {
-  await open(page, services);
+test("Stop appears once the page's send is accepted, and stops it", async ({ ox: page }) => {
   await newSession(page, "earlier prompt");
   const held = await hold(page, "session/send");
-  await prompt(page).fill(Array.from({ length: 200 }, (_, i) => `word${i}`).join(" "));
+  await prompt(page).fill(words(200));
   await prompt(page).press("Enter");
   await held.arrived;
   await expect(send(page)).toBeDisabled();
   await expect(stop(page)).toHaveCount(0);
   held.release();
   await stop(page).click();
-  await expect(page.locator(".error")).toHaveText("Interrupted");
+  await expect(errors(page)).toHaveText(["Interrupted"]);
   await expect(stop(page)).toHaveCount(0);
 });
 
-test("a send held in one session leaves another usable", async ({ page }) => {
-  await open(page, services);
+test("a session in the background shows its status and stays configurable and archivable", async ({ ox: page }) => {
+  await newSessionButton(page).click();
+  await prompt(page).fill("background 60000");
+  await prompt(page).press("Enter");
+  await expect(replies(page)).toHaveText(["You said: background 60000"]);
+  await expect(sessionButton(page, "background 60000")).toHaveAccessibleDescription("background");
+  await expect(permissionMode(page)).toBeEnabled();
+  await expect(stop(page)).toHaveCount(0);
+  const archive = menuItem(await openMenu(sessionItem(page, "background 60000")), "Archive");
+  await expect(archive).toBeEnabled();
+  await archive.click();
+  await expect(sessionButton(page, "background 60000")).toHaveCount(0);
+});
+
+test("a send held in one session leaves another usable", async ({ ox: page }) => {
   await newSession(page, "first session");
   await newSession(page, "second session");
   await sessionButton(page, "first session").click();
@@ -418,127 +412,80 @@ test("a send held in one session leaves another usable", async ({ page }) => {
   await sessionButton(page, "second session").click();
   await prompt(page).fill("free prompt");
   await prompt(page).press("Enter");
-  await expect(page.locator(".reply").last()).toHaveText("You said: free prompt");
+  await expect(replies(page).last()).toHaveText("You said: free prompt");
   held.release();
   await sessionButton(page, "first session").click();
-  await expect(page.locator(".reply").last()).toHaveText("You said: held prompt");
+  await expect(replies(page).last()).toHaveText("You said: held prompt");
 });
 
-// ask sends a prompt that has the fake harness ask to approve a call of tool
-// with inputJSON, and returns the approval's card.
-async function ask(page: Page, tool: string, inputJSON: string) {
-  await prompt(page).fill(`approve ${tool} ${inputJSON}`);
-  await prompt(page).press("Enter");
-  const card = page.locator(".approval");
-  await expect(card).toHaveCount(1);
-  return card;
-}
-
-test("Allow sends the exact numbers displayed in the tool input", async ({ page }) => {
-  await open(page, services);
-  await page.getByRole("button", { name: "New session" }).click();
-
+test("Allow sends the exact numbers displayed in the tool input", async ({ ox: page }) => {
+  await newSessionButton(page).click();
   const input = '{"ids":[9007199254740993],"amount":1.00000000000000001}';
-  const card = await ask(page, "Example", input);
-  await card.locator("summary").click();
-  await expect(card.locator("pre")).toHaveText('{ "ids": [ 9007199254740993 ], "amount": 1.00000000000000001 }');
-  const exampleTool = page.locator("details.tool").filter({ has: page.locator(".name", { hasText: "Example" }) });
-  await expect(exampleTool.locator(".detail")).toHaveText(input);
-  await card.getByLabel("Allow").check();
-  await card.getByRole("button", { name: "Submit" }).click();
-  await expect(card).toHaveCount(0);
-  await expect(toolResult(page, "Example")).toHaveText(`{"behavior":"allow","updatedInput":${input}}`);
+  const approval = await ask(page, "Example", input);
+  await approval.getByRole("group").click();
+  await expect(
+    approval.getByText('{ "ids": [ 9007199254740993 ], "amount": 1.00000000000000001 }', { exact: true }),
+  ).toBeVisible();
+  await expect(toolCall(page, "Example")).toContainText(input);
+  await allow(approval);
+  await expect(approval).toHaveCount(0);
+  await expect(toolCall(page, "Example")).toContainText(`{"behavior":"allow","updatedInput":${input}}`);
   await expect(stop(page)).toHaveCount(0);
 });
 
-test("a prompt sent while Claude works stays pending until Claude takes it", async ({ page }) => {
-  await open(page, services);
-  await page.getByRole("button", { name: "New session" }).click();
+test("a prompt sent while Claude works stays pending until Claude takes it", async ({ ox: page }) => {
+  await newSessionButton(page).click();
   await ask(page, "Bash", "{}");
   await expect(stop(page)).toBeVisible();
   await expect(send(page)).toBeVisible();
   await prompt(page).fill("steer");
   await prompt(page).press("Enter");
   await expect(prompt(page)).toHaveValue("");
-  await expect(page.locator(".prompt.queued")).toHaveText("steer");
+  await expect(pending(page).getByRole("article")).toHaveText(["steer"]);
   await expect(send(page)).toBeDisabled();
 
   await page.reload();
-  await expect(page.locator(".prompt.queued")).toHaveText("steer");
-  const card = page.locator(".approval");
-  await card.getByLabel("Allow").check();
-  await card.getByRole("button", { name: "Submit" }).click();
-  await expect(page.locator(".prompt.queued")).toHaveCount(0);
-  await expect(page.locator(".prompt")).toHaveText(["approve Bash {}", "steer"]);
-  await expect(page.locator(".reply").last()).toHaveText("You said: steer");
+  await expect(pending(page).getByRole("article")).toHaveText(["steer"]);
+  await allow(waiting(page).getByRole("article"));
+  await expect(pending(page)).toHaveCount(0);
+  await expect(transcript(page).getByRole("article")).toHaveText(["approve Bash {}", "steer", "You said: steer"]);
 });
 
-test("Stop drops a pending prompt and returns its text to the composer", async ({ page }) => {
-  await open(page, services);
-  await page.getByRole("button", { name: "New session" }).click();
+test("Stop drops a pending prompt and returns its text to the composer", async ({ ox: page }) => {
+  await newSessionButton(page).click();
   await ask(page, "Bash", "{}");
   await prompt(page).fill("steer");
   await prompt(page).press("Enter");
-  await expect(page.locator(".prompt.queued")).toHaveText("steer");
+  await expect(pending(page).getByRole("article")).toHaveText(["steer"]);
   await expect(prompt(page)).toHaveValue("");
   await prompt(page).fill("more");
   await stop(page).click();
-  await expect(page.locator(".prompt.queued")).toHaveCount(0);
+  await expect(pending(page)).toHaveCount(0);
   await expect(prompt(page)).toHaveValue("steer\nmore");
-  await expect(page.locator(".error")).toHaveText("Interrupted");
+  await expect(errors(page)).toHaveText(["Interrupted"]);
 });
 
-test("a dropped prompt returns only to the page that sent it", async ({ page, context }) => {
-  await open(page, services);
-  await page.getByRole("button", { name: "New session" }).click();
+test("a dropped prompt returns only to the page that sent it", async ({ ox: page, context }) => {
+  await newSessionButton(page).click();
   await ask(page, "Bash", "{}");
   const other = await context.newPage();
   await other.goto(page.url());
-  await expect(other.locator(".approval")).toHaveCount(1);
+  await expect(waiting(other).getByRole("article")).toHaveCount(1);
   await prompt(page).fill("steer");
   await prompt(page).press("Enter");
   await expect(prompt(page)).toHaveValue("");
-  await expect(other.locator(".prompt.queued")).toHaveText("steer");
+  await expect(pending(other).getByRole("article")).toHaveText(["steer"]);
   await stop(other).click();
-  await expect(page.locator(".prompt.queued")).toHaveCount(0);
-  await expect(other.locator(".prompt.queued")).toHaveCount(0);
-  await expect(other.locator(".error")).toHaveText("Interrupted");
+  await expect(pending(page)).toHaveCount(0);
+  await expect(pending(other)).toHaveCount(0);
+  await expect(errors(other)).toHaveText(["Interrupted"]);
   await expect(prompt(page)).toHaveValue("steer");
   await expect(prompt(other)).toHaveValue("");
 });
 
-// callTool calls an MCP tool as session from's Claude does, through an MCP
-// connection attached to it, and returns the tool's text.
-function callTool(from: string, name: string, args: Record<string, string>) {
-  return new Promise<string>((resolve, reject) => {
-    const socket = createConnection(services.socket);
-    const call = (id: number, method: string, params: object) =>
-      socket.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
-    let buffered = "";
-    socket.on("data", (data) => {
-      buffered += data;
-      for (let i = buffered.indexOf("\n"); i >= 0; i = buffered.indexOf("\n")) {
-        const line = JSON.parse(buffered.slice(0, i));
-        buffered = buffered.slice(i + 1);
-        if (line.id !== 2) continue;
-        socket.end();
-        if (line.error || line.result.isError) reject(new Error(JSON.stringify(line)));
-        else resolve(line.result.content[0].text);
-      }
-    });
-    socket.on("error", reject);
-    call(1, "mcp/attach", { session_id: from });
-    call(2, "tools/call", { name, arguments: args });
-  });
-}
-
-// sessionId is the ID of the session the page shows.
-const sessionId = (page: Page) => decodeURIComponent(new URL(page.url()).hash.slice(1));
-
 // messaging creates sessions "first from A" and "first from B" and leaves B
 // waiting on an approval, and returns their IDs.
 async function messaging(page: Page) {
-  await open(page, services);
   await newSession(page, "first from A");
   const a = sessionId(page);
   await newSession(page, "first from B");
@@ -547,97 +494,109 @@ async function messaging(page: Page) {
   return { a, b };
 }
 
-test("all waiting inputs show in order with their send-time labels", async ({ page }) => {
+const fromA = (page: Page) => transcript(page).getByRole("article", { name: "Message from first from A" });
+
+test("pending inputs show in order at the transcript's end and hold Send", async ({ ox: page, services }) => {
   const { a, b } = await messaging(page);
   await prompt(page).fill("steer");
   await prompt(page).press("Enter");
-  const queued = page.locator(".prompt.queued");
-  await expect(queued).toHaveText(["steer"]);
-  expect(await callTool(a, "send_message", { to: b, text: "hello from A" })).toBe(`Message queued for ${b}.`);
-  await callTool(a, "send_message", { to: b, text: "another from A" });
-  const checkPending = async () => {
-    const expected = ["steer", "first from Ahello from A", "first from Aanother from A"];
-    await expect(queued).toHaveText(expected);
-    await expect(page.locator(".transcript > :nth-last-child(-n+3)")).toHaveText(expected);
-    await expect(send(page)).toBeDisabled();
-  };
-  await checkPending();
-
-  // Even deleting the sender doesn't change the label recorded on its messages.
-  const sender = sessionRow(page, "first from A");
-  await menuItem(await openMenu(sender), "Delete").click();
-  await page.getByRole("button", { name: "Delete", exact: true }).click();
-  await expect(sender).toHaveCount(0);
-  await page.reload();
-  await checkPending();
-  const card = page.locator(".approval");
-  await card.getByLabel("Allow").check();
-  await card.getByRole("button", { name: "Submit" }).click();
-  await expect(page.locator(".prompt.queued")).toHaveCount(0);
-  const message = page.locator(".prompt.message");
-  await expect(message.locator(".from")).toHaveText(["first from A", "first from A"]);
-  await expect(message).toHaveText(["first from Ahello from A", "first from Aanother from A"]);
-  await expect(page.locator(".reply").last()).toContainText("another from A");
-  await expect(stop(page)).toHaveCount(0);
-
-  await page.reload();
-  await expect(message.locator(".from")).toHaveText(["first from A", "first from A"]);
-  await expect(message).toHaveText(["first from Ahello from A", "first from Aanother from A"]);
-  await expect(sessionButton(page, "first from B")).toHaveCount(1);
+  await expect(pending(page).getByRole("article")).toHaveText(["steer"]);
+  expect(await services.callTool(a, "send_message", { to: b, text: "hello from A" })).toBe(`Message queued for ${b}.`);
+  await services.callTool(a, "send_message", { to: b, text: "another from A" });
+  const queued = ["steer", "first from Ahello from A", "first from Aanother from A"];
+  await expect(pending(page).getByRole("article", { name: "Prompt" })).toHaveText(["steer"]);
+  await expect(pending(page).getByRole("article", { name: "Message from first from A" })).toHaveText(queued.slice(1));
+  await expect(pending(page).getByRole("article")).toHaveText(queued);
+  await expect(transcript(page).getByRole("article")).toHaveText([
+    "first from B",
+    "You said: first from B",
+    "approve Bash {}",
+    ...queued,
+  ]);
+  await expect(send(page)).toBeDisabled();
 });
 
-test("Stop drops a pending message without touching the composer", async ({ page }) => {
+test("a pending message keeps its sender's label after the sender is deleted", async ({ ox: page, services }) => {
+  const { a, b } = await messaging(page);
+  await services.callTool(a, "send_message", { to: b, text: "hello from A" });
+  await expect(fromA(page)).toHaveText(["first from Ahello from A"]);
+  await menuItem(await openMenu(sessionItem(page, "first from A")), "Delete").click();
+  await page.getByRole("alertdialog", { name: "Delete session?" }).getByRole("button", { name: "Delete" }).click();
+  await expect(sessionButton(page, "first from A")).toHaveCount(0);
+  await page.reload();
+  await expect(pending(page).getByRole("article", { name: "Message from first from A" })).toHaveText([
+    "first from Ahello from A",
+  ]);
+});
+
+test("taken messages keep their labels after a reload", async ({ ox: page, services }) => {
+  const { a, b } = await messaging(page);
+  await services.callTool(a, "send_message", { to: b, text: "hello from A" });
+  await services.callTool(a, "send_message", { to: b, text: "another from A" });
+  await expect(pending(page).getByRole("article")).toHaveCount(2);
+  await allow(waiting(page).getByRole("article"));
+  await expect(pending(page)).toHaveCount(0);
+  const taken = ["first from Ahello from A", "first from Aanother from A"];
+  await expect(fromA(page)).toHaveText(taken);
+  await expect(replies(page).last()).toContainText("another from A");
+  await expect(stop(page)).toHaveCount(0);
+  await page.reload();
+  await expect(fromA(page)).toHaveText(taken);
+});
+
+test("Stop drops a pending message without touching the composer", async ({ ox: page, services }) => {
   const { a, b } = await messaging(page);
   await prompt(page).fill("draft");
-  await callTool(a, "send_message", { to: b, text: "hello from A" });
-  await callTool(a, "send_message", { to: b, text: "another from A" });
-  await expect(page.locator(".prompt.queued.message")).toHaveCount(2);
+  await services.callTool(a, "send_message", { to: b, text: "hello from A" });
+  await services.callTool(a, "send_message", { to: b, text: "another from A" });
+  await expect(pending(page).getByRole("article", { name: "Message from first from A" })).toHaveCount(2);
   await stop(page).click();
-  await expect(page.locator(".prompt.queued")).toHaveCount(0);
-  await expect(page.locator(".prompt.message")).toHaveCount(0);
+  await expect(pending(page)).toHaveCount(0);
+  await expect(fromA(page)).toHaveCount(0);
   await expect(prompt(page)).toHaveValue("draft");
-  await expect(page.locator(".error")).toHaveText("Interrupted");
+  await expect(errors(page)).toHaveText(["Interrupted"]);
 });
 
 for (const outcome of ["taken", "dropped"] as const) {
-  test(`a reconnect reconciles a prompt ${outcome} while the page was away`, async ({ page, context }) => {
-    await open(page, services);
-    await page.getByRole("button", { name: "New session" }).click();
+  test(`a reconnect reconciles a prompt ${outcome} while the page was away`, async ({
+    ox: page,
+    services,
+    context,
+  }) => {
+    await newSessionButton(page).click();
     await ask(page, "Bash", "{}");
     await prompt(page).fill("steer");
     await prompt(page).press("Enter");
-    await expect(page.locator(".prompt.queued")).toHaveText("steer");
+    await expect(pending(page).getByRole("article")).toHaveText(["steer"]);
     const other = await context.newPage();
     await other.goto(page.url());
-    await expect(other.locator(".prompt.queued")).toHaveText("steer");
+    await expect(pending(other).getByRole("article")).toHaveText(["steer"]);
 
     await expect(prompt(page)).toHaveValue("");
     await prompt(page).fill("next draft");
     // The page stays disconnected while the other page resolves the prompt.
     await page.route("**/events", (route) => route.abort());
     await services.restartRelay();
-    await expect(page.getByRole("alert").filter({ hasText: "Lost the connection" })).toBeVisible();
-    // Wait for the other page's new snapshot, not its old approval card or
-    // the HTTP acknowledgement of a session/get for some other session.
+    await expect(main(page).getByRole("alert").filter({ hasText: "Lost the connection" })).toBeVisible();
+    // Wait for the other page's new snapshot, not its old approval or the
+    // HTTP acknowledgement of a session/get for some other session.
     await other.reload();
-    await expect(other.locator(".prompt.queued")).toHaveText("steer");
+    await expect(pending(other).getByRole("article")).toHaveText(["steer"]);
     if (outcome === "taken") {
-      const card = other.locator(".approval");
-      await card.getByLabel("Allow").check();
-      await card.getByRole("button", { name: "Submit" }).click();
-      await expect(other.locator(".reply").last()).toHaveText("You said: steer");
+      await allow(waiting(other).getByRole("article"));
+      await expect(replies(other).last()).toHaveText("You said: steer");
     } else {
       await stop(other).click();
-      await expect(other.locator(".error")).toHaveText("Interrupted");
+      await expect(errors(other)).toHaveText(["Interrupted"]);
       await expect(prompt(other)).toHaveValue("");
     }
-    await expect(page.locator(".prompt.queued")).toHaveText("steer");
+    await expect(pending(page).getByRole("article")).toHaveText(["steer"]);
 
     await page.unroute("**/events");
     await expect(send(page)).toBeEnabled({ timeout: 15_000 });
     const expected = outcome === "taken" ? ["approve Bash {}", "steer"] : ["approve Bash {}"];
     const composer = outcome === "taken" ? "next draft" : "steer\nnext draft";
-    await expect(page.locator(".prompt")).toHaveText(expected);
+    await expect(prompts(page)).toHaveText(expected);
     await expect(prompt(page)).toHaveValue(composer);
     // A later reload of the session must not restore the same input again.
     const snapshot = await hold(page, "session/get", { session_id: sessionId(page) });
@@ -646,96 +605,118 @@ for (const outcome of ["taken", "dropped"] as const) {
     snapshot.release();
     await expect(send(page)).toBeEnabled();
     await expect(prompt(page)).toHaveValue(composer);
-    await expect(page.locator(".prompt")).toHaveText(expected);
+    await expect(prompts(page)).toHaveText(expected);
   });
 }
 
-test("AskUserQuestion is answered from a form", async ({ page }) => {
-  await open(page, services);
-  await page.getByRole("button", { name: "New session" }).click();
+const questions =
+  '{"questions":[{"question":"Which color?","header":"Color","options":[{"label":"Red","description":"Warm"},{"label":"Blue","description":"Cool"}],"multiSelect":false},{"question":"Which sections?","header":"Sections","options":[{"label":"Introduction","description":"a"},{"label":"Conclusion","description":"b"},{"label":"Appendix","description":"c"}],"multiSelect":true}]}';
 
-  const input =
-    '{"questions":[{"question":"Which color?","header":"Color","options":[{"label":"Red","description":"Warm"},{"label":"Blue","description":"Cool"}],"multiSelect":false},{"question":"Which sections?","header":"Sections","options":[{"label":"Introduction","description":"a"},{"label":"Conclusion","description":"b"},{"label":"Appendix","description":"c"}],"multiSelect":true}]}';
-  let card = await ask(page, "AskUserQuestion", input);
-  await expect(card.locator("legend")).toHaveText(["ColorWhich color?", "SectionsWhich sections?"]);
-  await expect(card).toContainText("Warm");
-  const submit = card.getByRole("button", { name: "Submit" });
+// askQuestions has the fake harness ask the two questions above, and returns
+// the form and its two questions.
+async function askQuestions(page: Page) {
+  await newSessionButton(page).click();
+  const form = await ask(page, "AskUserQuestion", questions);
+  return {
+    form,
+    color: form.getByRole("group", { name: /Which color\?/ }),
+    sections: form.getByRole("group", { name: /Which sections\?/ }),
+    submit: form.getByRole("button", { name: "Submit" }),
+  };
+}
 
-  await card.getByLabel("Red").check();
+test("Submit waits for an answer to every question", async ({ ox: page }) => {
+  const { color, sections, submit } = await askQuestions(page);
+  await color.getByRole("radio", { name: "Red" }).check();
   await expect(submit).toBeDisabled();
-  await card.getByLabel("Appendix").check();
-  await card.getByLabel("Introduction").check();
-  await card.getByLabel("Other answer").last().fill("Glossary");
+  await sections.getByRole("checkbox", { name: "Appendix" }).check();
   await expect(submit).toBeEnabled();
+});
 
-  // Moving between an option and Other leaves one answer to "Which color?".
-  const otherBox = card.getByLabel("Other", { exact: true }).first();
-  const otherField = card.getByLabel("Other answer").first();
-  await otherBox.check();
+test("choosing an option or Other leaves one answer to a single-select question", async ({ ox: page }) => {
+  const { form, color, sections, submit } = await askQuestions(page);
+  await sections.getByRole("checkbox", { name: "Introduction" }).check();
+  const other = color.getByRole("radio", { name: "Other", exact: true });
+  const otherAnswer = color.getByRole("textbox", { name: "Other answer" });
+  const red = color.getByRole("radio", { name: "Red" });
+  await other.check();
   await expect(submit).toBeDisabled();
-  await card.getByLabel("Red").check();
+  await red.check();
   await expect(submit).toBeEnabled();
-  await otherField.fill("Green");
-  await otherField.fill("");
+  await otherAnswer.fill("Green");
+  await expect(red).not.toBeChecked();
+  await otherAnswer.fill("");
   await expect(submit).toBeDisabled();
-  await otherField.fill("Green");
-  await card.getByLabel("Red").check();
-  await expect(otherBox).not.toBeChecked();
-  await expect(otherField).toHaveValue("Green");
-  await expect(submit).toBeEnabled();
-
+  await otherAnswer.fill("Green");
+  await red.check();
+  await expect(other).not.toBeChecked();
+  await expect(otherAnswer).toHaveValue("Green");
   await submit.click();
-  await expect(card).toHaveCount(0);
-  await expect(
-    page
-      .locator("details.tool")
-      .filter({ has: page.locator(".name", { hasText: "AskUserQuestion" }) })
-      .last()
-      .locator(".detail"),
-  ).toHaveText("Which color?");
-  await expect(toolResult(page, "AskUserQuestion")).toHaveText(
-    `{"behavior":"allow","updatedInput":${input.slice(0, -1)},"answers":{"Which color?":"Red","Which sections?":"Introduction, Appendix, Glossary"}}}`,
+  await expect(form).toHaveCount(0);
+  await expect(toolCall(page, "AskUserQuestion")).toContainText('"answers":{"Which color?":"Red",');
+});
+
+test("submitted answers reach the tool by question text", async ({ ox: page }) => {
+  const { form, color, sections, submit } = await askQuestions(page);
+  await expect(color).toContainText("Warm");
+  await color.getByRole("radio", { name: "Red" }).check();
+  await sections.getByRole("checkbox", { name: "Appendix" }).check();
+  await sections.getByRole("checkbox", { name: "Introduction" }).check();
+  await sections.getByRole("textbox", { name: "Other answer" }).fill("Glossary");
+  await submit.click();
+  await expect(form).toHaveCount(0);
+  await expect(toolCall(page, "AskUserQuestion")).toContainText(
+    `{"behavior":"allow","updatedInput":${questions.slice(0, -1)},"answers":{"Which color?":"Red","Which sections?":"Introduction, Appendix, Glossary"}}}`,
   );
   await expect(stop(page)).toHaveCount(0);
+});
 
-  card = await ask(page, "AskUserQuestion", input);
-  await card.getByRole("button", { name: "Decline" }).click();
-  await expect(card).toHaveCount(0);
-  await expect(toolResult(page, "AskUserQuestion")).toHaveText(
+test("Decline denies the question", async ({ ox: page }) => {
+  const { form } = await askQuestions(page);
+  await form.getByRole("button", { name: "Decline" }).click();
+  await expect(form).toHaveCount(0);
+  await expect(toolCall(page, "AskUserQuestion")).toContainText(
     '{"behavior":"deny","message":"User declined to answer"}',
   );
   await expect(stop(page)).toHaveCount(0);
-
-  card = await ask(page, "AskUserQuestion", '{"questions":"x"}');
-  await expect(card.getByLabel("Allow")).toBeVisible();
 });
 
-test("a tool whose process ended with oxd shows stopped on every page", async ({ page, context }) => {
-  await open(page, services);
-  await page.getByRole("button", { name: "New session" }).click();
+test("a malformed question falls back to Allow and Deny", async ({ ox: page }) => {
+  await newSessionButton(page).click();
+  const approval = await ask(page, "AskUserQuestion", '{"questions":"x"}');
+  await expect(approval.getByRole("radio", { name: "Allow" })).toBeVisible();
+  await expect(approval.getByRole("radio", { name: "Deny" })).toBeVisible();
+});
+
+test("a tool whose process ended with oxd shows stopped on every page", async ({
+  ox: page,
+  services,
+  config,
+  context,
+}) => {
+  await newSessionButton(page).click();
   await ask(page, "Bash", '{"command":"sleep 60"}');
-  const marker = page.locator("details.tool .marker");
-  await expect(marker).toHaveAttribute("aria-label", "running");
-  await services.restartDaemon(fakeConfig, "SIGKILL");
-  await expect(marker).toHaveAttribute("aria-label", "stopped");
+  const marker = toolCall(page, "Bash").getByRole("img");
+  await expect(marker).toHaveAccessibleName("running");
+  await services.restartDaemon(config, "SIGKILL");
+  await expect(marker).toHaveAccessibleName("stopped");
   await prompt(page).fill("after the crash");
   await prompt(page).press("Enter");
-  await expect(page.locator(".reply").last()).toHaveText("You said: after the crash");
+  await expect(replies(page).last()).toHaveText("You said: after the crash");
   const other = await context.newPage();
   await other.goto(page.url());
-  await expect(other.locator("details.tool .marker").first()).toHaveAttribute("aria-label", "stopped");
+  await expect(transcript(other).getByRole("group", { name: "Bash" }).getByRole("img")).toHaveAccessibleName("stopped");
 });
 
-test("a reconnect keeps an expanded tool call open", async ({ page }) => {
-  await open(page, services);
-  await page.getByRole("button", { name: "New session" }).click();
-  const card = await ask(page, "Bash", '{"command":"ls"}');
-  await card.getByLabel("Allow").check();
-  await card.getByRole("button", { name: "Submit" }).click();
+test("a reconnect keeps an expanded tool call open", async ({ ox: page, services }) => {
+  await newSessionButton(page).click();
+  await allow(await ask(page, "Bash", '{"command":"ls"}'));
   await expect(stop(page)).toHaveCount(0);
-  const tool = page.locator("details.tool");
-  await tool.locator("summary").click();
-  await expect(tool).toHaveAttribute("open");
+  const tool = toolCall(page, "Bash");
+  const input = tool.getByText('{ "command": "ls" }', { exact: true });
+  await expect(input).toBeHidden();
+  await tool.click();
+  await expect(input).toBeVisible();
   // Send waits for the session's reloaded transcript.
   await prompt(page).fill("after the reconnect");
   const snapshot = await hold(page, "session/get");
@@ -744,114 +725,68 @@ test("a reconnect keeps an expanded tool call open", async ({ page }) => {
   await expect(send(page)).toBeDisabled();
   snapshot.release();
   await expect(send(page)).toBeEnabled();
-  await expect(tool).toHaveAttribute("open");
+  await expect(input).toBeVisible();
 });
 
-test("a session whose harness is no longer offered shows its settings", async ({ page }) => {
-  await open(page, services);
+test("a session whose harness is no longer offered shows its settings", async ({ ox: page, services }) => {
   await newSession(page, "harness retired");
   await services.restartDaemon(haikuConfig);
-  try {
-    await expect(page.locator(".settings .picker .model")).toHaveText("echo");
-    await expect(page.locator(".settings select[name=permission_mode]")).toHaveValue("manual");
-  } finally {
-    await services.restartDaemon(fakeConfig);
-  }
+  await expect(model(page)).toContainText("echo");
+  await expect(permissionMode(page)).toHaveValue("manual");
 });
 
-test("reselecting a model repairs a retired effort when there is only one choice", async ({ page }) => {
-  await open(page, services);
+test("reselecting a model repairs a retired effort when there is only one choice", async ({ ox: page, services }) => {
   await newSession(page, "retired effort");
-  const picker = page.locator(".settings .picker");
   const effort = page.getByRole("slider", { name: "Effort" });
-  await picker.click();
+  await model(page).click();
   await effort.press("End");
-  await expect(picker).toContainText("High");
-  await expect(picker).not.toHaveAttribute("aria-busy");
+  await expect(model(page)).toContainText("High");
+  await expect(model(page)).not.toHaveAttribute("aria-busy");
   await page.keyboard.press("Escape");
-  const model = fakeConfig.harnesses.fake.models[0];
-  const config = {
+  const fake = fakeConfig.harnesses.fake;
+  const echo = fake.models[0];
+  await services.restartDaemon({
     ...fakeConfig,
-    harnesses: { fake: { ...fakeConfig.harnesses.fake, models: [{ ...model, efforts: model.efforts.slice(0, 1) }] } },
-  };
-  await services.restartDaemon(config);
-  try {
-    await expect(picker).toContainText("high");
-    await picker.click();
-    await expect(effort).toBeDisabled();
-    await page.getByRole("option", { name: "Echo" }).click();
-    await expect(picker).toContainText("Low");
-    await expect(picker).not.toHaveAttribute("aria-busy");
-    await page.reload();
-    await expect(picker).toContainText("Low");
-  } finally {
-    await services.restartDaemon(fakeConfig);
-  }
+    harnesses: { fake: { ...fake, models: [{ ...echo, efforts: echo.efforts.slice(0, 1) }] } },
+  });
+  await expect(model(page)).toContainText("high");
+  await model(page).click();
+  await expect(effort).toBeDisabled();
+  await page.getByRole("option", { name: "Echo" }).click();
+  await expect(model(page)).toContainText("Low");
+  await expect(model(page)).not.toHaveAttribute("aria-busy");
+  await page.reload();
+  await expect(model(page)).toContainText("Low");
 });
 
-// Withhold an accepted reply at the SSE boundary, leaving the call pending.
-async function cutReply(page: Page, field: "session_id" | "message_id") {
-  await page.addInitScript((field) => {
-    const Original = window.EventSource;
-    window.EventSource = class extends Original {
-      constructor(url: string | URL, init?: EventSourceInit) {
-        super(url, init);
-        this.addEventListener("message", (event) => {
-          if (document.body.dataset.cutReply === "armed" && JSON.parse(event.data).result?.[field]) {
-            document.body.dataset.cutReply = "held";
-            event.stopImmediatePropagation();
-          }
-        });
-      }
-    };
-  }, field);
-}
-
-const armCutReply = (page: Page) =>
-  page.evaluate(() => {
-    document.body.dataset.cutReply = "armed";
-  });
-
-test("a lost creation reply is recovered after leaving the draft", async ({ page }) => {
-  await cutReply(page, "session_id");
+test("a lost creation reply is recovered after leaving the draft", async ({ page, services }) => {
+  const cutoff = await cutReply(page, "session_id");
   await open(page, services);
   await newSession(page, "another conversation");
-  const before = await page.locator("nav button.open").count();
-  await page.getByRole("button", { name: "New session" }).click();
-  await armCutReply(page);
+  const listed = sessions(page).getByRole("listitem");
+  await expect(listed).toHaveCount(1);
+  await newSessionButton(page).click();
+  await cutoff.arm();
   await prompt(page).fill("recover my prompt");
   await prompt(page).press("Enter");
-  await expect(page.locator("body")).toHaveAttribute("data-cut-reply", "held");
-  await expect(page.locator("nav button.open")).toHaveCount(before + 1);
+  await cutoff.cut;
+  await expect(listed).toHaveCount(2);
   await prompt(page).fill("recover my edited prompt");
   await sessionButton(page, "another conversation").click();
   await services.restartRelay();
   await page.getByRole("button", { name: "Reopen draft" }).click();
   await expect(prompt(page)).toHaveValue("recover my edited prompt");
-  await expect(page.getByRole("status").filter({ hasText: "Session recovered" })).toBeVisible();
-  await expect(page.locator(".prompt")).toHaveCount(0);
+  await expect(main(page).getByRole("status")).toContainText("Session recovered");
+  await expect(prompts(page)).toHaveCount(0);
   await send(page).click();
-  await expect(page.locator(".reply")).toHaveText("You said: recover my edited prompt");
-  await expect(page.locator("nav button.open")).toHaveCount(before + 1);
+  await expect(replies(page)).toHaveText(["You said: recover my edited prompt"]);
+  await expect(listed).toHaveCount(2);
 });
 
-test("a retried creation recovers the session without sending", async ({ page }) => {
-  await cutReply(page, "session_id");
-  // Mark the reply that finds the session already created.
-  await page.addInitScript(() => {
-    const Original = window.EventSource;
-    window.EventSource = class extends Original {
-      constructor(url: string | URL, init?: EventSourceInit) {
-        super(url, init);
-        this.addEventListener("message", (event) => {
-          if (JSON.parse(event.data).result?.existing) document.body.dataset.existing = "true";
-        });
-      }
-    };
-  });
+test("a retried creation recovers the session without sending", async ({ page, services }) => {
+  const cutoff = await cutReply(page, "session_id");
   // Hold every snapshot of the new session, so it loads only after the retry.
   let id: string | undefined;
-  const sends: string[] = [];
   let release!: () => void;
   const released = new Promise<void>((resolve) => {
     release = resolve;
@@ -859,378 +794,415 @@ test("a retried creation recovers the session without sending", async ({ page })
   await page.route("**/rpc*", async (route) => {
     const body = route.request().postDataJSON();
     if (body?.method === "session/create") id ??= body.params.session_id;
-    if (body?.method === "session/send") sends.push(body.params.text);
     if (body?.method === "session/get" && id !== undefined && body.params.session_id === id) await released;
     return route.fallback();
   });
   await open(page, services);
-  await page.getByRole("button", { name: "New session" }).click();
-  await armCutReply(page);
+  const sends = rpcCalls(page, "session/send");
+  await newSessionButton(page).click();
+  await cutoff.arm();
   await prompt(page).fill("retry my prompt");
   await prompt(page).press("Enter");
-  await expect(page.locator("body")).toHaveAttribute("data-cut-reply", "held");
+  await cutoff.cut;
   await services.restartRelay();
-  await expect(page.locator(".log ~ [role=alert]")).toContainText("Lost the connection");
+  // Once reconnected, the creation's error is the one left.
   await expect(send(page)).toBeEnabled();
+  await expect(main(page).getByRole("alert")).toHaveText(["Lost the connection to ox. Reconnecting."]);
+  // The retry's reply finds the session already created.
+  const existing = cutoff.reply("existing");
   await send(page).click();
-  await expect(page.locator("body")).toHaveAttribute("data-existing", "true");
+  await existing;
   release();
-  await expect(page.getByRole("status").filter({ hasText: "Session recovered" })).toBeVisible();
+  await expect(main(page).getByRole("status")).toContainText("Session recovered");
   await expect(prompt(page)).toHaveValue("retry my prompt");
-  await expect(page.locator(".prompt")).toHaveCount(0);
+  await expect(prompts(page)).toHaveCount(0);
   expect(sends).toEqual([]);
 });
 
-test("session list membership and ordering don't wait for transcripts", async ({ page }) => {
-  const isolated = await startServices(fakeConfig);
-  try {
-    await open(page, isolated);
-    const firstSnapshot = await hold(page, "session/get");
-    await page.getByRole("button", { name: "New session" }).click();
-    await prompt(page).fill("older session");
-    await prompt(page).press("Enter");
-    await firstSnapshot.arrived;
-    await expect(page.locator("nav li .title")).toHaveCount(1);
-    await expect(menuItem(await openMenu(workspaceRow(page, isolated.workspace)), "Remove workspace")).toBeDisabled();
-    await page.keyboard.press("Escape");
-    await expect(page.getByRole("status")).toHaveText("Loading session…");
-    const id = sessionId(page);
-    await newSession(page, "younger session");
-    await expect(page.locator("nav li .title")).toHaveText(["older session", "younger session"]);
-    firstSnapshot.release();
-    await expect(page.locator("nav li .title")).toHaveText(["older session", "younger session"]);
+test("session list membership and order don't wait for transcripts", async ({ ox: page, services }) => {
+  const listed = sessions(page).getByRole("listitem");
+  const firstSnapshot = await hold(page, "session/get");
+  await newSessionButton(page).click();
+  await prompt(page).fill("older session");
+  await prompt(page).press("Enter");
+  await firstSnapshot.arrived;
+  await expect(listed).toHaveText(["older session"]);
+  await expect(menuItem(await openMenu(workspaceSection(page, services.workspace)), "Remove workspace")).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(main(page).getByRole("status")).toHaveText("Loading session…");
+  const id = sessionId(page);
+  await newSession(page, "younger session");
+  await expect(listed).toHaveText(["older session", "younger session"]);
+  firstSnapshot.release();
+  await expect(listed).toHaveText(["older session", "younger session"]);
 
-    const reloadSnapshot = await hold(page, "session/get", { session_id: id });
-    await page.reload();
-    await reloadSnapshot.arrived;
-    await expect(page.locator(".reply")).toHaveText("You said: younger session");
-    await expect(page.locator("nav li .title")).toHaveText(["older session", "younger session"]);
-    reloadSnapshot.release();
-    await expect(page.locator("nav li .title")).toHaveText(["older session", "younger session"]);
-
-    // A hash change in the document selects the session it names.
-    await page.evaluate((hash) => {
-      location.hash = hash;
-    }, encodeURIComponent(id));
-    await expect(sessionButton(page, "older session")).toHaveAttribute("aria-current", "page");
-    await expect(page.locator(".reply")).toHaveText("You said: older session");
-  } finally {
-    await isolated.stop();
-  }
+  const reloadSnapshot = await hold(page, "session/get", { session_id: id });
+  await page.reload();
+  await reloadSnapshot.arrived;
+  await expect(replies(page)).toHaveText(["You said: younger session"]);
+  await expect(listed).toHaveText(["older session", "younger session"]);
+  reloadSnapshot.release();
+  await expect(listed).toHaveText(["older session", "younger session"]);
 });
 
-test("a cancelled deletion's reply cannot close the next confirmation", async ({ page }) => {
-  await open(page, services);
+test("a hash change selects the session it names", async ({ ox: page }) => {
+  await newSession(page, "older session");
+  const url = page.url();
+  await newSession(page, "younger session");
+  await page.goto(url);
+  await expect(sessionButton(page, "older session")).toHaveAttribute("aria-current", "page");
+  await expect(replies(page)).toHaveText(["You said: older session"]);
+});
+
+test("a cancelled deletion's reply cannot close the next confirmation", async ({ ox: page }) => {
   await newSession(page, "old deletion");
   await newSession(page, "new deletion");
-  const remove = async (label: string) => menuItem(await openMenu(sessionRow(page, label)), "Delete");
+  const remove = async (title: string) => menuItem(await openMenu(sessionItem(page, title)), "Delete").click();
   const first = await hold(page, "session/destroy");
-  const dialog = page.getByRole("alertdialog");
-  await (await remove("old deletion")).click();
-  await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+  const dialog = page.getByRole("alertdialog", { name: "Delete session?" });
+  await remove("old deletion");
+  await dialog.getByRole("button", { name: "Delete" }).click();
   await first.arrived;
   await page.keyboard.press("Escape");
-  await (await remove("new deletion")).click();
+  await remove("new deletion");
   first.release();
   await expect(sessionButton(page, "old deletion")).toHaveCount(0);
   await expect(dialog).toBeVisible();
-  await expect(dialog).toContainText("new deletion");
-  await dialog.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(dialog).toHaveAccessibleDescription('This deletes "new deletion" and its history.');
+  await dialog.getByRole("button", { name: "Delete" }).click();
   await expect(sessionButton(page, "new deletion")).toHaveCount(0);
 });
 
-test("on reconnect each session waits for its own settings", async ({ page, context }) => {
-  await open(page, services);
+test("on reconnect each session waits for its own settings", async ({ ox: page, services, context }) => {
   await newSession(page, "available independently");
   await newSession(page, "refresh my settings");
-  const id = new URL(page.url()).hash.slice(1);
   const other = await context.newPage();
   await other.goto(page.url());
-  await expect(other.locator(".reply")).toHaveText("You said: refresh my settings");
+  await expect(replies(other)).toHaveText(["You said: refresh my settings"]);
 
-  const snapshot = await hold(page, "session/get", { session_id: id });
+  const snapshot = await hold(page, "session/get", { session_id: sessionId(page) });
   await services.restartRelay();
   await snapshot.arrived;
-  await other.locator("select[name=permission_mode]").selectOption("plan");
-  await expect(other.locator("select[name=permission_mode]")).not.toHaveAttribute("aria-busy");
+  await permissionMode(other).selectOption("plan");
+  await expect(permissionMode(other)).not.toHaveAttribute("aria-busy");
   await prompt(other).fill("written while reloading");
   await prompt(other).press("Enter");
-  await expect(other.locator(".reply").last()).toHaveText("You said: written while reloading");
-  await expect(page.locator("select[name=permission_mode]")).toHaveValue("manual");
-  await expect(page.locator(".prompt")).toHaveText(["refresh my settings"]);
+  await expect(replies(other).last()).toHaveText("You said: written while reloading");
+  await expect(permissionMode(page)).toHaveValue("manual");
+  await expect(prompts(page)).toHaveText(["refresh my settings"]);
   await prompt(page).fill("after reload");
   await expect(send(page)).toBeDisabled();
   await sessionButton(page, "available independently").click();
   await expect(send(page)).toBeEnabled();
   await sessionButton(page, "refresh my settings").click();
   snapshot.release();
-  await expect(page.locator("select[name=permission_mode]")).toHaveValue("plan");
-  await expect(page.locator(".prompt")).toHaveText(["refresh my settings", "written while reloading"]);
+  await expect(permissionMode(page)).toHaveValue("plan");
+  await expect(prompts(page)).toHaveText(["refresh my settings", "written while reloading"]);
   await expect(send(page)).toBeEnabled();
   await prompt(other).fill("written after reloading");
   await prompt(other).press("Enter");
-  await expect(page.locator(".prompt")).toHaveText([
-    "refresh my settings",
-    "written while reloading",
-    "written after reloading",
-  ]);
+  await expect(prompts(page)).toHaveText(["refresh my settings", "written while reloading", "written after reloading"]);
 });
 
-test("a child session shows beneath its parent with its title", async ({ page }) => {
-  await open(page, services);
-  await newSession(page, "child parent");
-  const parent = sessionId(page);
-  // A later top-level session lists after the parent's children.
-  await newSession(page, "after the parent");
-  const name = basename(mkdtempSync(`${services.workspace}/child-`));
+// createChild has session parent create a child titled title, which starts
+// with message, and returns the child's ID and directory.
+async function createChild(services: Services, parent: string, title: string, args: Record<string, string> = {}) {
   const created = JSON.parse(
-    await callTool(parent, "create_session", {
-      name: "helper",
-      title: "Helper child",
-      message: "hello child",
-      dir: name,
+    await services.callTool(parent, "create_session", {
+      name: title.toLowerCase().replaceAll(" ", "-"),
+      title,
+      message: "hello",
+      ...args,
     }),
   );
-  const directory = `${services.workspace}/${name}`;
-  expect(created.directory).toBe(directory);
+  return created as { session_id: string; directory: string };
+}
 
-  const parentRow = page.locator("nav li").filter({ hasText: "child parent" });
-  const childRow = page.locator("nav li:has-text('child parent') + li");
-  const check = async () => {
-    await expect(childRow).toHaveClass(/child/);
-    await expect(childRow.locator(".title")).toHaveText("Helper child");
-    await expect(sessionButton(page, "Helper child")).toHaveCount(1);
-    const parentDelete = menuItem(await openMenu(parentRow), "Delete");
-    await expect(parentDelete).toHaveAccessibleName("Delete Delete its child sessions first");
-    await expect(parentDelete).toBeDisabled();
-    await page.keyboard.press("Escape");
-    await childRow.locator("button.open").click();
-    await expect(page.locator(".context h1")).toHaveText("Helper child");
-    expect(sessionId(page)).toBe(created.session_id);
-    await expect(page.locator(".context .path")).toHaveText(directory);
-    await expect(page.locator(".prompt.message .from")).toHaveText("child parent");
-    await expect(page.locator(".prompt.message")).toHaveText("child parenthello child");
-  };
-  await check();
-  await page.reload();
-  await check();
+// family creates the session "Parent", its child "Child", and the child's
+// child "Grandchild", and waits until all three are idle.
+async function family(page: Page, services: Services) {
+  await newSession(page, "Parent");
+  const child = await createChild(services, sessionId(page), "Child");
+  await createChild(services, child.session_id, "Grandchild");
+  for (const title of ["Parent", "Child", "Grandchild"]) {
+    await expect(sessionButton(page, title)).toHaveAccessibleDescription("idle");
+  }
+}
 
-  // The child's own child follows it, indented one level further, and keeps
-  // the family from being archived while it waits on an approval.
-  await callTool(created.session_id, "create_session", {
-    name: "leaf",
-    title: "Leaf grandchild",
-    message: "hello grandchild",
-  });
-  const grandchildRow = page.locator("nav li:has-text('child parent') + li + li");
-  await expect(grandchildRow.locator(".title")).toHaveText("Leaf grandchild");
-  const childTitle = await childRow.locator(".title").boundingBox();
-  const grandchildTitle = await grandchildRow.locator(".title").boundingBox();
-  expect(grandchildTitle?.x).toBeGreaterThan(childTitle?.x ?? Infinity);
-  await grandchildRow.locator("button.open").click();
-  await expect(page.locator(".context h1")).toHaveText("Leaf grandchild");
-  await expect(stop(page)).toHaveCount(0);
-  await prompt(page).fill("approve Bash {}");
-  await prompt(page).press("Enter");
-  const card = page.locator(".approval");
-  await expect(card).toBeVisible();
-  const blocked = menuItem(await openMenu(parentRow), "Archive");
-  await expect(blocked).toHaveAccessibleName("Archive Wait until it and its child sessions are idle");
-  await expect(blocked).toBeDisabled();
-  await page.keyboard.press("Escape");
-  await card.getByLabel("Allow").check();
-  await card.getByRole("button", { name: "Submit" }).click();
-  await expect(stop(page)).toHaveCount(0);
-  await childRow.locator("button.open").click();
+// archive archives the session titled title from its menu.
+async function archive(page: Page, title: string) {
+  await menuItem(await openMenu(sessionItem(page, title)), "Archive").click();
+  await expect(sessionButton(page, title)).toHaveCount(0);
+}
 
-  // A child archived without its parent hides beneath it, with its own child.
-  const archiveChild = menuItem(await openMenu(childRow), "Archive");
-  await expect(archiveChild).toBeEnabled();
-  await archiveChild.click();
-  await expect(sessionButton(page, "Helper child")).toHaveCount(0);
-  await expect(sessionButton(page, "Leaf grandchild")).toHaveCount(0);
-  await expect(sessionButton(page, "child parent")).toHaveCount(1);
-  await expect(page.locator(".composer.archived p")).toHaveText("This session is archived.");
+// showArchived shows the archived sessions of the services' workspace.
+async function showArchived(page: Page, services: Services) {
+  await menuItem(await openMenu(workspaceSection(page, services.workspace)), "Show archived").click();
+}
 
-  // Archiving the parent archives the sessions beneath it, and every row hides
-  // until shown.
-  const archive = menuItem(await openMenu(parentRow), "Archive");
-  await expect(archive).toBeEnabled();
-  await archive.click();
-  await expect(sessionButton(page, "child parent")).toHaveCount(0);
-  await expect(sessionButton(page, "Helper child")).toHaveCount(0);
-  await expect(sessionButton(page, "Leaf grandchild")).toHaveCount(0);
-  await expect(page.locator(".composer.archived p")).toHaveText("This session is archived with its parent.");
-  await expect(page.getByRole("button", { name: "Unarchive", exact: true })).toBeDisabled();
-  const workspace = workspaceRow(page, services.workspace);
-  await menuItem(await openMenu(workspace), "Show archived").click();
-  await expect(parentRow).toHaveClass(/archived/);
-  await expect(childRow).toHaveClass(/archived/);
-  await expect(grandchildRow).toHaveClass(/archived/);
-  await expect(childRow.getByRole("img", { name: "archived" })).toHaveCount(1);
-  const childMenu = await openMenu(childRow);
-  await expect(menuItem(childMenu, "Unarchive")).toHaveAccessibleName("Unarchive Unarchive its parent first");
-  await expect(menuItem(childMenu, "Unarchive")).toBeDisabled();
-  await expect(menuItem(childMenu, "Delete")).toHaveAccessibleName("Delete Delete its child sessions first");
-  await page.keyboard.press("Escape");
-  await menuItem(await openMenu(grandchildRow), "Delete").click();
-  await page.getByRole("button", { name: "Delete", exact: true }).click();
-  await expect(sessionButton(page, "Leaf grandchild")).toHaveCount(0);
-  await menuItem(await openMenu(childRow), "Delete").click();
-  await page.getByRole("button", { name: "Delete", exact: true }).click();
-  await expect(sessionButton(page, "Helper child")).toHaveCount(0);
-  await expect(menuItem(await openMenu(parentRow), "Delete")).toBeEnabled();
-  await menuItem(page.getByRole("menu"), "Unarchive").click();
-  await expect(parentRow).not.toHaveClass(/archived/);
-  await menuItem(await openMenu(workspace), "Hide archived").click();
+// remove deletes the session titled title from its menu.
+async function remove(page: Page, title: string) {
+  await menuItem(await openMenu(sessionItem(page, title)), "Delete").click();
+  await page.getByRole("alertdialog", { name: "Delete session?" }).getByRole("button", { name: "Delete" }).click();
+  await expect(sessionButton(page, title)).toHaveCount(0);
+}
+
+test("a child session shows its title, its directory, and its parent's message, also after a reload", async ({
+  ox: page,
+  services,
+}) => {
+  await newSession(page, "child parent");
+  const dir = basename(mkdtempSync(`${services.workspace}/child-`));
+  const child = await createChild(services, sessionId(page), "Helper child", { message: "hello child", dir });
+  const directory = `${services.workspace}/${dir}`;
+  expect(child.directory).toBe(directory);
+  for (const reload of [false, true]) {
+    if (reload) await page.reload();
+    await sessionButton(page, "Helper child").click();
+    await expect(heading(page)).toHaveText("Helper child");
+    expect(sessionId(page)).toBe(child.session_id);
+    await expect(main(page).getByText(directory, { exact: true })).toBeVisible();
+    await expect(transcript(page).getByRole("article", { name: "Message from child parent" })).toHaveText(
+      "child parenthello child",
+    );
+  }
 });
 
-test("a child's own children list before its next sibling", async ({ page }) => {
-  await open(page, services);
+test("children list beneath their parent, each level one deeper, before the parent's next sibling", async ({
+  ox: page,
+  services,
+}) => {
   await newSession(page, "tree root");
   const root = sessionId(page);
-  const first = JSON.parse(
-    await callTool(root, "create_session", { name: "first", title: "Tree first", message: "hi" }),
-  );
-  await callTool(first.session_id, "create_session", { name: "leaf", title: "Tree leaf", message: "hi" });
-  await callTool(root, "create_session", { name: "second", title: "Tree second", message: "hi" });
-  await expect(page.locator("nav li:has-text('tree root') ~ li .title").first()).toHaveText("Tree first");
-  await expect(page.locator("nav li:has-text('Tree first') + li .title")).toHaveText("Tree leaf");
-  await expect(page.locator("nav li:has-text('Tree leaf') + li .title")).toHaveText("Tree second");
+  await newSession(page, "after the root");
+  const first = await createChild(services, root, "Tree first");
+  await createChild(services, first.session_id, "Tree leaf");
+  await createChild(services, root, "Tree second");
+  const listed = sessions(page).getByRole("listitem");
+  await expect(listed).toHaveText(["tree root", "Tree first", "Tree leaf", "Tree second", "after the root"]);
+  await expect(sessions(page).getByRole("listitem", { level: 1 })).toHaveText(["tree root", "after the root"]);
+  await expect(sessions(page).getByRole("listitem", { level: 2 })).toHaveText(["Tree first", "Tree second"]);
+  await expect(sessions(page).getByRole("listitem", { level: 3 })).toHaveText(["Tree leaf"]);
 });
 
-test("an archived session is read-only and hidden until shown", async ({ page, context }) => {
-  await open(page, services);
+test("a session with children cannot be deleted", async ({ ox: page, services }) => {
+  await newSession(page, "Parent");
+  await createChild(services, sessionId(page), "Child");
+  await expect(sessionButton(page, "Child")).toBeVisible();
+  const deletion = menuItem(await openMenu(sessionItem(page, "Parent")), "Delete");
+  await expect(deletion).toHaveAccessibleDescription("Delete its child sessions first");
+  await expect(deletion).toBeDisabled();
+});
+
+test("a waiting descendant keeps its family from being archived", async ({ ox: page, services }) => {
+  await family(page, services);
+  await sessionButton(page, "Grandchild").click();
+  await ask(page, "Bash", "{}");
+  const blocked = menuItem(await openMenu(sessionItem(page, "Parent")), "Archive");
+  await expect(blocked).toHaveAccessibleDescription("Wait until it and its child sessions are idle");
+  await expect(blocked).toBeDisabled();
+});
+
+test("a child archived alone hides beneath its parent with its own children", async ({ ox: page, services }) => {
+  await family(page, services);
+  await archive(page, "Child");
+  await expect(sessionButton(page, "Grandchild")).toHaveCount(0);
+  await expect(sessionButton(page, "Parent")).toBeVisible();
+  await showArchived(page, services);
+  await expect(sessionItem(page, "Child")).toHaveAttribute("aria-level", "2");
+  await expect(sessionItem(page, "Grandchild")).toHaveAttribute("aria-level", "3");
+  await expect(sessionButton(page, "Child")).toHaveAccessibleDescription("archived");
+  await expect(sessionButton(page, "Grandchild")).toHaveAccessibleDescription("archived");
+  await expect(sessionButton(page, "Parent")).toHaveAccessibleDescription("idle");
+});
+
+test("archiving a parent archives the sessions beneath it", async ({ ox: page, services }) => {
+  await family(page, services);
+  await archive(page, "Parent");
+  await expect(sessionButton(page, "Child")).toHaveCount(0);
+  await expect(sessionButton(page, "Grandchild")).toHaveCount(0);
+  await showArchived(page, services);
+  for (const title of ["Parent", "Child", "Grandchild"]) {
+    await expect(sessionButton(page, title)).toHaveAccessibleDescription("archived");
+  }
+});
+
+test("a child cannot be unarchived while its parent is archived", async ({ ox: page, services }) => {
+  await family(page, services);
+  await archive(page, "Parent");
+  await showArchived(page, services);
+  const unarchive = menuItem(await openMenu(sessionItem(page, "Child")), "Unarchive");
+  await expect(unarchive).toHaveAccessibleDescription("Unarchive its parent first");
+  await expect(unarchive).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await sessionButton(page, "Child").click();
+  await expect(main(page).getByText("This session is archived with its parent.")).toBeVisible();
+  await expect(main(page).getByRole("button", { name: "Unarchive" })).toBeDisabled();
+});
+
+test("archived sessions show with an archived marker when shown", async ({ ox: page, services }) => {
   await newSession(page, "archive me");
-  const row = sessionRow(page, "archive me");
-  const workspace = workspaceRow(page, services.workspace);
-  await prompt(page).fill('approve Bash {"command":"ls"}');
-  await prompt(page).press("Enter");
-  const card = page.locator(".approval");
-  await expect(card).toBeVisible();
-  const busy = menuItem(await openMenu(row), "Archive");
-  await expect(busy).toHaveAccessibleName("Archive Wait until it is idle");
+  await archive(page, "archive me");
+  await showArchived(page, services);
+  await expect(sessionItem(page, "archive me").getByRole("img", { name: "archived" })).toBeVisible();
+  await expect(sessionButton(page, "archive me")).toHaveAccessibleDescription("archived");
+});
+
+test("deleting a family from the leaves up enables each parent's Delete", async ({ ox: page, services }) => {
+  await family(page, services);
+  for (const title of ["Parent", "Child"]) {
+    await expect(menuItem(await openMenu(sessionItem(page, title)), "Delete")).toBeDisabled();
+    await page.keyboard.press("Escape");
+  }
+  await remove(page, "Grandchild");
+  await remove(page, "Child");
+  await expect(menuItem(await openMenu(sessionItem(page, "Parent")), "Delete")).toBeEnabled();
+});
+
+test("Archive waits until the session is idle", async ({ ox: page }) => {
+  await newSession(page, "archive me");
+  const approval = await ask(page, "Bash", '{"command":"ls"}');
+  const busy = menuItem(await openMenu(sessionItem(page, "archive me")), "Archive");
+  await expect(busy).toHaveAccessibleDescription("Wait until it is idle");
   await expect(busy).toBeDisabled();
   await page.keyboard.press("Escape");
-  await card.getByLabel("Allow").check();
-  await card.getByRole("button", { name: "Submit" }).click();
+  await allow(approval);
   await expect(stop(page)).toHaveCount(0);
+  await expect(menuItem(await openMenu(sessionItem(page, "archive me")), "Archive")).toBeEnabled();
+});
+
+test("Archive and Unarchive are unavailable while not connected", async ({ ox: page, services }) => {
+  await newSession(page, "archive me");
   const offline = await hold(page, "workspace/list");
   await services.restartRelay();
   await offline.arrived;
-  await expect(menuItem(await openMenu(row), "Archive")).toHaveAccessibleName("Archive Not connected");
+  const archiveItem = menuItem(await openMenu(sessionItem(page, "archive me")), "Archive");
+  await expect(archiveItem).toHaveAccessibleDescription("Not connected");
+  await expect(archiveItem).toBeDisabled();
   await page.keyboard.press("Escape");
   offline.release();
+  await archive(page, "archive me");
+  await showArchived(page, services);
 
-  await prompt(page).fill("kept while archived");
-  const archive = menuItem(await openMenu(row), "Archive");
-  await expect(archive).toBeEnabled();
-  const failed = await hold(page, "session/archive");
-  await archive.click();
-  await failed.arrived;
-  failed.fail("relay unavailable");
-  await expect(page.locator("nav [role=alert]")).toHaveText("relay unavailable");
-  await menuItem(await openMenu(row), "Archive").click();
-  await expect(row).toHaveCount(0);
-  await expect(page.locator("nav [role=alert]")).toHaveCount(0);
-  const archivedLine = page.locator(".composer.archived p");
-  await expect(archivedLine).toHaveText("This session is archived.");
-  await expect(prompt(page)).toHaveCount(0);
-  await expect(page.locator("select[name=permission_mode]")).toHaveCount(0);
-  await expect(page.locator(".reply").last()).toHaveText('You said: approve Bash {"command":"ls"}');
-
-  const other = await context.newPage();
-  await other.goto(page.url());
-  await expect(other.locator(".composer.archived p")).toHaveText("This session is archived.");
-  await expect(prompt(other)).toHaveCount(0);
-  await other.close();
-
-  await menuItem(await openMenu(workspace), "Show archived").click();
-  await expect(row).toHaveClass(/archived/);
-  // Hiding the session list keeps its choice to show archived sessions.
-  await page.getByRole("button", { name: "Toggle sessions" }).click();
-  await expect(row).toBeHidden();
-  await page.getByRole("button", { name: "Toggle sessions" }).click();
-  await expect(row).toHaveClass(/archived/);
-  await expect(row.getByRole("img", { name: "archived" })).toHaveCount(1);
-  const unarchive = page.getByRole("button", { name: "Unarchive", exact: true });
   const reconnect = await hold(page, "workspace/list");
   await services.restartRelay();
   await reconnect.arrived;
-  await expect(menuItem(await openMenu(row), "Unarchive")).toHaveAccessibleName("Unarchive Not connected");
+  const unarchiveItem = menuItem(await openMenu(sessionItem(page, "archive me")), "Unarchive");
+  await expect(unarchiveItem).toHaveAccessibleDescription("Not connected");
+  await expect(unarchiveItem).toBeDisabled();
   await page.keyboard.press("Escape");
+  const unarchive = main(page).getByRole("button", { name: "Unarchive" });
   await expect(unarchive).toBeDisabled();
   reconnect.release();
   await expect(unarchive).toBeEnabled();
-  // Opening another menu while one is open shows the new one.
-  await openMenu(row);
-  await expect((await openMenu(workspace)).getByRole("menuitem")).toHaveText(["Hide archived", /^Remove workspace/]);
-  // The first menu reports its close after the second opens.
-  await page.waitForTimeout(100);
-  await expect(page.getByRole("menu")).toBeVisible();
-  await page.keyboard.press("Escape");
-  // A menu opened near the window's bottom edge moves up to end at it.
+});
+
+test("a failed archive shows its error in the session list", async ({ ox: page }) => {
+  await newSession(page, "archive me");
+  const failed = await hold(page, "session/archive");
+  await menuItem(await openMenu(sessionItem(page, "archive me")), "Archive").click();
+  await failed.arrived;
+  failed.fail("relay unavailable");
+  await expect(sessions(page).getByRole("alert")).toHaveText("relay unavailable");
+  await expect(sessionButton(page, "archive me")).toBeVisible();
+  await archive(page, "archive me");
+  await expect(sessions(page).getByRole("alert")).toHaveCount(0);
+});
+
+test("an archived session shows its transcript and Unarchive in place of the composer", async ({ ox: page }) => {
+  await newSession(page, "archive me");
+  await archive(page, "archive me");
+  await expect(main(page).getByText("This session is archived.")).toBeVisible();
+  await expect(main(page).getByRole("button", { name: "Unarchive" })).toBeEnabled();
+  await expect(prompt(page)).toHaveCount(0);
+  await expect(permissionMode(page)).toHaveCount(0);
+  await expect(replies(page)).toHaveText(["You said: archive me"]);
+});
+
+test("an archived session is archived on every page", async ({ ox: page, context }) => {
+  await newSession(page, "archive me");
+  await archive(page, "archive me");
+  const other = await context.newPage();
+  await other.goto(page.url());
+  await expect(main(other).getByText("This session is archived.")).toBeVisible();
+  await expect(prompt(other)).toHaveCount(0);
+});
+
+test("showing archived sessions lasts through hiding the session list", async ({ ox: page, services }) => {
+  await newSession(page, "archive me");
+  await archive(page, "archive me");
+  await showArchived(page, services);
+  const archived = sessionButton(page, "archive me");
+  await expect(archived).toBeVisible();
+  const toggle = page.getByRole("button", { name: "Toggle sessions" });
+  await toggle.click();
+  await expect(archived).toBeHidden();
+  await toggle.click();
+  await expect(archived).toBeVisible();
+  await expect(archived).toHaveAccessibleDescription("archived");
+});
+
+test("opening a menu while another is open shows the new one", async ({ ox: page, services }) => {
+  await newSession(page, "archive me");
+  await archive(page, "archive me");
+  await showArchived(page, services);
+  await openMenu(sessionItem(page, "archive me"));
+  const menu = await openMenu(workspaceSection(page, services.workspace));
+  await expect(menu.getByRole("menuitem")).toHaveText(["Hide archived", /^Remove workspace/]);
+  // Choosing from it shows it stayed open past the first menu's close.
+  await menuItem(menu, "Hide archived").click();
+  await expect(sessionButton(page, "archive me")).toHaveCount(0);
+});
+
+test("a menu opened near the bottom edge stays on screen as it grows", async ({ ox: page, services }) => {
+  await newSession(page, "menu row");
+  const item = sessionItem(page, "menu row");
   const viewport = page.viewportSize();
-  const rowBox = await row.boundingBox();
-  if (!viewport || !rowBox) throw new Error("no viewport or row box");
-  const height = Math.ceil(rowBox.y + rowBox.height) + 4;
-  await page.setViewportSize({ width: viewport.width, height });
-  await row.click({ button: "right", position: { x: 10, y: rowBox.height - 2 } });
+  const box = await item.boundingBox();
+  if (!viewport || !box) throw new Error("no viewport or row box");
+  await page.setViewportSize({ width: viewport.width, height: Math.ceil(box.y + box.height) + 4 });
+  await item.click({ button: "right", position: { x: 10, y: box.height - 2 } });
   const menu = page.getByRole("menu");
-  await expect(menu.getByRole("menuitem")).toHaveText(["Unarchive", "Delete"]);
-  const menuBox = await menu.boundingBox();
-  if (!menuBox) throw new Error("no menu box");
-  expect(menuBox.y + menuBox.height).toBeCloseTo(height, 0);
+  await expect(menu).toBeInViewport({ ratio: 1 });
   // A reason that appears while the menu is open keeps it on screen.
   const lost = await hold(page, "workspace/list");
   await services.restartRelay();
   await lost.arrived;
-  await expect(menuItem(menu, "Unarchive")).toHaveAccessibleName("Unarchive Not connected");
-  await expect
-    .poll(async () => {
-      const box = await menu.boundingBox();
-      return box && Math.abs(box.y + box.height - height);
-    })
-    .toBeLessThanOrEqual(1);
-  await page.keyboard.press("Escape");
-  lost.release();
-  await page.setViewportSize(viewport);
-  await menuItem(await openMenu(workspace), "Hide archived").click();
-  await expect(row).toHaveCount(0);
+  await expect(menuItem(menu, "Archive")).toHaveAccessibleDescription("Not connected");
+  await expect(menu).toBeInViewport({ ratio: 1 });
+});
 
-  await unarchive.click();
+test("unarchiving returns the unsent text", async ({ ox: page }) => {
+  await newSession(page, "archive me");
+  await prompt(page).fill("kept while archived");
+  await archive(page, "archive me");
+  await expect(prompt(page)).toHaveCount(0);
+  await main(page).getByRole("button", { name: "Unarchive" }).click();
   await expect(prompt(page)).toHaveValue("kept while archived");
-  await expect(row).not.toHaveClass(/archived/);
+  await expect(sessionButton(page, "archive me")).not.toHaveAccessibleDescription("archived");
+});
 
-  // An archive this page missed while disconnected shows once it reconnects.
+test("an archive missed while disconnected shows after reconnecting", async ({ ox: page, services, context }) => {
+  await newSession(page, "archive me");
   await page.route("**/events", (route) => route.abort());
   await services.restartRelay();
   const archiver = await context.newPage();
   await archiver.goto(page.url());
-  await menuItem(await openMenu(sessionRow(archiver, "archive me")), "Archive").click();
-  await expect(archiver.locator(".composer.archived p")).toBeVisible();
+  await archive(archiver, "archive me");
+  await expect(main(archiver).getByText("This session is archived.")).toBeVisible();
   await archiver.close();
+  await expect(prompt(page)).toBeVisible();
   await page.unroute("**/events");
-  await expect(archivedLine).toBeVisible();
-  await menuItem(await openMenu(workspace), "Show archived").click();
-  await expect(row).toHaveCount(1);
-  await page.reload();
-  await expect(archivedLine).toBeVisible();
-  await expect(row).toHaveCount(0);
+  await expect(main(page).getByText("This session is archived.")).toBeVisible();
 });
 
-test("workspace headers keep their height when archived sessions overflow the sidebar", async ({ page }) => {
-  await open(page, services);
-  await newSession(page, "overflow archived");
-  const row = sessionRow(page, "overflow archived");
-  await menuItem(await openMenu(row), "Archive").click();
-  await expect(row).toHaveCount(0);
-  await menuItem(await openMenu(workspaceRow(page, services.workspace)), "Show archived").click();
-  await expect(row).toHaveClass(/archived/);
-  await page.setViewportSize({ width: 1280, height: 100 });
-  const sidebar = page.locator("nav");
-  expect(await sidebar.evaluate((nav) => nav.scrollHeight > nav.clientHeight)).toBe(true);
-  for (const header of await page.locator("nav > p").all()) {
-    expect((await header.boundingBox())?.height).toBe(28);
-  }
+test("a reload hides archived sessions, and an archived session's URL opens it", async ({ ox: page, services }) => {
+  await newSession(page, "archive me");
+  await archive(page, "archive me");
+  await showArchived(page, services);
+  await expect(sessionButton(page, "archive me")).toBeVisible();
+  await page.reload();
+  await expect(main(page).getByText("This session is archived.")).toBeVisible();
+  await expect(heading(page)).toHaveText("archive me");
+  await expect(sessionButton(page, "archive me")).toHaveCount(0);
 });

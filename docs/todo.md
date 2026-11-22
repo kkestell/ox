@@ -17,11 +17,6 @@ the evidence and the correction.
 - [ ] **Dev shutdown masks daemon exit failures.** The dev stack reports an
       ordinary Ctrl-C even when `oxd` terminates with a race detector failure.
       [Audit F4](../agents/audits/2026-11-22-001-conversation-launch-and-layout.md#f4-the-dev-stack-decides-its-exit-status-before-services-stop)
-- [ ] **Rewrite the web client tests to Playwright best practice.** Specs find
-      elements by CSS class and structure, assert styling and pixel arithmetic,
-      sleep for fixed times, share one daemon per file, and pack many behaviors
-      into one test; the page lacks the roles and names role-based locators
-      need. [Audit](../agents/audits/2026-11-22-003-frontend-tests.md)
 
 ## Workflow
 

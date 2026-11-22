@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, onSettled, Show } from "solid-js";
+import { createMemo, createSignal, createUniqueId, For, onSettled, Show } from "solid-js";
 import type { Selection } from "./App";
 import { createAttempt, type Session, useOx, type Workspace, workspaceName } from "./ox";
 import { settled } from "./protocol";
@@ -14,6 +14,7 @@ function WorkspaceDialog(props: { request: DialogRequest; onClose(): void }) {
   const [error, attempt] = createAttempt();
   const [busy, setBusy] = createSignal(false);
   const request = props.request;
+  const id = createUniqueId();
   let dialog!: HTMLDialogElement;
   onSettled(() => dialog.showModal());
 
@@ -31,19 +32,37 @@ function WorkspaceDialog(props: { request: DialogRequest; onClose(): void }) {
   };
 
   return (
-    <dialog ref={dialog} role={request.kind === "add" ? undefined : "alertdialog"} onClose={props.onClose}>
+    <dialog
+      ref={dialog}
+      role={request.kind === "add" ? undefined : "alertdialog"}
+      aria-label={request.kind === "add" ? "Add workspace" : undefined}
+      aria-labelledby={request.kind === "add" ? undefined : `${id}-title`}
+      aria-describedby={request.kind === "add" ? undefined : `${id}-description`}
+      onClose={props.onClose}
+    >
       <form onSubmit={submit}>
         {request.kind === "add" ? (
-          <input name="path" placeholder="/absolute/path/to/directory" size="40" required autofocus />
+          <input
+            name="path"
+            aria-label="Directory"
+            placeholder="/absolute/path/to/directory"
+            size="40"
+            required
+            autofocus
+          />
         ) : request.kind === "delete" ? (
           <>
-            <h2>Delete session?</h2>
-            <p class="description">This deletes "{request.label}" and its history.</p>
+            <h2 id={`${id}-title`}>Delete session?</h2>
+            <p id={`${id}-description`} class="description">
+              This deletes "{request.label}" and its history.
+            </p>
           </>
         ) : (
           <>
-            <h2>Remove workspace?</h2>
-            <p class="description">This removes "{request.path}" from Ox. The directory stays on disk.</p>
+            <h2 id={`${id}-title`}>Remove workspace?</h2>
+            <p id={`${id}-description`} class="description">
+              This removes "{request.path}" from Ox. The directory stays on disk.
+            </p>
           </>
         )}
         <button type="button" onClick={() => dialog.close()}>
@@ -83,11 +102,15 @@ function rowsOf(shown: Session[]): Row[] {
 }
 
 // SessionRow is a session's row, indented by its depth. An archived session
-// shows an archive icon in place of its status.
+// shows an archive icon in place of its status. The row's button is named by
+// its title and described by its status.
 function SessionRow(props: { row: Row; selected: boolean; onSelect(): void; onMenu(at: MenuAt): void }) {
   const session = () => props.row.session;
+  const id = createUniqueId();
   return (
+    // biome-ignore lint/a11y/useAriaPropsSupportedByRole: WAI-ARIA 1.2 gives listitem aria-level, the session's depth in the tree.
     <li
+      aria-level={props.row.depth + 1}
       class={{
         selected: props.selected,
         child: props.row.depth > 0,
@@ -105,17 +128,29 @@ function SessionRow(props: { row: Row; selected: boolean; onSelect(): void; onMe
         type="button"
         class="open"
         aria-current={props.selected ? "page" : undefined}
+        aria-labelledby={`${id}-title`}
+        aria-describedby={`${id}-status`}
         onClick={() => props.onSelect()}
       >
         <Show
           when={!session().archived}
-          fallback={<span class="icon archive" role="img" title="archived" aria-label="archived" />}
+          fallback={<span id={`${id}-status`} class="icon archive" role="img" title="archived" aria-label="archived" />}
         >
           <Show when={session().load.snapshot?.state}>
-            {(status) => <span class={["status", status()]} role="img" title={status()} aria-label={status()} />}
+            {(status) => (
+              <span
+                id={`${id}-status`}
+                class={["status", status()]}
+                role="img"
+                title={status()}
+                aria-label={status()}
+              />
+            )}
           </Show>
         </Show>
-        <span class="title">{session().label}</span>
+        <span id={`${id}-title`} class="title">
+          {session().label}
+        </span>
       </button>
       <MenuButton label="Session actions" onMenu={props.onMenu} />
     </li>
@@ -174,21 +209,40 @@ function Menu(props: { at: MenuAt; label: string; items: MenuItem[]; onClose(): 
     >
       <For each={props.items}>
         {(item) => (
-          <button
-            type="button"
-            role="menuitem"
-            disabled={item.disabledBecause !== undefined}
-            onClick={() => {
+          <MenuItemButton
+            item={item}
+            onChoose={() => {
               menu.hidePopover();
               item.onChoose();
             }}
-          >
-            <span>{item.label}</span>
-            <Show when={item.disabledBecause}>{(reason) => <span class="reason">{reason()}</span>}</Show>
-          </button>
+          />
         )}
       </For>
     </div>
+  );
+}
+
+// MenuItemButton is named by its label and described by its reason.
+function MenuItemButton(props: { item: MenuItem; onChoose(): void }) {
+  const id = createUniqueId();
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      disabled={props.item.disabledBecause !== undefined}
+      aria-labelledby={`${id}-label`}
+      aria-describedby={`${id}-reason`}
+      onClick={() => props.onChoose()}
+    >
+      <span id={`${id}-label`}>{props.item.label}</span>
+      <Show when={props.item.disabledBecause}>
+        {(reason) => (
+          <span id={`${id}-reason`} class="reason">
+            {reason()}
+          </span>
+        )}
+      </Show>
+    </button>
   );
 }
 
@@ -278,7 +332,11 @@ export function Sidebar(props: {
     setMenu({ target: { kind, id }, ...at });
 
   return (
-    <nav hidden={props.hidden} style={{ width: props.width === undefined ? undefined : `${props.width}px` }}>
+    <nav
+      aria-label="Sessions"
+      hidden={props.hidden}
+      style={{ width: props.width === undefined ? undefined : `${props.width}px` }}
+    >
       <button
         type="button"
         class="icon folder-plus"
@@ -309,16 +367,20 @@ export function Sidebar(props: {
       <For each={ox.state.workspaces}>
         {(workspace) => {
           const rows = createMemo(() => rowsOf(workspace.sessions.filter((session) => visible(workspace.id, session))));
+          const id = createUniqueId();
           return (
-            <>
-              <p
+            <section aria-labelledby={id}>
+              {/* biome-ignore lint/a11y/noStaticElementInteractions: a right-click opens the menu that Workspace actions opens from the keyboard. */}
+              <header
                 title={workspace.path}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   menuOf("workspace", workspace.id)({ x: event.clientX, y: event.clientY });
                 }}
               >
-                <span class="name">{workspaceName(workspace.path)}</span>
+                <h2 id={id} class="name">
+                  {workspaceName(workspace.path)}
+                </h2>
                 <MenuButton label="Workspace actions" onMenu={menuOf("workspace", workspace.id)} />
                 <button
                   type="button"
@@ -327,7 +389,7 @@ export function Sidebar(props: {
                   title="New session"
                   onClick={() => props.onSelect({ kind: "draft", workspaceId: workspace.id })}
                 />
-              </p>
+              </header>
               <ul>
                 <For each={rows()} keyed={(row) => row.session.id}>
                   {(row) => (
@@ -340,7 +402,7 @@ export function Sidebar(props: {
                   )}
                 </For>
               </ul>
-            </>
+            </section>
           );
         }}
       </For>

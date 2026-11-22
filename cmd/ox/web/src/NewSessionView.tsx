@@ -80,6 +80,7 @@ export function NewSessionView(props: { draft: Draft; onCreated(): void; toggles
               />
               <Select
                 name="permission_mode"
+                label="Permission mode"
                 options={ox.state.harnesses[choice().harness]?.permission_modes ?? []}
                 value={choice().permission_mode}
                 disabled={!draft.control.canCreate()}

@@ -37,7 +37,7 @@ export function FileTree(props: {
       style={{ width: props.width === undefined ? undefined : `${props.width}px` }}
     >
       <header>
-        <p>{workspaceName(props.workspace.path)}</p>
+        <h2>{workspaceName(props.workspace.path)}</h2>
         {props.toggles}
       </header>
       <div class="tree">

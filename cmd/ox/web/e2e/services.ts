@@ -1,8 +1,8 @@
-// Services runs oxd and the ox relay for a test file, on a temporary socket,
+// Services runs oxd and the ox relay for a test, on a temporary socket,
 // database, and port, built with the race detector by global-setup.ts.
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stopProcess } from "../stack.mjs";
@@ -49,8 +49,9 @@ export type Services = {
   url: string;
   // workspace is an empty directory for the sessions to run in.
   workspace: string;
-  // socket is oxd's socket, which a session's MCP forwarder attaches to.
-  socket: string;
+  // callTool calls an MCP tool as session from's Claude does, through an MCP
+  // connection to oxd's socket attached to it, and returns the tool's text.
+  callTool(from: string, name: string, args: Record<string, string>): Promise<string>;
   restartRelay(): Promise<void>;
   // restartDaemon restarts oxd over the same database with config. SIGKILL
   // stops it without its shutdown, as a crash does.
@@ -96,7 +97,7 @@ export async function startServices(config: object): Promise<Services> {
   return {
     url,
     workspace,
-    socket,
+    callTool: (from, name, args) => callTool(socket, from, name, args),
     async restartRelay() {
       if (relay) await stopProcess(relay);
       await startRelay();
@@ -117,6 +118,29 @@ export async function startServices(config: object): Promise<Services> {
       rmSync(workspace, { recursive: true, force: true });
     },
   };
+}
+
+function callTool(socket: string, from: string, name: string, args: Record<string, string>) {
+  return new Promise<string>((resolve, reject) => {
+    const connection = createConnection(socket);
+    const call = (id: number, method: string, params: object) =>
+      connection.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+    let buffered = "";
+    connection.on("data", (data) => {
+      buffered += data;
+      for (let i = buffered.indexOf("\n"); i >= 0; i = buffered.indexOf("\n")) {
+        const line = JSON.parse(buffered.slice(0, i));
+        buffered = buffered.slice(i + 1);
+        if (line.id !== 2) continue;
+        connection.end();
+        if (line.error || line.result.isError) reject(new Error(JSON.stringify(line)));
+        else resolve(line.result.content[0].text);
+      }
+    });
+    connection.on("error", reject);
+    call(1, "mcp/attach", { session_id: from });
+    call(2, "tools/call", { name, arguments: args });
+  });
 }
 
 function freePort() {

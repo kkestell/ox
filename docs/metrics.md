@@ -10,9 +10,9 @@ the code in `*_test.go` and `cmd/ox/web/e2e`.
 
 | Language   | Files | Comment |  Code | Tests |
 | ---------- | ----: | ------: | ----: | ----: |
-| Go         |    26 |     576 | 4,650 | 7,021 |
-| TypeScript |    18 |     184 | 2,386 | 2,095 |
-| CSS        |     1 |      34 |   370 |     0 |
+| Go         |    26 |     576 | 4,650 | 7,032 |
+| TypeScript |    18 |     189 | 2,472 | 2,286 |
+| CSS        |     1 |      34 |   372 |     0 |
 
 ## High complexity
 
@@ -45,7 +45,7 @@ Comments that silence a linter, in production and test files.
 | Language   | Comment        | Suppressions |
 | ---------- | -------------- | -----------: |
 | Go         | `nolint`       |            0 |
-| TypeScript | `biome-ignore` |            2 |
+| TypeScript | `biome-ignore` |            4 |
 | CSS        | `biome-ignore` |            0 |
 
 ## Known issues

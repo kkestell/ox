@@ -1,89 +1,83 @@
 // Approvals against real Claude with Haiku. They run only with OX_LIVE=1, as
 // make live does.
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test } from "@playwright/test";
-import { haikuConfig, type Services, startServices } from "./services";
-import { open, prompt, stop, toolResult } from "./ui";
+import { haikuConfig } from "./services";
+import { allow, expect, newSessionButton, permissionMode, prompt, stop, test, toolCall, waiting } from "./ui";
 
 test.skip(!process.env.OX_LIVE, "set OX_LIVE=1 to run against real Claude with Haiku");
 test.setTimeout(180_000);
+test.use({ config: haikuConfig });
 
-let services: Services;
-test.beforeAll(async () => {
-  services = await startServices(haikuConfig);
+// Claude writes plan files under the test's workspace, which the services
+// fixture removes, rather than in the user's ~/.claude/plans.
+test.beforeEach(({ services }) => {
+  mkdirSync(join(services.workspace, ".claude"));
+  writeFileSync(join(services.workspace, ".claude", "settings.json"), '{"plansDirectory": ".claude/plans"}');
 });
-test.afterAll(async () => {
-  await services.stop();
-});
 
-test("an approval is answered from its card", async ({ page }) => {
-  await open(page, services);
-  await page.getByRole("button", { name: "New session" }).click();
-  await expect(page.locator("select[name=permission_mode]")).toHaveValue("manual");
-  const approval = page.locator(".approval");
-
+test("Allow runs the tool", async ({ ox: page, services }) => {
+  await newSessionButton(page).click();
+  await expect(permissionMode(page)).toHaveValue("manual");
+  const approval = waiting(page).getByRole("article", { name: "Allow Bash?" });
   await prompt(page).fill("Run the Bash command `touch allowed.txt`, then reply with just the word done.");
   await prompt(page).press("Enter");
   await expect(approval).toContainText("touch allowed.txt", { timeout: 120_000 });
-  await approval.getByLabel("Allow").check();
-  await approval.getByRole("button", { name: "Submit" }).click();
+  await allow(approval);
   await expect(approval).toHaveCount(0);
   await expect(stop(page)).toHaveCount(0, { timeout: 120_000 });
   expect(existsSync(join(services.workspace, "allowed.txt"))).toBe(true);
+});
 
+test("a typed reply denies with that message", async ({ ox: page, services }) => {
+  await newSessionButton(page).click();
+  await expect(permissionMode(page)).toHaveValue("manual");
+  const approval = waiting(page).getByRole("article", { name: "Allow Bash?" });
   await prompt(page).fill(
     "Run the Bash command `touch denied.txt`. If it is denied, reply with just the word stopped.",
   );
   await prompt(page).press("Enter");
   await expect(approval).toContainText("touch denied.txt", { timeout: 120_000 });
-  await approval.getByLabel("Other response").fill("Do not create files.");
+  await approval.getByRole("textbox", { name: "Other response" }).fill("Do not create files.");
   await approval.getByRole("button", { name: "Submit" }).click();
   await expect(approval).toHaveCount(0);
   await expect(stop(page)).toHaveCount(0, { timeout: 120_000 });
-  await expect(toolResult(page, "Bash")).toContainText("Do not create files.");
+  await expect(toolCall(page, "Bash")).toContainText("Do not create files.");
   expect(existsSync(join(services.workspace, "denied.txt"))).toBe(false);
 });
 
-test("an ExitPlanMode plan renders as Markdown", async ({ page }) => {
-  await open(page, services);
-  await page.getByRole("button", { name: "New session" }).click();
-  await page.locator("select[name=permission_mode]").selectOption("plan");
-  const approval = page.locator(".approval");
-
+test("an ExitPlanMode plan renders as Markdown", async ({ ox: page }) => {
+  await newSessionButton(page).click();
+  await permissionMode(page).selectOption("plan");
+  const approval = waiting(page).getByRole("article", { name: "Allow ExitPlanMode?" });
   await prompt(page).fill(
     "Load and call the ExitPlanMode tool now with this plan, as a Markdown list of exactly two items: first step, second step.",
   );
   await prompt(page).press("Enter");
-  await expect(approval.locator(".plan li").nth(1)).toBeVisible({ timeout: 120_000 });
-  await expect(approval.locator("summary .subject")).toHaveText("Input");
-  await approval.getByLabel("Deny").check();
+  await expect(approval.getByRole("listitem")).toHaveCount(2, { timeout: 120_000 });
+  await expect(approval.getByText("Input", { exact: true })).toBeVisible();
+  await approval.getByRole("radio", { name: "Deny" }).check();
   await approval.getByRole("button", { name: "Submit" }).click();
   await expect(approval).toHaveCount(0);
   await expect(stop(page)).toHaveCount(0, { timeout: 120_000 });
 
-  const tool = page.locator("details.tool").filter({ has: page.locator(".name", { hasText: "ExitPlanMode" }) });
-  await tool.locator("summary").click();
-  await expect(tool.locator(".plan li").first()).toBeVisible();
+  const tool = toolCall(page, "ExitPlanMode");
+  await tool.getByText("ExitPlanMode", { exact: true }).click();
+  await expect(tool.getByRole("listitem").first()).toBeVisible();
 });
 
-test("an AskUserQuestion is answered from its form", async ({ page }) => {
-  await open(page, services);
-  await page.getByRole("button", { name: "New session" }).click();
-  await expect(page.locator("select[name=permission_mode]")).toHaveValue("manual");
-  const approval = page.locator(".approval");
-
+test("an AskUserQuestion is answered from its form", async ({ ox: page }) => {
+  await newSessionButton(page).click();
+  await expect(permissionMode(page)).toHaveValue("manual");
+  const approval = waiting(page).getByRole("article", { name: "Claude asks" });
   await prompt(page).fill(
     'Load and call the AskUserQuestion tool now with one single-select question, "Which color?", with the options Red and Blue. Then reply with just the chosen color.',
   );
   await prompt(page).press("Enter");
-  await expect(approval.locator("fieldset")).toBeVisible({ timeout: 120_000 });
-  await approval.getByLabel("Red").check();
+  await expect(approval.getByRole("group", { name: /Which color\?/ })).toBeVisible({ timeout: 120_000 });
+  await approval.getByRole("radio", { name: "Red" }).check();
   await approval.getByRole("button", { name: "Submit" }).click();
   await expect(approval).toHaveCount(0);
   await expect(stop(page)).toHaveCount(0, { timeout: 120_000 });
-
-  const tool = page.locator("details.tool").filter({ has: page.locator(".name", { hasText: "AskUserQuestion" }) });
-  await tool.locator("summary").click();
-  await expect(tool).toContainText('="Red"');
+  await expect(toolCall(page, "AskUserQuestion")).toContainText('="Red"');
 });

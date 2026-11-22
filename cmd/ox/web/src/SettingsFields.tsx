@@ -60,11 +60,18 @@ export function ModelPicker(props: {
     }
   };
 
+  // The button is named "Model" followed by its content, so its visible text
+  // stays part of its name.
   return (
     <>
+      <span id={`${id}-label`} hidden>
+        Model
+      </span>
       <button
         type="button"
+        id={`${id}-button`}
         class="picker"
+        aria-labelledby={`${id}-label ${id}-button`}
         popovertarget={id}
         disabled={props.disabled}
         aria-busy={props.pending ? "true" : undefined}
@@ -180,6 +187,7 @@ function Effort(props: { efforts: Option[]; value: string; disabled?: boolean; o
 // value shows a spinner until it is confirmed.
 export function Select(props: {
   name: string;
+  label: string;
   options: Option[];
   value: string;
   disabled?: boolean;
@@ -197,6 +205,7 @@ export function Select(props: {
     <span class={["select", { pointer: pointer() }]}>
       <select
         name={props.name}
+        aria-label={props.label}
         disabled={props.disabled}
         aria-busy={props.pending ? "true" : undefined}
         onPointerDown={() => setPointer(true)}

@@ -17,9 +17,10 @@ Use `make dev` to work on the [web client](../../../docs/architecture.md#web-ui)
   does, and assert with web-first assertions on visibility, text, ARIA state,
   and focus.
 - `make e2e` runs the Playwright specs in `e2e` in headless Chrome against
-  `ox` and `oxd` with the fake harness. Each spec file runs its own `oxd` and
-  relay on a temporary socket, database, and port. `approval.spec.ts` uses
-  Haiku and runs with `make live`.
+  `ox` and `oxd` with the fake harness. Each test runs its own `oxd` and relay
+  on a temporary socket, database, and port, through the `services` fixture
+  in `e2e/ui.ts`. `approval.spec.ts` uses Haiku and runs with `make live`.
+  `make test` runs `highlight.test.mjs` with `node:test` beside the specs.
 
 ## Solid 2.0
 

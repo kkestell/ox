@@ -220,6 +220,19 @@ func describe(messages []message) string {
 	return b.String()
 }
 
+// keepPlansIn has Claude write the plan files of sessions in workspace under
+// it, where the test removes them, rather than in the user's ~/.claude/plans.
+func keepPlansIn(t *testing.T, workspace string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(workspace, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settings := []byte(`{"plansDirectory": ".claude/plans"}`)
+	if err := os.WriteFile(filepath.Join(workspace, ".claude", "settings.json"), settings, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestLive runs sections against real Claude Code with Haiku. Each section
 // creates the sessions it uses, so -run TestLive/<section> runs one alone.
 func TestLive(t *testing.T) {
@@ -237,6 +250,7 @@ func TestLive(t *testing.T) {
 	cfg.Harnesses["claude"] = h
 	st := openStore(t)
 	dir := t.TempDir()
+	keepPlansIn(t, dir)
 	// A stored session whose conversation Claude does not have.
 	const lost = "lost-session"
 	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: dir, CreatedAt: time.Now()}); err != nil {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -150,7 +150,6 @@ test("a retiring service that fails stops the stack", async () => {
   assert.notEqual(await stack, 0);
   assert.ok(lines.includes(`${paths.oxd} exited with status 66`));
   assert.equal(lines.includes("restarted oxd"), false);
-  await sleep(200);
   assert.equal(pid(paths.oxd), before);
 });
 
@@ -201,21 +200,23 @@ test("a second Enter during a rebuild does not start another", async () => {
   const before = pid(paths.ox);
   input.write("\n\n");
   await until(() => lines.includes("restarted ox") && pid(paths.ox) !== before);
-  await sleep(500);
+  // Both lines are read before the first build ends, so a second rebuild
+  // would already have logged.
+  assert.equal(lines.filter((line) => line === "rebuilding").length, 1);
   assert.ok(lines.includes("a rebuild is in progress"));
-  assert.equal(lines.filter((line) => line === "restarted ox").length, 1);
 });
 
 test("stopping during a restart starts no new process", async () => {
   const paths = await start({
     changed: ["ox"],
-    traps: { ox: "trap 'sleep 0.5; exit 0' TERM" },
+    traps: { ox: "trap 'touch $0.stopping; sleep 0.5; exit 0' TERM" },
   });
   const before = pid(paths.ox);
   input.write("\n");
-  await sleep(300);
+  await until(() => existsSync(`${paths.ox}.stopping`));
   stack.stop(0);
-  await sleep(1000);
+  await stack;
+  await until(() => !alive(Number(before)));
   assert.equal(pid(paths.ox), before);
   assert.equal(lines.includes("restarted ox"), false);
 });

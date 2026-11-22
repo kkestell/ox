@@ -12,7 +12,7 @@ build:
 
 test: lint
 	go test -race ./...
-	node --test cmd/ox/web/stack.test.mjs
+	node --test cmd/ox/web/stack.test.mjs cmd/ox/web/highlight.test.mjs
 
 lint: web
 	gofmt -l . | (! grep .)

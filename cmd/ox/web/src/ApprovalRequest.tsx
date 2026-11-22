@@ -61,8 +61,8 @@ function PermissionCard(props: Props) {
   );
 
   return (
-    <div class="approval">
-      <p>Allow {props.approval.request.tool_name}?</p>
+    <article class="approval" aria-labelledby={`${id}-title`}>
+      <p id={`${id}-title`}>Allow {props.approval.request.tool_name}?</p>
       <Show when={plan()}>{(text) => <Markdown class="plan" text={text()} />}</Show>
       {/* The subject summarizes the input; expanding shows all of it. */}
       <details class="input">
@@ -105,7 +105,7 @@ function PermissionCard(props: Props) {
           Submit
         </button>
       </div>
-    </div>
+    </article>
   );
 }
 
@@ -153,8 +153,8 @@ function QuestionForm(props: Props & { questions: Question[] }) {
     });
 
   return (
-    <div class="approval">
-      <p>Claude asks</p>
+    <article class="approval" aria-labelledby={`${id}-title`}>
+      <p id={`${id}-title`}>Claude asks</p>
       <For each={props.questions}>
         {(question, i) => (
           <fieldset class="question">
@@ -234,6 +234,6 @@ function QuestionForm(props: Props & { questions: Question[] }) {
           Submit
         </button>
       </div>
-    </div>
+    </article>
   );
 }
