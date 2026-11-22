@@ -194,7 +194,9 @@ need them cannot happen.
 ## Workflow
 
 The user settles the direction and rough scope of a change with a top-level
-agent, which carries it through child sessions:
+agent, which carries it through child sessions. When Codex leads the workflow,
+use Codex child sessions on Sol 6.2. The Claude model choices below apply when
+Claude Code leads the workflow.
 
 1. A child session on Opus 5.5 at high effort runs `/ox-plan`. The user
    approves the plan's requirement changes with its other product questions.
