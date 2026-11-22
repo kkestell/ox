@@ -57,6 +57,32 @@ the evidence and the correction.
       held about 140 agent leftovers. Have each skill keep its scratch in one
       temporary directory it removes, and stop every process it starts before
       its final response.
+- [ ] **Reviews overrule the user.** The review of 7446420, 64d1e65, and 44cab72
+      asked to restore the CSS assertions the user had ruled out of tests, and
+      to reword `cmd/ox/web/AGENTS.md` to allow them. Have `/ox-review` take the
+      user's decisions in `AGENTS.md`, `cmd/ox/web/AGENTS.md`, and the plan as
+      settled, and raise a disagreement as a question to the user.
+- [ ] **Reviews report checks they did not run.** The Codex tailnet review took
+      `make e2e` and the Chrome check from the implementer's report, though
+      nothing blocked it from running them, and called the change Ready to
+      commit. Have `/ox-review` list each check as run by the implementer or by
+      the reviewer, and refuse Ready to commit while a required check is
+      neither.
+- [ ] **Written rules do not hold.** `0ebfa4a` told reviewers to take
+      `/ox-work`'s check results, and the mobile review reran `make e2e` anyway.
+      Audit findings were lost twice despite `0d2ee01` and `f1350cd`. Make each
+      rule an agent keeps breaking a check a script runs, such as the pre-commit
+      hook, instead of more prose.
+- [ ] **Skill fixes patch the last failure.** 47 of 159 commits change
+      `AGENTS.md` or the skills, and `/ox-work`'s test-proving step was
+      rewritten four times in three days (`f379aac`, `6489a11`, `8bf47da`,
+      `44cab72`). Its answer to hollow tests, removing every added condition,
+      cost hours per change and produced pixel-asserting tests. Before changing
+      a skill for a failure, find why the existing rule did not prevent it.
+- [ ] **Requirements change without a plan.** The user owns
+      `docs/functional-requirements.md`, and `0fd3e2f` added a requirement with
+      no plan. Have the pre-commit hook refuse a change to that file unless the
+      commit adds the plan whose Requirement changes it applies.
 
 ## Sidebar
 
