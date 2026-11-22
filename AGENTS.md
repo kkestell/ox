@@ -81,12 +81,14 @@ We test with `make dev`. Ox's test state is disposable.
 │   │   ├── history_test.go    # history tests
 │   │   ├── history.go         # session history
 │   │   ├── live_test.go       # live Claude and Ur tests
+│   │   ├── mcp_test.go        # MCP tests
 │   │   ├── mcp.go             # MCP connections
 │   │   ├── methods_test.go    # method tests
 │   │   ├── methods.go         # RPC methods
 │   │   ├── server.go          # listener, workspaces, and sessions
 │   │   └── session.go         # session goroutine and lifecycle
 │   ├── store
+│   │   ├── store_test.go      # store tests
 │   │   └── store.go           # SQLite persistence
 │   └── ur
 │       ├── stream.go          # OpenRouter requests and streams

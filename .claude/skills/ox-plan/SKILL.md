@@ -65,7 +65,7 @@ Keep this work in this session:
     - Claude harness logic: `internal/claude` tests that build state through `Send` and `Handle` with real Claude messages and assert through the agent's public methods, recorded updates, and bytes written. Process I/O uses a stand-in `claude` script.
     - Daemon behavior: `internal/server` tests that speak the protocol with the fake harness. A server path the fake harness does not reach needs the fake to reach it, or a live case.
     - Page behavior: `make e2e` specs, with delays and failures injected by intercepting the page's `/rpc` posts.
-    - The path from the page to `oxd` through the relay and Vite's proxy: a `cmd/ox` test of the headers the relay receives, and a check in headless Chrome through the `make dev` stack on spare ports, started with `OX_VITE_PORT=9080 OX_RELAY_PORT=9081 XDG_STATE_HOME=$dir XDG_RUNTIME_DIR=$dir make dev` for an empty temporary `$dir`, and its page at http://localhost:9080.
+    - The path from the page to `oxd` through the relay and Vite's proxy: a `cmd/ox` test of the headers the relay receives, and a check in headless Chrome through the `make dev` stack on spare ports, started with `OX_VITE_PORT=9080 OX_RELAY_PORT=9081 XDG_CONFIG_HOME=$dir XDG_STATE_HOME=$dir XDG_RUNTIME_DIR=$dir make dev` for an empty temporary `$dir`, and its page at http://localhost:9080.
     - Claude Code behavior: a small `TestLive` case or `approval.spec.ts` check with Haiku.
 
     Put each case in an existing test whose setup already reaches it, and add a new test only when none does. Each new test fails on the code before the change. A change that replaces behavior replaces the tests of the old behavior.
