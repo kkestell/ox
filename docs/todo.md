@@ -4,13 +4,6 @@ Planned work, ordered by priority: unfixed audit findings, then gaps in features
 Ox already supports. Each finding links its section in the audit, which holds
 the evidence and the correction.
 
-## Defects
-
-- [ ] **Dragging the file split can collapse the transcript.** When the side
-      panels leave less than 480 px for the center, dragging in either direction
-      chooses the same split and can shrink the transcript to a sliver.
-      [Audit F3](../agents/audits/2026-11-22-001-conversation-launch-and-layout.md#f3-the-file-split-assumes-space-the-side-panels-can-take-away)
-
 ## Sidebar
 
 - [ ] **Collapse a session's children.** A session with children gets a

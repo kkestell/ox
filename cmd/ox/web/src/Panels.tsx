@@ -1,8 +1,5 @@
 import { createSignal, onSettled } from "solid-js";
 
-const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
-const panelWidth = (width: number) => clamp(width, 160, 640);
-
 // Below this width the page shows one pane at a time, with the side panels as
 // drawers. The layout's root carries the result as its narrow class, which the
 // stylesheet reads.
@@ -21,8 +18,8 @@ export function createPanels(drawerAtLoad: Drawer | undefined) {
   const [drawer, setDrawer] = createSignal<Drawer | undefined>(drawerAtLoad);
   const [left, setLeft] = createSignal(true);
   const [right, setRight] = createSignal(true);
-  const [leftWidth, writeLeftWidth] = createSignal(288);
-  const [rightWidth, writeRightWidth] = createSignal(288);
+  const [leftWidth, setLeftWidth] = createSignal(288);
+  const [rightWidth, setRightWidth] = createSignal(288);
   onSettled(() => {
     const follow = () => {
       setNarrow(media.matches);
@@ -42,8 +39,8 @@ export function createPanels(drawerAtLoad: Drawer | undefined) {
     dismiss: () => setDrawer(undefined),
     leftWidth,
     rightWidth,
-    setLeftWidth: (width: number) => writeLeftWidth(panelWidth(width)),
-    setRightWidth: (width: number) => writeRightWidth(panelWidth(width)),
+    setLeftWidth,
+    setRightWidth,
   };
 }
 
@@ -73,9 +70,23 @@ export function PanelToggles(props: { panels: Panels }) {
   );
 }
 
+// column reads its width and its minimum and maximum widths from the layout.
+// An unset maximum is unbounded.
+function column(element: Element | null) {
+  if (!element) return { width: 0, min: 0, max: Number.POSITIVE_INFINITY };
+  const style = getComputedStyle(element);
+  return {
+    width: element.getBoundingClientRect().width,
+    min: Number.parseFloat(style.minWidth) || 0,
+    max: style.maxWidth === "none" ? Number.POSITIVE_INFINITY : Number.parseFloat(style.maxWidth),
+  };
+}
+
 // Sash resizes the columns on either side of it, by pointer only, as VS Code's
 // sashes do. A drag passes both columns' widths at its start to drag, and the
-// pointer's horizontal travel since then to the function drag returns.
+// pointer's horizontal travel since then to the function drag returns. The
+// drag stops where either column reaches its minimum or maximum width, and
+// passes travel only when it changes.
 export function Sash(props: { label: string; drag(before: number, after: number): (dx: number) => void }) {
   const [move, setMove] = createSignal<(x: number) => void>();
   const start = (event: PointerEvent & { currentTarget: HTMLHRElement }) => {
@@ -83,10 +94,23 @@ export function Sash(props: { label: string; drag(before: number, after: number)
     event.preventDefault();
     const sash = event.currentTarget;
     sash.setPointerCapture(event.pointerId);
-    const width = (element: Element | null) => element?.getBoundingClientRect().width ?? 0;
-    const resize = props.drag(width(sash.previousElementSibling), width(sash.nextElementSibling));
+    const before = column(sash.previousElementSibling);
+    const after = column(sash.nextElementSibling);
+    // The layout rendered both columns within their limits, so the range
+    // holds the current position. Layout rounding leaves widths a fraction of a
+    // pixel from their limits on either side, so the range ignores less than a
+    // pixel of room in either direction.
+    const lowest = Math.min(0, Math.ceil(Math.max(before.min - before.width, after.width - after.max)));
+    const highest = Math.max(0, Math.floor(Math.min(before.max - before.width, after.width - after.min)));
+    const resize = props.drag(before.width, after.width);
     const x = event.clientX;
-    setMove(() => (clientX: number) => resize(clientX - x));
+    let last = 0;
+    setMove(() => (clientX: number) => {
+      const dx = Math.min(Math.max(clientX - x, lowest), highest);
+      if (dx === last) return;
+      last = dx;
+      resize(dx);
+    });
   };
   return (
     <hr

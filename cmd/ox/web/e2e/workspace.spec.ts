@@ -575,6 +575,22 @@ test.describe("on a wide screen", () => {
     await entry(page, "a.txt").click();
     await expect(viewer(page)).toBeVisible();
     await near(main, split);
+
+    // A window too tight for both minimums splits the center evenly, ignores
+    // the split's sash, and keeps the saved split for when it widens. A
+    // fractional sessions width leaves the tight center a fractional width.
+    await drag(page, "Resize sessions", 0.3);
+    await page.setViewportSize({ width: 820, height: 900 });
+    const even = await width(viewer(page));
+    await near(main, even);
+    await drag(page, "Resize file viewer", -35);
+    await near(main, even);
+    await near(viewer(page), even);
+    await drag(page, "Resize file viewer", 35);
+    await near(main, even);
+    await near(viewer(page), even);
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await near(main, split);
   });
 
   test("panel widths are page-wide and each session keeps its own split", async ({ ox: page }) => {
