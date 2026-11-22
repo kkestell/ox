@@ -54,6 +54,12 @@ the evidence and the correction.
       Ox before exposing
       [Claude's persistent permission option](harnesses/claude-code.md#can_use_tool).
 
+## Web client
+
+- [ ] **Consistent client state.** Audit the state the web client keeps, such as
+      panel sizes, collapsed sessions, and open files, and decide in one place
+      which of it survives a reload and where it is stored.
+
 ## Configuration
 
 - [ ] **Write the default config on first start.** When `oxd` starts and finds
