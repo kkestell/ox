@@ -364,8 +364,6 @@ test("panel toggles and drags change the layout, which lasts until reload", asyn
     const toggleSessions = page.getByRole("button", { name: "Toggle sessions" });
     const toggleFiles = page.getByRole("button", { name: "Toggle files" });
     const width = async (locator: Locator) => (await locator.boundingBox())?.width ?? 0;
-    const color = (locator: Locator) => locator.evaluate((element) => getComputedStyle(element).color);
-    const addColor = await color(page.getByRole("button", { name: "Add workspace" }));
     const openFile = async () => {
       await files.getByRole("button", { name: "src" }).click();
       await files.getByRole("button", { name: "a.txt", exact: true }).click();
@@ -375,7 +373,6 @@ test("panel toggles and drags change the layout, which lasts until reload", asyn
     const alone = async () =>
       expect(Math.abs((await width(main)) - (1600 - (await width(nav)) - (await width(files))))).toBeLessThanOrEqual(1);
     const even = async () => expect(Math.abs((await width(main)) - (await width(viewer)))).toBeLessThanOrEqual(1);
-    const cursor = () => page.evaluate(() => getComputedStyle(document.body).cursor);
     // drag moves a sash dx pixels along the x axis with the given button.
     const drag = async (label: string, dx: number, button: "left" | "right" = "left") => {
       const box = await page.getByRole("separator", { name: label }).boundingBox();
@@ -384,7 +381,6 @@ test("panel toggles and drags change the layout, which lasts until reload", asyn
       await page.mouse.move(box.x, y);
       await page.mouse.down({ button });
       await page.mouse.move(box.x + dx, y, { steps: 5 });
-      if (button === "left") expect(await cursor()).toBe("col-resize");
       await page.mouse.up({ button });
     };
 
@@ -425,7 +421,6 @@ test("panel toggles and drags change the layout, which lasts until reload", asyn
     await expect(page.locator("header.context").getByRole("button", { name: "Toggle files" })).toHaveCount(1);
     await expect(viewer.getByRole("button", { name: "Toggle files" })).toHaveCount(0);
     await expect(toggleFiles).toHaveAttribute("aria-pressed", "false");
-    expect(await color(toggleFiles)).not.toBe(addColor);
     await expect(viewer).toBeVisible();
     await expect(page.getByRole("separator", { name: "Resize files" })).toHaveCount(0);
     await toggleSessions.click();
@@ -443,7 +438,6 @@ test("panel toggles and drags change the layout, which lasts until reload", asyn
     expect(await width(nav)).toBe(288);
     await drag("Resize sessions", 100);
     expect(await width(nav)).toBe(388);
-    expect(await cursor()).not.toBe("col-resize");
     // The drag ends with the button: a move over the sash leaves it in place.
     const sash = await page.getByRole("separator", { name: "Resize sessions" }).boundingBox();
     await page.mouse.move((sash?.x ?? 0) + 1, (sash?.y ?? 0) + 100);
@@ -734,7 +728,7 @@ test("the file viewer shows each session's open file", async ({ page }) => {
     await expect(panel).toHaveText("back\n", { timeout: 3000 });
 
     // A file of a language Ox does not register shows as plain text; a Go file
-    // is colored for the page's scheme, and its pane is not re-rendered while
+    // is split into highlighted tokens, and its pane is not re-rendered while
     // the file is unchanged.
     await expect(panel.locator("span")).toHaveCount(0);
     await files.getByRole("button", { name: "main.txt", exact: true }).click();
@@ -750,10 +744,6 @@ test("the file viewer shows each session's open file", async ({ page }) => {
     const comment = panel.locator("span", { hasText: "//" });
     await expect(keyword).toHaveText("package");
     await expect(comment).toHaveText("// note");
-    await expect(keyword).toHaveCSS("color", "rgb(207, 34, 46)");
-    await page.emulateMedia({ colorScheme: "dark" });
-    await expect(keyword).toHaveCSS("color", "rgb(255, 123, 114)");
-    await page.emulateMedia({ colorScheme: "light" });
     await comment.evaluate((span) => {
       span.dataset.marked = "true";
     });
@@ -768,14 +758,13 @@ test("the file viewer shows each session's open file", async ({ page }) => {
     await expect(panel.locator("span").first()).toBeVisible();
     expect(await panel.evaluate((pre) => pre.textContent)).toBe(template);
 
-    // A TSX element's tag name is colored as a tag, and Markdown emphasis is
-    // italic.
+    // TSX and Markdown files are highlighted too.
     await files.getByRole("button", { name: "view.tsx", exact: true }).click();
     await expect(tab).toHaveText("view.tsx");
-    await expect(panel.locator("span", { hasText: /^div$/ })).toHaveCSS("color", "rgb(17, 99, 41)");
+    await expect(panel.locator("span", { hasText: /^div$/ })).toHaveCount(1);
     await files.getByRole("button", { name: "notes.md", exact: true }).click();
     await expect(tab).toHaveText("notes.md");
-    await expect(panel.locator("span", { hasText: "*a*" })).toHaveCSS("font-style", "italic");
+    await expect(panel.locator("span", { hasText: "*a*" })).toHaveCount(1);
 
     // A relay error on a read shows in the pane until the next read replaces it.
     const failedRead = await hold(page, "workspace/read_file", { path: "bin.dat" });

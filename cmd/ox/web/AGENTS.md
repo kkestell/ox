@@ -12,6 +12,10 @@ Use `make dev` to work on the [web client](../../../docs/architecture.md#web-ui)
   views it touches. Check how a change behaves in headless Chrome with
   Playwright, through `make e2e` specs or against a stack started on spare
   ports.
+- Specs test what the user sees and does, as Playwright's best practices
+  describe: they find elements by role and accessible name, act as the user
+  does, and assert with web-first assertions on visibility, text, ARIA state,
+  and focus.
 - `make e2e` runs the Playwright specs in `e2e` in headless Chrome against
   `ox` and `oxd` with the fake harness. Each spec file runs its own `oxd` and
   relay on a temporary socket, database, and port. `approval.spec.ts` uses

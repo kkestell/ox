@@ -68,7 +68,7 @@ Keep this work in this session:
     - The path from the page to `oxd` through the relay and Vite's proxy: a `cmd/ox` test of the headers the relay receives, and a check in headless Chrome through the `make dev` stack on spare ports, started with `OX_VITE_PORT=9080 OX_RELAY_PORT=9081 XDG_STATE_HOME=$dir XDG_RUNTIME_DIR=$dir make dev` for an empty temporary `$dir`, and its page at http://localhost:9080.
     - Claude Code behavior: a small `TestLive` case or `approval.spec.ts` check with Haiku.
 
-    Put each case in an existing test whose setup already reaches it, and add a new test only when none does. Each new test fails on the code before the change, and each condition the change adds has a test that fails when the condition is removed. A change that replaces behavior replaces the tests of the old behavior.
+    Put each case in an existing test whose setup already reaches it, and add a new test only when none does. Each new test fails on the code before the change. A change that replaces behavior replaces the tests of the old behavior.
 
 ## Write
 

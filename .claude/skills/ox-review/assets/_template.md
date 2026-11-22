@@ -45,7 +45,7 @@ For `Fix`, the change to make at the cause, and the test to keep: its layer, the
 
 ## Checks run
 
-- Each check you ran and its result, including new tests run against the base revision and each removed condition.
+- Each check you ran and its result, including new tests run without the change and each spot-checked removal.
 - Each check something outside your control blocked, and what blocked it.
 
 ## Verification 1

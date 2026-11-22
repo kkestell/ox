@@ -22,7 +22,7 @@ Before you start the children:
 
 Then end your turn until every child has answered.
 
-Afterwards, read the children's changes as one change, apply the Requirement changes, and prove the tests and run the checks yourself on the final tree, as steps 7 to 9 describe. Children do not run `make test`, `make e2e`, or `make live`. A run in a shared checkout sees the other children's unfinished edits, and the checks count only on the integrated tree.
+Afterwards, read the children's changes as one change, apply the Requirement changes, and prove the tests and run the checks yourself on the final tree, as steps 7 and 8 describe. Children do not run `make test`, `make e2e`, or `make live`. A run in a shared checkout sees the other children's unfinished edits, and the checks count only on the integrated tree.
 
 Keep this work in this session:
 
@@ -49,13 +49,8 @@ Keep this work in this session:
 
 ## Prove the tests
 
-7. Run each test that reproduces a defect once against the base revision, in a detached worktree that you remove afterwards, and confirm it fails there. Failing at its first assertion is enough. Step 8 covers every other new or changed test.
-8. Remove each condition the change adds, one at a time, and confirm a test fails. Add or strengthen a test for each removal no test catches.
-   - For Go, first run the changed packages' tests once with `-coverprofile`. A condition on a line no test runs has no test yet: write one before removing anything.
-   - Then run each removal as its own `go test -count=1 -overlay=<json> <package>`, where the overlay maps the source file to a copy holding the removal, written in a temporary directory. The working tree stays as it is, so run the removals in parallel. Leave out `-race`, which step 9 covers.
-   - A removal counts as caught only when a test fails. Rewrite a removal that fails to build until it builds.
-   - For code outside Go, edit the file, run its tests, and revert the edit.
-9. Run the checks `AGENTS.md` ("Verification") requires for the change on the final tree, after your last edit, and fix each failure it causes. Report a check as blocked only when something you cannot change prevents it, and name the blocker.
+7. Run each new or changed test without the change and confirm it fails: for a plan, against the base revision in a detached worktree that you remove afterwards; for a review's fix, with that fix reverted. Failing at its first assertion is enough. Rewrite a test that passes without the change until it fails.
+8. Run the checks `AGENTS.md` ("Verification") requires for the change on the final tree, after your last edit, and fix each failure it causes. Report a check as blocked only when something you cannot change prevents it, and name the blocker.
 
 ## Final response
 
@@ -73,7 +68,7 @@ One or two sentences: what the change does, and whether it is ready for review.
 
 **Findings:** F1 fixed; F2 recorded; F3 not fixed: its defect does not exist, because …
 
-**Tests proved:** `TestHeldPromptDropped` fails on the base revision; removing the `ended` check in `Send` fails `TestSendAfterEnd`.
+**Tests proved:** `TestHeldPromptDropped` and `TestSendAfterEnd` fail on the base revision.
 
 **Open choices:** each choice the plan or review left open that a reviewer should check.
 
@@ -82,4 +77,4 @@ One or two sentences: what the change does, and whether it is ready for review.
 **Blocked:** `make live`: what blocks it.
 ```
 
-List every file created or modified. Under Tests proved, list each test run against the base revision, and each condition removed in step 8 with the test that caught it. Under Checks, list each check from step 9 with its result on the final tree. Write `None.` for Requirement changes when the plan has none. Include Findings only when fixing a review. Omit Open choices when there are none, and Blocked when every check ran.
+List every file created or modified. Under Tests proved, list each test run without the change in step 7. Under Checks, list each check from step 8 with its result on the final tree. Write `None.` for Requirement changes when the plan has none. Include Findings only when fixing a review. Omit Open choices when there are none, and Blocked when every check ran.

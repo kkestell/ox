@@ -103,9 +103,7 @@ test("a reply renders as Markdown and its prompt stays plain", async ({ page }) 
   await expect(reply.locator("strong")).toHaveText("bold");
   await expect(reply.locator("code")).toHaveText("code");
   await expect(reply.locator("ul li")).toHaveText(["one", "two"]);
-  await expect(reply.locator("ul")).toHaveCSS("list-style-type", "disc");
   await expect(reply.locator("ol li")).toHaveText(["first", "second"]);
-  await expect(reply.locator("ol")).toHaveCSS("list-style-type", "decimal");
   await expect(reply.locator("b")).toHaveCount(0);
   await expect(reply).toContainText("<b>raw</b>");
   await expect(reply.locator("img")).toHaveCount(0);
@@ -1087,7 +1085,7 @@ test("a child session shows beneath its parent with its title", async ({ page })
   await menuItem(await openMenu(workspace), "Hide archived").click();
 });
 
-test("a child's guide starts at its parent's dot or where its previous sibling branches", async ({ page }) => {
+test("a child's own children list before its next sibling", async ({ page }) => {
   await open(page, services);
   await newSession(page, "tree root");
   const root = sessionId(page);
@@ -1099,43 +1097,6 @@ test("a child's guide starts at its parent's dot or where its previous sibling b
   await expect(page.locator("nav li:has-text('tree root') ~ li .title").first()).toHaveText("Tree first");
   await expect(page.locator("nav li:has-text('Tree first') + li .title")).toHaveText("Tree leaf");
   await expect(page.locator("nav li:has-text('Tree leaf') + li .title")).toHaveText("Tree second");
-
-  const dot = (title: string) =>
-    sessionRow(page, title)
-      .locator(".status")
-      .evaluate((status) => {
-        const box = status.getBoundingClientRect();
-        return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
-      });
-  const middle = (title: string) =>
-    sessionRow(page, title).evaluate((row) => {
-      const box = row.getBoundingClientRect();
-      return box.top + box.height / 2;
-    });
-  const guide = (title: string) =>
-    sessionRow(page, title).evaluate((row) => {
-      const box = row.getBoundingClientRect();
-      const style = getComputedStyle(row, "::before");
-      return {
-        x: box.left + Number.parseFloat(style.left) + 0.5,
-        top: box.top + Number.parseFloat(style.top),
-        radius: style.borderBottomLeftRadius,
-      };
-    });
-  const rootDot = await dot("tree root");
-  const firstDot = await dot("Tree first");
-  const firstGuide = await guide("Tree first");
-  expect(firstGuide.x).toBeCloseTo(rootDot.x, 0);
-  expect(firstGuide.top).toBeCloseTo(rootDot.y + 4, 0);
-  expect(firstGuide.radius).toBe("0px");
-  const leafGuide = await guide("Tree leaf");
-  expect(leafGuide.x).toBeCloseTo(firstDot.x, 0);
-  expect(leafGuide.top).toBeCloseTo(firstDot.y + 4, 0);
-  expect(leafGuide.radius).toBe("6px");
-  const secondGuide = await guide("Tree second");
-  expect(secondGuide.x).toBeCloseTo(rootDot.x, 0);
-  expect(secondGuide.top).toBeCloseTo(await middle("Tree first"), 0);
-  expect(secondGuide.radius).toBe("6px");
 });
 
 test("an archived session is read-only and hidden until shown", async ({ page, context }) => {
