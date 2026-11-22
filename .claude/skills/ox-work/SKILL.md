@@ -34,8 +34,8 @@ Keep this work in this session:
 
 ## Establish the work
 
-1. Run `git status`. Implementing a plan starts from a checkout holding only that plan; fixing a review, from one holding only the reviewed change and its plan and review. If anything else is uncommitted, stop and report it to whoever started the work, as `AGENTS.md` ("Workflow") describes. Then read `<work> $ARGUMENTS </work>`. If it names neither a plan in `agents/plans/` nor a review in `agents/reviews/`, ask what to implement and stop. For a review, also read the plan it names.
-2. Read `AGENTS.md`, `docs/functional-requirements.md`, and `docs/known-issues.md`. For web client work, also read `cmd/ox/web/AGENTS.md`. Read the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/harnesses/claude-code.md` that cover the code the work touches.
+1. Run `git status`. The change's worktree holds only this change: implementing a plan starts from one holding only that plan; fixing a review, from one holding only the reviewed change and its plan and review. If anything else is uncommitted, stop and report it to whoever started the work, as `AGENTS.md` ("Workflow") describes. Then read `<work> $ARGUMENTS </work>`. If it names neither a plan in `agents/plans/` nor a review in `agents/reviews/`, ask what to implement and stop. For a review, also read the plan it names.
+2. Read `AGENTS.md`, `docs/functional-requirements.md`, and the open `bug` issues (`gh issue list --label bug`). For web client work, also read `cmd/ox/web/AGENTS.md`. Read the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/harnesses/claude-code.md` that cover the code the work touches.
 
 ## Implement a plan
 
@@ -45,11 +45,11 @@ Keep this work in this session:
 
 ## Fix a review
 
-6. For each `Fix` finding not yet `Resolved`, make the change it states at its cause, and keep the test it names. For each `Record` finding, add the entry it states to `docs/known-issues.md`. Leave `Rejected` findings alone. When a finding's defect does not exist or its fix would contradict the plan, report that with the evidence instead of changing the code.
+6. For each `Fix` finding not yet `Resolved`, make the change it states at its cause, and keep the test it names. For each `Record` finding, open the issue it states with `gh issue create --label bug`. Leave `Rejected` findings alone. When a finding's defect does not exist or its fix would contradict the plan, report that with the evidence instead of changing the code.
 
 ## Prove the tests
 
-7. Run each new or changed test without the change and confirm it fails: for a plan, against the base revision in a detached worktree that you remove afterwards; for a review's fix, with that fix reverted. Failing at its first assertion is enough. Rewrite a test that passes without the change until it fails.
+7. Run each new or changed test without the change and confirm it fails: for a plan, against the base revision, `git merge-base origin/main HEAD`, checked out detached in a temporary worktree that you remove afterwards; for a review's fix, with that fix reverted. Failing at its first assertion is enough. Rewrite a test that passes without the change until it fails.
 8. Run the checks `AGENTS.md` ("Verification") requires for the change on the final tree, after your last edit, and fix each failure it causes. Report a check as blocked only when something you cannot change prevents it, and name the blocker.
 
 ## Final response
@@ -66,7 +66,7 @@ One or two sentences: what the change does, and whether it is ready for review.
 
 **Requirement changes:** applied as planned.
 
-**Findings:** F1 fixed; F2 recorded; F3 not fixed: its defect does not exist, because …
+**Findings:** F1 fixed; F2 recorded as #123; F3 not fixed: its defect does not exist, because …
 
 **Tests proved:** `TestHeldPromptDropped` and `TestSendAfterEnd` fail on the base revision.
 

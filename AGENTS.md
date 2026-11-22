@@ -17,7 +17,10 @@ We test with `make dev`. Ox's test state is disposable.
 │   ├── reviews                # reviews from /ox-review
 │   └── scratch                # research notes
 ├── .githooks
-│   └── pre-commit             # records metrics, checks docs formatting
+│   └── pre-commit             # checks docs formatting
+├── .github
+│   └── workflows
+│       └── ci.yml             # PR checks
 ├── .golangci.yml              # Go linters
 ├── bin                        # build output
 │   ├── ox
@@ -39,10 +42,7 @@ We test with `make dev`. Ox's test state is disposable.
 │   ├── functional-requirements.md # what users see and rely on
 │   ├── harnesses
 │   │   └── claude-code.md     # observed Claude Code behavior
-│   ├── known-issues.md        # unfixed defects
-│   ├── metrics.md             # size and complexity, generated
-│   ├── protocol.md            # the interface oxd serves
-│   └── todo.md                # planned work
+│   └── protocol.md            # the interface oxd serves
 ├── dprint.json                # Markdown formatting for docs
 ├── go.mod                     # Go module
 ├── go.sum                     # dependency checksums
@@ -96,7 +96,7 @@ We test with `make dev`. Ox's test state is disposable.
 │       └── ur.go              # Ur agent
 ├── Makefile                   # build, test, run, and format docs
 └── scripts
-    └── metrics.py             # writes docs/metrics.md
+    └── metrics.py             # prints size and complexity
 ```
 
 ## Implementation
@@ -185,13 +185,15 @@ need them cannot happen.
   - **Reject,** with the reason in the review: the finding is speculative,
     misreads the intended behavior, or costs less to keep than to fix, such
     as an unmeasured scaling cost.
-  - **Record** in `docs/known-issues.md`: a defect that cannot be fixed yet,
-    because it needs reproducing or depends on Claude Code behavior Ox cannot
-    change. The entry states the defect's worst cost, how it was found, and
-    what it waits on.
-- A review reads `docs/known-issues.md` first and reports a recorded defect
-  again only when what it waits on has changed.
-- Remove an entry once its defect is fixed or shown not to exist.
+  - **Record** as a GitHub issue labeled `bug`: a defect that cannot be fixed
+    yet, because it needs reproducing or depends on Claude Code behavior Ox
+    cannot change. The issue states the defect's worst cost, how it was found,
+    and what it waits on.
+- A review reads the open `bug` issues first. It skips a defect that an open
+  `bug` issue records, unless the change resolves that issue or what the issue
+  waits on has changed, and checks that the change fixes each issue it
+  resolves.
+- Close an issue once its defect is fixed or shown not to exist.
 
 ## Workflow
 
@@ -200,13 +202,11 @@ agent, which carries it through child sessions. When Codex leads the workflow,
 use Codex child sessions on Sol 6.2. The Claude model choices below apply when
 Claude Code leads the workflow.
 
-The checkout holds one change at a time, and no code change is committed before
-its review is Ready to commit. Before starting a change, the top-level agent runs
-`git status` and carries any uncommitted work through the steps below to a
-commit, or asks the user about work it cannot place. Worktrees for parallel
-changes are cut only from a clean checkout. A child session that finds
-uncommitted work outside its brief stops and reports it to the session that
-started it.
+The main checkout stays on `main` and only pulls. Each change starts with
+`make worktree NAME=<slug>` from a clean main checkout, and every step below
+runs in that worktree. A child session that finds uncommitted work outside its
+brief stops and reports it to the session that started it. Changes reach
+`main` only by pull request, which the user merges.
 
 1. A child session on Opus 5.5 at high effort runs `/ox-plan`. The user
    approves the plan's requirement changes with its other product questions.
@@ -221,7 +221,17 @@ started it.
    findings or new regressions go back to the implementing session, until
    the verdict is Ready to commit.
 7. The top-level agent sanity-checks the result, including the requirements
-   diff, and commits the change with its plan and review in `agents/`.
+   diff, and commits the change with its plan and review in `agents/`. It runs
+   `git fetch` and `git rebase origin/main`, then re-runs `make test` and
+   `make e2e`. When the rebase resolved a conflict in code, the reviewing
+   session runs `/ox-review verify` on the rebased commit before the push. The
+   top-level agent pushes with `git push -u origin <slug>` and opens the pull
+   request with `gh pr create`. Its title is the commit subject. Its body links
+   the plan and review, states the verdict, lists the checks run, with
+   `make live` run or not run, and adds `Fixes #N` for each issue the change
+   resolves.
+8. After the user merges, the top-level agent removes the worktree and its
+   local branch, then pulls in the main checkout.
 
 The user owns `docs/functional-requirements.md`. It changes only when a change
 adds, alters, or removes behavior the user can observe, and only with the text
@@ -235,11 +245,11 @@ happen, drawing on past plans, reviews, and fixes as evidence. Each finding
 the user chooses to change goes through the workflow above, with the finding
 as the request for `/ox-plan`.
 
-Every audit finding marked to plan or to fix, from `/ox-audit` or any other
-audit, goes into `docs/todo.md` when the audit is written: one entry that
-names the defect and links its section in the audit. The change that fixes
-it removes the entry in the same commit. An audit or review that finds an
-entry stale corrects or removes it.
+Every audit finding marked to plan, from `/ox-audit` or any other audit,
+becomes a GitHub issue labeled `bug` that links its section in the audit.
+The audit lands through its own pull request. The pull request that fixes a
+finding closes its issue. An audit or review that finds an issue stale
+corrects or closes it.
 
 ## Verification
 
@@ -257,9 +267,9 @@ entry stale corrects or removes it.
   the test, or stops `oxd` with the race's report.
 - A change is done once every check that covers it has run: `make test` and
   `make e2e`; `make live` when it changes how Ox drives Claude Code; and a
-  check in headless Chrome through the `make dev` stack when it changes how
-  the page reaches `oxd`. A check is reported as not run only when something
-  the agent cannot change blocks it, named in the report.
+  check in headless Chrome through `make dev` in the change's worktree when it
+  changes how the page reaches `oxd`. A check is reported as not run only when
+  something the agent cannot change blocks it, named in the report.
 
 ## Documentation
 
@@ -278,12 +288,9 @@ facts listed for it:
   and stream-json, as observed.
 - `docs/functional-requirements.md`: the behavior the person using Ox can see
   and rely on, each one a user would call a bug if it broke.
-- `docs/known-issues.md`: defects that cannot be fixed yet, kept as the
-  Defects section describes.
-- `docs/todo.md`: planned work, by priority, including every unfixed audit
-  finding marked to plan or to fix.
-- `docs/metrics.md`: line counts and cognitive complexity, written by
-  `make metrics` and the pre-commit hook. Nobody edits it by hand.
+
+Planned work and defects live in the repository's GitHub issues, labeled
+`enhancement` and `bug`.
 
 Every fact lives in one place. A document that needs a fact owned by another
 links to it instead of restating it. Most changes need no doc edits: edit a

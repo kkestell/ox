@@ -4,7 +4,7 @@ Write the plan after making the main decisions. Keep the sections needed to expl
 
 ## Goal
 
-The problem, and what should happen when the change is done. Link the todo item, known issue, or audit finding it comes from, if any.
+The problem, and what should happen when the change is done. Link the issue it resolves, or the audit finding it comes from, if any.
 
 ## Related code
 

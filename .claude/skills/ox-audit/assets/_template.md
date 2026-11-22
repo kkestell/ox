@@ -39,7 +39,7 @@ The structure, and the wrong states it lets the code build, in short paragraphs.
 
 ### Defects
 
-Each defect the structure caused, with its review finding, known issue, or commit, and whether its fix changed the structure or guarded the symptom. `None.` when the finding rests on a reachable wrong state alone.
+Each defect the structure caused, with its review finding, issue, or commit, and whether its fix changed the structure or guarded the symptom. `None.` when the finding rests on a reachable wrong state alone.
 
 ### Evidence
 

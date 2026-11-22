@@ -5,3 +5,4 @@
 /cmd/ox/web/playwright-report/
 .DS_Store
 /.env
+/.state/
