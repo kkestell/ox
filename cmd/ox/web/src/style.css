@@ -78,7 +78,6 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: 
 .loader { --icon: url(lucide-static/icons/loader-circle.svg); }
 .loader::before { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.marker.done { --icon: url(lucide-static/icons/check.svg); }
 .marker.failed { --icon: url(lucide-static/icons/circle-alert.svg); color: var(--destructive); }
 .marker.stopped { --icon: url(lucide-static/icons/circle-stop.svg); color: var(--muted-foreground); }
 
@@ -187,7 +186,7 @@ nav[hidden] { display: none; }
 
 .status { flex: none; width: 1rem; height: 1rem; display: flex; align-items: center; justify-content: center; }
 .status::before { content: ""; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: currentColor; }
-.status.idle, .status.parked { color: #525252; }
+.status.idle, .status.parked, .marker.done { color: #525252; }
 .status.requires_action { color: #f59e0b; }
 .status.background { color: #16a34a; }
 .status.background::before { box-sizing: border-box; background: transparent; border: 1.5px solid currentColor; }
@@ -240,7 +239,7 @@ details.tool:not([open]) + details.tool { margin-top: -0.75rem; }
 details.tool summary { display: flex; align-items: center; padding: 0.25rem 0; list-style: none; cursor: default; }
 details.tool summary::-webkit-details-marker { display: none; }
 .marker { flex: none; width: 1.5rem; height: 1.25rem; display: flex; align-items: center; }
-.marker.running::before { width: 0.5rem; height: 0.5rem; margin-left: 0.25rem; border-radius: 50%; mask: none; }
+.marker.running::before, .marker.done::before { width: 0.5rem; height: 0.5rem; margin-left: 0.25rem; border-radius: 50%; mask: none; }
 details.tool .name { flex: none; }
 details.tool .detail { min-width: 0; margin-left: 0.25rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted-foreground); }
 details.tool .card { margin: 0.5rem 0 0 1.5rem; border-radius: calc(var(--radius) + 4px); overflow: hidden; background: var(--card); box-shadow: var(--shadow-sm); }
@@ -295,10 +294,12 @@ details.tool pre + pre { border-top: 1px solid var(--border); }
 .approval .choice input[type="radio"], .approval .choice input[type="checkbox"] { margin-top: 0.125rem; }
 .approval .choice:last-child input[type="radio"], .approval .choice:last-child input[type="checkbox"] { margin-top: 0.5rem; }
 .approval .question { display: flex; flex-direction: column; min-width: 0; border: 0; }
+.approval .question[hidden] { display: none; }
 .approval .question legend { padding: 0; margin-bottom: 0.25rem; color: var(--foreground); }
 .approval .question .header, .approval .choice .description { display: block; color: var(--muted-foreground); font-size: 0.875rem; }
 .approval input[type="text"] { height: 2rem; }
-.approval .actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
+.approval .actions { display: flex; justify-content: flex-end; align-items: center; gap: 0.5rem; }
+.approval .actions .position { margin-right: auto; font-size: 0.875rem; color: var(--muted-foreground); }
 
 /* Model picker */
 .composer .settings > button.picker {

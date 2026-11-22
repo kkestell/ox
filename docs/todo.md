@@ -19,10 +19,6 @@ the evidence and the correction.
       row's background on its right fades the title, so the icon does not blend
       into the text beneath it.
 
-- [ ] **Idle dot for completed tool calls.** The transcript marks a completed
-      tool call with a check icon (`.marker.done` in
-      `cmd/ox/web/src/style.css`). Use the sidebar's idle status dot instead.
-
 ## Usage
 
 - [ ] **Subscription usage under the composer.** Extend the harness interface
@@ -33,12 +29,6 @@ the evidence and the correction.
       client shows them under the composer on Claude sessions. Decide the
       protocol shape in `docs/protocol.md`, and what a session shows before its
       first turn, when Claude has sent no event. Adds a requirement.
-
-## Questions
-
-- [ ] **One question per page.** A form with several questions shows them all in
-      one scrolling container. Show one question at a time with Previous and
-      Next buttons, and submit from the last. Changes **Questions from Claude**.
 
 ## Approvals
 

@@ -613,7 +613,7 @@ const questions =
   '{"questions":[{"question":"Which color?","header":"Color","options":[{"label":"Red","description":"Warm"},{"label":"Blue","description":"Cool"}],"multiSelect":false},{"question":"Which sections?","header":"Sections","options":[{"label":"Introduction","description":"a"},{"label":"Conclusion","description":"b"},{"label":"Appendix","description":"c"}],"multiSelect":true}]}';
 
 // askQuestions has the fake harness ask the two questions above, and returns
-// the form and its two questions.
+// the form, its two questions, and its buttons.
 async function askQuestions(page: Page) {
   await newSessionButton(page).click();
   const form = await ask(page, "AskUserQuestion", questions);
@@ -622,44 +622,114 @@ async function askQuestions(page: Page) {
     color: form.getByRole("group", { name: /Which color\?/ }),
     sections: form.getByRole("group", { name: /Which sections\?/ }),
     submit: form.getByRole("button", { name: "Submit" }),
+    next: form.getByRole("button", { name: "Next" }),
+    previous: form.getByRole("button", { name: "Previous" }),
   };
 }
 
-test("Submit waits for an answer to every question", async ({ ox: page }) => {
-  const { color, sections, submit } = await askQuestions(page);
+test("Next waits for an answer to the shown question", async ({ ox: page }) => {
+  const { form, color, sections, submit, next, previous } = await askQuestions(page);
+  await expect(form.getByText("1 of 2")).toBeVisible();
+  await expect(color).toBeVisible();
+  await expect(sections).toBeHidden();
+  await expect(previous).toBeDisabled();
+  await expect(submit).toHaveCount(0);
+  await expect(next).toBeDisabled();
   await color.getByRole("radio", { name: "Red" }).check();
+  await next.click();
+  await expect(sections).toBeVisible();
+  await expect(color).toBeHidden();
+  await expect(form.getByText("2 of 2")).toBeVisible();
+  await expect(next).toHaveCount(0);
   await expect(submit).toBeDisabled();
   await sections.getByRole("checkbox", { name: "Appendix" }).check();
   await expect(submit).toBeEnabled();
 });
 
+test("Previous keeps answers", async ({ ox: page }) => {
+  const { color, sections, submit, next, previous } = await askQuestions(page);
+  await color.getByRole("textbox", { name: "Other answer" }).fill("Green");
+  await next.click();
+  await sections.getByRole("checkbox", { name: "Appendix" }).check();
+  await previous.click();
+  await expect(color.getByRole("radio", { name: "Other", exact: true })).toBeChecked();
+  await expect(color.getByRole("textbox", { name: "Other answer" })).toHaveValue("Green");
+  await next.click();
+  await expect(sections.getByRole("checkbox", { name: "Appendix" })).toBeChecked();
+  await expect(submit).toBeEnabled();
+});
+
+test("keyboard moves between questions", async ({ ox: page }) => {
+  const { form, color, sections, previous } = await askQuestions(page);
+  const otherAnswer = color.getByRole("textbox", { name: "Other answer" });
+  await otherAnswer.press("Enter");
+  await expect(form.getByText("1 of 2")).toBeVisible();
+  await expect(sections).toBeHidden();
+  await otherAnswer.fill("Green");
+  await otherAnswer.press("Enter");
+  await expect(sections).toBeVisible();
+  const introduction = sections.getByRole("checkbox", { name: "Introduction" });
+  await expect(introduction).toBeFocused();
+  await introduction.check();
+  await previous.click();
+  await expect(color.getByRole("radio", { name: "Other", exact: true })).toBeFocused();
+});
+
+test("a form keeps its question and answers across a reconnect", async ({ ox: page, services }) => {
+  const { form, color, sections, next } = await askQuestions(page);
+  await color.getByRole("radio", { name: "Red" }).check();
+  await next.click();
+  await sections.getByRole("checkbox", { name: "Appendix" }).check();
+  await services.restartRelay();
+  await expect(main(page).getByRole("alert")).toHaveCount(0, { timeout: 10_000 });
+  await expect(send(page)).toBeEnabled({ timeout: 10_000 });
+  await expect(form.getByText("2 of 2")).toBeVisible();
+  await expect(sections.getByRole("checkbox", { name: "Appendix" })).toBeChecked();
+});
+
+test("a single question has no Previous or Next", async ({ ox: page }) => {
+  await newSessionButton(page).click();
+  const form = await ask(
+    page,
+    "AskUserQuestion",
+    '{"questions":[{"question":"Which color?","header":"Color","options":[{"label":"Red"},{"label":"Blue"}],"multiSelect":false}]}',
+  );
+  await expect(form.getByRole("button", { name: "Previous" })).toHaveCount(0);
+  await expect(form.getByRole("button", { name: "Next" })).toHaveCount(0);
+  await expect(form.getByText("1 of 1")).toHaveCount(0);
+  await form.getByRole("radio", { name: "Red" }).check();
+  await expect(form.getByRole("button", { name: "Submit" })).toBeEnabled();
+});
+
 test("choosing an option or Other leaves one answer to a single-select question", async ({ ox: page }) => {
-  const { form, color, sections, submit } = await askQuestions(page);
-  await sections.getByRole("checkbox", { name: "Introduction" }).check();
+  const { form, color, sections, submit, next } = await askQuestions(page);
   const other = color.getByRole("radio", { name: "Other", exact: true });
   const otherAnswer = color.getByRole("textbox", { name: "Other answer" });
   const red = color.getByRole("radio", { name: "Red" });
   await other.check();
-  await expect(submit).toBeDisabled();
+  await expect(next).toBeDisabled();
   await red.check();
-  await expect(submit).toBeEnabled();
+  await expect(next).toBeEnabled();
   await otherAnswer.fill("Green");
   await expect(red).not.toBeChecked();
   await otherAnswer.fill("");
-  await expect(submit).toBeDisabled();
+  await expect(next).toBeDisabled();
   await otherAnswer.fill("Green");
   await red.check();
   await expect(other).not.toBeChecked();
   await expect(otherAnswer).toHaveValue("Green");
+  await next.click();
+  await sections.getByRole("checkbox", { name: "Introduction" }).check();
   await submit.click();
   await expect(form).toHaveCount(0);
   await expect(toolCall(page, "AskUserQuestion")).toContainText('"answers":{"Which color?":"Red",');
 });
 
 test("submitted answers reach the tool by question text", async ({ ox: page }) => {
-  const { form, color, sections, submit } = await askQuestions(page);
+  const { form, color, sections, submit, next } = await askQuestions(page);
   await expect(color).toContainText("Warm");
   await color.getByRole("radio", { name: "Red" }).check();
+  await next.click();
   await sections.getByRole("checkbox", { name: "Appendix" }).check();
   await sections.getByRole("checkbox", { name: "Introduction" }).check();
   await sections.getByRole("textbox", { name: "Other answer" }).fill("Glossary");
@@ -672,7 +742,9 @@ test("submitted answers reach the tool by question text", async ({ ox: page }) =
 });
 
 test("Decline denies the question", async ({ ox: page }) => {
-  const { form } = await askQuestions(page);
+  const { form, color, next } = await askQuestions(page);
+  await color.getByRole("radio", { name: "Red" }).check();
+  await next.click();
   await form.getByRole("button", { name: "Decline" }).click();
   await expect(form).toHaveCount(0);
   await expect(toolCall(page, "AskUserQuestion")).toContainText(

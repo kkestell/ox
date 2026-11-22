@@ -132,8 +132,10 @@ title.
 - **Allow and Deny.** Allow sends the tool's input exactly as the card shows it;
   Deny, or a typed reply, denies with that message.
 - **Questions from Claude.** A question from Claude appears as a form with its
-  options and an Other answer; the user submits answers to every question or
-  declines.
+  options and an Other answer, one question at a time. The user moves between
+  questions with Previous and Next without losing answers, moves on only once
+  the shown question is answered, submits from the last question, and can
+  decline from any question.
 - **Approvals wait.** An approval waits for an answer, and the session does not
   park meanwhile. It is withdrawn on every page when Claude cancels it, goes
   idle, or exits.
