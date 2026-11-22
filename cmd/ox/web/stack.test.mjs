@@ -125,13 +125,13 @@ test("a service with restart false is not restarted", async () => {
 });
 
 test("an exit the stack did not cause stops the stack", async () => {
-  const paths = await start();
+  const paths = await start({ traps: { vite: "trap 'exit 3' USR1" } });
   const oxd = Number(pid(paths.oxd));
   const ox = Number(pid(paths.ox));
-  process.kill(Number(pid(paths.vite)), "SIGKILL");
-  const code = await stack;
-  assert.notEqual(code, 0);
-  await until(() => !alive(oxd) && !alive(ox));
+  process.kill(Number(pid(paths.vite)), "SIGUSR1");
+  assert.equal(await stack, 3);
+  assert.deepEqual(lines, []);
+  assert.ok(!alive(oxd) && !alive(ox));
 });
 
 test("an exit after a restart stops the stack", async () => {
@@ -148,24 +148,41 @@ test("a retiring service that fails stops the stack", async () => {
   const before = pid(paths.oxd);
   input.write("\n");
   assert.notEqual(await stack, 0);
-  assert.ok(lines.includes(`${paths.oxd} exited with status 66`));
+  assert.equal(lines.filter((line) => line === `${paths.oxd} exited with status 66`).length, 1);
   assert.equal(lines.includes("restarted oxd"), false);
   assert.equal(pid(paths.oxd), before);
 });
 
+test("a service that fails on Ctrl-C fails the stack", async () => {
+  const signals = new EventEmitter();
+  const paths = await start({ traps: { oxd: "trap 'exit 66' INT" }, signals });
+  for (const path of Object.values(paths)) process.kill(Number(pid(path)), "SIGINT");
+  signals.emit("SIGINT");
+  assert.equal(await stack, 1);
+  assert.deepEqual(lines, [`${paths.oxd} exited with status 66`]);
+});
+
 // signalStack sends signal to the stack, after sending it to every service
 // too when the terminal delivers it, and expects each service to have received
-// it alone.
+// it alone. A service takes a first SIGINT as a graceful stop that ends 0.3
+// seconds later and a second as a forced stop that exits 1, as oxd does. In
+// the terminal case the stack's signal waits until every service has handled
+// the first.
 async function signalStack(signal, terminal) {
   const names = ["oxd", "ox", "vite"];
   const signals = new EventEmitter();
-  const record = "trap 'echo INT >> $0.log; exit 0' INT; trap 'echo TERM >> $0.log; exit 0' TERM";
+  const record =
+    "trap 'echo INT >> $0.log; [ -e $0.int ] && exit 1; touch $0.int; (sleep 0.3; kill -USR1 $$) &' INT; " +
+    "trap 'exit 0' USR1; trap 'echo TERM >> $0.log; exit 0' TERM";
   const paths = await start({ traps: Object.fromEntries(names.map((name) => [name, record])), signals });
   const pids = names.map((name) => Number(pid(paths[name])));
-  if (terminal) for (const id of pids) process.kill(id, signal);
+  if (terminal) {
+    for (const id of pids) process.kill(id, signal);
+    await until(() => names.every((name) => existsSync(`${paths[name]}.int`)));
+  }
   signals.emit(signal);
   const code = await stack;
-  await until(() => pids.every((id) => !alive(id)));
+  assert.ok(pids.every((id) => !alive(id)));
   for (const name of names) assert.equal(readFileSync(`${paths[name]}.log`, "utf8"), `${signal.slice(3)}\n`);
   return code;
 }
@@ -179,7 +196,7 @@ test("SIGTERM to the stack signals every service", async () => {
   assert.equal(await signalStack("SIGTERM", false), 143);
 });
 
-test("stopProcess accepts only status 0 or the signal it sent", async () => {
+test("stopProcess accepts only status 0, the signal it sent, or 128 plus its number", async () => {
   const spawned = (path) => {
     const proc = spawn(path, { stdio: "ignore" });
     return until(() => pid(path)).then(() => proc);
@@ -188,6 +205,7 @@ test("stopProcess accepts only status 0 or the signal it sent", async () => {
   await stopProcess(await spawned(script("killed", "trap 'exit 66' TERM")), "SIGKILL");
   await stopProcess(await spawned(script("terminated")));
   await stopProcess(await spawned(script("clean", "trap 'exit 0' TERM")));
+  await stopProcess(await spawned(script("handled", "trap 'exit 143' TERM")));
   const crashing = await spawned(script("crashing", "trap 'kill -KILL $$' TERM"));
   await assert.rejects(stopProcess(crashing), /exited on SIGKILL$/);
   const exited = spawn("sh", ["-c", "exit 3"]);
@@ -216,7 +234,7 @@ test("stopping during a restart starts no new process", async () => {
   await until(() => existsSync(`${paths.ox}.stopping`));
   stack.stop(0);
   await stack;
-  await until(() => !alive(Number(before)));
+  assert.equal(alive(Number(before)), false);
   assert.equal(pid(paths.ox), before);
   assert.equal(lines.includes("restarted ox"), false);
 });

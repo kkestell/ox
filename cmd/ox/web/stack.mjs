@@ -1,37 +1,48 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { constants } from "node:os";
 import { createInterface } from "node:readline";
 
 function fileHash(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-// stopProcess sends signal to proc unless it has already exited, and resolves
-// once it exits with status 0 or on signal. Any other exit rejects, such as
-// the status 66 of a race report.
-export function stopProcess(proc, signal = "SIGTERM") {
+// exited waits for proc to exit without signalling it, and resolves when it
+// exits with status 0, on signal, or with status 128 plus the signal's number,
+// as a Node process that handles the signal exits. Any other exit rejects,
+// such as the status 66 of a race report.
+export function exited(proc, signal = "SIGTERM") {
   return new Promise((resolve, reject) => {
     const judge = (code, received) => {
-      if (code === 0 || received === signal) resolve();
+      if (code === 0 || received === signal || code === 128 + constants.signals[signal]) resolve();
       else if (code !== null) reject(new Error(`${proc.spawnfile} exited with status ${code}`));
       else reject(new Error(`${proc.spawnfile} exited on ${received}`));
     };
     if (proc.exitCode !== null || proc.signalCode !== null) return judge(proc.exitCode, proc.signalCode);
     proc.once("exit", judge);
-    proc.kill(signal);
   });
+}
+
+// stopProcess sends signal to proc unless it has already exited, and resolves
+// or rejects as exited does.
+export function stopProcess(proc, signal = "SIGTERM") {
+  if (proc.exitCode === null && proc.signalCode === null) proc.kill(signal);
+  return exited(proc, signal);
 }
 
 // runStack runs the services as one stack and returns a promise of its exit
 // code, with a stop(code) method. An exit the stack did not cause stops every
-// service. Each line of input rebuilds with the build command line and
-// restarts the services whose binary changed. A service's current process and
-// hash belong to its record here, and only a restart replaces them.
+// service. The code resolves once every process the stack stopped, on a
+// restart or a shutdown, has exited, and is 1 when any of them failed. Each
+// line of input rebuilds with the build command line and restarts the services
+// whose binary changed. A service's current process and hash belong to its
+// record here, and only a restart replaces them.
 //
 // signals, such as process, delivers the stack's own SIGINT and SIGTERM. The
 // services share the terminal's process group, so a terminal Ctrl-C has
-// already sent them SIGINT, and the stack stops without signalling them again.
+// already sent them SIGINT, and the stack judges their exits without
+// signalling them again.
 export function runStack({ services, build, input, signals, log = console.log }) {
   let stopping = false;
   let busy = false;
@@ -43,12 +54,28 @@ export function runStack({ services, build, input, signals, log = console.log })
 
   const records = services.map((spec) => ({ spec, proc: null, hash: null }));
 
-  function stop(code, signal = "SIGTERM") {
+  // stops holds the judged exit of every process the stack has stopped.
+  const stops = [];
+
+  function retire(proc, signal, send) {
+    const stopped = send ? stopProcess(proc, signal) : exited(proc, signal);
+    stops.push(stopped);
+    return stopped;
+  }
+
+  // stop ends the stack: it signals each current process unless send is false,
+  // waits for every stopped process to exit, and resolves code, or 1 when any
+  // of them failed.
+  async function stop(code, signal = "SIGTERM", send = true) {
     if (stopping) return;
     stopping = true;
     lines.close();
-    if (signal) for (const record of records) record.proc?.kill(signal);
-    resolveCode(code);
+    for (const record of records) {
+      if (record.proc) retire(record.proc, signal, send);
+    }
+    const settled = await Promise.allSettled(stops);
+    for (const { reason } of settled.filter(({ status }) => status === "rejected")) log(reason.message);
+    resolveCode(settled.some(({ status }) => status === "rejected") ? 1 : code);
   }
 
   function start(record) {
@@ -58,11 +85,14 @@ export function runStack({ services, build, input, signals, log = console.log })
     if (record.spec.restart) record.hash = fileHash(command);
     proc.on("error", (error) => {
       console.error(error.message);
+      record.proc = null;
       stop(1);
     });
     // An exit is expected exactly when the service has moved off this process.
     proc.on("exit", (code) => {
-      if (record.proc === proc) stop(code ?? 1);
+      if (record.proc !== proc) return;
+      record.proc = null;
+      stop(code ?? 1);
     });
   }
 
@@ -78,9 +108,8 @@ export function runStack({ services, build, input, signals, log = console.log })
     const old = record.proc;
     record.proc = null;
     try {
-      await stopProcess(old);
-    } catch (error) {
-      log(error.message);
+      await retire(old, "SIGTERM", true);
+    } catch {
       stop(1);
       return;
     }
@@ -119,7 +148,7 @@ export function runStack({ services, build, input, signals, log = console.log })
     }
   });
 
-  signals?.on("SIGINT", () => stop(130, null));
+  signals?.on("SIGINT", () => stop(130, "SIGINT", false));
   signals?.on("SIGTERM", () => stop(143));
   for (const record of records) start(record);
   return Object.assign(result, { stop });
