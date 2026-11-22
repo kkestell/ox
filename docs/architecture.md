@@ -220,11 +220,11 @@ refuses an `/rpc` post from another origin, so a page whose domain rebinds to
 one of these addresses cannot reach `oxd`. `/rpc` answers `503` when the page's
 `oxd` connection is gone, and the page treats it as a lost connection.
 
-`ox` reads the same configuration file as `oxd`. When it sets `tailscale_ip`,
-`ox` also binds that address at port 17840, alongside the listener at `-addr`,
-and prints the tailnet URL once both have bound; both listeners serve the same
-relay and UI. Under `make dev`, the tailnet listener serves the embedded build
-from startup, while the local Vite URL keeps live reload.
+When the configuration sets `tailscale_ip`, `ox` also binds that address at port
+17840, alongside the listener at `-addr`, and prints the tailnet URL once both
+have bound; both listeners serve the same relay and UI. Under `make dev`, the
+tailnet listener serves the embedded build from startup, while the local Vite
+URL keeps live reload.
 
 | File                                                                                                                                                                                            | Owns                                                                                                                                                                                                                                                                       |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

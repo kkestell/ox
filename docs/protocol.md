@@ -90,9 +90,8 @@ harness, model, effort, and permission mode a new session starts with, each one
 of the configured choices; the daemon refuses to start otherwise. The required
 `max_child_depth`, at least 1, is how many levels of child sessions a top-level
 session can have beneath it; the built-in configuration sets 2. The optional
-`tailscale_ip`, empty by default, is this machine's Tailscale IPv4 address,
-within `100.64.0.0/10`; see [Web UI](architecture.md#web-ui) for what setting it
-does.
+`tailscale_ip` is this machine's Tailscale IPv4 address, within `100.64.0.0/10`;
+see [Web UI](architecture.md#web-ui) for what setting it does.
 
 ```json
 {"harnesses":{"claude":{"models":[{"id":"claude-haiku-5-5","name":"Haiku 5.5","efforts":[{"id":"low","name":"Low"},{"id":"high","name":"High"}]}],"permission_modes":[{"id":"manual","name":"Manual"},{"id":"plan","name":"Plan"}]}},"defaults":{"harness":"claude","model":"claude-haiku-5-5","effort":"low","permission_mode":"plan"},"max_child_depth":2,"tailscale_ip":"100.101.102.103"}
@@ -108,8 +107,8 @@ with one and a session stored with one fails to start; see
 
 ### `harness/list`
 
-Returns the configuration's harnesses, new-session defaults, and
-`max_child_depth`.
+Returns the configuration's harnesses, new-session defaults, `max_child_depth`,
+and `tailscale_ip` when it is set.
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"harness/list","params":{}}

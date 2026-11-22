@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"slices"
 	"strings"
 	"testing"
@@ -79,61 +80,15 @@ func TestRelayRefusesEveryInterface(t *testing.T) {
 	}
 }
 
-// listen binds a tailnet listener beside the local one, at the configured
-// address and the fixed tailnetPort, regardless of -addr's own port,
-// returning both as allowed hosts and the tailnet's URL.
-func TestListenBindsTailnetListener(t *testing.T) {
-	listeners, hosts, tailnetURL, err := listen("localhost:0", "127.0.0.1")
-	if err != nil {
-		t.Fatal(err)
+// Ox serves the web UI on the configured Tailscale address at port 17840,
+// whatever -addr's port, and only at -addr without one.
+func TestWebAddrs(t *testing.T) {
+	if got := webAddrs("localhost:8080", netip.Addr{}); !slices.Equal(got, []string{"localhost:8080"}) {
+		t.Errorf("without tailscale_ip: %v", got)
 	}
-	defer func() {
-		for _, l := range listeners {
-			l.Close()
-		}
-	}()
-	if len(listeners) != 2 {
-		t.Fatalf("got %d listeners, not 2", len(listeners))
-	}
-	if got := listeners[1].Addr().String(); got != "127.0.0.1:17840" {
-		t.Errorf("tailnet listener bound %s, want 127.0.0.1:17840", got)
-	}
-	if tailnetURL != "http://127.0.0.1:17840" {
-		t.Errorf("tailnetURL = %q, want http://127.0.0.1:17840", tailnetURL)
-	}
-	if !slices.Equal(hosts, []string{"localhost", "127.0.0.1"}) {
-		t.Errorf("hosts = %v, not [localhost 127.0.0.1]", hosts)
-	}
-}
-
-// Without a configured address, listen binds only the local listener.
-func TestListenWithoutTailscaleIP(t *testing.T) {
-	listeners, hosts, tailnetURL, err := listen("127.0.0.1:0", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listeners[0].Close()
-	if len(listeners) != 1 {
-		t.Fatalf("got %d listeners, not 1", len(listeners))
-	}
-	if tailnetURL != "" {
-		t.Errorf("tailnetURL = %q without a configured address", tailnetURL)
-	}
-	if len(hosts) != 1 {
-		t.Errorf("hosts = %v", hosts)
-	}
-}
-
-// A tailnet port already bound fails listen and closes the local listener it
-// already opened.
-func TestListenFailsOnBoundTailnetPort(t *testing.T) {
-	blocker, err := net.Listen("tcp", "127.0.0.1:17840")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer blocker.Close()
-	if _, _, _, err := listen("127.0.0.1:0", "127.0.0.1"); err == nil {
-		t.Error("a bound tailnet port was accepted")
+	got := webAddrs("localhost:8081", netip.MustParseAddr("100.64.1.2"))
+	if !slices.Equal(got, []string{"localhost:8081", "100.64.1.2:17840"}) {
+		t.Errorf("with tailscale_ip: %v", got)
 	}
 }
 

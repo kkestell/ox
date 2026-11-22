@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"slices"
 	"strings"
 	"sync"
@@ -23,9 +24,9 @@ import (
 //go:embed web/dist
 var dist embed.FS
 
-// tailnetPort is where ox also serves the web UI when the configuration sets
-// tailscale_ip, independent of -addr's port.
-const tailnetPort = "17840"
+// tailnetPort is where ox serves the web UI on the configured tailscale_ip,
+// whatever -addr's port.
+const tailnetPort = 17840
 
 func main() {
 	addr := flag.String("addr", "localhost:8080", "address to serve the web UI on")
@@ -53,47 +54,36 @@ func main() {
 		log.Fatal(err)
 	}
 
-	listeners, hosts, tailnetURL, err := listen(*addr, cfg.TailscaleIP)
-	if err != nil {
-		log.Fatal(err)
+	addrs := webAddrs(*addr, cfg.TailscaleIP)
+	r := &relay{socket: *socketPath, conns: make(map[string]net.Conn)}
+	listeners := make([]net.Listener, len(addrs))
+	for i, a := range addrs {
+		host, err := serveHost(a)
+		if err != nil {
+			log.Fatal(err)
+		}
+		r.hosts = append(r.hosts, host)
+		if listeners[i], err = net.Listen("tcp", a); err != nil {
+			log.Fatal(err)
+		}
 	}
-	if tailnetURL != "" {
-		fmt.Println(tailnetURL)
+	for _, a := range addrs[1:] {
+		fmt.Printf("http://%s\n", a)
 	}
-	r := &relay{socket: *socketPath, hosts: hosts, conns: make(map[string]net.Conn)}
 	handler := r.handler(web)
-	serveErr := make(chan error, len(listeners))
-	for _, l := range listeners {
-		go func(l net.Listener) { serveErr <- http.Serve(l, handler) }(l)
+	for _, l := range listeners[1:] {
+		go func() { log.Fatal(http.Serve(l, handler)) }()
 	}
-	log.Fatal(<-serveErr)
+	log.Fatal(http.Serve(listeners[0], handler))
 }
 
-// listen binds addr for the local listener, and, when tailscaleIP is set,
-// that address at tailnetPort for the tailnet listener. It reports the hosts
-// the relay should accept, and the tailnet URL once both have bound, empty
-// when tailscaleIP is empty.
-func listen(addr, tailscaleIP string) (listeners []net.Listener, hosts []string, tailnetURL string, err error) {
-	host, err := serveHost(addr)
-	if err != nil {
-		return nil, nil, "", err
+// webAddrs returns the addresses ox serves the web UI on: addr, then the
+// tailnet address when tailscaleIP is set.
+func webAddrs(addr string, tailscaleIP netip.Addr) []string {
+	if !tailscaleIP.IsValid() {
+		return []string{addr}
 	}
-	local, err := net.Listen("tcp", addr)
-	if err != nil {
-		return nil, nil, "", err
-	}
-	listeners = []net.Listener{local}
-	hosts = []string{host}
-	if tailscaleIP == "" {
-		return listeners, hosts, "", nil
-	}
-	tailnetAddr := net.JoinHostPort(tailscaleIP, tailnetPort)
-	tailnet, err := net.Listen("tcp", tailnetAddr)
-	if err != nil {
-		local.Close()
-		return nil, nil, "", err
-	}
-	return append(listeners, tailnet), append(hosts, tailscaleIP), "http://" + tailnetAddr, nil
+	return []string{addr, netip.AddrPortFrom(tailscaleIP, tailnetPort).String()}
 }
 
 // serveHost returns the host addr names. An address that names every
@@ -112,7 +102,7 @@ func serveHost(addr string) (string, error) {
 
 type relay struct {
 	socket string
-	hosts  []string // the host given to -addr, and the configured tailscale_ip
+	hosts  []string // the hosts of webAddrs
 	mu     sync.Mutex
 	conns  map[string]net.Conn
 }
@@ -126,10 +116,9 @@ func (r *relay) handler(web fs.FS) http.Handler {
 	return mux
 }
 
-// checkHost refuses a request not addressed to a loopback name or one of
-// r.hosts: the host given to -addr, and the configured tailscale_ip. A page
-// whose domain rebinds to one of these addresses is same-origin to the
-// browser, but its requests still name that domain in Host.
+// checkHost refuses a request not addressed to a loopback name or a host ox
+// serves on. A page whose domain rebinds to one of these addresses is
+// same-origin to the browser, but its requests still name that domain in Host.
 func (r *relay) checkHost(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		host, _, err := net.SplitHostPort(req.Host)
@@ -137,16 +126,11 @@ func (r *relay) checkHost(next http.Handler) http.Handler {
 			host = req.Host
 		}
 		host = strings.Trim(host, "[]")
-		switch host {
-		case "localhost", "127.0.0.1", "::1":
-			next.ServeHTTP(w, req)
-		default:
-			if slices.Contains(r.hosts, host) {
-				next.ServeHTTP(w, req)
-				return
-			}
+		if !slices.Contains([]string{"localhost", "127.0.0.1", "::1"}, host) && !slices.Contains(r.hosts, host) {
 			http.Error(w, "unknown host", http.StatusForbidden)
+			return
 		}
+		next.ServeHTTP(w, req)
 	})
 }
 

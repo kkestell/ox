@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,52 +58,34 @@ func TestDefaultsMustBeConfiguredChoices(t *testing.T) {
 	}
 }
 
-// A nonempty tailscale_ip must be an IPv4 address within Tailscale's CGNAT
-// range; omitting it, or leaving it empty, loads with no tailnet address.
+// A tailscale_ip must be an IPv4 address within Tailscale's range. Without
+// one, Ox serves only its local address.
 func TestTailscaleIP(t *testing.T) {
-	const harnesses = `"harnesses":{"h":{"models":[{"id":"m","name":"M"}],"permission_modes":[{"id":"auto","name":"Auto"}]}},` +
+	const catalog = `"harnesses":{"h":{"models":[{"id":"m","name":"M"}],"permission_modes":[{"id":"auto","name":"Auto"}]}},` +
 		`"defaults":{"harness":"h","model":"m","effort":"","permission_mode":"auto"},"max_child_depth":2`
-	for ip, valid := range map[string]bool{
-		"":                true,
-		"100.101.102.103": true,
-		"100.64.0.1":      true,
-		"100.127.255.255": true,
-		"not-an-ip":       false,
-		"100.63.255.255":  false, // just outside the range
-		"100.128.0.0":     false, // just outside the range
-		"192.168.1.1":     false, // outside Tailscale's range
-		"::1":             false, // IPv6
-		"2001:db8::1":     false, // IPv6
+	for _, c := range []struct {
+		setting string
+		ok      bool
+		want    netip.Addr
+	}{
+		{``, true, netip.Addr{}},
+		{`,"tailscale_ip":""`, true, netip.Addr{}},
+		{`,"tailscale_ip":"100.64.0.1"`, true, netip.MustParseAddr("100.64.0.1")},
+		{`,"tailscale_ip":"100.127.255.255"`, true, netip.MustParseAddr("100.127.255.255")},
+		{`,"tailscale_ip":"not-an-ip"`, false, netip.Addr{}},
+		{`,"tailscale_ip":"100.63.255.255"`, false, netip.Addr{}},
+		{`,"tailscale_ip":"100.128.0.0"`, false, netip.Addr{}},
+		{`,"tailscale_ip":"::ffff:100.64.0.1"`, false, netip.Addr{}},
+		{`,"tailscale_ip":"fd7a:115c:a1e0::1"`, false, netip.Addr{}},
 	} {
 		path := filepath.Join(t.TempDir(), "config.json")
-		data := `{` + harnesses
-		if ip != "" {
-			data += `,"tailscale_ip":"` + ip + `"`
-		}
-		data += `}`
-		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte(`{`+catalog+c.setting+`}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		cfg, err := Load(path)
-		if (err == nil) != valid {
-			t.Errorf("tailscale_ip %q: valid %v, got %v", ip, valid, err)
-			continue
+		if (err == nil) != c.ok || err == nil && cfg.TailscaleIP != c.want {
+			t.Errorf("%s: want %v, %v; got %v, %v", c.setting, c.ok, c.want, cfg, err)
 		}
-		if valid && cfg.TailscaleIP != ip {
-			t.Errorf("tailscale_ip %q loaded as %q", ip, cfg.TailscaleIP)
-		}
-		if valid && ip != "" {
-			data, err := json.Marshal(cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if strings.Contains(string(data), "tailscale_ip") {
-				t.Errorf("Config marshaled with tailscale_ip set emits it: %s", data)
-			}
-		}
-	}
-	if cfg, err := Load(filepath.Join(t.TempDir(), "missing.json")); err != nil || cfg.TailscaleIP != "" {
-		t.Errorf("the built-in configuration has tailscale_ip %q, %v", cfg.TailscaleIP, err)
 	}
 }
 
