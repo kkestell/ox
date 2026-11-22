@@ -42,7 +42,7 @@ role, which keeps every decision.
 
 ```mermaid
 flowchart TB
-    You(("Thinking<br/>meat")) <--> Orch["Orchestrator<br/>holds direction and scope<br/>sanity-checks each handoff, commits"]
+    You(("Thinking<br/>meat")) <--> Orch["Orchestrator<br/>holds direction and scope<br/>sanity-checks each handoff, opens the PR"]
 
     subgraph roles [" "]
         direction LR
@@ -66,9 +66,10 @@ flowchart TB
 ## What lasts
 
 Plans, reviews, and audits are working records: each is committed with its
-change and read later as evidence. The documents in `docs/` are what last.
-They say what the project does and what is known to be wrong with it, and
-every role reads them before it starts.
+change and read later as evidence. The documents in `docs/` and the
+repository's issues are what last. The documents say what the project does,
+the issues what is known to be wrong with it, and every role reads them before
+it starts.
 
 ### Functional requirements: what the user can rely on
 
@@ -81,7 +82,7 @@ flowchart LR
     Plan["Planner proposes<br/>exact new text"] --> You(("Thinking meat<br/>approves"))
     You --> Work["Implementer applies it<br/>word for word"]
     Work --> Review["Reviewer checks the diff<br/>word for word"]
-    Review --> Orch["Orchestrator checks<br/>the requirements diff<br/>before committing"]
+    Review --> Orch["Orchestrator checks<br/>the requirements diff<br/>before opening the PR"]
     Orch --> FR[("functional-requirements.md")]
     FR -. "cited by title in every plan and review;<br/>a whole-repository review checks them all" .-> Plan
 
@@ -94,18 +95,18 @@ flowchart LR
 ### Known issues: defects that cannot be fixed yet
 
 Every confirmed defect is fixed, unless the fix waits on something the project
-cannot change yet. `docs/known-issues.md` keeps those in view so they are neither lost nor
-rediscovered by every review.
+cannot change yet. Issues labeled `bug` keep those in view so they are neither
+lost nor rediscovered by every review.
 
 ```mermaid
 flowchart LR
     Review["Reviewer confirms a defect"] --> Q{"Can it be<br/>fixed now?"}
     Q -- yes --> Fix["Fix<br/>implementer fixes it"]
     Q -- "no: needs reproducing,<br/>or waits on a dependency" --> Rec["Record"]
-    Rec --> KI[("known-issues.md<br/>worst cost · how it was found<br/>what it waits on")]
+    Rec --> KI[("bug issue<br/>worst cost · how it was found<br/>what it waits on")]
     KI -- "skipped by later reviews<br/>until what it waits on changes" --> Review
     KI -- "evidence" --> Audit["Auditor"]
-    KI -- "fixed, or shown<br/>not to exist" --> Gone["entry removed"]
+    KI -- "fixed, or shown<br/>not to exist" --> Gone["issue closed"]
 
     classDef doc fill:#dbeafe,stroke:#1e3a8a,color:#000
     class KI doc
@@ -115,7 +116,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    PL["plans"] & RV["reviews"] & KI[("known-issues.md")] & Git["fix commits"] --> Audit["Auditor<br/>groups defects by<br/>the structure behind them"]
+    PL["plans"] & RV["reviews"] & KI[("bug issues")] & Git["fix commits"] --> Audit["Auditor<br/>groups defects by<br/>the structure behind them"]
     Audit -- "a structure worth changing" --> Plan["Planner"]
     Audit -- "rejected, with the reason" --> Kept["not raised again until<br/>its evidence changes"]
 

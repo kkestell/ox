@@ -1,7 +1,7 @@
 ---
 name: ox-plan
-description: Plan a change to Ox, given a request, bug report, todo item, known issue, or audit finding, and write the plan in `agents/plans/`. The plan settles every decision except product questions, which the user answers, and accounts for the functional requirements, state owners, Claude Code behavior, and tests the change depends on. Use before implementing a code or behavior change to Ox, not for standalone documentation edits. Never use it unless the user, or an agent acting on the user's request, invokes it.
-argument-hint: "[request, bug report, todo item, known issue, or audit finding]"
+description: Plan a change to Ox, given a request, bug report, issue, or audit finding, and write the plan in `agents/plans/`. The plan settles every decision except product questions, which the user answers, and accounts for the functional requirements, state owners, Claude Code behavior, and tests the change depends on. Use before implementing a code or behavior change to Ox, not for standalone documentation edits. Never use it unless the user, or an agent acting on the user's request, invokes it.
+argument-hint: "[request, bug report, issue, or audit finding]"
 ---
 
 Use this skill only when the user, or an agent acting on the user's request, invokes it. Never use it on your own initiative.
@@ -36,8 +36,8 @@ Keep this work in this session:
 
 ## Establish the work
 
-1. Run `git status`. If the checkout has uncommitted changes, stop and report them to whoever asked for the plan, as `AGENTS.md` ("Workflow") describes. Then read `<request> $ARGUMENTS </request>`. If it is empty, ask the user what to plan and stop. If it names an item in `docs/todo.md` or `docs/known-issues.md`, read that item. If it names a finding in an audit in `agents/audits/`, read the finding; the change replaces its structure at every place the finding names.
-2. Read `AGENTS.md`, `docs/functional-requirements.md`, and `docs/known-issues.md`. For web client work, also read `cmd/ox/web/AGENTS.md`. Read the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/harnesses/claude-code.md` that cover the code the change touches.
+1. Run `git status`. If the checkout has uncommitted changes, stop and report them to whoever asked for the plan, as `AGENTS.md` ("Workflow") describes. Then read `<request> $ARGUMENTS </request>`. If it is empty, ask the user what to plan and stop. If it names a GitHub issue, read it with `gh issue view`. If it names a finding in an audit in `agents/audits/`, read the finding; the change replaces its structure at every place the finding names.
+2. Read `AGENTS.md`, `docs/functional-requirements.md`, and the open `bug` issues (`gh issue list --label bug`). For web client work, also read `cmd/ox/web/AGENTS.md`. Read the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/harnesses/claude-code.md` that cover the code the change touches.
 
 ## Explore the code
 
@@ -46,7 +46,7 @@ Keep this work in this session:
 
 ## Settle the request
 
-5. A plan covers one change, which lands as one commit. If the request holds independent changes, or leaves open what the change should do, its scope, or its priorities, ask the user in one message, in terms of what they would see in Ox, with your recommendation, and wait. Plan once they answer.
+5. A plan covers one change, which lands as one pull request. If the request holds independent changes, or leaves open what the change should do, its scope, or its priorities, ask the user in one message, in terms of what they would see in Ox, with your recommendation, and wait. Plan once they answer.
 
 ## Decide
 
@@ -65,18 +65,18 @@ Keep this work in this session:
     - Claude harness logic: `internal/claude` tests that build state through `Send` and `Handle` with real Claude messages and assert through the agent's public methods, recorded updates, and bytes written. Process I/O uses a stand-in `claude` script.
     - Daemon behavior: `internal/server` tests that speak the protocol with the fake harness. A server path the fake harness does not reach needs the fake to reach it, or a live case.
     - Page behavior: `make e2e` specs, with delays and failures injected by intercepting the page's `/rpc` posts.
-    - The path from the page to `oxd` through the relay and Vite's proxy: a `cmd/ox` test of the headers the relay receives, and a check in headless Chrome through the `make dev` stack on spare ports, started with `OX_VITE_PORT=9080 OX_RELAY_PORT=9081 XDG_CONFIG_HOME=$dir XDG_STATE_HOME=$dir XDG_RUNTIME_DIR=$dir make dev` for an empty temporary `$dir`, and its page at http://localhost:9080.
+    - The path from the page to `oxd` through the relay and Vite's proxy: a `cmd/ox` test of the headers the relay receives, and a check in headless Chrome through `make dev` in the change's worktree, at the page URL it prints.
     - Claude Code behavior: a small `TestLive` case or `approval.spec.ts` check with Haiku.
 
     Put each case in an existing test whose setup already reaches it, and add a new test only when none does. Each new test fails on the code before the change. A change that replaces behavior replaces the tests of the old behavior.
 
 ## Write
 
-10. Read this skill's `assets/_template.md` and write the plan in `agents/plans/`, named `YYYY-MM-DD-NNN-slug.md` with the next sequence for the day. Do not stage or commit it.
+10. Read this skill's `assets/_template.md` and write the plan in `agents/plans/`, named `YYYY-MM-DD-<slug>.md`, where the slug is the branch name. Do not stage or commit it.
 11. Keep the plan to relevant code references, decisions that need explaining, tasks tied to files, names, and tests. Leave out repository rules, standard validation commands, conversation history, rejected options, and work for a later change.
 12. Use the protocol's names in tasks, code, comments, and documentation. Do not give one concept several names or give an existing term a new meaning.
 13. Under Requirement changes, give the exact text of each requirement the change adds, changes, or removes in `docs/functional-requirements.md`, in that file's form: a short bold title, then one or two plain sentences about what the user sees or relies on. A change alters the requirements only when it adds, alters, or removes behavior the user can observe; a bug fix changes none unless it shows a requirement was wrong. Write `None.` when nothing changes.
-14. Under Documentation updates, name the document `AGENTS.md` assigns each other fact the change alters. Leave out documents whose facts do not change. When the change fixes an entry in `docs/todo.md`, including an audit finding listed there, the update removes that entry.
+14. Under Documentation updates, name the document `AGENTS.md` assigns each other fact the change alters. Leave out documents whose facts do not change. The Goal links the issue the change resolves, if any.
 15. Under Check your assumptions, list the product questions the request leaves open. Each requirement the plan adds, changes, or removes is one, quoting its old text, its new text, or both. Most plans have none, one, or two; write `None.` when nothing qualifies. Write each as the user experiences Ox: what the plan does that they will notice, and the alternative with what it would cost them, without code names.
 16. Do not review the plan yourself or ask another agent to review it.
 
@@ -92,7 +92,7 @@ Reply in the form below and nothing else. Lead with the main point, write plainl
 ```markdown
 Two to four sentences explaining, at a high level, what the change does and how.
 
-**Plan:** `agents/plans/YYYY-MM-DD-NNN-slug.md`
+**Plan:** `agents/plans/YYYY-MM-DD-<slug>.md`
 
 **Requirements touched:** Stop, Lost connection
 

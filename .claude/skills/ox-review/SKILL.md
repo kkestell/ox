@@ -1,7 +1,7 @@
 ---
 name: ox-review
-description: Review Ox code in uncommitted changes, a commit, a branch, named files, or the whole repository, against its plan, Ox's functional requirements, and `AGENTS.md`, and write the review in `agents/reviews/`, marking each confirmed finding to fix or to record, and each rejected one with its reason. Fixes nothing. Run again with an existing review to verify the fixes made for it. Do not use for plan critiques or standalone documentation reviews. Never use it unless the user, or an agent acting on the user's request, invokes it.
-argument-hint: "[review scope and the plan it implements, or verify <review path>]"
+description: Review Ox code in uncommitted changes, a commit, a branch, a pull request, named files, or the whole repository, against its plan, Ox's functional requirements, and `AGENTS.md`, and write the review in `agents/reviews/`, marking each confirmed finding to fix or to record, and each rejected one with its reason. Fixes nothing. Run again with an existing review to verify the fixes made for it. Do not use for plan critiques or standalone documentation reviews. Never use it unless the user, or an agent acting on the user's request, invokes it.
+argument-hint: "[review scope or pull request, and the plan it implements, or verify <review path>]"
 ---
 
 Use this skill only when the user, or an agent acting on the user's request, invokes it. Never use it on your own initiative.
@@ -11,7 +11,7 @@ Use this skill only when the user, or an agent acting on the user's request, inv
 Review the code and write a review that tells whoever implemented it exactly what to change. Give every finding one action, as `AGENTS.md` ("Defects") defines the outcomes:
 
 - `Fix`: a confirmed defect, or a design, test, or documentation problem whose fix costs less than keeping it.
-- `Record`: a confirmed defect that cannot be fixed yet, because it needs reproducing or depends on Claude Code behavior Ox cannot change. The implementer writes it into `docs/known-issues.md`.
+- `Record`: a confirmed defect that cannot be fixed yet, because it needs reproducing or depends on Claude Code behavior Ox cannot change. The implementer opens a `bug` issue.
 - `Rejected`: speculative, a misreading of the intended behavior, or cheaper to keep than to fix, such as an unmeasured scaling cost. The reason is recorded so the finding is not raised again.
 
 Change no code, tests, or documentation, and stage or commit nothing. Edit only the review file. Start other agents only as [Child sessions](#child-sessions) describes.
@@ -45,8 +45,8 @@ Correctness matters for what happens in normal use and for the requirements in `
 ## Choose what to review
 
 1. Read `<review_scope> $ARGUMENTS </review_scope>`. If it asks to verify an existing review, go to [Verify fixes](#verify-fixes). Ask the user only when the answer would change what you review.
-2. For uncommitted changes, a commit, or a branch, review the changes and the code that calls or depends on them. For named files or the whole repository, review that full scope; for the whole repository, check every requirement in `docs/functional-requirements.md`. Record the base revision and the state of the working tree you reviewed.
-3. Read `AGENTS.md`, `docs/functional-requirements.md`, and `docs/known-issues.md`; for web client code, also `cmd/ox/web/AGENTS.md`. Read the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/harnesses/claude-code.md` that cover the code under review. If the scope names a plan in `agents/plans/`, read it: its Goal, its Decisions, its Requirement changes, and its settled Check your assumptions entries are the requirements.
+2. For uncommitted changes, a commit, or a branch, review the changes and the code that calls or depends on them. For a pull request that did not come through the workflow, such as another agent's or a contributor's, read it with `gh pr view` and `gh pr diff`, and review it in its worktree or in one made with `gh pr checkout <number> --worktree ../ox-<branch>`. For named files or the whole repository, review that full scope; for the whole repository, check every requirement in `docs/functional-requirements.md`. The base revision is `git merge-base origin/main HEAD` for uncommitted changes, a branch, or a pull request, and the commit's parent for a commit. Record it and the state of the working tree you reviewed.
+3. Read `AGENTS.md`, `docs/functional-requirements.md`, and the open `bug` issues (`gh issue list --label bug`); for web client code, also `cmd/ox/web/AGENTS.md`. Read the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/harnesses/claude-code.md` that cover the code under review. If the scope names a plan in `agents/plans/`, read it: its Goal, its Decisions, its Requirement changes, and its settled Check your assumptions entries are the requirements.
 
 ## Review
 
@@ -67,15 +67,15 @@ Correctness matters for what happens in normal use and for the requirements in `
    - **Conventions.** The rules in `AGENTS.md` and `cmd/ox/web/AGENTS.md`, such as one name per field and log lines that name the session.
    - **Documentation.** Each changed fact is stated by the document `AGENTS.md` assigns it, and no document contradicts the code.
 6. Confirm each suspected finding by tracing the code, reproducing it, or running a focused check: a stand-in `claude` script, an injected `/rpc` delay or failure in an e2e spec, or a probe against built binaries on a temporary socket, database, and port. Report missing handling only when a requirement or a reachable failure needs it. Do not ask for tests of hypothetical cases. Leave out what you cannot confirm. Revert every edit a check needs before you finish.
-7. Skip a defect `docs/known-issues.md` records unless what its entry waits on has changed.
+7. Skip a defect that an open `bug` issue records, unless the change resolves that issue or what the issue waits on has changed. Check that the change fixes each issue it resolves.
 8. Check the Tests proved results from `/ox-work`'s final response, which the request passes on, against the change: each new or changed test failed without the change. Spot-check a few branches, guards, or state transitions the change adds by removing them one at a time and confirming a test fails. A test that passes without the change, and a branch, guard, or state transition no test protects, is a `Testing` finding.
 9. Take the checks from the Checks in `/ox-work`'s final response: each check `AGENTS.md` ("Verification") requires for the change ran on the final tree and passed. A required check that is missing, failed, or blocked by something the implementer could change is a finding. Run another suite only to confirm or reject a finding, as step 6 describes.
 
 ## Write the review
 
 10. Give each finding its action, as the Objective defines them. When the right fix raises a product question, a choice that changes what the user sees or does in everyday use that the plan and the user's answers do not settle, ask the user, one focused question at a time: what they would see happen, the options as they would experience them, and your recommendation, without code names. Wait for the answer, and make it the finding's `Fix`. Design, interface, and internal behavior choices, and how a rare case behaves, are yours; severity, size, and file count alone do not make a product question.
-11. Read this skill's `assets/_template.md` and write the review in `agents/reviews/`, named `YYYY-MM-DD-NNN-slug.md` with the next sequence for the day.
-12. For each `Fix`, state the change to make at the cause, and the test to keep: its layer, the behavior it guards, and the existing test that should carry it when one already reaches the case. For each `Record`, state the entry: its worst cost, how it was confirmed, and what it waits on. For a fix the user decided, state their decision.
+11. Read this skill's `assets/_template.md` and write the review in `agents/reviews/`, named `YYYY-MM-DD-<slug>.md`, where the slug is the branch name.
+12. For each `Fix`, state the change to make at the cause, and the test to keep: its layer, the behavior it guards, and the existing test that should carry it when one already reaches the case. For each `Record`, state the `bug` issue to open: its worst cost, how it was confirmed, and what it waits on. For a fix the user decided, state their decision.
 13. Give the final response and stop.
 
 ## Verify fixes
@@ -83,7 +83,7 @@ Correctness matters for what happens in normal use and for the requirements in `
 Run this when asked to verify the fixes for an existing review.
 
 14. Read the review. Inspect the changes made since it was written, and the code each `Fix` and `Record` finding names.
-15. For each `Fix` and `Record` finding, confirm the change addresses its cause, and that its test exists, fails with the fix removed, and passes with it. A `Record` finding is resolved by its `docs/known-issues.md` entry. Mark each finding `Resolved` or `Open`, with the evidence. Do not raise a `Rejected` finding again.
+15. For each `Fix` and `Record` finding, confirm the change addresses its cause, and that its test exists, fails with the fix removed, and passes with it. A `Record` finding is resolved by its `bug` issue. Mark each finding `Resolved` or `Open`, with the evidence. Do not raise a `Rejected` finding again.
 16. Review the changes made since the review as in [Review](#review), for regressions and new defects, and apply step 9 to the final response of the fixes. Add each new finding with the next ID and its action.
 17. Add a verification round to the review: the revision you checked, each finding's status, the new findings, and the checks run. Then give the final response and stop.
 
@@ -99,7 +99,7 @@ One or two sentences: the verdict, and the number of findings by action and, aft
 | F1 | High     | Fix      | Open   | Relay accepts requests from any host | `cmd/ox/main.go:41`         |
 | F2 | Low      | Rejected | —      | Reconnect reloads every history      | `cmd/ox/web/src/ox.tsx:285` |
 
-**Review:** `agents/reviews/YYYY-MM-DD-NNN-slug.md`
+**Review:** `agents/reviews/YYYY-MM-DD-<slug>.md`
 
 **Views changed:** the session view, the new-session view.
 

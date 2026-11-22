@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Write docs/metrics.md: size, cognitive complexity, and health counts of the
-files staged for commit.
+"""Print size, cognitive complexity, and lint suppressions of the files staged
+for commit, as markdown.
 
 Needs cloc, Go, and the web client's node_modules.
 """
@@ -19,7 +19,6 @@ WEB = "cmd/ox/web"
 LANGUAGES = ("Go", "TypeScript", "CSS")
 SUPPRESSION = {"Go": "nolint", "TypeScript": "biome-ignore", "CSS": "biome-ignore"}
 ROOT = Path(__file__).resolve().parent.parent
-OUTPUT = ROOT / "docs/metrics.md"
 
 
 def run(*args, cwd=ROOT, input=None, check=True):
@@ -120,9 +119,6 @@ def main():
         functions = [
             f for f in go_complexity(snapshot) + ts_complexity(snapshot) if f[0] > COMPLEXITY_THRESHOLD
         ]
-        known_issues = sum(
-            line.startswith("## ") for line in (snapshot / "docs/known-issues.md").read_text().splitlines()
-        )
 
     size_rows = [
         (language, f"{size[language, False]['files']:,}", f"{size[language, False]['comment']:,}",
@@ -142,7 +138,7 @@ def main():
 
     markdown = (
         "# Metrics\n\n"
-        "Written by `make metrics` and the pre-commit hook from the files staged for commit.\n\n"
+        "Printed by `make metrics` from the files in the index.\n\n"
         "## Size\n\n"
         "Lines counted by cloc. Files, Comment, and Code cover production files; Tests is the code in "
         f"`*_test.go` and `{WEB}/e2e`.\n\n"
@@ -157,10 +153,8 @@ def main():
         + "\n## Lint suppressions\n\n"
         "Comments that silence a linter, in production and test files.\n\n"
         + table(("Language", "Comment", "Suppressions"), suppression_rows)
-        + "\n## Known issues\n\n"
-        f"{known_issues} entries in `docs/known-issues.md`.\n"
     )
-    OUTPUT.write_text(run("dprint", "fmt", "--stdin", OUTPUT, input=markdown))
+    print(markdown, end="")
 
 
 if __name__ == "__main__":

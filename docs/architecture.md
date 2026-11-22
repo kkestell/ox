@@ -212,7 +212,9 @@ builds it with Vite into `cmd/ox/web/dist`, which `ox` embeds. `make dev` builds
 it before `ox`, runs `ox` on port 8081, and serves the UI from source with live
 reload at http://localhost:8080 through Vite's dev server, which passes
 `/events` and `/rpc` to `ox`. Enter in the `make dev` terminal rebuilds the
-binaries and restarts `ox` or `oxd` if its binary changed.
+binaries and restarts `ox` or `oxd` if its binary changed. In a linked worktree,
+`make dev` keeps its configuration, state, and socket under the checkout's
+`.state`, serves on free ports, and prints the page's URL.
 
 Each page gets an `oxd` connection through `ox`: `/events` relays socket lines
 as Server-Sent Events, and `/rpc` posts the page's JSON-RPC requests to the

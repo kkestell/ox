@@ -15,14 +15,14 @@ Find the structures in Ox that let defects happen, and write an audit that tells
 
 The audit recommends which finding to take up first. The user chooses which findings go through the [project workflow](../../../AGENTS.md#workflow).
 
-Change no code, tests, or documentation other than `docs/todo.md`, and stage or commit nothing. Edit only the audit file and `docs/todo.md`. Do not start other agents.
+Change no code, tests, or documentation, and stage or commit nothing. Edit only the audit file, and open, edit, and close `bug` issues for its findings. Do not start other agents.
 
 ## Gather the evidence
 
 1. Run `git status`. If the checkout has uncommitted changes, stop and report them to whoever asked for the audit, as `AGENTS.md` ("Workflow") describes. Then read `<audit_scope> $ARGUMENTS </audit_scope>`. With no scope, audit the whole repository since the last audit in `agents/audits/`, or all history if there is none. Record the revision and the state of the working tree you audit.
-2. Read `AGENTS.md`, `docs/functional-requirements.md`, `docs/known-issues.md`, and `docs/architecture.md`; for web client code, also `cmd/ox/web/AGENTS.md`. Read the sections of `docs/protocol.md` and `docs/harnesses/claude-code.md` that cover the code in scope.
-3. Read the earlier audits in `agents/audits/` and `docs/todo.md`, and note which earlier findings have landed and which are still open in `docs/todo.md`. Do not raise a finding an earlier audit or review rejected unless the evidence its reason rests on has changed.
-4. Collect the defects in scope, starting with the `Fix` and `Record` findings in `agents/reviews/` and the entries in `docs/known-issues.md`. Then read the messages of the commits in scope, and read the diff of a commit that fixes behavior only when no review explains it. For each defect, note what went wrong, where, and what the fix changed: the structure that allowed it, or a guard, special case, or retry at the symptom.
+2. Read `AGENTS.md`, `docs/functional-requirements.md`, and `docs/architecture.md`; for web client code, also `cmd/ox/web/AGENTS.md`. Read the sections of `docs/protocol.md` and `docs/harnesses/claude-code.md` that cover the code in scope.
+3. Read the earlier audits in `agents/audits/` and the `bug` issues, open and closed (`gh issue list --label bug --state all`), and note which earlier findings have landed and which are still open. Do not raise a finding an earlier audit or review rejected unless the evidence its reason rests on has changed.
+4. Collect the defects in scope, starting with the `Fix` and `Record` findings in `agents/reviews/`, the `bug` issues, and the merged pull requests in scope (`gh pr list --state merged`). Then read the messages of the commits in scope, and read the diff of a commit that fixes behavior only when no review explains it. For each defect, note what went wrong, where, and what the fix changed: the structure that allowed it, or a guard, special case, or retry at the symptom.
 
 ## Find the structures
 
@@ -38,9 +38,9 @@ Change no code, tests, or documentation other than `docs/todo.md`, and stage or 
 
 ## Write the audit
 
-10. Read this skill's `assets/_template.md` and write the audit in `agents/audits/`, named `YYYY-MM-DD-NNN-slug.md` with the next sequence for the day.
+10. Read this skill's `assets/_template.md` and write the audit in `agents/audits/`, named `YYYY-MM-DD-<slug>.md`, where the slug is the branch name.
 11. Make each `Plan` finding complete enough to plan from: the structure, every place it appears, the defects it caused, the wrong states it still permits, the owner or representation that replaces it, and what the replacement removes. Leave the design of the change to the plan. Record a candidate as a `Rejected` finding only when a later audit or review would otherwise raise it again: an earlier review raised it, or it has the shape of a structure this audit looks for. State the reason.
-12. Add an entry to `docs/todo.md`, under Defects and in order of cost, for each `Plan` finding: a bold title naming the defect, one sentence on what goes wrong, and a link to the finding's section in the audit. Remove the entry of an earlier finding that has landed, and correct one this audit shows is stale.
+12. Open one issue labeled `bug` for each `Plan` finding, with `gh issue create --label bug`: a title naming the defect, one sentence on what goes wrong, and a link to the finding's section, `https://github.com/kkestell/ox/blob/main/agents/audits/<file>#<section>`, which resolves once the audit's pull request merges. Close the issue of an earlier finding that has landed, and edit one this audit shows is stale.
 13. Give the final response and stop.
 
 ## Final response
@@ -55,11 +55,11 @@ One or two sentences: what the audit found, and the number of findings by action
 | F1 | High   | Plan     | Session state copied into each connection  | 4      |
 | F2 | Low    | Rejected | Two similar argument parsers               | 2      |
 
-**Audit:** `agents/audits/YYYY-MM-DD-NNN-slug.md`
+**Audit:** `agents/audits/YYYY-MM-DD-<slug>.md`
 
-**Still open in `docs/todo.md`:** 4 earlier findings, the highest-cost Archive acts on a stale session.
+**Still open:** 4 `bug` issues, the highest-cost Archive acts on a stale session.
 
 **Recommended finding** F1, Session state copied into each connection.
 ```
 
-List every finding, `Plan` findings first, each group by cost, highest first. If there are no findings, replace the table with `No findings.` Places is the number of places the structure appears. Give the number of earlier findings still open in `docs/todo.md` and the highest-cost one, or omit the line when none are. Recommend the highest-cost `Plan` finding by ID and title when there is one.
+List every finding, `Plan` findings first, each group by cost, highest first. If there are no findings, replace the table with `No findings.` Places is the number of places the structure appears. Give the number of open `bug` issues and the highest-cost one, or omit the line when none are. Recommend the highest-cost `Plan` finding by ID and title when there is one.

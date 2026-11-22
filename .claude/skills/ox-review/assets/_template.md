@@ -41,7 +41,7 @@ How you confirmed it: the trace, reproduction, probe, or test output.
 
 ### Action
 
-For `Fix`, the change to make at the cause, and the test to keep: its layer, the behavior it guards, and the existing test that should carry it. For `Record`, the `docs/known-issues.md` entry: worst cost, how it was confirmed, and what it waits on. When the fix needed a product decision, the user's answer. For `Rejected`, the reason.
+For `Fix`, the change to make at the cause, and the test to keep: its layer, the behavior it guards, and the existing test that should carry it. For `Record`, the `bug` issue to open: worst cost, how it was confirmed, and what it waits on. When the fix needed a product decision, the user's answer. For `Rejected`, the reason.
 
 ## Checks run
 

@@ -313,8 +313,10 @@ exec sleep 60
 		t.Fatal(err)
 	}
 	socket, database := filepath.Join(dir, "oxd.sock"), filepath.Join(dir, "ox.db")
+	// Every file oxd keeps is placed by a flag, as make dev places them in a
+	// linked worktree.
 	command := func(ctx context.Context, socket string) *exec.Cmd {
-		cmd := exec.CommandContext(ctx, filepath.Join(bin, "oxd"), "-socket="+socket, "-db="+database, "-config="+filepath.Join(dir, "none.json"))
+		cmd := exec.CommandContext(ctx, filepath.Join(bin, "oxd"), "-socket="+socket, "-db="+database, "-config="+filepath.Join(dir, "none.json"), "-ur="+filepath.Join(dir, "ur"))
 		cmd.Env = append(os.Environ(), "OXD_TEST_MAIN=1", "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 		return cmd
 	}

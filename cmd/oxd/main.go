@@ -29,11 +29,13 @@ func main() {
 	socketPath := flag.String("socket", "", "override the socket in the user runtime directory")
 	dbPath := flag.String("db", "", "override the database in the user state directory")
 	configPath := flag.String("config", "", "override the configuration in the user config directory")
+	urDir := flag.String("ur", "", "override Ur's directory in the user state directory")
 	parkAfter := flag.Duration("park-after", 5*time.Minute, "stop a session's harness process after it has been unused this long")
 	flag.Parse()
 	defaultPath(socketPath, paths.Socket)
 	defaultPath(dbPath, paths.Database)
 	defaultPath(configPath, paths.Config)
+	defaultPath(urDir, paths.Ur)
 	// The forwarder runs in a session's workspace, so it needs an absolute
 	// socket path.
 	socket, err := absolute(*socketPath)
@@ -44,14 +46,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	urDir, err := paths.Ur()
-	if err != nil {
-		log.Fatal(err)
-	}
 	harnesses := map[string]agent.Harness{
 		"claude": claude.Harness,
 		"fake":   {Start: fake.Start},
-		"ur":     ur.Harness(ur.Endpoint, urDir, cfg.Harnesses["ur"].Providers()),
+		"ur":     ur.Harness(ur.Endpoint, *urDir, cfg.Harnesses["ur"].Providers()),
 	}
 	if err := checkConfig(cfg, harnesses); err != nil {
 		log.Fatalf("%s: %v", *configPath, err)
