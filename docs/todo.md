@@ -25,64 +25,62 @@ the evidence and the correction.
 
 ## Workflow
 
-- [ ] **Code reaches main without review.** 7446420, 64d1e65, and 44cab72 were
-      committed unreviewed on 2026-11-22, and 2125f54 and a42b498 before them.
-      Have the pre-commit hook refuse a commit that changes `cmd/` or
-      `internal/` unless it adds or updates a review in `agents/reviews/` whose
-      verdict is Ready to commit.
-- [ ] **The top-level agent works from prose alone.** No skill carries the
-      workflow, so the coordinating agent decides for itself how to land work.
-      On 2026-11-22 it cut worktrees around the main checkout's uncommitted
-      work, stashed that work to fast-forward two branches past it, and removed
-      a worktree holding an uncommitted rewrite of the phone test, which was
-      lost. Write a skill that carries the Workflow steps of `AGENTS.md`: check
-      `git status` first, keep one change in the checkout, land only clean
-      worktrees, and sanity-check each result against "Correct by construction"
-      and the test rules.
-- [ ] **Reviews prescribe fixes.** The Codex tailnet review dictated a shadow
-      struct and fixed-port socket tests, and the implementer built them word
-      for word. Have each `/ox-review` finding state the defect and the rule it
-      breaks, and leave the fix's design to `/ox-work`.
-- [ ] **Reviewers share the implementer's blind spots.** Sol 6.2 planned,
-      implemented, and reviewed the tailnet change, and the review passed its
-      own prescriptions. The mobile review passed a phone test asserting
-      padding, font sizes, and CSS transitions. Run `/ox-review` on a different
-      model from `/ox-work`.
+These changes govern how agents work on Ox's code, through scripts and skills in
+this repository, and stay out of Ox itself. Each step of the workflow is
+enforced by the script or role that owns it.
+
+- [ ] **Nothing enforces landing.** 7446420, 64d1e65, and 44cab72 were committed
+      unreviewed on 2026-11-22, and 2125f54 and a42b498 before them. `0fd3e2f`
+      added a requirement with no plan. The top-level agent improvised Git: it
+      cut worktrees around the main checkout's uncommitted work, stashed that
+      work to fast-forward two branches past it, and removed a worktree holding
+      an uncommitted rewrite of the phone test, which was lost. Add a landing
+      script that the top-level agent uses for every change: it starts from a
+      clean checkout, creates and removes worktrees only when clean, and
+      commits. Add a pre-commit check that refuses a commit unless its review
+      approves the exact staged change: the review records the base commit and
+      an identity of the staged change that covers every code, build, and test
+      file and excludes the workflow records in `agents/` and `docs/metrics.md`.
+      An edit after approval blocks the commit. A change to
+      `docs/functional-requirements.md` must equal the requirements patch the
+      user approved in the plan. A change whose first review has nothing to fix
+      lands without a fix and verification round.
+- [ ] **Check results travel as prose.** The Codex tailnet review took `make
+      e2e` and the Chrome check from the implementer's report, and its
+      verification took a matching diff stat as proof the code was unchanged.
+      The mobile review reran `make e2e` though `0ebfa4a` told reviewers to take
+      `/ox-work`'s results. Have the check runner record each check's command,
+      result, and the identity of the change it ran against, the same identity
+      the landing check uses, and have the landing check require a record for
+      each check the change needs. Sessions stop passing check summaries. The
+      reviewer judges whether the tests protect the behavior. The headless
+      Chrome check becomes a script so it can be recorded.
+- [ ] **Handoffs blur who decides.** The plan settles decisions, the review says
+      exactly what to change, and `/ox-work` carries it out. The Codex tailnet
+      review dictated a shadow struct and fixed-port socket tests, and the
+      implementer built them word for word. The review of 7446420, 64d1e65, and
+      44cab72 asked to restore the CSS assertions the user had ruled out of
+      tests, and to reword `cmd/ox/web/AGENTS.md` to allow them. The mobile
+      review passed a phone test asserting padding, font sizes, and CSS
+      transitions. Rewrite the skills so every stage works from the same
+      user-approved scope and requirements patch: a review finding states the
+      defect, its evidence, and what would count as fixed; `/ox-work` designs
+      the fix; and a finding that would change a settled user decision goes to
+      the user as a question. A review is independent when it traces behavior
+      from the approved decisions and the code.
+- [ ] **Agents own resource lifetimes.** An `oxd` probe ran for four days and a
+      Vite server for a week after their sessions ended, and `/tmp` held about
+      140 agent leftovers. Have the check runner start, wait for, and stop its
+      own processes in a scratch directory it removes, and the landing script
+      own worktrees.
+- [ ] **Audit findings miss the todo list.** Findings were lost twice despite
+      `0d2ee01` and `f1350cd`. Have the pre-commit hook refuse a commit that
+      adds an audit unless `docs/todo.md` links the section of each finding the
+      audit marks Plan.
 - [ ] **A session went quiet with work pending.** The mobile implementer started
       background test runs and resumed only after the user prompted it twice.
       Find whether Ox lost the background task's completion or the session never
       waited for it.
-- [ ] **Agents leave processes and files behind.** An `oxd` probe ran for four
-      days and a Vite server for a week after their sessions ended, and `/tmp`
-      held about 140 agent leftovers. Have each skill keep its scratch in one
-      temporary directory it removes, and stop every process it starts before
-      its final response.
-- [ ] **Reviews overrule the user.** The review of 7446420, 64d1e65, and 44cab72
-      asked to restore the CSS assertions the user had ruled out of tests, and
-      to reword `cmd/ox/web/AGENTS.md` to allow them. Have `/ox-review` take the
-      user's decisions in `AGENTS.md`, `cmd/ox/web/AGENTS.md`, and the plan as
-      settled, and raise a disagreement as a question to the user.
-- [ ] **Reviews report checks they did not run.** The Codex tailnet review took
-      `make e2e` and the Chrome check from the implementer's report, though
-      nothing blocked it from running them, and called the change Ready to
-      commit. Have `/ox-review` list each check as run by the implementer or by
-      the reviewer, and refuse Ready to commit while a required check is
-      neither.
-- [ ] **Written rules do not hold.** `0ebfa4a` told reviewers to take
-      `/ox-work`'s check results, and the mobile review reran `make e2e` anyway.
-      Audit findings were lost twice despite `0d2ee01` and `f1350cd`. Make each
-      rule an agent keeps breaking a check a script runs, such as the pre-commit
-      hook, instead of more prose.
-- [ ] **Skill fixes patch the last failure.** 47 of 159 commits change
-      `AGENTS.md` or the skills, and `/ox-work`'s test-proving step was
-      rewritten four times in three days (`f379aac`, `6489a11`, `8bf47da`,
-      `44cab72`). Its answer to hollow tests, removing every added condition,
-      cost hours per change and produced pixel-asserting tests. Before changing
-      a skill for a failure, find why the existing rule did not prevent it.
-- [ ] **Requirements change without a plan.** The user owns
-      `docs/functional-requirements.md`, and `0fd3e2f` added a requirement with
-      no plan. Have the pre-commit hook refuse a change to that file unless the
-      commit adds the plan whose Requirement changes it applies.
 
 ## Sidebar
 
