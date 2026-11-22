@@ -34,7 +34,7 @@ Keep this work in this session:
 
 ## Establish the work
 
-1. Read `<work> $ARGUMENTS </work>`. If it names neither a plan in `agents/plans/` nor a review in `agents/reviews/`, ask what to implement and stop. For a review, also read the plan it names.
+1. Run `git status`. Implementing a plan starts from a checkout holding only that plan; fixing a review, from one holding only the reviewed change and its plan and review. If anything else is uncommitted, stop and report it to whoever started the work, as `AGENTS.md` ("Workflow") describes. Then read `<work> $ARGUMENTS </work>`. If it names neither a plan in `agents/plans/` nor a review in `agents/reviews/`, ask what to implement and stop. For a review, also read the plan it names.
 2. Read `AGENTS.md`, `docs/functional-requirements.md`, and `docs/known-issues.md`. For web client work, also read `cmd/ox/web/AGENTS.md`. Read the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/harnesses/claude-code.md` that cover the code the work touches.
 
 ## Implement a plan

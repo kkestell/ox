@@ -36,7 +36,7 @@ Keep this work in this session:
 
 ## Establish the work
 
-1. Read `<request> $ARGUMENTS </request>`. If it is empty, ask the user what to plan and stop. If it names an item in `docs/todo.md` or `docs/known-issues.md`, read that item. If it names a finding in an audit in `agents/audits/`, read the finding; the change replaces its structure at every place the finding names.
+1. Run `git status`. If the checkout has uncommitted changes, stop and report them to whoever asked for the plan, as `AGENTS.md` ("Workflow") describes. Then read `<request> $ARGUMENTS </request>`. If it is empty, ask the user what to plan and stop. If it names an item in `docs/todo.md` or `docs/known-issues.md`, read that item. If it names a finding in an audit in `agents/audits/`, read the finding; the change replaces its structure at every place the finding names.
 2. Read `AGENTS.md`, `docs/functional-requirements.md`, and `docs/known-issues.md`. For web client work, also read `cmd/ox/web/AGENTS.md`. Read the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/harnesses/claude-code.md` that cover the code the change touches.
 
 ## Explore the code

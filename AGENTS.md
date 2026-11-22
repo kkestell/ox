@@ -198,6 +198,14 @@ agent, which carries it through child sessions. When Codex leads the workflow,
 use Codex child sessions on Sol 6.2. The Claude model choices below apply when
 Claude Code leads the workflow.
 
+The checkout holds one change at a time, and no code change is committed before
+its review is Ready to commit. Before starting a change, the top-level agent runs
+`git status` and carries any uncommitted work through the steps below to a
+commit, or asks the user about work it cannot place. Worktrees for parallel
+changes are cut only from a clean checkout. A child session that finds
+uncommitted work outside its brief stops and reports it to the session that
+started it.
+
 1. A child session on Opus 5.5 at high effort runs `/ox-plan`. The user
    approves the plan's requirement changes with its other product questions.
 2. The top-level agent sanity-checks the plan with a quick look at the code it
