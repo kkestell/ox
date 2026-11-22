@@ -313,11 +313,12 @@ title.
 
 ## Configuration
 
-- **Built-in catalog.** Without a configuration file, Ox offers Claude Opus,
-  Sonnet, and Haiku 5.5 with their effort levels and the manual, auto,
-  acceptEdits, and plan modes, and Ur with DeepSeek V4.1 Flash and GLM 5.3 Flash
-  at low, high, and max effort and Muse Spark 1.3 Contributor at minimal, low,
-  medium, high, xhigh, and max effort, in manual mode.
+- **Built-in catalog.** When Ox starts without a configuration file, it writes
+  one for the user to edit, offering Claude Opus, Sonnet, and Haiku 5.5 with
+  their effort levels and the manual, auto, acceptEdits, and plan modes, and Ur
+  with DeepSeek V4.1 Flash and GLM 5.3 Flash at low, high, and max effort and
+  Muse Spark 1.3 Contributor at minimal, low, medium, high, xhigh, and max
+  effort, in manual mode.
 - **Configuration checks.** `oxd` refuses to start with a malformed
   configuration, defaults it does not offer, a maximum child depth below 1, an
   unknown harness, or an effort level, permission mode, or provider order its

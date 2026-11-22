@@ -1,11 +1,14 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -173,5 +176,69 @@ func TestEffort(t *testing.T) {
 		if got := h.Effort(c.model, c.current); got != c.want {
 			t.Errorf("Effort(%q, %q) = %q, not %q", c.model, c.current, got, c.want)
 		}
+	}
+}
+
+func TestLoadWritesTheDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ox", "config.json")
+	first, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(path); err != nil || !bytes.Equal(data, defaultConfig) {
+		t.Fatalf("written file differs from the built-in configuration: %v", err)
+	}
+	for file, mode := range map[string]os.FileMode{path: 0o600, filepath.Dir(path): 0o700} {
+		if info, err := os.Stat(file); err != nil || info.Mode().Perm() != mode {
+			t.Errorf("%s: mode %v, %v; want %v", file, info.Mode().Perm(), err, mode)
+		}
+	}
+	second, err := Load(path)
+	if err != nil || !reflect.DeepEqual(first, second) {
+		t.Errorf("reload: %v; configurations equal: %v", err, reflect.DeepEqual(first, second))
+	}
+
+	for round := range 50 {
+		racePath := filepath.Join(t.TempDir(), "config.json")
+		configs := make([]*Config, 8)
+		errs := make([]error, len(configs))
+		var wg sync.WaitGroup
+		for i := range configs {
+			wg.Go(func() {
+				configs[i], errs[i] = Load(racePath)
+			})
+		}
+		wg.Wait()
+		for i := range configs {
+			if errs[i] != nil {
+				t.Fatalf("round %d, concurrent load %d: %v", round, i, errs[i])
+			}
+			if !reflect.DeepEqual(configs[0], configs[i]) {
+				t.Errorf("round %d, concurrent load %d differs from load 0", round, i)
+			}
+		}
+		if entries, err := os.ReadDir(filepath.Dir(racePath)); err != nil || len(entries) != 1 || entries[0].Name() != "config.json" {
+			t.Errorf("round %d, directory after concurrent loads: %v, %v", round, entries, err)
+		}
+	}
+
+	invalid := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(invalid, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(invalid); err == nil {
+		t.Error("an invalid file loaded")
+	}
+	if data, _ := os.ReadFile(invalid); string(data) != "{" {
+		t.Errorf("invalid file rewritten as %q", data)
+	}
+
+	locked := t.TempDir()
+	if err := os.Chmod(locked, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o700) })
+	if _, err := Load(filepath.Join(locked, "ox", "config.json")); err == nil || !strings.HasPrefix(err.Error(), "write default configuration to") {
+		t.Errorf("directory that cannot be created: got %v", err)
 	}
 }

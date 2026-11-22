@@ -185,7 +185,9 @@ func init() {
 		{
 			name: "create_session",
 			description: "Start a child Ox session and send it its first message. Use it only when the user, or the session that gave you your task, asks for another session or agent. " +
-				"name is unique among your children: lowercase letters, digits, and hyphens. title is its label in Ox. " +
+				"name is unique among your children: lowercase letters, digits, and hyphens. title is its label in Ox, shown beneath yours in a narrow sidebar that cuts off long titles: " +
+				"write it as `Stage: topic`, where Stage is one capitalized word for the kind of work, the same word for the same kind across your children, such as the name of the command the child runs, " +
+				"and topic is the fewest words that tell it from its siblings, any ID first, such as `Review: F2 child start outside lock`. " +
 				"The child runs with your harness, model, effort, permission mode, and directory unless harness, model, effort, or dir is given; " +
 				"list_models lists the choices. dir is an existing directory, absolute or relative to yours. " +
 				"The message reaches the child as a message from you. Returns the child's session ID.",
@@ -193,7 +195,7 @@ func init() {
 				"type": "object",
 				"properties": map[string]any{
 					"name":    map[string]any{"type": "string", "description": "the child's name among your children"},
-					"title":   map[string]any{"type": "string", "description": "the child's label in Ox, one line"},
+					"title":   map[string]any{"type": "string", "description": "the child's label in Ox, one line of at most 48 characters, as `Stage: topic`"},
 					"message": map[string]any{"type": "string", "description": "the child's first message"},
 					"harness": map[string]any{"type": "string", "description": "a harness from list_models, if not yours"},
 					"model":   map[string]any{"type": "string", "description": "a model from list_models, if not yours"},

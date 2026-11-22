@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"net/netip"
 	"os"
+	"path/filepath"
 )
 
 // tailscaleRange is the CGNAT range Tailscale assigns IPv4 addresses from.
@@ -57,8 +58,12 @@ type Option struct {
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		data = defaultConfig
-	} else if err != nil {
+		if err := writeDefault(path); err != nil {
+			return nil, fmt.Errorf("write default configuration to %s: %w", path, err)
+		}
+		data, err = os.ReadFile(path)
+	}
+	if err != nil {
 		return nil, err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
@@ -85,6 +90,32 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("%s: tailscale_ip %s is not an IPv4 address in %s", path, ip, tailscaleRange)
 	}
 	return &config, nil
+}
+
+// writeDefault creates path with the built-in configuration. The file is
+// published by linking a finished temporary file, so no reader sees a partial
+// file, and a file that appears meanwhile is kept.
+func writeDefault(path string) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(dir, ".config-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(temp.Name())
+	if _, err := temp.Write(defaultConfig); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(temp.Name(), path); err != nil && !errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	return nil
 }
 
 // check requires every list a client reads, and an ID and a name for every

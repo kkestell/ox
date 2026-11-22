@@ -23,14 +23,6 @@ the evidence and the correction.
       tool call with a check icon (`.marker.done` in
       `cmd/ox/web/src/style.css`). Use the sidebar's idle status dot instead.
 
-## Child sessions
-
-- [ ] **Consistent child titles.** Agents title children inconsistently
-      ("Implement" and "Work" for the same stage, "Plan F1: …" beside "Plan:
-      …"), and the sidebar truncates the topic that tells siblings apart. Give
-      `create_session`'s description in `internal/server/mcp.go` a title
-      convention.
-
 ## Usage
 
 - [ ] **Subscription usage under the composer.** Extend the harness interface
@@ -59,10 +51,3 @@ the evidence and the correction.
 - [ ] **Consistent client state.** Audit the state the web client keeps, such as
       panel sizes, collapsed sessions, and open files, and decide in one place
       which of it survives a reload and where it is stored.
-
-## Configuration
-
-- [ ] **Write the default config on first start.** When `oxd` starts and finds
-      no config file, it copies the built-in default into the config directory
-      (`internal/paths` resolves it) instead of only using it in memory, so the
-      user can begin editing it.

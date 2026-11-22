@@ -73,9 +73,10 @@ call or a resumed conversation keeps the harness active until its next
 
 The daemon reads the harnesses it offers from `ox/config.json` beneath
 `$XDG_CONFIG_HOME`, or beneath `~/.config` when that is unset; `-config
-/absolute/path/to/config.json` chooses a different file. A missing file selects
-the built-in catalog of Claude Code and Ur. The daemon validates harness names
-at startup. `ox` reads the same file, for its optional `tailscale_ip`.
+/absolute/path/to/config.json` chooses a different file. A missing file is
+written with the built-in catalog of Claude Code and Ur, creating its directory,
+and then read. The daemon validates harness names at startup. `ox` reads the
+same file, for its optional `tailscale_ip`.
 
 Each harness lists at least one model, each with the effort levels it takes, and
 at least one permission mode. Every choice has a nonempty `id`, unique within
