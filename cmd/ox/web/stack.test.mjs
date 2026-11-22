@@ -28,11 +28,14 @@ afterEach(async () => {
 });
 
 // script writes a service that sleeps until killed, or, given trap, sets the
-// trap before writing its PID and then waits in a loop that lets it run.
+// trap before writing its PID and then waits in a loop that lets it run. The
+// loop waits on each sleep with the wait builtin, which a trapped signal
+// interrupts at once, while sh can drop a SIGINT that arrives during a
+// foreground command.
 function script(name, trap) {
   const path = join(dir, name);
   const body = trap
-    ? `${trap}\necho $$ > ${path}.pid\nwhile :; do sleep 0.05; done`
+    ? `${trap}\necho $$ > ${path}.pid\nwhile :; do sleep 0.05 & wait $!; done`
     : `echo $$ > ${path}.pid\nexec sleep 1000`;
   writeFileSync(path, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
   return path;

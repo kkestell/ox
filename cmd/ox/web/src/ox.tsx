@@ -169,7 +169,10 @@ function createSessionControl(
   const [requested, setRequested] = createSignal<SettingsPatch>();
   const [error, attempt, clearError] = createAttempt();
   const [notice, setNotice] = createSignal<string>();
-  const [creating, setCreating] = createSignal(false);
+  // creation is the state of this control's session/create. "unconfirmed"
+  // means a create was sent and oxd did not confirm it as new: its request
+  // failed, or oxd answered that the session already existed.
+  const [creation, setCreation] = createSignal<"none" | "creating" | "unconfirmed">("none");
   // expanded holds the paths of the expanded folders in the file tree.
   const [expanded, setExpandedStore] = createStore<Record<string, true>>({});
   // file is the path of the file open in the file viewer, and split the
@@ -182,7 +185,7 @@ function createSessionControl(
     const load = session()?.load;
     return load?.kind === "live" ? load.snapshot : undefined;
   };
-  const free = () => connected() && !creating() && !sending() && requested() === undefined;
+  const free = () => connected() && creation() !== "creating" && !sending() && requested() === undefined;
   const canSend = () => free() && live()?.queued.length === 0;
   const canConfigure = () => {
     const state = live()?.state;
@@ -219,9 +222,10 @@ function createSessionControl(
     });
     start(request).finally(() => setSending(false));
   }
-  // recover returns to a session whose creation reply was lost, with its
+  // recover returns to a session whose creation was unconfirmed, with its
   // current settings, and waits for the user to send the retained text.
   function recover() {
+    setCreation("none");
     clearError();
     setNotice("Session recovered. Review its settings and send your prompt.");
   }
@@ -231,7 +235,11 @@ function createSessionControl(
     error,
     // notice is information about the session that is not an error.
     notice,
-    creating,
+    // canCreate is whether a draft can submit its first prompt.
+    canCreate: free,
+    // recoverable is whether the session exists although its creation was
+    // unconfirmed, so the draft returns to it instead of sending.
+    recoverable: () => creation() === "unconfirmed" && live() !== undefined,
     canSend,
     canConfigure,
     // requested is the settings a configuration in flight asks for.
@@ -251,13 +259,13 @@ function createSessionControl(
     setSplit: (transcript: number, total: number) =>
       writeSplit(Math.min(Math.max(transcript, 240), total - 240) / total),
     // create creates the session with the composer's text as its first
-    // prompt, and calls onCreated once the session exists. If an earlier
-    // create already reached oxd, it recovers instead of sending.
+    // prompt, and calls onCreated once oxd confirms the session as new.
+    // Otherwise the creation is unconfirmed, and nothing is sent.
     create(workspaceId: string, harness: string, settings: Settings, onCreated: () => void) {
       const prompt = text();
       const submitted = edits;
-      if (!connected() || creating() || !prompt.trim()) return;
-      setCreating(true);
+      if (!free() || !prompt.trim()) return;
+      setCreation("creating");
       const { effort, ...required } = settings;
       const request = rpc("session/create", {
         session_id: id,
@@ -265,13 +273,22 @@ function createSessionControl(
         harness,
         ...required,
         ...(effort ? { effort } : {}),
-      }).then((result) => {
-        setCreating(false);
-        if (result.existing) recover();
-        else post(prompt, submitted);
-        onCreated();
-      });
-      start(request).finally(() => setCreating(false));
+      }).then(
+        (result) => {
+          if (result.existing) {
+            setCreation("unconfirmed");
+            return;
+          }
+          setCreation("none");
+          post(prompt, submitted);
+          onCreated();
+        },
+        (e: Error) => {
+          setCreation("unconfirmed");
+          throw e;
+        },
+      );
+      start(request);
     },
     recover,
     send(prompt: string) {

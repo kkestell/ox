@@ -5,7 +5,6 @@
 import { mkdtempSync } from "node:fs";
 import { createConnection } from "node:net";
 import { basename } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { expect, type Page, test } from "@playwright/test";
 import { fakeConfig, haikuConfig, type Services, startServices } from "./services";
 import {
@@ -589,37 +588,6 @@ test("all waiting inputs show in order with their send-time labels", async ({ pa
   await expect(sessionButton(page, "first from B")).toHaveCount(1);
 });
 
-test("a recorded message without a saved label still shows its sender", async ({ page }) => {
-  await open(page, services);
-  await newSession(page, "legacy sender");
-  const sender = sessionId(page);
-  await newSession(page, "legacy recipient");
-  const recipient = sessionId(page);
-  await callTool(sender, "send_message", { to: recipient, text: "older message" });
-  await expect(page.locator(".reply").last()).toContainText("older message");
-  await expect(stop(page)).toHaveCount(0);
-
-  const database = new DatabaseSync(services.database);
-  try {
-    const changed = database
-      .prepare(
-        "UPDATE events SET data = json_remove(data, '$.from_label') WHERE session_id = ? AND data ->> 'from' = ?",
-      )
-      .run(recipient, sender);
-    expect(changed.changes).toBe(1);
-  } finally {
-    database.close();
-  }
-
-  const from = page.locator(".prompt.message .from");
-  await page.reload();
-  await expect(from).toHaveText("legacy sender");
-
-  await menuItem(await openMenu(sessionRow(page, "legacy sender")), "Delete").click();
-  await page.getByRole("button", { name: "Delete", exact: true }).click();
-  await expect(from).toHaveText(sender.slice(0, 8));
-});
-
 test("Stop drops a pending message without touching the composer", async ({ page }) => {
   const { a, b } = await messaging(page);
   await prompt(page).fill("draft");
@@ -867,6 +835,52 @@ test("a lost creation reply is recovered after leaving the draft", async ({ page
   await send(page).click();
   await expect(page.locator(".reply")).toHaveText("You said: recover my edited prompt");
   await expect(page.locator("nav button.open")).toHaveCount(before + 1);
+});
+
+test("a retried creation recovers the session without sending", async ({ page }) => {
+  await cutReply(page, "session_id");
+  // Mark the reply that finds the session already created.
+  await page.addInitScript(() => {
+    const Original = window.EventSource;
+    window.EventSource = class extends Original {
+      constructor(url: string | URL, init?: EventSourceInit) {
+        super(url, init);
+        this.addEventListener("message", (event) => {
+          if (JSON.parse(event.data).result?.existing) document.body.dataset.existing = "true";
+        });
+      }
+    };
+  });
+  // Hold every snapshot of the new session, so it loads only after the retry.
+  let id: string | undefined;
+  const sends: string[] = [];
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/rpc*", async (route) => {
+    const body = route.request().postDataJSON();
+    if (body?.method === "session/create") id ??= body.params.session_id;
+    if (body?.method === "session/send") sends.push(body.params.text);
+    if (body?.method === "session/get" && id !== undefined && body.params.session_id === id) await released;
+    return route.fallback();
+  });
+  await open(page, services);
+  await page.getByRole("button", { name: "New session" }).click();
+  await armCutReply(page);
+  await prompt(page).fill("retry my prompt");
+  await prompt(page).press("Enter");
+  await expect(page.locator("body")).toHaveAttribute("data-cut-reply", "held");
+  await services.restartRelay();
+  await expect(page.locator(".log ~ [role=alert]")).toContainText("Lost the connection");
+  await expect(send(page)).toBeEnabled();
+  await send(page).click();
+  await expect(page.locator("body")).toHaveAttribute("data-existing", "true");
+  release();
+  await expect(page.getByRole("status").filter({ hasText: "Session recovered" })).toBeVisible();
+  await expect(prompt(page)).toHaveValue("retry my prompt");
+  await expect(page.locator(".prompt")).toHaveCount(0);
+  expect(sends).toEqual([]);
 });
 
 test("session list membership and ordering don't wait for transcripts", async ({ page }) => {

@@ -130,15 +130,11 @@ function Transcript(props: { snapshot: SessionSnapshot }) {
 
 // PromptBubble shows a prompt, or a message headed with its sender's label.
 function PromptBubble(props: { input: Prompt; queued?: boolean }) {
-  const ox = useOx();
-  const senderLabel = (id: string) => {
-    if (props.input.from_label !== undefined) return props.input.from_label;
-    const sender = ox.session(id);
-    return sender ? sender.label : id.slice(0, 8);
-  };
   return (
     <div class={["prompt", { queued: props.queued, message: props.input.from !== undefined }]}>
-      <Show when={props.input.from}>{(from) => <div class="from">{senderLabel(from())}</div>}</Show>
+      <Show when={props.input.from !== undefined}>
+        <div class="from">{props.input.from_label}</div>
+      </Show>
       {props.input.text}
     </div>
   );

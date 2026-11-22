@@ -6,7 +6,70 @@ import { fakeConfig, startServices } from "./services";
 
 import { hold, menuItem, open, openMenu, prompt, send, sessionButton, sessionRow, workspaceRow } from "./ui";
 
-test("the workspace sidebar works after opening a malformed session link", async ({ page }) => {
+test("a malformed session link still lists workspaces", async ({ page }) => {
+  const services = await startServices(fakeConfig);
+  try {
+    await page.goto(`${services.url}/#%`);
+    await page.getByRole("button", { name: "Add workspace" }).click();
+    await page.getByPlaceholder("/absolute/path/to/directory").fill("/");
+    await page.getByRole("button", { name: "Add", exact: true }).click();
+    await expect(page.getByTitle("/").locator(".name")).toHaveText("/");
+  } finally {
+    await services.stop();
+  }
+});
+
+test("a draft holds Send until the session list loads", async ({ page }) => {
+  const services = await startServices(fakeConfig);
+  try {
+    const list = await hold(page, "workspace/list");
+    await page.goto(services.url);
+    await list.arrived;
+    await page.getByRole("button", { name: "Add workspace" }).click();
+    await page.getByPlaceholder("/absolute/path/to/directory").fill(services.workspace);
+    await page.getByRole("button", { name: "Add", exact: true }).click();
+    await expect(page.getByTitle(services.workspace)).toBeVisible();
+    await page.getByRole("button", { name: "New session" }).click();
+    await prompt(page).fill("draft before catalog");
+    await expect(send(page)).toBeDisabled();
+    list.release();
+    await expect(send(page)).toBeEnabled();
+  } finally {
+    await services.stop();
+  }
+});
+
+test("a draft keeps its permission mode through a relay restart", async ({ page }) => {
+  const services = await startServices(fakeConfig);
+  try {
+    let creates = 0;
+    page.on("request", (request) => {
+      if (request.url().includes("/rpc") && request.postDataJSON()?.method === "session/create") creates++;
+    });
+    await open(page, services);
+    await page.getByRole("button", { name: "New session" }).click();
+    await prompt(page).fill("draft through a restart");
+    const mode = page.locator("select[name=permission_mode]");
+    await expect(mode).toHaveValue("manual");
+    await mode.selectOption("plan");
+    const reconnect = await hold(page, "workspace/list");
+    await services.restartRelay();
+    await reconnect.arrived;
+    await expect(send(page)).toBeDisabled();
+    await expect(mode).toBeDisabled();
+    await expect(page.locator("button.picker")).toBeDisabled();
+    await prompt(page).press("Enter");
+    reconnect.release();
+    await expect(send(page)).toBeEnabled();
+    await expect(mode).toHaveValue("plan");
+    await expect(prompt(page)).toHaveValue("draft through a restart");
+    expect(creates).toBe(0);
+  } finally {
+    await services.stop();
+  }
+});
+
+test("a model without efforts creates a session without effort", async ({ page }) => {
   const fake = fakeConfig.harnesses.fake;
   const services = await startServices({
     ...fakeConfig,
@@ -14,32 +77,15 @@ test("the workspace sidebar works after opening a malformed session link", async
     defaults: { ...fakeConfig.defaults, effort: "" },
   });
   try {
-    const list = await hold(page, "workspace/list");
-    await page.goto(`${services.url}/#%`);
-    await list.arrived;
-    await page.getByRole("button", { name: "Add workspace" }).click();
-    await page.getByPlaceholder("/absolute/path/to/directory").fill("/");
-    await page.getByRole("button", { name: "Add", exact: true }).click();
-    await expect(page.getByTitle("/").locator(".name")).toHaveText("/");
+    await open(page, services);
     await page.getByRole("button", { name: "New session" }).click();
-    await prompt(page).fill("draft before catalog");
-    await expect(send(page)).toBeDisabled();
-    list.release();
-    await expect(page.locator("select[name=permission_mode]")).toHaveValue("manual");
-    const mode = page.locator("select[name=permission_mode]");
-    await mode.selectOption("plan");
-    const reconnect = await hold(page, "workspace/list");
-    await services.restartRelay();
-    await reconnect.arrived;
-    reconnect.release();
-    await expect(send(page)).toBeEnabled();
-    await expect(mode).toHaveValue("plan");
+    await prompt(page).fill("no effort");
     const create = page.waitForRequest(
       (r) => r.url().includes("/rpc") && r.postDataJSON()?.method === "session/create",
     );
     await send(page).click();
     expect((await create).postDataJSON().params).not.toHaveProperty("effort");
-    await expect(page.locator(".reply")).toHaveText("You said: draft before catalog");
+    await expect(page.locator(".reply")).toHaveText("You said: no effort");
   } finally {
     await services.stop();
   }

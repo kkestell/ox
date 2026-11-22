@@ -124,6 +124,12 @@ func TestSettingsValidation(t *testing.T) {
 			t.Errorf("invalid creation %s: %+v", params, response.Error)
 		}
 	}
+	for _, sessionID := range []string{strings.Repeat("g", 32), strings.Repeat("a", 30)} {
+		params := `{"session_id":"` + sessionID + `","workspace_id":"missing","harness":"h","model":"m","effort":"low","permission_mode":"plan"}`
+		if response := answer(s, request("session/create", params)); response.Error == nil || response.Error.Message != "session_id must be 32 hexadecimal digits" {
+			t.Errorf("malformed session_id %s: %+v", sessionID, response.Error)
+		}
+	}
 	if response := answer(s, request("session/configure", `{"session_id":"missing","effort":""}`)); response.Error == nil || response.Error.Code != -32001 {
 		t.Fatalf("configuration of one setting did not reach session lookup: %+v", response.Error)
 	}

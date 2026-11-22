@@ -109,13 +109,11 @@ function Layout() {
     setDrafts((all) => all.filter((d) => d !== created));
   };
 
-  // The creation reply can be lost even though the session appears in a
-  // notification or reconnect snapshot. Reattach the draft without sending.
+  // A creation is unconfirmed when its reply is lost, or when a retry finds
+  // the session already created. Once the session is live, reattach a shown
+  // draft without sending.
   createEffect(
-    () =>
-      liveDrafts().find(
-        (d) => d.control.error() && ox.session(d.id)?.load.kind === "live" && (d === draft() || session()?.id === d.id),
-      ),
+    () => liveDrafts().find((d) => d.control.recoverable() && (d === draft() || session()?.id === d.id)),
     (recovered) => {
       if (recovered) {
         recovered.control.recover();

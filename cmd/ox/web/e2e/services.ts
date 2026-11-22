@@ -51,7 +51,6 @@ export type Services = {
   workspace: string;
   // socket is oxd's socket, which a session's MCP forwarder attaches to.
   socket: string;
-  database: string;
   restartRelay(): Promise<void>;
   // restartDaemon restarts oxd over the same database with config. SIGKILL
   // stops it without its shutdown, as a crash does.
@@ -98,7 +97,6 @@ export async function startServices(config: object): Promise<Services> {
     url,
     workspace,
     socket,
-    database,
     async restartRelay() {
       if (relay) await stopProcess(relay);
       await startRelay();

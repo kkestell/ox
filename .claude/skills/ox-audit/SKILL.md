@@ -13,7 +13,7 @@ Find the structures in Ox that let defects happen, and write an audit that tells
 - `Plan`: a confirmed structure whose replacement costs less than keeping it.
 - `Rejected`: speculative, a misreading of the intended design, or cheaper to keep than to replace. The reason is recorded so the next audit does not raise it again.
 
-The audit recommends which finding to take up first. The user chooses the work with the top-level agent. The top-level agent hands the chosen finding to its planning child and carries it through the [project workflow](../../../AGENTS.md#workflow).
+The audit recommends which finding to take up first. The user chooses which findings go through the [project workflow](../../../AGENTS.md#workflow).
 
 Change no code, tests, or documentation other than `docs/todo.md`, and stage or commit nothing. Edit only the audit file and `docs/todo.md`. Do not start other agents.
 
@@ -39,7 +39,7 @@ Change no code, tests, or documentation other than `docs/todo.md`, and stage or 
 ## Write the audit
 
 10. Read this skill's `assets/_template.md` and write the audit in `agents/audits/`, named `YYYY-MM-DD-NNN-slug.md` with the next sequence for the day.
-11. Give the planning child enough context to use any selected `Plan` finding as its task. Include the structure, every place it appears, the defects it caused, the wrong states it still permits, the owner or representation that replaces it, and what the replacement removes. Leave the design of the change to the plan. Record a candidate as a `Rejected` finding only when a later audit or review would otherwise raise it again: an earlier review raised it, or it has the shape of a structure this audit looks for. State the reason.
+11. Make each `Plan` finding complete enough to plan from: the structure, every place it appears, the defects it caused, the wrong states it still permits, the owner or representation that replaces it, and what the replacement removes. Leave the design of the change to the plan. Record a candidate as a `Rejected` finding only when a later audit or review would otherwise raise it again: an earlier review raised it, or it has the shape of a structure this audit looks for. State the reason.
 12. Add an entry to `docs/todo.md`, under Defects and in order of cost, for each `Plan` finding: a bold title naming the defect, one sentence on what goes wrong, and a link to the finding's section in the audit. Remove the entry of an earlier finding that has landed, and correct one this audit shows is stale.
 13. Give the final response and stop.
 

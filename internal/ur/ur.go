@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/kkestell/ox/internal/agent"
@@ -96,17 +95,10 @@ type Agent struct {
 	onError      func(error)
 
 	settings agent.Settings
-	history  []entry        // exactly the file's entries; only save adds to it
+	history  []message      // exactly the file's entries; only save adds to it
 	tracker  *agent.Tracker // inputs not taken and the reported state
 	turn     *turn          // the running turn; nil while idle
 	exited   bool
-}
-
-// entry is one line of the conversation file: a prompt or one delta of a reply
-// with the model that wrote it.
-type entry struct {
-	message
-	Model string `json:"model,omitempty"`
 }
 
 func (a *Agent) path() string {
@@ -122,21 +114,21 @@ func (a *Agent) load() error {
 	defer f.Close()
 	decoder := json.NewDecoder(f)
 	for {
-		var e entry
-		err := decoder.Decode(&e)
+		var m message
+		err := decoder.Decode(&m)
 		if errors.Is(err, io.EOF) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		a.history = append(a.history, e)
+		a.history = append(a.history, m)
 	}
 }
 
-// save appends e to the conversation file, and to history once it is
+// save appends m to the conversation file, and to history once it is
 // written. Saving the first entry makes the conversation resumable.
-func (a *Agent) save(e entry) error {
+func (a *Agent) save(m message) error {
 	if err := os.MkdirAll(a.dir, 0o700); err != nil {
 		return err
 	}
@@ -144,7 +136,7 @@ func (a *Agent) save(e entry) error {
 	if err != nil {
 		return err
 	}
-	data, _ := json.Marshal(e) // strings always marshal
+	data, _ := json.Marshal(m) // strings always marshal
 	_, err = f.Write(append(data, '\n'))
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
@@ -152,7 +144,7 @@ func (a *Agent) save(e entry) error {
 	if err != nil {
 		return err
 	}
-	a.history = append(a.history, e)
+	a.history = append(a.history, m)
 	if len(a.history) == 1 {
 		a.onResumable(a.id)
 	}
@@ -205,7 +197,7 @@ func (a *Agent) Handle(event agent.Event) {
 		if e.turn != a.turn {
 			return
 		}
-		if err := a.save(entry{Role: "assistant", Content: e.text, Model: a.settings.Model}); err != nil {
+		if err := a.save(message{Role: "assistant", Content: e.text}); err != nil {
 			a.finish(agent.Result{Text: "Ur could not save the reply: " + err.Error(), IsError: true})
 			return
 		}
@@ -217,11 +209,11 @@ func (a *Agent) Handle(event agent.Event) {
 		if e.err != nil {
 			a.finish(agent.Result{Text: e.err.Error(), IsError: true})
 		} else {
-			start := len(a.history)
-			for start > 0 && a.history[start-1].Role == "assistant" {
-				start--
+			var reply string
+			if messages := conversation(a.history); messages[len(messages)-1].Role == "assistant" {
+				reply = messages[len(messages)-1].Content
 			}
-			a.finish(agent.Result{Text: replyText(a.history[start:])})
+			a.finish(agent.Result{Text: reply})
 		}
 	}
 }
@@ -246,30 +238,17 @@ func (a *Agent) begin() {
 	ctx, cancel := context.WithCancel(context.Background())
 	t := &turn{prompt: input.MessageID, cancel: cancel}
 	a.turn = t
-	if err := a.save(entry{Role: "user", Content: input.Content}); err != nil {
+	if err := a.save(message{Role: "user", Content: input.Content}); err != nil {
 		a.finish(agent.Result{Text: "Ur could not save the prompt: " + err.Error(), IsError: true})
 		return
 	}
 	go a.stream(ctx, t, a.request())
 }
 
-// request builds the next request with the current settings and joins each
-// run of assistant entries into one message.
+// request builds the next request from the conversation with the current
+// settings.
 func (a *Agent) request() []byte {
-	var messages []message
-	for rest := a.history; len(rest) > 0; {
-		e := rest[0].message
-		count := 1
-		if e.Role == "assistant" {
-			for count < len(rest) && rest[count].Role == "assistant" {
-				count++
-			}
-			e.Content = replyText(rest[:count])
-		}
-		messages = append(messages, e)
-		rest = rest[count:]
-	}
-	body := request{Model: a.settings.Model, Messages: messages, Stream: true}
+	body := request{Model: a.settings.Model, Messages: conversation(a.history), Stream: true}
 	if a.settings.Effort != "" {
 		body.Reasoning = &reasoning{Effort: a.settings.Effort}
 	}
@@ -280,12 +259,18 @@ func (a *Agent) request() []byte {
 	return data
 }
 
-func replyText(entries []entry) string {
-	var reply strings.Builder
-	for _, e := range entries {
-		reply.WriteString(e.Content)
+// conversation joins each run of assistant entries in history, the deltas of
+// one reply, into one message.
+func conversation(history []message) []message {
+	var messages []message
+	for _, m := range history {
+		if last := len(messages) - 1; m.Role == "assistant" && last >= 0 && messages[last].Role == "assistant" {
+			messages[last].Content += m.Content
+		} else {
+			messages = append(messages, m)
+		}
 	}
-	return reply.String()
+	return messages
 }
 
 // finish ends the running turn with result and begins the next queued input.

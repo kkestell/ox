@@ -479,7 +479,7 @@ the `idle` or `background` that releases it:
 
 For a message, `from` is the sender's session ID and `from_label` is its label
 when the message was sent. The recorded `prompt` keeps this label even if the
-sender is deleted. Older recorded prompts can omit `from_label`.
+sender is deleted.
 
 `running` means Claude is working. `requires_action` means it is waiting for
 user action; read the approval notifications to obtain the requests. `idle`

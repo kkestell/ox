@@ -64,7 +64,7 @@ export function NewSessionView(props: { draft: Draft; onCreated(): void; toggles
             class="icon send"
             aria-label="Send"
             title="Send"
-            disabled={draft.control.creating() || !ox.ready()}
+            disabled={!draft.control.canCreate()}
           />
         </form>
         <Show when={draft.choice()}>
@@ -73,14 +73,14 @@ export function NewSessionView(props: { draft: Draft; onCreated(): void; toggles
               <ModelPicker
                 harnesses={ox.state.harnesses}
                 value={choice()}
-                disabled={draft.control.creating() || !ox.ready()}
+                disabled={!draft.control.canCreate()}
                 onChange={pick}
               />
               <Select
                 name="permission_mode"
                 options={ox.state.harnesses[choice().harness]?.permission_modes ?? []}
                 value={choice().permission_mode}
-                disabled={draft.control.creating() || !ox.ready()}
+                disabled={!draft.control.canCreate()}
                 onChange={(mode) => draft.setChoice({ ...choice(), permission_mode: mode })}
               />
             </div>

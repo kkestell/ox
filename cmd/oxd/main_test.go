@@ -79,13 +79,7 @@ func TestListenReplacesOnlyAStaleSocket(t *testing.T) {
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	stale := filepath.Join(dir, "stale.sock")
-	var l *net.UnixListener
-	l, err = net.ListenUnix("unix", &net.UnixAddr{Name: stale, Net: "unix"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	l.SetUnlinkOnClose(false)
-	l.Close()
+	staleSocket(t, stale)
 	if l, err := listen(stale); err != nil {
 		t.Fatalf("a stale socket was not replaced: %v", err)
 	} else {
@@ -102,6 +96,76 @@ func TestListenReplacesOnlyAStaleSocket(t *testing.T) {
 	}
 	if data, err := os.ReadFile(file); err != nil || string(data) != "kept" {
 		t.Fatalf("listen changed the regular file at its path: %q, %v", data, err)
+	}
+}
+
+// staleSocket leaves a socket file at path that refuses connections, as an
+// oxd that exited without closing its listener does.
+func staleSocket(t *testing.T, path string) {
+	t.Helper()
+	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.SetUnlinkOnClose(false)
+	l.Close()
+}
+
+// A starter that finds a stale socket while another starter replaces it waits
+// for the other, and then refuses the live socket it left.
+func TestListenWaitsForAnotherStarter(t *testing.T) {
+	// t.TempDir is too long for a socket path on macOS.
+	dir, err := os.MkdirTemp("", "oxd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	path := filepath.Join(dir, "oxd.sock")
+	staleSocket(t, path)
+
+	other, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if err := syscall.Flock(int(other.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		l   net.Listener
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		l, err := listen(path)
+		done <- result{l, err}
+	}()
+	select {
+	case r := <-done:
+		if r.l != nil {
+			r.l.Close()
+		}
+		t.Fatalf("listen did not wait for the starter holding the lock: %v", r.err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	live, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer live.Close()
+	if err := syscall.Flock(int(other.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	r := <-done
+	if r.l != nil {
+		r.l.Close()
+	}
+	if r.err == nil || !strings.Contains(r.err.Error(), "another oxd is serving") {
+		t.Fatalf("listen after the other starter = %v, want it to refuse the live socket", r.err)
 	}
 }
 

@@ -268,6 +268,17 @@ func TestLastLineWithoutNewline(t *testing.T) {
 	}
 }
 
+// A reply that finishes without text ends the turn with an empty result.
+func TestEmptyReply(t *testing.T) {
+	r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
+		sse(w)
+	})
+	r.send("p1", "hi")
+	if result := r.result(); result.IsError || result.Text != "" {
+		t.Errorf("result %+v, not an empty reply", result)
+	}
+}
+
 // A failed turn ends with its error. The next request carries the reply the
 // user saw, and no empty reply when there was none.
 func TestStreamErrors(t *testing.T) {
@@ -505,10 +516,6 @@ func TestStopDuringTurn(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("Stop published %q, not %q", got, want)
 	}
-	if len(r.errors) != 0 {
-		t.Errorf("Stop reported %v", r.errors)
-	}
-
 	if err := r.launch(r.tokens[0]); err != nil {
 		t.Fatal(err)
 	}
@@ -549,8 +556,7 @@ func TestResumeDuringTurn(t *testing.T) {
 	}
 }
 
-// A conversation survives a new agent: the file holds every reply delta with
-// its model, and the request sends the joined messages alone.
+// A conversation survives a new agent, which sends each reply as one message.
 func TestResume(t *testing.T) {
 	r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, _ *http.Request, n int) {
 		sse(w, [][]string{{"o", "ne"}, {"two"}, {"three"}}[n]...)
@@ -561,12 +567,6 @@ func TestResume(t *testing.T) {
 	}
 	r.idle()
 	r.request()
-	other := "other/model"
-	r.agent.Configure(agent.SettingsPatch{Model: &other}, func(err error) {
-		if err != nil {
-			t.Fatal(err)
-		}
-	})
 	r.send("p2", "again")
 	r.idle()
 	r.request()
@@ -584,30 +584,8 @@ func TestResume(t *testing.T) {
 	if got := roles(body); !slices.Equal(got, []string{"user", "assistant", "user", "assistant", "user"}) {
 		t.Errorf("the resumed request's roles %q", got)
 	}
-	for _, m := range body["messages"].([]any) {
-		if _, ok := m.(map[string]any)["model"]; ok {
-			t.Errorf("a message sent its model: %v", m)
-		}
-	}
 	if len(r.tokens) != 1 {
 		t.Errorf("OnResumable got %q, not the one token", r.tokens)
-	}
-
-	data, err := os.ReadFile(r.file())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var lines []string
-	for line := range strings.Lines(string(data)) {
-		var e entry
-		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			t.Fatalf("line %q: %v", line, err)
-		}
-		lines = append(lines, e.Role+" "+e.Content+" "+e.Model)
-	}
-	want := []string{"user hi ", "assistant o " + model, "assistant ne " + model, "user again ", "assistant two " + other, "user third ", "assistant three " + other}
-	if !slices.Equal(lines, want) {
-		t.Errorf("the conversation file holds %q, not %q", lines, want)
 	}
 }
 

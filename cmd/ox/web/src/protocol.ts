@@ -33,7 +33,7 @@ export type ApprovalResponse =
 // or a message from the session from.
 export type Prompt = { message_id: string; text: string } & (
   | { from?: never; from_label?: never }
-  | { from: string; from_label?: string }
+  | { from: string; from_label: string }
 );
 
 export type Update = { time: string } & (
