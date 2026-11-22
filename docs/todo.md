@@ -4,6 +4,20 @@ Planned work, ordered by priority: unfixed audit findings, then gaps in features
 Ox already supports. Each finding links its section in the audit, which holds
 the evidence and the correction.
 
+## Defects
+
+- [ ] **A slow child start stalls unrelated sessions.** Starting the harness and
+      handing it the first message hold the lock other sessions need to receive
+      requests.
+      [Audit F2](../agents/audits/2026-11-22-001-conversation-launch-and-layout.md#f2-a-childs-first-send-holds-the-daemons-membership-lock)
+- [ ] **Dragging the file split can collapse the transcript.** When the side
+      panels leave less than 480 px for the center, dragging in either direction
+      chooses the same split and can shrink the transcript to a sliver.
+      [Audit F3](../agents/audits/2026-11-22-001-conversation-launch-and-layout.md#f3-the-file-split-assumes-space-the-side-panels-can-take-away)
+- [ ] **Dev shutdown masks daemon exit failures.** The dev stack reports an
+      ordinary Ctrl-C even when `oxd` terminates with a race detector failure.
+      [Audit F4](../agents/audits/2026-11-22-001-conversation-launch-and-layout.md#f4-the-dev-stack-decides-its-exit-status-before-services-stop)
+
 ## Sidebar
 
 - [ ] **Collapse a session's children.** A session with children gets a

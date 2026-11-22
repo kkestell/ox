@@ -102,8 +102,8 @@ type Agent struct {
 	exited   bool
 }
 
-// entry is one line of the conversation file: a chat message, and on a reply,
-// the model that wrote it.
+// entry is one line of the conversation file: a prompt or one delta of a reply
+// with the model that wrote it.
 type entry struct {
 	message
 	Model string `json:"model,omitempty"`
@@ -159,11 +159,10 @@ func (a *Agent) save(e entry) error {
 	return nil
 }
 
-// turn is one request and the reply streamed so far.
+// turn identifies the running request and allows it to be canceled.
 type turn struct {
 	prompt string // the ID of the input the turn answers
 	cancel context.CancelFunc
-	reply  strings.Builder
 }
 
 // delta is reply text streamed for a turn.
@@ -199,14 +198,17 @@ func (a *Agent) deliver(event agent.Event) {
 }
 
 // Handle takes a request's output. Output for a turn that is no longer running
-// belongs to an interrupted one and is ignored.
+// is ignored.
 func (a *Agent) Handle(event agent.Event) {
 	switch e := event.(type) {
 	case delta:
 		if e.turn != a.turn {
 			return
 		}
-		e.turn.reply.WriteString(e.text)
+		if err := a.save(entry{Role: "assistant", Content: e.text, Model: a.settings.Model}); err != nil {
+			a.finish(agent.Result{Text: "Ur could not save the reply: " + err.Error(), IsError: true})
+			return
+		}
 		a.publish(agent.Update{Type: agent.UpdateTextDelta, Text: e.text})
 	case ended:
 		if e.turn != a.turn {
@@ -215,7 +217,11 @@ func (a *Agent) Handle(event agent.Event) {
 		if e.err != nil {
 			a.finish(agent.Result{Text: e.err.Error(), IsError: true})
 		} else {
-			a.finish(agent.Result{Text: e.turn.reply.String()})
+			start := len(a.history)
+			for start > 0 && a.history[start-1].Role == "assistant" {
+				start--
+			}
+			a.finish(agent.Result{Text: replyText(a.history[start:])})
 		}
 	}
 }
@@ -247,12 +253,21 @@ func (a *Agent) begin() {
 	go a.stream(ctx, t, a.request())
 }
 
-// request is the body of the next request: the conversation so far, with the
-// current settings.
+// request builds the next request with the current settings and joins each
+// run of assistant entries into one message.
 func (a *Agent) request() []byte {
-	messages := make([]message, len(a.history))
-	for i, e := range a.history {
-		messages[i] = e.message
+	var messages []message
+	for rest := a.history; len(rest) > 0; {
+		e := rest[0].message
+		count := 1
+		if e.Role == "assistant" {
+			for count < len(rest) && rest[count].Role == "assistant" {
+				count++
+			}
+			e.Content = replyText(rest[:count])
+		}
+		messages = append(messages, e)
+		rest = rest[count:]
 	}
 	body := request{Model: a.settings.Model, Messages: messages, Stream: true}
 	if a.settings.Effort != "" {
@@ -265,16 +280,16 @@ func (a *Agent) request() []byte {
 	return data
 }
 
-// finish ends the running turn with result, keeping the reply as the user saw
-// it, and begins the next queued input.
-func (a *Agent) finish(result agent.Result) {
-	if err := a.keepReply(); err != nil {
-		text := "Ur could not save the reply: " + err.Error()
-		if result.IsError {
-			text = result.Text + "\n" + text
-		}
-		result = agent.Result{Text: text, IsError: true}
+func replyText(entries []entry) string {
+	var reply strings.Builder
+	for _, e := range entries {
+		reply.WriteString(e.Content)
 	}
+	return reply.String()
+}
+
+// finish ends the running turn with result and begins the next queued input.
+func (a *Agent) finish(result agent.Result) {
 	a.publish(agent.Update{Type: agent.UpdateResult, Result: &result})
 	a.tracker.Report(agent.StateIdle, "")
 	a.turn.cancel()
@@ -282,15 +297,6 @@ func (a *Agent) finish(result agent.Result) {
 	if a.tracker.Len() > 0 {
 		a.begin()
 	}
-}
-
-// keepReply saves the running turn's reply as far as it streamed, if any.
-func (a *Agent) keepReply() error {
-	reply := a.turn.reply.String()
-	if reply == "" {
-		return nil
-	}
-	return a.save(entry{Role: "assistant", Content: reply, Model: a.settings.Model})
 }
 
 // Approve has nothing to answer: Ur calls no tools.
@@ -329,9 +335,6 @@ func (a *Agent) Stop() {
 	a.tracker.DropFrom(0)
 	if a.turn != nil {
 		a.turn.cancel()
-		if err := a.keepReply(); err != nil {
-			a.onError(fmt.Errorf("save the reply: %w", err))
-		}
 		a.publish(agent.Update{Type: agent.UpdateExited, Error: "stopped"})
 		a.turn = nil
 	}

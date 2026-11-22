@@ -476,8 +476,8 @@ func TestStartWithoutKey(t *testing.T) {
 	}
 }
 
-// Stop ends the running turn, keeping its reply as far as it streamed, and
-// drops the inputs waiting behind it.
+// Stop ends the running turn and drops waiting inputs. Its reply has already
+// been saved as far as it streamed.
 func TestStopDuringTurn(t *testing.T) {
 	r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, req *http.Request, n int) {
 		if n > 0 {
@@ -519,11 +519,41 @@ func TestStopDuringTurn(t *testing.T) {
 	}
 }
 
-// A conversation survives a new agent: the file holds every message, with the
-// model of each reply, and the request sends the messages alone.
+// A second agent sees the streamed reply while the first request is still open.
+func TestResumeDuringTurn(t *testing.T) {
+	r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, req *http.Request, n int) {
+		if n > 0 {
+			sse(w, "ok")
+			return
+		}
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"remember\"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\" blue\"}}]}\n\n")
+		w.(http.Flusher).Flush()
+		<-req.Context().Done()
+	})
+	r.send("p1", "hi")
+	r.request()
+	r.until(func(u agent.Update) bool { return u.Type == agent.UpdateTextDelta && u.Text == " blue" })
+
+	if err := r.launch(r.tokens[0]); err != nil {
+		t.Fatal(err)
+	}
+	r.send("p2", "next")
+	r.idle()
+	body := r.request().body
+	if got := contents(body); !slices.Equal(got, []string{"hi", "remember blue", "next"}) {
+		t.Errorf("the resumed request's messages %q", got)
+	}
+	if got := roles(body); !slices.Equal(got, []string{"user", "assistant", "user"}) {
+		t.Errorf("the resumed request's roles %q", got)
+	}
+}
+
+// A conversation survives a new agent: the file holds every reply delta with
+// its model, and the request sends the joined messages alone.
 func TestResume(t *testing.T) {
 	r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, _ *http.Request, n int) {
-		sse(w, []string{"one", "two", "three"}[n])
+		sse(w, [][]string{{"o", "ne"}, {"two"}, {"three"}}[n]...)
 	})
 	r.send("p1", "hi")
 	if len(r.tokens) != 1 || r.tokens[0] == "" {
@@ -575,7 +605,7 @@ func TestResume(t *testing.T) {
 		}
 		lines = append(lines, e.Role+" "+e.Content+" "+e.Model)
 	}
-	want := []string{"user hi ", "assistant one " + model, "user again ", "assistant two " + other, "user third ", "assistant three " + other}
+	want := []string{"user hi ", "assistant o " + model, "assistant ne " + model, "user again ", "assistant two " + other, "user third ", "assistant three " + other}
 	if !slices.Equal(lines, want) {
 		t.Errorf("the conversation file holds %q, not %q", lines, want)
 	}
@@ -614,7 +644,8 @@ func TestResumeLost(t *testing.T) {
 	}
 }
 
-// A message that cannot be saved never reaches the model.
+// An unsaved prompt never reaches the model, and an unsaved reply delta is
+// never published.
 func TestSaveFailure(t *testing.T) {
 	t.Run("prompt", func(t *testing.T) {
 		r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
@@ -636,65 +667,52 @@ func TestSaveFailure(t *testing.T) {
 		}
 	})
 
-	// The reply is written as the turn ends, after the file was made read-only.
-	for name, c := range map[string]struct {
-		handle handler
-		want   string // the result's text before the save failure
-	}{
-		"completed reply": {func(w http.ResponseWriter, _ *http.Request, _ int) {
-			sse(w, "one")
-		}, ""},
-		"failed reply": {func(w http.ResponseWriter, _ *http.Request, _ int) {
-			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"par\"}}]}\n\n")
-			fmt.Fprint(w, "data: {\"error\":{\"message\":\"provider went away\"}}\n\n")
-		}, "OpenRouter: provider went away\n"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			release := make(chan struct{})
-			r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, req *http.Request, n int) {
-				if n == 0 {
-					<-release
-					c.handle(w, req, n)
-					return
-				}
+	t.Run("reply", func(t *testing.T) {
+		release := make(chan struct{})
+		r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, req *http.Request, n int) {
+			if n > 0 {
 				sse(w, "ok")
-			})
-			r.send("p1", "hi")
-			r.request()
-			if err := os.Chmod(r.file(), 0o400); err != nil {
-				t.Fatal(err)
+				return
 			}
-			close(release)
-			result := r.result()
-			prefix := c.want + "Ur could not save the reply: "
-			if !result.IsError || !strings.HasPrefix(result.Text, prefix) || !strings.Contains(result.Text, "permission denied") {
-				t.Errorf("result %+v, not an error starting %q that names the denied write", result, prefix)
-			}
-			r.idle()
-			os.Chmod(r.file(), 0o600)
-			r.send("p2", "again")
-			r.idle()
-			if got := roles(r.request().body); !slices.Equal(got, []string{"user", "user"}) {
-				t.Errorf("the next request's messages %q", got)
-			}
-		})
-	}
-
-	t.Run("stop", func(t *testing.T) {
-		r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, req *http.Request, _ int) {
-			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"one\"}}]}\n\n")
 			w.(http.Flusher).Flush()
-			<-req.Context().Done()
+			select {
+			case <-release:
+				sse(w, "two")
+			case <-req.Context().Done():
+			}
 		})
 		r.send("p1", "hi")
 		r.request()
-		r.until(func(u agent.Update) bool { return u.Type == agent.UpdateTextDelta })
+		r.until(func(u agent.Update) bool { return u.Type == agent.UpdateTextDelta && u.Text == "one" })
 		if err := os.Chmod(r.file(), 0o400); err != nil {
 			t.Fatal(err)
 		}
-		r.agent.Stop()
-		if len(r.errors) != 1 || !strings.HasPrefix(r.errors[0].Error(), "save the reply: ") {
-			t.Errorf("OnError got %v", r.errors)
+		close(release)
+		var result agent.Result
+		r.until(func(u agent.Update) bool {
+			if u.Type == agent.UpdateTextDelta && u.Text == "two" {
+				t.Error("published an unsaved reply delta")
+			}
+			if u.Type == agent.UpdateResult {
+				result = *u.Result
+			}
+			return u.Type == agent.UpdateState && u.State == agent.StateIdle
+		})
+		if slices.ContainsFunc(r.updates, func(u agent.Update) bool { return u.Type == agent.UpdateTextDelta }) {
+			t.Error("published a reply delta after going idle")
+		}
+		prefix := "Ur could not save the reply: "
+		if !result.IsError || !strings.HasPrefix(result.Text, prefix) || !strings.Contains(result.Text, "permission denied") {
+			t.Errorf("result %+v, expected an error starting %q that names the denied write", result, prefix)
+		}
+		if err := os.Chmod(r.file(), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		r.send("p2", "again")
+		r.idle()
+		if got := contents(r.request().body); !slices.Equal(got, []string{"hi", "one", "again"}) {
+			t.Errorf("the next request's messages %q", got)
 		}
 	})
 }
