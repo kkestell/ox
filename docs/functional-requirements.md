@@ -226,8 +226,10 @@ title.
   case it asks for a reload.
 - **Work outlives the page.** Closing every page leaves prompts, approvals, and
   Claude's own turns running.
-- **Local access only.** Only pages served from this machine (or from the host
-  `ox` was told to serve) can reach `oxd`.
+- **Web access.** The web relay accepts requests addressed to Ox's local or
+  configured hosts. When the user configures `tailscale_ip`, Ox also serves the
+  web UI on that Tailscale address at port 17840, independently of the local
+  listener's port, and prints that URL at startup.
 
 ## Layout
 

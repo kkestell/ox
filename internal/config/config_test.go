@@ -57,6 +57,55 @@ func TestDefaultsMustBeConfiguredChoices(t *testing.T) {
 	}
 }
 
+// A nonempty tailscale_ip must be an IPv4 address within Tailscale's CGNAT
+// range; omitting it, or leaving it empty, loads with no tailnet address.
+func TestTailscaleIP(t *testing.T) {
+	const harnesses = `"harnesses":{"h":{"models":[{"id":"m","name":"M"}],"permission_modes":[{"id":"auto","name":"Auto"}]}},` +
+		`"defaults":{"harness":"h","model":"m","effort":"","permission_mode":"auto"},"max_child_depth":2`
+	for ip, valid := range map[string]bool{
+		"":                true,
+		"100.101.102.103": true,
+		"100.64.0.1":      true,
+		"100.127.255.255": true,
+		"not-an-ip":       false,
+		"100.63.255.255":  false, // just outside the range
+		"100.128.0.0":     false, // just outside the range
+		"192.168.1.1":     false, // outside Tailscale's range
+		"::1":             false, // IPv6
+		"2001:db8::1":     false, // IPv6
+	} {
+		path := filepath.Join(t.TempDir(), "config.json")
+		data := `{` + harnesses
+		if ip != "" {
+			data += `,"tailscale_ip":"` + ip + `"`
+		}
+		data += `}`
+		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		if (err == nil) != valid {
+			t.Errorf("tailscale_ip %q: valid %v, got %v", ip, valid, err)
+			continue
+		}
+		if valid && cfg.TailscaleIP != ip {
+			t.Errorf("tailscale_ip %q loaded as %q", ip, cfg.TailscaleIP)
+		}
+		if valid && ip != "" {
+			data, err := json.Marshal(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), "tailscale_ip") {
+				t.Errorf("Config marshaled with tailscale_ip set emits it: %s", data)
+			}
+		}
+	}
+	if cfg, err := Load(filepath.Join(t.TempDir(), "missing.json")); err != nil || cfg.TailscaleIP != "" {
+		t.Errorf("the built-in configuration has tailscale_ip %q, %v", cfg.TailscaleIP, err)
+	}
+}
+
 // harness/list serves the catalog as loaded, and the web client reads every
 // list in it, for every harness.
 func TestCatalogListsArePresent(t *testing.T) {

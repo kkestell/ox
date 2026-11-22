@@ -12,18 +12,25 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 
+	"github.com/kkestell/ox/internal/config"
 	"github.com/kkestell/ox/internal/paths"
 )
 
 //go:embed web/dist
 var dist embed.FS
 
+// tailnetPort is where ox also serves the web UI when the configuration sets
+// tailscale_ip, independent of -addr's port.
+const tailnetPort = "17840"
+
 func main() {
 	addr := flag.String("addr", "localhost:8080", "address to serve the web UI on")
 	socketPath := flag.String("socket", "", "override the oxd socket in the user runtime directory")
+	configPath := flag.String("config", "", "override the configuration in the user config directory")
 	flag.Parse()
 	if *socketPath == "" {
 		var err error
@@ -31,17 +38,62 @@ func main() {
 			log.Fatal(err)
 		}
 	}
+	if *configPath == "" {
+		var err error
+		if *configPath, err = paths.Config(); err != nil {
+			log.Fatal(err)
+		}
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		log.Fatal(err)
+	}
 	web, err := fs.Sub(dist, "web/dist")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	host, err := serveHost(*addr)
+	listeners, hosts, tailnetURL, err := listen(*addr, cfg.TailscaleIP)
 	if err != nil {
 		log.Fatal(err)
 	}
-	r := &relay{socket: *socketPath, host: host, conns: make(map[string]net.Conn)}
-	log.Fatal(http.ListenAndServe(*addr, r.handler(web)))
+	if tailnetURL != "" {
+		fmt.Println(tailnetURL)
+	}
+	r := &relay{socket: *socketPath, hosts: hosts, conns: make(map[string]net.Conn)}
+	handler := r.handler(web)
+	serveErr := make(chan error, len(listeners))
+	for _, l := range listeners {
+		go func(l net.Listener) { serveErr <- http.Serve(l, handler) }(l)
+	}
+	log.Fatal(<-serveErr)
+}
+
+// listen binds addr for the local listener, and, when tailscaleIP is set,
+// that address at tailnetPort for the tailnet listener. It reports the hosts
+// the relay should accept, and the tailnet URL once both have bound, empty
+// when tailscaleIP is empty.
+func listen(addr, tailscaleIP string) (listeners []net.Listener, hosts []string, tailnetURL string, err error) {
+	host, err := serveHost(addr)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	local, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	listeners = []net.Listener{local}
+	hosts = []string{host}
+	if tailscaleIP == "" {
+		return listeners, hosts, "", nil
+	}
+	tailnetAddr := net.JoinHostPort(tailscaleIP, tailnetPort)
+	tailnet, err := net.Listen("tcp", tailnetAddr)
+	if err != nil {
+		local.Close()
+		return nil, nil, "", err
+	}
+	return append(listeners, tailnet), append(hosts, tailscaleIP), "http://" + tailnetAddr, nil
 }
 
 // serveHost returns the host addr names. An address that names every
@@ -60,7 +112,7 @@ func serveHost(addr string) (string, error) {
 
 type relay struct {
 	socket string
-	host   string // the host given to -addr
+	hosts  []string // the host given to -addr, and the configured tailscale_ip
 	mu     sync.Mutex
 	conns  map[string]net.Conn
 }
@@ -74,19 +126,25 @@ func (r *relay) handler(web fs.FS) http.Handler {
 	return mux
 }
 
-// checkHost refuses a request not addressed to a loopback name or the host
-// given to -addr. A page whose domain rebinds to this address is same-origin
-// to the browser, but its requests still name that domain in Host.
+// checkHost refuses a request not addressed to a loopback name or one of
+// r.hosts: the host given to -addr, and the configured tailscale_ip. A page
+// whose domain rebinds to one of these addresses is same-origin to the
+// browser, but its requests still name that domain in Host.
 func (r *relay) checkHost(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		host, _, err := net.SplitHostPort(req.Host)
 		if err != nil {
 			host = req.Host
 		}
-		switch strings.Trim(host, "[]") {
-		case "localhost", "127.0.0.1", "::1", r.host:
+		host = strings.Trim(host, "[]")
+		switch host {
+		case "localhost", "127.0.0.1", "::1":
 			next.ServeHTTP(w, req)
 		default:
+			if slices.Contains(r.hosts, host) {
+				next.ServeHTTP(w, req)
+				return
+			}
 			http.Error(w, "unknown host", http.StatusForbidden)
 		}
 	})

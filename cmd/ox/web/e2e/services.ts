@@ -76,7 +76,11 @@ export async function startServices(config: object): Promise<Services> {
   let daemon = startDaemon();
   let relay: ChildProcess | undefined;
   const startRelay = async () => {
-    relay = run(join(bin, "ox"), [`-addr=127.0.0.1:${port}`, `-socket=${socket}`]);
+    relay = run(join(bin, "ox"), [
+      `-addr=127.0.0.1:${port}`,
+      `-socket=${socket}`,
+      `-config=${join(dir, "config.json")}`,
+    ]);
     await waitFor(url);
   };
   function run(command: string, args: string[]) {

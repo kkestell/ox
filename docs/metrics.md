@@ -10,8 +10,8 @@ the code in `*_test.go` and `cmd/ox/web/e2e`.
 
 | Language   | Files | Comment |  Code | Tests |
 | ---------- | ----: | ------: | ----: | ----: |
-| Go         |    26 |     567 | 4,613 | 6,929 |
-| TypeScript |    18 |     165 | 2,334 | 1,953 |
+| Go         |    26 |     583 | 4,687 | 7,027 |
+| TypeScript |    18 |     165 | 2,334 | 1,957 |
 | CSS        |     1 |      26 |   343 |     0 |
 
 ## High complexity

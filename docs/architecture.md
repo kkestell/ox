@@ -214,10 +214,17 @@ Each page gets an `oxd` connection through `ox`: `/events` relays socket lines
 as Server-Sent Events, and `/rpc` posts the page's JSON-RPC requests to the
 socket. Its 8 MiB request body cap leaves space for JSON escaping under the
 [decoded prompt limit](protocol.md#sessionsend). `ox` answers both only when the
-request's `Host` names `localhost`, `127.0.0.1`, `[::1]`, or the host given to
-`-addr`, and refuses an `/rpc` post from another origin, so a page whose domain
-rebinds to the relay's address cannot reach `oxd`. `/rpc` answers `503` when the
-page's `oxd` connection is gone, and the page treats it as a lost connection.
+request's `Host` names `localhost`, `127.0.0.1`, `[::1]`, the host given to
+`-addr`, or the configured [`tailscale_ip`](protocol.md#configuration), and
+refuses an `/rpc` post from another origin, so a page whose domain rebinds to
+one of these addresses cannot reach `oxd`. `/rpc` answers `503` when the page's
+`oxd` connection is gone, and the page treats it as a lost connection.
+
+`ox` reads the same configuration file as `oxd`. When it sets `tailscale_ip`,
+`ox` also binds that address at port 17840, alongside the listener at `-addr`,
+and prints the tailnet URL once both have bound; both listeners serve the same
+relay and UI. Under `make dev`, the tailnet listener serves the embedded build
+from startup, while the local Vite URL keeps live reload.
 
 | File                                                                                                                                                                                            | Owns                                                                                                                                                                                                                                                                       |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

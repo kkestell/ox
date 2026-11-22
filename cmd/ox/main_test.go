@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -16,13 +17,14 @@ func TestRelayRefusesForeignPages(t *testing.T) {
 	relayEnd, daemonEnd := net.Pipe()
 	defer relayEnd.Close()
 	go io.Copy(io.Discard, daemonEnd)
-	r := &relay{host: "ox.test", conns: map[string]net.Conn{"page": relayEnd}}
+	r := &relay{hosts: []string{"ox.test", "100.64.1.2"}, conns: map[string]net.Conn{"page": relayEnd}}
 	h := r.handler(fstest.MapFS{})
 	body := `{"jsonrpc":"2.0","id":1,"method":"workspace/create","params":{"path":"/"}}`
 	for _, c := range []struct{ name, method, path, host, origin string }{
 		{"events from a foreign host", "GET", "/events", "attacker.example:8080", ""},
 		{"rpc from a foreign host", "POST", "/rpc?connection=page", "attacker.example:8080", "http://attacker.example:8080"},
 		{"rpc from another origin", "POST", "/rpc?connection=page", "localhost:8080", "http://attacker.example"},
+		{"rpc from another origin on the tailnet host", "POST", "/rpc?connection=page", "100.64.1.2:17840", "http://attacker.example"},
 	} {
 		req := httptest.NewRequest(c.method, c.path, strings.NewReader(body))
 		req.Host = c.host
@@ -43,11 +45,12 @@ func TestRelayAcceptsItsPage(t *testing.T) {
 	relayEnd, daemonEnd := net.Pipe()
 	defer relayEnd.Close()
 	go io.Copy(io.Discard, daemonEnd)
-	r := &relay{host: "localhost", conns: map[string]net.Conn{"page": relayEnd}}
+	r := &relay{hosts: []string{"localhost", "100.64.1.2"}, conns: map[string]net.Conn{"page": relayEnd}}
 	h := r.handler(fstest.MapFS{})
 	for _, c := range []struct{ name, host, origin string }{
 		{"direct", "localhost:8080", "http://localhost:8080"},
 		{"through Vite", "localhost:8081", "http://localhost:8080"},
+		{"tailnet host", "100.64.1.2:17840", "http://100.64.1.2:17840"},
 	} {
 		req := httptest.NewRequest("POST", "/rpc?connection=page", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"harness/list"}`))
 		req.Host = c.host
@@ -73,6 +76,64 @@ func TestRelayRefusesEveryInterface(t *testing.T) {
 		if host, err := serveHost(addr); err != nil || host == "" {
 			t.Errorf("-addr %s: %q, %v", addr, host, err)
 		}
+	}
+}
+
+// listen binds a tailnet listener beside the local one, at the configured
+// address and the fixed tailnetPort, regardless of -addr's own port,
+// returning both as allowed hosts and the tailnet's URL.
+func TestListenBindsTailnetListener(t *testing.T) {
+	listeners, hosts, tailnetURL, err := listen("localhost:0", "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		for _, l := range listeners {
+			l.Close()
+		}
+	}()
+	if len(listeners) != 2 {
+		t.Fatalf("got %d listeners, not 2", len(listeners))
+	}
+	if got := listeners[1].Addr().String(); got != "127.0.0.1:17840" {
+		t.Errorf("tailnet listener bound %s, want 127.0.0.1:17840", got)
+	}
+	if tailnetURL != "http://127.0.0.1:17840" {
+		t.Errorf("tailnetURL = %q, want http://127.0.0.1:17840", tailnetURL)
+	}
+	if !slices.Equal(hosts, []string{"localhost", "127.0.0.1"}) {
+		t.Errorf("hosts = %v, not [localhost 127.0.0.1]", hosts)
+	}
+}
+
+// Without a configured address, listen binds only the local listener.
+func TestListenWithoutTailscaleIP(t *testing.T) {
+	listeners, hosts, tailnetURL, err := listen("127.0.0.1:0", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listeners[0].Close()
+	if len(listeners) != 1 {
+		t.Fatalf("got %d listeners, not 1", len(listeners))
+	}
+	if tailnetURL != "" {
+		t.Errorf("tailnetURL = %q without a configured address", tailnetURL)
+	}
+	if len(hosts) != 1 {
+		t.Errorf("hosts = %v", hosts)
+	}
+}
+
+// A tailnet port already bound fails listen and closes the local listener it
+// already opened.
+func TestListenFailsOnBoundTailnetPort(t *testing.T) {
+	blocker, err := net.Listen("tcp", "127.0.0.1:17840")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Close()
+	if _, _, _, err := listen("127.0.0.1:0", "127.0.0.1"); err == nil {
+		t.Error("a bound tailnet port was accepted")
 	}
 }
 

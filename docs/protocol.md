@@ -75,7 +75,7 @@ The daemon reads the harnesses it offers from `ox/config.json` beneath
 `$XDG_CONFIG_HOME`, or beneath `~/.config` when that is unset; `-config
 /absolute/path/to/config.json` chooses a different file. A missing file selects
 the built-in catalog of Claude Code and Ur. The daemon validates harness names
-at startup.
+at startup. `ox` reads the same file, for its optional `tailscale_ip`.
 
 Each harness lists at least one model, each with the effort levels it takes, and
 at least one permission mode. Every choice has a nonempty `id`, unique within
@@ -89,10 +89,13 @@ lists none, and takes an empty `effort`. The required `defaults` name the
 harness, model, effort, and permission mode a new session starts with, each one
 of the configured choices; the daemon refuses to start otherwise. The required
 `max_child_depth`, at least 1, is how many levels of child sessions a top-level
-session can have beneath it; the built-in configuration sets 2.
+session can have beneath it; the built-in configuration sets 2. The optional
+`tailscale_ip`, empty by default, is this machine's Tailscale IPv4 address,
+within `100.64.0.0/10`; see [Web UI](architecture.md#web-ui) for what setting it
+does.
 
 ```json
-{"harnesses":{"claude":{"models":[{"id":"claude-haiku-5-5","name":"Haiku 5.5","efforts":[{"id":"low","name":"Low"},{"id":"high","name":"High"}]}],"permission_modes":[{"id":"manual","name":"Manual"},{"id":"plan","name":"Plan"}]}},"defaults":{"harness":"claude","model":"claude-haiku-5-5","effort":"low","permission_mode":"plan"},"max_child_depth":2}
+{"harnesses":{"claude":{"models":[{"id":"claude-haiku-5-5","name":"Haiku 5.5","efforts":[{"id":"low","name":"Low"},{"id":"high","name":"High"}]}],"permission_modes":[{"id":"manual","name":"Manual"},{"id":"plan","name":"Plan"}]}},"defaults":{"harness":"claude","model":"claude-haiku-5-5","effort":"low","permission_mode":"plan"},"max_child_depth":2,"tailscale_ip":"100.101.102.103"}
 ```
 
 Clients offer these choices, and the daemon accepts only these in

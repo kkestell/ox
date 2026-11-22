@@ -8,8 +8,12 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/netip"
 	"os"
 )
+
+// tailscaleRange is the CGNAT range Tailscale assigns IPv4 addresses from.
+var tailscaleRange = netip.MustParsePrefix("100.64.0.0/10")
 
 //go:embed default.json
 var defaultConfig []byte
@@ -20,6 +24,18 @@ type Config struct {
 	// MaxChildDepth is how many levels of child sessions a top-level session
 	// can have beneath it.
 	MaxChildDepth int `json:"max_child_depth"`
+	// TailscaleIP, when set, is this machine's Tailscale IPv4 address. ox
+	// also serves the web UI there, on port 17840. Read only from the
+	// configuration file through fileConfig, and tagged "-" here so it stays
+	// out of Config's own JSON, which harness/list and list_models also send.
+	TailscaleIP string `json:"-"`
+}
+
+// fileConfig decodes tailscale_ip from the configuration file into the
+// embedded Config without adding it to Config's own JSON representation.
+type fileConfig struct {
+	*Config
+	TailscaleIP string `json:"tailscale_ip"`
 }
 
 type Defaults struct {
@@ -56,13 +72,15 @@ func Load(path string) (*Config, error) {
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	var config Config
-	if err := decoder.Decode(&config); err != nil {
+	config := &Config{}
+	file := fileConfig{Config: config}
+	if err := decoder.Decode(&file); err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
 	if decoder.Decode(&struct{}{}) != io.EOF {
 		return nil, fmt.Errorf("read %s: content after the configuration", path)
 	}
+	config.TailscaleIP = file.TailscaleIP
 	for name, harness := range config.Harnesses {
 		if err := harness.check(); err != nil {
 			return nil, fmt.Errorf("%s: harness %q: %w", path, name, err)
@@ -74,7 +92,26 @@ func Load(path string) (*Config, error) {
 	if config.MaxChildDepth < 1 {
 		return nil, fmt.Errorf("%s: max_child_depth must be at least 1", path)
 	}
-	return &config, nil
+	if err := checkTailscaleIP(config.TailscaleIP); err != nil {
+		return nil, fmt.Errorf("%s: tailscale_ip: %w", path, err)
+	}
+	return config, nil
+}
+
+// checkTailscaleIP requires an empty string, or an IPv4 address within
+// Tailscale's range.
+func checkTailscaleIP(ip string) error {
+	if ip == "" {
+		return nil
+	}
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return err
+	}
+	if !addr.Is4() || !tailscaleRange.Contains(addr) {
+		return fmt.Errorf("%q is not an IPv4 address in 100.64.0.0/10", ip)
+	}
+	return nil
 }
 
 // check requires every list a client reads, and an ID and a name for every
