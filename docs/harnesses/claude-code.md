@@ -505,9 +505,15 @@ Deny:
 {"behavior":"deny","message":"Permission denied by client","toolUseID":"toolu_...","decisionClassification":"user_reject"}
 ```
 
-A deny becomes a tool error (`"User declined"`, `is_error: true`) and the model
-continues; text typed by the user can go in `message`. Setting `interrupt: true`
-on the deny stops the turn instead.
+A deny becomes a tool error whose text is the deny's `message`, and the model
+continues. Text typed by the user goes in `message` and reaches the model as
+written; a deny with `"message":"Do not create files."` produced:
+
+```json
+{"type":"tool_result","content":"Do not create files.","is_error":true,"tool_use_id":"toolu_..."}
+```
+
+Setting `interrupt: true` on the deny stops the turn instead.
 
 ### `AskUserQuestion`
 

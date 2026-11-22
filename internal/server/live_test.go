@@ -21,6 +21,207 @@ import (
 
 const haiku = "claude-haiku-5-5"
 
+// live is one section of TestLive: its t, a client that reports to it, and
+// the daemon's workspace and store.
+type live struct {
+	t         *testing.T
+	c         *client
+	workspace string
+	st        *store.Store
+}
+
+// liveRequest is the part of a Claude approval request the sections read.
+type liveRequest struct {
+	ToolName string          `json:"tool_name"`
+	Input    json.RawMessage `json:"input"`
+}
+
+func allow(r liveRequest) any {
+	return map[string]any{"behavior": "allow", "updatedInput": r.Input}
+}
+
+// denyBash allows every call but Bash, which it denies with an interrupt and
+// records in denied.
+func denyBash(denied *bool) func(liveRequest) any {
+	return func(r liveRequest) any {
+		if r.ToolName == "Bash" {
+			*denied = true
+			return map[string]any{"behavior": "deny", "message": "no", "interrupt": true}
+		}
+		return allow(r)
+	}
+}
+
+// refuse fails the section for any call that asks for approval.
+func (l *live) refuse(r liveRequest) any {
+	l.t.Errorf("%s asked for approval", r.ToolName)
+	return map[string]any{"behavior": "deny", "message": "no", "interrupt": true}
+}
+
+func (l *live) create(mode string) string {
+	l.t.Helper()
+	var created struct {
+		SessionID string `json:"session_id"`
+	}
+	json.Unmarshal(l.c.call("session/create", map[string]string{
+		"workspace_id": l.workspace, "harness": "claude", "model": haiku, "effort": "low", "permission_mode": mode,
+	}), &created)
+	return created.SessionID
+}
+
+// turn sends text to session id, answers each approval with answer, and
+// returns the tools Claude called once the session is idle.
+func (l *live) turn(id, text string, answer func(liveRequest) any) []string {
+	l.t.Helper()
+	l.c.forget(id)
+	l.c.call("session/send", map[string]string{"session_id": id, "text": text})
+	var tools []string
+	for {
+		var u agent.Update
+		l.c.next(func(m message) bool {
+			if m.Method != "session/update" || m.sessionID() != id {
+				return false
+			}
+			u = agent.Update{}
+			json.Unmarshal(m.Params, &u)
+			return u.Type == "tool_use" || u.Type == "approval" || (u.Type == "state" && u.State == "idle")
+		})
+		switch u.Type {
+		case "tool_use":
+			tools = append(tools, u.ToolName)
+		case "approval":
+			var r liveRequest
+			json.Unmarshal(u.Request, &r)
+			l.c.call("session/approve", map[string]any{"session_id": id, "request_id": u.RequestID, "response": answer(r)})
+		default:
+			return tools
+		}
+	}
+}
+
+func (l *live) idle(id string) {
+	l.t.Helper()
+	for l.c.update(id, "state").State != "idle" {
+	}
+}
+
+// parked reports whether session id has parked since the client last
+// forgot it.
+func (l *live) parked(id string) bool {
+	for _, m := range l.c.received(id) {
+		var u agent.Update
+		json.Unmarshal(m.Params, &u)
+		if m.Method == "session/update" && u.Type == "parked" {
+			return true
+		}
+	}
+	return false
+}
+
+func (l *live) resumeToken(id string) string {
+	l.t.Helper()
+	workspaces, err := l.st.Workspaces()
+	if err != nil {
+		l.t.Fatal(err)
+	}
+	for _, w := range workspaces {
+		for _, record := range w.Sessions {
+			if record.ID == id {
+				return record.ResumeToken
+			}
+		}
+	}
+	l.t.Fatalf("session %s not found in the database", id)
+	return ""
+}
+
+// listModels has session id list Ox's models without asking.
+func (l *live) listModels(id string) {
+	l.t.Helper()
+	tools := l.turn(id, "Call the mcp__ox__list_models tool now, then reply with just ok.", l.refuse)
+	if !slices.Contains(tools, "mcp__ox__list_models") {
+		l.t.Fatalf("Haiku did not call mcp__ox__list_models (%v); run again", tools)
+	}
+	for _, m := range l.c.received(id) {
+		var u agent.Update
+		json.Unmarshal(m.Params, &u)
+		if u.Type == "tool_result" && !u.Result.IsError && strings.Contains(u.Result.Text, haiku) {
+			return
+		}
+	}
+	l.t.Errorf("list_models returned no catalog: %v", l.c.received(id))
+}
+
+const steerText = "Also reply with the word steered."
+
+// steer sends a prompt that waits on a Bash approval, then sends a second
+// prompt while it waits, and returns the approval and the second prompt's ID.
+func (l *live) steer(id string) (agent.Update, string) {
+	l.t.Helper()
+	l.c.forget(id)
+	l.c.call("session/send", map[string]string{"session_id": id, "text": "Use the Bash tool to run `sleep 3 && touch steer.txt`, then reply with just the word done."})
+	asked := l.c.update(id, "approval")
+	var queued struct {
+		MessageID string `json:"message_id"`
+	}
+	json.Unmarshal(l.c.call("session/send", map[string]string{"session_id": id, "text": steerText}), &queued)
+	var u agent.Update
+	l.c.next(func(m message) bool {
+		if m.Method != "session/update" || m.sessionID() != id {
+			return false
+		}
+		u = agent.Update{}
+		json.Unmarshal(m.Params, &u)
+		return u.Type == "prompt_queued" && u.MessageID == queued.MessageID
+	})
+	if u.Text != steerText {
+		l.t.Errorf("prompt_queued carried %q", u.Text)
+	}
+	if busy := l.c.request("session/send", map[string]string{"session_id": id, "text": "again"}); busy.Error == nil || busy.Error.Code != sessionBusy {
+		l.t.Errorf("a second prompt was queued: %+v", busy.Error)
+	}
+	return asked, queued.MessageID
+}
+
+// message has a session in mode list the sessions and message a new parked
+// one, without asking, and the recipient starts and takes it.
+func (l *live) message(mode string) {
+	l.t.Helper()
+	from, to := l.create(mode), l.create("manual")
+	tools := l.turn(from, "Do both steps. Step 1: load and call the mcp__ox__list_sessions tool. "+
+		"Step 2: load and call the mcp__ox__send_message tool with to set to "+to+
+		` and text "Reply with just the word ok, without calling any tool." Then reply with just ok.`, l.refuse)
+	if !slices.Contains(tools, "mcp__ox__list_sessions") || !slices.Contains(tools, "mcp__ox__send_message") {
+		l.t.Fatalf("Haiku did not call list_sessions and send_message (%v); run again: %s", tools, describe(l.c.received(from)))
+	}
+	listedRecipient := false
+	for _, m := range l.c.received(from) {
+		var u agent.Update
+		json.Unmarshal(m.Params, &u)
+		if u.Type == "tool_result" && !u.Result.IsError && strings.Contains(u.Result.Text, `"session_id":"`+to+`"`) {
+			listedRecipient = true
+		}
+	}
+	if !listedRecipient {
+		l.t.Errorf("list_sessions did not list the recipient: %v", l.c.received(from))
+	}
+	if u := l.c.update(to, "prompt"); u.From != from {
+		l.t.Errorf("the recipient took a prompt from %q, not %q", u.From, from)
+	}
+	l.idle(to)
+}
+
+func describe(messages []message) string {
+	var b strings.Builder
+	for _, m := range messages {
+		b.Write(m.Params)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// TestLive runs sections against real Claude Code with Haiku. Each section
+// creates the sessions it uses, so -run TestLive/<section> runs one alone.
 func TestLive(t *testing.T) {
 	if os.Getenv("OX_LIVE") == "" {
 		t.Skip("set OX_LIVE=1 to run against real Claude with Haiku, as make live does")
@@ -57,727 +258,583 @@ func TestLive(t *testing.T) {
 	if out, err := exec.Command("go", "build", "-o", mcp.Forwarder, "../../cmd/ox-mcp").CombinedOutput(); err != nil {
 		t.Fatalf("build ox-mcp: %v\n%s", err, out)
 	}
-	s, err := New(st, cfg, parkAfter, map[string]agent.Harness{"claude": claude.Harness}, mcp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(s.Close)
-	serve := func(s *Server) net.Listener {
+	// serve starts a daemon that outlives the section that starts it.
+	top := t
+	serve := func(t *testing.T, park time.Duration) (*Server, net.Listener) {
+		t.Helper()
+		s, err := New(st, cfg, park, map[string]agent.Harness{"claude": claude.Harness}, mcp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		top.Cleanup(s.Close)
 		listener, err := net.Listen("unix", mcp.Socket)
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { listener.Close() })
+		top.Cleanup(func() { listener.Close() })
 		go s.Serve(listener)
-		return listener
+		return s, listener
 	}
-	listener := serve(s)
-	c := connect(t, s)
-	c.timeout = 3 * time.Minute
-	restart := func(park time.Duration) {
-		t.Helper()
-		s.Close()
-		listener.Close()
-		restarted, err := New(st, cfg, park, map[string]agent.Harness{"claude": claude.Harness}, mcp)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(restarted.Close)
-		s, listener = restarted, serve(restarted)
-		c = connect(t, s)
-		c.timeout = 3 * time.Minute
-	}
-
+	s, listener := serve(t, parkAfter)
 	var workspace struct {
 		WorkspaceID string `json:"workspace_id"`
 	}
-	json.Unmarshal(c.call("workspace/create", map[string]string{"path": dir}), &workspace)
-	create := func(mode string) string {
-		var created struct {
-			SessionID string `json:"session_id"`
-		}
-		json.Unmarshal(c.call("session/create", map[string]string{
-			"workspace_id": workspace.WorkspaceID, "harness": "claude", "model": haiku, "effort": "low", "permission_mode": mode,
-		}), &created)
-		return created.SessionID
-	}
-	type request struct {
-		ToolName string          `json:"tool_name"`
-		Input    json.RawMessage `json:"input"`
-	}
-	allow := func(r request) any {
-		return map[string]any{"behavior": "allow", "updatedInput": r.Input}
-	}
-	turn := func(id, text string, answer func(request) any) []string {
+	json.Unmarshal(connect(t, s).call("workspace/create", map[string]string{"path": dir}), &workspace)
+	open := func(t *testing.T) *live {
 		t.Helper()
-		c.forget(id)
-		c.call("session/send", map[string]string{"session_id": id, "text": text})
-		var tools []string
-		for {
-			var u agent.Update
-			c.next(func(m message) bool {
-				if m.Method != "session/update" || m.sessionID() != id {
+		c := connect(t, s)
+		c.timeout = 3 * time.Minute
+		return &live{t: t, c: c, workspace: workspace.WorkspaceID, st: st}
+	}
+	section := func(name string, run func(l *live)) {
+		t.Run(name, func(t *testing.T) { run(open(t)) })
+	}
+	// restart replaces the daemon, which the sections after l's keep, and
+	// returns l's section on the new one.
+	restart := func(l *live, park time.Duration) *live {
+		l.t.Helper()
+		s.Close()
+		listener.Close()
+		s, listener = serve(l.t, park)
+		return open(l.t)
+	}
+
+	section("failed start", func(l *live) {
+		var lostSend struct {
+			MessageID string `json:"message_id"`
+		}
+		json.Unmarshal(l.c.call("session/send", map[string]string{"session_id": lost, "text": "Reply with just the word ok."}), &lostSend)
+		if u := l.c.update(lost, "prompt_cancelled"); u.MessageID != lostSend.MessageID {
+			l.t.Errorf("resuming a missing conversation did not drop the prompt: %+v", u)
+		}
+		if u := l.c.update(lost, "exited"); !strings.Contains(u.Error, "could not resume the earlier conversation") {
+			l.t.Errorf("resuming a missing conversation did not say so: %+v", u)
+		}
+		l.c.update(lost, "parked")
+		if token := l.resumeToken(lost); token != "" {
+			l.t.Errorf("the missing conversation's token was kept: %q", token)
+		}
+		misspelled := l.create("acceptEdit")
+		l.c.call("session/send", map[string]string{"session_id": misspelled, "text": "Reply with just the word ok."})
+		if u := l.c.update(misspelled, "exited"); !strings.Contains(u.Error, "'acceptEdit' is invalid") {
+			l.t.Errorf("a start Claude refused on stderr failed without its reason: %+v", u)
+		} else {
+			l.t.Logf("exited: %s", u.Error)
+		}
+	})
+
+	section("resume after stop", func(l *live) {
+		var direct []agent.Update
+		var conversation string
+		options := agent.Options{
+			Workspace: dir, Settings: agent.Settings{Model: haiku, Effort: "low", PermissionMode: "manual"},
+			MCP: agent.MCPServer{
+				Command: mcp.Forwarder, Env: map[string]string{"OX_SOCKET": mcp.Socket, "OX_SESSION_ID": "direct"},
+				Approved: approvedTools(),
+			},
+			OnUpdate:     func(u agent.Update) { direct = append(direct, u) },
+			OnResumable:  func(token string) { conversation = token },
+			OnConfigured: func(agent.Settings) {},
+			OnError:      func(err error) { l.t.Log(err) },
+		}
+		// ask sends text to a and handles its events until Claude is idle,
+		// and returns the turn's result.
+		ask := func(a agent.Agent, text string) string {
+			l.t.Helper()
+			id := rand.Text()
+			if err := a.Send(agent.Input{MessageID: id, Text: text, Content: text}); err != nil {
+				l.t.Fatal(err)
+			}
+			timeout := time.After(3 * time.Minute)
+			var reply string
+			for seen := len(direct); ; {
+				select {
+				case e := <-a.Events():
+					a.Handle(e)
+				case <-timeout:
+					l.t.Fatal("Claude did not finish the turn")
+				}
+				for ; seen < len(direct); seen++ {
+					switch u := direct[seen]; {
+					case u.Type == agent.UpdateResult:
+						reply = u.Result.Text
+					case u.Type == agent.UpdateExited:
+						l.t.Fatalf("Claude exited: %s", u.Error)
+					case u.Type == agent.UpdateState && u.State == agent.StateIdle && u.MessageID == id:
+						return reply
+					}
+				}
+			}
+		}
+		first, err := claude.Start(options)
+		if err != nil {
+			l.t.Fatal(err)
+		}
+		ask(first, "Remember the word heliotrope. Reply with just ok.")
+		if conversation == "" {
+			l.t.Fatal("the conversation was not resumable")
+		}
+		first.Stop()
+		exiting := exec.Command("pgrep", "-f", "session-id="+conversation).Run() == nil
+		options.Resume = conversation
+		second, err := claude.Start(options)
+		if err != nil {
+			l.t.Fatal(err)
+		}
+		if reply := ask(second, "What word did I ask you to remember? Reply with just the word."); !strings.Contains(strings.ToLower(reply), "heliotrope") {
+			l.t.Errorf("the resumed conversation answered %q", reply)
+		}
+		second.Stop()
+		if !exiting {
+			l.t.Errorf("the stopped process had exited before the next one started")
+		}
+	})
+
+	section("resume after restart", func(l *live) {
+		// The first approval can be pending when the daemon restarts.
+		pendingID := l.create("manual")
+		const marker = "unfinished-ox-test-49"
+		l.c.call("session/send", map[string]string{"session_id": pendingID, "text": "Use Bash to run `touch " + marker + "`."})
+		if approval := l.c.update(pendingID, "approval"); !strings.Contains(string(approval.Request), marker) {
+			l.t.Fatalf("unexpected approval: %s", approval.Request)
+		}
+		pendingToken := l.resumeToken(pendingID)
+		if pendingToken == "" {
+			l.t.Fatal("the first prompt left no resume token while waiting on an approval")
+		}
+		configDir := os.Getenv("CLAUDE_CONFIG_DIR")
+		if configDir == "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				l.t.Fatal(err)
+			}
+			configDir = filepath.Join(home, ".claude")
+		}
+		files, err := filepath.Glob(filepath.Join(configDir, "projects", "*", pendingToken+".jsonl"))
+		if err != nil || len(files) != 1 {
+			l.t.Fatalf("no transcript for %s: %v, %v", pendingToken, files, err)
+		}
+		transcript, err := os.ReadFile(files[0])
+		if err != nil || !strings.Contains(string(transcript), "Use Bash to run `touch "+marker+"`.") {
+			l.t.Fatalf("Claude did not write the first prompt before the approval: %v", err)
+		}
+
+		// /clear replaces the resume token even with an empty result.
+		cleared := l.create("manual")
+		l.turn(cleared, "Reply with just the word ok.", allow)
+		old := l.resumeToken(cleared)
+		l.turn(cleared, "/clear", allow)
+		clearedToken := l.resumeToken(cleared)
+		if old == "" || clearedToken == "" || clearedToken == old {
+			l.t.Fatalf("/clear did not replace the resume token: %q -> %q", old, clearedToken)
+		}
+
+		l = restart(l, parkAfter)
+		l.turn(pendingID, "What exact filename did my first prompt ask to create? Reply with just the filename; do not call tools.", allow)
+		if r := l.c.update(pendingID, "result").Result; r.IsError || !strings.Contains(r.Text, marker) || l.resumeToken(pendingID) != pendingToken {
+			l.t.Fatalf("the reply did not resume the unfinished conversation: %+v", r)
+		}
+		l.turn(cleared, "Reply with just the word ok.", allow)
+		if r := l.c.update(cleared, "result").Result; r.IsError || l.resumeToken(cleared) != clearedToken {
+			l.t.Fatalf("the cleared conversation did not resume: %+v", r)
+		}
+	})
+
+	section("local command output", func(l *live) {
+		// /cost output is visible as reply text even without deltas from Claude.
+		id := l.create("manual")
+		l.turn(id, "Reply with just the word ok.", allow)
+		l.turn(id, "/cost", allow)
+		delta, result := l.c.update(id, "text_delta"), l.c.update(id, "result")
+		if result.Result.IsError || delta.Text == "" || delta.Text != result.Result.Text || delta.MessageID != result.MessageID {
+			l.t.Fatalf("local command output was not published as the reply: %+v, %+v", delta, result)
+		}
+	})
+
+	section("configure keeps other settings", func(l *live) {
+		a := l.create("acceptEdits")
+		l.turn(a, "Reply with just the word ok.", allow)
+		l.c.call("session/configure", map[string]string{"session_id": a, "effort": "high"})
+		configured := l.c.next(func(m message) bool { return m.Method == "session/configured" && m.sessionID() == a })
+		var settings agent.Settings
+		json.Unmarshal(configured.Params, &settings)
+		if settings != (agent.Settings{Model: haiku, Effort: "high", PermissionMode: "acceptEdits"}) {
+			l.t.Errorf("configuring effort changed other settings: %+v", settings)
+		}
+		l.turn(a, "Reply with just the word again.", allow)
+	})
+
+	section("interrupt", func(l *live) {
+		a := l.create("acceptEdits")
+		l.turn(a, "Reply with just the word ok.", allow)
+
+		// An interrupt ends a generating turn with an error result.
+		l.c.forget(a)
+		var sent struct {
+			MessageID string `json:"message_id"`
+		}
+		json.Unmarshal(l.c.call("session/send", map[string]string{"session_id": a, "text": "Write the numbers from 1 to 2000 in words, one per line."}), &sent)
+		if u := l.c.update(a, "text_delta"); u.MessageID != sent.MessageID {
+			l.t.Errorf("the prompt's reply was attributed to %q, not %q", u.MessageID, sent.MessageID)
+		}
+		l.c.call("session/interrupt", map[string]string{"session_id": a})
+		if u := l.c.update(a, "result"); !u.Result.IsError || u.Result.Text != "Interrupted" || u.MessageID != sent.MessageID {
+			l.t.Errorf("an interrupted turn ended with %+v", u)
+		}
+		l.idle(a)
+
+		// An interrupt right after a send stops the prompt.
+		l.c.forget(a)
+		l.c.call("session/send", map[string]string{"session_id": a, "text": "Write the numbers from 1 to 2000 in words, one per line."})
+		l.c.call("session/interrupt", map[string]string{"session_id": a})
+		if r := l.c.update(a, "result").Result; !r.IsError || r.Text != "Interrupted" {
+			l.t.Errorf("a prompt interrupted on arrival ended with %+v", r)
+		}
+		l.idle(a)
+	})
+
+	section("steering", func(l *live) {
+		// A prompt sent while Claude works joins the turn.
+		steered := l.create("manual")
+		u, queued := l.steer(steered)
+		for taken := false; ; {
+			if u.Type == "approval" {
+				var r liveRequest
+				json.Unmarshal(u.Request, &r)
+				l.c.call("session/approve", map[string]any{"session_id": steered, "request_id": u.RequestID, "response": allow(r)})
+			}
+			l.c.next(func(m message) bool {
+				if m.Method != "session/update" || m.sessionID() != steered {
 					return false
 				}
 				u = agent.Update{}
 				json.Unmarshal(m.Params, &u)
-				return u.Type == "tool_use" || u.Type == "approval" || (u.Type == "state" && u.State == "idle")
+				return u.Type == "prompt" || u.Type == "approval" || (u.Type == "state" && u.State == "idle")
 			})
-			switch u.Type {
-			case "tool_use":
-				tools = append(tools, u.ToolName)
-			case "approval":
-				var r request
-				json.Unmarshal(u.Request, &r)
-				c.call("session/approve", map[string]any{"session_id": id, "request_id": u.RequestID, "response": answer(r)})
-			default:
-				return tools
+			if u.Type == "prompt" {
+				taken = taken || u.MessageID == queued
 			}
-		}
-	}
-	idle := func(id string) {
-		for c.update(id, "state").State != "idle" {
-		}
-	}
-	lastIs := func(id, method string) bool {
-		received := c.received(id)
-		return len(received) > 0 && received[len(received)-1].Method == method
-	}
-	parked := func(id string) bool {
-		for _, m := range c.received(id) {
-			var u agent.Update
-			json.Unmarshal(m.Params, &u)
-			if m.Method == "session/update" && u.Type == "parked" {
-				return true
-			}
-		}
-		return false
-	}
-
-	resumeToken := func(id string) string {
-		t.Helper()
-		workspaces, err := st.Workspaces()
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, w := range workspaces {
-			for _, record := range w.Sessions {
-				if record.ID == id {
-					return record.ResumeToken
+			if u.Type == "state" {
+				if !taken {
+					l.t.Error("Claude did not take the prompt sent while it worked")
 				}
+				break
 			}
 		}
-		t.Fatalf("session %s not found in the database", id)
-		return ""
-	}
-
-	t.Log("a failed start reports Claude's reason")
-	var lostSend struct {
-		MessageID string `json:"message_id"`
-	}
-	json.Unmarshal(c.call("session/send", map[string]string{"session_id": lost, "text": "Reply with just the word ok."}), &lostSend)
-	if u := c.update(lost, "prompt_cancelled"); u.MessageID != lostSend.MessageID {
-		t.Errorf("resuming a missing conversation did not drop the prompt: %+v", u)
-	}
-	if u := c.update(lost, "exited"); !strings.Contains(u.Error, "could not resume the earlier conversation") {
-		t.Errorf("resuming a missing conversation did not say so: %+v", u)
-	}
-	c.update(lost, "parked")
-	if token := resumeToken(lost); token != "" {
-		t.Errorf("the missing conversation's token was kept: %q", token)
-	}
-	misspelled := create("acceptEdit")
-	c.call("session/send", map[string]string{"session_id": misspelled, "text": "Reply with just the word ok."})
-	if u := c.update(misspelled, "exited"); !strings.Contains(u.Error, "'acceptEdit' is invalid") {
-		t.Errorf("a start Claude refused on stderr failed without its reason: %+v", u)
-	} else {
-		t.Logf("exited: %s", u.Error)
-	}
-
-	t.Log("a conversation resumes at once after its process is stopped")
-	var direct []agent.Update
-	var conversation string
-	options := agent.Options{
-		Workspace: dir, Settings: agent.Settings{Model: haiku, Effort: "low", PermissionMode: "manual"},
-		MCP: agent.MCPServer{
-			Command: mcp.Forwarder, Env: map[string]string{"OX_SOCKET": mcp.Socket, "OX_SESSION_ID": "direct"},
-			Approved: approvedTools(),
-		},
-		OnUpdate:     func(u agent.Update) { direct = append(direct, u) },
-		OnResumable:  func(token string) { conversation = token },
-		OnConfigured: func(agent.Settings) {},
-		OnError:      func(err error) { t.Log(err) },
-	}
-	// ask sends text to a and handles its events until Claude is idle, and
-	// returns the turn's result.
-	ask := func(a agent.Agent, text string) string {
-		t.Helper()
-		id := rand.Text()
-		if err := a.Send(agent.Input{MessageID: id, Text: text, Content: text}); err != nil {
-			t.Fatal(err)
-		}
-		timeout := time.After(3 * time.Minute)
-		var reply string
-		for seen := len(direct); ; {
-			select {
-			case e := <-a.Events():
-				a.Handle(e)
-			case <-timeout:
-				t.Fatal("Claude did not finish the turn")
-			}
-			for ; seen < len(direct); seen++ {
-				switch u := direct[seen]; {
-				case u.Type == agent.UpdateResult:
-					reply = u.Result.Text
-				case u.Type == agent.UpdateExited:
-					t.Fatalf("Claude exited: %s", u.Error)
-				case u.Type == agent.UpdateState && u.State == agent.StateIdle && u.MessageID == id:
-					return reply
-				}
-			}
-		}
-	}
-	first, err := claude.Start(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ask(first, "Remember the word heliotrope. Reply with just ok.")
-	if conversation == "" {
-		t.Fatal("the conversation was not resumable")
-	}
-	first.Stop()
-	exiting := exec.Command("pgrep", "-f", "session-id="+conversation).Run() == nil
-	options.Resume = conversation
-	second, err := claude.Start(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reply := ask(second, "What word did I ask you to remember? Reply with just the word."); !strings.Contains(strings.ToLower(reply), "heliotrope") {
-		t.Errorf("the resumed conversation answered %q", reply)
-	}
-	second.Stop()
-	if !exiting {
-		t.Errorf("the stopped process had exited before the next one started")
-	}
-
-	t.Log("the first approval can be pending when the daemon restarts")
-	pendingID := create("manual")
-	const marker = "unfinished-ox-test-49"
-	c.call("session/send", map[string]string{"session_id": pendingID, "text": "Use Bash to run `touch " + marker + "`."})
-	if approval := c.update(pendingID, "approval"); !strings.Contains(string(approval.Request), marker) {
-		t.Fatalf("unexpected approval: %s", approval.Request)
-	}
-	pendingToken := resumeToken(pendingID)
-	if pendingToken == "" {
-		t.Fatal("the first prompt left no resume token while waiting on an approval")
-	}
-	configDir := os.Getenv("CLAUDE_CONFIG_DIR")
-	if configDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			t.Fatal(err)
-		}
-		configDir = filepath.Join(home, ".claude")
-	}
-	files, err := filepath.Glob(filepath.Join(configDir, "projects", "*", pendingToken+".jsonl"))
-	if err != nil || len(files) != 1 {
-		t.Fatalf("no transcript for %s: %v, %v", pendingToken, files, err)
-	}
-	transcript, err := os.ReadFile(files[0])
-	if err != nil || !strings.Contains(string(transcript), "Use Bash to run `touch "+marker+"`.") {
-		t.Fatalf("Claude did not write the first prompt before the approval: %v", err)
-	}
-
-	t.Log("/clear replaces the resume token even with an empty result")
-	cleared := create("manual")
-	turn(cleared, "Reply with just the word ok.", allow)
-	old := resumeToken(cleared)
-	turn(cleared, "/clear", allow)
-	clearedToken := resumeToken(cleared)
-	if old == "" || clearedToken == "" || clearedToken == old {
-		t.Fatalf("/clear did not replace the resume token: %q -> %q", old, clearedToken)
-	}
-
-	restart(parkAfter)
-	turn(pendingID, "What exact filename did my first prompt ask to create? Reply with just the filename; do not call tools.", allow)
-	if r := c.update(pendingID, "result").Result; r.IsError || !strings.Contains(r.Text, marker) || resumeToken(pendingID) != pendingToken {
-		t.Fatalf("the reply did not resume the unfinished conversation: %+v", r)
-	}
-	turn(cleared, "Reply with just the word ok.", allow)
-	if r := c.update(cleared, "result").Result; r.IsError || resumeToken(cleared) != clearedToken {
-		t.Fatalf("the cleared conversation did not resume: %+v", r)
-	}
-
-	t.Log("/cost output is visible as reply text even without deltas from Claude")
-	turn(cleared, "/cost", allow)
-	delta, result := c.update(cleared, "text_delta"), c.update(cleared, "result")
-	if result.Result.IsError || delta.Text == "" || delta.Text != result.Result.Text || delta.MessageID != result.MessageID {
-		t.Fatalf("local command output was not published as the reply: %+v, %+v", delta, result)
-	}
-
-	t.Log("configuring one setting keeps the others")
-	a := create("acceptEdits")
-	turn(a, "Reply with just the word ok.", allow)
-	c.call("session/configure", map[string]string{"session_id": a, "effort": "high"})
-	configured := c.next(func(m message) bool { return m.Method == "session/configured" && m.sessionID() == a })
-	var settings agent.Settings
-	json.Unmarshal(configured.Params, &settings)
-	if settings != (agent.Settings{Model: haiku, Effort: "high", PermissionMode: "acceptEdits"}) {
-		t.Errorf("configuring effort changed other settings: %+v", settings)
-	}
-	turn(a, "Reply with just the word again.", allow)
-
-	t.Log("an interrupt ends a generating turn with an error result")
-	c.forget(a)
-	var sent struct {
-		MessageID string `json:"message_id"`
-	}
-	json.Unmarshal(c.call("session/send", map[string]string{"session_id": a, "text": "Write the numbers from 1 to 2000 in words, one per line."}), &sent)
-	if u := c.update(a, "text_delta"); u.MessageID != sent.MessageID {
-		t.Errorf("the prompt's reply was attributed to %q, not %q", u.MessageID, sent.MessageID)
-	}
-	c.call("session/interrupt", map[string]string{"session_id": a})
-	if u := c.update(a, "result"); !u.Result.IsError || u.Result.Text != "Interrupted" || u.MessageID != sent.MessageID {
-		t.Errorf("an interrupted turn ended with %+v", u)
-	}
-	idle(a)
-
-	t.Log("an interrupt right after a send stops the prompt")
-	c.forget(a)
-	c.call("session/send", map[string]string{"session_id": a, "text": "Write the numbers from 1 to 2000 in words, one per line."})
-	c.call("session/interrupt", map[string]string{"session_id": a})
-	if r := c.update(a, "result").Result; !r.IsError || r.Text != "Interrupted" {
-		t.Errorf("a prompt interrupted on arrival ended with %+v", r)
-	}
-	idle(a)
-
-	// steer sends a prompt that waits on a Bash approval, then sends a
-	// second prompt while it waits, and returns the approval and the second
-	// prompt's ID.
-	const steerText = "Also reply with the word steered."
-	steer := func(id string) (agent.Update, string) {
-		t.Helper()
-		c.forget(id)
-		c.call("session/send", map[string]string{"session_id": id, "text": "Use the Bash tool to run `sleep 3 && touch steer.txt`, then reply with just the word done."})
-		asked := c.update(id, "approval")
-		var queued struct {
-			MessageID string `json:"message_id"`
-		}
-		json.Unmarshal(c.call("session/send", map[string]string{"session_id": id, "text": steerText}), &queued)
-		var u agent.Update
-		c.next(func(m message) bool {
-			if m.Method != "session/update" || m.sessionID() != id {
-				return false
-			}
-			u = agent.Update{}
-			json.Unmarshal(m.Params, &u)
-			return u.Type == "prompt_queued" && u.MessageID == queued.MessageID
-		})
-		if u.Text != steerText {
-			t.Errorf("prompt_queued carried %q", u.Text)
-		}
-		if busy := c.request("session/send", map[string]string{"session_id": id, "text": "again"}); busy.Error == nil || busy.Error.Code != sessionBusy {
-			t.Errorf("a second prompt was queued: %+v", busy.Error)
-		}
-		return asked, queued.MessageID
-	}
-
-	t.Log("a prompt sent while Claude works joins the turn")
-	steered := create("manual")
-	u, queued := steer(steered)
-	for taken := false; ; {
-		if u.Type == "approval" {
-			var r request
-			json.Unmarshal(u.Request, &r)
-			c.call("session/approve", map[string]any{"session_id": steered, "request_id": u.RequestID, "response": allow(r)})
-		}
-		c.next(func(m message) bool {
-			if m.Method != "session/update" || m.sessionID() != steered {
-				return false
-			}
-			u = agent.Update{}
-			json.Unmarshal(m.Params, &u)
-			return u.Type == "prompt" || u.Type == "approval" || (u.Type == "state" && u.State == "idle")
-		})
-		if u.Type == "prompt" {
-			taken = taken || u.MessageID == queued
-		}
-		if u.Type == "state" {
-			if !taken {
-				t.Error("Claude did not take the prompt sent while it worked")
-			}
-			break
-		}
-	}
-
-	t.Log("Stop drops a prompt Claude has not taken")
-	stopped := create("manual")
-	_, dropped := steer(stopped)
-	c.call("session/interrupt", map[string]string{"session_id": stopped})
-	if u := c.update(stopped, "prompt_cancelled"); u.MessageID != dropped || u.Text != steerText {
-		t.Errorf("prompt_cancelled named %+v, not %s", u, dropped)
-	}
-	idle(stopped)
-	for _, m := range c.received(stopped) {
-		var u agent.Update
-		json.Unmarshal(m.Params, &u)
-		if u.Type == "prompt" && u.MessageID == dropped {
-			t.Error("Claude took the prompt Stop dropped")
-		}
-	}
-
-	t.Log("a session starting Claude holds up only its own requests")
-	b := create("acceptEdits")
-	start := time.Now()
-	sending := c.send("session/send", map[string]string{"session_id": b, "text": "Reply with just the word ok."})
-	c.call("session/get", map[string]string{"session_id": a})
-	answered := time.Since(start)
-	if r := c.response(sending); r.Error != nil {
-		t.Fatalf("send: %+v", r.Error)
-	}
-	if started := time.Since(start); answered > 100*time.Millisecond || answered >= started {
-		t.Errorf("session/get took %v while another session took %v to start", answered, started)
-	}
-	idle(b)
-
-	t.Log("a destroyed session's last notification is session/destroyed")
-	d := create("acceptEdits")
-	sending = c.send("session/send", map[string]string{"session_id": d, "text": "Reply with just the word ok."})
-	destroyed := c.send("session/destroy", map[string]string{"session_id": d})
-	c.response(sending) // succeeds or finds the session gone, depending on which runs first
-	if r := c.response(destroyed); r.Error != nil {
-		t.Fatalf("destroy while starting: %+v", r.Error)
-	}
-	configuring := c.send("session/configure", map[string]string{"session_id": b, "effort": "high"})
-	destroyed = c.send("session/destroy", map[string]string{"session_id": b})
-	c.response(configuring)
-	if r := c.response(destroyed); r.Error != nil {
-		t.Fatalf("destroy while configuring: %+v", r.Error)
-	}
-	time.Sleep(time.Second)
-	if !lastIs(d, "session/destroyed") || !lastIs(b, "session/destroyed") {
-		t.Errorf("a notification followed session/destroyed: %v, %v", c.received(d), c.received(b))
-	}
-
-	t.Log("a mode Claude changes itself reaches the client")
-	planned := create("plan")
-	tools := turn(planned, "Load and call the ExitPlanMode tool now with the one-line plan: reply ok. Then reply with just ok.", allow)
-	if !slices.Contains(tools, "ExitPlanMode") {
-		t.Fatalf("Haiku did not call ExitPlanMode (%v); run again", tools)
-	}
-	moved := c.next(func(m message) bool { return m.Method == "session/configured" && m.sessionID() == planned })
-	var movedTo agent.Settings
-	json.Unmarshal(moved.Params, &movedTo)
-	if movedTo.PermissionMode != "manual" {
-		t.Errorf("approving ExitPlanMode left the mode %q", movedTo.PermissionMode)
-	}
-
-	t.Log("Claude lists Ox's models without asking, in every mode")
-	refuse := func(r request) any {
-		t.Errorf("%s asked for approval", r.ToolName)
-		return map[string]any{"behavior": "deny", "message": "no", "interrupt": true}
-	}
-	listModels := func(id string) {
-		t.Helper()
-		tools := turn(id, "Call the mcp__ox__list_models tool now, then reply with just ok.", refuse)
-		if !slices.Contains(tools, "mcp__ox__list_models") {
-			t.Fatalf("Haiku did not call mcp__ox__list_models (%v); run again", tools)
-		}
-		for _, m := range c.received(id) {
-			var u agent.Update
-			json.Unmarshal(m.Params, &u)
-			if u.Type == "tool_result" && !u.Result.IsError && strings.Contains(u.Result.Text, haiku) {
-				return
-			}
-		}
-		t.Errorf("list_models returned no catalog: %v", c.received(id))
-	}
-	listed := create("manual")
-	listModels(listed)
-	listModels(create("plan"))
-
-	t.Log("background work shows as background until it ends, then Claude's own turn runs")
-	worker := create("manual")
-	c.forget(worker)
-	c.call("session/send", map[string]string{"session_id": worker,
-		"text": "Run the Bash command `sleep 8` with run_in_background set to true. Do not wait for it or check on it. Then reply with just the word started."})
-	// states is the session's published states, each change once, from the
-	// first background on.
-	var states []string
-	for !slices.Equal(states, []string{"background", "idle", "running", "idle"}) {
-		var u agent.Update
-		c.next(func(m message) bool {
-			if m.Method != "session/update" || m.sessionID() != worker {
-				return false
-			}
-			u = agent.Update{}
-			json.Unmarshal(m.Params, &u)
-			return u.Type == "approval" || u.Type == "state"
-		})
-		switch {
-		case u.Type == "approval":
-			var r request
-			json.Unmarshal(u.Request, &r)
-			c.call("session/approve", map[string]any{"session_id": worker, "request_id": u.RequestID, "response": allow(r)})
-		case u.State == "background" || len(states) > 0:
-			if len(states) == 0 || states[len(states)-1] != u.State {
-				states = append(states, u.State)
-			}
-			if len(states) > 4 {
-				t.Fatalf("background work published %v", states)
-			}
-		}
-	}
-	if snapshot := c.call("session/get", map[string]string{"session_id": worker}); !strings.Contains(string(snapshot), `"state":"idle"`) {
-		t.Errorf("after its background work the session is not idle: %s", snapshot)
-	}
-
-	t.Log("Claude lists sessions and messages a parked one")
-	describe := func(messages []message) string {
-		var b strings.Builder
-		for _, m := range messages {
-			b.Write(m.Params)
-			b.WriteString("\n")
-		}
-		return b.String()
-	}
-	// message has a session in mode list the sessions and message a new
-	// parked one, without asking, and the recipient starts and takes it.
-	message := func(mode string) {
-		t.Helper()
-		from, to := create(mode), create("manual")
-		tools := turn(from, "Do both steps. Step 1: load and call the mcp__ox__list_sessions tool. "+
-			"Step 2: load and call the mcp__ox__send_message tool with to set to "+to+
-			` and text "Reply with just the word ok, without calling any tool." Then reply with just ok.`, refuse)
-		if !slices.Contains(tools, "mcp__ox__list_sessions") || !slices.Contains(tools, "mcp__ox__send_message") {
-			t.Fatalf("Haiku did not call list_sessions and send_message (%v); run again: %s", tools, describe(c.received(from)))
-		}
-		listedRecipient := false
-		for _, m := range c.received(from) {
-			var u agent.Update
-			json.Unmarshal(m.Params, &u)
-			if u.Type == "tool_result" && !u.Result.IsError && strings.Contains(u.Result.Text, `"session_id":"`+to+`"`) {
-				listedRecipient = true
-			}
-		}
-		if !listedRecipient {
-			t.Errorf("list_sessions did not list the recipient: %v", c.received(from))
-		}
-		if u := c.update(to, "prompt"); u.From != from {
-			t.Errorf("the recipient took a prompt from %q, not %q", u.From, from)
-		}
-		idle(to)
-	}
-	message("manual")
-	message("auto")
-
-	t.Log("Claude reads another session's long transcript without asking, in plan mode")
-	const endMarker = "END-MARKER-7731"
-	long := create("manual")
-	turn(long, strings.Repeat("lorem ipsum dolor sit amet ", 1420)+"The marker is "+endMarker+". Reply with just ok.", refuse)
-	reader := create("plan")
-	tools = turn(reader, "Load and call the mcp__ox__read_session tool with to set to "+long+
-		`. Then reply with just the marker that ends the user prompt in the transcript, the word after "The marker is".`, refuse)
-	if !slices.Contains(tools, "mcp__ox__read_session") {
-		t.Fatalf("Haiku did not call read_session (%v); run again: %s", tools, describe(c.received(reader)))
-	}
-	read, replied := false, false
-	for _, m := range c.received(reader) {
-		var u agent.Update
-		json.Unmarshal(m.Params, &u)
-		switch {
-		case u.Type == "result":
-			replied = replied || strings.Contains(u.Result.Text, endMarker)
-		case u.Type == "tool_result" && !u.Result.IsError && strings.Contains(u.Result.Text, endMarker) && len(u.Result.Text) >= 38000:
-			read = true
-			t.Logf("read_session's result reached Claude as %d characters", len(u.Result.Text))
-		}
-	}
-	if !read {
-		t.Errorf("read_session did not return the whole transcript: %v", c.received(reader))
-	}
-	if !replied {
-		t.Errorf("Claude did not reply with the end of the transcript: %v", c.received(reader))
-	}
-
-	t.Log("asked in plain words, Claude messages another session through Ox")
-	from, to := create("acceptEdits"), create("manual")
-	tools = turn(from, "Exchange a message with the other agent, session "+to+
-		": ask it to reply with just the word ok, without calling any tool. Then reply with just ok.", refuse)
-	if slices.Contains(tools, "SendMessage") || slices.Contains(tools, "ListAgents") {
-		t.Fatalf("Claude used its own messaging tools: %v", tools)
-	}
-	if !slices.Contains(tools, "mcp__ox__send_message") {
-		t.Fatalf("Haiku called no messaging tool (%v); run again: %s", tools, describe(c.received(from)))
-	}
-	if u := c.update(to, "prompt"); u.From != from {
-		t.Errorf("the recipient took a prompt from %q, not %q", u.From, from)
-	}
-	idle(to)
-	tools = turn(from, "Load and call the ListAgents tool. Then reply with just ok.", refuse)
-	if slices.Contains(tools, "ListAgents") {
-		t.Errorf("Claude called ListAgents: %v", tools)
-	}
-
-	t.Log("in plan mode, a message asks first")
-	// Haiku in plan mode usually declines to call a tool that is not
-	// read-only; when it does call send_message, the call asks first.
-	planner, recipient := create("plan"), create("manual")
-	askedToSend := false
-	tools = turn(planner, "Load and call the mcp__ox__send_message tool with to set to "+recipient+
-		` and text "Reply with just the word ok." Then reply with just ok.`, func(r request) any {
-		if r.ToolName != "mcp__ox__send_message" {
-			t.Errorf("%s asked for approval in plan mode", r.ToolName)
-		}
-		askedToSend = true
-		return allow(r)
 	})
-	switch {
-	case askedToSend:
-		if u := c.update(recipient, "prompt"); u.From != planner {
-			t.Errorf("the recipient took a prompt from %q, not %q", u.From, planner)
+
+	section("stop drops untaken prompt", func(l *live) {
+		stopped := l.create("manual")
+		_, dropped := l.steer(stopped)
+		l.c.call("session/interrupt", map[string]string{"session_id": stopped})
+		if u := l.c.update(stopped, "prompt_cancelled"); u.MessageID != dropped || u.Text != steerText {
+			l.t.Errorf("prompt_cancelled named %+v, not %s", u, dropped)
 		}
-		idle(recipient)
-	case slices.Contains(tools, "mcp__ox__send_message"):
-		t.Error("send_message ran without asking in plan mode")
-	default:
-		t.Logf("Haiku declined to call send_message in plan mode (%v)", tools)
-		for _, m := range c.received(recipient) {
-			if m.Method == "session/update" {
-				t.Errorf("a message reached the recipient without approval: %s", m.Params)
+		l.idle(stopped)
+		for _, m := range l.c.received(stopped) {
+			var u agent.Update
+			json.Unmarshal(m.Params, &u)
+			if u.Type == "prompt" && u.MessageID == dropped {
+				l.t.Error("Claude took the prompt Stop dropped")
 			}
 		}
-	}
+	})
 
-	t.Log("a refused message reaches Claude as a tool error")
-	unknown := create("manual")
-	tools = turn(unknown, `Load and call the mcp__ox__send_message tool with to set to "no-such-session" and text "hi". Then reply with just ok.`, refuse)
-	if !slices.Contains(tools, "mcp__ox__send_message") {
-		t.Fatalf("Haiku did not call send_message (%v); run again", tools)
-	}
-	refused := false
-	for _, m := range c.received(unknown) {
-		var u agent.Update
-		json.Unmarshal(m.Params, &u)
-		if u.Type == "tool_result" && u.Result.IsError && strings.Contains(u.Result.Text, "session not found") {
-			refused = true
+	section("own mode change", func(l *live) {
+		// A mode Claude changes itself reaches the client.
+		planned := l.create("plan")
+		tools := l.turn(planned, "Load and call the ExitPlanMode tool now with the one-line plan: reply ok. Then reply with just ok.", allow)
+		if !slices.Contains(tools, "ExitPlanMode") {
+			l.t.Fatalf("Haiku did not call ExitPlanMode (%v); run again", tools)
 		}
-	}
-	if !refused {
-		t.Errorf("the refusal did not reach Claude as an error: %v", c.received(unknown))
-	}
+		moved := l.c.next(func(m message) bool { return m.Method == "session/configured" && m.sessionID() == planned })
+		var movedTo agent.Settings
+		json.Unmarshal(moved.Params, &movedTo)
+		if movedTo.PermissionMode != "manual" {
+			l.t.Errorf("approving ExitPlanMode left the mode %q", movedTo.PermissionMode)
+		}
+	})
 
-	t.Log("Claude starts a child session without asking")
-	parent, childDir := create("manual"), t.TempDir()
-	tools = turn(parent, "Load and call the mcp__ox__create_session tool with name helper, title Helper, dir "+childDir+
-		`, and message "Load and call the mcp__ox__create_session tool with name leaf, title Leaf, and message 'Reply with just the word ok, without calling any tool.' Then reply with just ok." Then reply with just ok.`, refuse)
-	if !slices.Contains(tools, "mcp__ox__create_session") {
-		t.Fatalf("Haiku did not call create_session (%v); run again: %s", tools, describe(c.received(parent)))
-	}
-	var started struct {
-		SessionID string `json:"session_id"`
-	}
-	for _, m := range c.received(parent) {
-		var u agent.Update
-		json.Unmarshal(m.Params, &u)
-		if u.Type == "tool_result" && !u.Result.IsError && strings.Contains(u.Result.Text, `"session_id"`) {
-			json.Unmarshal([]byte(u.Result.Text), &started)
+	section("list models", func(l *live) {
+		// Claude lists Ox's models without asking, in every mode, and once
+		// resumed.
+		listed := l.create("manual")
+		l.listModels(listed)
+		l.listModels(l.create("plan"))
+		l.c.update(listed, "parked")
+		l.listModels(listed)
+	})
+
+	section("background work", func(l *live) {
+		// Background work shows as background until it ends, then Claude's
+		// own turn runs.
+		worker := l.create("manual")
+		l.c.call("session/send", map[string]string{"session_id": worker,
+			"text": "Run the Bash command `sleep 8` with run_in_background set to true. Do not wait for it or check on it. Then reply with just the word started."})
+		// states is the session's published states, each change once, from
+		// the first background on.
+		var states []string
+		for !slices.Equal(states, []string{"background", "idle", "running", "idle"}) {
+			var u agent.Update
+			l.c.next(func(m message) bool {
+				if m.Method != "session/update" || m.sessionID() != worker {
+					return false
+				}
+				u = agent.Update{}
+				json.Unmarshal(m.Params, &u)
+				return u.Type == "approval" || u.Type == "state"
+			})
+			switch {
+			case u.Type == "approval":
+				var r liveRequest
+				json.Unmarshal(u.Request, &r)
+				l.c.call("session/approve", map[string]any{"session_id": worker, "request_id": u.RequestID, "response": allow(r)})
+			case u.State == "background" || len(states) > 0:
+				if len(states) == 0 || states[len(states)-1] != u.State {
+					states = append(states, u.State)
+				}
+				if len(states) > 4 {
+					l.t.Fatalf("background work published %v", states)
+				}
+			}
 		}
-	}
-	if started.SessionID == "" {
-		t.Fatalf("create_session returned no child: %s", describe(c.received(parent)))
-	}
-	var childCreated struct {
-		Child *child `json:"child"`
-	}
-	for _, m := range c.received(started.SessionID) {
-		if m.Method == "session/created" {
-			json.Unmarshal(m.Params, &childCreated)
+		if snapshot := l.c.call("session/get", map[string]string{"session_id": worker}); !strings.Contains(string(snapshot), `"state":"idle"`) {
+			l.t.Errorf("after its background work the session is not idle: %s", snapshot)
 		}
-	}
-	if childCreated.Child == nil || childCreated.Child.Directory != childDir || childCreated.Child.ParentID != parent {
-		t.Errorf("session/created carried %+v", childCreated.Child)
-	}
-	if u := c.update(started.SessionID, "prompt"); u.From != parent {
-		t.Errorf("the child took a prompt from %q, not %q", u.From, parent)
-	}
-	if u := c.update(started.SessionID, "result"); u.Result.IsError {
-		t.Errorf("the child's turn failed: %s", u.Result.Text)
-	}
-	t.Log("a child starts a child of its own on its parent's request")
-	// The grandchild is published before create_session answers the child.
-	var leaf string
-	for _, m := range c.notifications("session/created") {
-		var created struct {
+	})
+
+	section("message parked session", func(l *live) {
+		// Claude lists sessions and messages a parked one.
+		l.message("manual")
+		l.message("auto")
+	})
+
+	section("read long transcript", func(l *live) {
+		// Claude reads another session's long transcript without asking, in
+		// plan mode.
+		const endMarker = "END-MARKER-7731"
+		long := l.create("manual")
+		l.turn(long, strings.Repeat("lorem ipsum dolor sit amet ", 1420)+"The marker is "+endMarker+". Reply with just ok.", l.refuse)
+		reader := l.create("plan")
+		tools := l.turn(reader, "Load and call the mcp__ox__read_session tool with to set to "+long+
+			`. Then reply with just the marker that ends the user prompt in the transcript, the word after "The marker is".`, l.refuse)
+		if !slices.Contains(tools, "mcp__ox__read_session") {
+			l.t.Fatalf("Haiku did not call read_session (%v); run again: %s", tools, describe(l.c.received(reader)))
+		}
+		read, replied := false, false
+		for _, m := range l.c.received(reader) {
+			var u agent.Update
+			json.Unmarshal(m.Params, &u)
+			switch {
+			case u.Type == "result":
+				replied = replied || strings.Contains(u.Result.Text, endMarker)
+			case u.Type == "tool_result" && !u.Result.IsError && strings.Contains(u.Result.Text, endMarker) && len(u.Result.Text) >= 38000:
+				read = true
+				l.t.Logf("read_session's result reached Claude as %d characters", len(u.Result.Text))
+			}
+		}
+		if !read {
+			l.t.Errorf("read_session did not return the whole transcript: %v", l.c.received(reader))
+		}
+		if !replied {
+			l.t.Errorf("Claude did not reply with the end of the transcript: %v", l.c.received(reader))
+		}
+	})
+
+	section("plain-words messaging", func(l *live) {
+		// Asked in plain words, Claude messages another session through Ox.
+		from, to := l.create("acceptEdits"), l.create("manual")
+		tools := l.turn(from, "Exchange a message with the other agent, session "+to+
+			": ask it to reply with just the word ok, without calling any tool. Then reply with just ok.", l.refuse)
+		if slices.Contains(tools, "SendMessage") || slices.Contains(tools, "ListAgents") {
+			l.t.Fatalf("Claude used its own messaging tools: %v", tools)
+		}
+		if !slices.Contains(tools, "mcp__ox__send_message") {
+			l.t.Fatalf("Haiku called no messaging tool (%v); run again: %s", tools, describe(l.c.received(from)))
+		}
+		if u := l.c.update(to, "prompt"); u.From != from {
+			l.t.Errorf("the recipient took a prompt from %q, not %q", u.From, from)
+		}
+		l.idle(to)
+		tools = l.turn(from, "Load and call the ListAgents tool. Then reply with just ok.", l.refuse)
+		if slices.Contains(tools, "ListAgents") {
+			l.t.Errorf("Claude called ListAgents: %v", tools)
+		}
+	})
+
+	section("plan-mode message asks", func(l *live) {
+		// Haiku in plan mode usually declines to call a tool that is not
+		// read-only; when it does call send_message, the call asks first.
+		planner, recipient := l.create("plan"), l.create("manual")
+		askedToSend := false
+		tools := l.turn(planner, "Load and call the mcp__ox__send_message tool with to set to "+recipient+
+			` and text "Reply with just the word ok." Then reply with just ok.`, func(r liveRequest) any {
+			if r.ToolName != "mcp__ox__send_message" {
+				l.t.Errorf("%s asked for approval in plan mode", r.ToolName)
+			}
+			askedToSend = true
+			return allow(r)
+		})
+		switch {
+		case askedToSend:
+			if u := l.c.update(recipient, "prompt"); u.From != planner {
+				l.t.Errorf("the recipient took a prompt from %q, not %q", u.From, planner)
+			}
+			l.idle(recipient)
+		case slices.Contains(tools, "mcp__ox__send_message"):
+			l.t.Error("send_message ran without asking in plan mode")
+		default:
+			l.t.Logf("Haiku declined to call send_message in plan mode (%v)", tools)
+			for _, m := range l.c.received(recipient) {
+				if m.Method == "session/update" {
+					l.t.Errorf("a message reached the recipient without approval: %s", m.Params)
+				}
+			}
+		}
+	})
+
+	section("refused message", func(l *live) {
+		// A refused message reaches Claude as a tool error.
+		unknown := l.create("manual")
+		tools := l.turn(unknown, `Load and call the mcp__ox__send_message tool with to set to "no-such-session" and text "hi". Then reply with just ok.`, l.refuse)
+		if !slices.Contains(tools, "mcp__ox__send_message") {
+			l.t.Fatalf("Haiku did not call send_message (%v); run again", tools)
+		}
+		refused := false
+		for _, m := range l.c.received(unknown) {
+			var u agent.Update
+			json.Unmarshal(m.Params, &u)
+			if u.Type == "tool_result" && u.Result.IsError && strings.Contains(u.Result.Text, "session not found") {
+				refused = true
+			}
+		}
+		if !refused {
+			l.t.Errorf("the refusal did not reach Claude as an error: %v", l.c.received(unknown))
+		}
+	})
+
+	section("child sessions", func(l *live) {
+		// Claude starts a child session without asking, and the child starts
+		// one of its own on its parent's request.
+		parent, childDir := l.create("manual"), l.t.TempDir()
+		tools := l.turn(parent, "Load and call the mcp__ox__create_session tool with name helper, title Helper, dir "+childDir+
+			`, and message "Load and call the mcp__ox__create_session tool with name leaf, title Leaf, and message 'Reply with just the word ok, without calling any tool.' Then reply with just ok." Then reply with just ok.`, l.refuse)
+		if !slices.Contains(tools, "mcp__ox__create_session") {
+			l.t.Fatalf("Haiku did not call create_session (%v); run again: %s", tools, describe(l.c.received(parent)))
+		}
+		var started struct {
+			SessionID string `json:"session_id"`
+		}
+		for _, m := range l.c.received(parent) {
+			var u agent.Update
+			json.Unmarshal(m.Params, &u)
+			if u.Type == "tool_result" && !u.Result.IsError && strings.Contains(u.Result.Text, `"session_id"`) {
+				json.Unmarshal([]byte(u.Result.Text), &started)
+			}
+		}
+		if started.SessionID == "" {
+			l.t.Fatalf("create_session returned no child: %s", describe(l.c.received(parent)))
+		}
+		var childCreated struct {
 			Child *child `json:"child"`
 		}
-		json.Unmarshal(m.Params, &created)
-		if created.Child != nil && created.Child.ParentID == started.SessionID {
-			leaf = m.sessionID()
+		for _, m := range l.c.received(started.SessionID) {
+			if m.Method == "session/created" {
+				json.Unmarshal(m.Params, &childCreated)
+			}
 		}
-	}
-	if leaf == "" {
-		t.Fatalf("the child started no child: %s", describe(c.received(started.SessionID)))
-	}
-	idle(started.SessionID)
-	idle(leaf)
-	c.call("session/destroy", map[string]string{"session_id": leaf})
-	c.call("session/destroy", map[string]string{"session_id": started.SessionID})
-
-	t.Log("pending schedules keep a session running, even after a failed turn")
-	deniedBash := false
-	denyBash := func(r request) any {
-		if r.ToolName == "Bash" {
-			deniedBash = true
-			return map[string]any{"behavior": "deny", "message": "no", "interrupt": true}
+		if childCreated.Child == nil || childCreated.Child.Directory != childDir || childCreated.Child.ParentID != parent {
+			l.t.Errorf("session/created carried %+v", childCreated.Child)
 		}
-		return allow(r)
-	}
-	failed := create("manual")
-	tools = turn(failed, "Step 1: load and call the CronCreate tool with cron '*/30 * * * *' and prompt 'say hi'. "+
-		"Step 2: only after CronCreate succeeds, run the Bash command `touch marker.txt`. Do both steps.", denyBash)
-	if !slices.Contains(tools, "CronCreate") || !slices.Contains(tools, "Bash") {
-		t.Fatalf("Haiku did not call CronCreate and then Bash (%v); run again", tools)
-	}
-	if !deniedBash {
-		t.Fatal("Bash did not ask for approval; no interrupting denial was sent")
-	}
-	completed := create("manual")
-	tools = turn(completed, "Use the CronCreate tool to create a recurring job with cron '*/30 * * * *' and prompt 'say hi'. "+
-		"Then reply with just the word ok.", allow)
-	if !slices.Contains(tools, "CronCreate") {
-		t.Fatalf("Haiku did not call CronCreate (%v); run again", tools)
-	}
-	time.Sleep(parkAfter + 5*time.Second)
-	if parked(failed) {
-		t.Error("a failed turn that created a cron let its session park")
-	}
-	if parked(completed) {
-		t.Error("a completed turn that created a cron let its session park")
-	}
-	if !parked(a) {
-		t.Error("an idle session with nothing scheduled did not park")
-	}
+		if u := l.c.update(started.SessionID, "prompt"); u.From != parent {
+			l.t.Errorf("the child took a prompt from %q, not %q", u.From, parent)
+		}
+		if u := l.c.update(started.SessionID, "result"); u.Result.IsError {
+			l.t.Errorf("the child's turn failed: %s", u.Result.Text)
+		}
+		// The grandchild is published before create_session answers the child.
+		var leaf string
+		for _, m := range l.c.notifications("session/created") {
+			var created struct {
+				Child *child `json:"child"`
+			}
+			json.Unmarshal(m.Params, &created)
+			if created.Child != nil && created.Child.ParentID == started.SessionID {
+				leaf = m.sessionID()
+			}
+		}
+		if leaf == "" {
+			l.t.Fatalf("the child started no child: %s", describe(l.c.received(started.SessionID)))
+		}
+		l.idle(started.SessionID)
+		l.idle(leaf)
+		l.c.call("session/destroy", map[string]string{"session_id": leaf})
+		l.c.call("session/destroy", map[string]string{"session_id": started.SessionID})
+	})
 
-	t.Log("a resumed session lists Ox's models")
-	if !parked(listed) {
-		t.Fatal("the session that listed models did not park")
-	}
-	listModels(listed)
+	section("parking", func(l *live) {
+		// Pending schedules keep a session running, even after a failed turn.
+		var denied bool
+		failed := l.create("manual")
+		tools := l.turn(failed, "Step 1: load and call the CronCreate tool with cron '*/30 * * * *' and prompt 'say hi'. "+
+			"Step 2: only after CronCreate succeeds, run the Bash command `touch marker.txt`. Do both steps.", denyBash(&denied))
+		if !slices.Contains(tools, "CronCreate") || !slices.Contains(tools, "Bash") {
+			l.t.Fatalf("Haiku did not call CronCreate and then Bash (%v); run again", tools)
+		}
+		if !denied {
+			l.t.Fatal("Bash did not ask for approval; no interrupting denial was sent")
+		}
+		completed := l.create("manual")
+		tools = l.turn(completed, "Use the CronCreate tool to create a recurring job with cron '*/30 * * * *' and prompt 'say hi'. "+
+			"Then reply with just the word ok.", allow)
+		if !slices.Contains(tools, "CronCreate") {
+			l.t.Fatalf("Haiku did not call CronCreate (%v); run again", tools)
+		}
+		// The control, with nothing scheduled, became idle last, so once it
+		// parks the others have been idle for the whole park period.
+		control := l.create("manual")
+		l.turn(control, "Reply with just the word ok.", allow)
+		l.c.update(control, "parked")
+		if l.parked(failed) {
+			l.t.Error("a failed turn that created a cron let its session park")
+		}
+		if l.parked(completed) {
+			l.t.Error("a completed turn that created a cron let its session park")
+		}
+	})
 
-	t.Log("a resumed session keeps restored schedules through an interrupted first turn")
-	restart(2 * time.Second)
-	// Use the session whose completed turn created a recurring job. Deny
-	// the first tool on resume so Claude never sends a Stop schedule report.
-	deniedBash = false
-	turn(completed, "Run the Bash command `touch resumed.txt` now.", denyBash)
-	if !deniedBash {
-		t.Fatal("the first turn on resume did not reach an interrupting denial")
-	}
-	time.Sleep(4 * time.Second)
-	if parked(completed) {
-		t.Error("the interrupted first turn let the resumed session park")
-	}
+	section("restored schedules", func(l *live) {
+		// A resumed session keeps the schedules --resume restored, through an
+		// interrupted first turn and after its next completed one.
+		scheduled, control := l.create("manual"), l.create("manual")
+		tools := l.turn(scheduled, "Use the CronCreate tool to create a recurring job with cron '*/30 * * * *' and prompt 'say hi'. "+
+			"Then reply with just the word ok.", allow)
+		if !slices.Contains(tools, "CronCreate") {
+			l.t.Fatalf("Haiku did not call CronCreate (%v); run again", tools)
+		}
+		l.turn(control, "Reply with just the word ok.", allow)
+		l = restart(l, 2*time.Second)
+
+		// Deny the first tool on resume so Claude sends no Stop schedule report.
+		var denied bool
+		l.turn(scheduled, "Run the Bash command `touch resumed.txt` now.", denyBash(&denied))
+		if !denied {
+			l.t.Fatal("the first turn on resume did not reach an interrupting denial")
+		}
+		l.turn(control, "Reply with just the word ok.", allow)
+		l.c.update(control, "parked")
+		if l.parked(scheduled) {
+			l.t.Error("the interrupted first turn let the resumed session park")
+		}
+
+		// The next completed turn's Stop report lists the restored job.
+		l.turn(scheduled, "Reply with just the word ok.", allow)
+		l.turn(control, "Reply with just the word ok.", allow)
+		l.c.update(control, "parked")
+		if l.parked(scheduled) {
+			l.t.Error("a completed turn on resume let a session with a restored job park")
+		}
+	})
 }
 
 // TestLiveUr chats with the built-in Ur model through OpenRouter, and parks

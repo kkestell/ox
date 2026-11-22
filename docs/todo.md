@@ -4,12 +4,6 @@ Planned work, ordered by priority: unfixed audit findings, then gaps in features
 Ox already supports. Each finding links its section in the audit, which holds
 the evidence and the correction.
 
-## Defects
-
-- [ ] **Tests that pass when their behavior breaks.** Six tests, from the
-      settings passed to the next start to `TestLive`'s ordering.
-      [Deslop F8](../agents/audits/2026-11-20-002-deslop.md#f8-tests-that-pass-when-the-behavior-they-name-breaks)
-
 ## Sidebar
 
 - [ ] **Collapse a session's children.** A session with children gets a

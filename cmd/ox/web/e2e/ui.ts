@@ -20,6 +20,15 @@ export const sessionButton = (page: Page, title: string) => page.locator("nav bu
 export const sessionRow = (page: Page, title: string) => page.locator("nav li").filter({ hasText: title });
 export const workspaceRow = (page: Page, path: string) => page.getByTitle(path, { exact: true });
 
+// toolResult is the result text of the last call of tool.
+export const toolResult = (page: Page, tool: string) =>
+  page
+    .locator("details.tool")
+    .filter({ has: page.locator(".name", { hasText: tool }) })
+    .last()
+    .locator(".card pre")
+    .last();
+
 // openMenu opens a sidebar row's menu with its ⋯ button and returns the menu.
 export async function openMenu(row: Locator) {
   await row.getByRole("button", { name: /actions$/ }).click();

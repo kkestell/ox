@@ -141,6 +141,21 @@ func written(t *testing.T, input *bytes.Buffer) []string {
 	return ids
 }
 
+// wrotePrompt decodes the one prompt written to input.
+func wrotePrompt(t *testing.T, input *bytes.Buffer) (wire struct {
+	UUID     string `json:"uuid"`
+	Priority string `json:"priority"`
+	Message  struct {
+		Content string `json:"content"`
+	} `json:"message"`
+}) {
+	t.Helper()
+	if err := json.Unmarshal(input.Bytes(), &wire); err != nil {
+		t.Fatalf("no single prompt written: %q: %v", input, err)
+	}
+	return wire
+}
+
 // queuedIDs returns the IDs of the inputs a reports untaken, oldest first.
 func queuedIDs(a *Agent) []string {
 	ids := []string{}
@@ -207,9 +222,8 @@ func TestPromptSentWhileClaudeWorks(t *testing.T) {
 	if err := a.Send(steer); err != nil {
 		t.Fatal(err)
 	}
-	var wire map[string]any
-	if err := json.Unmarshal(input.Bytes(), &wire); err != nil || wire["uuid"] != id || wire["priority"] != "next" {
-		t.Fatalf("prompt not written for steering under its ID: %s", input)
+	if wire := wrotePrompt(t, input); wire.UUID != id || wire.Priority != "next" || wire.Message.Content != "wrapped steer" {
+		t.Fatalf("prompt not written for steering under its ID with its content: %s", input)
 	}
 	input.Reset()
 	if len(*updates) != 1 || (*updates)[0].Type != "prompt_queued" || (*updates)[0].MessageID != id {
@@ -558,9 +572,8 @@ func TestInputWaitsForStartup(t *testing.T) {
 	*updates = nil
 
 	a.Handle(initialized)
-	var wire map[string]any
-	if err := json.Unmarshal(input.Bytes(), &wire); err != nil || wire["uuid"] != held.MessageID || wire["priority"] != "next" {
-		t.Fatalf("the first held input alone was not written once Claude answered: %q", input)
+	if wire := wrotePrompt(t, input); wire.UUID != held.MessageID || wire.Priority != "next" || wire.Message.Content != "wrapped steer" {
+		t.Fatalf("the first held input alone was not written with its content once Claude answered: %q", input)
 	}
 	input.Reset()
 	if len(*updates) != 0 || !slices.Equal(queuedIDs(a), []string{held.MessageID, second.MessageID}) {

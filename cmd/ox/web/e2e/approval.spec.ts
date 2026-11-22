@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { haikuConfig, type Services, startServices } from "./services";
-import { open, prompt, stop } from "./ui";
+import { open, prompt, stop, toolResult } from "./ui";
 
 test.skip(!process.env.OX_LIVE, "set OX_LIVE=1 to run against real Claude with Haiku");
 test.setTimeout(180_000);
@@ -41,6 +41,7 @@ test("an approval is answered from its card", async ({ page }) => {
   await approval.getByRole("button", { name: "Submit" }).click();
   await expect(approval).toHaveCount(0);
   await expect(stop(page)).toHaveCount(0, { timeout: 120_000 });
+  await expect(toolResult(page, "Bash")).toContainText("Do not create files.");
   expect(existsSync(join(services.workspace, "denied.txt"))).toBe(false);
 });
 

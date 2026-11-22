@@ -8,7 +8,19 @@ import { basename } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { expect, type Page, test } from "@playwright/test";
 import { fakeConfig, haikuConfig, type Services, startServices } from "./services";
-import { hold, menuItem, open, openMenu, prompt, send, sessionButton, sessionRow, stop, workspaceRow } from "./ui";
+import {
+  hold,
+  menuItem,
+  open,
+  openMenu,
+  prompt,
+  send,
+  sessionButton,
+  sessionRow,
+  stop,
+  toolResult,
+  workspaceRow,
+} from "./ui";
 
 let services: Services;
 test.beforeAll(async () => {
@@ -239,6 +251,7 @@ test("a reconnect keeps typed text and sends nothing again", async ({ page }) =>
   await prompt(page).fill("unsent draft");
   await services.restartRelay();
   await expect(page.getByRole("alert")).toHaveCount(0, { timeout: 10_000 });
+  await expect(send(page)).toBeEnabled({ timeout: 10_000 });
   await expect(prompt(page)).toHaveValue("unsent draft");
   await expect(page.locator(".prompt")).toHaveText(["sent once"]);
   await page.reload();
@@ -423,16 +436,6 @@ async function ask(page: Page, tool: string, inputJSON: string) {
   await expect(card).toHaveCount(1);
   return card;
 }
-
-// toolResult is the result text of the last call of tool, which the fake
-// harness sets to the answer it received.
-const toolResult = (page: Page, tool: string) =>
-  page
-    .locator("details.tool")
-    .filter({ has: page.locator(".name", { hasText: tool }) })
-    .last()
-    .locator(".card pre")
-    .last();
 
 test("Allow sends the exact numbers displayed in the tool input", async ({ page }) => {
   await open(page, services);

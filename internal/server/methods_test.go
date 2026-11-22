@@ -406,15 +406,20 @@ func TestSessionLifecycle(t *testing.T) {
 	}
 }
 
-// A running process keeps settings it has taken even when storing them
-// fails, so every client is told what it now uses.
+// Settings taken are kept even when storing them fails: every client is told
+// what the session now uses, and the session's next process starts with them.
 func TestConfigurationTakenButNotStored(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
 		Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}}},
 		PermissionModes: []config.Option{{ID: "plan"}},
 	}}}
 	st := openStore(t)
-	s, err := New(st, cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+	started := make(chan agent.Settings, 2)
+	start := func(options agent.Options) (agent.Agent, error) {
+		started <- options.Settings
+		return fake.Start(options)
+	}
+	s, err := New(st, cfg, 100*time.Millisecond, map[string]agent.Harness{"fake": {Start: start}}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,16 +439,28 @@ func TestConfigurationTakenButNotStored(t *testing.T) {
 	json.Unmarshal(c.call("session/create", map[string]string{
 		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "effort": "low", "permission_mode": "plan",
 	}), &created)
-	c.call("session/send", map[string]string{"session_id": id, "text": "hi"})
-	for c.update(id, "state").State != "idle" {
+	parked := created.SessionID
+	// The background task keeps the running session from parking until it
+	// has taken its configuration.
+	c.call("session/send", map[string]string{"session_id": id, "text": "background 2000"})
+	<-started
+	for c.update(id, "state").State != "background" {
 	}
 
 	st.Close()
-	for _, id := range []string{id, created.SessionID} {
+	for _, id := range []string{id, parked} {
 		c.call("session/configure", map[string]string{"session_id": id, "effort": "high"})
 		configured := c.next(func(m message) bool { return m.Method == "session/configured" && m.sessionID() == id })
 		if !strings.Contains(string(configured.Params), `"effort":"high"`) {
 			t.Fatalf("clients were not told the settings taken: %s", configured.Params)
+		}
+	}
+
+	c.update(id, agent.UpdateParked)
+	for _, id := range []string{id, parked} {
+		c.call("session/send", map[string]string{"session_id": id, "text": "hi"})
+		if settings, want := <-started, (agent.Settings{Model: "m", Effort: "high", PermissionMode: "plan"}); settings != want {
+			t.Fatalf("the session's next process started with %+v, not the settings it took", settings)
 		}
 	}
 }
@@ -756,6 +773,77 @@ func TestStartAndStopHoldUpNoOtherSession(t *testing.T) {
 	}
 }
 
+// A session destroyed while Claude starts or takes a configuration ends with
+// session/destroyed: nothing its process held, such as the prompt or the
+// configuration, reaches clients after it.
+func TestDestroyWhileStartingOrConfiguring(t *testing.T) {
+	dir := t.TempDir()
+	started, configuring := filepath.Join(dir, "started"), filepath.Join(dir, "configuring")
+	// A stand-in for Claude that answers initialize once the started gate
+	// exists, takes a prompt, and marks the configuration it reads.
+	script := "#!/bin/sh\nread line\n" +
+		"while [ ! -e " + started + " ]; do sleep .02; done\n" +
+		`echo '{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}'` + "\n" +
+		takePrompt +
+		`echo '{"type":"system","subtype":"session_state_changed","state":"idle"}'` + "\n" +
+		"read line\ntouch " + configuring + "\n" +
+		"exec cat >/dev/null\n"
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cfg := &config.Config{Harnesses: map[string]config.Harness{"claude": {
+		Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}}},
+		PermissionModes: []config.Option{{ID: "manual"}},
+	}}}
+	st := openStore(t)
+	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: dir, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"session-d", "session-b"} {
+		if err := st.AddSession("w", &store.Session{ID: id, Harness: "claude", Model: "m", Effort: "low", PermissionMode: "manual", CreatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := New(st, cfg, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c := connect(t, s)
+	endsDestroyed := func(id string) {
+		t.Helper()
+		c.call("workspace/list", map[string]any{})
+		received := c.received(id)
+		if len(received) == 0 || received[len(received)-1].Method != "session/destroyed" {
+			t.Fatalf("session %s's last notification is not session/destroyed: %+v", id, received)
+		}
+	}
+
+	// Starting: Claude has not answered initialize.
+	c.call("session/send", map[string]string{"session_id": "session-d", "text": "hi"})
+	c.call("session/destroy", map[string]string{"session_id": "session-d"})
+	endsDestroyed("session-d")
+
+	// Configuring: Claude has read the configuration and not acknowledged it.
+	if err := os.WriteFile(started, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c.call("session/send", map[string]string{"session_id": "session-b", "text": "hi"})
+	for c.update("session-b", "state").State != "idle" {
+	}
+	configure := c.send("session/configure", map[string]string{"session_id": "session-b", "effort": "high"})
+	for {
+		if _, err := os.Stat(configuring); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	c.call("session/destroy", map[string]string{"session_id": "session-b"})
+	c.response(configure)
+	endsDestroyed("session-b")
+}
+
 // A resume token whose conversation Claude no longer has, such as one whose
 // transcript Claude deleted, drops one prompt with a notice in the
 // transcript; the next send starts a new conversation.
@@ -925,16 +1013,18 @@ func TestResumeTokenKeptWhenNotStored(t *testing.T) {
 }
 
 // A mode Claude changes itself, as it does when a plan is approved, reaches
-// every client and the store.
+// every client, the store, and the session's later processes.
 func TestClaudeModeChangeIsAdopted(t *testing.T) {
 	dir := t.TempDir()
-	// A stand-in for Claude that leaves plan mode once it has read a prompt.
-	script := "#!/bin/sh\n" +
+	args := filepath.Join(dir, "args")
+	// A stand-in for Claude that leaves plan mode once it has read a prompt,
+	// answers it, and exits.
+	script := logStarts(args) +
 		"read line\n" +
 		`echo '{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}'` + "\n" +
 		"read prompt\n" +
 		`echo '{"type":"system","subtype":"status","status":null,"permissionMode":"default"}'` + "\n" +
-		"exec cat >/dev/null\n"
+		`echo '{"type":"result","subtype":"success","session_id":"11111111-1111-4111-8111-111111111111","is_error":false,"result":"done"}'` + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -971,6 +1061,16 @@ func TestClaudeModeChangeIsAdopted(t *testing.T) {
 	workspaces, err := st.Workspaces()
 	if err != nil || workspaces[0].Sessions[0].PermissionMode != "manual" {
 		t.Fatalf("the stored mode was not updated: %v", err)
+	}
+
+	c.update("s", "parked")
+	c.forget("s")
+	c.call("session/send", map[string]string{"session_id": "s", "text": "again"})
+	c.update("s", "result")
+	lines := starts(t, args)
+	if len(lines) != 2 || !strings.Contains(lines[1], "--resume=11111111-1111-4111-8111-111111111111") ||
+		!strings.Contains(lines[1], "--permission-mode=manual") {
+		t.Fatalf("the next process did not resume in the mode Claude chose: %q", lines)
 	}
 }
 
