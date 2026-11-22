@@ -29,6 +29,7 @@ p { overflow-wrap: break-word; }
   --input-background: light-dark(transparent, oklch(1 0 0 / 4.5%));
   --ring: light-dark(oklch(0.708 0 0), oklch(0.556 0 0));
   --sidebar: light-dark(oklch(0.985 0 0), oklch(0.205 0 0));
+  --sidebar-accent: light-dark(oklch(0.97 0 0), oklch(0.269 0 0));
   --pane: color-mix(in oklab, var(--background), var(--card));
   --composer: light-dark(var(--card), color-mix(in oklab, oklch(0.205 0 0), white 4%));
   --radius: 0.625rem;
@@ -137,14 +138,15 @@ nav { --row: 2rem; flex: none; min-width: 160px; max-width: 640px; height: 100%;
 nav > button.icon { align-self: flex-end; margin: 0.5rem 0; }
 nav > section { flex: none; }
 nav header { position: relative; display: flex; align-items: center; height: 1.75rem; padding: 0 0.5rem; border-radius: var(--radius-md); font-size: 11px; text-transform: uppercase; color: var(--muted-foreground); }
-nav header:hover { background: var(--accent); }
+nav header:hover { background: var(--sidebar-accent); }
 nav header .name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font: inherit; }
 nav header button.icon { position: absolute; right: 0.125rem; width: 1.5rem; height: 1.5rem; color: var(--text); }
 nav header button.icon.ellipsis { right: 1.625rem; }
 nav ul { margin-bottom: 0.5rem; list-style: none; }
-nav li { position: relative; display: flex; align-items: center; gap: 0.375rem; height: var(--row); padding: 0 0.5rem 0 calc(0.5rem + var(--depth) * 1.25rem); border-radius: var(--radius-md); cursor: default; }
-nav li:hover { background: var(--accent); }
-nav li.selected { background: var(--secondary); color: var(--secondary-foreground); }
+nav li { position: relative; display: flex; align-items: center; gap: 0.375rem; height: var(--row); padding: 0 0.5rem 0 calc(0.5rem + var(--depth) * 1.25rem); border-radius: var(--radius-md); cursor: default; --row-background: var(--sidebar); background: var(--row-background); }
+nav li:hover { --row-background: var(--sidebar-accent); }
+nav li.selected { --row-background: var(--sidebar-accent); color: var(--secondary-foreground); }
+nav li.selected button.open { font-weight: 500; }
 /* Each level indents 1.25rem. A child's guide runs down from its parent's
    status dot, or from where its previous sibling branches, --rise rows up,
    and branches into its own dot, curving only into the last child. Rows are
@@ -156,13 +158,22 @@ nav li.child::before {
 }
 nav li.child.first::before { top: calc(var(--row) / 2 + 4px - var(--rise) * var(--row)); }
 nav li.child.last::before { border-bottom-left-radius: 6px; }
-nav li button.open { flex: 1; min-width: 0; height: 100%; display: flex; justify-content: flex-start; align-items: center; gap: 0.375rem; cursor: default; padding: 0; border: 0; background: transparent; box-shadow: none; color: inherit; font: inherit; text-align: left; }
+/* The title and a parent's chevron. The chevron follows a title that fits and
+   sticks over the end of one that does not, so showing it never moves the
+   title. The 3px padding keeps focus rings inside the clip. */
+nav li .head { flex: 1; min-width: 0; align-self: stretch; display: flex; align-items: center; overflow: hidden; margin: -3px; padding: 3px; }
+nav li button.open { flex: none; max-width: 100%; height: 100%; display: flex; justify-content: flex-start; align-items: center; gap: 0.375rem; cursor: default; padding: 0; border: 0; background: transparent; box-shadow: none; color: inherit; font: inherit; text-align: left; }
 nav li button.open:hover { background: transparent; }
-nav li .title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+nav li .title { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 nav li button.icon { width: 1.5rem; height: 1.5rem; margin-right: -0.25rem; color: var(--muted-foreground); }
 nav li button.icon:hover { color: inherit; }
+/* The chevron's icon stands 0.25rem after the title, over a fade into the row. */
+nav li button.chevron-right { display: none; position: sticky; right: 0; width: 1.25rem; height: 1.25rem; margin: 0; justify-content: flex-end; }
+nav li button.chevron-right, nav li button.chevron-right:hover { background: linear-gradient(to right, transparent, var(--row-background) 0.25rem); }
+nav li .chevron-right[aria-expanded="true"]::before { transform: rotate(90deg); }
 nav header button.icon, nav li button.icon { opacity: 0; }
 nav header:is(:hover, :focus-within) button.icon, nav li:is(:hover, :focus-within) button.icon { opacity: 1; }
+nav li:is(:hover, :focus-within) button.chevron-right { display: inline-flex; }
 nav li.archived button.open { opacity: 0.6; }
 nav li:has(.status.parked) button.open { opacity: 0.6; }
 nav li .archive { flex: none; width: 1rem; height: 1rem; display: flex; align-items: center; justify-content: center; color: var(--muted-foreground); }
@@ -431,6 +442,7 @@ aside.files .chevron-right.open::before { transform: rotate(90deg); }
   nav { --row: 2.5rem; }
   aside.files .row { height: 2.5rem; }
   nav header button.icon, nav li button.icon { opacity: 1; }
+  nav li button.chevron-right { display: inline-flex; }
   textarea, select, input:not([type="radio"], [type="checkbox"], [type="range"]) { font-size: 16px; }
   .composer .settings > button.picker, .composer .select { height: 2rem; font-size: 1rem; }
 }

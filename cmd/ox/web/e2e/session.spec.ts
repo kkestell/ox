@@ -904,17 +904,17 @@ test("session list membership and order don't wait for transcripts", async ({ ox
   await expect(main(page).getByRole("status")).toHaveText("Loading session…");
   const id = sessionId(page);
   await newSession(page, "younger session");
-  await expect(listed).toHaveText(["older session", "younger session"]);
+  await expect(listed).toHaveText(["younger session", "older session"]);
   firstSnapshot.release();
-  await expect(listed).toHaveText(["older session", "younger session"]);
+  await expect(listed).toHaveText(["younger session", "older session"]);
 
   const reloadSnapshot = await hold(page, "session/get", { session_id: id });
   await page.reload();
   await reloadSnapshot.arrived;
   await expect(replies(page)).toHaveText(["You said: younger session"]);
-  await expect(listed).toHaveText(["older session", "younger session"]);
+  await expect(listed).toHaveText(["younger session", "older session"]);
   reloadSnapshot.release();
-  await expect(listed).toHaveText(["older session", "younger session"]);
+  await expect(listed).toHaveText(["younger session", "older session"]);
 });
 
 test("a hash change selects the session it names", async ({ ox: page }) => {
@@ -924,6 +924,9 @@ test("a hash change selects the session it names", async ({ ox: page }) => {
   await page.goto(url);
   await expect(sessionButton(page, "older session")).toHaveAttribute("aria-current", "page");
   await expect(replies(page)).toHaveText(["You said: older session"]);
+  // The selected session's title is set in medium weight, as shadcn's active item is.
+  await expect(sessionButton(page, "older session")).toHaveCSS("font-weight", "500");
+  await expect(sessionButton(page, "younger session")).toHaveCSS("font-weight", "400");
 });
 
 test("a cancelled deletion's reply cannot close the next confirmation", async ({ ox: page }) => {
@@ -1040,7 +1043,7 @@ test("a child session shows its title, its directory, and its parent's message, 
   }
 });
 
-test("children list beneath their parent, each level one deeper, before the parent's next sibling", async ({
+test("children list oldest first beneath their parent, each level one deeper, after newer top-level sessions", async ({
   ox: page,
   services,
 }) => {
@@ -1051,10 +1054,144 @@ test("children list beneath their parent, each level one deeper, before the pare
   await createChild(services, first.session_id, "Tree leaf");
   await createChild(services, root, "Tree second");
   const listed = sessions(page).getByRole("listitem");
-  await expect(listed).toHaveText(["tree root", "Tree first", "Tree leaf", "Tree second", "after the root"]);
-  await expect(sessions(page).getByRole("listitem", { level: 1 })).toHaveText(["tree root", "after the root"]);
+  await expect(listed).toHaveText(["after the root", "tree root", "Tree first", "Tree leaf", "Tree second"]);
+  await expect(sessions(page).getByRole("listitem", { level: 1 })).toHaveText(["after the root", "tree root"]);
   await expect(sessions(page).getByRole("listitem", { level: 2 })).toHaveText(["Tree first", "Tree second"]);
   await expect(sessions(page).getByRole("listitem", { level: 3 })).toHaveText(["Tree leaf"]);
+});
+
+// chevron is the button that hides and shows the sessions beneath the
+// session titled title.
+const chevron = (page: Page, title: string) =>
+  sessionItem(page, title).getByRole("button", { name: "Child sessions", includeHidden: true });
+
+// toggleChildren hovers the row of the session titled title and clicks its
+// chevron.
+async function toggleChildren(page: Page, title: string) {
+  await sessionItem(page, title).hover();
+  await chevron(page, title).click();
+}
+
+test("a session's chevron hides and shows every session beneath it", async ({ ox: page, services }) => {
+  await family(page, services);
+  const listed = sessions(page).getByRole("listitem");
+  await expect(chevron(page, "Parent")).toHaveCount(1);
+  await expect(chevron(page, "Child")).toHaveCount(1);
+  await expect(chevron(page, "Grandchild")).toHaveCount(0);
+
+  await page.mouse.move(0, 0);
+  await expect(chevron(page, "Child")).toBeHidden();
+  await sessionItem(page, "Child").hover();
+  await expect(chevron(page, "Child")).toBeVisible();
+  await sessionButton(page, "Child").click();
+  const url = page.url();
+  await chevron(page, "Child").click();
+  await expect(listed).toHaveText(["Parent", "Child"]);
+  await expect(chevron(page, "Child")).toHaveAttribute("aria-expanded", "false");
+  await expect(sessionButton(page, "Child")).toHaveAttribute("aria-current", "page");
+  expect(page.url()).toBe(url);
+
+  await toggleChildren(page, "Parent");
+  await expect(listed).toHaveText(["Parent"]);
+
+  const list = await hold(page, "workspace/list");
+  await services.restartRelay();
+  await list.arrived;
+  list.release();
+  // Archive is enabled once the page is connected and has the new list.
+  await expect(menuItem(await openMenu(sessionItem(page, "Parent")), "Archive")).toBeEnabled();
+  await page.keyboard.press("Escape");
+  await expect(listed).toHaveText(["Parent"]);
+
+  await toggleChildren(page, "Parent");
+  await expect(listed).toHaveText(["Parent", "Child"]);
+  await expect(chevron(page, "Child")).toHaveAttribute("aria-expanded", "false");
+
+  const row = sessionItem(page, "Parent");
+  const box = await row.boundingBox();
+  if (!box) throw new Error("Parent's row is not shown");
+  await row.click({ position: { x: box.width - 40, y: box.height / 2 } });
+  await expect(sessionButton(page, "Parent")).toHaveAttribute("aria-current", "page");
+  await expect(heading(page)).toHaveText("Parent");
+
+  await page.reload();
+  await expect(listed).toHaveText(["Parent", "Child", "Grandchild"]);
+
+  // A title too long to fit keeps its width when the chevron shows over its
+  // end, and the chevron keeps its size expanded and collapsed.
+  const long = `Long parent ${words(40)}`;
+  await newSession(page, long);
+  await createChild(services, sessionId(page), "Long child");
+  await expect(sessionButton(page, "Long child")).toBeVisible();
+  // Hovered but not selected, the row shows its hover color.
+  await sessionButton(page, "Parent").click();
+  await page.mouse.move(0, 0);
+  const title = sessionButton(page, long);
+  const width = (await title.boundingBox())?.width;
+  await sessionItem(page, long).hover();
+  await expect(chevron(page, long)).toBeVisible();
+  expect((await title.boundingBox())?.width).toBe(width);
+  // The chevron stays clear of the ⋯ button, over the title's end.
+  const actions = await sessionItem(page, long).getByRole("button", { name: "Session actions" }).boundingBox();
+  const over = await chevron(page, long).boundingBox();
+  if (!actions || !over) throw new Error("the long parent's buttons are not shown");
+  expect(over.x + over.width).toBeLessThanOrEqual(actions.x);
+  // In the dark theme too, the chevron's box beside its icon shows the
+  // hovered row's own color.
+  await page.emulateMedia({ colorScheme: "dark" });
+  const longRow = await sessionItem(page, long).boundingBox();
+  if (!longRow) throw new Error("the long parent's row is not shown");
+  const pixel = (x: number) =>
+    page.screenshot({ clip: { x, y: Math.round(over.y + over.height / 2), width: 1, height: 1 } });
+  expect(await pixel(Math.round(over.x + over.width) - 2)).toEqual(await pixel(Math.round(longRow.x) + 3));
+  for (const expanded of ["true", "false"]) {
+    await expect(chevron(page, long)).toHaveAttribute("aria-expanded", expanded);
+    const box = await chevron(page, long).boundingBox();
+    expect([box?.width, box?.height]).toEqual([20, 20]);
+    if (expanded === "true") await chevron(page, long).click();
+  }
+  // An archived parent's chevron is not dimmed with its title, expanded or not.
+  await chevron(page, long).click();
+  await archive(page, long);
+  await showArchived(page, services);
+  await sessionItem(page, long).hover();
+  await expect(chevron(page, long)).toHaveAttribute("aria-expanded", "true");
+  await expect(chevron(page, long)).toHaveCSS("opacity", "1");
+});
+
+test("collapsing the open session's family leaves it open, and a new child stays hidden", async ({
+  ox: page,
+  services,
+}) => {
+  await family(page, services);
+  const parent = sessionId(page);
+  const listed = sessions(page).getByRole("listitem");
+  await sessionButton(page, "Grandchild").click();
+  await toggleChildren(page, "Parent");
+  await expect(listed).toHaveText(["Parent"]);
+  await expect(heading(page)).toHaveText("Grandchild");
+  await expect(sessions(page).locator("[aria-current]")).toHaveCount(0);
+
+  const late = await createChild(services, parent, "Late child");
+  await page.goto(`${new URL(page.url()).origin}/#${encodeURIComponent(late.session_id)}`);
+  await expect(heading(page)).toHaveText("Late child");
+  await expect(listed).toHaveText(["Parent"]);
+  await toggleChildren(page, "Parent");
+  await expect(listed).toHaveText(["Parent", "Child", "Grandchild", "Late child"]);
+});
+
+test.describe("on a touch screen", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  test("a parent's chevron shows without hover and keeps the session list open", async ({ ox: page, services }) => {
+    await newSession(page, "Parent");
+    await createChild(services, sessionId(page), "Child");
+    await page.getByRole("button", { name: "Toggle sessions" }).tap();
+    await expect(sessionButton(page, "Child")).toBeVisible();
+    await chevron(page, "Parent").tap();
+    await expect(sessionButton(page, "Child")).toHaveCount(0);
+    await expect(sessions(page)).toBeVisible();
+  });
 });
 
 test("a session with children cannot be deleted", async ({ ox: page, services }) => {

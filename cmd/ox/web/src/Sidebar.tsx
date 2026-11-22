@@ -79,32 +79,59 @@ function WorkspaceDialog(props: { request: DialogRequest; onClose(): void }) {
 
 // Row is a shown session in the sidebar's tree. depth counts its ancestors;
 // rise counts the rows up to where its guide starts, its parent's for its
-// first shown child, else its previous shown sibling's.
-type Row = { session: Session; depth: number; rise: number; first: boolean; last: boolean };
+// first shown child, else its previous shown sibling's. children says whether
+// it has shown children and whether they show.
+type Row = {
+  session: Session;
+  depth: number;
+  rise: number;
+  first: boolean;
+  last: boolean;
+  children: "none" | "shown" | "hidden";
+};
 
-// rowsOf flattens the shown sessions depth-first, oldest first at every
-// level. A shown session's ancestors are shown, since the sessions beneath an
-// archived session are archived.
-function rowsOf(shown: Session[]): Row[] {
+// rowsOf flattens the shown sessions depth-first in oxd's creation order:
+// top-level sessions newest first, and each session's children oldest first
+// beneath it. It does not descend into a collapsed session. A shown session's
+// ancestors are shown, since the sessions beneath an archived session are
+// archived.
+function rowsOf(shown: Session[], collapsed: Set<string>): Row[] {
   const rows: Row[] = [];
-  const add = (parentId: string | undefined, depth: number, parentRow: number) => {
-    const children = shown.filter((session) => session.child?.parent_id === parentId);
+  const childrenOf = (parentId: string | undefined) => shown.filter((session) => session.child?.parent_id === parentId);
+  const add = (children: Session[], depth: number, parentRow: number) => {
     let above = parentRow;
     children.forEach((session, i) => {
       const index = rows.length;
-      rows.push({ session, depth, rise: index - above, first: i === 0, last: i === children.length - 1 });
+      const own = childrenOf(session.id);
+      const state = !own.length ? "none" : collapsed.has(session.id) ? "hidden" : "shown";
+      rows.push({
+        session,
+        depth,
+        rise: index - above,
+        first: i === 0,
+        last: i === children.length - 1,
+        children: state,
+      });
       above = index;
-      add(session.id, depth + 1, index);
+      if (state === "shown") add(own, depth + 1, index);
     });
   };
-  add(undefined, 0, -1);
+  add(childrenOf(undefined).reverse(), 0, -1);
   return rows;
 }
 
 // SessionRow is a session's row, indented by its depth. An archived session
 // shows an archive icon in place of its status. The row's button is named by
-// its title and described by its status.
-function SessionRow(props: { row: Row; selected: boolean; onSelect(): void; onMenu(at: MenuAt): void }) {
+// its title and described by its status. A session with shown children has a
+// chevron after its title that hides and shows them. A click anywhere on the
+// row but its other buttons opens the session, as its button does.
+function SessionRow(props: {
+  row: Row;
+  selected: boolean;
+  onSelect(): void;
+  onToggle(): void;
+  onMenu(at: MenuAt): void;
+}) {
   const session = () => props.row.session;
   const id = createUniqueId();
   return (
@@ -119,39 +146,56 @@ function SessionRow(props: { row: Row; selected: boolean; onSelect(): void; onMe
         archived: session().archived,
       }}
       style={{ "--depth": props.row.depth, "--rise": props.row.rise }}
+      onClick={(event) => {
+        if (event.target instanceof Element && !event.target.closest("button")) props.onSelect();
+      }}
       onContextMenu={(event) => {
         event.preventDefault();
         props.onMenu({ x: event.clientX, y: event.clientY });
       }}
     >
-      <button
-        type="button"
-        class="open"
-        aria-current={props.selected ? "page" : undefined}
-        aria-labelledby={`${id}-title`}
-        aria-describedby={`${id}-status`}
-        onClick={() => props.onSelect()}
-      >
-        <Show
-          when={!session().archived}
-          fallback={<span id={`${id}-status`} class="icon archive" role="img" title="archived" aria-label="archived" />}
+      <div class="head">
+        <button
+          type="button"
+          class="open"
+          aria-current={props.selected ? "page" : undefined}
+          aria-labelledby={`${id}-title`}
+          aria-describedby={`${id}-status`}
+          onClick={() => props.onSelect()}
         >
-          <Show when={session().load.snapshot?.state}>
-            {(status) => (
-              <span
-                id={`${id}-status`}
-                class={["status", status()]}
-                role="img"
-                title={status()}
-                aria-label={status()}
-              />
-            )}
+          <Show
+            when={!session().archived}
+            fallback={
+              <span id={`${id}-status`} class="icon archive" role="img" title="archived" aria-label="archived" />
+            }
+          >
+            <Show when={session().load.snapshot?.state}>
+              {(status) => (
+                <span
+                  id={`${id}-status`}
+                  class={["status", status()]}
+                  role="img"
+                  title={status()}
+                  aria-label={status()}
+                />
+              )}
+            </Show>
           </Show>
+          <span id={`${id}-title`} class="title">
+            {session().label}
+          </span>
+        </button>
+        <Show when={props.row.children !== "none"}>
+          <button
+            type="button"
+            class="icon chevron-right"
+            aria-label="Child sessions"
+            title="Child sessions"
+            aria-expanded={props.row.children === "shown" ? "true" : "false"}
+            onClick={() => props.onToggle()}
+          />
         </Show>
-        <span id={`${id}-title`} class="title">
-          {session().label}
-        </span>
-      </button>
+      </div>
       <MenuButton label="Session actions" onMenu={props.onMenu} />
     </li>
   );
@@ -257,6 +301,14 @@ export function Sidebar(props: {
   const [menu, setMenu] = createSignal<MenuRequest>();
   // shown holds the workspaces whose archived sessions are shown.
   const [shown, setShown] = createSignal(new Set<string>());
+  // collapsed holds the sessions whose children are hidden.
+  const [collapsed, setCollapsed] = createSignal(new Set<string>());
+  const toggle = (id: string) =>
+    setCollapsed((ids) => {
+      const next = new Set(ids);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
   const [error, attempt] = createAttempt();
   const isSelected = (session: Session) => props.selected?.kind === "session" && props.selected.id === session.id;
   const childrenOf = (session: Session) =>
@@ -366,7 +418,12 @@ export function Sidebar(props: {
       </Show>
       <For each={ox.state.workspaces}>
         {(workspace) => {
-          const rows = createMemo(() => rowsOf(workspace.sessions.filter((session) => visible(workspace.id, session))));
+          const rows = createMemo(() =>
+            rowsOf(
+              workspace.sessions.filter((session) => visible(workspace.id, session)),
+              collapsed(),
+            ),
+          );
           const id = createUniqueId();
           return (
             <section aria-labelledby={id}>
@@ -397,6 +454,7 @@ export function Sidebar(props: {
                       row={row()}
                       selected={isSelected(row().session)}
                       onSelect={() => props.onSelect({ kind: "session", id: row().session.id })}
+                      onToggle={() => toggle(row().session.id)}
                       onMenu={menuOf("session", row().session.id)}
                     />
                   )}

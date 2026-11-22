@@ -6,13 +6,6 @@ the evidence and the correction.
 
 ## Sidebar
 
-- [ ] **Collapse a session's children.** A session with children gets a
-      disclosure control that hides and shows them. Decide whether the collapsed
-      state survives a reload.
-- [ ] **Newest sessions first.** List each workspace's top-level sessions newest
-      first. Decide whether children follow, or stay oldest first so a plan,
-      work, and review read in order. Changes **Session order**.
-
 - [ ] **Clip session titles at the panel edge.** Show each title in full and let
       the sidebar's right edge clip it, instead of ending it with an ellipsis.
       Behind the hover menu icon, a gradient from transparent on its left to the

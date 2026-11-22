@@ -14,7 +14,7 @@ title.
 
 ## Session list
 
-- **Session order.** Each workspace lists its top-level sessions oldest first,
+- **Session order.** Each workspace lists its top-level sessions newest first,
   each followed by its child sessions, oldest first and indented beneath it; a
   child's own children follow it the same way, indented one level further.
 - **Session labels.** A child session is labeled with the title it was created
@@ -23,6 +23,12 @@ title.
 - **Session status.** Each session shows whether it is parked, idle, idle while
   background work Claude started still runs, running, waiting on the user, or
   archived.
+- **Collapsing child sessions.** A session with child sessions shows a chevron
+  after its title while its row is hovered or focused; clicking it hides or
+  shows every session beneath it, and clicking elsewhere on the row opens the
+  session. Children start shown, a child created under a collapsed session stays
+  hidden, hiding the open session leaves it open, and reloading the page shows
+  every child again.
 - **Session URL.** The URL names the selected session, so reloading the page
   reopens it.
 
@@ -257,9 +263,9 @@ title.
   file; panels cannot be resized. At load, the session list is open when the URL
   names no session, and closed otherwise.
 - **Touch screens.** On a touch screen, session and file rows are tall enough to
-  tap, the session list's New session and actions buttons always show, focusing
-  a text field does not zoom the page, and the page keeps its controls clear of
-  the notch, rounded corners, and browser toolbars.
+  tap, the session list's New session, actions, and child sessions buttons
+  always show, focusing a text field does not zoom the page, and the page keeps
+  its controls clear of the notch, rounded corners, and browser toolbars.
 
 ## Files
 
