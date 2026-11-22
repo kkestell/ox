@@ -341,7 +341,8 @@ details.tool pre + pre { border-top: 1px solid var(--border); }
 /* File tree: the sidebar's mirror. Rows indent by --depth; a file's icon sits
    under a folder's, past the chevron. Icons and notes are muted. */
 aside.files { flex: none; height: 100%; display: flex; flex-direction: column; background: var(--sidebar); border-left: 1px solid var(--border); }
-.files > header { flex: none; display: flex; align-items: center; height: var(--context-title); padding: 0 0.5rem 0 1rem; }
+/* Matches the session header's title row, so the panel toggles keep their place as they move between them. */
+.files > header { flex: none; display: flex; align-items: center; height: var(--context-title); padding: 0 0.75rem 0 1rem; border-bottom: 1px solid transparent; }
 aside.files .tree { flex: 1; min-height: 0; overflow-y: auto; padding: 0 0.5rem calc(0.5rem + env(safe-area-inset-bottom)); }
 .files > header p { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; text-transform: uppercase; color: var(--muted-foreground); }
 aside.files ul { list-style: none; }

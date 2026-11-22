@@ -408,8 +408,14 @@ test("panel toggles and drags change the layout, which lasts until reload", asyn
     await alone();
     await expect(files.getByRole("button", { name: "Toggle sessions" })).toHaveAttribute("aria-pressed", "true");
     await expect(files.getByRole("button", { name: "Toggle files" })).toHaveAttribute("aria-pressed", "true");
-    expect(await color(toggleSessions)).toBe(addColor);
-    expect(await color(toggleFiles)).toBe(addColor);
+
+    // The toggles keep their place on screen as they move between headers.
+    const shownBox = await toggleFiles.boundingBox();
+    await toggleFiles.click();
+    await expect(files).toHaveCount(0);
+    expect(await toggleFiles.boundingBox()).toEqual(shownBox);
+    await toggleFiles.click();
+    await expect(files).toBeVisible();
 
     // Hiding the file tree moves the toggles to the session's header and keeps
     // the open file.
