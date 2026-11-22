@@ -17,6 +17,11 @@ the evidence and the correction.
 - [ ] **Dev shutdown masks daemon exit failures.** The dev stack reports an
       ordinary Ctrl-C even when `oxd` terminates with a race detector failure.
       [Audit F4](../agents/audits/2026-11-22-001-conversation-launch-and-layout.md#f4-the-dev-stack-decides-its-exit-status-before-services-stop)
+- [ ] **Rewrite the web client tests to Playwright best practice.** Specs find
+      elements by CSS class and structure, assert styling and pixel arithmetic,
+      sleep for fixed times, share one daemon per file, and pack many behaviors
+      into one test; the page lacks the roles and names role-based locators
+      need. [Audit](../agents/audits/2026-11-22-003-frontend-tests.md)
 
 ## Sidebar
 
@@ -27,6 +32,16 @@ the evidence and the correction.
       first. Decide whether children follow, or stay oldest first so a plan,
       work, and review read in order. Changes **Session order**.
 
+- [ ] **Clip session titles at the panel edge.** Show each title in full and let
+      the sidebar's right edge clip it, instead of ending it with an ellipsis.
+      Behind the hover menu icon, a gradient from transparent on its left to the
+      row's background on its right fades the title, so the icon does not blend
+      into the text beneath it.
+
+- [ ] **Idle dot for completed tool calls.** The transcript marks a completed
+      tool call with a check icon (`.marker.done` in
+      `cmd/ox/web/src/style.css`). Use the sidebar's idle status dot instead.
+
 ## Child sessions
 
 - [ ] **Consistent child titles.** Agents title children inconsistently
@@ -34,6 +49,17 @@ the evidence and the correction.
       …"), and the sidebar truncates the topic that tells siblings apart. Give
       `create_session`'s description in `internal/server/mcp.go` a title
       convention.
+
+## Usage
+
+- [ ] **Subscription usage under the composer.** Extend the harness interface
+      (`internal/agent/agent.go`) so a harness can report subscription usage.
+      The Claude agent reports the 5-hour and 7-day windows, each with its
+      utilization and reset time, from
+      [`rate_limit_event`](harnesses/claude-code.md#rate_limit_event). The web
+      client shows them under the composer on Claude sessions. Decide the
+      protocol shape in `docs/protocol.md`, and what a session shows before its
+      first turn, when Claude has sent no event. Adds a requirement.
 
 ## Questions
 
