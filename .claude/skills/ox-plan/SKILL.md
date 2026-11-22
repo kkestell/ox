@@ -65,7 +65,7 @@ Keep this work in this session:
     - Claude harness logic: `internal/claude` tests that build state through `Send` and `Handle` with real Claude messages and assert through the agent's public methods, recorded updates, and bytes written. Process I/O uses a stand-in `claude` script.
     - Daemon behavior: `internal/server` tests that speak the protocol with the fake harness. A server path the fake harness does not reach needs the fake to reach it, or a live case.
     - Page behavior: `make e2e` specs, with delays and failures injected by intercepting the page's `/rpc` posts.
-    - The path from the page to `oxd` through the relay and Vite's proxy: a `cmd/ox` test of the headers the relay receives, and a check in headless Chrome through the `make dev` stack on spare ports.
+    - The path from the page to `oxd` through the relay and Vite's proxy: a `cmd/ox` test of the headers the relay receives, and a check in headless Chrome through the `make dev` stack on spare ports, started with `OX_VITE_PORT=9080 OX_RELAY_PORT=9081 XDG_STATE_HOME=$dir XDG_RUNTIME_DIR=$dir make dev` for an empty temporary `$dir`, and its page at http://localhost:9080.
     - Claude Code behavior: a small `TestLive` case or `approval.spec.ts` check with Haiku.
 
     Put each case in an existing test whose setup already reaches it, and add a new test only when none does. Each new test fails on the code before the change, and each condition the change adds has a test that fails when the condition is removed. A change that replaces behavior replaces the tests of the old behavior.
@@ -77,7 +77,7 @@ Keep this work in this session:
 12. Use the protocol's names in tasks, code, comments, and documentation. Do not give one concept several names or give an existing term a new meaning.
 13. Under Requirement changes, give the exact text of each requirement the change adds, changes, or removes in `docs/functional-requirements.md`, in that file's form: a short bold title, then one or two plain sentences about what the user sees or relies on. A change alters the requirements only when it adds, alters, or removes behavior the user can observe; a bug fix changes none unless it shows a requirement was wrong. Write `None.` when nothing changes.
 14. Under Documentation updates, name the document `AGENTS.md` assigns each other fact the change alters. Leave out documents whose facts do not change. When the change fixes an entry in `docs/todo.md`, including an audit finding listed there, the update removes that entry.
-15. Under Check your assumptions, list the product questions the request leaves open. Each requirement the plan changes or removes is one, quoting the old and new text. Most plans have none, one, or two; write `None.` when nothing qualifies. Write each as the user experiences Ox: what the plan does that they will notice, and the alternative with what it would cost them, without code names.
+15. Under Check your assumptions, list the product questions the request leaves open. Each requirement the plan adds, changes, or removes is one, quoting its old text, its new text, or both. Most plans have none, one, or two; write `None.` when nothing qualifies. Write each as the user experiences Ox: what the plan does that they will notice, and the alternative with what it would cost them, without code names.
 16. Do not review the plan yourself or ask another agent to review it.
 
 ## Check your assumptions

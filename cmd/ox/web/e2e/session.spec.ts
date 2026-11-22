@@ -1240,3 +1240,19 @@ test("an archived session is read-only and hidden until shown", async ({ page, c
   await expect(archivedLine).toBeVisible();
   await expect(row).toHaveCount(0);
 });
+
+test("workspace headers keep their height when archived sessions overflow the sidebar", async ({ page }) => {
+  await open(page, services);
+  await newSession(page, "overflow archived");
+  const row = sessionRow(page, "overflow archived");
+  await menuItem(await openMenu(row), "Archive").click();
+  await expect(row).toHaveCount(0);
+  await menuItem(await openMenu(workspaceRow(page, services.workspace)), "Show archived").click();
+  await expect(row).toHaveClass(/archived/);
+  await page.setViewportSize({ width: 1280, height: 100 });
+  const sidebar = page.locator("nav");
+  expect(await sidebar.evaluate((nav) => nav.scrollHeight > nav.clientHeight)).toBe(true);
+  for (const header of await page.locator("nav > p").all()) {
+    expect((await header.boundingBox())?.height).toBe(28);
+  }
+});

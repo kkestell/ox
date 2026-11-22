@@ -132,7 +132,7 @@ dialog [role="alert"] { margin-top: 0.75rem; }
 /* Sidebar */
 nav { flex: none; height: 100%; overflow-y: auto; padding: 0 0.5rem 0.5rem; display: flex; flex-direction: column; background: var(--sidebar); border-right: 1px solid var(--border); }
 nav > button.icon { align-self: flex-end; margin: 0.5rem 0; }
-nav > p { position: relative; display: flex; align-items: center; height: 1.75rem; padding: 0 0.5rem; border-radius: var(--radius-md); font-size: 11px; text-transform: uppercase; color: var(--muted-foreground); }
+nav > p { flex: none; position: relative; display: flex; align-items: center; height: 1.75rem; padding: 0 0.5rem; border-radius: var(--radius-md); font-size: 11px; text-transform: uppercase; color: var(--muted-foreground); }
 nav > p:hover { background: var(--accent); }
 nav > p .name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 nav > p button.icon { position: absolute; right: 0.125rem; width: 1.5rem; height: 1.5rem; color: var(--text); }

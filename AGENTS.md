@@ -11,6 +11,11 @@ We test with `make dev`. Ox's test state is disposable.
 ```
 .
 ├── AGENTS.md                  # agent instructions
+├── agents                     # workflow records
+│   ├── audits                 # audits from /ox-audit and others
+│   ├── plans                  # plans from /ox-plan
+│   ├── reviews                # reviews from /ox-review
+│   └── scratch                # research notes
 ├── .githooks
 │   └── pre-commit             # records metrics, checks docs formatting
 ├── .golangci.yml              # Go linters
@@ -72,6 +77,7 @@ We test with `make dev`. Ox's test state is disposable.
 │   ├── server
 │   │   ├── client_test.go     # test client
 │   │   ├── conn.go            # client connections
+│   │   ├── files.go           # workspace folder listing and file reads
 │   │   ├── history_test.go    # history tests
 │   │   ├── history.go         # session history
 │   │   ├── live_test.go       # live Claude and Ur tests

@@ -581,9 +581,9 @@ text, all questions in one response:
 ## 8. Background work and schedules
 
 - Background Bash, Monitor and background subagents appear in
-  `background_tasks_changed`. A task's tool call stays running after its
-  `tool_result` until its `task_notification`; a turn's `result` should not mark
-  it failed.
+  `background_tasks_changed`. A task's tool call gets its `tool_result` when the
+  task starts; the task ends at its `task_notification`, and a turn's `result`
+  does not end it.
 - On ending, the order is `task_updated`, `task_notification`,
   `background_tasks_changed` without the task, then a turn Claude starts itself
   with no user prompt.

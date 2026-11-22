@@ -181,7 +181,7 @@ func init() {
 		{
 			name: "create_session",
 			description: "Start a child Ox session and send it its first message. Use it only when the user, or the session that gave you your task, asks for another session or agent. " +
-				"name is the child's address among your children: lowercase letters, digits, and hyphens. title is its label in Ox. " +
+				"name is unique among your children: lowercase letters, digits, and hyphens. title is its label in Ox. " +
 				"The child runs with your harness, model, effort, permission mode, and directory unless harness, model, effort, or dir is given; " +
 				"list_models lists the choices. dir is an existing directory, absolute or relative to yours. " +
 				"The message reaches the child as a message from you. Returns the child's session ID.",

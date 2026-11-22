@@ -13,16 +13,6 @@ the evidence and the correction.
 - [ ] **Tests that pass when their behavior breaks.** Six tests, from the
       settings passed to the next start to `TestLive`'s ordering.
       [Deslop F8](../agents/audits/2026-11-20-002-deslop.md#f8-tests-that-pass-when-the-behavior-they-name-breaks)
-- [ ] **`ox-plan` lets an added requirement skip approval, and its dev check is
-      not runnable.**
-      [Deslop F21](../agents/audits/2026-11-20-002-deslop.md#f21-ox-plan-lets-a-new-requirement-skip-approval-and-its-dev-check-is-not-runnable)
-- [ ] **Protocol, architecture, and Claude notes misstate the code.**
-      [Deslop F22](../agents/audits/2026-11-20-002-deslop.md#f22-protocol-architecture-and-claude-notes-misstate-the-code)
-
-- [ ] **Workspace headers shrink when archived sessions are shown.** The extra
-      rows overflow the sidebar, and its flex column shrinks each header below
-      its `1.75rem` height. Likely fix: `flex: none` on `nav > p` in
-      `cmd/ox/web/src/style.css`.
 
 ## Sidebar
 

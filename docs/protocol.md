@@ -164,13 +164,13 @@ has sessions`; destroy its sessions first.
 
 ### `workspace/list_folder`
 
-Requires `workspace_id` and `path`, a slash-separated path relative to the
-workspace's directory, or `""` for the directory itself. Returns the folder's
-entries in directory order, each with its `name` and whether it is a `folder`.
-`.git`, `.svn`, `.hg`, `.hypercube`, `.DS_Store`, and `Thumbs.db` are left out.
-A symlink is a folder when its relative target leads to a folder inside the
-workspace's directory; one with an absolute target, one that leads outside the
-directory, and one that leads nowhere are not.
+Requires `workspace_id`. `path` is a slash-separated path relative to the
+workspace's directory, empty or omitted for the directory itself. Returns the
+folder's entries in directory order, each with its `name` and whether it is a
+`folder`. `.git`, `.svn`, `.hg`, `.hypercube`, `.DS_Store`, and `Thumbs.db` are
+left out. A symlink is a folder when its relative target leads to a folder
+inside the workspace's directory; one with an absolute target, one that leads
+outside the directory, and one that leads nowhere are not.
 
 A `path` that is absolute or leaves the directory returns `-32602`; an unknown
 workspace returns `-32001`. A folder that cannot be listed, including one
@@ -221,7 +221,7 @@ after it. A setting the [configuration](#configuration) does not offer returns
 | `workspace_id`    | Yes      | The workspace whose directory the harness runs in.                                                                                                                |
 | `harness`         | Yes      | A harness in the configuration.                                                                                                                                   |
 | `model`           | Yes      | One of the harness's models; passed to Claude's `--model` flag.                                                                                                   |
-| `effort`          | No       | One of the model's effort levels; passed to Claude's `--effort` flag. A model without effort levels takes an empty or omitted value, which leaves the flag unset. |
+| `effort`          | Yes      | One of the model's effort levels; passed to Claude's `--effort` flag. A model without effort levels takes an empty or omitted value, which leaves the flag unset. |
 | `permission_mode` | Yes      | One of the harness's permission modes; passed to Claude's `--permission-mode` flag.                                                                               |
 
 A repeat using the same ID in the same workspace returns the existing ID and
@@ -266,8 +266,8 @@ after the previous `result`, as
 send publishes `prompt_queued` until Claude takes the prompt (`prompt`) or it is
 dropped (`prompt_cancelled`). A send while any input is still queued, including
 a message from another session ([`send_message`](#tools)), returns `-32002`. A
-send while a configuration runs waits for it, so Claude receives the change
-first.
+send while a configuration runs waits for it to end, and is written even when
+Claude refused the change.
 
 ### `session/get`
 
@@ -369,12 +369,14 @@ reading prompt updates for the outcome.
 
 Requires `session_id`. Asks a running session to stop its turn and the tools it
 runs, using Claude's [interrupt](harnesses/claude-code.md#interrupt). Success
-means the request was written; a session that is idle or parked has nothing to
-stop and also succeeds. The stopped turn ends with an error `result` whose text
-is `Interrupted`, and an `idle` or `background` state, which release a prompt as
-usual. Every prompt and message Claude has not taken is dropped with a
-`prompt_cancelled` update each. When no turn is running, cancellation and `idle`
-end the interrupt, with no `result`.
+means the request was written, or, while Claude is starting or a configuration
+runs, that nothing needed writing and the state settles once that ends; a
+session that is idle or parked has nothing to stop and also succeeds. The
+stopped turn ends with an error `result` whose text is `Interrupted`, and an
+`idle` or `background` state, which release a prompt as usual. Every prompt and
+message Claude has not taken is dropped with a `prompt_cancelled` update each.
+When no turn is running, cancellation and `idle` end the interrupt, with no
+`result`.
 
 ```json
 {"jsonrpc":"2.0","id":8,"method":"session/interrupt","params":{"session_id":"session-id"}}
@@ -470,7 +472,7 @@ the `idle` or `background` that releases it:
 | `approval_answered`  | `request_id`: string                                               | A client answered the approval.                                                                                                                                                                                                              |
 | `approval_cancelled` | `request_id`: string                                               | Withdraw an unanswered approval. Discard any later answer.                                                                                                                                                                                   |
 | `exited`             | `error`: string                                                    | The process exited during an active prompt or without being stopped, it was stopped during an active prompt, or it could not start or resume. The text includes the available reason, including Claude's stderr tail for an unexpected exit. |
-| `parked`             | —                                                                  | The session's process has exited, for any reason. The session's last update until its next process starts.                                                                                                                                   |
+| `parked`             | —                                                                  | The session's harness has stopped, for any reason, though its process may still be exiting. The session's last update until its next process starts.                                                                                         |
 
 For a message, `from` is the sender's session ID and `from_label` is its label
 when the message was sent. The recorded `prompt` keeps this label even if the
