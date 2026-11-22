@@ -40,7 +40,9 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
           <h1>{props.session.label}</h1>
           {props.toggles}
         </div>
-        <p class="path">{directory()}</p>
+        <p class="path">
+          <span class="directory">{directory()}</span>
+        </p>
       </header>
       <div class="log">
         <div class="transcript">

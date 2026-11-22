@@ -235,16 +235,29 @@ title.
 
 - **Panel toggles.** Two buttons show and hide the session list and the file
   tree, each in full color while its panel shows and dimmed while it is hidden.
-  They sit at the right of the file tree's header while the tree shows, and
-  otherwise at the right of the session's header, whether or not a file is open.
-- **Resizing panels.** Dragging the boundary beside the session list, the file
-  tree, or between the transcript and the file viewer resizes them.
+  On a screen 768 px or wider, they sit at the right of the file tree's header
+  while the tree shows, and otherwise at the right of the session's header,
+  whether or not a file is open.
+- **Resizing panels.** On a screen 768 px or wider, dragging the boundary beside
+  the session list, the file tree, or between the transcript and the file viewer
+  resizes them.
 - **Layout through navigation.** Which panels show and their widths are the same
   for every session. Each session and new-session draft keeps its own split
   between the transcript and the file viewer, and a draft's split carries to the
   session it creates. The layout lasts through switching views and reconnecting;
-  reloading the page shows both panels at their default widths, with the
-  transcript and file viewer splitting evenly.
+  reloading the page on a screen 768 px or wider shows both panels at their
+  default widths, with the transcript and file viewer splitting evenly.
+- **Narrow screens.** On a screen narrower than 768 px, the page shows one pane
+  at a time: the transcript, or the open file in its place until its tab is
+  closed. The session list and the file tree slide in over it from the left and
+  right, from the buttons at either end of the session's header, and close when
+  the user taps outside them, picks a session or a new-session draft, or opens a
+  file; panels cannot be resized. At load, the session list is open when the URL
+  names no session, and closed otherwise.
+- **Touch screens.** On a touch screen, session and file rows are tall enough to
+  tap, the session list's New session and actions buttons always show, focusing
+  a text field does not zoom the page, and the page keeps its controls clear of
+  the notch, rounded corners, and browser toolbars.
 
 ## Files
 
@@ -256,11 +269,12 @@ title.
 - **File tree updates.** While the page is visible, the tree shows changes on
   disk to the folders it shows within about a second.
 - **File viewer.** Clicking a file in the file tree opens it in a pane between
-  the transcript and the tree, under a tab with its name and a close button, and
-  highlights its row; clicking another file replaces it. The pane shows the
-  file's text in a monospaced font without wrapping, or one line saying why when
-  the file is binary, larger than 1 MiB, not UTF-8 text, or cannot be read, and
-  reads nothing outside the workspace directory.
+  the transcript and the tree, or in place of the transcript on a narrow screen,
+  under a tab with its name and a close button, and highlights its row; clicking
+  another file replaces it. The pane shows the file's text in a monospaced font
+  without wrapping, or one line saying why when the file is binary, larger than
+  1 MiB, not UTF-8 text, or cannot be read, and reads nothing outside the
+  workspace directory.
 - **File viewer updates.** While the page is visible, the open file shows
   changes on disk within about a second; a file deleted or renamed keeps its tab
   and shows why it cannot be read until it returns.

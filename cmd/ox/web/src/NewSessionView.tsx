@@ -43,7 +43,9 @@ export function NewSessionView(props: { draft: Draft; onCreated(): void; toggles
           <h1>New session</h1>
           {props.toggles}
         </div>
-        <p class="path">{workspace()}</p>
+        <p class="path">
+          <span class="directory">{workspace()}</span>
+        </p>
       </header>
       <div class="log" />
       <Show when={draft.control.error()}>{(error) => <p role="alert">{error()}</p>}</Show>

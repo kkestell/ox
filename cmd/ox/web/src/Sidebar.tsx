@@ -195,7 +195,7 @@ function Menu(props: { at: MenuAt; label: string; items: MenuItem[]; onClose(): 
 export function Sidebar(props: {
   selected?: Selection;
   onSelect(selection: Selection): void;
-  width: number;
+  width?: number;
   hidden: boolean;
 }) {
   const ox = useOx();
@@ -278,7 +278,7 @@ export function Sidebar(props: {
     setMenu({ target: { kind, id }, ...at });
 
   return (
-    <nav hidden={props.hidden} style={{ width: `${props.width}px` }}>
+    <nav hidden={props.hidden} style={{ width: props.width === undefined ? undefined : `${props.width}px` }}>
       <button
         type="button"
         class="icon folder-plus"

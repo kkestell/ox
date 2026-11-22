@@ -505,6 +505,159 @@ test("panel toggles and drags change the layout, which lasts until reload", asyn
   }
 });
 
+test.describe("on a phone", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  test("the page shows one pane at a time", async ({ page }) => {
+    const services = await startServices(fakeConfig);
+    try {
+      mkdirSync(join(services.workspace, "src"));
+      writeFileSync(join(services.workspace, "src", "a.txt"), "a\n");
+      const nav = page.locator("nav");
+      const main = page.locator("main");
+      const scrim = page.locator(".scrim");
+      const files = page.getByRole("complementary", { name: "Files" });
+      const viewer = page.getByRole("region", { name: "File" });
+      const toggleSessions = page.getByRole("button", { name: "Toggle sessions" });
+      const toggleFiles = page.getByRole("button", { name: "Toggle files" });
+      const box = async (locator: Locator) => {
+        const found = await locator.boundingBox();
+        if (!found) throw new Error(`${locator} has no box`);
+        return found;
+      };
+      const style = (locator: Locator, property: string) =>
+        locator.evaluate((element, property) => getComputedStyle(element).getPropertyValue(property), property);
+      // A sash is zero pixels wide, so it shows by its display. Role queries
+      // skip an element with no display, so this one finds it by its label.
+      const sashDisplay = (label: string) => style(page.locator(`.sash[aria-label="${label}"]`), "display");
+      // slides tells whether a drawer is moving across the screen.
+      const slides = (locator: Locator) =>
+        locator.evaluate((element) =>
+          element.getAnimations().some((a) => a instanceof CSSTransition && a.transitionProperty === "translate"),
+        );
+      expect(await page.evaluate(() => matchMedia("(pointer: coarse)").matches)).toBe(true);
+
+      // The bare URL opens with the session list over the empty transcript.
+      await page.goto(services.url);
+      await expect(nav).toBeVisible();
+      await expect(scrim).toBeVisible();
+      expect((await box(main)).width).toBe(390);
+      expect((await box(toggleFiles)).x).toBeGreaterThan(300);
+      await open(page, services);
+
+      // Touch shows the row buttons and keeps text fields at 16px.
+      const newSession = page.getByRole("button", { name: "New session" });
+      expect(await style(newSession, "opacity")).toBe("1");
+      await newSession.tap();
+      await expect(nav).toBeHidden();
+      await expect(scrim).toHaveCount(0);
+      expect(await style(prompt(page), "font-size")).toBe("16px");
+      expect((await box(page.locator(".composer .picker"))).height).toBe(32);
+      await prompt(page).fill("first");
+      await send(page).tap();
+      await expect(page.locator(".reply")).toHaveText("You said: first");
+
+      // The toggles sit at either end of the session's header, and a long
+      // directory keeps to one line.
+      const title = await box(main.locator("h1"));
+      expect((await box(toggleSessions)).x).toBeLessThan(title.x);
+      expect((await box(toggleFiles)).x).toBeGreaterThanOrEqual(title.x + title.width);
+      const path = main.locator(".path");
+      expect(await path.locator(".directory").evaluate((span) => span.scrollWidth > span.clientWidth)).toBe(true);
+      expect((await box(path.locator(".directory"))).height).toBeLessThanOrEqual((await box(path)).height);
+
+      // Safe-area insets keep the page clear of the notch, the rounded
+      // corners, and Safari's toolbar, in the transcript, the drawers, and
+      // the file viewer.
+      const cdp = await page.context().newCDPSession(page);
+      await cdp.send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 47, bottom: 34, left: 12, right: 12 } });
+      expect((await box(main.locator("h1"))).y).toBeGreaterThanOrEqual(47);
+      const composer = await box(page.locator(".composer"));
+      expect(composer.x).toBe(12 + 8);
+      expect(await style(page.locator(".transcript"), "padding-left")).toBe("29px");
+      expect(composer.y + composer.height).toBeLessThanOrEqual(844 - 34);
+
+      // The file tree is a drawer that a tap outside or opening a file closes,
+      // and an open file replaces the transcript until its tab closes.
+      await toggleFiles.tap();
+      expect(await slides(files)).toBe(true);
+      await expect(files).toBeVisible();
+      await expect(files.getByRole("button", { name: /^Toggle/ })).toHaveCount(0);
+      await expect(toggleFiles).toHaveAttribute("aria-pressed", "true");
+      expect((await box(main)).width).toBe(390 - 24);
+      // The drawer covers its toggle, which closes it from the keyboard.
+      await toggleFiles.press("Enter");
+      await expect(files).toHaveCount(0);
+      await toggleFiles.tap();
+      await scrim.tap({ position: { x: 20, y: 400 } });
+      await expect(files).toHaveCount(0);
+      await toggleFiles.tap();
+      expect((await box(files.locator("header"))).y).toBeGreaterThanOrEqual(47);
+      expect(await style(files.locator(".tree"), "padding-bottom")).toBe("42px");
+      expect(await style(files, "padding-right")).toBe("12px");
+      expect((await box(files.getByRole("button", { name: "src" }))).height).toBe(40);
+      await files.getByRole("button", { name: "src" }).tap();
+      await files.getByRole("button", { name: "a.txt", exact: true }).tap();
+      await expect(files).toHaveCount(0);
+      await expect(viewer).toBeVisible();
+      expect((await box(viewer)).width).toBe(390 - 24);
+      await expect(main).toBeHidden();
+      expect(await sashDisplay("Resize file viewer")).toBe("none");
+      expect(await style(viewer.getByRole("tabpanel"), "padding-bottom")).toBe("42px");
+      await viewer.getByRole("button", { name: "Close a.txt" }).tap();
+      await expect(main).toBeVisible();
+
+      // The session list is a drawer that picking a session closes, and a
+      // session's URL opens with it closed.
+      await toggleSessions.tap();
+      expect(await slides(nav)).toBe(true);
+      await expect(nav).toBeVisible();
+      await expect(toggleSessions).toHaveAttribute("aria-pressed", "true");
+      expect((await box(sessionRow(page, "first"))).height).toBe(40);
+      expect(await sashDisplay("Resize sessions")).toBe("none");
+      expect((await box(page.getByRole("button", { name: "Add workspace" }))).y).toBeGreaterThanOrEqual(47);
+      expect(await style(nav, "padding-bottom")).toBe("42px");
+      expect(await style(nav, "padding-left")).toBe("20px");
+      await cdp.send("Emulation.setSafeAreaInsetsOverride", { insets: {} });
+      await sessionButton(page, "first").tap();
+      expect(await slides(nav)).toBe(true);
+      await expect(nav).toBeHidden();
+      await page.reload();
+      await expect(page.locator(".reply")).toHaveText("You said: first");
+      await expect(nav).toBeHidden();
+
+      // A wide window shows the panels side by side; returning to narrow
+      // closes the drawer that was open.
+      await page.setViewportSize({ width: 1000, height: 844 });
+      await expect(nav).toBeVisible();
+      await expect(files).toBeVisible();
+      expect((await box(main)).width).toBe(1000 - (await box(nav)).width - (await box(files)).width);
+      expect(await sashDisplay("Resize sessions")).not.toBe("none");
+      await expect(scrim).toHaveCount(0);
+      // A width dragged wide leaves the drawer at its own width.
+      const sash = await box(page.locator('.sash[aria-label="Resize sessions"]'));
+      await page.mouse.move(sash.x, sash.y + 100);
+      await page.mouse.down();
+      await page.mouse.move(sash.x + 100, sash.y + 100, { steps: 5 });
+      await page.mouse.up();
+      expect((await box(nav)).width).toBe(388);
+      await page.setViewportSize({ width: 390, height: 844 });
+      await expect(nav).toBeHidden();
+      await toggleSessions.tap();
+      await expect(nav).toBeVisible();
+      expect((await box(nav)).width).toBe(288);
+      await page.setViewportSize({ width: 1000, height: 844 });
+      await expect(files).toBeVisible();
+      expect(await sashDisplay("Resize sessions")).not.toBe("none");
+      await page.setViewportSize({ width: 390, height: 844 });
+      await expect(nav).toBeHidden();
+      await expect(scrim).toHaveCount(0);
+    } finally {
+      await services.stop();
+    }
+  });
+});
+
 test("the file viewer shows each session's open file", async ({ page }) => {
   const services = await startServices(fakeConfig);
   const a = join(services.workspace, "src", "a.txt");

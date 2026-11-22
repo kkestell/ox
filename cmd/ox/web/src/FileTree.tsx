@@ -7,6 +7,7 @@ import type { FolderEntry } from "./protocol";
 type Tree = {
   workspaceId: string;
   control: () => SessionControl;
+  onOpen(): void;
 };
 
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
@@ -19,13 +20,22 @@ const byFolderThenName = (a: FolderEntry, b: FolderEntry) =>
 export function FileTree(props: {
   workspace: { id: string; path: string };
   control: SessionControl;
-  width: number;
-  toggles: JSX.Element;
+  width?: number;
+  toggles?: JSX.Element;
+  onOpen(): void;
 }) {
   // The tree is keyed by its workspace, so the workspace ID never changes.
-  const tree: Tree = { workspaceId: untrack(() => props.workspace.id), control: () => props.control };
+  const tree: Tree = {
+    workspaceId: untrack(() => props.workspace.id),
+    control: () => props.control,
+    onOpen: () => props.onOpen(),
+  };
   return (
-    <aside class="files" aria-label="Files" style={{ width: `${props.width}px` }}>
+    <aside
+      class="files"
+      aria-label="Files"
+      style={{ width: props.width === undefined ? undefined : `${props.width}px` }}
+    >
       <header>
         <p>{workspaceName(props.workspace.path)}</p>
         {props.toggles}
@@ -111,7 +121,10 @@ function FileRow(props: { tree: Tree; path: string; name: string; depth: number 
         style={{ "--depth": props.depth }}
         title={props.path}
         aria-current={open() ? "true" : undefined}
-        onClick={() => props.tree.control().setFile(props.path)}
+        onClick={() => {
+          props.tree.control().setFile(props.path);
+          props.tree.onOpen();
+        }}
       >
         <span class="icon file" />
         <span class="name">{props.name}</span>

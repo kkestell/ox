@@ -80,10 +80,17 @@ function Layout() {
     return workspace && { workspace, control: d.control };
   };
 
-  const panels = createPanels();
-  // The file tree, when it shows. The toggles sit in its header then, and in
-  // the session's header otherwise.
-  const tree = () => (panels.right() ? files() : undefined);
+  // With no session named, the transcript is empty, so a narrow page opens
+  // with the session list.
+  const panels = createPanels(selectionFromHash() ? undefined : "sessions");
+  // The file tree, when it shows.
+  const tree = () => (panels.files() ? files() : undefined);
+  // The toggles sit in the file tree's header while it shows in the wide
+  // layout, and in the session's header otherwise.
+  const togglesInTree = () => !panels.narrow() && tree() !== undefined;
+  // Panel widths and the split apply only to the wide layout's side-by-side
+  // panels.
+  const width = (pixels: number) => (panels.narrow() ? undefined : pixels);
   // The transcript's share of the width, while the file viewer shows beside it.
   // Alone, it fills the space.
   const share = () => {
@@ -91,7 +98,7 @@ function Layout() {
     return current?.control.file() ? current.control.split() : undefined;
   };
   const Toggles = () => (
-    <Show when={!tree()}>
+    <Show when={!togglesInTree()}>
       <PanelToggles panels={panels} />
     </Show>
   );
@@ -123,9 +130,21 @@ function Layout() {
   );
 
   return (
-    <>
-      <Sidebar selected={selected()} onSelect={select} width={panels.leftWidth()} hidden={!panels.left()} />
-      <Show when={panels.left()}>
+    <div class={["layout", { narrow: panels.narrow() }]}>
+      <Sidebar
+        selected={selected()}
+        onSelect={(selection) => {
+          select(selection);
+          panels.dismiss();
+        }}
+        width={width(panels.leftWidth())}
+        hidden={!panels.sessions()}
+      />
+      <Show when={panels.narrow() && (panels.sessions() || tree() !== undefined)}>
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: a tap outside the drawer closes it; the header's toggles close it from the keyboard. */}
+        <div class="scrim" onClick={() => panels.dismiss()} />
+      </Show>
+      <Show when={panels.sessions()}>
         <Sash label="Resize sessions" drag={(before) => (dx) => panels.setLeftWidth(before + dx)} />
       </Show>
       <main style={{ "flex-grow": share() }}>
@@ -182,7 +201,7 @@ function Layout() {
                       <FileView
                         workspaceId={workspaceId}
                         path={path}
-                        share={1 - current().control.split()}
+                        share={panels.narrow() ? undefined : 1 - current().control.split()}
                         onClose={() => current().control.setFile(undefined)}
                       />
                     </>
@@ -195,8 +214,9 @@ function Layout() {
                       <FileTree
                         workspace={shown().workspace}
                         control={shown().control}
-                        width={panels.rightWidth()}
-                        toggles={<PanelToggles panels={panels} />}
+                        width={width(panels.rightWidth())}
+                        toggles={togglesInTree() ? <PanelToggles panels={panels} /> : undefined}
+                        onOpen={() => panels.dismiss()}
                       />
                     </>
                   )}
@@ -206,6 +226,6 @@ function Layout() {
           </Show>
         )}
       </Show>
-    </>
+    </div>
   );
 }

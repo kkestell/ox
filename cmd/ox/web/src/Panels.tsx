@@ -1,22 +1,47 @@
-import { createSignal } from "solid-js";
+import { createSignal, onSettled } from "solid-js";
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 const panelWidth = (width: number) => clamp(width, 160, 640);
 
-// createPanels holds which of the page's side panels show and their widths,
-// for the life of the page.
-export function createPanels() {
+// Below this width the page shows one pane at a time, with the side panels as
+// drawers. The layout's root carries the result as its narrow class, which the
+// stylesheet reads.
+const narrowQuery = "(max-width: 767px)";
+
+export type Drawer = "sessions" | "files";
+
+// createPanels holds which of the page's side panels show, for the life of the
+// page. The wide layout shows each panel at its own width while its flag is
+// set; the narrow layout shows at most one, as a drawer over the page, starting
+// with drawerAtLoad. Crossing the breakpoint closes the drawer, and leaves the
+// wide layout's panels as they were.
+export function createPanels(drawerAtLoad: Drawer | undefined) {
+  const media = matchMedia(narrowQuery);
+  const [narrow, setNarrow] = createSignal(media.matches);
+  const [drawer, setDrawer] = createSignal<Drawer | undefined>(drawerAtLoad);
   const [left, setLeft] = createSignal(true);
   const [right, setRight] = createSignal(true);
   const [leftWidth, writeLeftWidth] = createSignal(288);
   const [rightWidth, writeRightWidth] = createSignal(288);
+  onSettled(() => {
+    const follow = () => {
+      setNarrow(media.matches);
+      setDrawer(undefined);
+    };
+    media.addEventListener("change", follow);
+    return () => media.removeEventListener("change", follow);
+  });
+  const toggle = (which: Drawer) => setDrawer((open) => (open === which ? undefined : which));
   return {
-    left,
-    right,
+    narrow,
+    sessions: () => (narrow() ? drawer() === "sessions" : left()),
+    files: () => (narrow() ? drawer() === "files" : right()),
+    toggleSessions: () => (narrow() ? toggle("sessions") : setLeft((shown) => !shown)),
+    toggleFiles: () => (narrow() ? toggle("files") : setRight((shown) => !shown)),
+    // dismiss closes the open drawer; the wide layout has none.
+    dismiss: () => setDrawer(undefined),
     leftWidth,
     rightWidth,
-    setLeft: (shown: boolean) => setLeft(shown),
-    setRight: (shown: boolean) => setRight(shown),
     setLeftWidth: (width: number) => writeLeftWidth(panelWidth(width)),
     setRightWidth: (width: number) => writeRightWidth(panelWidth(width)),
   };
@@ -33,16 +58,16 @@ export function PanelToggles(props: { panels: Panels }) {
         class="icon panel-left"
         aria-label="Toggle sessions"
         title="Toggle sessions"
-        aria-pressed={props.panels.left() ? "true" : "false"}
-        onClick={() => props.panels.setLeft(!props.panels.left())}
+        aria-pressed={props.panels.sessions() ? "true" : "false"}
+        onClick={() => props.panels.toggleSessions()}
       />
       <button
         type="button"
         class="icon panel-right"
         aria-label="Toggle files"
         title="Toggle files"
-        aria-pressed={props.panels.right() ? "true" : "false"}
-        onClick={() => props.panels.setRight(!props.panels.right())}
+        aria-pressed={props.panels.files() ? "true" : "false"}
+        onClick={() => props.panels.toggleFiles()}
       />
     </div>
   );
