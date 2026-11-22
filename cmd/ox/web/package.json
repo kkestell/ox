@@ -10,10 +10,12 @@
     "e2e": "playwright test"
   },
   "dependencies": {
+    "@shikijs/langs": "^4.6.0",
+    "@shikijs/themes": "^4.6.0",
     "@solidjs/web": "^2.0.1",
     "@ungap/raw-json": "^0.4.4",
-    "highlight.js": "^11.12.0",
     "markdown-it": "^15.0.3",
+    "shiki": "^4.6.0",
     "solid-js": "^2.0.1"
   },
   "devDependencies": {

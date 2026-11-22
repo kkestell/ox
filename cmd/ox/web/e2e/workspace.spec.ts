@@ -470,6 +470,8 @@ test("the file viewer shows each session's open file", async ({ page }) => {
     const template = `const s = \`a \${b}\`;\r\nlet c = 1;\rlet d = 2;\n`;
     writeFileSync(join(services.workspace, "src", "template.ts"), template);
     writeFileSync(main, "package main\n\n// note\nfunc main() {}\n");
+    writeFileSync(join(services.workspace, "src", "view.tsx"), "const v = <div />;\n");
+    writeFileSync(join(services.workspace, "src", "notes.md"), "*a*\n");
     writeFileSync(join(services.workspace, "src", "main.txt"), "package main\n\n// note\nfunc main() {}\n");
     await open(page, services);
     for (const text of ["first", "second"]) {
@@ -539,11 +541,11 @@ test("the file viewer shows each session's open file", async ({ page }) => {
     await firstRead.arrived;
     await expect(panel).toHaveText("");
     firstRead.release();
-    const keyword = panel.locator(".hljs-keyword").first();
-    const comment = panel.locator(".hljs-comment");
+    const keyword = panel.locator("span").first();
+    const comment = panel.locator("span", { hasText: "//" });
     await expect(keyword).toHaveText("package");
     await expect(comment).toHaveText("// note");
-    await expect(keyword).toHaveCSS("color", "rgb(215, 58, 73)");
+    await expect(keyword).toHaveCSS("color", "rgb(207, 34, 46)");
     await page.emulateMedia({ colorScheme: "dark" });
     await expect(keyword).toHaveCSS("color", "rgb(255, 123, 114)");
     await page.emulateMedia({ colorScheme: "light" });
@@ -555,14 +557,20 @@ test("the file viewer shows each session's open file", async ({ page }) => {
     writeFileSync(main, "// changed\n");
     await expect(comment).toHaveText("// changed", { timeout: 3000 });
 
-    // The pane keeps the file's carriage returns, and a substitution inside a
-    // string keeps the pane's foreground.
+    // The pane keeps the file's carriage returns.
     await files.getByRole("button", { name: "template.ts", exact: true }).click();
     await expect(tab).toHaveText("template.ts");
-    await expect(panel.locator(".hljs-subst")).toHaveCount(1);
+    await expect(panel.locator("span").first()).toBeVisible();
     expect(await panel.evaluate((pre) => pre.textContent)).toBe(template);
-    const color = (element: Element) => getComputedStyle(element).color;
-    expect(await panel.locator(".hljs-subst").evaluate(color)).toBe(await panel.evaluate(color));
+
+    // A TSX element's tag name is colored as a tag, and Markdown emphasis is
+    // italic.
+    await files.getByRole("button", { name: "view.tsx", exact: true }).click();
+    await expect(tab).toHaveText("view.tsx");
+    await expect(panel.locator("span", { hasText: /^div$/ })).toHaveCSS("color", "rgb(17, 99, 41)");
+    await files.getByRole("button", { name: "notes.md", exact: true }).click();
+    await expect(tab).toHaveText("notes.md");
+    await expect(panel.locator("span", { hasText: "*a*" })).toHaveCSS("font-style", "italic");
 
     // A relay error on a read shows in the pane until the next read replaces it.
     const failedRead = await hold(page, "workspace/read_file", { path: "bin.dat" });

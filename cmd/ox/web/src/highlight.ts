@@ -1,102 +1,111 @@
-import hljs from "highlight.js/lib/core";
-import bash from "highlight.js/lib/languages/bash";
-import c from "highlight.js/lib/languages/c";
-import cpp from "highlight.js/lib/languages/cpp";
-import css from "highlight.js/lib/languages/css";
-import diff from "highlight.js/lib/languages/diff";
-import dockerfile from "highlight.js/lib/languages/dockerfile";
-import go from "highlight.js/lib/languages/go";
-import ini from "highlight.js/lib/languages/ini";
-import java from "highlight.js/lib/languages/java";
-import javascript from "highlight.js/lib/languages/javascript";
-import json from "highlight.js/lib/languages/json";
-import makefile from "highlight.js/lib/languages/makefile";
-import markdown from "highlight.js/lib/languages/markdown";
-import ocaml from "highlight.js/lib/languages/ocaml";
-import plaintext from "highlight.js/lib/languages/plaintext";
-import python from "highlight.js/lib/languages/python";
-import rust from "highlight.js/lib/languages/rust";
-import scss from "highlight.js/lib/languages/scss";
-import sql from "highlight.js/lib/languages/sql";
-import swift from "highlight.js/lib/languages/swift";
-import typescript from "highlight.js/lib/languages/typescript";
-import xml from "highlight.js/lib/languages/xml";
-import yaml from "highlight.js/lib/languages/yaml";
+import bash from "@shikijs/langs/bash";
+import c from "@shikijs/langs/c";
+import css from "@shikijs/langs/css";
+import diff from "@shikijs/langs/diff";
+import docker from "@shikijs/langs/docker";
+import go from "@shikijs/langs/go";
+import html from "@shikijs/langs/html";
+import ini from "@shikijs/langs/ini";
+import java from "@shikijs/langs/java";
+import javascript from "@shikijs/langs/javascript";
+import json from "@shikijs/langs/json";
+import jsonc from "@shikijs/langs/jsonc";
+import jsx from "@shikijs/langs/jsx";
+import make from "@shikijs/langs/make";
+import markdown from "@shikijs/langs/markdown";
+import ocaml from "@shikijs/langs/ocaml";
+import python from "@shikijs/langs/python";
+import rust from "@shikijs/langs/rust";
+import scss from "@shikijs/langs/scss";
+import sql from "@shikijs/langs/sql";
+import swift from "@shikijs/langs/swift";
+import toml from "@shikijs/langs/toml";
+import tsx from "@shikijs/langs/tsx";
+import typescript from "@shikijs/langs/typescript";
+import xml from "@shikijs/langs/xml";
+import yaml from "@shikijs/langs/yaml";
+import githubDark from "@shikijs/themes/github-dark-default";
+import githubLight from "@shikijs/themes/github-light-default";
+import { createHighlighterCoreSync, stringifyTokenStyle } from "shiki/core";
+import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 
 const languages = {
   bash,
   c,
-  cpp,
   css,
   diff,
-  dockerfile,
+  docker,
   go,
   ini,
   java,
   javascript,
+  jsx,
   json,
-  makefile,
+  jsonc,
+  make,
   markdown,
   ocaml,
-  plaintext,
   python,
   rust,
   scss,
   sql,
   swift,
   typescript,
+  tsx,
   xml,
+  html,
   yaml,
+  toml,
 };
-for (const [name, language] of Object.entries(languages)) hljs.registerLanguage(name, language);
+type Language = keyof typeof languages;
+
+const highlighter = createHighlighterCoreSync({
+  themes: [githubLight, githubDark],
+  langs: Object.values(languages),
+  engine: createJavaScriptRegexEngine(),
+});
 
 // Languages of whole base names.
-const names: Record<string, string> = {
-  Dockerfile: "dockerfile",
-  Containerfile: "dockerfile",
-  Makefile: "makefile",
-  makefile: "makefile",
-  GNUmakefile: "makefile",
+const names: Record<string, Language> = {
+  Dockerfile: "docker",
+  Containerfile: "docker",
+  Makefile: "make",
+  makefile: "make",
+  GNUmakefile: "make",
 };
 
 // Languages of the lowercased text after a base name's last dot.
-const extensions: Record<string, string> = {
+const extensions: Record<string, Language> = {
   c: "c",
   h: "c",
-  cc: "cpp",
-  cpp: "cpp",
-  cxx: "cpp",
-  hh: "cpp",
-  hpp: "cpp",
-  hxx: "cpp",
   css: "css",
   scss: "scss",
   diff: "diff",
   patch: "diff",
-  dockerfile: "dockerfile",
-  mk: "makefile",
+  dockerfile: "docker",
+  mk: "make",
   go: "go",
   java: "java",
   rs: "rust",
   swift: "swift",
-  html: "xml",
-  htm: "xml",
-  xhtml: "xml",
+  html: "html",
+  htm: "html",
+  xhtml: "html",
   xml: "xml",
   svg: "xml",
   plist: "xml",
   ini: "ini",
-  toml: "ini",
+  toml: "toml",
   js: "javascript",
   mjs: "javascript",
   cjs: "javascript",
-  jsx: "javascript",
+  jsx: "jsx",
   ts: "typescript",
   mts: "typescript",
   cts: "typescript",
-  tsx: "typescript",
+  tsx: "tsx",
   json: "json",
-  jsonc: "json",
+  jsonc: "jsonc",
   jsonl: "json",
   md: "markdown",
   markdown: "markdown",
@@ -112,21 +121,45 @@ const extensions: Record<string, string> = {
   yaml: "yaml",
 };
 
-function languageFor(path: string): string {
+function languageFor(path: string): Language | undefined {
   const base = path.slice(path.lastIndexOf("/") + 1);
   const named = Object.hasOwn(names, base) ? names[base] : undefined;
   if (named) return named;
   const dot = base.lastIndexOf(".");
-  if (dot <= 0) return "plaintext";
+  if (dot <= 0) return undefined;
   const extension = base.slice(dot + 1).toLowerCase();
-  return Object.hasOwn(extensions, extension) ? extensions[extension] : "plaintext";
+  return Object.hasOwn(extensions, extension) ? extensions[extension] : undefined;
 }
 
-// highlight.js escapes the source text and emits only <span class="hljs-…">
-// elements, so the returned HTML adds no elements from the file and loads
-// nothing. A file name no language claims is plain text, escaped the same way.
 // A carriage return is written as a character reference, which the HTML
 // parser keeps where it would turn a raw one into a newline.
+function escapeHtml(text: string): string {
+  return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll("\r", "&#13;");
+}
+
+// The file's text reaches the DOM only through escapeHtml, inside the <span>
+// elements written here, and the style attributes hold only the bundled
+// themes' colors. The returned HTML adds no other elements and loads nothing.
+// A file name no language claims is plain text, escaped the same way.
 export function highlight(path: string, text: string): string {
-  return hljs.highlight(text, { language: languageFor(path), ignoreIllegals: true }).value.replaceAll("\r", "&#13;");
+  const language = languageFor(path);
+  if (!language) return escapeHtml(text);
+  const { tokens } = highlighter.codeToTokens(text, {
+    lang: language,
+    themes: { light: "github-light-default", dark: "github-dark-default" },
+    defaultColor: "light-dark()",
+  });
+  // Shiki splits lines on \r?\n; splitting on \n gives the same lines, and a
+  // line's trailing \r is the one Shiki dropped.
+  const lines = text.split("\n");
+  return tokens
+    .map((line, i) => {
+      const spans = line
+        .map(
+          (token) => `<span style="${stringifyTokenStyle(token.htmlStyle ?? {})}">${escapeHtml(token.content)}</span>`,
+        )
+        .join("");
+      return lines[i].endsWith("\r") ? `${spans}&#13;` : spans;
+    })
+    .join("\n");
 }
