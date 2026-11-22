@@ -1,6 +1,6 @@
 ---
 name: ox-audit
-description: Audit Ox for structures that let classes of defects happen, such as a state the types allow but the design forbids, one fact kept in two places, or a rule several callers decide for themselves. Draws on past plans, reviews, fixes, and known issues as evidence, confirms each structure in the code, and writes the audit in `agents/audits/`, marking each finding to plan or rejected with its reason. Fixes nothing. Each finding to plan becomes the request for `/ox-plan`. Never use it unless the user, or an agent acting on the user's request, invokes it.
+description: Audit Ox for structures that let classes of defects happen, such as a state the types allow but the design forbids, one fact kept in two places, or a rule several callers decide for themselves. Draws on past plans, reviews, fixes, and known issues as evidence, confirms each structure in the code, and writes the audit in `agents/audits/`, marking each finding to plan or rejected with its reason. Fixes nothing. The user chooses which findings to take through the project workflow. Never use it unless the user, or an agent acting on the user's request, invokes it.
 argument-hint: "[scope: whole repository, an area, or since a revision or earlier audit]"
 ---
 
@@ -10,8 +10,10 @@ Use this skill only when the user, or an agent acting on the user's request, inv
 
 Find the structures in Ox that let defects happen, and write an audit that tells the user which are worth changing. A structure is worth changing when keeping it costs more than replacing it: the defects it has caused, the defects it still permits, and the checks, guards, and syncing it forces on every reader. Give every finding one action:
 
-- `Plan`: a confirmed structure whose replacement costs less than keeping it. The finding becomes the request for `/ox-plan`.
+- `Plan`: a confirmed structure whose replacement costs less than keeping it.
 - `Rejected`: speculative, a misreading of the intended design, or cheaper to keep than to replace. The reason is recorded so the next audit does not raise it again.
+
+The audit recommends which finding to take up first. The user chooses the work with the top-level agent. The top-level agent hands the chosen finding to its planning child and carries it through the [project workflow](../../../AGENTS.md#workflow).
 
 Change no code, tests, or documentation other than `docs/todo.md`, and stage or commit nothing. Edit only the audit file and `docs/todo.md`. Do not start other agents.
 
@@ -37,7 +39,7 @@ Change no code, tests, or documentation other than `docs/todo.md`, and stage or 
 ## Write the audit
 
 10. Read this skill's `assets/_template.md` and write the audit in `agents/audits/`, named `YYYY-MM-DD-NNN-slug.md` with the next sequence for the day.
-11. Make each `Plan` finding stand on its own as a request for `/ox-plan`: the structure, every place it appears, the defects it caused, the wrong states it still permits, the owner or representation that replaces it, and what the replacement removes. Leave the design of the change to the plan. Record a candidate as a `Rejected` finding only when a later audit or review would otherwise raise it again: an earlier review raised it, or it has the shape of a structure this audit looks for. State the reason.
+11. Give the planning child enough context to use any selected `Plan` finding as its task. Include the structure, every place it appears, the defects it caused, the wrong states it still permits, the owner or representation that replaces it, and what the replacement removes. Leave the design of the change to the plan. Record a candidate as a `Rejected` finding only when a later audit or review would otherwise raise it again: an earlier review raised it, or it has the shape of a structure this audit looks for. State the reason.
 12. Add an entry to `docs/todo.md`, under Defects and in order of cost, for each `Plan` finding: a bold title naming the defect, one sentence on what goes wrong, and a link to the finding's section in the audit. Remove the entry of an earlier finding that has landed, and correct one this audit shows is stale.
 13. Give the final response and stop.
 
@@ -57,7 +59,7 @@ One or two sentences: what the audit found, and the number of findings by action
 
 **Still open in `docs/todo.md`:** 4 earlier findings, the highest-cost Archive acts on a stale session.
 
-**Next:** `/ox-plan agents/audits/YYYY-MM-DD-NNN-slug.md F1`
+**Recommended finding** F1, Session state copied into each connection.
 ```
 
-List every finding, `Plan` findings first, each group by cost, highest first; if there are none, replace the table with `No findings.` and omit Next. Places is the number of places the structure appears. Give the number of earlier findings still open in `docs/todo.md` and the highest-cost one, or omit the line when none are. Give a Next line for the highest-cost `Plan` finding.
+List every finding, `Plan` findings first, each group by cost, highest first. If there are no findings, replace the table with `No findings.` Places is the number of places the structure appears. Give the number of earlier findings still open in `docs/todo.md` and the highest-cost one, or omit the line when none are. Recommend the highest-cost `Plan` finding by ID and title when there is one.
