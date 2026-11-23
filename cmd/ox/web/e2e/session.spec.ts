@@ -4,7 +4,7 @@
 // background task for a prompt "background <milliseconds>".
 import { mkdtempSync } from "node:fs";
 import { basename } from "node:path";
-import type { Locator, Page } from "@playwright/test";
+import type { Locator, Page, Route } from "@playwright/test";
 import type { Services } from "./services";
 import { fakeConfig, haikuConfig } from "./services";
 import {
@@ -387,6 +387,32 @@ test("a send cut off after acceptance shows an error without resending", async (
   await expect(main(page).getByRole("alert")).toHaveText(["Lost the connection to ox. Reconnecting."]);
   await expect(prompts(page)).toHaveText(["before disconnection", "accepted once"]);
   expect(sends.map((params) => params.text)).toEqual(["accepted once"]);
+});
+
+test("the page links a manifest that opens Ox standalone with its icon", async ({ page, services }) => {
+  await page.goto(services.url);
+  const href = await page.locator("link[rel=manifest]").getAttribute("href");
+  const manifestResponse = await page.request.get(new URL(href ?? "", services.url).href);
+  expect(manifestResponse.ok()).toBe(true);
+  const manifest = await manifestResponse.json();
+  expect(manifest).toMatchObject({ name: "Ox", display: "standalone", start_url: "/" });
+  const icon = await page.request.get(new URL(manifest.icons[0].src, services.url).href);
+  expect(icon.status()).toBe(200);
+  expect(icon.headers()["content-type"]).toBe("image/png");
+});
+
+test("a closed stream offers a Reload button that reconnects", async ({ ox: page, services }) => {
+  await newSession(page, "reload me");
+  const refuse = (route: Route) => route.fulfill({ status: 502 });
+  await page.route("**/events", refuse);
+  await services.restartRelay();
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("Lost the connection to ox.");
+  await expect(alert).not.toContainText("Reconnecting");
+  await page.unroute("**/events", refuse);
+  await alert.getByRole("button", { name: "Reload" }).click();
+  await expect(alert).toHaveCount(0);
+  await expect(send(page)).toBeEnabled();
 });
 
 test("Shift+Enter starts a new line", async ({ ox: page }) => {

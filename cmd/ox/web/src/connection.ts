@@ -10,8 +10,15 @@ export class RpcError extends Error {
 }
 
 // Disconnected is a request's failure when the page's connection to oxd,
-// through the relay and its event stream, is gone.
-export class Disconnected extends Error {}
+// through the relay and its event stream, is gone. closed means the browser
+// has stopped reconnecting the stream, so only a reload restores it.
+export class Disconnected extends Error {
+  readonly closed: boolean;
+  constructor(message: string, closed = false) {
+    super(message);
+    this.closed = closed;
+  }
+}
 
 export type Connection = {
   rpc<M extends keyof Methods>(method: M, params: Methods[M][0]): Promise<Methods[M][1]>;
@@ -46,12 +53,9 @@ export function connect(handlers: {
       handlers.onConnect();
     });
     source.onerror = () => {
+      const closed = source.readyState === EventSource.CLOSED;
       lose(
-        new Disconnected(
-          source.readyState === EventSource.CLOSED
-            ? "Lost the connection to ox. Reload the page to reconnect."
-            : "Lost the connection to ox. Reconnecting.",
-        ),
+        new Disconnected(closed ? "Lost the connection to ox." : "Lost the connection to ox. Reconnecting.", closed),
       );
     };
     source.onmessage = (event) => {

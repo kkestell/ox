@@ -326,7 +326,7 @@ function createOx() {
     harnesses: {},
     workspaces: [],
   });
-  const [error, setError] = createSignal<string>();
+  const [error, setError] = createSignal<Error>();
   const controls = new Map<string, SessionControl>();
   const [ready, setReady] = createSignal(false);
   let connection!: Connection;
@@ -361,7 +361,7 @@ function createOx() {
   // failure as the page error meanwhile. It returns undefined once the stream
   // is lost, which the page reports itself.
   async function retry<T>(request: () => Promise<T>): Promise<T | undefined> {
-    let shown: string | undefined;
+    let shown: Error | undefined;
     for (;;) {
       try {
         const answer = await request();
@@ -369,7 +369,7 @@ function createOx() {
         return answer;
       } catch (e) {
         if (e instanceof Disconnected) return undefined;
-        shown = (e as Error).message;
+        shown = e as Error;
         setError(shown);
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
@@ -536,7 +536,7 @@ function createOx() {
             }
           }
         });
-        setError(error.message);
+        setError(error);
       },
     });
     return () => connection.close();
