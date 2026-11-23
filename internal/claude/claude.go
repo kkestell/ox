@@ -121,11 +121,18 @@ func checkEffort(effort string) error {
 	return nil
 }
 
+// permissionModes are the permission modes Claude takes, other than its alias
+// default for manual.
+var permissionModes = []string{"acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"}
+
 // checkPermissionMode refuses default, Claude's alias for manual, so that one
-// mode has one ID.
+// mode has one ID, and any mode Claude does not take.
 func checkPermissionMode(mode string) error {
 	if mode == "default" {
 		return errors.New("use permission mode \"manual\" instead of \"default\" for Claude")
+	}
+	if !slices.Contains(permissionModes, mode) {
+		return fmt.Errorf("Claude has no permission mode %q", mode)
 	}
 	return nil
 }

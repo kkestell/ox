@@ -77,6 +77,7 @@ type Agent struct {
 	resumable        string // token last passed to OnResumable, or supplied at startup
 	streamedText     bool   // the current turn published a text delta
 	mayHaveSchedules bool   // true until Stop reports an empty schedule list
+	plainText        string // Claude's last plain-text line on stdout after startup
 }
 
 type processExit struct {
@@ -144,6 +145,8 @@ func (a *Agent) Handle(event agent.Event) {
 	case plainText:
 		if s, ok := a.phase.(*starting); ok {
 			s.reason, s.noConversation = string(e), false
+		} else {
+			a.plainText = string(e)
 		}
 	case processExit:
 		a.exit(e)
@@ -218,7 +221,7 @@ func (a *Agent) handleOutput(m message) {
 	case "assistant":
 		for _, use := range m.toolUses() {
 			switch use.Name {
-			case "CronCreate", "CronDelete", "ScheduleWakeup":
+			case "CronCreate", "ScheduleWakeup":
 				a.mayHaveSchedules = true
 			}
 			if m.ParentToolUseID == "" {
@@ -353,6 +356,9 @@ func (a *Agent) exit(exit processExit) {
 		// Claude exits on its own only when something has gone wrong, which
 		// can cut short a turn it started itself.
 		reason := exitReason(exit)
+		if a.plainText != "" {
+			reason += "\n" + a.plainText
+		}
 		if exit.stderr != "" {
 			reason += "\n" + exit.stderr
 		}
