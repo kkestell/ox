@@ -57,6 +57,8 @@ const folder = (page: Page, name: string) =>
 const viewer = (page: Page) => page.getByRole("region", { name: "File" });
 const tab = (page: Page) => viewer(page).getByRole("tab");
 const pane = (page: Page) => viewer(page).getByRole("tabpanel");
+const wrapButton = (page: Page) => viewer(page).getByRole("button", { name: "Toggle word wrap" });
+const previewButton = (page: Page) => viewer(page).getByRole("button", { name: "Toggle preview" });
 
 // showFiles shows the file tree, which a wide screen hides at load.
 async function showFiles(page: Page) {
@@ -603,7 +605,7 @@ test.describe("on a wide screen", () => {
     await expect(files(page)).toHaveCount(0);
     await expect(viewer(page)).toBeVisible();
     await expect(main.getByRole("button", { name: "Toggle files" })).toHaveAttribute("aria-pressed", "false");
-    await expect(viewer(page).getByRole("button", { name: /^Toggle/ })).toHaveCount(0);
+    await expect(viewer(page).getByRole("button", { name: /^Toggle (sessions|files)$/ })).toHaveCount(0);
     await expect(page.getByRole("separator", { name: "Resize files" })).toHaveCount(0);
 
     await toggleSessions.click();
@@ -940,6 +942,8 @@ test("clicking a file opens it under its tab and marks its row, and another file
   read.release();
   await expect(pane(page)).toHaveText("first");
   await expect(entry(page, "a.txt")).toHaveAttribute("aria-current", "true");
+  await expect(wrapButton(page)).toBeVisible();
+  await expect(previewButton(page)).toHaveCount(0);
 
   await entry(page, "b.txt").click();
   await expect(tab(page)).toHaveText("b.txt");
@@ -1018,6 +1022,101 @@ test("the pane keeps a file's carriage returns", async ({ ox: page, services }) 
   await openFile(page, "src/template.ts");
   await expect(tab(page)).toHaveText("template.ts");
   await expect(pane(page)).toHaveJSProperty("textContent", template);
+});
+
+test("the wrap button wraps long lines to the pane", async ({ ox: page, services }) => {
+  await showFiles(page);
+  writeFileSync(join(services.workspace, "a.txt"), `${"long line ".repeat(200)}\n`);
+  await newSessionButton(page).click();
+  await openFile(page, "a.txt");
+  await expect(pane(page)).toContainText("long line");
+  await expect(wrapButton(page)).toHaveAttribute("aria-pressed", "false");
+  await pane(page).hover();
+  await page.mouse.wheel(300, 0);
+  await expect(pane(page)).toHaveJSProperty("scrollLeft", 300);
+
+  await wrapButton(page).click();
+  await expect(wrapButton(page)).toHaveAttribute("aria-pressed", "true");
+  await expect(pane(page)).toHaveJSProperty("scrollLeft", 0);
+  await pane(page).hover();
+  await page.mouse.wheel(300, 0);
+  await expect(pane(page)).toHaveJSProperty("scrollLeft", 0);
+});
+
+test("the wrap choice holds for the next file and resets on reload", async ({ ox: page, services }) => {
+  await showFiles(page);
+  writeFileSync(join(services.workspace, "a.txt"), "a\n");
+  writeFileSync(join(services.workspace, "b.txt"), "b\n");
+  await newSession(page, "first");
+  await openFile(page, "a.txt");
+  await wrapButton(page).click();
+  await expect(wrapButton(page)).toHaveAttribute("aria-pressed", "true");
+  await openFile(page, "b.txt");
+  await expect(pane(page)).toHaveText("b");
+  await expect(wrapButton(page)).toHaveAttribute("aria-pressed", "true");
+
+  await page.reload();
+  await expect(replies(page)).toHaveText(["You said: first"]);
+  await showFiles(page);
+  await openFile(page, "a.txt");
+  await expect(wrapButton(page)).toHaveAttribute("aria-pressed", "false");
+});
+
+test("a Markdown file opens as a preview and its button shows the source", async ({ ox: page, services }) => {
+  await showFiles(page);
+  writeFileSync(join(services.workspace, "notes.md"), "# Title\n\ntext\n");
+  await newSessionButton(page).click();
+  await openFile(page, "notes.md");
+  await expect(pane(page).getByRole("heading", { name: "Title" })).toBeVisible();
+  await expect(previewButton(page)).toHaveAttribute("aria-pressed", "true");
+  await expect(wrapButton(page)).toHaveCount(0);
+
+  await previewButton(page).click();
+  await expect(previewButton(page)).toHaveAttribute("aria-pressed", "false");
+  await expect(pane(page)).toContainText("# Title");
+  await expect(pane(page).getByRole("heading")).toHaveCount(0);
+  await expect(wrapButton(page)).toBeVisible();
+});
+
+test("a Markdown file's source view holds through switching sessions, and the next Markdown file opens as a preview", async ({
+  ox: page,
+  services,
+}) => {
+  await showFiles(page);
+  writeFileSync(join(services.workspace, "a.md"), "# A\n");
+  writeFileSync(join(services.workspace, "b.md"), "# B\n");
+  await newSession(page, "first");
+  await newSession(page, "second");
+  await sessionButton(page, "first").click();
+  await openFile(page, "a.md");
+  await previewButton(page).click();
+  await expect(pane(page)).toHaveText("# A");
+  await sessionButton(page, "second").click();
+  await expect(viewer(page)).toHaveCount(0);
+  await sessionButton(page, "first").click();
+  await expect(tab(page)).toHaveText("a.md");
+  await expect(previewButton(page)).toHaveAttribute("aria-pressed", "false");
+  await expect(pane(page)).toHaveText("# A");
+
+  await entry(page, "a.md").click();
+  await expect(previewButton(page)).toHaveAttribute("aria-pressed", "false");
+  await expect(pane(page)).toHaveText("# A");
+
+  await openFile(page, "b.md");
+  await expect(previewButton(page)).toHaveAttribute("aria-pressed", "true");
+  await expect(pane(page).getByRole("heading", { name: "B" })).toBeVisible();
+});
+
+clocked("the preview shows changes on disk", async ({ ox: page, services }) => {
+  await showFiles(page);
+  const notes = join(services.workspace, "notes.md");
+  writeFileSync(notes, "# One\n");
+  await newSessionButton(page).click();
+  await openFile(page, "notes.md");
+  await expect(pane(page).getByRole("heading")).toHaveText("One");
+  writeFileSync(notes, "# Two\n");
+  await page.clock.runFor(1000);
+  await expect(pane(page).getByRole("heading")).toHaveText("Two");
 });
 
 clocked(

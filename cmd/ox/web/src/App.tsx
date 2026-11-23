@@ -84,6 +84,8 @@ function Layout() {
   // With no session named, the transcript is empty, so a narrow page opens
   // with the session list.
   const panels = createPanels(selectionFromHash() ? undefined : "sessions");
+  // Whether the file viewer wraps long lines, for every file until reload.
+  const [wrap, setWrap] = createSignal(false);
   // The file tree, when it shows.
   const tree = () => (panels.files() ? files() : undefined);
   // The toggles sit in the file tree's header while it shows in the wide
@@ -212,7 +214,7 @@ function Layout() {
             {(workspaceId) => (
               <Show when={files()}>
                 {(current) => (
-                  <Show when={current().control.file()} keyed>
+                  <Show when={current().control.file()?.path} keyed>
                     {(path) => (
                       <>
                         <Sash
@@ -226,6 +228,10 @@ function Layout() {
                           workspaceId={workspaceId}
                           path={path}
                           share={panels.narrow() ? undefined : 1 - current().control.split()}
+                          view={current().control.file()?.view}
+                          onView={(view) => current().control.setView(view)}
+                          wrap={wrap()}
+                          onWrap={setWrap}
                           onClose={() => current().control.setFile(undefined)}
                         />
                       </>

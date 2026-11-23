@@ -121,7 +121,7 @@ const extensions: Record<string, Language> = {
   yaml: "yaml",
 };
 
-function languageFor(path: string): Language | undefined {
+export function languageFor(path: string): Language | undefined {
   const base = path.slice(path.lastIndexOf("/") + 1);
   const named = Object.hasOwn(names, base) ? names[base] : undefined;
   if (named) return named;
@@ -138,12 +138,25 @@ function escapeHtml(text: string): string {
 }
 
 // The file's text reaches the DOM only through escapeHtml, inside the <span>
-// elements written here, and the style attributes hold only the bundled
-// themes' colors. The returned HTML adds no other elements and loads nothing.
-// A file name no language claims is plain text, escaped the same way.
-export function highlight(path: string, text: string): string {
+// elements written here: one <span class="line"> per line, holding the line's
+// token spans and its \n, and token spans whose style attributes hold only the
+// bundled themes' colors. The HTML adds no other elements and loads nothing.
+// A file name no language claims is plain text, escaped the same way. The
+// empty piece after a final \n is not a line, so an empty file has none.
+export function highlight(path: string, text: string): { html: string; lines: number } {
+  const pieces = text.split("\n");
+  const lines = pieces.at(-1) === "" ? pieces.length - 1 : pieces.length;
+  const html = linesOf(path, text, pieces)
+    .slice(0, lines)
+    .map((line, i) => `<span class="line">${line}${i < pieces.length - 1 ? "\n" : ""}</span>`)
+    .join("");
+  return { html, lines };
+}
+
+// linesOf returns the HTML of each of the text's pieces between newlines.
+function linesOf(path: string, text: string, pieces: string[]): string[] {
   const language = languageFor(path);
-  if (!language) return escapeHtml(text);
+  if (!language) return pieces.map(escapeHtml);
   const { tokens } = highlighter.codeToTokens(text, {
     lang: language,
     themes: { light: "github-light-default", dark: "github-dark-default" },
@@ -151,15 +164,10 @@ export function highlight(path: string, text: string): string {
   });
   // Shiki drops the \r of a \r\n and keeps any other, so only a line that a \n
   // follows gets its \r restored.
-  const lines = text.split("\n");
-  return tokens
-    .map((line, i) => {
-      const spans = line
-        .map(
-          (token) => `<span style="${stringifyTokenStyle(token.htmlStyle ?? {})}">${escapeHtml(token.content)}</span>`,
-        )
-        .join("");
-      return i < lines.length - 1 && lines[i].endsWith("\r") ? `${spans}&#13;` : spans;
-    })
-    .join("\n");
+  return tokens.map((line, i) => {
+    const spans = line
+      .map((token) => `<span style="${stringifyTokenStyle(token.htmlStyle ?? {})}">${escapeHtml(token.content)}</span>`)
+      .join("");
+    return i < pieces.length - 1 && pieces[i].endsWith("\r") ? `${spans}&#13;` : spans;
+  });
 }

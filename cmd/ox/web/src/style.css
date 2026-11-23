@@ -78,6 +78,8 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: 
 .folder-open { --icon: url(lucide-static/icons/folder-open.svg); }
 .file { --icon: url(lucide-static/icons/file.svg); }
 .x { --icon: url(lucide-static/icons/x.svg); }
+.wrap-text { --icon: url(lucide-static/icons/wrap-text.svg); }
+.eye { --icon: url(lucide-static/icons/eye.svg); }
 .panel-left { --icon: url(lucide-static/icons/panel-left.svg); }
 .panel-right { --icon: url(lucide-static/icons/panel-right.svg); }
 .search-icon { --icon: url(lucide-static/icons/search.svg); }
@@ -433,11 +435,34 @@ aside.files .chevron-right.open::before { transform: rotate(90deg); }
 .viewer [role="tab"] > :last-child { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .viewer button.x { width: 1.5rem; height: 1.5rem; }
 .viewer button.x::before { width: 0.75rem; height: 0.75rem; }
+/* The editor actions sit at the header's right end, as in VS Code; a toggle
+   that is off is dimmed, as the panel toggles are. */
+.viewer .editor-actions { flex: none; display: flex; margin-left: auto; margin-right: -0.25rem; color: var(--text); }
+.viewer .editor-actions button[aria-pressed="false"] { color: var(--muted-foreground); }
 .viewer [role="tabpanel"] { padding: 0.5rem 0.75rem calc(0.5rem + var(--bottom-inset)); font-size: 0.75rem; color: var(--muted-foreground); }
-.viewer pre[role="tabpanel"] { flex: 1; min-height: 0; overflow: auto; white-space: pre; font-family: var(--font-mono); color: var(--foreground); }
+.viewer pre[role="tabpanel"] { flex: 1; min-height: 0; overflow: auto; padding-left: 0; white-space: pre; font-family: var(--font-mono); color: var(--foreground); }
+/* Line numbers, as in GitHub and VS Code: each line's number is generated
+   content, so selecting and copying take only the text, in a gutter that
+   sticks to the pane's left edge while the text scrolls under it. The gutter
+   is the pane's padding, the widest number, and a gap; each line hangs its
+   wrapped rows past it. The number's shadow covers the text a pane edge on a
+   fractional pixel leaves half-clipped beside it. */
+.viewer pre[role="tabpanel"] code {
+  --gutter: calc(0.75rem + var(--digits) * 1ch + 1rem);
+  display: block; width: max-content; min-width: 100%; counter-reset: line;
+}
+.viewer .line { display: block; min-height: 1lh; padding-left: var(--gutter); text-indent: calc(-1 * var(--gutter)); counter-increment: line; }
+.viewer .line::before {
+  content: counter(line); position: sticky; left: 0; display: inline-block; width: var(--gutter);
+  padding: 0 1rem 0 0.75rem; text-indent: 0; text-align: right; color: var(--muted-foreground); background: var(--pane);
+  box-shadow: -1px 0 var(--pane);
+}
+.viewer pre.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+.viewer pre.wrap code { width: auto; }
+.viewer .preview { flex: 1; min-height: 0; overflow: auto; padding: 0.75rem 1rem calc(0.75rem + var(--bottom-inset)); font-size: 0.875rem; color: var(--foreground); }
 
 /* Shiki gives font styles of dual themes only as these variables; both GitHub themes share them. */
-.viewer pre[role="tabpanel"] span { font-style: var(--shiki-light-font-style); font-weight: var(--shiki-light-font-weight); }
+.viewer pre[role="tabpanel"] span[style] { font-style: var(--shiki-light-font-style); font-weight: var(--shiki-light-font-weight); }
 
 /* Narrow screens show one pane at a time, as the ChatGPT and Claude mobile web
    apps do: the side panels are drawers over a dimmed page, opened from the

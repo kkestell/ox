@@ -112,7 +112,7 @@ function FolderRow(props: { tree: Tree; path: string; name: string; depth: numbe
 }
 
 function FileRow(props: { tree: Tree; path: string; name: string; depth: number }) {
-  const open = () => props.tree.control().file() === props.path;
+  const open = () => props.tree.control().file()?.path === props.path;
   return (
     <li>
       <button
