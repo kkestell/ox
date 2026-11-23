@@ -1,7 +1,8 @@
 // Package ur is Ox's built-in harness, which chats through OpenRouter's chat
 // completions API and runs the model's shell commands. Each turn is a streamed
-// request carrying the conversation so far, which Ur keeps in a file of its
-// own, then a request after each response's commands have run.
+// request carrying Ur's instructions and then the conversation so far, which
+// Ur keeps in a file of its own, then a request after each response's commands
+// have run.
 package ur
 
 import (
@@ -312,8 +313,13 @@ func (a *Agent) request() {
 			return
 		}
 	}
+	body, err := a.body()
+	if err != nil {
+		a.finish(agent.Result{Text: "Ur could not read AGENTS.md: " + err.Error(), IsError: true})
+		return
+	}
 	a.turn.step = streaming{}
-	go a.stream(a.turn.ctx, a.turn, a.body())
+	go a.stream(a.turn.ctx, a.turn, body)
 }
 
 // next takes up calls, the response's calls not yet answered, oldest first,
@@ -387,10 +393,16 @@ func (a *Agent) answer(calls []toolCall, o outcome) {
 	a.next(calls[1:])
 }
 
-// body builds the next request from the conversation with the current
-// settings.
-func (a *Agent) body() []byte {
-	body := request{Model: a.settings.Model, Messages: conversation(a.history), Tools: []json.RawMessage{shellTool}, Stream: true}
+// body builds the next request from Ur's instructions, read now, and the
+// conversation, with the current settings. The instructions are not part of
+// the saved conversation.
+func (a *Agent) body() ([]byte, error) {
+	text, err := instructions(a.workspace, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	messages := append([]message{{Role: "system", Content: text}}, conversation(a.history)...)
+	body := request{Model: a.settings.Model, Messages: messages, Tools: []json.RawMessage{shellTool}, Stream: true}
 	if a.settings.Effort != "" {
 		body.Reasoning = &reasoning{Effort: a.settings.Effort}
 	}
@@ -398,7 +410,7 @@ func (a *Agent) body() []byte {
 		body.Provider = &provider{Order: order}
 	}
 	data, _ := json.Marshal(body) // strings, slices of them, and valid JSON always marshal
-	return data
+	return data, nil
 }
 
 // stopped answers a call whose command did not finish: an interrupt, Stop, or

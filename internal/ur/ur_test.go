@@ -184,10 +184,14 @@ func contents(body map[string]any) []string {
 	return field(body, "content")
 }
 
-// field is the given field of each of a request's messages that has it.
+// field is the given field of each of a request's conversation messages that
+// has it; the system message is not part of the conversation.
 func field(body map[string]any, name string) []string {
 	var values []string
 	for _, m := range body["messages"].([]any) {
+		if m.(map[string]any)["role"] == "system" {
+			continue
+		}
 		if value, ok := m.(map[string]any)[name].(string); ok {
 			values = append(values, value)
 		}
@@ -614,6 +618,85 @@ func TestResume(t *testing.T) {
 	if len(r.tokens) != 1 {
 		t.Errorf("OnResumable got %q, not the one token", r.tokens)
 	}
+	if got := systemMessages(body); len(got) != 1 || body["messages"].([]any)[0].(map[string]any)["role"] != "system" {
+		t.Errorf("the resumed request has system messages %q, not one first", got)
+	}
+}
+
+// systemMessages is the content of each system message in a request.
+func systemMessages(body map[string]any) []string {
+	var values []string
+	for _, m := range body["messages"].([]any) {
+		if m := m.(map[string]any); m["role"] == "system" {
+			values = append(values, m["content"].(string))
+		}
+	}
+	return values
+}
+
+// Each request starts with a system message built from the workspace, the
+// style, and the workspace's AGENTS.md as it stands then.
+func TestInstructions(t *testing.T) {
+	answer := func(w http.ResponseWriter, _ *http.Request, _ int) { sse(w, "ok") }
+	// system sends a prompt and returns the request's one system message,
+	// which must lead.
+	system := func(t *testing.T, r *run) string {
+		t.Helper()
+		r.send("p", "hi")
+		r.idle()
+		body := r.request().body
+		got := systemMessages(body)
+		if len(got) != 1 || body["messages"].([]any)[0].(map[string]any)["role"] != "system" {
+			t.Fatalf("system messages %q, not one first", got)
+		}
+		return got[0]
+	}
+
+	t.Run("fresh each request", func(t *testing.T) {
+		r := start(t, agent.Settings{Model: model}, nil, answer)
+		path := filepath.Join(r.workspace, "AGENTS.md")
+		if err := os.WriteFile(path, []byte("marker-one"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		first := system(t, r)
+		for _, want := range []string{r.workspace, agent.Style, "marker-one", "Date: " + time.Now().Format("2006-01-02")} {
+			if !strings.Contains(first, want) {
+				t.Errorf("system message lacks %q:\n%s", want, first)
+			}
+		}
+		if err := os.WriteFile(path, []byte("marker-two"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		second := system(t, r)
+		if !strings.Contains(second, "marker-two") || strings.Contains(second, "marker-one") {
+			t.Errorf("system message after the edit:\n%s", second)
+		}
+	})
+
+	t.Run("no AGENTS.md", func(t *testing.T) {
+		r := start(t, agent.Settings{Model: model}, nil, answer)
+		got := system(t, r)
+		if !strings.Contains(got, r.workspace) || strings.Contains(got, "Instructions from the workspace's") {
+			t.Errorf("system message:\n%s", got)
+		}
+	})
+
+	t.Run("unreadable AGENTS.md", func(t *testing.T) {
+		r := start(t, agent.Settings{Model: model}, nil, answer)
+		if err := os.Mkdir(filepath.Join(r.workspace, "AGENTS.md"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		r.send("p", "hi")
+		if result := r.result(); !result.IsError || !strings.HasPrefix(result.Text, "Ur could not read AGENTS.md: ") {
+			t.Errorf("result %+v", result)
+		}
+		r.idle()
+		select {
+		case req := <-r.requests:
+			t.Errorf("the server received %v", req.body)
+		default:
+		}
+	})
 }
 
 // A conversation whose file is gone or damaged refuses the start and clears
@@ -791,11 +874,13 @@ func kinds(updates []agent.Update) []string {
 	return described
 }
 
-// messages is a request's messages.
+// messages is a request's conversation messages, without the system message.
 func messages(body map[string]any) []map[string]any {
 	var ms []map[string]any
 	for _, m := range body["messages"].([]any) {
-		ms = append(ms, m.(map[string]any))
+		if m.(map[string]any)["role"] != "system" {
+			ms = append(ms, m.(map[string]any))
+		}
 	}
 	return ms
 }

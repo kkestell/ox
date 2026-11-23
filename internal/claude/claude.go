@@ -30,9 +30,7 @@ type process struct {
 // style, then what Claude needs to know about running as Ox session
 // oxSessionID in workspace.
 func systemPrompt(oxSessionID, workspace string) string {
-	return "Lead with the big idea up front. " +
-		"Use crisp, deadpan, military-efficient delivery. " +
-		"Use dry wit with complete emotional neutrality.\n\n" +
+	return agent.Style + "\n\n" +
 		"You are running inside Ox, which runs several Claude Code sessions side by side. " +
 		"You are Ox session `" + oxSessionID + "` in `" + workspace + "`. The user talks to you through Ox.\n\n" +
 		"\"Another session\" or \"the other agent\" means another Ox session. " +

@@ -53,7 +53,7 @@
             { "id": "high", "name": "High" },
             { "id": "max", "name": "Max" }
           ],
-          "providers": ["inference-net/us", "stepfun/fp8"]
+          "providers": ["inference-net/us"]
         },
         {
           "id": "z-ai/glm-5.3-flash",
