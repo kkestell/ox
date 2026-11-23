@@ -12,6 +12,7 @@ import {
   allow,
   ask,
   cutReply,
+  edges,
   errors,
   expect,
   heading,
@@ -20,6 +21,7 @@ import {
   model,
   newSession,
   newSessionButton,
+  openKeyboard,
   openMenu,
   pending,
   permissionMode,
@@ -32,6 +34,7 @@ import {
   sessionId,
   sessionItem,
   sessions,
+  setSafeArea,
   stop,
   test,
   toolCall,
@@ -1268,6 +1271,20 @@ test.describe("on a touch screen", () => {
     );
     await expect(markdown.getByRole("table")).toBeInViewport({ ratio: 1 });
     await expect.poll(() => transcript(page).evaluate((el) => el.scrollWidth - el.clientWidth)).toBe(0);
+  });
+
+  test("pending approvals leave the composer above the keyboard", async ({ ox: page }) => {
+    await setSafeArea(page, { top: 47, bottom: 34 });
+    await newSessionButton(page).click();
+    // The keyboard covers 336 px of the 844 px window, and Safari pans the page
+    // 120 px down, leaving 508 px visible from 120 to 628.
+    await openKeyboard(page, { height: 336, offsetTop: 120 });
+    const lines = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`line${i}`, i]));
+    const approval = await ask(page, "Example", JSON.stringify(lines));
+    await approval.getByRole("group").click();
+    await expect(approval.getByText('"line39": 39')).toBeVisible();
+    await expect.poll(async () => (await waiting(page).boundingBox())?.height).toBeLessThanOrEqual(254);
+    await expect.poll(async () => (await edges(page.getByRole("main").locator(".composer"))).bottom).toBe(620);
   });
 });
 
