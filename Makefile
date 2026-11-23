@@ -12,10 +12,10 @@ GOLANGCI_LINT := bin/golangci-lint-$(GOLANGCI_LINT_VERSION)
 -include .env
 export OPENROUTER_API_KEY
 
-dev: web build
+dev: build
 	GORACE=halt_on_error=1 node cmd/ox/web/dev.mjs
 
-build:
+build: web
 	go build -race -o bin/ ./cmd/ox ./cmd/ox-mcp ./cmd/oxd
 
 test: lint

@@ -84,10 +84,10 @@ export function runStack({ services, build, input, signals, log = console.log })
   }
 
   function start(record) {
-    const { command, args = [], cwd } = record.spec;
-    const proc = spawn(command, args, { cwd, detached: true, stdio: ["ignore", "inherit", "inherit"] });
+    const { command, args = [] } = record.spec;
+    const proc = spawn(command, args, { detached: true, stdio: ["ignore", "inherit", "inherit"] });
     record.proc = proc;
-    if (record.spec.restart) record.hash = fileHash(command);
+    record.hash = fileHash(command);
     proc.on("error", (error) => {
       console.error(error.message);
       record.proc = null;
@@ -132,7 +132,7 @@ export function runStack({ services, build, input, signals, log = console.log })
     let changed = false;
     for (const record of records) {
       if (stopping) return;
-      if (!record.spec.restart || fileHash(record.spec.command) === record.hash) continue;
+      if (fileHash(record.spec.command) === record.hash) continue;
       changed = true;
       await restart(record);
     }

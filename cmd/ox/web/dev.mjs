@@ -17,40 +17,36 @@ function freePort() {
 }
 
 // A linked worktree's .git is a file. Its stack keeps its configuration,
-// state, and socket under the checkout's .state and serves on free ports, so
+// state, and socket under the checkout's .state and serves on a free port, so
 // it runs beside the main checkout's stack and the user's Ox. The paths go by
 // flag rather than XDG variables, so the Claude sessions oxd starts, and their
 // tools, keep the user's environment.
 const checkout = join(import.meta.dirname, "../../..");
 const oxdArgs = [];
 const oxArgs = [];
+let port = "8080";
 if (lstatSync(join(checkout, ".git")).isFile()) {
   const state = join(checkout, ".state");
   const config = `-config=${join(state, "config.json")}`;
   const socket = `-socket=${join(state, "oxd.sock")}`;
   oxdArgs.push(config, socket, `-db=${join(state, "ox.db")}`, `-ur=${join(state, "ur")}`);
   oxArgs.push(config, socket);
-  process.env.OX_VITE_PORT ??= await freePort();
-  process.env.OX_RELAY_PORT ??= await freePort();
+  port = await freePort();
 }
+oxArgs.push("-addr", `localhost:${port}`);
 
-// OX_RELAY_PORT moves ox off 8081, and vite.config.ts reads it too.
-const relayPort = process.env.OX_RELAY_PORT ?? "8081";
-const vitePort = process.env.OX_VITE_PORT ?? "8080";
-
-// The daemon, relay, and Vite serve one dev session. If one exits on its own,
-// the others must stop too, especially when another daemon owns the socket.
+// The daemon and relay serve one dev session. If one exits on its own, the
+// other must stop too, especially when another daemon owns the socket.
 const stack = runStack({
   services: [
-    { name: "oxd", command: "bin/oxd", args: oxdArgs, restart: true },
-    { name: "ox", command: "bin/ox", args: [...oxArgs, "-addr", `localhost:${relayPort}`], restart: true },
-    { name: "vite", command: "node_modules/.bin/vite", cwd: import.meta.dirname, restart: false },
+    { name: "oxd", command: "bin/oxd", args: oxdArgs },
+    { name: "ox", command: "bin/ox", args: oxArgs },
   ],
   build: "make build",
   input: process.stdin,
   signals: process,
 });
 
-console.log(`Ox is at http://localhost:${vitePort}/`);
+console.log(`Ox is at http://localhost:${port}/`);
 console.log("Press Enter to rebuild and restart what changed.");
 process.exitCode = await stack;

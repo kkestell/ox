@@ -41,8 +41,7 @@ func TestRelayRefusesForeignPages(t *testing.T) {
 	}
 }
 
-// The page reaches the relay directly, or under make dev through Vite's
-// proxy, which sends the relay's own address as Host with the page's Origin.
+// The page reaches the relay directly or through the tailnet address.
 func TestRelayAcceptsItsPage(t *testing.T) {
 	relayEnd, daemonEnd := net.Pipe()
 	defer relayEnd.Close()
@@ -52,7 +51,6 @@ func TestRelayAcceptsItsPage(t *testing.T) {
 	h := r.handler(fstest.MapFS{})
 	for _, c := range []struct{ name, host, origin string }{
 		{"direct", "localhost:8080", "http://localhost:8080"},
-		{"through Vite", "localhost:8081", "http://localhost:8080"},
 		{"tailnet host", "100.64.1.2:17840", "http://100.64.1.2:17840"},
 	} {
 		req := httptest.NewRequest("POST", "/rpc?connection=page", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"harness/list"}`))
