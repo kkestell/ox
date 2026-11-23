@@ -6,7 +6,8 @@ title.
 ## Workspaces
 
 - **Adding a workspace.** The user adds a workspace by giving the absolute path
-  of an existing directory; adding the same directory again changes nothing.
+  of an existing directory; adding the same directory again changes nothing. The
+  session list shows it by its directory's name.
 - **Removing a workspace.** A workspace can be removed only when it has no
   sessions, archived ones included; otherwise its menu shows Remove workspace
   unavailable, with the reason. Removing it asks first, and leaves the directory
@@ -23,21 +24,23 @@ title.
 - **Session status.** Each session shows whether it is parked, idle, idle while
   background work Claude started still runs, running, waiting on the user, or
   archived.
-- **Collapsing child sessions.** A session with child sessions shows a chevron
-  after its title while its row is hovered or focused; clicking it hides or
-  shows every session beneath it, and clicking elsewhere on the row opens the
-  session. Children start shown, a child created under a collapsed session stays
-  hidden, hiding the open session leaves it open, and reloading the page shows
-  every child again.
+- **Collapsing child sessions.** A session with child sessions has a control on
+  its row that hides or shows every session beneath it; clicking elsewhere on
+  the row opens the session. Children start shown, a child created under a
+  collapsed session stays hidden, hiding the open session leaves it open, and
+  reloading the page shows every child again.
 - **Session URL.** The URL names the selected session, so reloading the page
   reopens it.
+- **Menus.** A session's and a workspace's actions open from its menu button or
+  by right-clicking it, and an unavailable action shows why.
 
 ## Creating sessions
 
 - **New-session defaults.** A new session starts with the configured default
   harness, model, effort, and permission mode.
 - **New-session choices.** Before sending, the user can pick any offered
-  harness, model, effort, and permission mode for a new session.
+  harness, model, effort, and permission mode for a new session. The user finds
+  a model by typing part of its name or its harness's.
 - **Creating a session.** Submitting a new session creates it and sends the
   prompt exactly once.
 - **Creation keeps the user's view.** A session whose creation finishes after
@@ -73,7 +76,7 @@ title.
   the end of the transcript and Send is unavailable, as it is while a message
   from another session is pending or waiting; once taken, it becomes a normal
   prompt where Claude took it.
-- **Stop.** While Claude works, Stop shows beside Send. Stop ends the turn, the
+- **Stop.** While Claude works, a Stop button shows. Stop ends the turn, the
   transcript shows it was interrupted, and the session takes prompts again; a
   pending prompt is dropped, and its text returns to the composer of the page
   that sent it, ahead of anything typed since. Messages from other sessions that
@@ -81,6 +84,8 @@ title.
 
 ## Transcript
 
+- **Session header.** A session's view shows its label and the directory it
+  works in.
 - **Prompts as sent.** Prompts show in the transcript as the plain text the user
   sent.
 - **Messages in the transcript.** A message shows in the recipient's transcript
@@ -136,11 +141,10 @@ title.
 
 ## Approvals
 
-- **Permission requests.** A tool permission request appears as a card above the
-  composer on every page, including after a reload, until it is answered or
-  withdrawn.
-- **Allow and Deny.** Allow sends the tool's input exactly as the card shows it;
-  Deny, or a typed reply, denies with that message.
+- **Permission requests.** A tool permission request appears in its session on
+  every page, including after a reload, until it is answered or withdrawn.
+- **Allow and Deny.** Allow approves the tool's input exactly as shown; Deny, or
+  a typed reply, denies with that message.
 - **Questions from Claude.** A question from Claude appears as a form with its
   options and an Other answer, one question at a time. The user moves between
   questions with Previous and Next without losing answers, moves on only once
@@ -162,14 +166,14 @@ title.
   send any of them a message. It does so without asking for approval, except in
   plan mode, where each message asks first.
 - **Claude can read other sessions.** Claude can read any other session's
-  transcript and current status, a page at a time with the newest last, in any
-  permission mode, without asking for approval.
+  transcript and current status, in any permission mode, without asking for
+  approval.
 - **Claude can start child sessions.** A session's Claude can start a child
-  session with a name, a title, and a first message, which reaches the child as
-  a message from its parent, without asking for approval except in plan mode,
-  where Claude asks first. The child takes its parent's permission mode, and its
-  parent's harness, model, effort, and directory unless Claude picks others Ox
-  offers, and can start children of its own up to the configured depth.
+  session with a title and a first message, which reaches the child as a message
+  from its parent, without asking for approval except in plan mode, where Claude
+  asks first. The child takes its parent's permission mode, and its parent's
+  harness, model, effort, and directory unless Claude picks others Ox offers,
+  and can start children of its own up to the configured depth.
 - **Message delivery.** A message from another session reaches Claude as a
   prompt sent while it works does: Claude takes it into the running turn after
   its current step, or runs it next, and an idle session starts a turn with it.
@@ -189,11 +193,9 @@ title.
   transcripts survive parking and `oxd` restarts.
 - **Resuming the conversation.** A parked session resumes its Claude
   conversation on the next send or message.
-- **Database failures.** Saved state, including transcripts, persists only while
-  Ox can write its database. `oxd` logs a failed write of a transcript or a
-  setting, and the page does not show it; adding or removing a workspace shows
-  its failure in its dialog. A session whose conversation could not be saved
-  still resumes it until `oxd` restarts.
+- **Database failures.** Adding or removing a workspace shows a failure to save
+  in its dialog; any other failure to save goes to `oxd`'s log. A session whose
+  conversation could not be saved still resumes it until `oxd` restarts.
 - **Lost conversation.** If Claude can no longer resume the conversation, the
   prompt is dropped with a notice in the transcript and its text returns to the
   composer, and the next send starts a new conversation without the earlier
@@ -222,9 +224,8 @@ title.
   restarts and on every page. Its unsent text returns when it is unarchived.
 - **Showing archived sessions.** A workspace's archived sessions are hidden
   until the user shows them from the workspace's menu, a choice that lasts until
-  the page reloads; shown, they keep their place, dimmed, with an archived
-  marker in place of their status. An archived session's URL opens it even while
-  it is hidden.
+  the page reloads; shown, they keep their place, marked as archived. An
+  archived session's URL opens it even while it is hidden.
 
 ## Pages and connection
 
@@ -234,15 +235,15 @@ title.
   in the view that made it. The error stays until that view's next request, even
   if a later request finishes first.
 - **Lost connection.** When the connection drops, the page says so, fails its
-  pending requests, and holds Send and settings until each session has reloaded.
-  It reconnects by itself, unless `oxd` is still down when it tries, in which
-  case it shows a Reload button.
+  pending requests, and holds Send and settings until it has caught up. It
+  reconnects by itself, unless `oxd` is still down when it tries, in which case
+  it shows a Reload button.
 - **Work outlives the page.** Closing every page leaves prompts, approvals, and
   Claude's own turns running.
-- **Web access.** The web relay accepts requests addressed to Ox's local or
+- **Web access.** The web UI answers only requests addressed to Ox's local or
   configured hosts. When the user configures `tailscale_ip`, Ox also serves the
-  web UI on that Tailscale address at port 17840, independently of the local
-  listener's port, and prints that URL at startup.
+  web UI on that Tailscale address, at a port that stays the same across
+  restarts and local port changes, and prints that URL at startup.
 - **Home Screen app.** On an iPhone, Ox added to the Home Screen from Safari
   shows its icon and the name Ox, and opens full screen without Safari's
   toolbars, at the session list, over the same address the browser uses.
@@ -250,54 +251,48 @@ title.
 ## Layout
 
 - **Panel toggles.** Two buttons show and hide the session list and the file
-  tree, each in full color while its panel shows and dimmed while it is hidden.
-  On a screen 768 px or wider, they sit at the right of the file tree's header
-  while the tree shows, and otherwise at the right of the session's header,
-  whether or not a file is open.
-- **Resizing panels.** On a screen 768 px or wider, dragging the boundary beside
-  the session list, the file tree, or between the transcript and the file viewer
+  tree, each showing whether its panel is shown.
+- **Resizing panels.** On a wide screen, dragging the boundary beside the
+  session list, the file tree, or between the transcript and the file viewer
   resizes them.
 - **Layout through navigation.** Which panels show and their widths are the same
   for every session. Each session and new-session draft keeps its own split
   between the transcript and the file viewer, and a draft's split carries to the
   session it creates. The layout lasts through switching views and reconnecting;
-  reloading the page on a screen 768 px or wider shows the session list and
-  hides the file tree, each panel at its default width, with the transcript and
-  file viewer splitting evenly.
-- **Narrow screens.** On a screen narrower than 768 px, the page shows one pane
-  at a time: the transcript, or the open file in its place until its tab is
-  closed. The session list and the file tree slide in over it from the left and
-  right, from the buttons at either end of the session's header, and close when
-  the user taps outside them, picks a session or a new-session draft, or opens a
-  file; panels cannot be resized. At load, the session list is open when the URL
-  names no session, and closed otherwise.
+  reloading the page restores the default layout.
+- **Narrow screens.** On a narrow screen, such as a phone's, the page shows one
+  pane at a time: the transcript, or the open file in its place until its tab is
+  closed. The session list and the file tree open over it from buttons in the
+  session's header, and close when the user taps outside them, picks a session
+  or a new-session draft, or opens a file; panels cannot be resized. At load,
+  the session list is open when the URL names no session, and closed otherwise.
 - **Touch screens.** On a touch screen, session and file rows are tall enough to
-  tap, the session list's New session, actions, and child sessions buttons
-  always show, focusing a text field does not zoom the page, and the page keeps
-  its controls clear of the notch, rounded corners, and browser toolbars.
+  tap, controls that appear on hover elsewhere always show, focusing a text
+  field does not zoom the page, and the page keeps its controls clear of the
+  notch, rounded corners, and browser toolbars.
 
 ## Files
 
 - **File tree.** Beside the transcript, a panel shows the selected session's
   workspace directory as a tree, folders first, whose folders expand and
-  collapse. It hides `.git`, `.svn`, `.hg`, `.hypercube`, `.DS_Store`, and
-  `Thumbs.db` at any depth, shows files Git ignores, lists nothing outside the
-  workspace directory, and shows why a folder cannot be read.
+  collapse. It hides version-control folders and operating-system metadata files
+  at any depth, such as `.git` and `.DS_Store`, shows files Git ignores, lists
+  nothing outside the workspace directory, and shows why a folder cannot be
+  read.
 - **File tree updates.** While the page is visible, the tree shows changes on
   disk to the folders it shows within about a second.
-- **File viewer.** Clicking a file in the file tree opens it in a pane between
-  the transcript and the tree, or in place of the transcript on a narrow screen,
-  under a tab with its name and a close button, and highlights its row; clicking
-  another file replaces it. The pane shows the file's text in a monospaced font
-  without wrapping, or one line saying why when the file is binary, larger than
-  1 MiB, not UTF-8 text, or cannot be read, and reads nothing outside the
-  workspace directory.
+- **File viewer.** Clicking a file in the file tree opens it beside the
+  transcript, or in its place on a narrow screen, under a tab with its name that
+  closes it, and marks its row; clicking another file replaces it. The pane
+  shows the file's text, or why, when the file is binary, larger than 1 MiB, not
+  UTF-8 text, or cannot be read, and reads nothing outside the workspace
+  directory.
 - **File viewer updates.** While the page is visible, the open file shows
   changes on disk within about a second; a file deleted or renamed keeps its tab
   and shows why it cannot be read until it returns.
 - **Syntax highlighting.** The file viewer colors a file's text by its language,
-  chosen from the file's name, in GitHub's light or dark colors to match the
-  page; a file whose language Ox does not recognize shows as plain text.
+  chosen from the file's name, in colors that follow the page's light or dark
+  theme; a file whose language Ox does not recognize shows as plain text.
 - **Open file.** Each session, and each workspace's new-session draft, keeps its
   open file through switching views and reconnecting, and a draft's open file
   stays open in the session it creates; reloading the page closes it.
@@ -313,8 +308,8 @@ title.
   in a child session, the directory it was created in.
 - **Subscription billing.** Claude's work is billed to the user's Claude
   subscription, never to an API key or token in Ox's environment.
-- **Ox's instructions.** Claude runs with Ox's appended instructions: its style,
-  and that it is an Ox session, which one, and how to reach the other sessions.
+- **Ox's instructions.** Claude knows that it is an Ox session, which one, and
+  how to reach the other sessions, and follows Ox's style.
 - **Claude's workspace access.** Claude changes the workspace only as its
   permission mode and the user's approvals allow.
 
@@ -322,35 +317,30 @@ title.
 
 - **Ur sessions.** Ur chats through OpenRouter with the user's
   `OPENROUTER_API_KEY`, streaming its replies; a send to an Ur session without
-  the key is refused with an error. Ur saves each prompt, each reply as far as
-  it streamed, and each shell command's outcome, so an Ur session parks and
-  resumes its conversation like a Claude session. If its saved conversation can
-  no longer be read, the send is refused with an error saying so, and the next
-  send starts a new conversation without the earlier context.
+  the key is refused with an error. An Ur session parks and resumes its
+  conversation like a Claude session, including a reply cut off partway. If its
+  saved conversation can no longer be read, the send is refused with an error
+  saying so, and the next send starts a new conversation without the earlier
+  context.
 - **Ur's shell commands.** Ur can run shell commands in the session's workspace
   directory, without `OPENROUTER_API_KEY` in their environment. In manual mode
   each command asks for approval first, and a denied command tells Ur so and the
   turn goes on; in auto mode every command runs without asking. A command ends
   when it exits, at its timeout of two minutes or up to ten that Ur sets, or
   when the turn is stopped, which also ends the processes it started; Ur gets
-  its exit status and the first and last 8 KiB of its output.
-- **Ur's instructions.** Ur works with instructions stating that it is a coding
-  agent in Ox working through its shell tool, Ox's style, the session's
-  workspace directory, the OS, and today's date, and with the workspace's
-  `AGENTS.md` as it stands when each request is sent.
+  its exit status and its output, or the start and end of output too long to
+  keep whole.
+- **Ur's instructions.** Ur knows the session's workspace directory, its OS, and
+  today's date, follows Ox's style, and follows the workspace's `AGENTS.md` as
+  it stands when each request is sent.
 
 ## Configuration
 
 - **Built-in catalog.** When Ox starts without a configuration file, it writes
-  one for the user to edit, offering Claude Opus, Sonnet, and Haiku 5.5 with
-  their effort levels and the manual, auto, acceptEdits, and plan modes, and Ur
-  with DeepSeek V4.1 Flash and GLM 5.3 Flash at low, high, and max effort and
-  Muse Spark 1.3 Contributor at minimal, low, medium, high, xhigh, and max
-  effort, in manual and auto modes.
-- **Configuration checks.** `oxd` refuses to start with a malformed
-  configuration, defaults it does not offer, a maximum child depth below 1, an
-  unknown harness, or an effort level, permission mode, or provider order its
-  harness does not take, and says why.
+  one for the user to edit, offering the Claude and Ur models Ox supports with
+  their effort levels and permission modes.
+- **Configuration checks.** `oxd` refuses to start with a configuration that is
+  malformed or that it cannot honor, and says why.
 - **File locations.** Ox reads its configuration and keeps its database, socket,
   and Ur's saved conversations in the user's XDG directories, and the user can
   choose other paths.
@@ -361,8 +351,8 @@ title.
   never holds up another session.
 - **Stopping oxd.** Stopping `oxd` stops every Claude process and Ur command it
   runs; a second stop request ends it at once.
-- **Socket safety.** A socket left by an `oxd` that has exited does not block
-  the next start; `oxd` will not replace a socket another `oxd` is serving, or a
-  file that is not a socket.
+- **Socket safety.** After `oxd` exits, even by crashing, it starts again.
+  Starting a second `oxd` while one runs fails and leaves the running one alone,
+  and `oxd` never overwrites another file at its socket's path.
 - **Ox's own files.** Ox's own bookkeeping writes only its database, its socket,
   the configuration it writes on first start, and Ur's saved conversations.

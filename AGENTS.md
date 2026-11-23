@@ -299,7 +299,13 @@ facts listed for it:
 - `docs/harnesses/claude-code.md`: how Claude Code behaves when driven with `claude -p`
   and stream-json, as observed.
 - `docs/functional-requirements.md`: the behavior the person using Ox can see
-  and rely on, each one a user would call a bug if it broke.
+  and rely on, each one a user would call a bug if it broke. A requirement
+  states it in the words the user would use to report it broken: outcomes, the
+  limits they hit, the data that survives, what is refused and why, the order
+  they depend on, and the boundaries Ox keeps. It leaves to the code and tests
+  the values a designer or maintainer could change without the user calling it
+  a regression, such as sizes, breakpoints, colors, placement, catalogs,
+  protocol names, and internal states.
 
 Planned work and defects live in the repository's GitHub issues, labeled
 `enhancement` and `bug`.
