@@ -467,6 +467,21 @@ func TestTopLevelToolCallsArePublished(t *testing.T) {
 	}
 }
 
+func TestThinkingIsPublished(t *testing.T) {
+	a, _, updates, id := promptingAgent(t)
+	output(t, a, `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":""}}}`)
+	output(t, a, `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"Two plus two."}}}`)
+	output(t, a, `{"type":"stream_event","parent_tool_use_id":"t0","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"sub"}}}`)
+	output(t, a, `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"signature_delta","signature":"abc"}}}`)
+	output(t, a, `{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"Two plus two.","signature":"abc"}]}}`)
+	if len(*updates) != 1 {
+		t.Fatalf("expected the top-level thinking only: %+v", *updates)
+	}
+	if u := (*updates)[0]; u.Type != "reasoning_delta" || u.Text != "Two plus two." || u.MessageID != id {
+		t.Fatalf("unexpected reasoning update: %+v", u)
+	}
+}
+
 // Claude exits on its own only on failure, which clients see even when no
 // prompt is active; an exit Ox asked for is plain parking.
 func TestUnexpectedExitIsReported(t *testing.T) {

@@ -862,6 +862,37 @@ func TestLive(t *testing.T) {
 			l.t.Error("a completed turn on resume let a session with a restored job park")
 		}
 	})
+
+	section("reasoning", func(l *live) {
+		var created struct {
+			SessionID string `json:"session_id"`
+		}
+		json.Unmarshal(l.c.call("session/create", map[string]string{
+			"workspace_id": l.workspace, "harness": "claude", "model": haiku, "effort": "high", "permission_mode": "manual",
+		}), &created)
+		id := created.SessionID
+		l.c.call("session/send", map[string]string{"session_id": id, "text": "Without any tool, work out 17 * 23 + 19 * 29 step by step, then reply with just the number."})
+		reasoned := false
+		for {
+			var u agent.Update
+			l.c.next(func(m message) bool {
+				if m.Method != "session/update" || m.sessionID() != id {
+					return false
+				}
+				u = agent.Update{}
+				json.Unmarshal(m.Params, &u)
+				return u.Type == "reasoning_delta" || u.Type == "result"
+			})
+			if u.Type == "result" {
+				break
+			}
+			reasoned = reasoned || u.Text != ""
+		}
+		if !reasoned {
+			l.t.Errorf("Haiku at effort high streamed no reasoning before its result: %s", describe(l.c.received(id)))
+		}
+		l.idle(id)
+	})
 }
 
 // TestLiveUr chats with the built-in Ur model through OpenRouter, parks the
@@ -917,9 +948,11 @@ func TestLiveUr(t *testing.T) {
 		t.Errorf("the second turn forgot the first: %q", reply)
 	}
 
-	// In manual mode the command waits for approval, then runs.
+	// In manual mode the command waits for approval, then runs. The prompt
+	// needs some thought, so the model often reasons before its call.
 	c.forget(id)
-	c.call("session/send", map[string]string{"session_id": id, "text": "Use the shell tool to run `echo ox-$((6*7))`, then reply with its output."})
+	c.call("session/send", map[string]string{"session_id": id, "text": "Work out which of 391, 403, and 409 is prime, " +
+		"then use the shell tool to run `echo ox-<that number>`, then reply with its output."})
 	approval := c.update(id, "approval")
 	var asked struct {
 		ToolName string `json:"tool_name"`
@@ -928,13 +961,27 @@ func TestLiveUr(t *testing.T) {
 		t.Fatalf("approval request %s", approval.Request)
 	}
 	c.call("session/approve", map[string]any{"session_id": id, "request_id": approval.RequestID, "response": json.RawMessage(`{"behavior":"allow"}`)})
-	if ran := c.update(id, "tool_result").Result; ran.IsError || !strings.Contains(ran.Text, "ox-42") {
+	if ran := c.update(id, "tool_result").Result; ran.IsError || !strings.Contains(ran.Text, "ox-409") {
 		t.Errorf("the command's result %+v", ran)
 	}
+	// When the model reasoned before its call, the follow-up request returned
+	// that reasoning, and the turn's success shows OpenRouter accepted it.
 	if result := c.update(id, "result").Result; result.IsError {
 		t.Fatalf("the shell turn failed: %s", result.Text)
 	}
 	for c.update(id, "state").State != "idle" {
+	}
+	reasoned := false
+	for _, m := range c.received(id) {
+		var u agent.Update
+		json.Unmarshal(m.Params, &u)
+		if u.Type == "tool_use" {
+			break
+		}
+		reasoned = reasoned || (u.Type == "reasoning_delta" && u.Text != "")
+	}
+	if !reasoned {
+		t.Log("the model did not reason before its call, so its follow-up request returned no reasoning")
 	}
 
 	// In auto mode the command runs at once, and an interrupt ends it.

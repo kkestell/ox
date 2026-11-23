@@ -13,6 +13,7 @@ turns:
 claude -p \
   --input-format stream-json --output-format stream-json --verbose \
   --include-partial-messages \
+  --thinking-display summarized \
   --replay-user-messages \
   --permission-mode <mode> --permission-prompt-tool stdio \
   --system-prompt-snapshot off \
@@ -28,6 +29,8 @@ claude -p \
 - `--verbose` is required with `--output-format stream-json`.
 - `--include-partial-messages` adds `stream_event` lines carrying raw Anthropic
   SSE events (text and thinking deltas).
+- `--thinking-display summarized` streams Claude's summary of its thinking in
+  `thinking_delta`. It is accepted though absent from `--help` (2.1.330).
 - `--replay-user-messages` echoes each prompt back as a `user` line with
   `isReplay: true` and the prompt's `uuid` once Claude takes it into a turn.
 - `--permission-prompt-tool stdio` routes permission prompts to the host as
@@ -288,9 +291,12 @@ Stdout carries JSON lines and can carry plain text on
 
 - Use `content_block_delta` with `delta.type` `text_delta` (`.text`) or
   `thinking_delta` (`.thinking`).
-- `thinking_delta` strings are empty in these builds (with `estimated_tokens`),
-  and the final thinking block is `{"type":"thinking","thinking":""}`. Drop
-  empty thinking and whitespace-only text.
+- Without `--thinking-display summarized` every `thinking_delta` is empty (with
+  `estimated_tokens`), and the final thinking block is
+  `{"type":"thinking","thinking":""}`. With it, `thinking_delta` streams
+  summarized text, and the final block carries that text with a `signature`.
+  `showThinkingSummaries` in `--settings` changes neither (2.1.330). Drop empty
+  thinking and whitespace-only text.
 - `index` is the block's position in the whole API message. Key streamed items
   by `api_message_id:index`.
 - Subagent lines arrive as complete messages, without `stream_event`s.

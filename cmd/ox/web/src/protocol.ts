@@ -43,6 +43,7 @@ export type Update = { time: string } & (
 
 type OtherUpdate =
   | { type: "text_delta"; text: string }
+  | { type: "reasoning_delta"; text: string }
   | { type: "tool_use"; tool_use_id: string; tool_name: string; input: Record<string, unknown> }
   | { type: "tool_result"; tool_use_id: string; result: ToolResult }
   | { type: "result"; result: ToolResult }

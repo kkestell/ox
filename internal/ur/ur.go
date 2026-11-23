@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/kkestell/ox/internal/agent"
@@ -157,6 +158,7 @@ func (a *Agent) save(m message) error {
 // turn is the running turn. Canceling its context ends its request or command.
 type turn struct {
 	prompt string // the ID of the input whose turn it is; a later input taken into the turn replaces it
+	start  int    // the length of history when the turn began; later entries are the turn's
 	ctx    context.Context
 	cancel context.CancelFunc
 	step   step
@@ -194,10 +196,11 @@ func (streaming) isStep()  {}
 func (*asking) isStep()    {}
 func (*executing) isStep() {}
 
-// delta is reply text streamed for a turn.
+// delta is a chunk's reply text and reasoning fragments streamed for a turn.
 type delta struct {
-	turn *turn
-	text string
+	turn      *turn
+	text      string
+	reasoning []reasoningDetail
 }
 
 // ended ends a turn's request, with the response's tool calls or the error
@@ -242,11 +245,20 @@ func (a *Agent) Handle(event agent.Event) {
 		if e.turn != a.turn {
 			return
 		}
-		if err := a.save(message{Role: "assistant", Content: e.text}); err != nil {
+		if err := a.save(message{Role: "assistant", Content: e.text, ReasoningDetails: e.reasoning}); err != nil {
 			a.finish(agent.Result{Text: "Ur could not save the reply: " + err.Error(), IsError: true})
 			return
 		}
-		a.publish(agent.Update{Type: agent.UpdateTextDelta, Text: e.text})
+		var reasoning strings.Builder
+		for _, d := range e.reasoning {
+			reasoning.WriteString(d.display())
+		}
+		if reasoning.Len() > 0 {
+			a.publish(agent.Update{Type: agent.UpdateReasoningDelta, Text: reasoning.String()})
+		}
+		if e.text != "" {
+			a.publish(agent.Update{Type: agent.UpdateTextDelta, Text: e.text})
+		}
 	case ended:
 		if e.turn != a.turn {
 			return
@@ -299,7 +311,7 @@ func (a *Agent) Send(input agent.Input) error {
 // before it, or waits for the turn to end if the response was its last.
 func (a *Agent) begin() {
 	ctx, cancel := context.WithCancel(context.Background())
-	a.turn = &turn{ctx: ctx, cancel: cancel}
+	a.turn = &turn{start: len(a.history), ctx: ctx, cancel: cancel}
 	a.request()
 }
 
@@ -401,7 +413,13 @@ func (a *Agent) body() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	messages := append([]message{{Role: "system", Content: text}}, conversation(a.history)...)
+	// Reasoning models need the current turn's reasoning back in its tool
+	// loop. Earlier turns' reasoning stays out.
+	history := slices.Clone(a.history)
+	for i := range a.turn.start {
+		history[i].ReasoningDetails = nil
+	}
+	messages := append([]message{{Role: "system", Content: text}}, conversation(history)...)
 	body := request{Model: a.settings.Model, Messages: messages, Tools: []json.RawMessage{shellTool}, Stream: true}
 	if a.settings.Effort != "" {
 		body.Reasoning = &reasoning{Effort: a.settings.Effort}
@@ -417,17 +435,21 @@ func (a *Agent) body() ([]byte, error) {
 // oxd exiting during it.
 const stopped = "The user stopped this command before it finished."
 
-// conversation joins each run of assistant entries in history, the deltas and
-// tool calls of one response, into one message, and answers each call left
-// without a tool entry before the next user entry with stopped.
+// conversation joins each run of assistant entries in history, the deltas,
+// reasoning, and tool calls of one response, into one message, and answers
+// each call left without a tool entry before the next user entry with stopped.
 func conversation(history []message) []message {
 	var messages []message
 	var open []string // IDs of the latest response's calls without a tool entry
 	for _, m := range history {
 		last := len(messages) - 1
+		// The merge writes into the message's details, which must not be
+		// history's.
+		m.ReasoningDetails = appendReasoning(nil, m.ReasoningDetails)
 		switch {
 		case m.Role == "assistant" && last >= 0 && messages[last].Role == "assistant":
 			messages[last].Content += m.Content
+			messages[last].ReasoningDetails = appendReasoning(messages[last].ReasoningDetails, m.ReasoningDetails)
 			messages[last].ToolCalls = append(messages[last].ToolCalls, m.ToolCalls...)
 		case m.Role == "tool":
 			open = slices.DeleteFunc(open, func(id string) bool { return id == m.ToolCallID })

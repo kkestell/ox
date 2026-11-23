@@ -35,6 +35,7 @@ export type Workspace = { id: string; path: string; sessions: Session[] };
 export type Entry =
   | { kind: "prompt"; input: Prompt }
   | { kind: "reply"; text: string }
+  | { kind: "reasoning"; text: string }
   | { kind: "tool"; id: string; name: string; input: Record<string, unknown>; result?: ToolResult; stopped?: boolean }
   | { kind: "result"; result: ToolResult }
   | { kind: "exited"; error: string };
@@ -88,6 +89,12 @@ function apply(session: SessionSnapshot, u: Update) {
       const last = session.entries.at(-1);
       if (last?.kind === "reply") last.text += u.text;
       else session.entries.push({ kind: "reply", text: u.text });
+      break;
+    }
+    case "reasoning_delta": {
+      const last = session.entries.at(-1);
+      if (last?.kind === "reasoning") last.text += u.text;
+      else session.entries.push({ kind: "reasoning", text: u.text });
       break;
     }
     case "tool_use":

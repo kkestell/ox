@@ -96,7 +96,7 @@ func startProcess(workspace, oxSessionID, sessionID string, resume bool, setting
 	}
 	args := []string{
 		"-p", "--input-format=stream-json", "--output-format=stream-json", "--verbose",
-		"--include-partial-messages", "--permission-prompt-tool=stdio",
+		"--include-partial-messages", "--thinking-display=summarized", "--permission-prompt-tool=stdio",
 		"--append-system-prompt", systemPrompt(oxSessionID, workspace), "--system-prompt-snapshot=off",
 	}
 	if resume {

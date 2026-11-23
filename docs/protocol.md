@@ -298,12 +298,13 @@ response arrives.
 | `queued`                             | All inputs Claude has not taken, prompts and messages, oldest first. Each has `message_id` and `text`, with `from` and `from_label` for a message. An empty queue is `[]`. |
 | `history`                            | The session's recorded updates, oldest first, in the form of `session/update` params without `session_id`.                                                                 |
 
-The daemon records every session's `prompt`, `text_delta`, `tool_use`,
-`tool_result`, `result`, `exited`, and `parked` updates, including those of
-turns Claude starts itself, and keeps them across parking and daemon restarts. A
-daemon that exited without recording a session's last `parked` update records it
-when it next starts. The history returns consecutive `text_delta` fragments of
-one message as one. Applying the history the same way as live updates reproduces
+The daemon records every session's `prompt`, `text_delta`, `reasoning_delta`,
+`tool_use`, `tool_result`, `result`, `exited`, and `parked` updates, including
+those of turns Claude starts itself, and keeps them across parking and daemon
+restarts. A daemon that exited without recording a session's last `parked`
+update records it when it next starts. The history returns consecutive
+`text_delta` fragments of one message as one, and consecutive `reasoning_delta`
+fragments likewise. Applying the history the same way as live updates reproduces
 the conversation. Deleting the session deletes its history.
 
 ### `session/configure`
@@ -472,6 +473,7 @@ the `idle` or `background` that releases it:
 | `prompt`             | `text`: string; `from`, `from_label`: strings for a message        | Claude took this prompt or message into its conversation.                                                                                                                                                                                    |
 | `prompt_cancelled`   | `text`: string; `from`, `from_label`: strings for a message        | This input was dropped before Claude took it, on interrupt, process exit, or a failed start.                                                                                                                                                 |
 | `text_delta`         | `text`: string                                                     | Append this fragment of top-level assistant text. If a successful turn result has text but none was streamed, the daemon publishes its text here before the result.                                                                          |
+| `reasoning_delta`    | `text`: string                                                     | Append this fragment of top-level reasoning: Claude's summary of its thinking, or Ur's model's reasoning text. Consecutive fragments form one stretch of reasoning; any other entry between them starts a new one.                           |
 | `tool_use`           | `tool_use_id`: string; `tool_name`: string; `input`: object        | Claude called a tool at the top level. A call with no `tool_result` when its turn's `result`, `exited`, or `parked` arrives did not finish.                                                                                                  |
 | `tool_result`        | `tool_use_id`: string; `result`: object with `text` and `is_error` | The outcome of the top-level tool call with this `tool_use_id`. `text` joins the result's text blocks.                                                                                                                                       |
 | `state`              | `state`: `running`, `requires_action`, `idle`, or `background`     | The session's execution state: Claude's report, `running` for a prompt Claude has not taken yet, or `background` while Claude is idle with background tasks running.                                                                         |
@@ -681,7 +683,7 @@ blank line. A time is the update's, in `oxd`'s local zone, as `2006-01-02
   `tool_result` for it with `is_error`. Tool output is not shown.
 - `result`: `(turn finished)`, or `Error: <text>` when it is an error.
 - `exited`: `Exited: <error>`.
-- `tool_result` and `parked` are not shown.
+- `reasoning_delta`, `tool_result`, and `parked` are not shown.
 
 A page holds up to 40,000 characters of entries. It is filled from the newest
 entry back, or from the entry before `cursor`. A page that leaves earlier

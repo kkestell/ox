@@ -264,9 +264,12 @@ main { flex: 1 1 0; min-width: min(240px, 50cqi); display: flex; flex-direction:
 .markdown a { color: inherit; text-decoration: underline; }
 .log .error { padding: 0.75rem 1rem; border-radius: var(--radius); background: var(--card); }
 
-details.tool:not([open]) + details.tool { margin-top: -0.75rem; }
-details.tool summary { display: flex; align-items: center; padding: 0.25rem 0; list-style: none; cursor: default; }
-details.tool summary::-webkit-details-marker { display: none; }
+:is(details.tool, details.reasoning):not([open]) + :is(details.tool, details.reasoning) { margin-top: -0.75rem; }
+:is(details.tool, details.reasoning) summary { display: flex; align-items: center; padding: 0.25rem 0; list-style: none; cursor: default; }
+:is(details.tool, details.reasoning) summary::-webkit-details-marker { display: none; }
+details.reasoning summary .chevron-right { margin-left: 0.25rem; color: var(--muted-foreground); }
+details.reasoning[open] > summary .chevron-right::before { transform: rotate(90deg); }
+details.reasoning .markdown { margin-top: 0.25rem; color: var(--muted-foreground); }
 .marker { flex: none; width: 1.5rem; height: 1.25rem; display: flex; align-items: center; }
 .marker.running::before, .marker.done::before { width: 0.5rem; height: 0.5rem; margin-left: 0.25rem; border-radius: 50%; mask: none; }
 details.tool .name { flex: none; }

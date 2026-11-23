@@ -236,9 +236,15 @@ func (a *Agent) handleOutput(m message) {
 		}
 	case "stream_event":
 		delta := m.Event.Delta
-		if m.ParentToolUseID == "" && m.Event.Type == "content_block_delta" && delta.Type == "text_delta" && delta.Text != "" {
+		if m.ParentToolUseID != "" || m.Event.Type != "content_block_delta" {
+			break
+		}
+		switch {
+		case delta.Type == "text_delta" && delta.Text != "":
 			a.streamedText = true
 			a.publish(agent.Update{Type: agent.UpdateTextDelta, Text: delta.Text})
+		case delta.Type == "thinking_delta" && delta.Thinking != "":
+			a.publish(agent.Update{Type: agent.UpdateReasoningDelta, Text: delta.Thinking})
 		}
 	case "result":
 		result := agent.Result{Text: m.Result, IsError: m.failed()}

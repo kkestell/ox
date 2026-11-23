@@ -21,6 +21,7 @@ type Agent struct {
 	settings agent.Settings
 	prompt   string // the ID of the input whose turn is running
 	reply    string
+	thoughts []string // the reasoning still to stream before the reply
 	words    []string
 	tool     string          // the tool call the prompt asked to approve
 	approval *agent.Approval // pending until answered, interrupted, or stopped
@@ -100,6 +101,12 @@ func (a *Agent) Handle(event agent.Event) {
 			a.begin()
 			return
 		}
+		if len(a.thoughts) > 0 {
+			a.publish(agent.Update{Type: agent.UpdateReasoningDelta, Text: a.thoughts[0]})
+			a.thoughts = a.thoughts[1:]
+			a.after(step, tick{a.prompt})
+			return
+		}
 		if len(a.words) > 0 {
 			a.publish(agent.Update{Type: agent.UpdateTextDelta, Text: a.words[0]})
 			a.words = a.words[1:]
@@ -111,7 +118,7 @@ func (a *Agent) Handle(event agent.Event) {
 }
 
 func (a *Agent) finish(result agent.Result) {
-	a.words = nil
+	a.thoughts, a.words = nil, nil
 	a.publish(agent.Update{Type: agent.UpdateResult, Result: &result})
 	if a.onResumable != nil {
 		a.onResumable(rand.Text())
@@ -136,7 +143,8 @@ func (a *Agent) idle() bool {
 // Send queues the input, and starts a turn with it when the agent is idle.
 // The reply echoes the input's Content, which the model would receive. An
 // input "background <milliseconds>" also starts a background task that runs
-// that long.
+// that long, and an input "think <text>" streams text as reasoning before the
+// reply.
 func (a *Agent) Send(input agent.Input) error {
 	idle := a.idle()
 	a.tracker.Accept(input)
@@ -152,6 +160,9 @@ func (a *Agent) begin() {
 	a.prompt = input.MessageID
 	a.reply = "You said: " + input.Content
 	a.words = strings.SplitAfter(a.reply, " ")
+	if thought, ok := strings.CutPrefix(input.Content, "think "); ok {
+		a.thoughts = strings.SplitAfter(thought, " ")
+	}
 	if d, ok := backgroundRequest(input.Content); ok {
 		a.tracker.SetTasks(a.tracker.Tasks() + 1)
 		a.after(d, taskEnded{})
