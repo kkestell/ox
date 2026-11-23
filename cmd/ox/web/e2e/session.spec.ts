@@ -433,6 +433,26 @@ test("Allow sends the exact numbers displayed in the tool input", async ({ ox: p
   await expect(stop(page)).toHaveCount(0);
 });
 
+test("Ox's own tools show readable names and the message they send", async ({ ox: page }) => {
+  await newSessionButton(page).click();
+  const approval = await ask(page, "mcp__ox__send_message", '{"to":"some-session","text":"hello there"}');
+  await expect(approval.getByText("Allow SendMessage?")).toBeVisible();
+  await expect(approval.getByText("hello there", { exact: true })).toBeVisible();
+  const call = toolCall(page, "SendMessage");
+  await expect(call).toContainText("SendMessage");
+  await expect(call.locator("summary")).toContainText("hello there");
+  await expect(call.locator("summary")).not.toContainText("mcp__ox__");
+  await expect(call.locator("summary")).not.toContainText("some-session");
+  await allow(approval);
+  await expect(approval).toHaveCount(0);
+  await expect(stop(page)).toHaveCount(0);
+
+  const empty = await ask(page, "mcp__ox__list_sessions", "{}");
+  await expect(empty.getByText("Allow ListSessions?")).toBeVisible();
+  await expect(empty.locator("summary")).toHaveText("Input");
+  await expect(toolCall(page, "ListSessions").locator("summary")).not.toContainText("{}");
+});
+
 test("a prompt sent while Claude works stays pending until Claude takes it", async ({ ox: page }) => {
   await newSessionButton(page).click();
   await ask(page, "Bash", "{}");
