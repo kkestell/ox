@@ -5,7 +5,7 @@ import { Markdown } from "./Markdown";
 import { type Entry, type Session, type SessionControl, type SessionSnapshot, useOx } from "./ox";
 import type { Prompt, Settings } from "./protocol";
 import { ModelPicker, Select } from "./SettingsFields";
-import { planOf, toolInputJSON, toolSubject } from "./toolInput";
+import { planOf, toolInputJSON, toolLabel, toolSubject } from "./toolInput";
 
 type Tool = Extract<Entry, { kind: "tool" }>;
 
@@ -162,16 +162,16 @@ function PromptBubble(props: { input: Prompt; queued?: boolean }) {
 }
 
 function ToolCall(props: { tool: Tool }) {
-  const detail = () => toolSubject(props.tool.input).split("\n")[0].slice(0, 120);
+  const detail = () => toolSubject(props.tool.name, props.tool.input).split("\n")[0].slice(0, 120);
   const status = () => {
     if (props.tool.result) return props.tool.result.is_error ? "failed" : "done";
     return props.tool.stopped ? "stopped" : "running";
   };
   return (
-    <details class="tool" aria-label={props.tool.name}>
+    <details class="tool" aria-label={toolLabel(props.tool.name)}>
       <summary>
         <span class={["marker", status()]} role="img" title={status()} aria-label={status()} />
-        <span class="name">{props.tool.name}</span> <span class="detail">{detail()}</span>
+        <span class="name">{toolLabel(props.tool.name)}</span> <span class="detail">{detail()}</span>
       </summary>
       <div class="card">
         <Show when={planOf(props.tool.name, props.tool.input)}>

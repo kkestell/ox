@@ -2,11 +2,37 @@
 import { isRawJSON, stringify } from "@ungap/raw-json";
 import { snapshot } from "solid-js";
 
+// Ox's own MCP tools arrive named for the server that internal/claude/claude.go
+// registers, such as mcp__ox__send_message.
+const OX_PREFIX = "mcp__ox__";
+
+// toolLabel is the name a tool call shows. Ox's tools show their own name in
+// PascalCase, as built-in tools do; every other name shows as it arrives.
+export function toolLabel(tool: string): string {
+  if (!tool.startsWith(OX_PREFIX)) return tool;
+  return tool
+    .slice(OX_PREFIX.length)
+    .split("_")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join("");
+}
+
+// The input field that summarizes an Ox tool call, where it is not the first
+// string.
+const OX_SUBJECT_FIELD: Record<string, string> = {
+  [`${OX_PREFIX}send_message`]: "text",
+  [`${OX_PREFIX}create_session`]: "title",
+};
+
 // toolSubject is what a tool call acts on, such as Bash's command or Edit's
 // file: the first string in its input at any depth, such as AskUserQuestion's
-// first question. An input with no string is shown as compact JSON.
-export function toolSubject(input: Record<string, unknown>): string {
+// first question. An input with no keys has no subject, and an input with no
+// string is shown as compact JSON.
+export function toolSubject(tool: string, input: Record<string, unknown>): string {
   const plain = snapshot(input);
+  if (Object.keys(plain).length === 0) return "";
+  const field = OX_SUBJECT_FIELD[tool];
+  if (field !== undefined && typeof plain[field] === "string") return plain[field];
   return firstString(plain) ?? stringify(plain);
 }
 

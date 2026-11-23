@@ -2,7 +2,7 @@ import { createSignal, createStore, createUniqueId, For, flush, Show, snapshot, 
 import { Markdown } from "./Markdown";
 import type { Approval } from "./ox";
 import type { ApprovalResponse } from "./protocol";
-import { planOf, type Question, questionsOf, toolInputJSON, toolSubject } from "./toolInput";
+import { planOf, type Question, questionsOf, toolInputJSON, toolLabel, toolSubject } from "./toolInput";
 
 type Choice = "allow" | "deny" | "other";
 
@@ -31,6 +31,8 @@ function PermissionCard(props: Props) {
   const [sending, setSending] = createSignal(false);
   let field!: HTMLInputElement;
   const plan = () => planOf(props.approval.request.tool_name, props.approval.request.input);
+  const subject = () =>
+    (plan() ? "" : toolSubject(props.approval.request.tool_name, props.approval.request.input)) || "Input";
   const ready = () => choice() === "allow" || choice() === "deny" || (choice() === "other" && !!reply().trim());
 
   const pick = (picked: Choice) => {
@@ -62,12 +64,12 @@ function PermissionCard(props: Props) {
 
   return (
     <article class="approval" aria-labelledby={`${id}-title`}>
-      <p id={`${id}-title`}>Allow {props.approval.request.tool_name}?</p>
+      <p id={`${id}-title`}>Allow {toolLabel(props.approval.request.tool_name)}?</p>
       <Show when={plan()}>{(text) => <Markdown class="plan" text={text()} />}</Show>
       {/* The subject summarizes the input; expanding shows all of it. */}
       <details class="input">
         <summary>
-          <span class="subject">{plan() ? "Input" : toolSubject(props.approval.request.input)}</span>
+          <span class="subject">{subject()}</span>
           <span class="icon chevron-down" />
         </summary>
         <pre>{toolInputJSON(props.approval.request.input)}</pre>
