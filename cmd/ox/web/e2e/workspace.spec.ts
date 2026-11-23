@@ -128,6 +128,11 @@ test("a malformed session link still lists workspaces", async ({ page, services 
   ).toBeVisible();
 });
 
+test("a workspace added with a trailing slash is named for its directory", async ({ page, services }) => {
+  await page.goto(services.url);
+  await addWorkspace(page, `${services.workspace}/`);
+});
+
 test("a draft holds Send until the session list loads", async ({ page, services }) => {
   const list = await hold(page, "workspace/list");
   await page.goto(services.url);
@@ -644,6 +649,13 @@ test.describe("on a wide screen", () => {
     const treeStart = await width(tree);
     await drag(page, "Resize files", -100);
     await near(tree, treeStart + 100);
+
+    // At a narrow window both side panels together leave the transcript its
+    // minimum.
+    await page.setViewportSize({ width: 960, height: 900 });
+    await drag(page, "Resize sessions", 1000);
+    await drag(page, "Resize files", -1000);
+    expect(await width(page.getByRole("main"))).toBeGreaterThanOrEqual(240);
   });
 
   test("the file split leaves each side its minimum and comes back when the file reopens", async ({ ox: page }) => {

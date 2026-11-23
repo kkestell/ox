@@ -121,7 +121,8 @@ We test with `make dev`. Ox's test state is disposable.
   Keep unresolved protocol choices open until they need a decision.
 - A session's state is owned by its goroutine, and other code reaches it only
   by posting an operation to it. A harness's own goroutines only read its
-  process and fire timers, and deliver what they produce through `Events`.
+  process, fire timers, and do the I/O its turn needs, such as Ur's HTTP
+  requests and shell commands, and deliver what they produce through `Events`.
 - A response is queued by the owner of the state it reports, when it reads
   that state.
 - A request carries only what the user changed, and `oxd` applies it to the
@@ -210,7 +211,7 @@ Claude Code leads the workflow.
 The main checkout stays on `main` and only pulls. Each change starts with
 `make worktree NAME=<slug>` from a clean main checkout, and every step below
 runs in that worktree. A child session that finds uncommitted work outside its
-brief stops and reports it to the session that started it. Changes reach
+brief, other than its sibling children's, stops and reports it to the session that started it. Changes reach
 `main` only by pull request, which the user merges.
 
 1. A child session on Opus 5.5 at high effort runs `/ox-plan`. The user

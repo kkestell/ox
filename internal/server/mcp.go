@@ -619,7 +619,11 @@ func stateLine(snapshot agent.Snapshot) string {
 		state = "waiting for approval"
 		names := make([]string, len(snapshot.Approvals))
 		for i, a := range snapshot.Approvals {
-			names[i] = a.ToolName
+			var request struct {
+				ToolName string `json:"tool_name"`
+			}
+			json.Unmarshal(a.Request, &request)
+			names[i] = request.ToolName
 		}
 		if len(names) > 0 {
 			state += ": " + strings.Join(names, ", ")

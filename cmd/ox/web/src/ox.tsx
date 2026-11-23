@@ -66,7 +66,7 @@ const settingsOf = (p: Settings): Settings => ({
 });
 
 // workspaceName is the name of a workspace's directory.
-export const workspaceName = (path: string) => path.split("/").at(-1) || path;
+export const workspaceName = (path: string) => path.replace(/\/+$/, "").split("/").at(-1) || path;
 
 function stopTools(session: SessionSnapshot) {
   for (const e of session.entries) if (e.kind === "tool" && !e.result) e.stopped = true;

@@ -20,7 +20,8 @@ Use `make dev` to work on the [web client](../../../docs/architecture.md#web-ui)
   `ox` and `oxd` with the fake harness. Each test runs its own `oxd` and relay
   on a temporary socket, database, and port, through the `services` fixture
   in `e2e/ui.ts`. `approval.spec.ts` uses Haiku and runs with `make live`.
-  `make test` runs `highlight.test.mjs` with `node:test` beside the specs.
+  `make test` runs the Node suites `highlight.test.mjs`, `stack.test.mjs`, and
+  `toolInput.test.mjs` with `node:test`.
 
 ## Solid 2.0
 

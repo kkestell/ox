@@ -274,6 +274,53 @@ test("a pending setting is marked pending and holds Send until confirmed", async
   expect(sends).toEqual([]);
 });
 
+test.describe("with two models", () => {
+  const fake = fakeConfig.harnesses.fake;
+  test.use({
+    config: {
+      ...fakeConfig,
+      harnesses: {
+        fake: {
+          ...fake,
+          models: [
+            ...fake.models,
+            {
+              id: "other",
+              name: "Other",
+              efforts: [
+                { id: "medium", name: "Medium" },
+                { id: "high", name: "High" },
+              ],
+            },
+          ],
+        },
+      },
+    },
+  });
+
+  test("picking a model sends the model alone, and the session ends with the effort oxd chose", async ({
+    ox: page,
+  }) => {
+    await newSession(page, "configure me");
+    const configures = rpcCalls(page, "session/configure");
+    await model(page).click();
+    await page.getByRole("option", { name: "Other" }).click();
+    await expect(model(page)).toContainText("Medium");
+    await expect(model(page)).not.toHaveAttribute("aria-busy");
+    expect(configures).toEqual([{ session_id: sessionId(page), model: "other" }]);
+  });
+
+  test("Enter while composing in the model search does not choose the match", async ({ ox: page }) => {
+    await newSessionButton(page).click();
+    await model(page).click();
+    const search = page.getByRole("combobox", { name: "Search models" });
+    await search.fill("other");
+    await search.dispatchEvent("keydown", { key: "Enter", isComposing: true });
+    await page.keyboard.press("Escape");
+    await expect(model(page)).toContainText("Echo");
+  });
+});
+
 test("a failed setting change shows the error and the settings Claude has", async ({ ox: page }) => {
   await newSession(page, "configure me");
   const failed = await hold(page, "session/configure");
@@ -974,9 +1021,8 @@ test("a retried creation recovers the session without sending", async ({ page, s
   await expect(send(page)).toBeEnabled();
   await expect(main(page).getByRole("alert")).toHaveText(["Lost the connection to ox. Reconnecting."]);
   // The retry's reply finds the session already created.
-  const existing = cutoff.reply("existing");
   await send(page).click();
-  await existing;
+  await cutoff.existing;
   release();
   await expect(main(page).getByRole("status")).toContainText("Session recovered");
   await expect(prompt(page)).toHaveValue("retry my prompt");

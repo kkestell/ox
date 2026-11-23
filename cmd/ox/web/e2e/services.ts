@@ -74,7 +74,7 @@ export async function startServices(config: object): Promise<Services> {
   const startDaemon = () =>
     run(join(bin, "oxd"), [`-socket=${socket}`, `-db=${database}`, `-config=${join(dir, "config.json")}`]);
   let daemon = startDaemon();
-  let relay: ChildProcess | undefined;
+  let relay!: ChildProcess;
   const startRelay = async () => {
     relay = run(join(bin, "ox"), [
       `-addr=127.0.0.1:${port}`,
@@ -99,7 +99,7 @@ export async function startServices(config: object): Promise<Services> {
     workspace,
     callTool: (from, name, args) => callTool(socket, from, name, args),
     async restartRelay() {
-      if (relay) await stopProcess(relay);
+      await stopProcess(relay);
       await startRelay();
     },
     async restartDaemon(config: object, signal: NodeJS.Signals = "SIGTERM") {
@@ -111,7 +111,7 @@ export async function startServices(config: object): Promise<Services> {
     async stop() {
       const exited = daemon.exitCode;
       // Both stop even when one exits badly, so a failure leaves neither running.
-      const stopped = await Promise.allSettled([relay && stopProcess(relay), stopProcess(daemon)]);
+      const stopped = await Promise.allSettled([stopProcess(relay), stopProcess(daemon)]);
       for (const result of stopped) if (result.status === "rejected") throw result.reason;
       if (exited !== null) throw new Error(`oxd exited during the tests with status ${exited}`);
       rmSync(dir, { recursive: true, force: true });

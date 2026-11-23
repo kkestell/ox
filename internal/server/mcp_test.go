@@ -296,11 +296,11 @@ func TestCreateSession(t *testing.T) {
 		}
 		return child
 	}
-	createdChild := func(c *client, id string) child {
+	createdChild := func(c *client, id string) store.Child {
 		t.Helper()
 		var params struct {
-			Label string `json:"label"`
-			Child *child `json:"child"`
+			Label string       `json:"label"`
+			Child *store.Child `json:"child"`
 		}
 		json.Unmarshal(c.next(func(m message) bool { return m.Method == "session/created" && m.sessionID() == id }).Params, &params)
 		if params.Child == nil {
@@ -318,7 +318,7 @@ func TestCreateSession(t *testing.T) {
 		Model: "m", Effort: "high", PermissionMode: "manual", Directory: dir}); worker != want {
 		t.Fatalf("create_session returned %+v, not %+v", worker, want)
 	}
-	workerChild := child{ParentID: a, Name: "worker", Title: "Worker", Directory: dir}
+	workerChild := store.Child{ParentID: a, Name: "worker", Title: "Worker", Directory: dir}
 	if got := createdChild(c, worker.SessionID); got != workerChild {
 		t.Fatalf("session/created carried %+v", got)
 	}
@@ -338,9 +338,9 @@ func TestCreateSession(t *testing.T) {
 	}
 
 	type listedSession struct {
-		SessionID string `json:"session_id"`
-		Label     string `json:"label"`
-		Child     *child `json:"child"`
+		SessionID string       `json:"session_id"`
+		Label     string       `json:"label"`
+		Child     *store.Child `json:"child"`
 	}
 	listWorkspace := func(c *client) []listedSession {
 		t.Helper()
@@ -415,7 +415,7 @@ func TestCreateSession(t *testing.T) {
 	if err := json.Unmarshal([]byte(text), &leaf); refused || err != nil {
 		t.Fatalf("the child's create_session returned %q, %v", text, refused)
 	}
-	if got, want := createdChild(c, leaf.SessionID), (child{ParentID: worker.SessionID, Name: "leaf", Title: "Leaf", Directory: dir}); got != want {
+	if got, want := createdChild(c, leaf.SessionID), (store.Child{ParentID: worker.SessionID, Name: "leaf", Title: "Leaf", Directory: dir}); got != want {
 		t.Fatalf("session/created for the grandchild carried %+v, not %+v", got, want)
 	}
 	if taken := c.update(leaf.SessionID, "prompt"); taken.From != worker.SessionID || taken.FromLabel != "Worker" || taken.Text != "hello grandchild" {

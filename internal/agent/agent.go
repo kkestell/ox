@@ -143,7 +143,7 @@ const (
 	StateRunning        = "running"
 	StateRequiresAction = "requires_action"
 	StateBackground     = "background" // idle while background tasks the harness started still run
-	StateParked         = "parked"     // snapshots only: no process is running
+	StateParked         = "parked"     // snapshots only: the harness has stopped, though its process may still be exiting
 )
 
 type Update struct {
@@ -193,5 +193,4 @@ func (i Input) Update(kind string) Update {
 type Approval struct {
 	RequestID string          `json:"request_id"`
 	Request   json.RawMessage `json:"request"`
-	ToolName  string          `json:"-"` // the tool the approval asks about, named by the harness
 }

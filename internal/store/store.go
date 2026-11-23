@@ -39,10 +39,10 @@ type Session struct {
 // Child is what makes a session a child: its parent, its name among the
 // parent's children, its title, and the directory it runs in.
 type Child struct {
-	ParentID  string
-	Name      string
-	Title     string
-	Directory string
+	ParentID  string `json:"parent_id"`
+	Name      string `json:"name"`
+	Title     string `json:"title"`
+	Directory string `json:"directory"`
 }
 
 // Event is one recorded session update, as JSON.

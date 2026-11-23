@@ -149,8 +149,8 @@ export function highlight(path: string, text: string): string {
     themes: { light: "github-light-default", dark: "github-dark-default" },
     defaultColor: "light-dark()",
   });
-  // Shiki splits lines on \r?\n; splitting on \n gives the same lines, and a
-  // line's trailing \r is the one Shiki dropped.
+  // Shiki drops the \r of a \r\n and keeps any other, so only a line that a \n
+  // follows gets its \r restored.
   const lines = text.split("\n");
   return tokens
     .map((line, i) => {
@@ -159,7 +159,7 @@ export function highlight(path: string, text: string): string {
           (token) => `<span style="${stringifyTokenStyle(token.htmlStyle ?? {})}">${escapeHtml(token.content)}</span>`,
         )
         .join("");
-      return lines[i].endsWith("\r") ? `${spans}&#13;` : spans;
+      return i < lines.length - 1 && lines[i].endsWith("\r") ? `${spans}&#13;` : spans;
     })
     .join("\n");
 }

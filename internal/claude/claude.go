@@ -88,12 +88,10 @@ func startProcess(workspace, oxSessionID, sessionID string, resume bool, setting
 	if err := checkEffort(settings.Effort); err != nil {
 		return nil, nil, err
 	}
-	mcpConfig, err := json.Marshal(map[string]any{"mcpServers": map[string]any{
+	// Strings always marshal.
+	mcpConfig, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{
 		"ox": map[string]any{"command": mcp.Command, "args": []string{}, "env": mcp.Env},
 	}})
-	if err != nil {
-		return nil, nil, err
-	}
 	approved := make([]string, len(mcp.Approved))
 	for i, tool := range mcp.Approved {
 		approved[i] = "mcp__ox__" + tool

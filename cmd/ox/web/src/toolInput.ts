@@ -36,6 +36,15 @@ export function toolSubject(tool: string, input: Record<string, unknown>): strin
   return firstString(plain) ?? stringify(plain);
 }
 
+// toolSummary is the first nonblank line of a tool call's subject, cut to 120
+// characters.
+export function toolSummary(tool: string, input: Record<string, unknown>): string {
+  const line = toolSubject(tool, input)
+    .split("\n")
+    .find((l) => l.trim() !== "");
+  return (line ?? "").slice(0, 120);
+}
+
 function firstString(value: unknown): string | undefined {
   if (typeof value === "string") return value;
   if (!value || typeof value !== "object" || isRawJSON(value)) return undefined;

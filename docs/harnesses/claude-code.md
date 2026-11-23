@@ -331,10 +331,8 @@ Stdout carries JSON lines and can carry plain text on
 
 ### `control_request` from Claude
 
-Answer `can_use_tool`, and answer a `hook_callback` for a hook declared in
-`initialize` (such as the Stop hook in section 8) with success. Answer every
-other subtype (undeclared hook callbacks, MCP messages) with an error so Claude
-does not wait:
+Answer `can_use_tool`. Ox answers every `hook_callback` with success, and every
+other subtype (MCP messages) with an error so Claude does not wait:
 
 ```json
 {"type":"control_response","response":{"subtype":"error","request_id":"<id>","error":"Unsupported control request"}}

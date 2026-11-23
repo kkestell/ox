@@ -163,9 +163,9 @@ title.
 - **Claude can start child sessions.** A session's Claude can start a child
   session with a name, a title, and a first message, which reaches the child as
   a message from its parent, without asking for approval except in plan mode,
-  where Claude asks first. The child takes its parent's harness, model, effort,
-  permission mode, and directory unless Claude picks others Ox offers, and can
-  start children of its own up to the configured depth.
+  where Claude asks first. The child takes its parent's permission mode, and its
+  parent's harness, model, effort, and directory unless Claude picks others Ox
+  offers, and can start children of its own up to the configured depth.
 - **Message delivery.** A message from another session reaches Claude as a
   prompt sent while it works does: Claude takes it into the running turn after
   its current step, or runs it next, and an idle session starts a turn with it.
@@ -186,9 +186,10 @@ title.
 - **Resuming the conversation.** A parked session resumes its Claude
   conversation on the next send or message.
 - **Database failures.** Saved state, including transcripts, persists only while
-  Ox can write its database. `oxd` logs a failed write, and the page does not
-  show it. A session whose conversation could not be saved still resumes it
-  until `oxd` restarts.
+  Ox can write its database. `oxd` logs a failed write of a transcript or a
+  setting, and the page does not show it; adding or removing a workspace shows
+  its failure in its dialog. A session whose conversation could not be saved
+  still resumes it until `oxd` restarts.
 - **Lost conversation.** If Claude can no longer resume the conversation, the
   prompt is dropped with a notice in the transcript and its text returns to the
   composer, and the next send starts a new conversation without the earlier
@@ -352,4 +353,4 @@ title.
   the next start; `oxd` will not replace a socket another `oxd` is serving, or a
   file that is not a socket.
 - **Ox's own files.** Ox's own bookkeeping writes only its database, its socket,
-  and Ur's saved conversations.
+  the configuration it writes on first start, and Ur's saved conversations.

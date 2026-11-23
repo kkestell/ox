@@ -11,9 +11,8 @@ import (
 
 func (a *Agent) controlRequest(requestID string, request json.RawMessage) {
 	var control struct {
-		Subtype  string `json:"subtype"`
-		ToolName string `json:"tool_name"`
-		Input    struct {
+		Subtype string `json:"subtype"`
+		Input   struct {
 			SessionCrons *[]json.RawMessage `json:"session_crons"`
 		} `json:"input"`
 	}
@@ -27,7 +26,7 @@ func (a *Agent) controlRequest(requestID string, request json.RawMessage) {
 		}
 		return
 	}
-	a.approvals = append(a.approvals, agent.Approval{RequestID: requestID, Request: request, ToolName: control.ToolName})
+	a.approvals = append(a.approvals, agent.Approval{RequestID: requestID, Request: request})
 	a.publish(agent.Update{Type: agent.UpdateApproval, RequestID: requestID, Request: request})
 }
 
@@ -38,8 +37,8 @@ func (a *Agent) Approve(requestID string, response json.RawMessage) error {
 	if !slices.ContainsFunc(a.approvals, func(p agent.Approval) bool { return p.RequestID == requestID }) {
 		return agent.ErrApprovalNotFound
 	}
-	// A failed write leaves the approval pending; the process's exit, which
-	// a broken pipe means, withdraws it.
+	// A failed write leaves the approval pending until Claude exits, which
+	// withdraws it.
 	if err := a.input.Respond(requestID, response); err != nil {
 		return fmt.Errorf("answer Claude: %w", err)
 	}
