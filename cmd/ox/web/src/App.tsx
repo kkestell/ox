@@ -1,4 +1,5 @@
 import { createEffect, createSignal, For, Match, onSettled, Show, Switch } from "solid-js";
+import { Disconnected } from "./connection";
 import { FileTree } from "./FileTree";
 import { FileView } from "./FileView";
 import { createDraft, type Draft, NewSessionView } from "./NewSessionView";
@@ -148,7 +149,19 @@ function Layout() {
         <Sash label="Resize sessions" drag={(before) => (dx) => panels.setLeftWidth(before + dx)} />
       </Show>
       <div class="center">
-        <Show when={ox.error()}>{(error) => <p role="alert">{error()}</p>}</Show>
+        <Show when={ox.error()}>
+          {(error) => (
+            <p role="alert">
+              {error().message}
+              <Show when={error() instanceof Disconnected && (error() as Disconnected).closed}>
+                {" "}
+                <button type="button" onClick={() => location.reload()}>
+                  Reload
+                </button>
+              </Show>
+            </p>
+          )}
+        </Show>
         <For each={liveDrafts().filter((d) => d.control.error() && d !== draft())}>
           {(failed) => (
             <p role="alert">

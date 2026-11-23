@@ -232,13 +232,16 @@ title.
 - **Lost connection.** When the connection drops, the page says so, fails its
   pending requests, and holds Send and settings until each session has reloaded.
   It reconnects by itself, unless `oxd` is still down when it tries, in which
-  case it asks for a reload.
+  case it shows a Reload button.
 - **Work outlives the page.** Closing every page leaves prompts, approvals, and
   Claude's own turns running.
 - **Web access.** The web relay accepts requests addressed to Ox's local or
   configured hosts. When the user configures `tailscale_ip`, Ox also serves the
   web UI on that Tailscale address at port 17840, independently of the local
   listener's port, and prints that URL at startup.
+- **Home Screen app.** On an iPhone, Ox added to the Home Screen from Safari
+  shows its icon and the name Ox, and opens full screen without Safari's
+  toolbars, at the session list, over the same address the browser uses.
 
 ## Layout
 

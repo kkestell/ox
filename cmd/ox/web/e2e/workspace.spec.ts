@@ -419,7 +419,10 @@ clocked("a lost connection keeps the last listing", async ({ ox: page, services 
   await page.route("**/events", down);
   await page.route("**/rpc*", aborted);
   await page.clock.runFor(1000);
-  await expect(page.getByRole("alert").filter({ hasText: "Lost the connection" })).toBeVisible();
+  const alert = page.getByRole("alert").filter({ hasText: "Lost the connection" });
+  await expect(alert).toBeVisible();
+  // A page that is still reconnecting offers no Reload button.
+  await expect(alert.getByRole("button", { name: "Reload" })).toHaveCount(0);
   await expect(entry(page, "a.txt")).toBeVisible();
   await expect(page.getByText("Could not reach ox")).toHaveCount(0);
   await page.unroute("**/rpc*", aborted);
