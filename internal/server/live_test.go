@@ -786,6 +786,16 @@ func TestLive(t *testing.T) {
 		l.c.call("session/destroy", map[string]string{"session_id": started.SessionID})
 	})
 
+	section("no subagents", func(l *live) {
+		// Claude has no subagent tool; Ox's child sessions take its place.
+		session := l.create("manual")
+		tools := l.turn(session, "Load and call the Agent tool to start a general-purpose subagent with the prompt "+
+			`"Reply with just the word ok." Then reply with just ok.`, l.refuse)
+		if slices.Contains(tools, "Agent") || slices.Contains(tools, "Task") {
+			l.t.Errorf("Claude started a subagent: %v", tools)
+		}
+	})
+
 	section("parking", func(l *live) {
 		// Pending schedules keep a session running, even after a failed turn.
 		var denied bool

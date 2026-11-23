@@ -53,6 +53,10 @@ claude -p \
   a `-p` process as `interactive`, named after its working directory (2.1.328).
 - `--disallowedTools=SendMessage,ListAgents` removes both tools from the main
   thread and its subagents; the socket stays bound (2.1.328).
+- The `init` line lists the subagent tool as `Task`. `--disallowedTools=Agent`
+  or `=Task`, or a bare `Agent` in `permissions.deny`, removes it from the
+  model's tool list. Skills with `context: fork` still run in their subagent
+  (2.1.330).
 - The `crossSessionInbound` setting takes `accept`, `hold`, or `refuse`. Unset,
   a message is delivered only when the sender's permission-mode class matches
   the receiver's. `--settings '{"crossSessionInbound":"refuse"}'` outranks

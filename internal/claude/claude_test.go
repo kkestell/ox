@@ -460,8 +460,8 @@ func TestClaudeRunsAsAnOxSession(t *testing.T) {
 		if !slices.Contains(args, "--allowedTools=mcp__ox__list_models") {
 			t.Errorf("resume %v: list_models is not pre-approved in %q", resume, args)
 		}
-		if !slices.Contains(args, "--disallowedTools=SendMessage,ListAgents") {
-			t.Errorf("resume %v: built-in messaging is not disallowed in %q", resume, args)
+		if !slices.Contains(args, "--disallowedTools=SendMessage,ListAgents,Agent") {
+			t.Errorf("resume %v: built-in messaging and subagents are not disallowed in %q", resume, args)
 		}
 		var settings struct {
 			CrossSessionInbound string `json:"crossSessionInbound"`
