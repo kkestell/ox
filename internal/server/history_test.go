@@ -23,6 +23,8 @@ func TestHistoryMergesTextAndKeepsConversation(t *testing.T) {
 	for _, u := range []agent.Update{
 		{MessageID: "p", Type: "prompt", Text: "hi"},
 		{MessageID: "p", Type: "state", State: "running"},
+		{MessageID: "p", Type: "reasoning_delta", Text: "Greet "},
+		{MessageID: "p", Type: "reasoning_delta", Text: "them."},
 		{MessageID: "p", Type: "text_delta", Text: "hel", Time: replyStarted},
 		{MessageID: "p", Type: "state", State: "requires_action"},
 		{MessageID: "p", Type: "text_delta", Text: "lo", Time: replyStarted.Add(time.Second)},
@@ -35,7 +37,7 @@ func TestHistoryMergesTextAndKeepsConversation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 2 || entries[1].Text != "hello" || !entries[1].Time.Equal(replyStarted) {
+	if len(entries) != 3 || entries[1].Text != "Greet them." || entries[2].Text != "hello" || !entries[2].Time.Equal(replyStarted) {
 		t.Fatalf("history mid-reply lacks the reply text so far, timed by its first fragment: %+v", entries)
 	}
 
@@ -43,6 +45,7 @@ func TestHistoryMergesTextAndKeepsConversation(t *testing.T) {
 	h.record(agent.Update{MessageID: "p", Type: "state", State: "idle"})
 	h.record(agent.Update{Type: "text_delta", Text: "tick"})
 	h.record(agent.Update{MessageID: "q", Type: "text_delta", Text: "tock"})
+	h.record(agent.Update{MessageID: "q", Type: "reasoning_delta", Text: "hm"})
 	h.record(agent.Update{Type: "parked"})
 	// A fresh history reads only what reached the store, as after a restart.
 	if entries, err = (&history{store: st, sessionID: "s"}).entries(); err != nil {
@@ -52,10 +55,10 @@ func TestHistoryMergesTextAndKeepsConversation(t *testing.T) {
 	for _, e := range entries {
 		got = append(got, e.Type+":"+e.Text)
 	}
-	if strings.Join(got, ",") != "prompt:hi,text_delta:hello,result:,text_delta:tick,text_delta:tock,parked:" {
+	if strings.Join(got, ",") != "prompt:hi,reasoning_delta:Greet them.,text_delta:hello,result:,text_delta:tick,text_delta:tock,reasoning_delta:hm,parked:" {
 		t.Fatalf("unexpected history: %v", got)
 	}
-	if !entries[1].Time.Equal(replyStarted) {
+	if !entries[2].Time.Equal(replyStarted) {
 		t.Fatalf("merged text is not timed by its first fragment: %v", entries[1].Time)
 	}
 }

@@ -34,6 +34,19 @@ func sse(w http.ResponseWriter, words ...string) {
 	fmt.Fprint(w, "data: [DONE]\n\n")
 }
 
+// sseReasoning streams each reasoning detail fragment as its own chunk.
+func sseReasoning(w http.ResponseWriter, fragments ...map[string]any) {
+	for _, f := range fragments {
+		data, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": "", "reasoning_details": []any{f}}}}})
+		fmt.Fprintf(w, "data: %s\n\n", data)
+	}
+}
+
+// reasoningText is a fragment of readable reasoning, as DeepSeek streams it.
+func reasoningText(text string) map[string]any {
+	return map[string]any{"type": "reasoning.text", "text": text, "format": "unknown", "index": 0}
+}
+
 // recorded is a request the server received.
 type recorded struct {
 	auth string
@@ -201,11 +214,15 @@ func field(body map[string]any, name string) []string {
 
 func TestTwoTurns(t *testing.T) {
 	settings := agent.Settings{Model: model, Effort: "low", PermissionMode: "manual"}
-	r := start(t, settings, map[string][]string{model: {"a/x", "b/y"}}, func(w http.ResponseWriter, _ *http.Request, _ int) {
+	r := start(t, settings, map[string][]string{model: {"a/x", "b/y"}}, func(w http.ResponseWriter, _ *http.Request, n int) {
+		if n == 0 {
+			sseReasoning(w, reasoningText("Greet"), reasoningText(" them."),
+				map[string]any{"type": "reasoning.encrypted", "data": "opaque", "index": 1})
+		}
 		sse(w, "Hello", ", ", "world")
 	})
 	r.send("p1", "hi")
-	var kinds []string
+	var kinds, reasoning []string
 	for {
 		u := r.until(func(agent.Update) bool { return true })
 		if u.MessageID != "p1" {
@@ -217,6 +234,9 @@ func TestTwoTurns(t *testing.T) {
 		}
 		if u.Type == agent.UpdateTextDelta && u.Text == "" {
 			t.Error("an empty text delta was published")
+		}
+		if u.Type == agent.UpdateReasoningDelta {
+			reasoning = append(reasoning, u.Text)
 		}
 		if u.Type == agent.UpdateResult {
 			if u.Result.IsError || u.Result.Text != "Hello, world" {
@@ -230,9 +250,12 @@ func TestTwoTurns(t *testing.T) {
 			break
 		}
 	}
-	want := []string{"prompt_queued", "state running", "prompt", "text_delta", "result", "state idle"}
+	want := []string{"prompt_queued", "state running", "prompt", "reasoning_delta", "text_delta", "result", "state idle"}
 	if !slices.Equal(kinds, want) {
 		t.Errorf("updates %q, not %q", kinds, want)
+	}
+	if want := []string{"Greet", " them."}; !slices.Equal(reasoning, want) {
+		t.Errorf("reasoning %q, not %q", reasoning, want)
 	}
 	r.request()
 
@@ -254,6 +277,11 @@ func TestTwoTurns(t *testing.T) {
 	}
 	if got := roles(second.body); !slices.Equal(got, []string{"user", "assistant", "user"}) {
 		t.Errorf("messages %q", got)
+	}
+	for _, m := range messages(second.body) {
+		if details, ok := m["reasoning_details"]; ok {
+			t.Errorf("the first turn's reasoning was sent again: %v", details)
+		}
 	}
 }
 
@@ -1025,7 +1053,12 @@ func TestShellDenied(t *testing.T) {
 func TestShellAuto(t *testing.T) {
 	r := start(t, agent.Settings{Model: model, PermissionMode: "auto"}, nil, func(w http.ResponseWriter, _ *http.Request, n int) {
 		if n == 0 {
+			sseReasoning(w, reasoningText("List "), reasoningText("both."))
 			sseCalls(w, "", call{"call_1", "shell", `{"command":"echo one"}`}, call{"call_2", "shell", `{"command":"echo two"}`})
+			return
+		}
+		if n == 1 {
+			sseCalls(w, "", call{"call_3", "shell", `{"command":"echo three"}`})
 			return
 		}
 		sse(w, "ok")
@@ -1040,7 +1073,7 @@ func TestShellAuto(t *testing.T) {
 			results = append(results, u.ToolUseID+" "+u.Result.Text)
 		}
 	}
-	if want := []string{"call_1 Exit code: 0\n\none\n", "call_2 Exit code: 0\n\ntwo\n"}; !slices.Equal(results, want) {
+	if want := []string{"call_1 Exit code: 0\n\none\n", "call_2 Exit code: 0\n\ntwo\n", "call_3 Exit code: 0\n\nthree\n"}; !slices.Equal(results, want) {
 		t.Errorf("tool results %q, not %q", results, want)
 	}
 	r.request()
@@ -1052,6 +1085,17 @@ func TestShellAuto(t *testing.T) {
 	if ms[2]["tool_call_id"] != "call_1" || ms[2]["content"] != "Exit code: 0\n\none\n" ||
 		ms[3]["tool_call_id"] != "call_2" || ms[3]["content"] != "Exit code: 0\n\ntwo\n" {
 		t.Errorf("tool messages %v %v", ms[2], ms[3])
+	}
+	const listBoth = `[{"format":"unknown","index":0,"text":"List both.","type":"reasoning.text"}]`
+	details, _ := json.Marshal(ms[1]["reasoning_details"])
+	if string(details) != listBoth {
+		t.Errorf("the calling message's reasoning %s, not %s", details, listBoth)
+	}
+	// Building a request leaves the saved fragments as they were.
+	third := r.request().body
+	details, _ = json.Marshal(messages(third)[1]["reasoning_details"])
+	if string(details) != listBoth {
+		t.Errorf("the third request's reasoning %s, not %s", details, listBoth)
 	}
 }
 
@@ -1276,6 +1320,7 @@ func TestShellStop(t *testing.T) {
 func TestShellInputBetweenSteps(t *testing.T) {
 	r := start(t, agent.Settings{Model: model, PermissionMode: "manual"}, nil, func(w http.ResponseWriter, _ *http.Request, n int) {
 		if n == 0 {
+			sseReasoning(w, reasoningText("Say hi."))
 			sseCalls(w, "", call{"call_1", "shell", `{"command":"echo hi"}`})
 			return
 		}
@@ -1303,6 +1348,11 @@ func TestShellInputBetweenSteps(t *testing.T) {
 	}
 	if got := contents(body); got[len(got)-1] != "also this" {
 		t.Errorf("the second request's contents %q", got)
+	}
+	// The input taken mid-turn belongs to the turn, which keeps its reasoning.
+	details, _ := json.Marshal(messages(body)[1]["reasoning_details"])
+	if want := `[{"format":"unknown","index":0,"text":"Say hi.","type":"reasoning.text"}]`; string(details) != want {
+		t.Errorf("the calling message's reasoning %s, not %s", details, want)
 	}
 	if r.agent.Snapshot().State != agent.StateIdle {
 		t.Errorf("snapshot after the turn: %+v", r.agent.Snapshot())

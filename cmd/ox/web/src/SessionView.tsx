@@ -118,6 +118,17 @@ function Transcript(props: { snapshot: SessionSnapshot }) {
                 </article>
               )}
             </Match>
+            <Match when={entry.kind === "reasoning" && entry}>
+              {(reasoning) => (
+                <details class="reasoning" aria-label="Thinking">
+                  <summary>
+                    <span class="marker brain" aria-hidden="true" />
+                    Thinking
+                  </summary>
+                  <Markdown text={reasoning().text} />
+                </details>
+              )}
+            </Match>
             <Match when={entry.kind === "tool" && entry}>{(tool) => <ToolCall tool={tool()} />}</Match>
             {/* A successful result repeats the reply, so only a failed turn shows its result. */}
             <Match when={entry.kind === "result" && entry.result.is_error && entry}>

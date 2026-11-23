@@ -1,7 +1,8 @@
 // The web client against the real relay and oxd, with the fake harness,
 // which echoes each prompt back a word at a time, or first asks to approve a
-// tool call for a prompt "approve <tool> <input JSON>", or also runs a
-// background task for a prompt "background <milliseconds>".
+// tool call for a prompt "approve <tool> <input JSON>", or first streams
+// <text> as reasoning for a prompt "think <text>", or also runs a background
+// task for a prompt "background <milliseconds>".
 import { mkdtempSync } from "node:fs";
 import { basename } from "node:path";
 import type { Locator, Page, Route } from "@playwright/test";
@@ -399,6 +400,28 @@ test("the page links a manifest that opens Ox standalone with its icon", async (
   const icon = await page.request.get(new URL(manifest.icons[0].src, services.url).href);
   expect(icon.status()).toBe(200);
   expect(icon.headers()["content-type"]).toBe("image/png");
+});
+
+test("reasoning shows as a collapsed Thinking row, before and after a reload", async ({ ox: page }) => {
+  await newSessionButton(page).click();
+  await prompt(page).fill("think Count to **three**.");
+  await prompt(page).press("Enter");
+  await expect(replies(page).last()).toHaveText("You said: think Count to three.");
+  const thinking = transcript(page).getByRole("group", { name: "Thinking" });
+  await expect(thinking).toHaveCount(1);
+  const reasoning = thinking.locator(".markdown");
+  await expect(reasoning).toBeHidden();
+  await thinking.getByText("Thinking").click();
+  await expect(reasoning).toBeVisible();
+  await expect(reasoning).toHaveText("Count to three.");
+  await expect(reasoning.locator("strong")).toHaveText("three");
+
+  await page.reload();
+  await expect(replies(page).last()).toHaveText("You said: think Count to three.");
+  await expect(thinking).toHaveCount(1);
+  await expect(reasoning).toBeHidden();
+  await thinking.getByText("Thinking").click();
+  await expect(reasoning).toHaveText("Count to three.");
 });
 
 test("a closed stream offers a Reload button that reconnects", async ({ ox: page, services }) => {

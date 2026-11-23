@@ -18,7 +18,7 @@ type history struct {
 
 func (h *history) record(update agent.Update) {
 	switch update.Type {
-	case agent.UpdatePrompt, agent.UpdateTextDelta, agent.UpdateToolUse, agent.UpdateToolResult, agent.UpdateResult, agent.UpdateExited, agent.UpdateParked:
+	case agent.UpdatePrompt, agent.UpdateTextDelta, agent.UpdateReasoningDelta, agent.UpdateToolUse, agent.UpdateToolResult, agent.UpdateResult, agent.UpdateExited, agent.UpdateParked:
 		h.append(update)
 	}
 }
@@ -50,9 +50,9 @@ func (h *history) append(update agent.Update) {
 	}
 }
 
-// entries returns the recorded updates, with consecutive text_delta
-// fragments of one message joined into one timed by its first fragment, as
-// the page joins them live.
+// entries returns the recorded updates, with consecutive text_delta or
+// reasoning_delta fragments of one message joined into one timed by its first
+// fragment, as the page joins them live.
 func (h *history) entries() ([]agent.Update, error) {
 	events, err := h.store.Events(h.sessionID)
 	if err != nil {
@@ -65,8 +65,8 @@ func (h *history) entries() ([]agent.Update, error) {
 			return nil, err
 		}
 		update.Time = e.CreatedAt
-		if n := len(updates); n > 0 && update.Type == agent.UpdateTextDelta {
-			if last := &updates[n-1]; last.Type == agent.UpdateTextDelta && last.MessageID == update.MessageID {
+		if n := len(updates); n > 0 && (update.Type == agent.UpdateTextDelta || update.Type == agent.UpdateReasoningDelta) {
+			if last := &updates[n-1]; last.Type == update.Type && last.MessageID == update.MessageID {
 				last.Text += update.Text
 				continue
 			}

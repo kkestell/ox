@@ -92,6 +92,10 @@ title.
 - **Tool calls.** Each tool call shows its name, a summary of its input, and
   whether it is running, done, failed, or stopped; expanding it shows the full
   input and the result's text, and a plan renders as Markdown.
+- **Reasoning.** When Claude or Ur reasons, the transcript shows a collapsed
+  Thinking row where the reasoning happened; expanding it shows the reasoning,
+  streaming in as Markdown under the same rules as replies. Claude's reasoning
+  is its own summary of its thinking.
 - **Main conversation only.** The transcript shows the main conversation only,
   not the inner messages of Claude's subagents.
 - **Failed turns.** A failed turn shows its error in the transcript.

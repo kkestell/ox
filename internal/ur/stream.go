@@ -3,6 +3,7 @@ package ur
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,10 +17,58 @@ import (
 
 // message is one entry of the conversation, in OpenRouter's request shape.
 type message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	ToolCalls  []toolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Role             string            `json:"role"`
+	Content          string            `json:"content,omitempty"`
+	ReasoningDetails []reasoningDetail `json:"reasoning_details,omitempty"`
+	ToolCalls        []toolCall        `json:"tool_calls,omitempty"`
+	ToolCallID       string            `json:"tool_call_id,omitempty"`
+}
+
+// reasoningDetail is one block of a model's reasoning, or a fragment of one
+// as streamed, in OpenRouter's reasoning_details shape. Fragments of one block
+// share its index.
+type reasoningDetail struct {
+	Type      string `json:"type"` // reasoning.text, reasoning.summary, or reasoning.encrypted
+	ID        string `json:"id,omitempty"`
+	Format    string `json:"format,omitempty"`
+	Index     int    `json:"index"`
+	Text      string `json:"text,omitempty"`
+	Summary   string `json:"summary,omitempty"`
+	Data      string `json:"data,omitempty"`
+	Signature string `json:"signature,omitempty"`
+}
+
+// display is the detail's readable text; encrypted reasoning has none.
+func (d reasoningDetail) display() string {
+	switch d.Type {
+	case "reasoning.text":
+		return d.Text
+	case "reasoning.summary":
+		return d.Summary
+	}
+	return ""
+}
+
+// appendReasoning appends fragments to details, merging each into the last
+// detail when they share an index: text, summary, and data concatenate, the
+// first type, id, and format stay, and the last signature wins.
+func appendReasoning(details []reasoningDetail, fragments []reasoningDetail) []reasoningDetail {
+	for _, f := range fragments {
+		last := len(details) - 1
+		if last < 0 || details[last].Index != f.Index {
+			details = append(details, f)
+			continue
+		}
+		d := &details[last]
+		d.Text += f.Text
+		d.Summary += f.Summary
+		d.Data += f.Data
+		d.Type = cmp.Or(d.Type, f.Type)
+		d.ID = cmp.Or(d.ID, f.ID)
+		d.Format = cmp.Or(d.Format, f.Format)
+		d.Signature = cmp.Or(f.Signature, d.Signature)
+	}
+	return details
 }
 
 type toolCall struct {
@@ -57,8 +106,9 @@ type chunk struct {
 	Error   *apiError `json:"error"`
 	Choices []struct {
 		Delta struct {
-			Content   string `json:"content"`
-			ToolCalls []struct {
+			Content          string            `json:"content"`
+			ReasoningDetails []reasoningDetail `json:"reasoning_details"`
+			ToolCalls        []struct {
 				Index    int      `json:"index"`
 				ID       string   `json:"id"`
 				Function function `json:"function"`
@@ -72,14 +122,15 @@ type apiError struct {
 	Message string `json:"message"`
 }
 
-// stream posts body for t and delivers its reply text and its end. It runs on
-// its own goroutine and reads only the agent's fields set at start.
+// stream posts body for t and delivers its reply text and reasoning and its
+// end. It runs on its own goroutine and reads only the agent's fields set at
+// start.
 func (a *Agent) stream(ctx context.Context, t *turn, body []byte) {
-	calls, err := a.post(ctx, body, func(text string) { a.deliver(delta{t, text}) })
+	calls, err := a.post(ctx, body, func(text string, reasoning []reasoningDetail) { a.deliver(delta{t, text, reasoning}) })
 	a.deliver(ended{t, calls, err})
 }
 
-func (a *Agent) post(ctx context.Context, body []byte, onText func(string)) ([]toolCall, error) {
+func (a *Agent) post(ctx context.Context, body []byte, onDelta func(string, []reasoningDetail)) ([]toolCall, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -94,7 +145,7 @@ func (a *Agent) post(ctx context.Context, body []byte, onText func(string)) ([]t
 	if resp.StatusCode != http.StatusOK {
 		return nil, statusError(resp)
 	}
-	return read(resp.Body, onText)
+	return read(resp.Body, onDelta)
 }
 
 // statusError reports a refused request with OpenRouter's message, if its
@@ -110,12 +161,13 @@ func statusError(resp *http.Response) error {
 	return fmt.Errorf("OpenRouter %s", resp.Status)
 }
 
-// read reads a completion's server-sent events, passing reply text to onText,
-// until data: [DONE] or the end of the stream, and returns the response's tool
-// calls in index order. A call arrives as fragments keyed by its index: the
-// first carries its ID and name, and each adds to its arguments. OpenRouter
-// reports an error after the response has started as a chunk with an error.
-func read(r io.Reader, onText func(string)) ([]toolCall, error) {
+// read reads a completion's server-sent events, passing each chunk's reply text
+// and reasoning fragments to onDelta, until data: [DONE] or the end of the
+// stream, and returns the response's tool calls in index order. A call arrives
+// as fragments keyed by its index: the first carries its ID and name, and each
+// adds to its arguments. OpenRouter reports an error after the response has
+// started as a chunk with an error.
+func read(r io.Reader, onDelta func(string, []reasoningDetail)) ([]toolCall, error) {
 	lines := bufio.NewReader(r)
 	finished := false
 	calls := map[int]*toolCall{}
@@ -139,8 +191,8 @@ func read(r io.Reader, onText func(string)) ([]toolCall, error) {
 				return nil, fmt.Errorf("OpenRouter: %s", c.Error.Message)
 			}
 			if len(c.Choices) > 0 {
-				if text := c.Choices[0].Delta.Content; text != "" {
-					onText(text)
+				if d := c.Choices[0].Delta; d.Content != "" || len(d.ReasoningDetails) > 0 {
+					onDelta(d.Content, d.ReasoningDetails)
 				}
 				for _, fragment := range c.Choices[0].Delta.ToolCalls {
 					call := calls[fragment.Index]

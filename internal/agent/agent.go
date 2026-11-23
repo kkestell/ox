@@ -132,6 +132,7 @@ const (
 	UpdatePromptCancelled   = "prompt_cancelled" // a queued input was dropped before the harness took it
 	UpdateState             = "state"
 	UpdateTextDelta         = "text_delta"
+	UpdateReasoningDelta    = "reasoning_delta"
 	UpdateToolUse           = "tool_use"
 	UpdateToolResult        = "tool_result"
 	UpdateResult            = "result"
