@@ -244,7 +244,7 @@ test("a rejected creation keeps the draft and its settings after switching views
   await create.arrived;
   await sessionButton(page, "existing conversation").click();
   create.release({ model: "not-offered" });
-  const error = main(page).getByRole("alert").filter({ hasText: "not-offered" });
+  const error = page.getByRole("alert").filter({ hasText: "not-offered" });
   await expect(error).toBeVisible();
   await expect(prompts(page)).toHaveText(["existing conversation"]);
   await error.getByRole("button", { name: "Reopen draft" }).click();
@@ -646,7 +646,7 @@ for (const outcome of ["taken", "dropped"] as const) {
     // The page stays disconnected while the other page resolves the prompt.
     await page.route("**/events", (route) => route.abort());
     await services.restartRelay();
-    await expect(main(page).getByRole("alert").filter({ hasText: "Lost the connection" })).toBeVisible();
+    await expect(page.getByRole("alert").filter({ hasText: "Lost the connection" })).toBeVisible();
     // Wait for the other page's new snapshot, not its old approval or the
     // HTTP acknowledgement of a session/get for some other session.
     await other.reload();
@@ -1046,6 +1046,47 @@ test("on reconnect each session waits for its own settings", async ({ ox: page, 
   await prompt(other).fill("written after reloading");
   await prompt(other).press("Enter");
   await expect(prompts(page)).toHaveText(["refresh my settings", "written while reloading", "written after reloading"]);
+});
+
+test("a creation failed by an empty relay answer shows its error with Reopen draft", async ({ ox: page }) => {
+  await newSession(page, "existing conversation");
+  await newSessionButton(page).click();
+  const create = await hold(page, "session/create");
+  await prompt(page).fill("keep this draft");
+  await prompt(page).press("Enter");
+  await create.arrived;
+  await sessionButton(page, "existing conversation").click();
+  create.fail("");
+  const error = page.getByRole("alert").filter({ hasText: "502" });
+  await expect(error).toBeVisible();
+  await error.getByRole("button", { name: "Reopen draft" }).click();
+  await expect(prompt(page)).toHaveValue("keep this draft");
+});
+
+test("a reconnect repeats a failed request until the page catches up", async ({ ox: page, services, context }) => {
+  await newSession(page, "first");
+  await newSession(page, "second");
+  const other = await context.newPage();
+  await other.goto(page.url());
+  await expect(replies(other)).toHaveText(["You said: second"]);
+
+  const id = sessionId(page);
+  const listing = await hold(page, "workspace/list");
+  const snapshot = await hold(page, "session/get", { session_id: id });
+  await services.restartRelay();
+  await listing.arrived;
+  listing.fail("listing unavailable");
+  const alert = page.getByRole("alert").filter({ hasText: "listing unavailable" });
+  await expect(alert).toBeVisible();
+  await snapshot.arrived;
+  snapshot.fail("snapshot unavailable");
+  await expect(page.getByRole("alert").filter({ hasText: "snapshot unavailable" })).toBeVisible();
+  await prompt(other).fill("while failing");
+  await prompt(other).press("Enter");
+  await expect(replies(other).last()).toHaveText("You said: while failing");
+  await expect(prompts(page)).toHaveText(["second", "while failing"]);
+  await expect(send(page)).toBeEnabled();
+  await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
 // createChild has session parent create a child titled title, which starts
