@@ -8,6 +8,8 @@ import {
   closeKeyboard,
   edges,
   expect,
+  expectWithin,
+  heading,
   hold,
   isRequest,
   menuItem,
@@ -456,9 +458,13 @@ clocked(
     const stale = await hold(page, "workspace/list_folder", { path: "src" });
     await page.clock.runFor(1000);
     await stale.arrived;
+    // The replacement stream stays down until the status has been read.
+    const down = (route: Route) => route.abort();
+    await page.route("**/events", down);
     await services.restartRelay();
     await expect(page.getByRole("status").filter({ hasText: "Reconnecting…" })).toBeVisible();
-    await expect(send(page)).toBeEnabled();
+    await page.unroute("**/events", down);
+    await expect(send(page)).toBeEnabled({ timeout: 10_000 });
     const lists = rpcCalls(page, "workspace/list");
     stale.abort();
     await page.clock.runFor(3000);
@@ -527,47 +533,6 @@ test("an unreadable folder says why, and an empty folder says Empty", async ({ o
     await expect(folder(page, "empty").getByText("Empty", { exact: true })).toBeVisible();
   } finally {
     chmodSync(locked, 0o755);
-  }
-});
-
-test("a workspace header is as tall as a session row, with its buttons centered", async ({ ox: page, services }) => {
-  await newSession(page, "first");
-  const section = workspaceSection(page, services.workspace);
-  const header = await section.locator("header").boundingBox();
-  const row = await sessionItem(page, "first").boundingBox();
-  if (!header || !row) throw new Error("the workspace's header or session is not shown");
-  expect(header.height).toBe(row.height);
-  await section.getByRole("heading").hover();
-  for (const name of ["Workspace actions", "New session"]) {
-    const button = await section.getByRole("button", { name }).boundingBox();
-    if (!button) throw new Error(`${name} is not shown`);
-    expect(button.y + button.height / 2).toBe(header.y + header.height / 2);
-  }
-});
-
-test("a long workspace name runs to its header's edge beneath its buttons' fade", async ({ ox: page }) => {
-  const long = mkdtempSync(join(tmpdir(), `ox-e2e-${"long".repeat(24)}-`));
-  try {
-    await addWorkspace(page, long);
-    const section = workspaceSection(page, long);
-    const name = section.getByRole("heading", { name: basename(long) });
-    await page.mouse.move(0, 0);
-    const nameBox = await name.boundingBox();
-    const sectionBox = await section.boundingBox();
-    if (!nameBox || !sectionBox) throw new Error("the long workspace is not shown");
-    expect(Math.abs(nameBox.x + nameBox.width - (sectionBox.x + sectionBox.width))).toBeLessThanOrEqual(1);
-    await expect(name).toHaveCSS("text-overflow", "clip");
-    // Hovered, the ⋯ icon stands on the header's own color over the name
-    // beneath it.
-    await name.hover();
-    const actions = await section.getByRole("button", { name: "Workspace actions" }).boundingBox();
-    if (!actions) throw new Error("the long workspace's buttons are not shown");
-    const strip = (x: number) =>
-      page.screenshot({ clip: { x: Math.ceil(x), y: nameBox.y, width: 3, height: nameBox.height } });
-    // The header's padding, left of the name, is empty.
-    expect(await strip(actions.x)).toEqual(await strip(nameBox.x - 5));
-  } finally {
-    rmSync(long, { recursive: true, force: true });
   }
 });
 
@@ -917,29 +882,33 @@ test.describe("on a phone", () => {
   // The keyboard below covers 336 px of the 844 px window, and Safari pans the
   // page 120 px down, leaving 508 px visible from 120 to 628.
   const keyboard = { height: 336, offsetTop: 120 };
+  // visible is the part of the 844 px window a keyboard leaves visible.
+  const visible = (k: { height: number; offsetTop: number }) => ({
+    top: k.offsetTop,
+    bottom: k.offsetTop + 844 - k.height,
+  });
 
-  test("the header and composer stay at the visible area's edges as the keyboard opens and closes", async ({
+  test("the header and composer stay in the visible area as the keyboard opens, pans, and closes", async ({
     ox: page,
   }) => {
     await setSafeArea(page, { top: 47, bottom: 34 });
     await newSession(page, "first");
-    const header = page.getByRole("main").locator("header");
-    const composer = page.getByRole("main").locator(".composer");
-    // frame is the header's top and the composer's bottom.
-    const frame = async () => ({ top: (await edges(header)).top, bottom: (await edges(composer)).bottom });
-    // The composer ends at the home indicator's 34 px inset, which is wider than its 16 px margin.
-    await expect.poll(frame).toEqual({ top: 47, bottom: 810 });
+    // frame is the top of the session's title and the bottom of the composer's
+    // last row.
+    const frame = async () => ({ top: (await edges(heading(page))).top, bottom: (await edges(model(page))).bottom });
+    const closed = await frame();
     await openKeyboard(page, keyboard);
-    // Above the keyboard, the home indicator's inset is gone.
-    await expect.poll(frame).toEqual({ top: 167, bottom: 612 });
+    await expectWithin(heading(page), visible(keyboard));
+    await expectWithin(model(page), visible(keyboard));
     // A pan alone moves the layout with the visible area.
     await panKeyboard(page, 60);
-    await expect.poll(frame).toEqual({ top: 107, bottom: 552 });
+    await expectWithin(heading(page), visible({ ...keyboard, offsetTop: 60 }));
+    await expectWithin(model(page), visible({ ...keyboard, offsetTop: 60 }));
     await closeKeyboard(page);
-    await expect.poll(frame).toEqual({ top: 47, bottom: 810 });
+    await expect.poll(frame).toEqual(closed);
     // A pinch zoom leaves the layout where it was.
     await openKeyboard(page, { ...keyboard, scale: 2 });
-    await expect.poll(frame).toEqual({ top: 47, bottom: 810 });
+    await expect.poll(frame).toEqual(closed);
   });
 
   test("a drawer spans the visible area while the keyboard is open", async ({ ox: page }) => {
@@ -948,7 +917,7 @@ test.describe("on a phone", () => {
     await openKeyboard(page, keyboard);
     await toggleSessions(page).tap();
     await expect(sessions(page)).toBeVisible();
-    await expect.poll(() => edges(sessions(page))).toEqual({ top: 120, bottom: 628 });
+    await expect.poll(() => edges(sessions(page))).toEqual(visible(keyboard));
   });
 });
 

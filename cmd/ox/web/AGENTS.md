@@ -13,9 +13,27 @@ Use `make dev` to work on the [web client](../../../docs/architecture.md#web-ui)
   Playwright, through `make e2e` specs or against a stack started on spare
   ports.
 - Specs test what the user sees and does, as Playwright's best practices
-  describe: they find elements by role and accessible name, act as the user
-  does, and assert with web-first assertions on visibility, text, ARIA state,
-  and focus.
+  describe: they find elements by role, label, or text, act as the user does,
+  and assert with web-first assertions on visibility, text, ARIA state, and
+  focus, one behavior per test. The user judges how the page looks. So specs
+  use none of these:
+  - `toHaveCSS`, `getComputedStyle`, screenshot or pixel comparisons, or
+    `boundingBox` arithmetic on sizes, insets, or alignment.
+  - Locators by CSS class, tag, attribute, or XPath. When the page lacks a
+    role or name, the markup gains it with no visible change.
+  - `waitForTimeout` or any fixed sleep.
+  - A one-shot read compared with `expect` where a web-first assertion or
+    `expect.poll` exists.
+  - A test that runs several behaviors under one name.
+
+  The exceptions:
+  - Geometry that is the behavior: a drag resizing a panel within its bounds,
+    output keeping the bottom in view, the composer staying above the
+    keyboard, a menu staying on screen with `toBeInViewport`.
+  - What the browser reads rather than the user, such as `<head>` metadata,
+    found by tag or attribute.
+  - ARIA state such as `aria-pressed`, `aria-current`, or `aria-expanded`,
+    asserted with `toHaveAttribute` on an element found by role.
 - `make e2e` runs the Playwright specs in `e2e` in headless Chrome against
   `ox` and `oxd` with the fake harness. Each test runs its own `oxd` and relay
   on a temporary socket, database, and port, through the `services` fixture

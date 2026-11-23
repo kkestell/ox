@@ -5,7 +5,7 @@
 // task for a prompt "background <milliseconds>".
 import { mkdtempSync } from "node:fs";
 import { basename } from "node:path";
-import type { Locator, Page, Route } from "@playwright/test";
+import type { Page, Route } from "@playwright/test";
 import type { Services } from "./services";
 import { fakeConfig, haikuConfig } from "./services";
 import {
@@ -13,9 +13,9 @@ import {
   allow,
   ask,
   cutReply,
-  edges,
   errors,
   expect,
+  expectWithin,
   heading,
   hold,
   menuItem,
@@ -46,52 +46,6 @@ import {
 
 const main = (page: Page) => page.getByRole("main");
 const words = (n: number) => Array.from({ length: n }, (_, i) => `word${i}`).join(" ");
-
-// expectSidesAligned checks that the session view's parts start 1rem from the
-// pane's left edge and end 1rem from its right edge. The files toggle's glyph
-// sits 1rem from the right edge of its header. On a phone the sessions toggle's
-// glyph sits on the left edge, and the title follows it.
-async function expectSidesAligned(page: Page, phone: boolean) {
-  await newSession(page, "line up");
-  const pane = await main(page).boundingBox();
-  if (!pane) throw new Error("no main box");
-  const left = pane.x + 16;
-  const right = pane.x + pane.width - 16;
-  const near = (actual: number, expected: number) => expect(Math.abs(actual - expected)).toBeLessThanOrEqual(1);
-  const box = async (locator: Locator) => {
-    const b = await locator.boundingBox();
-    if (!b) throw new Error("no box");
-    return b;
-  };
-  // On a phone the sessions toggle sits left of the title.
-  if (!phone) near((await box(heading(page))).x, left);
-  // The folder row's content starts after its padding.
-  const row = page.locator(".context .path");
-  const padding = await row.evaluate((el) => Number.parseFloat(getComputedStyle(el).paddingLeft));
-  near((await box(row)).x + padding, left);
-  const reply = await box(replies(page).last());
-  near(reply.x, left);
-  near(reply.x + reply.width, right);
-  const form = await box(main(page).locator(".composer .box"));
-  near(form.x, left);
-  near(form.x + form.width, right);
-  near((await box(model(page).locator(".harness-icon"))).x, left);
-  // A toggle's glyph is the 1rem square at its center. The files toggle sits in
-  // the session's header on a phone and in the file tree's header on a wide
-  // screen.
-  const glyph = async (button: Locator) => {
-    const b = await box(button);
-    return b.x + (b.width - 16) / 2;
-  };
-  const files = page.getByRole("button", { name: "Toggle files" });
-  const header = await box(files.locator("xpath=ancestor::header[1]"));
-  near((await glyph(files)) + 16, header.x + header.width - 16);
-  if (phone) near(await glyph(page.getByRole("button", { name: "Toggle sessions" })), left);
-}
-
-test("the header, transcript, composer, and settings share one side inset", async ({ ox: page }) => {
-  await expectSidesAligned(page, false);
-});
 
 test("edits typed while a new session is created and sent stay in the composer", async ({ ox: page }) => {
   await newSessionButton(page).click();
@@ -409,7 +363,7 @@ test("reasoning shows in the transcript, before and after a reload", async ({ ox
   await expect(replies(page).last()).toHaveText("You said: think Count to three.");
   const thinking = transcript(page).getByRole("article", { name: "Thinking" });
   await expect(thinking).toHaveText("Count to three.");
-  await expect(thinking.locator("strong")).toHaveText("three");
+  await expect(thinking.getByRole("strong")).toHaveText("three");
 
   await page.reload();
   await expect(replies(page).last()).toHaveText("You said: think Count to three.");
@@ -608,18 +562,19 @@ test("Ox's own tools show readable names and the message they send", async ({ ox
   await expect(approval.getByText("Allow SendMessage?")).toBeVisible();
   await expect(approval.getByText("hello there", { exact: true })).toBeVisible();
   const call = toolCall(page, "SendMessage");
-  await expect(call).toContainText("SendMessage");
-  await expect(call.locator("summary")).toContainText("hello there");
-  await expect(call.locator("summary")).not.toContainText("mcp__ox__");
-  await expect(call.locator("summary")).not.toContainText("some-session");
+  // Closed, the call shows its name and message, and hides its raw input.
+  await expect(call.getByText("SendMessage", { exact: true })).toBeVisible();
+  await expect(call.getByText("hello there", { exact: true })).toBeVisible();
+  await expect(call.getByText(/mcp__ox__/)).toHaveCount(0);
+  await expect(call.getByText(/some-session/)).toBeHidden();
   await allow(approval);
   await expect(approval).toHaveCount(0);
   await expect(stop(page)).toHaveCount(0);
 
   const empty = await ask(page, "mcp__ox__list_sessions", "{}");
   await expect(empty.getByText("Allow ListSessions?")).toBeVisible();
-  await expect(empty.locator("summary")).toHaveText("Input");
-  await expect(toolCall(page, "ListSessions").locator("summary")).not.toContainText("{}");
+  await expect(empty.getByText("Input", { exact: true })).toBeVisible();
+  await expect(toolCall(page, "ListSessions").getByText("{}")).toBeHidden();
 });
 
 test("a prompt sent while Claude works stays pending until Claude takes it", async ({ ox: page }) => {
@@ -1136,9 +1091,6 @@ test("a hash change selects the session it names", async ({ ox: page }) => {
   await page.goto(url);
   await expect(sessionButton(page, "older session")).toHaveAttribute("aria-current", "page");
   await expect(replies(page)).toHaveText(["You said: older session"]);
-  // The selected session's title is set in medium weight, as shadcn's active item is.
-  await expect(sessionButton(page, "older session")).toHaveCSS("font-weight", "500");
-  await expect(sessionButton(page, "younger session")).toHaveCSS("font-weight", "400");
 });
 
 test("a cancelled deletion's reply cannot close the next confirmation", async ({ ox: page }) => {
@@ -1325,42 +1277,53 @@ async function toggleChildren(page: Page, title: string) {
   await chevron(page, title).click();
 }
 
-test("a session's chevron hides and shows every session beneath it", async ({ ox: page, services }) => {
+test("only a session with children has a chevron", async ({ ox: page, services }) => {
   await family(page, services);
-  const listed = sessions(page).getByRole("listitem");
   await expect(chevron(page, "Parent")).toHaveCount(1);
   await expect(chevron(page, "Child")).toHaveCount(1);
   await expect(chevron(page, "Grandchild")).toHaveCount(0);
+});
 
+test("the keyboard reaches a row's chevron after a click on it", async ({ ox: page, services }) => {
+  await family(page, services);
+  await toggleChildren(page, "Child");
   await page.mouse.move(0, 0);
-  await expect(chevron(page, "Child")).toHaveCSS("opacity", "0");
-  await sessionItem(page, "Child").hover();
-  await expect(chevron(page, "Child")).toHaveCSS("opacity", "1");
-  await sessionButton(page, "Child").click();
-  const url = page.url();
-  await chevron(page, "Child").click();
-  await expect(listed).toHaveText(["Parent", "Child"]);
-  await expect(chevron(page, "Child")).toHaveAttribute("aria-expanded", "false");
-  await expect(sessionButton(page, "Child")).toHaveAttribute("aria-current", "page");
-  expect(page.url()).toBe(url);
-
-  // A click focuses the chevron without a focus ring, so the row's buttons
-  // hide when the pointer leaves; keyboard focus shows them.
-  await page.mouse.move(0, 0);
-  await expect(chevron(page, "Child")).toHaveCSS("opacity", "0");
-  await expect(sessionItem(page, "Child").locator(".actions")).toHaveCSS("opacity", "0");
   await page.keyboard.press("Shift+Tab");
   await expect(sessionButton(page, "Child")).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(chevron(page, "Child")).toBeFocused();
-  await expect(chevron(page, "Child")).toHaveCSS("opacity", "1");
-  await expect(sessionItem(page, "Child").locator(".actions")).toHaveCSS("opacity", "1");
   await page.keyboard.press("Tab");
   await expect(sessionItem(page, "Child").getByRole("button", { name: "Session actions" })).toBeFocused();
+});
 
+test("a chevron hides and shows every session beneath it without opening its session", async ({
+  ox: page,
+  services,
+}) => {
+  await family(page, services);
+  const listed = sessions(page).getByRole("listitem");
+  await sessionButton(page, "Child").click();
+  const url = page.url();
+  await toggleChildren(page, "Child");
+  await expect(listed).toHaveText(["Parent", "Child"]);
+  await expect(chevron(page, "Child")).toHaveAttribute("aria-expanded", "false");
+  await expect(sessionButton(page, "Child")).toHaveAttribute("aria-current", "page");
+  expect(page.url()).toBe(url);
   await toggleChildren(page, "Parent");
   await expect(listed).toHaveText(["Parent"]);
+  // Showing the parent's children leaves the collapsed child collapsed.
+  await toggleChildren(page, "Parent");
+  await expect(listed).toHaveText(["Parent", "Child"]);
+  await expect(chevron(page, "Child")).toHaveAttribute("aria-expanded", "false");
+  await toggleChildren(page, "Child");
+  await expect(listed).toHaveText(["Parent", "Child", "Grandchild"]);
+});
 
+test("hidden sessions stay hidden through a reconnect", async ({ ox: page, services }) => {
+  await family(page, services);
+  const listed = sessions(page).getByRole("listitem");
+  await toggleChildren(page, "Parent");
+  await expect(listed).toHaveText(["Parent"]);
   const list = await hold(page, "workspace/list");
   await services.restartRelay();
   await list.arrived;
@@ -1369,98 +1332,25 @@ test("a session's chevron hides and shows every session beneath it", async ({ ox
   await expect(menuItem(await openMenu(sessionItem(page, "Parent")), "Archive")).toBeEnabled();
   await page.keyboard.press("Escape");
   await expect(listed).toHaveText(["Parent"]);
+});
 
-  await toggleChildren(page, "Parent");
-  await expect(listed).toHaveText(["Parent", "Child"]);
-  await expect(chevron(page, "Child")).toHaveAttribute("aria-expanded", "false");
-
-  const row = sessionItem(page, "Parent");
-  const box = await row.boundingBox();
-  if (!box) throw new Error("Parent's row is not shown");
-  await row.click({ position: { x: box.width - 40, y: box.height / 2 } });
+test("clicking a parent's row beside its buttons opens the session", async ({ ox: page, services }) => {
+  await family(page, services);
+  await sessionButton(page, "Child").click();
+  await expect(heading(page)).toHaveText("Child");
+  // The row's middle lies past the short title and its chevron.
+  await sessionItem(page, "Parent").click();
   await expect(sessionButton(page, "Parent")).toHaveAttribute("aria-current", "page");
   await expect(heading(page)).toHaveText("Parent");
+});
 
+test("a reload shows every hidden session again", async ({ ox: page, services }) => {
+  await family(page, services);
+  const listed = sessions(page).getByRole("listitem");
+  await toggleChildren(page, "Parent");
+  await expect(listed).toHaveText(["Parent"]);
   await page.reload();
   await expect(listed).toHaveText(["Parent", "Child", "Grandchild"]);
-
-  // A title too long to fit runs to its row's edge, clipped without an
-  // ellipsis, and keeps its width when the chevron shows over its end. The
-  // chevron keeps its size expanded and collapsed.
-  const long = `Long parent ${words(40)}`;
-  // A child title is at most 48 characters, still too long to fit, and ends
-  // without spaces, so its text lies beneath the fade before the ⋯ icon.
-  const longChild = `Long child ${"M".repeat(30)}`;
-  await newSession(page, long);
-  await createChild(services, sessionId(page), longChild);
-  await expect(sessionButton(page, longChild)).toBeVisible();
-  // Hovered but not selected, the row shows its hover color.
-  await sessionButton(page, "Parent").click();
-  await page.mouse.move(0, 0);
-  const title = sessionButton(page, long);
-  const titleBox = await title.boundingBox();
-  const longRow = await sessionItem(page, long).boundingBox();
-  if (!titleBox || !longRow) throw new Error("the long parent's row is not shown");
-  expect(Math.abs(titleBox.x + titleBox.width - (longRow.x + longRow.width))).toBeLessThanOrEqual(1);
-  await expect(sessionItem(page, long).getByText(long, { exact: true })).toHaveCSS("text-overflow", "clip");
-  // strip is a 3px-wide strip of the row titled name at x, as tall as its
-  // title's text.
-  const strip = async (name: string, x: number) => {
-    const text = await sessionItem(page, name).getByText(name, { exact: true }).boundingBox();
-    if (!text) throw new Error(`${name}'s title is not shown`);
-    return page.screenshot({ clip: { x: Math.ceil(x), y: text.y, width: 3, height: text.height } });
-  };
-  // Selected, the long child keeps its color when hovered. Hovered without a
-  // chevron, it fades its title just before the ⋯ icon, which stands on the
-  // row's own color over the title beneath it.
-  await sessionButton(page, longChild).click();
-  await sessionButton(page, longChild).blur();
-  await page.mouse.move(0, 0);
-  const childRow = await sessionItem(page, longChild).boundingBox();
-  const childActions = await sessionItem(page, longChild)
-    .getByRole("button", { name: "Session actions" })
-    .boundingBox();
-  if (!childRow || !childActions) throw new Error("the long child's row is not shown");
-  const empty = await strip(longChild, childRow.x + 2);
-  const unfaded = await strip(longChild, childActions.x - 4);
-  await sessionItem(page, longChild).hover();
-  expect(await strip(longChild, childRow.x + 2)).toEqual(empty);
-  expect(await strip(longChild, childActions.x - 4)).not.toEqual(unfaded);
-  expect(await strip(longChild, childActions.x)).toEqual(empty);
-  // A hovered row shows a different color from the selected one.
-  const swatch = (row: { x: number; y: number; height: number }) =>
-    page.screenshot({ clip: { x: row.x + 2, y: Math.round(row.y + row.height / 2), width: 3, height: 3 } });
-  await sessionItem(page, long).hover();
-  expect(await swatch(longRow)).not.toEqual(await swatch(childRow));
-  await expect(chevron(page, long)).toHaveCSS("opacity", "1");
-  expect((await title.boundingBox())?.width).toBe(titleBox.width);
-  // The chevron stays clear of the ⋯ button, over the title's end, and from
-  // just past its icon to the ⋯ button only the row's color shows.
-  const actions = await sessionItem(page, long).getByRole("button", { name: "Session actions" }).boundingBox();
-  const over = await chevron(page, long).boundingBox();
-  if (!actions || !over) throw new Error("the long parent's buttons are not shown");
-  expect(over.x + over.width).toBeLessThanOrEqual(actions.x);
-  const beside = (x: number) => page.screenshot({ clip: { x, y: over.y, width: 5, height: over.height } });
-  expect(await beside(over.x + over.width - 2)).toEqual(await beside(longRow.x + 2));
-  // In the dark theme too, the chevron's box beside its icon shows the
-  // hovered row's own color.
-  await page.emulateMedia({ colorScheme: "dark" });
-  const pixel = (x: number) =>
-    page.screenshot({ clip: { x, y: Math.round(over.y + over.height / 2), width: 1, height: 1 } });
-  expect(await pixel(Math.round(over.x + over.width) - 2)).toEqual(await pixel(Math.round(longRow.x) + 3));
-  for (const expanded of ["true", "false"]) {
-    await expect(chevron(page, long)).toHaveAttribute("aria-expanded", expanded);
-    const box = await chevron(page, long).boundingBox();
-    expect([box?.width, box?.height]).toEqual([20, 20]);
-    if (expanded === "true") await chevron(page, long).click();
-  }
-  // An archived parent's chevron is not dimmed with its title, expanded or not.
-  await chevron(page, long).click();
-  await archive(page, long);
-  await showArchived(page, services);
-  await sessionItem(page, long).hover();
-  await expect(chevron(page, long)).toHaveAttribute("aria-expanded", "true");
-  await expect(chevron(page, long)).toHaveCSS("opacity", "1");
 });
 
 test("collapsing the open session's family leaves it open, and a new child stays hidden", async ({
@@ -1474,7 +1364,7 @@ test("collapsing the open session's family leaves it open, and a new child stays
   await toggleChildren(page, "Parent");
   await expect(listed).toHaveText(["Parent"]);
   await expect(heading(page)).toHaveText("Grandchild");
-  await expect(sessions(page).locator("[aria-current]")).toHaveCount(0);
+  await expect(sessionButton(page, "Parent")).not.toHaveAttribute("aria-current");
 
   const late = await createChild(services, parent, "Late child");
   await page.goto(`${new URL(page.url()).origin}/#${encodeURIComponent(late.session_id)}`);
@@ -1487,16 +1377,11 @@ test("collapsing the open session's family leaves it open, and a new child stays
 test.describe("on a touch screen", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
-  test("the header, transcript, composer, and settings share one side inset", async ({ ox: page }) => {
-    await expectSidesAligned(page, true);
-  });
-
-  test("a parent's chevron shows without hover and keeps the session list open", async ({ ox: page, services }) => {
+  test("a parent's chevron works without hover and keeps the session list open", async ({ ox: page, services }) => {
     await newSession(page, "Parent");
     await createChild(services, sessionId(page), "Child");
     await page.getByRole("button", { name: "Toggle sessions" }).tap();
     await expect(sessionButton(page, "Child")).toBeVisible();
-    await expect(chevron(page, "Parent")).toHaveCSS("opacity", "1");
     await chevron(page, "Parent").tap();
     await expect(sessionButton(page, "Child")).toHaveCount(0);
     await expect(sessions(page)).toBeVisible();
@@ -1523,7 +1408,7 @@ test.describe("on a touch screen", () => {
     const lastCell = table.getByRole("row").last().getByRole("cell").last();
     await expect(lastCell).toHaveText(paths[paths.length - 1]);
     await expect(table).toBeInViewport({ ratio: 1 });
-    expect(await table.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+    await expect(lastCell).not.toBeInViewport({ ratio: 1 });
     await table.evaluate((el) => el.scrollTo({ left: el.scrollWidth }));
     await expect(lastCell).toBeInViewport({ ratio: 1 });
     await expect.poll(() => transcript(page).evaluate((el) => el.scrollWidth - el.clientWidth)).toBe(0);
@@ -1539,8 +1424,9 @@ test.describe("on a touch screen", () => {
     const approval = await ask(page, "Example", JSON.stringify(lines));
     await approval.getByRole("group").click();
     await expect(approval.getByText('"line39": 39')).toBeVisible();
-    await expect.poll(async () => (await waiting(page).boundingBox())?.height).toBeLessThanOrEqual(254);
-    await expect.poll(async () => (await edges(page.getByRole("main").locator(".composer"))).bottom).toBe(612);
+    // The approvals and the composer beneath them fit in the visible area.
+    await expectWithin(waiting(page), { top: 120, bottom: 628 });
+    await expectWithin(model(page), { top: 120, bottom: 628 });
   });
 });
 

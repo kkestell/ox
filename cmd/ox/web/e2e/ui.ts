@@ -149,6 +149,16 @@ export async function edges(locator: Locator) {
   return { top: Math.round(box.y), bottom: Math.round(box.y + box.height) };
 }
 
+// expectWithin waits until locator lies between top and bottom on the page,
+// such as the area a phone's keyboard leaves visible.
+export async function expectWithin(locator: Locator, area: { top: number; bottom: number }) {
+  await expect(async () => {
+    const { top, bottom } = await edges(locator);
+    expect(top).toBeGreaterThanOrEqual(area.top);
+    expect(bottom).toBeLessThanOrEqual(area.bottom);
+  }).toPass();
+}
+
 // sessionId is the ID of the session the page shows.
 export const sessionId = (page: Page) => decodeURIComponent(new URL(page.url()).hash.slice(1));
 
