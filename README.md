@@ -1,9 +1,11 @@
 # Ox
 
-Ox runs several Claude Code sessions side by side and lets you drive them from a
-web page. A daemon, `oxd`, keeps your workspaces and sessions and runs Claude
-Code for each one. `ox` serves the web UI. Sessions can message, read, and start
-each other, so one Claude can split a job across child sessions.
+Ox runs several coding agent sessions side by side and lets you drive them from
+a web page. Each session runs one of two harnesses: Claude Code, or Ur, Ox's own
+agent for models on OpenRouter. A daemon, `oxd`, keeps your workspaces and
+sessions and runs their harnesses. `ox` serves the web UI. Claude sessions can
+message, read, and start each other, so one Claude can split a job across child
+sessions.
 
 ## Features
 
@@ -89,8 +91,11 @@ Each Claude gets Ox's tools over MCP, with no approval needed outside plan mode:
 
 - **Claude Code**, billed to your Claude subscription, offering Opus, Sonnet,
   and Haiku 5.5 with the manual, auto, accept edits, and plan permission modes.
-- **Ur**, a text chat through OpenRouter with your `OPENROUTER_API_KEY`,
-  offering DeepSeek V4.1 Flash, GLM 5.3 Flash, and Muse Spark 1.3 Contributor.
+- **Ur**, Ox's own agent, which runs models through OpenRouter with your
+  `OPENROUTER_API_KEY`, offering DeepSeek V4.1 Flash, GLM 5.3 Flash, and Muse
+  Spark 1.3 Contributor. Ur runs shell commands in the session's workspace,
+  asking for approval first in manual mode and running them freely in auto mode.
+  Ur sessions park and resume their conversations like Claude sessions.
 
 ### Remote access
 
