@@ -851,6 +851,28 @@ test("a tool whose process ended with oxd shows stopped on every page", async ({
   await expect(transcript(other).getByRole("group", { name: "Bash" }).getByRole("img")).toHaveAccessibleName("stopped");
 });
 
+test("a tool its turn ended without a result shows stopped", async ({ ox: page }) => {
+  // The page hears no tool_result, as with Ur, which publishes none for an interrupted call.
+  await page.addInitScript(() => {
+    const Original = window.EventSource;
+    window.EventSource = class extends Original {
+      constructor(url: string | URL, init?: EventSourceInit) {
+        super(url, init);
+        this.addEventListener("message", (event) => {
+          if (JSON.parse(event.data).params?.type === "tool_result") event.stopImmediatePropagation();
+        });
+      }
+    };
+  });
+  await page.goto(page.url());
+  await newSessionButton(page).click();
+  await ask(page, "Bash", '{"command":"sleep 60"}');
+  const marker = toolCall(page, "Bash").getByRole("img");
+  await expect(marker).toHaveAccessibleName("running");
+  await stop(page).click();
+  await expect(marker).toHaveAccessibleName("stopped");
+});
+
 test("a reconnect keeps an expanded tool call open", async ({ ox: page, services }) => {
   await newSessionButton(page).click();
   await allow(await ask(page, "Bash", '{"command":"ls"}'));

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/kkestell/ox/internal/agent"
+	"github.com/kkestell/ox/internal/children"
 )
 
 type recorder []agent.Update
@@ -61,7 +62,7 @@ func stoppableAgent(t *testing.T) (*Agent, *bytes.Buffer, *recorder) {
 func stoppableStartingAgent(t *testing.T) (*Agent, *bytes.Buffer, *recorder) {
 	t.Helper()
 	cmd := exec.Command("sleep", "60")
-	if err := spawn(cmd); err != nil {
+	if err := children.Start(cmd, func() { cmd.Process.Kill() }); err != nil {
 		t.Fatal(err)
 	}
 	return agentRunning(t, cmd)
@@ -73,7 +74,11 @@ func agentRunning(t *testing.T, cmd *exec.Cmd) (*Agent, *bytes.Buffer, *recorder
 	t.Helper()
 	t.Cleanup(func() { cmd.Process.Kill() })
 	events := make(chan agent.Event, 1)
-	go func() { events <- processExit{err: wait(cmd)} }()
+	go func() {
+		err := cmd.Wait()
+		children.Done(cmd)
+		events <- processExit{err: err}
+	}()
 	input := new(bytes.Buffer)
 	a, updates := startingAgent(input, events, &process{cmd: cmd})
 	return a, input, updates
@@ -512,7 +517,7 @@ func TestUnexpectedExitIsReported(t *testing.T) {
 }
 
 // Stop ends the agent at once, even when Claude ignores SIGTERM: Ox kills it
-// in the background, and WaitAll waits for that.
+// in the background, and children.WaitAll waits for that.
 func TestStopKillsClaudeIgnoringSIGTERM(t *testing.T) {
 	saved := killAfter
 	killAfter = 500 * time.Millisecond
@@ -522,7 +527,7 @@ func TestStopKillsClaudeIgnoringSIGTERM(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := spawn(cmd); err != nil {
+	if err := children.Start(cmd, func() { cmd.Process.Kill() }); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := bufio.NewReader(stdout).ReadString('\n'); err != nil {
@@ -539,7 +544,7 @@ func TestStopKillsClaudeIgnoringSIGTERM(t *testing.T) {
 	}
 	waited := make(chan struct{})
 	go func() {
-		WaitAll()
+		children.WaitAll()
 		close(waited)
 	}()
 	select {

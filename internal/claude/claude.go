@@ -13,74 +13,17 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
 	"github.com/kkestell/ox/internal/agent"
+	"github.com/kkestell/ox/internal/children"
 )
 
 type process struct {
 	cmd    *exec.Cmd
 	output *os.File // the read end of Claude's stdout
 	stderr *os.File // the read end of Claude's stderr
-}
-
-// children tracks Claude processes from spawn through Wait, including those
-// still initializing or waiting for SIGTERM's kill timer.
-var children struct {
-	sync.Mutex
-	live   map[*os.Process]struct{}
-	killed bool
-}
-
-func spawn(cmd *exec.Cmd) error {
-	children.Lock()
-	defer children.Unlock()
-	if children.killed {
-		return errors.New("daemon is shutting down")
-	}
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	if children.live == nil {
-		children.live = make(map[*os.Process]struct{})
-	}
-	children.live[cmd.Process] = struct{}{}
-	return nil
-}
-
-// childExited is signalled each time a Claude process is reaped.
-var childExited = sync.NewCond(&children.Mutex)
-
-func wait(cmd *exec.Cmd) error {
-	err := cmd.Wait()
-	children.Lock()
-	delete(children.live, cmd.Process)
-	childExited.Broadcast()
-	children.Unlock()
-	return err
-}
-
-// WaitAll returns once every Claude process has exited. The daemon calls it
-// after its sessions have ended, which asked each process to exit.
-func WaitAll() {
-	children.Lock()
-	defer children.Unlock()
-	for len(children.live) != 0 {
-		childExited.Wait()
-	}
-}
-
-// KillAll kills all Claude processes and prevents new ones from starting.
-// The daemon calls it before exiting on a second stop signal.
-func KillAll() {
-	children.Lock()
-	defer children.Unlock()
-	children.killed = true
-	for p := range children.live {
-		p.Kill()
-	}
 }
 
 // systemPrompt is the instructions appended to Claude's system prompt: Ox's
@@ -207,7 +150,7 @@ func startProcess(workspace, oxSessionID, sessionID string, resume bool, setting
 	}
 	cmd.Stdout = childStdout
 	cmd.Stderr = childStderr
-	err = spawn(cmd)
+	err = children.Start(cmd, func() { cmd.Process.Kill() })
 	childStdout.Close()
 	childStderr.Close()
 	if err != nil {
@@ -277,7 +220,8 @@ func (p *process) read(stderrTail <-chan string, captured chan<- agent.Event) {
 	defer close(captured)
 	exited := make(chan error, 1)
 	go func() {
-		err := wait(p.cmd)
+		err := p.cmd.Wait()
+		children.Done(p.cmd)
 		p.output.SetReadDeadline(time.Now().Add(time.Second))
 		p.stderr.SetReadDeadline(time.Now().Add(time.Second))
 		exited <- err

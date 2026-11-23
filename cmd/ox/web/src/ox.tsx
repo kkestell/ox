@@ -31,7 +31,7 @@ export type Workspace = { id: string; path: string; sessions: Session[] };
 // A session's entries are its conversation, in order. A message is a prompt
 // from another session. A reply is Claude's
 // text up to its next tool call or the end of its turn; a result entry ends a
-// turn. A tool is stopped when its process exited before its result.
+// turn. A tool is stopped when its turn ended or its process exited before its result.
 export type Entry =
   | { kind: "prompt"; input: Prompt }
   | { kind: "reply"; text: string }
@@ -100,6 +100,7 @@ function apply(session: SessionSnapshot, u: Update) {
     }
     case "result":
       session.entries.push({ kind: "result", result: u.result });
+      stopTools(session);
       break;
     case "state":
       session.state = u.state;

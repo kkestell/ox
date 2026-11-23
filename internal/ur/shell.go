@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
+
+	"github.com/kkestell/ox/internal/children"
 )
 
 // shellTool is the shell tool's definition, which every request offers.
@@ -36,13 +38,18 @@ var shellTool = json.RawMessage(`{
 // outcome keeps.
 const half = 8 << 10
 
-// shellCommand is a shell call's checked arguments.
+// shellCommand is a shell call's checked arguments. It is what the transcript
+// and the approval card show, and what runs.
 type shellCommand struct {
-	command string
-	timeout time.Duration
+	Command        string `json:"command"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
 }
 
-// parseShell checks a shell call's arguments.
+func (c shellCommand) timeout() time.Duration {
+	return time.Duration(c.TimeoutSeconds) * time.Second
+}
+
+// parseShell checks a shell call's arguments, which are one JSON object.
 func parseShell(arguments string) (shellCommand, error) {
 	var args struct {
 		Command        *string `json:"command"`
@@ -53,17 +60,20 @@ func parseShell(arguments string) (shellCommand, error) {
 	if err := decoder.Decode(&args); err != nil {
 		return shellCommand{}, fmt.Errorf("arguments: %w", err)
 	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return shellCommand{}, errors.New("arguments: trailing data after the JSON object")
+	}
 	if args.Command == nil {
 		return shellCommand{}, errors.New("arguments: missing field command")
 	}
-	seconds := 120
+	c := shellCommand{Command: *args.Command, TimeoutSeconds: 120}
 	if args.TimeoutSeconds != nil {
-		seconds = *args.TimeoutSeconds
-		if seconds < 1 || seconds > 600 {
+		c.TimeoutSeconds = *args.TimeoutSeconds
+		if c.TimeoutSeconds < 1 || c.TimeoutSeconds > 600 {
 			return shellCommand{}, errors.New("arguments: timeout_seconds must be from 1 through 600")
 		}
 	}
-	return shellCommand{*args.Command, time.Duration(seconds) * time.Second}, nil
+	return c, nil
 }
 
 // outcome is a call's result, which the model reads and the transcript shows.
@@ -72,22 +82,20 @@ type outcome struct {
 	isError bool
 }
 
-// commands counts the running commands, so oxd can wait for them to end.
-var commands sync.WaitGroup
-
-// WaitAll returns once every command has ended and its process group has been
-// killed. The daemon calls it after stopping every session.
-func WaitAll() {
-	commands.Wait()
+// shell is a started command.
+type shell struct {
+	cmd     *exec.Cmd
+	ctx     context.Context
+	cancel  context.CancelFunc
+	timeout int // seconds
+	output  *capture
 }
 
-// runShell runs c in workspace until it exits, its timeout passes, or ctx is
-// done, then kills its process group, which ends the background processes it
-// left.
-func runShell(ctx context.Context, workspace string, c shellCommand) outcome {
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "bash", "-c", c.command)
+// startShell starts c in workspace and registers it with children. It runs
+// until it exits, its timeout passes, or ctx is done.
+func startShell(ctx context.Context, workspace string, c shellCommand) (*shell, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.timeout())
+	cmd := exec.CommandContext(ctx, "bash", "-c", c.Command)
 	cmd.Dir = workspace
 	cmd.Env = environment()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -96,22 +104,31 @@ func runShell(ctx context.Context, workspace string, c shellCommand) outcome {
 	cmd.WaitDelay = time.Second
 	output := &capture{}
 	cmd.Stdout, cmd.Stderr = output, output
-	if err := cmd.Start(); err != nil {
-		return outcome{"Could not start bash: " + err.Error(), true}
+	if err := children.Start(cmd, func() { killGroup(cmd.Process.Pid) }); err != nil {
+		cancel()
+		return nil, err
 	}
-	cmd.Wait()
-	killGroup(cmd.Process.Pid)
-	status := cmd.ProcessState.Sys().(syscall.WaitStatus)
+	return &shell{cmd, ctx, cancel, c.TimeoutSeconds, output}, nil
+}
+
+// wait waits for the command to end, then kills its process group, which ends
+// the background processes it left.
+func (s *shell) wait() outcome {
+	defer s.cancel()
+	s.cmd.Wait()
+	killGroup(s.cmd.Process.Pid)
+	children.Done(s.cmd)
+	status := s.cmd.ProcessState.Sys().(syscall.WaitStatus)
 	var line string
 	switch {
-	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		line = fmt.Sprintf("Timed out after %d seconds", int(c.timeout/time.Second))
-	case status.Signaled():
-		line = fmt.Sprintf("Terminated by signal: %d", status.Signal())
-	default:
+	case status.Exited():
 		line = fmt.Sprintf("Exit code: %d", status.ExitStatus())
+	case errors.Is(s.ctx.Err(), context.DeadlineExceeded):
+		line = fmt.Sprintf("Timed out after %d seconds", s.timeout)
+	default:
+		line = fmt.Sprintf("Terminated by signal: %d", status.Signal())
 	}
-	return outcome{line + "\n\n" + output.text(), line != "Exit code: 0"}
+	return outcome{line + "\n\n" + s.output.text(), line != "Exit code: 0"}
 }
 
 // environment is oxd's environment without the OpenRouter key.

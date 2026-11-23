@@ -175,7 +175,12 @@ type asking struct {
 	calls     []toolCall
 	command   shellCommand // calls[0]'s arguments
 	requestID string
-	request   json.RawMessage
+}
+
+// approval is the request for the user's answer.
+func (s *asking) approval() agent.Approval {
+	request, _ := json.Marshal(map[string]any{"tool_name": "shell", "input": s.command, "tool_use_id": s.calls[0].ID}) // strings and valid JSON always marshal
+	return agent.Approval{RequestID: s.requestID, Request: request, ToolName: "shell"}
 }
 
 // executing waits on calls[0]'s command, the first of the response's calls not
@@ -273,7 +278,7 @@ func (a *Agent) Snapshot() agent.Snapshot {
 	approvals := []agent.Approval{}
 	if a.turn != nil {
 		if s, ok := a.turn.step.(*asking); ok {
-			approvals = append(approvals, agent.Approval{RequestID: s.requestID, Request: s.request, ToolName: "shell"})
+			approvals = append(approvals, s.approval())
 		}
 	}
 	return agent.Snapshot{State: a.tracker.State(), Approvals: approvals, Queued: a.tracker.Queued()}
@@ -321,17 +326,19 @@ func (a *Agent) next(calls []toolCall) {
 		return
 	}
 	call := calls[0]
-	input := json.RawMessage(call.Function.Arguments)
-	var object map[string]json.RawMessage
-	if json.Unmarshal(input, &object) != nil || object == nil {
-		input = json.RawMessage("{}")
+	command, err := parseCall(call)
+	var input json.RawMessage
+	if err == nil {
+		input, _ = json.Marshal(command) // strings and integers always marshal
+	} else {
+		// A call that does not run shows its arguments if they are an object.
+		input = json.RawMessage(call.Function.Arguments)
+		var object map[string]json.RawMessage
+		if json.Unmarshal(input, &object) != nil || object == nil {
+			input = json.RawMessage("{}")
+		}
 	}
 	a.publish(agent.Update{Type: agent.UpdateToolUse, ToolUseID: call.ID, ToolName: call.Function.Name, Input: input})
-	if call.Function.Name != "shell" {
-		a.answer(calls, outcome{fmt.Sprintf("Ur has no tool %q", call.Function.Name), true})
-		return
-	}
-	command, err := parseShell(call.Function.Arguments)
 	if err != nil {
 		a.answer(calls, outcome{err.Error(), true})
 		return
@@ -340,34 +347,43 @@ func (a *Agent) next(calls []toolCall) {
 		a.execute(calls, command)
 		return
 	}
-	request, _ := json.Marshal(map[string]any{"tool_name": "shell", "input": input, "tool_use_id": call.ID}) // strings and valid JSON always marshal
-	s := &asking{calls: calls, command: command, requestID: rand.Text(), request: request}
+	s := &asking{calls: calls, command: command, requestID: rand.Text()}
 	a.turn.step = s
 	a.tracker.Report(agent.StateRequiresAction, "")
-	a.publish(agent.Update{Type: agent.UpdateApproval, RequestID: s.requestID, Request: s.request})
+	approval := s.approval()
+	a.publish(agent.Update{Type: agent.UpdateApproval, RequestID: approval.RequestID, Request: approval.Request})
+}
+
+// parseCall checks that call is a shell call with valid arguments.
+func parseCall(call toolCall) (shellCommand, error) {
+	if call.Function.Name != "shell" {
+		return shellCommand{}, fmt.Errorf("Ur has no tool %q", call.Function.Name)
+	}
+	return parseShell(call.Function.Arguments)
 }
 
 // execute runs calls[0]'s command on its own goroutine, which delivers its
-// outcome.
+// outcome. The command is registered with children before execute returns.
 func (a *Agent) execute(calls []toolCall, command shellCommand) {
+	ctx := a.turn.ctx
+	sh, err := startShell(ctx, a.workspace, command)
+	if err != nil {
+		a.answer(calls, outcome{"Could not start bash: " + err.Error(), true})
+		return
+	}
 	s := &executing{calls: calls}
 	a.turn.step = s
-	ctx := a.turn.ctx
-	commands.Add(1)
-	go func() {
-		o := runShell(ctx, a.workspace, command)
-		commands.Done()
-		a.deliver(ran{s, o})
-	}()
+	go func() { a.deliver(ran{s, sh.wait()}) }()
 }
 
-// answer saves and publishes calls[0]'s outcome and takes up the rest.
+// answer publishes and saves calls[0]'s outcome and takes up the rest. An
+// outcome that cannot be saved is published, then ends the turn.
 func (a *Agent) answer(calls []toolCall, o outcome) {
+	a.publish(agent.Update{Type: agent.UpdateToolResult, ToolUseID: calls[0].ID, Result: &agent.Result{Text: o.text, IsError: o.isError}})
 	if err := a.save(message{Role: "tool", ToolCallID: calls[0].ID, Content: o.text}); err != nil {
 		a.finish(agent.Result{Text: "Ur could not save the command's result: " + err.Error(), IsError: true})
 		return
 	}
-	a.publish(agent.Update{Type: agent.UpdateToolResult, ToolUseID: calls[0].ID, Result: &agent.Result{Text: o.text, IsError: o.isError}})
 	a.next(calls[1:])
 }
 
@@ -458,24 +474,15 @@ func (a *Agent) Approve(requestID string, raw json.RawMessage) error {
 	return nil
 }
 
-// Interrupt ends the turn, answering the call it waits on, if any, with
-// stopped.
+// Interrupt ends the turn. A call it leaves without a result is answered with
+// stopped in the next request, and the page shows it stopped.
 func (a *Agent) Interrupt() error {
 	a.tracker.DropFrom(0)
 	if a.turn == nil {
 		return nil
 	}
-	var calls []toolCall
-	switch s := a.turn.step.(type) {
-	case streaming:
-	case *asking:
+	if s, ok := a.turn.step.(*asking); ok {
 		a.publish(agent.Update{Type: agent.UpdateApprovalCancelled, RequestID: s.requestID})
-		calls = s.calls
-	case *executing:
-		calls = s.calls
-	}
-	if calls != nil {
-		a.publish(agent.Update{Type: agent.UpdateToolResult, ToolUseID: calls[0].ID, Result: &agent.Result{Text: stopped, IsError: true}})
 	}
 	a.finish(agent.Result{Text: "Interrupted", IsError: true})
 	return nil
