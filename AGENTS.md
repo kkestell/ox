@@ -98,7 +98,8 @@ We test with `make dev`. Ox's test state is disposable.
 │       └── ur.go              # Ur agent
 ├── Makefile                   # build, test, run, and format docs
 └── scripts
-    └── metrics.py             # prints size and complexity
+    ├── metrics.py             # prints size and complexity
+    └── prune.sh               # removes merged branches and their worktrees
 ```
 
 ## Implementation
@@ -236,8 +237,9 @@ brief stops and reports it to the session that started it. Changes reach
    headless Chrome from the base and the change. The images are committed
    under `pr-<N>/` on the orphan `pr-assets` branch and linked through
    `raw.githubusercontent.com` at that commit.
-8. After the user merges, the top-level agent removes the worktree and its
-   local branch, then pulls in the main checkout.
+8. After the user merges, the top-level agent runs `make prune` and pulls in
+   the main checkout. `make prune` removes each local branch whose pull
+   request has merged, and its worktree; `make worktree` runs it first.
 
 The user owns `docs/functional-requirements.md`. It changes only when a change
 adds, alters, or removes behavior the user can observe, and only with the text

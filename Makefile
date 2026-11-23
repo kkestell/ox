@@ -1,4 +1,4 @@
-.PHONY: dev build web test live lint e2e metrics docs hooks worktree
+.PHONY: dev build web test live lint e2e metrics docs hooks worktree prune
 
 # A recipe that fails leaves no target behind, such as a partial download.
 .DELETE_ON_ERROR:
@@ -52,13 +52,20 @@ docs:
 hooks:
 	git config core.hooksPath .githooks
 
-# worktree makes ../ox-$(NAME) on a new branch $(NAME) from origin/main, with
-# no upstream, so the first push names its own branch.
-worktree:
+# worktree makes $(WORKTREES)/$(NAME) on a new branch $(NAME) from
+# origin/main, with no upstream, so the first push names its own branch.
+WORKTREES ?= $(HOME)/.local/share/worktrees/ox
+worktree: prune
 	@test -n "$(NAME)" || { echo "usage: make worktree NAME=<slug>" >&2; exit 1; }
 	git fetch origin
-	git worktree add ../ox-$(NAME) -b $(NAME) --no-track origin/main
-	if [ -e .env ]; then ln -s $(CURDIR)/.env ../ox-$(NAME)/.env; fi
+	mkdir -p $(WORKTREES)
+	git worktree add $(WORKTREES)/$(NAME) -b $(NAME) --no-track origin/main
+	if [ -e .env ]; then ln -s $(CURDIR)/.env $(WORKTREES)/$(NAME)/.env; fi
+
+# prune removes each local branch whose pull request has merged, and its
+# worktree.
+prune:
+	scripts/prune.sh
 
 $(GOLANGCI_LINT):
 	mkdir -p bin
