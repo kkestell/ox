@@ -1,11 +1,10 @@
 # Ox
 
-Ox runs several coding agent sessions side by side and lets you drive them from
-a web page. Each session runs one of two harnesses: Claude Code, or Ur, Ox's own
-agent for models on OpenRouter. A daemon, `oxd`, keeps your workspaces and
-sessions and runs their harnesses. `ox` serves the web UI. Claude sessions can
-message, read, and start each other, so one Claude can split a job across child
-sessions.
+Ox is a web app for running many agent sessions at once. Each session runs
+Claude Code or Ur, Ox's own agent for models on OpenRouter. A daemon, `oxd`,
+keeps your workspaces and sessions and runs their agents, and `ox` serves the
+web UI. Claude sessions can message, read, and start each other, so one Claude
+can split a job across child sessions.
 
 ## Features
 
