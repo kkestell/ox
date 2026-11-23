@@ -1249,6 +1249,26 @@ test.describe("on a touch screen", () => {
     await expect(sessionButton(page, "Child")).toHaveCount(0);
     await expect(sessions(page)).toBeVisible();
   });
+
+  test("a wide table scrolls inside its reply instead of the transcript", async ({ ox: page }) => {
+    const paths = [
+      "cmd/ox/web/e2e/workspace.spec.ts:352",
+      "cmd/ox/web/e2e/session.spec.ts:1220",
+      "cmd/ox/web/src/FileView.tsx:14",
+    ];
+    const markdown = await reply(
+      page,
+      [
+        "Locations",
+        "",
+        "| Title | Location |",
+        "| --- | --- |",
+        ...paths.map((path) => `| \`${path}\` | \`${path}\` |`),
+      ].join("\n"),
+    );
+    await expect(markdown.getByRole("table")).toBeInViewport({ ratio: 1 });
+    await expect.poll(() => transcript(page).evaluate((el) => el.scrollWidth - el.clientWidth)).toBe(0);
+  });
 });
 
 test("a session with children cannot be deleted", async ({ ox: page, services }) => {

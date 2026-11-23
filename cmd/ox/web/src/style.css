@@ -250,7 +250,7 @@ main > [role="alert"] { padding: 0.5rem 1rem; font-size: 0.75rem; }
 .markdown pre { padding: 0.5rem 0.75rem; overflow-x: auto; border-radius: var(--radius); background: var(--secondary); font-family: var(--font-mono); font-size: 0.75rem; white-space: pre; }
 .markdown pre code { padding: 0; background: none; font-size: inherit; }
 .markdown blockquote { padding-left: 0.75rem; border-left: 2px solid var(--border); color: var(--muted-foreground); }
-.markdown table { border-collapse: collapse; }
+.markdown table { display: block; overflow-x: auto; border-collapse: collapse; }
 .markdown th, .markdown td { padding: 0.25rem 0.5rem; border: 1px solid var(--border); }
 .markdown hr { border: 0; border-top: 1px solid var(--border); }
 .markdown a { color: inherit; text-decoration: underline; }
