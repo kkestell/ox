@@ -8,14 +8,13 @@ import {
   untrack,
   useContext,
 } from "solid-js";
-import { type Connection, connect, RpcError } from "./connection";
+import { type Connection, connect, Disconnected, RpcError } from "./connection";
 import {
   type ApprovalRequest,
   type ApprovalResponse,
   type Child,
   type Defaults,
   type Harness,
-  type Methods,
   type Notification,
   notFound,
   type Prompt,
@@ -357,16 +356,37 @@ function createOx() {
   // release forgets the page's control of a session that will never exist.
   const release = (id: string) => controls.delete(id);
 
+  // retry repeats a request each second until it is answered, showing each
+  // failure as the page error meanwhile. It returns undefined once the stream
+  // is lost, which the page reports itself.
+  async function retry<T>(request: () => Promise<T>): Promise<T | undefined> {
+    let shown: string | undefined;
+    for (;;) {
+      try {
+        const answer = await request();
+        if (shown !== undefined && error() === shown) setError(undefined);
+        return answer;
+      } catch (e) {
+        if (e instanceof Disconnected) return undefined;
+        shown = (e as Error).message;
+        setError(shown);
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
+  }
+
   // Install the snapshot without replacing the session's view or its open
   // tool details. Live updates start at the session/get response boundary.
   async function load(id: string) {
-    let result: Methods["session/get"][1];
-    try {
-      result = await connection.rpc("session/get", { session_id: id });
-    } catch (e) {
-      if (e instanceof RpcError && e.code === notFound) return;
-      throw e;
-    }
+    const result = await retry(async () => {
+      try {
+        return await connection.rpc("session/get", { session_id: id });
+      } catch (e) {
+        if (e instanceof RpcError && e.code === notFound) return undefined;
+        throw e;
+      }
+    });
+    if (!result) return;
     const snapshot: SessionSnapshot = {
       state: result.state,
       settings: settingsOf(result),
@@ -399,8 +419,12 @@ function createOx() {
   // was disconnected, so it reloads everything.
   async function reload() {
     setError(undefined);
-    const { harnesses, defaults } = await connection.rpc("harness/list", {});
-    const { workspaces } = await connection.rpc("workspace/list", {});
+    const harnessList = await retry(() => connection.rpc("harness/list", {}));
+    if (!harnessList) return;
+    const workspaceList = await retry(() => connection.rpc("workspace/list", {}));
+    if (!workspaceList) return;
+    const { harnesses, defaults } = harnessList;
+    const { workspaces } = workspaceList;
     const listed = new Set(workspaces.flatMap((w) => w.sessions.map((s) => s.session_id)));
     setState((s) => {
       s.harnesses = harnesses;
@@ -459,7 +483,7 @@ function createOx() {
             load: { kind: "reloading" },
           });
         });
-        if (ready()) void load(params.session_id).catch(fail);
+        if (ready()) void load(params.session_id);
         return;
       case "session/configured":
         return setState((s) => {
@@ -486,8 +510,6 @@ function createOx() {
     }
   }
 
-  const fail = (e: Error) => setError(e.message);
-
   // clock advances once a second while the page is visible and connected, and
   // paces every request the page repeats.
   const [clock, setClock] = createSignal(0);
@@ -501,7 +523,7 @@ function createOx() {
   onSettled(() => {
     connection = connect({
       onConnect: () => {
-        void reload().catch(fail);
+        void reload();
       },
       onNotification: receive,
       onError: (error) => {
@@ -513,7 +535,7 @@ function createOx() {
             }
           }
         });
-        fail(error);
+        setError(error.message);
       },
     });
     return () => connection.close();

@@ -366,40 +366,43 @@ clocked("a relay error shows in place of a folder's listing until the next listi
   mkdirSync(join(services.workspace, "src"));
   writeFileSync(join(services.workspace, "src", "a.txt"), "");
   await newSessionButton(page).click();
-  const listing = await hold(page, "workspace/list_folder", { path: "src" });
+  const answers: [(route: Route) => Promise<void>, string | RegExp][] = [
+    [(route) => route.fulfill({ status: 502, body: "relay unavailable" }), "relay unavailable"],
+    [(route) => route.abort(), "Could not reach ox"],
+    [(route) => route.fulfill({ status: 502, body: "" }), /502/],
+  ];
   await entry(page, "src").click();
-  await listing.arrived;
-  listing.fail("relay unavailable");
-  await expect(folder(page, "src").getByText("relay unavailable")).toBeVisible();
-  await expect(entry(page, "a.txt")).toHaveCount(0);
-  await page.clock.runFor(1000);
   await expect(entry(page, "a.txt")).toBeVisible();
-  await expect(folder(page, "src").getByText("relay unavailable")).toHaveCount(0);
+  for (const [answer, text] of answers) {
+    const failing = (route: Route) => {
+      const body = route.request().postDataJSON();
+      if (body?.method !== "workspace/list_folder" || body.params.path !== "src") return route.fallback();
+      return answer(route);
+    };
+    await page.route("**/rpc*", failing);
+    await page.clock.runFor(1000);
+    await expect(folder(page, "src").getByText(text)).toBeVisible();
+    await expect(entry(page, "a.txt")).toHaveCount(0);
+    await page.unroute("**/rpc*", failing);
+    await page.clock.runFor(1000);
+    await expect(entry(page, "a.txt")).toBeVisible();
+  }
 });
 
-clocked("an unreachable relay keeps the last listing", async ({ ox: page, services }) => {
+clocked("a relay that lost its oxd connection keeps the last listing", async ({ ox: page, services }) => {
   mkdirSync(join(services.workspace, "src"));
   writeFileSync(join(services.workspace, "src", "a.txt"), "");
   await newSessionButton(page).click();
   await entry(page, "src").click();
   await expect(entry(page, "a.txt")).toBeVisible();
-  // A request that cannot reach the relay, or that the relay answers after
-  // its oxd connection is gone.
-  const unreachable: ((route: Route) => Promise<void>)[] = [
-    (route) => route.abort(),
-    (route) => route.fulfill({ status: 503, body: "unknown connection" }),
-  ];
-  for (const answer of unreachable) {
-    const listing = (route: Route) => {
-      const body = route.request().postDataJSON();
-      if (body?.method !== "workspace/list_folder" || body.params.path !== "src") return route.fallback();
-      return answer(route);
-    };
-    await page.route("**/rpc*", listing);
-    await answered(page, "workspace/list_folder", "src");
-    await expect(entry(page, "a.txt")).toBeVisible();
-    await page.unroute("**/rpc*", listing);
-  }
+  const listing = (route: Route) => {
+    const body = route.request().postDataJSON();
+    if (body?.method !== "workspace/list_folder" || body.params.path !== "src") return route.fallback();
+    return route.fulfill({ status: 503, body: "unknown connection" });
+  };
+  await page.route("**/rpc*", listing);
+  await answered(page, "workspace/list_folder", "src");
+  await expect(entry(page, "a.txt")).toBeVisible();
 });
 
 clocked(
@@ -721,6 +724,18 @@ test.describe("on a phone", () => {
     const x = side === "right" ? box.x + box.width + 10 : box.x - 10;
     await page.touchscreen.tap(x, box.y + box.height / 2);
   }
+
+  test("a lost connection shows above an open file", async ({ ox: page, services }) => {
+    await newSession(page, "hello");
+    await toggleFiles(page).tap();
+    await entry(page, "src").tap();
+    await entry(page, "a.txt").tap();
+    await expect(viewer(page)).toBeVisible();
+    await page.route("**/events", (route) => route.abort());
+    await services.restartRelay();
+    await expect(viewer(page)).toBeVisible();
+    await expect(page.getByRole("alert").filter({ hasText: "Lost the connection" })).toBeVisible();
+  });
 
   test("the session list opens at load only when the URL names no session", async ({ ox: page }) => {
     await expect(sessions(page)).toBeVisible();
