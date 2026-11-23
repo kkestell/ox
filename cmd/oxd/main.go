@@ -96,6 +96,7 @@ func run(dbPath string, cfg *config.Config, parkAfter time.Duration, harnesses m
 	go func() {
 		s.Close()
 		claude.WaitAll()
+		ur.WaitAll()
 		close(stopped)
 	}()
 	select {

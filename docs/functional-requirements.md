@@ -312,12 +312,19 @@ title.
 ## Ur
 
 - **Ur sessions.** Ur chats through OpenRouter with the user's
-  `OPENROUTER_API_KEY`, streaming text replies with no tools; a send to an Ur
-  session without the key is refused with an error. Ur saves each prompt, and
-  each reply as far as it streamed, so an Ur session parks and resumes its
-  conversation like a Claude session. If its saved conversation can no longer be
-  read, the send is refused with an error saying so, and the next send starts a
-  new conversation without the earlier context.
+  `OPENROUTER_API_KEY`, streaming its replies; a send to an Ur session without
+  the key is refused with an error. Ur saves each prompt, each reply as far as
+  it streamed, and each shell command's outcome, so an Ur session parks and
+  resumes its conversation like a Claude session. If its saved conversation can
+  no longer be read, the send is refused with an error saying so, and the next
+  send starts a new conversation without the earlier context.
+- **Ur's shell commands.** Ur can run shell commands in the session's workspace
+  directory, without `OPENROUTER_API_KEY` in their environment. In manual mode
+  each command asks for approval first, and a denied command tells Ur so and the
+  turn goes on; in auto mode every command runs without asking. A command ends
+  when it exits, at its timeout of two minutes or up to ten that Ur sets, or
+  when the turn is stopped, which also ends the processes it started; Ur gets
+  its exit status and the first and last 8 KiB of its output.
 
 ## Configuration
 
@@ -326,7 +333,7 @@ title.
   their effort levels and the manual, auto, acceptEdits, and plan modes, and Ur
   with DeepSeek V4.1 Flash and GLM 5.3 Flash at low, high, and max effort and
   Muse Spark 1.3 Contributor at minimal, low, medium, high, xhigh, and max
-  effort, in manual mode.
+  effort, in manual and auto modes.
 - **Configuration checks.** `oxd` refuses to start with a malformed
   configuration, defaults it does not offer, a maximum child depth below 1, an
   unknown harness, or an effort level, permission mode, or provider order its
@@ -339,8 +346,8 @@ title.
 
 - **Independent sessions.** One session starting, changing settings, or running
   never holds up another session.
-- **Stopping oxd.** Stopping `oxd` stops every Claude process it runs; a second
-  stop request ends it at once.
+- **Stopping oxd.** Stopping `oxd` stops every Claude process and Ur command it
+  runs; a second stop request ends it at once.
 - **Socket safety.** A socket left by an `oxd` that has exited does not block
   the next start; `oxd` will not replace a socket another `oxd` is serving, or a
   file that is not a socket.

@@ -43,6 +43,7 @@ type run struct {
 	t          *testing.T
 	harness    agent.Harness
 	dir        string
+	workspace  string
 	settings   agent.Settings // the settings the next launch starts with
 	agent      agent.Agent
 	updates    []agent.Update
@@ -58,7 +59,7 @@ type handler func(w http.ResponseWriter, req *http.Request, n int)
 func start(t *testing.T, settings agent.Settings, providers map[string][]string, handle handler) *run {
 	t.Helper()
 	t.Setenv("OPENROUTER_API_KEY", "test-key")
-	r := &run{t: t, dir: filepath.Join(t.TempDir(), "ur"), settings: settings, requests: make(chan recorded, 16)}
+	r := &run{t: t, dir: filepath.Join(t.TempDir(), "ur"), workspace: t.TempDir(), settings: settings, requests: make(chan recorded, 16)}
 	var count atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		data, _ := io.ReadAll(req.Body)
@@ -80,6 +81,7 @@ func start(t *testing.T, settings agent.Settings, providers map[string][]string,
 func (r *run) launch(token string) error {
 	a, err := r.harness.Start(agent.Options{
 		Resume:      token,
+		Workspace:   r.workspace,
 		Settings:    r.settings,
 		OnUpdate:    func(u agent.Update) { r.updates = append(r.updates, u) },
 		OnResumable: func(token string) { r.tokens = append(r.tokens, token) },
@@ -138,6 +140,18 @@ func (r *run) until(done func(agent.Update) bool) agent.Update {
 	}
 }
 
+// turn handles events until the agent is idle, and returns every update
+// published until then.
+func (r *run) turn() []agent.Update {
+	r.t.Helper()
+	var seen []agent.Update
+	r.until(func(u agent.Update) bool {
+		seen = append(seen, u)
+		return u.Type == agent.UpdateState && u.State == agent.StateIdle
+	})
+	return seen
+}
+
 func (r *run) idle() {
 	r.t.Helper()
 	r.until(func(u agent.Update) bool { return u.Type == agent.UpdateState && u.State == agent.StateIdle })
@@ -168,11 +182,13 @@ func contents(body map[string]any) []string {
 	return field(body, "content")
 }
 
-// field is the given field of each of a request's messages.
+// field is the given field of each of a request's messages that has it.
 func field(body map[string]any, name string) []string {
 	var values []string
 	for _, m := range body["messages"].([]any) {
-		values = append(values, m.(map[string]any)[name].(string))
+		if value, ok := m.(map[string]any)[name].(string); ok {
+			values = append(values, value)
+		}
 	}
 	return values
 }
@@ -312,6 +328,15 @@ func TestStreamErrors(t *testing.T) {
 			w.(http.Flusher).Flush()
 			panic(http.ErrAbortHandler)
 		}, "unexpected EOF", []string{"user", "assistant", "user"}},
+		"tool call without an id or name": {func(w http.ResponseWriter, _ *http.Request, n int) {
+			if n > 0 {
+				sse(w, "ok")
+				return
+			}
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]}}]}\n\n")
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":\"tool_calls\"}]}\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}, "OpenRouter sent a tool call without an id or name", []string{"user", "user"}},
 		"malformed chunk": {func(w http.ResponseWriter, _ *http.Request, _ int) {
 			fmt.Fprint(w, "data: {\"choices\":\n\n")
 		}, "malformed OpenRouter stream chunk: unexpected end of JSON input", []string{"user", "user"}},
@@ -693,4 +718,498 @@ func TestSaveFailure(t *testing.T) {
 			t.Errorf("the next request's messages %q", got)
 		}
 	})
+}
+
+// call is a tool call a canned response makes.
+type call struct {
+	id, name, arguments string
+}
+
+// sseCalls writes a streamed completion of text and calls in the shape
+// OpenRouter streams them: each call's first fragment carries its ID and name,
+// later fragments carry its arguments keyed by index, and the finish chunk
+// arrives twice.
+func sseCalls(w http.ResponseWriter, text string, calls ...call) {
+	fmt.Fprint(w, ": OPENROUTER PROCESSING\n\n")
+	write := func(delta map[string]any, finish any) {
+		data, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": delta, "finish_reason": finish}}})
+		fmt.Fprintf(w, "data: %s\n\n", data)
+	}
+	if text != "" {
+		write(map[string]any{"content": text}, nil)
+	}
+	for i, c := range calls {
+		write(map[string]any{"tool_calls": []any{map[string]any{
+			"index": i, "id": c.id, "type": "function", "function": map[string]any{"name": c.name, "arguments": ""},
+		}}}, nil)
+	}
+	// The arguments arrive in two halves, the calls' fragments interleaved.
+	for half := range 2 {
+		for i, c := range calls {
+			mid := len(c.arguments) / 2
+			part := []string{c.arguments[:mid], c.arguments[mid:]}[half]
+			write(map[string]any{"tool_calls": []any{map[string]any{"index": i, "function": map[string]any{"arguments": part}}}}, nil)
+		}
+	}
+	write(map[string]any{"content": ""}, "tool_calls")
+	write(map[string]any{"content": ""}, "tool_calls")
+	fmt.Fprint(w, "data: [DONE]\n\n")
+}
+
+// kinds describes updates by type, message ID, and state.
+func kinds(updates []agent.Update) []string {
+	var described []string
+	for _, u := range updates {
+		described = append(described, strings.TrimSpace(u.Type+" "+u.MessageID+" "+u.State))
+	}
+	return described
+}
+
+// messages is a request's messages.
+func messages(body map[string]any) []map[string]any {
+	var ms []map[string]any
+	for _, m := range body["messages"].([]any) {
+		ms = append(ms, m.(map[string]any))
+	}
+	return ms
+}
+
+// waitFile waits for the command to write file.
+func waitFile(t *testing.T, file string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if data, err := os.ReadFile(file); err == nil && strings.HasSuffix(string(data), "\n") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s was never written", file)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestShellApproved(t *testing.T) {
+	r := start(t, agent.Settings{Model: model, PermissionMode: "manual"}, nil, func(w http.ResponseWriter, _ *http.Request, n int) {
+		if n == 0 {
+			sseCalls(w, "Running it.", call{"call_1", "shell", `{"command":"echo hi"}`})
+			return
+		}
+		sse(w, "done")
+	})
+	r.send("p1", "say hi")
+	var seen []agent.Update
+	approval := r.until(func(u agent.Update) bool {
+		if u.Type != agent.UpdateTextDelta {
+			seen = append(seen, u)
+		}
+		return u.Type == agent.UpdateApproval
+	})
+	want := []string{"prompt_queued p1", "state p1 running", "prompt p1", "tool_use p1", "state p1 requires_action", "approval p1"}
+	if got := kinds(seen); !slices.Equal(got, want) {
+		t.Errorf("updates %q, not %q", got, want)
+	}
+	if use := seen[3]; use.ToolUseID != "call_1" || use.ToolName != "shell" || string(use.Input) != `{"command":"echo hi"}` {
+		t.Errorf("tool_use %+v", use)
+	}
+	var request struct {
+		ToolName  string          `json:"tool_name"`
+		Input     json.RawMessage `json:"input"`
+		ToolUseID string          `json:"tool_use_id"`
+	}
+	if err := json.Unmarshal(approval.Request, &request); err != nil || request.ToolName != "shell" ||
+		string(request.Input) != `{"command":"echo hi"}` || request.ToolUseID != "call_1" {
+		t.Errorf("approval request %s", approval.Request)
+	}
+	snapshot := r.agent.Snapshot()
+	if snapshot.State != agent.StateRequiresAction || len(snapshot.Approvals) != 1 ||
+		snapshot.Approvals[0].RequestID != approval.RequestID || snapshot.Approvals[0].ToolName != "shell" {
+		t.Errorf("snapshot while asking: %+v", snapshot)
+	}
+	if r.agent.Parkable() {
+		t.Error("parkable while asking")
+	}
+	var configured error
+	effort := "high"
+	r.agent.Configure(agent.SettingsPatch{Effort: &effort}, func(err error) { configured = err })
+	if !errors.Is(configured, agent.ErrBusy) {
+		t.Errorf("Configure while asking: %v", configured)
+	}
+	if err := r.agent.Approve(approval.RequestID, json.RawMessage(`{"behavior":"maybe"}`)); err == nil || errors.Is(err, agent.ErrApprovalNotFound) {
+		t.Errorf("Approve with a malformed response: %v", err)
+	}
+	if err := r.agent.Approve("other", json.RawMessage(`{"behavior":"allow"}`)); !errors.Is(err, agent.ErrApprovalNotFound) {
+		t.Errorf("Approve with another ID: %v", err)
+	}
+
+	r.updates = nil
+	if err := r.agent.Approve(approval.RequestID, json.RawMessage(`{"behavior":"allow","updatedInput":{"command":"echo hi"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if got := kinds(r.updates); !slices.Equal(got, []string{"approval_answered p1", "state p1 running"}) {
+		t.Errorf("Approve published %q", got)
+	}
+	if err := r.agent.Approve(approval.RequestID, json.RawMessage(`{"behavior":"allow"}`)); !errors.Is(err, agent.ErrApprovalNotFound) {
+		t.Errorf("a second Approve: %v", err)
+	}
+	result := r.until(func(u agent.Update) bool { return u.Type == agent.UpdateToolResult })
+	if result.ToolUseID != "call_1" || result.Result.IsError || result.Result.Text != "Exit code: 0\n\nhi\n" {
+		t.Errorf("tool_result %+v %+v", result, result.Result)
+	}
+	if final := r.result(); final.IsError || final.Text != "done" {
+		t.Errorf("result %+v", final)
+	}
+
+	r.request()
+	second := r.request().body
+	if got := roles(second); !slices.Equal(got, []string{"user", "assistant", "tool"}) {
+		t.Fatalf("the second request's roles %q", got)
+	}
+	ms := messages(second)
+	calls := ms[1]["tool_calls"].([]any)
+	first := calls[0].(map[string]any)
+	if len(calls) != 1 || first["id"] != "call_1" || first["function"].(map[string]any)["arguments"] != `{"command":"echo hi"}` || ms[1]["content"] != "Running it." {
+		t.Errorf("assistant message %v", ms[1])
+	}
+	if ms[2]["tool_call_id"] != "call_1" || ms[2]["content"] != "Exit code: 0\n\nhi\n" {
+		t.Errorf("tool message %v", ms[2])
+	}
+	if tools := second["tools"].([]any); len(tools) != 1 || tools[0].(map[string]any)["function"].(map[string]any)["name"] != "shell" {
+		t.Errorf("tools %v", second["tools"])
+	}
+}
+
+func TestShellDenied(t *testing.T) {
+	r := start(t, agent.Settings{Model: model, PermissionMode: "manual"}, nil, func(w http.ResponseWriter, _ *http.Request, n int) {
+		if n == 0 {
+			sseCalls(w, "", call{"call_1", "shell", `{"command":"touch ran"}`})
+			return
+		}
+		sse(w, "ok")
+	})
+	r.send("p1", "touch it")
+	approval := r.until(func(u agent.Update) bool { return u.Type == agent.UpdateApproval })
+	if err := r.agent.Approve(approval.RequestID, json.RawMessage(`{"behavior":"deny","message":"not now"}`)); err != nil {
+		t.Fatal(err)
+	}
+	denied := "The user denied this command: not now"
+	if result := r.until(func(u agent.Update) bool { return u.Type == agent.UpdateToolResult }).Result; !result.IsError || result.Text != denied {
+		t.Errorf("tool_result %+v", result)
+	}
+	if result := r.result(); result.IsError || result.Text != "ok" {
+		t.Errorf("result %+v", result)
+	}
+	r.request()
+	if got := contents(r.request().body); !slices.Equal(got, []string{"touch it", denied}) {
+		t.Errorf("the second request's contents %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(r.workspace, "ran")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a denied command ran: %v", err)
+	}
+}
+
+func TestShellAuto(t *testing.T) {
+	r := start(t, agent.Settings{Model: model, PermissionMode: "auto"}, nil, func(w http.ResponseWriter, _ *http.Request, n int) {
+		if n == 0 {
+			sseCalls(w, "", call{"call_1", "shell", `{"command":"echo one"}`}, call{"call_2", "shell", `{"command":"echo two"}`})
+			return
+		}
+		sse(w, "ok")
+	})
+	r.send("p1", "count")
+	var results []string
+	for _, u := range r.turn() {
+		if u.Type == agent.UpdateApproval || u.Type == agent.UpdateState && u.State == agent.StateRequiresAction {
+			t.Errorf("auto mode published %s", u.Type)
+		}
+		if u.Type == agent.UpdateToolResult {
+			results = append(results, u.ToolUseID+" "+u.Result.Text)
+		}
+	}
+	if want := []string{"call_1 Exit code: 0\n\none\n", "call_2 Exit code: 0\n\ntwo\n"}; !slices.Equal(results, want) {
+		t.Errorf("tool results %q, not %q", results, want)
+	}
+	r.request()
+	second := r.request().body
+	if got := roles(second); !slices.Equal(got, []string{"user", "assistant", "tool", "tool"}) {
+		t.Fatalf("the second request's roles %q", got)
+	}
+	ms := messages(second)
+	if ms[2]["tool_call_id"] != "call_1" || ms[2]["content"] != "Exit code: 0\n\none\n" ||
+		ms[3]["tool_call_id"] != "call_2" || ms[3]["content"] != "Exit code: 0\n\ntwo\n" {
+		t.Errorf("tool messages %v %v", ms[2], ms[3])
+	}
+}
+
+// Calls with bad arguments or to an unknown tool are answered at once, without
+// asking, and the turn goes on.
+func TestShellInvalidCall(t *testing.T) {
+	r := start(t, agent.Settings{Model: model, PermissionMode: "manual"}, nil, func(w http.ResponseWriter, _ *http.Request, n int) {
+		if n == 0 {
+			sseCalls(w, "",
+				call{"call_1", "shell", `{"command":"touch wrong","cwd":"/"}`},
+				call{"call_2", "shell", `touch wrong`},
+				call{"call_3", "python", `{"code":"1"}`})
+			return
+		}
+		sse(w, "ok")
+	})
+	r.send("p1", "go")
+	var uses, results []string
+	for _, u := range r.turn() {
+		switch u.Type {
+		case agent.UpdateApproval:
+			t.Error("an invalid call asked for approval")
+		case agent.UpdateToolUse:
+			uses = append(uses, u.ToolUseID+" "+u.ToolName+" "+string(u.Input))
+		case agent.UpdateToolResult:
+			if !u.Result.IsError {
+				t.Errorf("%s answered without an error: %q", u.ToolUseID, u.Result.Text)
+			}
+			results = append(results, u.Result.Text)
+		case agent.UpdateResult:
+			if u.Result.IsError || u.Result.Text != "ok" {
+				t.Errorf("result %+v", u.Result)
+			}
+		}
+	}
+	wantUses := []string{`call_1 shell {"command":"touch wrong","cwd":"/"}`, "call_2 shell {}", `call_3 python {"code":"1"}`}
+	if !slices.Equal(uses, wantUses) {
+		t.Errorf("tool uses %q, not %q", uses, wantUses)
+	}
+	if len(results) != 3 || results[0] != `arguments: json: unknown field "cwd"` ||
+		!strings.HasPrefix(results[1], "arguments: ") || results[2] != `Ur has no tool "python"` {
+		t.Errorf("tool results %q", results)
+	}
+	r.request()
+	if got := roles(r.request().body); !slices.Equal(got, []string{"user", "assistant", "tool", "tool", "tool"}) {
+		t.Errorf("the second request's roles %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(r.workspace, "wrong")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("an invalid call ran: %v", err)
+	}
+}
+
+// background is a command that leaves a child, whose PID it writes to the
+// file child, and runs until stopped.
+const background = `{"command":"sleep 60 & echo $! > child; sleep 60"}`
+
+func TestShellInterrupt(t *testing.T) {
+	t.Run("asking", func(t *testing.T) {
+		r := start(t, agent.Settings{Model: model, PermissionMode: "manual"}, nil, func(w http.ResponseWriter, _ *http.Request, n int) {
+			if n == 0 {
+				sseCalls(w, "", call{"call_1", "shell", `{"command":"touch ran"}`})
+				return
+			}
+			sse(w, "ok")
+		})
+		r.send("p1", "go")
+		approval := r.until(func(u agent.Update) bool { return u.Type == agent.UpdateApproval })
+		r.send("p2", "waiting")
+		r.updates = nil
+		if err := r.agent.Interrupt(); err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"prompt_cancelled p2", "approval_cancelled p1", "tool_result p1", "result p1", "state p1 idle"}
+		if got := kinds(r.updates); !slices.Equal(got, want) {
+			t.Fatalf("interrupt published %q, not %q", got, want)
+		}
+		if u := r.updates[1]; u.RequestID != approval.RequestID {
+			t.Errorf("approval_cancelled %+v", u)
+		}
+		if u := r.updates[2]; u.ToolUseID != "call_1" || !u.Result.IsError || u.Result.Text != stopped {
+			t.Errorf("tool_result %+v %+v", u, u.Result)
+		}
+		if result := r.updates[3].Result; !result.IsError || result.Text != "Interrupted" {
+			t.Errorf("result %+v", result)
+		}
+		if snapshot := r.agent.Snapshot(); len(snapshot.Approvals) != 0 {
+			t.Errorf("approvals after the interrupt: %+v", snapshot.Approvals)
+		}
+		if err := r.agent.Approve(approval.RequestID, json.RawMessage(`{"behavior":"allow"}`)); !errors.Is(err, agent.ErrApprovalNotFound) {
+			t.Errorf("Approve after the interrupt: %v", err)
+		}
+		r.updates = nil
+		r.request()
+		r.send("p3", "next")
+		r.idle()
+		body := r.request().body
+		if got := roles(body); !slices.Equal(got, []string{"user", "assistant", "tool", "user"}) {
+			t.Fatalf("the next request's roles %q", got)
+		}
+		if got := messages(body)[2]; got["tool_call_id"] != "call_1" || got["content"] != stopped {
+			t.Errorf("the stopped call's answer %v", got)
+		}
+	})
+
+	t.Run("executing", func(t *testing.T) {
+		release := make(chan struct{})
+		r := start(t, agent.Settings{Model: model, PermissionMode: "auto"}, nil, func(w http.ResponseWriter, _ *http.Request, n int) {
+			if n == 0 {
+				sseCalls(w, "", call{"call_1", "shell", background})
+				return
+			}
+			<-release
+			sse(w, "ok")
+		})
+		r.send("p1", "go")
+		r.until(func(u agent.Update) bool { return u.Type == agent.UpdateToolUse })
+		waitFile(t, filepath.Join(r.workspace, "child"))
+		r.updates = nil
+		if err := r.agent.Interrupt(); err != nil {
+			t.Fatal(err)
+		}
+		if got := kinds(r.updates); !slices.Equal(got, []string{"tool_result p1", "result p1", "state p1 idle"}) {
+			t.Fatalf("interrupt published %q", got)
+		}
+		if u := r.updates[0]; !u.Result.IsError || u.Result.Text != stopped {
+			t.Errorf("tool_result %+v", u.Result)
+		}
+		gone(t, filepath.Join(r.workspace, "child"))
+		r.request()
+		// The next turn starts, and its request waits, while the killed
+		// command's outcome arrives during it and is dropped.
+		r.send("p2", "next")
+		r.updates = nil
+		select {
+		case e := <-r.agent.Events():
+			r.agent.Handle(e)
+		case <-time.After(3 * time.Second):
+			t.Fatal("the killed command delivered nothing")
+		}
+		if len(r.updates) != 0 {
+			t.Errorf("the killed command published %+v during the next turn", r.updates)
+		}
+		close(release)
+		for _, u := range r.turn() {
+			if u.Type == agent.UpdateToolResult {
+				t.Errorf("the next turn published a tool_result %+v", u.Result)
+			}
+		}
+		body := r.request().body
+		if got := roles(body); !slices.Equal(got, []string{"user", "assistant", "tool", "user"}) {
+			t.Fatalf("the next request's roles %q", got)
+		}
+		if got := messages(body)[2]["content"]; got != stopped {
+			t.Errorf("the stopped call's answer %v", got)
+		}
+	})
+}
+
+func TestShellStop(t *testing.T) {
+	t.Run("executing", func(t *testing.T) {
+		r := start(t, agent.Settings{Model: model, PermissionMode: "auto"}, nil, func(w http.ResponseWriter, _ *http.Request, n int) {
+			if n == 0 {
+				sseCalls(w, "", call{"call_1", "shell", background})
+				return
+			}
+			sse(w, "ok")
+		})
+		r.send("p1", "go")
+		r.until(func(u agent.Update) bool { return u.Type == agent.UpdateToolUse })
+		waitFile(t, filepath.Join(r.workspace, "child"))
+		// WaitAll, which oxd calls as it stops, waits for the command.
+		waited := make(chan struct{})
+		go func() {
+			WaitAll()
+			close(waited)
+		}()
+		select {
+		case <-waited:
+			t.Error("WaitAll returned while a command ran")
+		case <-time.After(100 * time.Millisecond):
+		}
+		r.updates = nil
+		r.agent.Stop()
+		if got := kinds(r.updates); !slices.Equal(got, []string{"exited p1"}) {
+			t.Errorf("Stop published %q", got)
+		}
+		select {
+		case <-waited:
+		case <-time.After(2 * time.Second):
+			t.Error("WaitAll did not return once Stop ended the command")
+		}
+		gone(t, filepath.Join(r.workspace, "child"))
+		r.request()
+		if err := r.launch(r.tokens[0]); err != nil {
+			t.Fatal(err)
+		}
+		r.send("p2", "next")
+		r.idle()
+		body := r.request().body
+		if got := roles(body); !slices.Equal(got, []string{"user", "assistant", "tool", "user"}) {
+			t.Fatalf("the resumed request's roles %q", got)
+		}
+		if got := messages(body)[2]; got["tool_call_id"] != "call_1" || got["content"] != stopped {
+			t.Errorf("the stopped call's answer %v", got)
+		}
+	})
+
+	t.Run("asking", func(t *testing.T) {
+		r := start(t, agent.Settings{Model: model, PermissionMode: "manual"}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
+			sseCalls(w, "", call{"call_1", "shell", `{"command":"true"}`})
+		})
+		r.send("p1", "go")
+		approval := r.until(func(u agent.Update) bool { return u.Type == agent.UpdateApproval })
+		r.updates = nil
+		r.agent.Stop()
+		if got := kinds(r.updates); !slices.Equal(got, []string{"approval_cancelled p1", "exited p1"}) {
+			t.Errorf("Stop published %q", got)
+		}
+		if r.updates[0].RequestID != approval.RequestID {
+			t.Errorf("approval_cancelled %+v", r.updates[0])
+		}
+	})
+}
+
+// A prompt sent while a call waits is taken after the call's result, before
+// the next request.
+func TestShellInputBetweenSteps(t *testing.T) {
+	r := start(t, agent.Settings{Model: model, PermissionMode: "manual"}, nil, func(w http.ResponseWriter, _ *http.Request, n int) {
+		if n == 0 {
+			sseCalls(w, "", call{"call_1", "shell", `{"command":"echo hi"}`})
+			return
+		}
+		sse(w, "ok")
+	})
+	r.send("p1", "go")
+	approval := r.until(func(u agent.Update) bool { return u.Type == agent.UpdateApproval })
+	r.send("p2", "also this")
+	if err := r.agent.Approve(approval.RequestID, json.RawMessage(`{"behavior":"allow"}`)); err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	for _, u := range r.turn() {
+		if u.Type == agent.UpdateToolResult || u.Type == agent.UpdatePrompt || u.Type == agent.UpdateResult {
+			order = append(order, u.Type+" "+u.MessageID)
+		}
+	}
+	if want := []string{"tool_result p1", "prompt p2", "result p2"}; !slices.Equal(order, want) {
+		t.Errorf("updates %q, not %q", order, want)
+	}
+	r.request()
+	body := r.request().body
+	if got := roles(body); !slices.Equal(got, []string{"user", "assistant", "tool", "user"}) {
+		t.Errorf("the second request's roles %q", got)
+	}
+	if got := contents(body); got[len(got)-1] != "also this" {
+		t.Errorf("the second request's contents %q", got)
+	}
+	if r.agent.Snapshot().State != agent.StateIdle {
+		t.Errorf("snapshot after the turn: %+v", r.agent.Snapshot())
+	}
+}
+
+func TestPermissionModes(t *testing.T) {
+	check := Harness("http://unused", t.TempDir(), nil).CheckPermissionMode
+	for _, mode := range []string{"manual", "auto"} {
+		if err := check(mode); err != nil {
+			t.Errorf("%s refused: %v", mode, err)
+		}
+	}
+	for _, mode := range []string{"acceptEdits", "plan"} {
+		if err := check(mode); err == nil {
+			t.Errorf("%s accepted", mode)
+		}
+	}
 }
