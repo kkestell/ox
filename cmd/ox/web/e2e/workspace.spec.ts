@@ -368,7 +368,6 @@ clocked("a relay error shows in place of a folder's listing until the next listi
   await newSessionButton(page).click();
   const answers: [(route: Route) => Promise<void>, string | RegExp][] = [
     [(route) => route.fulfill({ status: 502, body: "relay unavailable" }), "relay unavailable"],
-    [(route) => route.abort(), "Could not reach ox"],
     [(route) => route.fulfill({ status: 502, body: "" }), /502/],
   ];
   await entry(page, "src").click();
@@ -389,7 +388,7 @@ clocked("a relay error shows in place of a folder's listing until the next listi
   }
 });
 
-clocked("a relay that lost its oxd connection keeps the last listing", async ({ ox: page, services }) => {
+clocked("a lost connection keeps the last listing", async ({ ox: page, services }) => {
   mkdirSync(join(services.workspace, "src"));
   writeFileSync(join(services.workspace, "src", "a.txt"), "");
   await newSessionButton(page).click();
@@ -403,7 +402,49 @@ clocked("a relay that lost its oxd connection keeps the last listing", async ({ 
   await page.route("**/rpc*", listing);
   await answered(page, "workspace/list_folder", "src");
   await expect(entry(page, "a.txt")).toBeVisible();
+  await page.unroute("**/rpc*", listing);
+  // A POST that cannot reach the relay under a healthy stream.
+  const aborted = (route: Route) => {
+    const body = route.request().postDataJSON();
+    if (body?.method !== "workspace/list_folder" || body.params.path !== "src") return route.fallback();
+    return route.abort();
+  };
+  // The replacement stream stays down, so the alert stays up to be read.
+  const down = (route: Route) => route.abort();
+  await page.route("**/events", down);
+  await page.route("**/rpc*", aborted);
+  await page.clock.runFor(1000);
+  await expect(page.getByRole("alert").filter({ hasText: "Lost the connection" })).toBeVisible();
+  await expect(entry(page, "a.txt")).toBeVisible();
+  await expect(page.getByText("Could not reach ox")).toHaveCount(0);
+  await page.unroute("**/rpc*", aborted);
+  await page.unroute("**/events", down);
+  await expect(page.getByRole("alert").filter({ hasText: "Lost the connection" })).toHaveCount(0);
+  await expect(send(page)).toBeEnabled();
 });
+
+clocked(
+  "a request cut off after its connection was replaced leaves the new connection alone",
+  async ({ ox: page, services }) => {
+    mkdirSync(join(services.workspace, "src"));
+    writeFileSync(join(services.workspace, "src", "a.txt"), "");
+    await newSessionButton(page).click();
+    await entry(page, "src").click();
+    await expect(entry(page, "a.txt")).toBeVisible();
+    const stale = await hold(page, "workspace/list_folder", { path: "src" });
+    await page.clock.runFor(1000);
+    await stale.arrived;
+    await services.restartRelay();
+    await expect(page.getByRole("alert").filter({ hasText: "Lost the connection" })).toBeVisible();
+    await expect(send(page)).toBeEnabled();
+    const lists = rpcCalls(page, "workspace/list");
+    stale.abort();
+    await page.clock.runFor(3000);
+    await expect(page.getByRole("alert").filter({ hasText: "Lost the connection" })).toHaveCount(0);
+    await expect(send(page)).toBeEnabled();
+    expect(lists).toEqual([]);
+  },
+);
 
 clocked(
   "a lost connection keeps the tree and lists nothing until the page has reloaded",
