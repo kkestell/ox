@@ -43,3 +43,7 @@ test("highlighting keeps the file's text", () => {
     assert.equal(text(highlight(path, source)), source, path);
   }
 });
+
+test("a final carriage return with no newline after it is written once", () => {
+  assert.equal(highlight("a.go", "last\r").split("&#13;").length - 1, 1);
+});

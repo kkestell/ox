@@ -1,6 +1,7 @@
 // The specs' fixtures and page helpers. Each test runs its own oxd and relay
 // through the services fixture, with the configuration the config option
 // names.
+import { basename } from "node:path";
 import { test as base, expect, type Locator, type Page, type Route } from "@playwright/test";
 import { fakeConfig, type Services, startServices } from "./services";
 
@@ -53,7 +54,7 @@ export const waiting = (page: Page) => page.getByRole("region", { name: "Waiting
 export const sessions = (page: Page) => page.getByRole("navigation", { name: "Sessions" });
 // workspaceSection is the session list's section for the workspace at path.
 export const workspaceSection = (page: Page, path: string) =>
-  sessions(page).getByRole("region", { name: path.split("/").at(-1) || path, exact: true });
+  sessions(page).getByRole("region", { name: basename(path) || path, exact: true });
 export const sessionButton = (page: Page, title: string) =>
   sessions(page).getByRole("button", { name: title, exact: true });
 export const sessionItem = (page: Page, title: string) =>
@@ -169,8 +170,8 @@ export const isRequest = (method: string) => (request: { url(): string; postData
 
 // hold intercepts the page's next request for method until release passes it
 // on (optionally with changed parameters), fail answers it as a relay error, or
-// abort cuts it off as a network error.
-// Only a request whose parameters include every key of params is held.
+// abort cuts it off as a network error. It holds only a request whose
+// parameters have each of params's keys with an equal value.
 export async function hold(page: Page, method: string, params?: Record<string, unknown>) {
   let release!: (changes?: Record<string, unknown>) => void;
   let fail!: (message: string) => void;
@@ -205,27 +206,25 @@ declare global {
   interface Window {
     cutNextReply(): void;
     replyWithheld(): void;
-    replyResult(result: Record<string, unknown>): void;
+    replyExisting(): void;
   }
 }
 
 // cutReply withholds, once armed, the next accepted reply whose result has
 // field, at the page's EventSource, leaving its call pending. cut resolves
-// once a reply is withheld, and reply(key) on the next reply whose result has
-// key, withheld or not. Call it before the page loads.
+// once a reply is withheld, and existing once a reply reports an existing
+// session, withheld or not. Call it before the page loads.
 export async function cutReply(page: Page, field: "session_id" | "message_id") {
   let withheld!: () => void;
   const cut = new Promise<void>((resolve) => {
     withheld = resolve;
   });
-  const waiters: { key: string; resolve(): void }[] = [];
-  await page.exposeBinding("replyWithheld", () => withheld());
-  await page.exposeBinding("replyResult", (_source, result: Record<string, unknown>) => {
-    for (const waiter of waiters.filter((w) => result?.[w.key])) {
-      waiters.splice(waiters.indexOf(waiter), 1);
-      waiter.resolve();
-    }
+  let foundExisting!: () => void;
+  const existing = new Promise<void>((resolve) => {
+    foundExisting = resolve;
   });
+  await page.exposeBinding("replyWithheld", () => withheld());
+  await page.exposeBinding("replyExisting", () => foundExisting());
   await page.addInitScript((field) => {
     let armed = false;
     window.cutNextReply = () => {
@@ -238,7 +237,7 @@ export async function cutReply(page: Page, field: "session_id" | "message_id") {
         this.addEventListener("message", (event) => {
           const result = JSON.parse(event.data).result;
           if (result === undefined) return;
-          void window.replyResult(result);
+          if (result?.existing) void window.replyExisting();
           if (armed && result?.[field]) {
             armed = false;
             event.stopImmediatePropagation();
@@ -251,6 +250,6 @@ export async function cutReply(page: Page, field: "session_id" | "message_id") {
   return {
     arm: () => page.evaluate(() => window.cutNextReply()),
     cut,
-    reply: (key: string) => new Promise<void>((resolve) => waiters.push({ key, resolve })),
+    existing,
   };
 }

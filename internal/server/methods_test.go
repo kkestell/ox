@@ -378,6 +378,13 @@ func TestSessionLifecycle(t *testing.T) {
 	if !slices.Equal(states, []string{"running", "background", "idle"}) {
 		t.Fatalf("a background task published %v", states)
 	}
+
+	// A prompt queued during a turn runs its special commands when taken.
+	c.call("session/send", map[string]string{"session_id": worker, "text": "one two three four five six"})
+	c.call("session/send", map[string]string{"session_id": worker, "text": `approve Bash {"command":"ls"}`})
+	if u := c.update(worker, "approval"); !strings.Contains(string(u.Request), `"tool_name":"Bash"`) {
+		t.Fatalf("a queued approval request was taken as plain text: %s", u.Request)
+	}
 	c.call("session/destroy", map[string]string{"session_id": worker})
 
 	listed := func(c *client) int {
@@ -1796,5 +1803,47 @@ func TestExitDropsWaitingMessages(t *testing.T) {
 	}
 	if lines := starts(t, args); len(lines) != 1 {
 		t.Fatalf("Claude was started again for a waiting message: %q", lines)
+	}
+}
+
+func TestModelChangeKeepsCurrentEffort(t *testing.T) {
+	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
+		Models: []config.Model{
+			{ID: "a", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}},
+			{ID: "b", Efforts: []config.Option{{ID: "medium"}, {ID: "high"}}},
+		},
+		PermissionModes: []config.Option{{ID: "plan"}},
+	}}}
+	s, err := New(openStore(t), cfg, time.Minute, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c1, c2 := connect(t, s), connect(t, s)
+	var workspace struct {
+		WorkspaceID string `json:"workspace_id"`
+	}
+	json.Unmarshal(c1.call("workspace/create", map[string]string{"path": t.TempDir()}), &workspace)
+	var created struct {
+		SessionID string `json:"session_id"`
+	}
+	json.Unmarshal(c1.call("session/create", map[string]string{
+		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "a", "effort": "low", "permission_mode": "plan",
+	}), &created)
+	id := created.SessionID
+	settings := func() string {
+		var got agent.Settings
+		json.Unmarshal(c1.call("session/get", map[string]string{"session_id": id}), &got)
+		return got.Model + "/" + got.Effort
+	}
+
+	c1.call("session/configure", map[string]string{"session_id": id, "model": "b"})
+	if got := settings(); got != "b/medium" {
+		t.Fatalf("a model alone left %s, not b/medium", got)
+	}
+	c2.call("session/configure", map[string]string{"session_id": id, "effort": "high"})
+	c1.call("session/configure", map[string]string{"session_id": id, "model": "a"})
+	if got := settings(); got != "a/high" {
+		t.Fatalf("a model alone after another page's effort change left %s, not a/high", got)
 	}
 }

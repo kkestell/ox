@@ -851,7 +851,7 @@ func TestShellApproved(t *testing.T) {
 	}
 	snapshot := r.agent.Snapshot()
 	if snapshot.State != agent.StateRequiresAction || len(snapshot.Approvals) != 1 ||
-		snapshot.Approvals[0].RequestID != approval.RequestID || snapshot.Approvals[0].ToolName != "shell" ||
+		snapshot.Approvals[0].RequestID != approval.RequestID ||
 		!bytes.Equal(snapshot.Approvals[0].Request, approval.Request) {
 		t.Errorf("snapshot while asking: %+v", snapshot)
 	}

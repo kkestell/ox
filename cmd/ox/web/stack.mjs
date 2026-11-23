@@ -12,7 +12,7 @@ function fileHash(path) {
 // exits with status 0, on signal, or with status 128 plus the signal's number,
 // as a Node process that handles the signal exits. Any other exit rejects,
 // such as the status 66 of a race report.
-export function exited(proc, signal = "SIGTERM") {
+function exited(proc, signal) {
   return new Promise((resolve, reject) => {
     const judge = (code, received) => {
       if (code === 0 || received === signal || code === 128 + constants.signals[signal]) resolve();
@@ -54,12 +54,18 @@ export function runStack({ services, build, input, signals, log = console.log })
 
   const records = services.map((spec) => ({ spec, proc: null, hash: null }));
 
-  // stops holds the judged exit of every process the stack has stopped.
+  // stops holds the exit of every process the stack has stopped that is in
+  // flight or failed.
   const stops = [];
 
   function retire(proc, signal) {
     const stopped = stopProcess(proc, signal);
     stops.push(stopped);
+    // A clean exit needs no later judgment; an in-flight or failed one stays.
+    stopped.then(
+      () => stops.splice(stops.indexOf(stopped), 1),
+      () => {},
+    );
     return stopped;
   }
 

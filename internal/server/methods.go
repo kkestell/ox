@@ -154,12 +154,12 @@ func (s *Server) createWorkspace(reply replyFunc, id, params json.RawMessage) {
 
 func (s *Server) listWorkspaces(reply replyFunc, id json.RawMessage) {
 	type sessionInfo struct {
-		SessionID string    `json:"session_id"`
-		Label     string    `json:"label"`
-		Harness   string    `json:"harness"`
-		CreatedAt time.Time `json:"created_at"`
-		Child     *child    `json:"child,omitempty"`
-		Archived  bool      `json:"archived,omitempty"`
+		SessionID string       `json:"session_id"`
+		Label     string       `json:"label"`
+		Harness   string       `json:"harness"`
+		CreatedAt time.Time    `json:"created_at"`
+		Child     *store.Child `json:"child,omitempty"`
+		Archived  bool         `json:"archived,omitempty"`
 	}
 	type workspaceInfo struct {
 		WorkspaceID string        `json:"workspace_id"`
@@ -375,18 +375,19 @@ func (s *Server) publishLocked(w *workspace, sess *session) {
 	w.sessions = append(w.sessions, sess)
 	s.sessions[sess.id] = sess
 	s.broadcast("session/created", struct {
-		SessionID   string    `json:"session_id"`
-		WorkspaceID string    `json:"workspace_id"`
-		Label       string    `json:"label"`
-		Harness     string    `json:"harness"`
-		CreatedAt   time.Time `json:"created_at"`
-		Child       *child    `json:"child,omitempty"`
+		SessionID   string       `json:"session_id"`
+		WorkspaceID string       `json:"workspace_id"`
+		Label       string       `json:"label"`
+		Harness     string       `json:"harness"`
+		CreatedAt   time.Time    `json:"created_at"`
+		Child       *store.Child `json:"child,omitempty"`
 	}{sess.id, w.id, sess.labelLocked(), sess.harness, sess.createdAt, sess.child})
 }
 
-// getSession returns a session's settings, history, and current state. Every
-// connection already receives the session's updates; those queued before the
-// response are in the history, and those after it are not.
+// getSession returns a session's settings, history, queue, approvals, and
+// current state. Every connection already receives the session's updates;
+// those queued before the response are reflected in it, and those after it
+// are not.
 func (s *Server) getSession(reply replyFunc, id, params json.RawMessage) {
 	var input struct {
 		SessionID string `json:"session_id"`
@@ -493,10 +494,17 @@ func (s *Server) configureSession(reply replyFunc, id, params json.RawMessage) {
 		return
 	}
 	s.onSession(reply, id, input.SessionID, func(sess *session) {
+		harness := s.config.Harnesses[sess.harness]
+		// A model alone takes the session's current effort when the model
+		// offers it, so a page need not know the effort.
+		if input.Model != nil && input.Effort == nil {
+			if effort := harness.Effort(*input.Model, sess.settings.Effort); effort != sess.settings.Effort {
+				input.Effort = &effort
+			}
+		}
 		settings := input.Apply(sess.settings)
 		// Only the settings the request changes are checked, so a stored
 		// setting the configuration no longer offers can stay.
-		harness := s.config.Harnesses[sess.harness]
 		var err error
 		if input.Model != nil || input.Effort != nil {
 			err = harness.CheckModel(settings.Model, settings.Effort)

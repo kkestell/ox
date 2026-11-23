@@ -5,7 +5,7 @@ import { createSignal, onSettled } from "solid-js";
 // stylesheet reads.
 const narrowQuery = "(max-width: 767px)";
 
-export type Drawer = "sessions" | "files";
+type Drawer = "sessions" | "files";
 
 // createPanels holds which of the page's side panels show, for the life of the
 // page. The wide layout shows each panel at its own width while its flag is

@@ -97,7 +97,7 @@ func (a *Agent) Handle(event agent.Event) {
 			return // its prompt was interrupted
 		}
 		if a.tracker.Len() > 0 {
-			a.take()
+			a.begin()
 			return
 		}
 		if len(a.words) > 0 {
@@ -163,16 +163,6 @@ func (a *Agent) begin() {
 	}
 }
 
-// take makes the first queued input the turn's, whose reply replaces the rest
-// of the earlier one, as Claude takes a prompt after a tool call.
-func (a *Agent) take() {
-	taken := a.tracker.Take()
-	a.prompt = taken.MessageID
-	a.reply = "You said: " + taken.Content
-	a.words = strings.SplitAfter(a.reply, " ")
-	a.after(step, tick{a.prompt})
-}
-
 // backgroundRequest reads a prompt of the form "background <milliseconds>".
 func backgroundRequest(text string) (time.Duration, bool) {
 	rest, ok := strings.CutPrefix(text, "background ")
@@ -203,7 +193,7 @@ func (a *Agent) ask(tool string, input json.RawMessage) {
 	a.tool = rand.Text()
 	a.publish(agent.Update{Type: agent.UpdateToolUse, ToolUseID: a.tool, ToolName: tool, Input: input})
 	request, _ := json.Marshal(map[string]any{"subtype": "can_use_tool", "tool_name": tool, "input": input, "tool_use_id": a.tool})
-	a.approval = &agent.Approval{RequestID: rand.Text(), Request: request, ToolName: tool}
+	a.approval = &agent.Approval{RequestID: rand.Text(), Request: request}
 	a.publish(agent.Update{Type: agent.UpdateApproval, RequestID: a.approval.RequestID, Request: request})
 	a.tracker.Report(agent.StateRequiresAction, "")
 }

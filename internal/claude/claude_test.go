@@ -36,20 +36,18 @@ func (l *startLog) options() agent.Options {
 
 // failingStart returns a starting agent holding a prompt, with its ID and
 // what the agent reports after the prompt's acceptance. Its process waits to
-// be stopped and delivers its exit on the returned events.
-func failingStart(t *testing.T) (*Agent, string, *startLog, chan agent.Event) {
+// be stopped, which the test's cleanup does.
+func failingStart(t *testing.T) (*Agent, string, *startLog) {
 	t.Helper()
 	cmd := exec.Command("sleep", "60")
 	if err := children.Start(cmd, func() { cmd.Process.Kill() }); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { cmd.Process.Kill() })
-	events := make(chan agent.Event, 1)
-	go func() {
-		err := cmd.Wait()
+	t.Cleanup(func() {
+		cmd.Process.Kill()
+		cmd.Wait()
 		children.Done(cmd)
-		events <- processExit{err: err}
-	}()
+	})
 	log := new(startLog)
 	a := newAgent(newWriter(io.Discard), make(chan agent.Event), make(chan struct{}), &process{cmd: cmd}, log.options())
 	id, err := sendTestPrompt(a, "hello")
@@ -57,7 +55,7 @@ func failingStart(t *testing.T) (*Agent, string, *startLog, chan agent.Event) {
 		t.Fatal(err)
 	}
 	log.updates = nil
-	return a, id, log, events
+	return a, id, log
 }
 
 // dropped checks that the start ended, dropping the prompt id and reporting
@@ -115,7 +113,7 @@ func TestStartupFailureKeepsClaudesReason(t *testing.T) {
 		}, "Claude refused initialization (error): bad flags"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			a, id, log, _ := failingStart(t)
+			a, id, log := failingStart(t)
 			for _, e := range c.output {
 				a.Handle(e)
 			}

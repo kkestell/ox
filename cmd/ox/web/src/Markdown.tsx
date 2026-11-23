@@ -6,11 +6,10 @@ const md = new MarkdownIt({ html: false, linkify: true }).disable("image");
 
 // Links open in a new tab so following one leaves the page, and its unsent
 // text, in place.
-const linkOpen = md.renderer.rules.link_open;
-md.renderer.rules.link_open = (tokens, i, options, env, self) => {
+md.renderer.rules.link_open = (tokens, i, options, _env, self) => {
   tokens[i].attrSet("target", "_blank");
   tokens[i].attrSet("rel", "noopener noreferrer");
-  return linkOpen ? linkOpen(tokens, i, options, env, self) : self.renderToken(tokens, i, options);
+  return self.renderToken(tokens, i, options);
 };
 
 export function Markdown(props: { text: string; class?: string }) {

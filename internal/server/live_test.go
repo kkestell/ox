@@ -753,7 +753,7 @@ func TestLive(t *testing.T) {
 			l.t.Fatalf("create_session returned no child: %s", describe(l.c.received(parent)))
 		}
 		var childCreated struct {
-			Child *child `json:"child"`
+			Child *store.Child `json:"child"`
 		}
 		for _, m := range l.c.received(started.SessionID) {
 			if m.Method == "session/created" {
@@ -773,7 +773,7 @@ func TestLive(t *testing.T) {
 		var leaf string
 		for _, m := range l.c.created() {
 			var created struct {
-				Child *child `json:"child"`
+				Child *store.Child `json:"child"`
 			}
 			json.Unmarshal(m.Params, &created)
 			if created.Child != nil && created.Child.ParentID == started.SessionID {

@@ -5,7 +5,7 @@ import { Markdown } from "./Markdown";
 import { type Entry, type Session, type SessionControl, type SessionSnapshot, useOx } from "./ox";
 import type { Prompt, Settings } from "./protocol";
 import { ModelPicker, Select } from "./SettingsFields";
-import { planOf, toolInputJSON, toolLabel, toolSubject } from "./toolInput";
+import { planOf, toolInputJSON, toolLabel, toolSummary } from "./toolInput";
 
 type Tool = Extract<Entry, { kind: "tool" }>;
 
@@ -114,7 +114,7 @@ function Transcript(props: { snapshot: SessionSnapshot }) {
             <Match when={entry.kind === "reply" && entry}>
               {(reply) => (
                 <article aria-label="Reply">
-                  <Markdown class="reply" text={reply().text} />
+                  <Markdown text={reply().text} />
                 </article>
               )}
             </Match>
@@ -162,7 +162,7 @@ function PromptBubble(props: { input: Prompt; queued?: boolean }) {
 }
 
 function ToolCall(props: { tool: Tool }) {
-  const detail = () => toolSubject(props.tool.name, props.tool.input).split("\n")[0].slice(0, 120);
+  const detail = () => toolSummary(props.tool.name, props.tool.input);
   const status = () => {
     if (props.tool.result) return props.tool.result.is_error ? "failed" : "done";
     return props.tool.stopped ? "stopped" : "running";
@@ -203,7 +203,11 @@ function SettingsForm(props: { harness: string; settings: Settings; control: Ses
         value={{ harness: props.harness, model: shown().model, effort: shown().effort }}
         disabled={!props.control.canConfigure()}
         pending={pending("model") || pending("effort")}
-        onChange={(value) => props.control.configure({ model: value.model, effort: value.effort })}
+        onChange={(value) =>
+          value.model !== shown().model
+            ? props.control.configure({ model: value.model })
+            : props.control.configure({ effort: value.effort })
+        }
       />
       <Select
         name="permission_mode"

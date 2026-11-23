@@ -7,8 +7,8 @@ export type ModelChoice = { harness: string; model: string; effort: string };
 type Entry = { harness: string; model: Model };
 
 // ModelPicker chooses a model from every harness in harnesses, and its effort.
-// A model keeps the current effort when it offers it. A pending value shows a
-// spinner until it is confirmed.
+// The draft keeps the current effort when the model offers it; a session's
+// `oxd` decides its own. A pending value shows a spinner until it is confirmed.
 export function ModelPicker(props: {
   harnesses: Record<string, Harness>;
   value: ModelChoice;
@@ -53,7 +53,7 @@ export function ModelPicker(props: {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       move(event.key === "ArrowDown" ? 1 : -1);
-    } else if (event.key === "Enter") {
+    } else if (event.key === "Enter" && !event.isComposing) {
       event.preventDefault();
       const entry = matches()[active()];
       if (entry) choose(entry);
@@ -192,7 +192,7 @@ export function Select(props: {
   value: string;
   disabled?: boolean;
   pending?: boolean;
-  onChange?(id: string): void;
+  onChange(id: string): void;
 }) {
   const options = () =>
     props.value && !props.options.some((o) => o.id === props.value)
@@ -210,7 +210,7 @@ export function Select(props: {
         aria-busy={props.pending ? "true" : undefined}
         onPointerDown={() => setPointer(true)}
         onBlur={() => setPointer(false)}
-        onChange={(event) => props.onChange?.(event.currentTarget.value)}
+        onChange={(event) => props.onChange(event.currentTarget.value)}
       >
         <For each={options()}>
           {(option) => (

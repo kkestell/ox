@@ -18,7 +18,7 @@ Before you start the children:
 
 - Write the shared pieces the parts depend on yourself, such as a type, a protocol field, or a helper. If you cannot, keep the work in this session.
 - Brief each child with the plan's path, its steps from the Implementation plan and Test plan, and the files only it may edit.
-- Tell each child to run only its own package's tests or its own spec, reply with `send_message` listing the files it changed, and start no sessions of its own.
+- Tell each child to run only its own package's tests or its own spec, reply with `send_message` listing the files it changed, and start no sessions of its own. Tell each child that its siblings edit other files in the same checkout at once, and that their edits are not uncommitted work outside its brief.
 
 Then end your turn until every child has answered.
 

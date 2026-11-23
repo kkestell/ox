@@ -180,7 +180,7 @@ outside the directory, and one that leads nowhere are not.
 A `path` that is absolute or leaves the directory returns `-32602`; an unknown
 workspace returns `-32001`. A folder that cannot be listed, including one
 reached through a symlink that leads outside the directory, returns `-32000`
-with the reason, naming the path relative to the workspace.
+with the reason.
 
 ```json
 {"jsonrpc":"2.0","id":4,"method":"workspace/list_folder","params":{"workspace_id":"workspace-id","path":"cmd"}}
@@ -383,8 +383,8 @@ session that is idle or parked has nothing to stop and also succeeds. The
 stopped turn ends with an error `result` whose text is `Interrupted`, and an
 `idle` or `background` state, which release a prompt as usual. Every prompt and
 message Claude has not taken is dropped with a `prompt_cancelled` update each.
-When no turn is running, cancellation and `idle` end the interrupt, with no
-`result`.
+When no turn is running, Claude's interrupt ends with the cancellations and
+`idle`, with no `result`; an idle Ur session sends nothing.
 
 ```json
 {"jsonrpc":"2.0","id":8,"method":"session/interrupt","params":{"session_id":"session-id"}}

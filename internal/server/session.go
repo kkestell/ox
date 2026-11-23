@@ -24,8 +24,8 @@ type session struct {
 	server    *Server
 	id        string
 	harness   string
-	workspace string // the workspace's path
-	child     *child // nil for a top-level session
+	workspace string       // the workspace's path
+	child     *store.Child // nil for a top-level session
 	createdAt time.Time
 	ops       chan func()
 	done      chan struct{} // closed once run returns
@@ -44,14 +44,6 @@ type session struct {
 	agent       agent.Agent // nil while parked
 	parkTimer   *time.Timer // armed while the agent is parkable
 	ended       bool
-}
-
-// child is what makes a session a child of another, fixed at creation.
-type child struct {
-	ParentID  string `json:"parent_id"`
-	Name      string `json:"name"`
-	Title     string `json:"title"`
-	Directory string `json:"directory"`
 }
 
 // firstLine is the line of a prompt that labels its session.
@@ -76,19 +68,13 @@ func (sess *session) labelLocked() string {
 // newSession builds a stored session, whose goroutine its caller starts.
 // firstLine is the first line of the first prompt the user sent it, or "".
 func (s *Server) newSession(record *store.Session, workspace, firstLine string) *session {
-	var c *child
-	if r := record.Child; r != nil {
-		c = &child{ParentID: r.ParentID, Name: r.Name, Title: r.Title, Directory: r.Directory}
-	}
 	sess := &session{
-		server: s, id: record.ID, harness: record.Harness, workspace: workspace, child: c, createdAt: record.CreatedAt,
+		server: s, id: record.ID, harness: record.Harness, workspace: workspace, child: record.Child, createdAt: record.CreatedAt,
 		ops: make(chan func()), done: make(chan struct{}), archived: record.Archived, firstLine: firstLine,
 		settings:    agent.Settings{Model: record.Model, Effort: record.Effort, PermissionMode: record.PermissionMode},
 		resumeToken: record.ResumeToken,
 		history:     history{store: s.store, sessionID: record.ID},
 	}
-	// A session starts parked, so any earlier process has ended.
-	sess.history.recordEnd()
 	return sess
 }
 
@@ -129,7 +115,7 @@ func (sess *session) run() {
 }
 
 // snapshot is the agent's snapshot, or a parked one with no approvals or
-// inputs while no process runs.
+// inputs while the session is parked.
 func (sess *session) snapshot() agent.Snapshot {
 	if sess.agent == nil {
 		return agent.Snapshot{State: agent.StateParked, Approvals: []agent.Approval{}, Queued: []agent.Input{}}

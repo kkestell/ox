@@ -180,7 +180,7 @@ type asking struct {
 // approval is the request for the user's answer.
 func (s *asking) approval() agent.Approval {
 	request, _ := json.Marshal(map[string]any{"tool_name": "shell", "input": s.command, "tool_use_id": s.calls[0].ID}) // strings and valid JSON always marshal
-	return agent.Approval{RequestID: s.requestID, Request: request, ToolName: "shell"}
+	return agent.Approval{RequestID: s.requestID, Request: request}
 }
 
 // executing waits on calls[0]'s command, the first of the response's calls not
