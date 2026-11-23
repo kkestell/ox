@@ -16,6 +16,20 @@ export function sendOnEnter(event: KeyboardEvent & { currentTarget: HTMLTextArea
   }
 }
 
+// keepRowInPlace opens or closes the tool call whose summary was clicked
+// and scrolls the transcript so the summary stays where it was on screen. The
+// transcript is anchored at its bottom, so without this a row opened at the
+// bottom unfolds upward and pushes its summary out of view.
+function keepRowInPlace(event: MouseEvent & { currentTarget: HTMLElement }) {
+  const summary = (event.target as Element).closest("summary");
+  const details = summary?.parentElement;
+  if (!summary || !(details instanceof HTMLDetailsElement)) return;
+  event.preventDefault();
+  const top = summary.getBoundingClientRect().top;
+  details.open = !details.open;
+  event.currentTarget.scrollTop += summary.getBoundingClientRect().top - top;
+}
+
 export function SessionView(props: { session: Session; snapshot: SessionSnapshot; toggles?: JSX.Element }) {
   const ox = useOx();
   // Layout keys this view by session, so the control is stable for its lifetime.
@@ -44,7 +58,7 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
           <span class="directory">{directory()}</span>
         </p>
       </header>
-      <div class="log" role="log" aria-label="Transcript">
+      <div class="log" role="log" aria-label="Transcript" onClick={keepRowInPlace}>
         <div class="transcript">
           <Transcript snapshot={props.snapshot} />
         </div>
@@ -120,13 +134,9 @@ function Transcript(props: { snapshot: SessionSnapshot }) {
             </Match>
             <Match when={entry.kind === "reasoning" && entry}>
               {(reasoning) => (
-                <details class="reasoning" aria-label="Thinking">
-                  <summary>
-                    Thinking
-                    <span class="icon chevron-right" aria-hidden="true" />
-                  </summary>
+                <article class="reasoning" aria-label="Thinking">
                   <Markdown text={reasoning().text} />
-                </details>
+                </article>
               )}
             </Match>
             <Match when={entry.kind === "tool" && entry}>{(tool) => <ToolCall tool={tool()} />}</Match>
