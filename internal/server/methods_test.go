@@ -73,15 +73,34 @@ func TestInvalidLines(t *testing.T) {
 				t.Errorf("%s: %s was answered with ID %s", name, line, response.ID)
 			}
 		}
-		if _, err := c.conn.Write([]byte(`{"jsonrpc":"2.0","method":"ping"}` + "\n")); err != nil {
+		unadded := t.TempDir()
+		line := `{"jsonrpc":"2.0","method":"ping"}`
+		method := "ping"
+		if name == "plain" {
+			line = `{"jsonrpc":"2.0","method":"workspace/create","params":{"path":"` + unadded + `"}}`
+			method = "workspace/list"
+		}
+		if _, err := c.conn.Write([]byte(line + "\n")); err != nil {
 			t.Fatal(err)
 		}
-		method := "workspace/list"
-		if name == "mcp" {
-			method = "ping"
-		}
-		if response := c.request(method, map[string]string{}); response.Error != nil {
+		response := c.request(method, map[string]string{})
+		if response.Error != nil {
 			t.Errorf("%s: %s after a request without an ID: %+v", name, method, response.Error)
+		}
+		if name == "plain" {
+			var list struct {
+				Workspaces []struct {
+					Path string `json:"path"`
+				} `json:"workspaces"`
+			}
+			if err := json.Unmarshal(response.Result, &list); err != nil {
+				t.Fatal(err)
+			}
+			for _, w := range list.Workspaces {
+				if w.Path == unadded {
+					t.Errorf("a request without an ID created a workspace: %s", response.Result)
+				}
+			}
 		}
 		// Any reply to the request without an ID would be handled by now.
 		time.Sleep(100 * time.Millisecond)
@@ -1092,7 +1111,7 @@ func TestApprovalAnsweredOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(s.Close)
-	c := connect(t, s)
+	c, other := connect(t, s), connect(t, s)
 	var workspace struct {
 		WorkspaceID string `json:"workspace_id"`
 	}
@@ -1113,6 +1132,9 @@ func TestApprovalAnsweredOnce(t *testing.T) {
 	}
 	c.call("session/send", map[string]string{"session_id": id, "text": `approve Bash {"command":"ls"}`})
 	asked := c.update(id, "approval")
+	if seen := other.update(id, "approval"); seen.RequestID != asked.RequestID {
+		t.Fatalf("another client saw a different approval: %+v", seen)
+	}
 	var snapshot struct {
 		State     string           `json:"state"`
 		Approvals []agent.Approval `json:"approvals"`
@@ -1129,6 +1151,9 @@ func TestApprovalAnsweredOnce(t *testing.T) {
 	}
 	if answered := c.update(id, "approval_answered"); answered.RequestID != asked.RequestID {
 		t.Fatalf("approval_answered names another request: %+v", answered)
+	}
+	if answered := other.update(id, "approval_answered"); answered.RequestID != asked.RequestID {
+		t.Fatalf("another client was not told the approval was answered: %+v", answered)
 	}
 	if result := c.update(id, "tool_result"); result.Result.Text != response {
 		t.Fatalf("the harness received %q", result.Result.Text)
@@ -1246,6 +1271,16 @@ func TestSameDirectoryIsOneWorkspace(t *testing.T) {
 	}
 	if first, viaParent := add(filepath.Dir(dir)), add(link+"/.."); first != viaParent {
 		t.Fatalf("the path through a symlink followed by .. named another workspace: %s, %s", first, viaParent)
+	}
+	c.drain()
+	var announced int
+	for _, m := range c.backlog {
+		if m.Method == "workspace/created" {
+			announced++
+		}
+	}
+	if announced != 2 {
+		t.Fatalf("%d workspaces were announced for two directories", announced)
 	}
 }
 

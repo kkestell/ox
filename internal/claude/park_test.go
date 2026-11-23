@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -19,8 +20,19 @@ func TestParkableFollowsActivity(t *testing.T) {
 		t.Fatal("a finished background task kept the agent from parking")
 	}
 
+	var initialize struct {
+		Hooks struct {
+			Stop []struct {
+				HookCallbackIDs []string `json:"hookCallbackIds"`
+			}
+		}
+	}
+	if err := json.Unmarshal([]byte(initializeRequest), &initialize); err != nil || len(initialize.Hooks.Stop) == 0 || len(initialize.Hooks.Stop[0].HookCallbackIDs) == 0 {
+		t.Fatalf("initialize declares no Stop hook: %v, %+v", err, initialize)
+	}
+	callbackID := initialize.Hooks.Stop[0].HookCallbackIDs[0]
 	stop := func(crons string) {
-		output(t, a, `{"type":"control_request","request_id":"hook","request":{"subtype":"hook_callback","callback_id":"stop","input":{"hook_event_name":"Stop","session_crons":`+crons+`}}}`)
+		output(t, a, `{"type":"control_request","request_id":"hook","request":{"subtype":"hook_callback","callback_id":"`+callbackID+`","input":{"hook_event_name":"Stop","session_crons":`+crons+`}}}`)
 	}
 	stop(`[{"id":"b2286d1a","schedule":"45 9 * * *","recurring":false,"prompt":"tick"}]`)
 	if a.Parkable() {

@@ -20,7 +20,8 @@ test("files of a registered language come back as tokens", () => {
     ["Dockerfile", "FROM scratch\n"],
     ["build/Makefile", "all:\n\tgo build\n"],
   ]) {
-    assert.match(highlight(path, source), /<span /, path);
+    const styles = new Set([...highlight(path, source).matchAll(/<span style="([^"]*)"/g)].map((m) => m[1]));
+    assert.ok(styles.size >= 2, `${path} came back with ${styles.size} token styles`);
   }
 });
 

@@ -267,8 +267,8 @@ test("a pending setting is marked pending and holds Send until confirmed", async
   await expect(send(page)).toBeDisabled();
   await prompt(page).press("Enter");
   configure.release();
-  await expect(permissionMode(page)).toHaveValue("plan");
   await expect(permissionMode(page)).not.toHaveAttribute("aria-busy");
+  await expect(permissionMode(page)).toHaveValue("plan");
   await expect(send(page)).toBeEnabled();
   await expect(prompts(page)).toHaveText(["configure me"]);
   expect(sends).toEqual([]);
@@ -775,7 +775,9 @@ test("choosing an option or Other leaves one answer to a single-select question"
   const other = color.getByRole("radio", { name: "Other", exact: true });
   const otherAnswer = color.getByRole("textbox", { name: "Other answer" });
   const red = color.getByRole("radio", { name: "Red" });
+  await red.check();
   await other.check();
+  await expect(red).not.toBeChecked();
   await expect(next).toBeDisabled();
   await red.check();
   await expect(next).toBeEnabled();
@@ -1334,7 +1336,14 @@ test.describe("on a touch screen", () => {
         ...paths.map((path) => `| \`${path}\` | \`${path}\` |`),
       ].join("\n"),
     );
-    await expect(markdown.getByRole("table")).toBeInViewport({ ratio: 1 });
+    const table = markdown.getByRole("table");
+    await expect(table.getByRole("row")).toHaveCount(paths.length + 1);
+    const lastCell = table.getByRole("row").last().getByRole("cell").last();
+    await expect(lastCell).toHaveText(paths[paths.length - 1]);
+    await expect(table).toBeInViewport({ ratio: 1 });
+    expect(await table.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+    await table.evaluate((el) => el.scrollTo({ left: el.scrollWidth }));
+    await expect(lastCell).toBeInViewport({ ratio: 1 });
     await expect.poll(() => transcript(page).evaluate((el) => el.scrollWidth - el.clientWidth)).toBe(0);
   });
 
@@ -1489,9 +1498,10 @@ test("an archived session shows its transcript and Unarchive in place of the com
 
 test("an archived session is archived on every page", async ({ ox: page, context }) => {
   await newSession(page, "archive me");
-  await archive(page, "archive me");
   const other = await context.newPage();
   await other.goto(page.url());
+  await expect(prompt(other)).toBeVisible();
+  await archive(page, "archive me");
   await expect(main(other).getByText("This session is archived.")).toBeVisible();
   await expect(prompt(other)).toHaveCount(0);
 });

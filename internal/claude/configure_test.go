@@ -250,20 +250,28 @@ func TestConfigureTimeoutStopsProcess(t *testing.T) {
 	var reported []agent.Settings
 	a.onConfigured = func(s agent.Settings) { reported = append(reported, s) }
 	result := make(chan error, 1)
-	a.Configure(agent.SettingsPatch{PermissionMode: new("plan")}, replyTo(result))
-	requestID := controlRequestID(t, input)
+	a.Configure(agent.SettingsPatch{Model: new("haiku"), Effort: new("low"), PermissionMode: new("plan")}, replyTo(result))
+	first := controlRequestID(t, input)
+	acknowledge(t, a, first, "success")
+	second := controlRequestID(t, input)
 
+	a.Handle(controlTimeout{first})
 	a.Handle(controlTimeout{"stale"})
-	a.Handle(controlTimeout{requestID})
+	acknowledge(t, a, second, "success")
+	if len(reported) != 2 {
+		t.Fatalf("a timeout for an acknowledged request stopped the configuration: %+v", reported)
+	}
+	third := controlRequestID(t, input)
+
+	a.Handle(controlTimeout{third})
 	exit := <-a.Events()
-	acknowledge(t, a, requestID, "success")
-	acknowledge(t, a, "", "success")
+	acknowledge(t, a, third, "success")
 	select {
 	case err := <-result:
 		t.Fatalf("configuration ended before the process exited: %v", err)
 	default:
 	}
-	if len(reported) != 0 {
+	if len(reported) != 2 {
 		t.Fatalf("an acknowledgement after the timeout reported settings: %+v", reported)
 	}
 	id, err := sendTestPrompt(a, "hello")
