@@ -487,6 +487,23 @@ func TestUnexpectedExitIsReported(t *testing.T) {
 		t.Fatalf("an unexpected exit during a prompt was not reported once, naming it: %+v", *updates)
 	}
 
+	a, _, updates = testAgent()
+	id, err = sendTestPrompt(a, "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Handle(plainText("API Error: Connection refused"))
+	a.Handle(processExit{err: errors.New("exit status 1")})
+	exits = nil
+	for _, u := range *updates {
+		if u.Type == "exited" {
+			exits = append(exits, u)
+		}
+	}
+	if len(exits) != 1 || exits[0].MessageID != id || !strings.Contains(exits[0].Error, "exit status 1") || !strings.Contains(exits[0].Error, "API Error: Connection refused") {
+		t.Fatalf("an exit after startup dropped Claude's plain-text line: %+v", *updates)
+	}
+
 	a, _, updates = stoppableAgent(t)
 	a.Stop()
 	if !a.Exited() || len(*updates) != 0 {

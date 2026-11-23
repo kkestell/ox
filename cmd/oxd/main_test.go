@@ -224,12 +224,24 @@ func TestConfigOffersOnlyWhatHarnessesTake(t *testing.T) {
 	}
 }
 
-func TestConfigRefusesClaudesDefaultPermissionModeAlias(t *testing.T) {
-	cfg := &config.Config{Harnesses: map[string]config.Harness{"claude": {
-		PermissionModes: []config.Option{{ID: "default"}},
-	}}}
-	if err := checkConfig(cfg, map[string]agent.Harness{"claude": claude.Harness}); err == nil || !strings.Contains(err.Error(), "manual") {
-		t.Fatalf("Claude's alias default was not refused in favor of manual: %v", err)
+func TestConfigRefusesPermissionModesClaudeRefuses(t *testing.T) {
+	harnesses := map[string]agent.Harness{"claude": claude.Harness}
+	for mode, want := range map[string]string{"default": "manual", "acceptEdit": "acceptEdit"} {
+		cfg := &config.Config{Harnesses: map[string]config.Harness{"claude": {
+			PermissionModes: []config.Option{{ID: mode}},
+		}}}
+		if err := checkConfig(cfg, harnesses); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("permission mode %q was not refused: %v", mode, err)
+		}
+	}
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	harnesses["fake"] = agent.Harness{Start: fake.Start}
+	harnesses["ur"] = agent.Harness{Start: fake.Start, TakesProviders: true}
+	if err := checkConfig(cfg, harnesses); err != nil {
+		t.Fatalf("the built-in configuration was refused: %v", err)
 	}
 }
 
