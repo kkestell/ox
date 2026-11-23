@@ -39,10 +39,10 @@ export function stopProcess(proc, signal = "SIGTERM") {
 // whose binary changed. A service's current process and hash belong to its
 // record here, and only a restart replaces them.
 //
-// signals, such as process, delivers the stack's own SIGINT and SIGTERM. The
-// services share the terminal's process group, so a terminal Ctrl-C has
-// already sent them SIGINT, and the stack judges their exits without
-// signalling them again.
+// signals, such as process, delivers the stack's own SIGINT, SIGTERM, and
+// SIGHUP. The services run in their own process groups, so the stack sends
+// every signal they receive. A SIGINT while the stack is stopping goes on to
+// each service, which ends oxd at once.
 export function runStack({ services, build, input, signals, log = console.log }) {
   let stopping = false;
   let busy = false;
@@ -57,21 +57,20 @@ export function runStack({ services, build, input, signals, log = console.log })
   // stops holds the judged exit of every process the stack has stopped.
   const stops = [];
 
-  function retire(proc, signal, send) {
-    const stopped = send ? stopProcess(proc, signal) : exited(proc, signal);
+  function retire(proc, signal) {
+    const stopped = stopProcess(proc, signal);
     stops.push(stopped);
     return stopped;
   }
 
-  // stop ends the stack: it signals each current process unless send is false,
-  // waits for every stopped process to exit, and resolves code, or 1 when any
-  // of them failed.
-  async function stop(code, signal = "SIGTERM", send = true) {
+  // stop ends the stack: it signals each current process, waits for every
+  // stopped process to exit, and resolves code, or 1 when any of them failed.
+  async function stop(code, signal = "SIGTERM") {
     if (stopping) return;
     stopping = true;
     lines.close();
     for (const record of records) {
-      if (record.proc) retire(record.proc, signal, send);
+      if (record.proc) retire(record.proc, signal);
     }
     const settled = await Promise.allSettled(stops);
     for (const { reason } of settled.filter(({ status }) => status === "rejected")) log(reason.message);
@@ -80,7 +79,7 @@ export function runStack({ services, build, input, signals, log = console.log })
 
   function start(record) {
     const { command, args = [], cwd } = record.spec;
-    const proc = spawn(command, args, { cwd, stdio: ["ignore", "inherit", "inherit"] });
+    const proc = spawn(command, args, { cwd, detached: true, stdio: ["ignore", "inherit", "inherit"] });
     record.proc = proc;
     if (record.spec.restart) record.hash = fileHash(command);
     proc.on("error", (error) => {
@@ -108,7 +107,7 @@ export function runStack({ services, build, input, signals, log = console.log })
     const old = record.proc;
     record.proc = null;
     try {
-      await retire(old, "SIGTERM", true);
+      await retire(old, "SIGTERM");
     } catch {
       stop(1);
       return;
@@ -148,8 +147,17 @@ export function runStack({ services, build, input, signals, log = console.log })
     }
   });
 
-  signals?.on("SIGINT", () => stop(130, "SIGINT", false));
+  signals?.on("SIGINT", () => {
+    if (!stopping) {
+      stop(130, "SIGINT");
+      return;
+    }
+    for (const { proc } of records) {
+      if (proc && proc.exitCode === null && proc.signalCode === null) proc.kill("SIGINT");
+    }
+  });
   signals?.on("SIGTERM", () => stop(143));
+  signals?.on("SIGHUP", () => stop(129));
   for (const record of records) start(record);
   return Object.assign(result, { stop });
 }
