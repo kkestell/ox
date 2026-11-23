@@ -78,17 +78,17 @@ func TestUnrecordedEndIsRecordedAtLoad(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		entries, err := h.entries()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, e := range entries {
+			got = append(got, e.Type)
+		}
+		if strings.Join(got, ",") != "prompt,tool_use,parked" {
+			t.Fatalf("unexpected history: %v", got)
+		}
 		s.Close()
-	}
-	entries, err := h.entries()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got []string
-	for _, e := range entries {
-		got = append(got, e.Type)
-	}
-	if strings.Join(got, ",") != "prompt,tool_use,parked" {
-		t.Fatalf("unexpected history: %v", got)
 	}
 }

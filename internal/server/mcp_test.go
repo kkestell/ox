@@ -102,8 +102,8 @@ func TestReadSession(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	at := time.Date(2026, 11, 20, 9, 30, 0, 0, time.UTC)
-	stamp := at.Local().Format(timeLayout)
+	at := time.Date(2026, 11, 20, 9, 30, 0, 0, time.Local)
+	stamp := "2026-11-20 09:30:00 " + at.Format("-0700")
 	seed := func(id string, updates ...agent.Update) {
 		t.Helper()
 		for _, u := range updates {
@@ -968,7 +968,7 @@ func TestArchive(t *testing.T) {
 	}
 
 	t.Log("other sessions cannot list or message it, but can read it")
-	if text, _ := fromB.tool("list_sessions", map[string]any{}); strings.Contains(text, a) || strings.Contains(text, k) {
+	if text, _ := fromB.tool("list_sessions", map[string]any{}); text != "[]" {
 		t.Fatalf("list_sessions listed archived sessions: %s", text)
 	}
 	if text, isError := fromB.tool("send_message", map[string]string{"to": k, "text": "hi"}); !isError || text != "session is archived" {
