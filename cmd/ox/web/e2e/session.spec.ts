@@ -4,7 +4,7 @@
 // background task for a prompt "background <milliseconds>".
 import { mkdtempSync } from "node:fs";
 import { basename } from "node:path";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import type { Services } from "./services";
 import { fakeConfig, haikuConfig } from "./services";
 import {
@@ -45,6 +45,52 @@ import {
 
 const main = (page: Page) => page.getByRole("main");
 const words = (n: number) => Array.from({ length: n }, (_, i) => `word${i}`).join(" ");
+
+// expectSidesAligned checks that the session view's parts start 1rem from the
+// pane's left edge and end 1rem from its right edge. The files toggle's glyph
+// sits 1rem from the right edge of its header. On a phone the sessions toggle's
+// glyph sits on the left edge, and the title follows it.
+async function expectSidesAligned(page: Page, phone: boolean) {
+  await newSession(page, "line up");
+  const pane = await main(page).boundingBox();
+  if (!pane) throw new Error("no main box");
+  const left = pane.x + 16;
+  const right = pane.x + pane.width - 16;
+  const near = (actual: number, expected: number) => expect(Math.abs(actual - expected)).toBeLessThanOrEqual(1);
+  const box = async (locator: Locator) => {
+    const b = await locator.boundingBox();
+    if (!b) throw new Error("no box");
+    return b;
+  };
+  // On a phone the sessions toggle sits left of the title.
+  if (!phone) near((await box(heading(page))).x, left);
+  // The folder row's content starts after its padding.
+  const row = page.locator(".context .path");
+  const padding = await row.evaluate((el) => Number.parseFloat(getComputedStyle(el).paddingLeft));
+  near((await box(row)).x + padding, left);
+  const reply = await box(replies(page).last());
+  near(reply.x, left);
+  near(reply.x + reply.width, right);
+  const form = await box(main(page).locator(".composer .box"));
+  near(form.x, left);
+  near(form.x + form.width, right);
+  near((await box(model(page).locator(".harness-icon"))).x, left);
+  // A toggle's glyph is the 1rem square at its center. The files toggle sits in
+  // the session's header on a phone and in the file tree's header on a wide
+  // screen.
+  const glyph = async (button: Locator) => {
+    const b = await box(button);
+    return b.x + (b.width - 16) / 2;
+  };
+  const files = page.getByRole("button", { name: "Toggle files" });
+  const header = await box(files.locator("xpath=ancestor::header[1]"));
+  near((await glyph(files)) + 16, header.x + header.width - 16);
+  if (phone) near(await glyph(page.getByRole("button", { name: "Toggle sessions" })), left);
+}
+
+test("the header, transcript, composer, and settings share one side inset", async ({ ox: page }) => {
+  await expectSidesAligned(page, false);
+});
 
 test("edits typed while a new session is created and sent stay in the composer", async ({ ox: page }) => {
   await newSessionButton(page).click();
@@ -1243,6 +1289,10 @@ test("collapsing the open session's family leaves it open, and a new child stays
 test.describe("on a touch screen", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
+  test("the header, transcript, composer, and settings share one side inset", async ({ ox: page }) => {
+    await expectSidesAligned(page, true);
+  });
+
   test("a parent's chevron shows without hover and keeps the session list open", async ({ ox: page, services }) => {
     await newSession(page, "Parent");
     await createChild(services, sessionId(page), "Child");
@@ -1284,7 +1334,7 @@ test.describe("on a touch screen", () => {
     await approval.getByRole("group").click();
     await expect(approval.getByText('"line39": 39')).toBeVisible();
     await expect.poll(async () => (await waiting(page).boundingBox())?.height).toBeLessThanOrEqual(254);
-    await expect.poll(async () => (await edges(page.getByRole("main").locator(".composer"))).bottom).toBe(620);
+    await expect.poll(async () => (await edges(page.getByRole("main").locator(".composer"))).bottom).toBe(612);
   });
 });
 

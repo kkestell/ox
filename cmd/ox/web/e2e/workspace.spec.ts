@@ -828,19 +828,19 @@ test.describe("on a phone", () => {
     const composer = page.getByRole("main").locator(".composer");
     // frame is the header's top and the composer's bottom.
     const frame = async () => ({ top: (await edges(header)).top, bottom: (await edges(composer)).bottom });
-    // The composer sits its 8 px margin above the home indicator's 34 px inset.
-    await expect.poll(frame).toEqual({ top: 47, bottom: 802 });
+    // The composer sits its 16 px margin above the home indicator's 34 px inset.
+    await expect.poll(frame).toEqual({ top: 47, bottom: 794 });
     await openKeyboard(page, keyboard);
     // Above the keyboard, the home indicator's inset is gone.
-    await expect.poll(frame).toEqual({ top: 167, bottom: 620 });
+    await expect.poll(frame).toEqual({ top: 167, bottom: 612 });
     // A pan alone moves the layout with the visible area.
     await panKeyboard(page, 60);
-    await expect.poll(frame).toEqual({ top: 107, bottom: 560 });
+    await expect.poll(frame).toEqual({ top: 107, bottom: 552 });
     await closeKeyboard(page);
-    await expect.poll(frame).toEqual({ top: 47, bottom: 802 });
+    await expect.poll(frame).toEqual({ top: 47, bottom: 794 });
     // A pinch zoom leaves the layout where it was.
     await openKeyboard(page, { ...keyboard, scale: 2 });
-    await expect.poll(frame).toEqual({ top: 47, bottom: 802 });
+    await expect.poll(frame).toEqual({ top: 47, bottom: 794 });
   });
 
   test("a drawer spans the visible area while the keyboard is open", async ({ ox: page }) => {
