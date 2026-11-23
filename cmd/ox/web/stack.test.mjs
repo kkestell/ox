@@ -156,44 +156,57 @@ test("a retiring service that fails stops the stack", async () => {
 test("a service that fails on Ctrl-C fails the stack", async () => {
   const signals = new EventEmitter();
   const paths = await start({ traps: { oxd: "trap 'exit 66' INT" }, signals });
-  for (const path of Object.values(paths)) process.kill(Number(pid(path)), "SIGINT");
   signals.emit("SIGINT");
   assert.equal(await stack, 1);
   assert.deepEqual(lines, [`${paths.oxd} exited with status 66`]);
 });
 
-// signalStack sends signal to the stack, after sending it to every service
-// too when the terminal delivers it, and expects each service to have received
-// it alone. A service takes a first SIGINT as a graceful stop that ends 0.3
-// seconds later and a second as a forced stop that exits 1, as oxd does. In
-// the terminal case the stack's signal waits until every service has handled
-// the first.
-async function signalStack(signal, terminal) {
+// signalStack sends signal to the stack and expects each service to have
+// received only the signals in received. A service takes a first SIGINT as a
+// graceful stop that ends 0.3 seconds later and a second as a forced stop that
+// exits 1, as oxd does.
+async function signalStack(signal, received) {
   const names = ["oxd", "ox", "vite"];
   const signals = new EventEmitter();
-  const record =
-    "trap 'echo INT >> $0.log; [ -e $0.int ] && exit 1; touch $0.int; (sleep 0.3; kill -USR1 $$) &' INT; " +
-    "trap 'exit 0' USR1; trap 'echo TERM >> $0.log; exit 0' TERM";
   const paths = await start({ traps: Object.fromEntries(names.map((name) => [name, record])), signals });
   const pids = names.map((name) => Number(pid(paths[name])));
-  if (terminal) {
-    for (const id of pids) process.kill(id, signal);
-    await until(() => names.every((name) => existsSync(`${paths[name]}.int`)));
-  }
   signals.emit(signal);
+  await until(() => pids.every((id) => !alive(id)));
   const code = await stack;
-  assert.ok(pids.every((id) => !alive(id)));
-  for (const name of names) assert.equal(readFileSync(`${paths[name]}.log`, "utf8"), `${signal.slice(3)}\n`);
+  for (const name of names) assert.equal(readFileSync(`${paths[name]}.log`, "utf8"), `${received}\n`);
   return code;
 }
 
-test("one terminal Ctrl-C signals each service once", async () => {
-  // A terminal Ctrl-C reaches every process in the foreground group.
-  assert.equal(await signalStack("SIGINT", true), 130);
+const record =
+  "trap 'echo INT >> $0.log; [ -e $0.int ] && exit 1; touch $0.int; (sleep 0.3; kill -USR1 $$) &' INT; " +
+  "trap 'exit 0' USR1; trap 'echo TERM >> $0.log; exit 0' TERM";
+
+test("Ctrl-C to the stack signals each service once", async () => {
+  assert.equal(await signalStack("SIGINT", "INT"), 130);
 });
 
 test("SIGTERM to the stack signals every service", async () => {
-  assert.equal(await signalStack("SIGTERM", false), 143);
+  assert.equal(await signalStack("SIGTERM", "TERM"), 143);
+});
+
+test("a closed terminal stops every service", async () => {
+  assert.equal(await signalStack("SIGHUP", "TERM"), 129);
+});
+
+test("a terminal Ctrl-C reaches only the stack", async () => {
+  const paths = await start();
+  for (const path of Object.values(paths)) assert.equal(process.kill(-Number(pid(path)), 0), true);
+});
+
+test("a second Ctrl-C forwards SIGINT", async () => {
+  const names = ["oxd", "ox", "vite"];
+  const signals = new EventEmitter();
+  const paths = await start({ traps: Object.fromEntries(names.map((name) => [name, record])), signals });
+  signals.emit("SIGINT");
+  await until(() => names.every((name) => existsSync(`${paths[name]}.int`)));
+  signals.emit("SIGINT");
+  assert.equal(await stack, 1);
+  for (const name of names) assert.equal(readFileSync(`${paths[name]}.log`, "utf8"), "INT\nINT\n");
 });
 
 test("stopProcess accepts only status 0, the signal it sent, or 128 plus its number", async () => {
