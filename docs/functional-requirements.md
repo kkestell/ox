@@ -329,6 +329,10 @@ title.
   when it exits, at its timeout of two minutes or up to ten that Ur sets, or
   when the turn is stopped, which also ends the processes it started; Ur gets
   its exit status and the first and last 8 KiB of its output.
+- **Ur's instructions.** Ur works with instructions stating that it is a coding
+  agent in Ox working through its shell tool, Ox's style, the session's
+  workspace directory, the OS, and today's date, and with the workspace's
+  `AGENTS.md` as it stands when each request is sent.
 
 ## Configuration
 

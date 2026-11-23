@@ -12,6 +12,11 @@ var (
 	ErrApprovalNotFound = errors.New("approval request is no longer pending")
 )
 
+// Style is Ox's instruction on how every harness's model writes.
+const Style = "Lead with the big idea up front. " +
+	"Use crisp, deadpan, military-efficient delivery. " +
+	"Use dry wit with complete emotional neutrality."
+
 // Agent runs one harness instance. The session goroutine owns all method
 // calls and runs the Options callbacks during those calls.
 type Agent interface {
