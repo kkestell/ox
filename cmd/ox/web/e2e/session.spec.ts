@@ -1149,9 +1149,9 @@ test("a session's chevron hides and shows every session beneath it", async ({ ox
   await expect(chevron(page, "Grandchild")).toHaveCount(0);
 
   await page.mouse.move(0, 0);
-  await expect(chevron(page, "Child")).toBeHidden();
+  await expect(chevron(page, "Child")).toHaveCSS("opacity", "0");
   await sessionItem(page, "Child").hover();
-  await expect(chevron(page, "Child")).toBeVisible();
+  await expect(chevron(page, "Child")).toHaveCSS("opacity", "1");
   await sessionButton(page, "Child").click();
   const url = page.url();
   await chevron(page, "Child").click();
@@ -1159,6 +1159,20 @@ test("a session's chevron hides and shows every session beneath it", async ({ ox
   await expect(chevron(page, "Child")).toHaveAttribute("aria-expanded", "false");
   await expect(sessionButton(page, "Child")).toHaveAttribute("aria-current", "page");
   expect(page.url()).toBe(url);
+
+  // A click focuses the chevron without a focus ring, so the row's buttons
+  // hide when the pointer leaves; keyboard focus shows them.
+  await page.mouse.move(0, 0);
+  await expect(chevron(page, "Child")).toHaveCSS("opacity", "0");
+  await expect(sessionItem(page, "Child").locator(".actions")).toHaveCSS("opacity", "0");
+  await page.keyboard.press("Shift+Tab");
+  await expect(sessionButton(page, "Child")).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(chevron(page, "Child")).toBeFocused();
+  await expect(chevron(page, "Child")).toHaveCSS("opacity", "1");
+  await expect(sessionItem(page, "Child").locator(".actions")).toHaveCSS("opacity", "1");
+  await page.keyboard.press("Tab");
+  await expect(sessionItem(page, "Child").getByRole("button", { name: "Session actions" })).toBeFocused();
 
   await toggleChildren(page, "Parent");
   await expect(listed).toHaveText(["Parent"]);
@@ -1234,7 +1248,7 @@ test("a session's chevron hides and shows every session beneath it", async ({ ox
     page.screenshot({ clip: { x: row.x + 2, y: Math.round(row.y + row.height / 2), width: 3, height: 3 } });
   await sessionItem(page, long).hover();
   expect(await swatch(longRow)).not.toEqual(await swatch(childRow));
-  await expect(chevron(page, long)).toBeVisible();
+  await expect(chevron(page, long)).toHaveCSS("opacity", "1");
   expect((await title.boundingBox())?.width).toBe(titleBox.width);
   // The chevron stays clear of the ⋯ button, over the title's end, and from
   // just past its icon to the ⋯ button only the row's color shows.
@@ -1298,6 +1312,7 @@ test.describe("on a touch screen", () => {
     await createChild(services, sessionId(page), "Child");
     await page.getByRole("button", { name: "Toggle sessions" }).tap();
     await expect(sessionButton(page, "Child")).toBeVisible();
+    await expect(chevron(page, "Parent")).toHaveCSS("opacity", "1");
     await chevron(page, "Parent").tap();
     await expect(sessionButton(page, "Child")).toHaveCount(0);
     await expect(sessions(page)).toBeVisible();
