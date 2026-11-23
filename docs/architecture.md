@@ -249,9 +249,10 @@ URL keeps live reload.
 | `App.tsx`, `Panels.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `NewSessionView.tsx`, `FileTree.tsx`, `FileView.tsx`, `ApprovalRequest.tsx`, `SettingsFields.tsx`, `HarnessIcon.tsx`, `Markdown.tsx` | The components. `Layout` in `App.tsx` owns the page's panels for the life of the page: which show and their widths in the wide layout, and which drawer is open in the narrow one, below 768 px.                                                                           |
 
 The page shows stream errors while reconnecting and asks for a reload if the
-browser closes the stream after `ox` refuses it. A reload request that fails
-while the stream is connected repeats each second, and its failure shows as the
-page error until it is answered.
+browser closes the stream after `ox` refuses it. A request that cannot reach the
+relay drops the connection as a stream error does, and the page reconnects. A
+reload request that fails while the stream is connected repeats each second, and
+its failure shows as the page error until it is answered.
 
 A session's control owns the page's requests for that session: its composer
 text, the folders its file tree has expanded, its open file and the split
