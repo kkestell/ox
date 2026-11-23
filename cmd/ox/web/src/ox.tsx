@@ -9,6 +9,7 @@ import {
   useContext,
 } from "solid-js";
 import { type Connection, connect, Disconnected, RpcError } from "./connection";
+import { languageFor } from "./highlight";
 import {
   type ApprovalRequest,
   type ApprovalResponse,
@@ -41,6 +42,12 @@ export type Entry =
   | { kind: "exited"; error: string };
 
 export type Approval = { id: string; request: ApprovalRequest };
+
+export type MarkdownView = "preview" | "source";
+
+// OpenFile is the file open in the file viewer. Only a Markdown file has a
+// view, which shows it rendered or as its source.
+export type OpenFile = { path: string; view?: MarkdownView };
 
 export type Session = {
   id: string;
@@ -182,10 +189,11 @@ function createSessionControl(
   const [creation, setCreation] = createSignal<"none" | "creating" | "unconfirmed">("none");
   // expanded holds the paths of the expanded folders in the file tree.
   const [expanded, setExpandedStore] = createStore<Record<string, true>>({});
-  // file is the path of the file open in the file viewer, and split the
-  // transcript's share of the width it shares with the viewer. The layout
-  // renders the share within each side's minimum width without changing it.
-  const [file, setFile] = createSignal<string>();
+  // file is the file open in the file viewer, with its Markdown view, and
+  // split the transcript's share of the width it shares with the viewer. The
+  // layout renders the share within each side's minimum width without
+  // changing it.
+  const [file, writeFile] = createSignal<OpenFile>();
   const [split, writeSplit] = createSignal(0.5);
   // Keep a successfully sent prompt only until Claude takes it or it drops.
   let sent: { id: string; text: string } | undefined;
@@ -260,7 +268,18 @@ function createSessionControl(
       });
     },
     file,
-    setFile: (path: string | undefined) => setFile(path),
+    // setFile opens the file at path, a Markdown file as its preview, or
+    // closes the open file. Opening the open file keeps its view.
+    setFile(path: string | undefined) {
+      if (path === undefined) writeFile(undefined);
+      else if (file()?.path !== path)
+        writeFile(languageFor(path) === "markdown" ? { path, view: "preview" } : { path });
+    },
+    // setView switches the open Markdown file between its preview and source.
+    setView(view: MarkdownView) {
+      const current = file();
+      if (current?.view) writeFile({ ...current, view });
+    },
     split,
     // setSplit sets the transcript's share of the width it shares with the
     // viewer.

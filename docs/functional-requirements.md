@@ -293,6 +293,16 @@ title.
 - **Syntax highlighting.** The file viewer colors a file's text by its language,
   chosen from the file's name, in colors that follow the page's light or dark
   theme; a file whose language Ox does not recognize shows as plain text.
+- **Line numbers.** The file viewer numbers each line of a file's text in a
+  gutter that stays in view as the text scrolls sideways, and copying text from
+  the pane copies none of the numbers.
+- **Word wrap.** A button above the file's text wraps long lines to the pane's
+  width and turns wrapping off again. The choice holds for every file the page
+  opens until the page reloads, and starts off.
+- **Markdown preview.** A Markdown file opens rendered, as the transcript
+  renders Markdown, and a button above it switches between the rendering and its
+  source. The choice lasts while the file stays open in its session, through
+  switching views and reconnecting.
 - **Open file.** Each session, and each workspace's new-session draft, keeps its
   open file through switching views and reconnecting, and a draft's open file
   stays open in the session it creates; reloading the page closes it.

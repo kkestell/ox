@@ -245,7 +245,7 @@ have bound; both listeners serve the same relay and UI.
 | `poll.ts`                                                                                                                                                                                       | The page's polling: a request repeated on each tick of the provider's clock, one in flight at a time.                                                                                                                                                                      |
 | `highlight.ts`                                                                                                                                                                                  | Syntax highlighting: the registered languages and the file names that choose them.                                                                                                                                                                                         |
 | `toolInput.ts`                                                                                                                                                                                  | Readers of Claude's tool calls: a call's label, its subject, an `ExitPlanMode` plan, `AskUserQuestion` questions, and a call's input as JSON.                                                                                                                              |
-| `App.tsx`, `Panels.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `NewSessionView.tsx`, `FileTree.tsx`, `FileView.tsx`, `ApprovalRequest.tsx`, `SettingsFields.tsx`, `HarnessIcon.tsx`, `Markdown.tsx` | The components. `Layout` in `App.tsx` owns the page's panels for the life of the page: which show and their widths in the wide layout, and which drawer is open in the narrow one, below 768 px.                                                                           |
+| `App.tsx`, `Panels.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `NewSessionView.tsx`, `FileTree.tsx`, `FileView.tsx`, `ApprovalRequest.tsx`, `SettingsFields.tsx`, `HarnessIcon.tsx`, `Markdown.tsx` | The components. `Layout` in `App.tsx` owns the page's panels for the life of the page: which show and their widths in the wide layout, and which drawer is open in the narrow one, below 768 px. It also owns whether the file viewer wraps long lines.                    |
 
 The page shows stream errors while reconnecting and asks for a reload if the
 browser closes the stream after `ox` refuses it. A request that cannot reach the
@@ -254,17 +254,18 @@ reload request that fails while the stream is connected repeats each second, and
 its failure shows as the page error until it is answered.
 
 A session's control owns the page's requests for that session: its composer
-text, the folders its file tree has expanded, its open file and the split
-between the transcript and the file viewer, creation, sends, configuration,
-interrupts, approval answers, and their errors. It outlives the session's view,
-so leaving the view or reconnecting keeps the text, expanded folders, open file,
-and split and repeats no request. A send and a configuration exclude each other.
-The control remembers the prompt it sent last, so a prompt dropped before Claude
-took it returns to the composer of the page that sent it. The settings form
-sends a patch to [`session/configure`](protocol.md#sessionconfigure) and shows
-the requested values, each changed one with a spinner, and Send disabled until
-the request settles. After a reconnect each session waits for its own snapshot
-before allowing another send or settings change.
+text, the folders its file tree has expanded, its open file with a Markdown
+file's choice of preview or source, and the split between the transcript and the
+file viewer, creation, sends, configuration, interrupts, approval answers, and
+their errors. It outlives the session's view, so leaving the view or
+reconnecting keeps the text, expanded folders, open file, and split and repeats
+no request. A send and a configuration exclude each other. The control remembers
+the prompt it sent last, so a prompt dropped before Claude took it returns to
+the composer of the page that sent it. The settings form sends a patch to
+[`session/configure`](protocol.md#sessionconfigure) and shows the requested
+values, each changed one with a spinner, and Send disabled until the request
+settles. After a reconnect each session waits for its own snapshot before
+allowing another send or settings change.
 
 The page keeps one draft per workspace. Its ID and composer carry over to the
 created session. A successful create sends the submitted text once. If the reply
