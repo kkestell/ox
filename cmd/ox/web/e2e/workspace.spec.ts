@@ -457,6 +457,47 @@ test("an unreadable folder says why, and an empty folder says Empty", async ({ o
   }
 });
 
+test("a workspace header is as tall as a session row, with its buttons centered", async ({ ox: page, services }) => {
+  await newSession(page, "first");
+  const section = workspaceSection(page, services.workspace);
+  const header = await section.locator("header").boundingBox();
+  const row = await sessionItem(page, "first").boundingBox();
+  if (!header || !row) throw new Error("the workspace's header or session is not shown");
+  expect(header.height).toBe(row.height);
+  await section.getByRole("heading").hover();
+  for (const name of ["Workspace actions", "New session"]) {
+    const button = await section.getByRole("button", { name }).boundingBox();
+    if (!button) throw new Error(`${name} is not shown`);
+    expect(button.y + button.height / 2).toBe(header.y + header.height / 2);
+  }
+});
+
+test("a long workspace name runs to its header's edge beneath its buttons' fade", async ({ ox: page }) => {
+  const long = mkdtempSync(join(tmpdir(), `ox-e2e-${"long".repeat(24)}-`));
+  try {
+    await addWorkspace(page, long);
+    const section = workspaceSection(page, long);
+    const name = section.getByRole("heading", { name: basename(long) });
+    await page.mouse.move(0, 0);
+    const nameBox = await name.boundingBox();
+    const sectionBox = await section.boundingBox();
+    if (!nameBox || !sectionBox) throw new Error("the long workspace is not shown");
+    expect(Math.abs(nameBox.x + nameBox.width - (sectionBox.x + sectionBox.width))).toBeLessThanOrEqual(1);
+    await expect(name).toHaveCSS("text-overflow", "clip");
+    // Hovered, the ⋯ icon stands on the header's own color over the name
+    // beneath it.
+    await name.hover();
+    const actions = await section.getByRole("button", { name: "Workspace actions" }).boundingBox();
+    if (!actions) throw new Error("the long workspace's buttons are not shown");
+    const strip = (x: number) =>
+      page.screenshot({ clip: { x: Math.ceil(x), y: nameBox.y, width: 3, height: nameBox.height } });
+    // The header's padding, left of the name, is empty.
+    expect(await strip(actions.x)).toEqual(await strip(nameBox.x - 5));
+  } finally {
+    rmSync(long, { recursive: true, force: true });
+  }
+});
+
 test("another workspace's draft shows that workspace's tree", async ({ ox: page, services }) => {
   writeFileSync(join(services.workspace, "mine.txt"), "");
   const other = mkdtempSync(join(tmpdir(), "ox-e2e-other-"));

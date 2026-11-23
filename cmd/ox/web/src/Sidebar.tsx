@@ -122,9 +122,10 @@ function rowsOf(shown: Session[], collapsed: Set<string>): Row[] {
 
 // SessionRow is a session's row, indented by its depth. An archived session
 // shows an archive icon in place of its status. The row's button is named by
-// its title and described by its status. A session with shown children has a
-// chevron after its title that hides and shows them. A click anywhere on the
-// row but its other buttons opens the session, as its button does.
+// its title and described by its status. The title runs to the row's edge,
+// beneath the actions' fade. A session with shown children has a chevron after
+// its title that hides and shows them. A click anywhere on the row but its
+// other buttons opens the session, as its button does.
 function SessionRow(props: {
   row: Row;
   selected: boolean;
@@ -196,7 +197,9 @@ function SessionRow(props: {
           />
         </Show>
       </div>
-      <MenuButton label="Session actions" onMenu={props.onMenu} />
+      <div class="actions">
+        <MenuButton label="Session actions" onMenu={props.onMenu} />
+      </div>
     </li>
   );
 }
@@ -438,14 +441,16 @@ export function Sidebar(props: {
                 <h2 id={id} class="name">
                   {workspaceName(workspace.path)}
                 </h2>
-                <MenuButton label="Workspace actions" onMenu={menuOf("workspace", workspace.id)} />
-                <button
-                  type="button"
-                  class="icon plus"
-                  aria-label="New session"
-                  title="New session"
-                  onClick={() => props.onSelect({ kind: "draft", workspaceId: workspace.id })}
-                />
+                <div class="actions">
+                  <MenuButton label="Workspace actions" onMenu={menuOf("workspace", workspace.id)} />
+                  <button
+                    type="button"
+                    class="icon plus"
+                    aria-label="New session"
+                    title="New session"
+                    onClick={() => props.onSelect({ kind: "draft", workspaceId: workspace.id })}
+                  />
+                </div>
               </header>
               <ul>
                 <For each={rows()} keyed={(row) => row.session.id}>

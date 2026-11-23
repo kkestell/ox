@@ -1117,30 +1117,67 @@ test("a session's chevron hides and shows every session beneath it", async ({ ox
   await page.reload();
   await expect(listed).toHaveText(["Parent", "Child", "Grandchild"]);
 
-  // A title too long to fit keeps its width when the chevron shows over its
-  // end, and the chevron keeps its size expanded and collapsed.
+  // A title too long to fit runs to its row's edge, clipped without an
+  // ellipsis, and keeps its width when the chevron shows over its end. The
+  // chevron keeps its size expanded and collapsed.
   const long = `Long parent ${words(40)}`;
+  // A child title is at most 48 characters, still too long to fit, and ends
+  // without spaces, so its text lies beneath the fade before the ⋯ icon.
+  const longChild = `Long child ${"M".repeat(30)}`;
   await newSession(page, long);
-  await createChild(services, sessionId(page), "Long child");
-  await expect(sessionButton(page, "Long child")).toBeVisible();
+  await createChild(services, sessionId(page), longChild);
+  await expect(sessionButton(page, longChild)).toBeVisible();
   // Hovered but not selected, the row shows its hover color.
   await sessionButton(page, "Parent").click();
   await page.mouse.move(0, 0);
   const title = sessionButton(page, long);
-  const width = (await title.boundingBox())?.width;
+  const titleBox = await title.boundingBox();
+  const longRow = await sessionItem(page, long).boundingBox();
+  if (!titleBox || !longRow) throw new Error("the long parent's row is not shown");
+  expect(Math.abs(titleBox.x + titleBox.width - (longRow.x + longRow.width))).toBeLessThanOrEqual(1);
+  await expect(sessionItem(page, long).getByText(long, { exact: true })).toHaveCSS("text-overflow", "clip");
+  // strip is a 3px-wide strip of the row titled name at x, as tall as its
+  // title's text.
+  const strip = async (name: string, x: number) => {
+    const text = await sessionItem(page, name).getByText(name, { exact: true }).boundingBox();
+    if (!text) throw new Error(`${name}'s title is not shown`);
+    return page.screenshot({ clip: { x: Math.ceil(x), y: text.y, width: 3, height: text.height } });
+  };
+  // Selected, the long child keeps its color when hovered. Hovered without a
+  // chevron, it fades its title just before the ⋯ icon, which stands on the
+  // row's own color over the title beneath it.
+  await sessionButton(page, longChild).click();
+  await sessionButton(page, longChild).blur();
+  await page.mouse.move(0, 0);
+  const childRow = await sessionItem(page, longChild).boundingBox();
+  const childActions = await sessionItem(page, longChild)
+    .getByRole("button", { name: "Session actions" })
+    .boundingBox();
+  if (!childRow || !childActions) throw new Error("the long child's row is not shown");
+  const empty = await strip(longChild, childRow.x + 2);
+  const unfaded = await strip(longChild, childActions.x - 4);
+  await sessionItem(page, longChild).hover();
+  expect(await strip(longChild, childRow.x + 2)).toEqual(empty);
+  expect(await strip(longChild, childActions.x - 4)).not.toEqual(unfaded);
+  expect(await strip(longChild, childActions.x)).toEqual(empty);
+  // A hovered row shows a different color from the selected one.
+  const swatch = (row: { x: number; y: number; height: number }) =>
+    page.screenshot({ clip: { x: row.x + 2, y: Math.round(row.y + row.height / 2), width: 3, height: 3 } });
   await sessionItem(page, long).hover();
+  expect(await swatch(longRow)).not.toEqual(await swatch(childRow));
   await expect(chevron(page, long)).toBeVisible();
-  expect((await title.boundingBox())?.width).toBe(width);
-  // The chevron stays clear of the ⋯ button, over the title's end.
+  expect((await title.boundingBox())?.width).toBe(titleBox.width);
+  // The chevron stays clear of the ⋯ button, over the title's end, and from
+  // just past its icon to the ⋯ button only the row's color shows.
   const actions = await sessionItem(page, long).getByRole("button", { name: "Session actions" }).boundingBox();
   const over = await chevron(page, long).boundingBox();
   if (!actions || !over) throw new Error("the long parent's buttons are not shown");
   expect(over.x + over.width).toBeLessThanOrEqual(actions.x);
+  const beside = (x: number) => page.screenshot({ clip: { x, y: over.y, width: 5, height: over.height } });
+  expect(await beside(over.x + over.width - 2)).toEqual(await beside(longRow.x + 2));
   // In the dark theme too, the chevron's box beside its icon shows the
   // hovered row's own color.
   await page.emulateMedia({ colorScheme: "dark" });
-  const longRow = await sessionItem(page, long).boundingBox();
-  if (!longRow) throw new Error("the long parent's row is not shown");
   const pixel = (x: number) =>
     page.screenshot({ clip: { x, y: Math.round(over.y + over.height / 2), width: 1, height: 1 } });
   expect(await pixel(Math.round(over.x + over.width) - 2)).toEqual(await pixel(Math.round(longRow.x) + 3));

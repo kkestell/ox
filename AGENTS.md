@@ -229,7 +229,11 @@ brief stops and reports it to the session that started it. Changes reach
    request with `gh pr create`. Its title is the commit subject. Its body links
    the plan and review, states the verdict, lists the checks run, with
    `make live` run or not run, and adds `Fixes #N` for each issue the change
-   resolves.
+   resolves. When the change alters the UI, the body ends with a
+   `## Screenshots` table of each view it changes, before and after, taken in
+   headless Chrome from the base and the change. The images are committed
+   under `pr-<N>/` on the orphan `pr-assets` branch and linked through
+   `raw.githubusercontent.com` at that commit.
 8. After the user merges, the top-level agent removes the worktree and its
    local branch, then pulls in the main checkout.
 
