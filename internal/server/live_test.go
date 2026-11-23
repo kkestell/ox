@@ -3,12 +3,15 @@ package server
 import (
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -886,7 +889,8 @@ func TestLiveUr(t *testing.T) {
 	var workspace struct {
 		WorkspaceID string `json:"workspace_id"`
 	}
-	json.Unmarshal(c.call("workspace/create", map[string]string{"path": t.TempDir()}), &workspace)
+	dir := t.TempDir()
+	json.Unmarshal(c.call("workspace/create", map[string]string{"path": dir}), &workspace)
 	var created struct {
 		SessionID string `json:"session_id"`
 	}
@@ -933,16 +937,23 @@ func TestLiveUr(t *testing.T) {
 	for c.update(id, "state").State != "idle" {
 	}
 
-	// In auto mode the command runs at once, and an interrupt stops it.
+	// In auto mode the command runs at once, and an interrupt ends it.
 	c.call("session/configure", map[string]string{"session_id": id, "permission_mode": "auto"})
 	c.forget(id)
-	c.call("session/send", map[string]string{"session_id": id, "text": "Use the shell tool to run `sleep 30 && echo late`."})
+	c.call("session/send", map[string]string{"session_id": id, "text": "Use the shell tool to run exactly `echo $$ > running; sleep 30`."})
 	c.update(id, "tool_use")
+	pidFile := filepath.Join(dir, "running")
+	var pid int
+	for deadline := time.Now().Add(30 * time.Second); pid == 0; time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the command never started")
+		}
+		if data, err := os.ReadFile(pidFile); err == nil {
+			pid, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+		}
+	}
 	interrupted := time.Now()
 	c.call("session/interrupt", map[string]string{"session_id": id})
-	if stopped := c.update(id, "tool_result").Result; !stopped.IsError || !strings.Contains(stopped.Text, "stopped this command") {
-		t.Errorf("the interrupted command's result %+v", stopped)
-	}
 	if result := c.update(id, "result").Result; !result.IsError || result.Text != "Interrupted" {
 		t.Errorf("the interrupted turn's result %+v", result)
 	}
@@ -950,6 +961,13 @@ func TestLiveUr(t *testing.T) {
 	}
 	if elapsed := time.Since(interrupted); elapsed > 10*time.Second {
 		t.Errorf("the interrupt took %s", elapsed)
+	}
+	// The interrupt killed the command's process group.
+	for deadline := time.Now().Add(5 * time.Second); !errors.Is(syscall.Kill(pid, 0), syscall.ESRCH); time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			syscall.Kill(pid, syscall.SIGKILL)
+			t.Fatalf("the command's shell %d survived the interrupt", pid)
+		}
 	}
 	// The next request answers the stopped call, or the provider refuses it.
 	turn("Reply with just the word ok.")

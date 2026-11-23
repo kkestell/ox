@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/kkestell/ox/internal/agent"
+	"github.com/kkestell/ox/internal/children"
 )
 
 // startLog records what a starting agent reports.
@@ -39,12 +40,16 @@ func (l *startLog) options() agent.Options {
 func failingStart(t *testing.T) (*Agent, string, *startLog, chan agent.Event) {
 	t.Helper()
 	cmd := exec.Command("sleep", "60")
-	if err := spawn(cmd); err != nil {
+	if err := children.Start(cmd, func() { cmd.Process.Kill() }); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { cmd.Process.Kill() })
 	events := make(chan agent.Event, 1)
-	go func() { events <- processExit{err: wait(cmd)} }()
+	go func() {
+		err := cmd.Wait()
+		children.Done(cmd)
+		events <- processExit{err: err}
+	}()
 	log := new(startLog)
 	a := newAgent(newWriter(io.Discard), make(chan agent.Event), make(chan struct{}), &process{cmd: cmd}, log.options())
 	id, err := sendTestPrompt(a, "hello")
@@ -176,13 +181,13 @@ func TestStartupLimit(t *testing.T) {
 	log.dropped(t, a, id, "no startup response within one minute")
 	waited := make(chan struct{})
 	go func() {
-		WaitAll()
+		children.WaitAll()
 		close(waited)
 	}()
 	select {
 	case <-waited:
 	case <-time.After(5 * time.Second):
-		KillAll()
+		children.KillAll()
 		t.Fatal("Claude was not asked to exit after the startup limit")
 	}
 }

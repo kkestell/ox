@@ -1,6 +1,7 @@
 package ur
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/kkestell/ox/internal/agent"
+	"github.com/kkestell/ox/internal/children"
 )
 
 const model = "deepseek/test"
@@ -718,6 +720,30 @@ func TestSaveFailure(t *testing.T) {
 			t.Errorf("the next request's messages %q", got)
 		}
 	})
+
+	// A command that ran is shown in the transcript even when its outcome
+	// cannot be saved.
+	t.Run("command result", func(t *testing.T) {
+		r := start(t, agent.Settings{Model: model, PermissionMode: "auto"}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
+			sseCalls(w, "", call{"call_1", "shell", `{"command":"while [ ! -e go ]; do sleep 0.05; done"}`})
+		})
+		r.send("p1", "go")
+		r.until(func(u agent.Update) bool { return u.Type == agent.UpdateToolUse })
+		if err := os.Chmod(r.file(), 0o400); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(r.workspace, "go"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		result := r.until(func(u agent.Update) bool { return u.Type == agent.UpdateToolResult })
+		if result.ToolUseID != "call_1" || result.Result.IsError || !strings.HasPrefix(result.Result.Text, "Exit code: 0") {
+			t.Errorf("tool_result %+v %+v", result, result.Result)
+		}
+		prefix := "Ur could not save the command's result: "
+		if final := r.result(); !final.IsError || !strings.HasPrefix(final.Text, prefix) {
+			t.Errorf("result %+v, expected an error starting %q", final, prefix)
+		}
+	})
 }
 
 // call is a tool call a canned response makes.
@@ -797,6 +823,8 @@ func TestShellApproved(t *testing.T) {
 		}
 		sse(w, "done")
 	})
+	// The card shows the parsed arguments, with the default timeout filled in.
+	const shown = `{"command":"echo hi","timeout_seconds":120}`
 	r.send("p1", "say hi")
 	var seen []agent.Update
 	approval := r.until(func(u agent.Update) bool {
@@ -809,7 +837,7 @@ func TestShellApproved(t *testing.T) {
 	if got := kinds(seen); !slices.Equal(got, want) {
 		t.Errorf("updates %q, not %q", got, want)
 	}
-	if use := seen[3]; use.ToolUseID != "call_1" || use.ToolName != "shell" || string(use.Input) != `{"command":"echo hi"}` {
+	if use := seen[3]; use.ToolUseID != "call_1" || use.ToolName != "shell" || string(use.Input) != shown {
 		t.Errorf("tool_use %+v", use)
 	}
 	var request struct {
@@ -818,12 +846,13 @@ func TestShellApproved(t *testing.T) {
 		ToolUseID string          `json:"tool_use_id"`
 	}
 	if err := json.Unmarshal(approval.Request, &request); err != nil || request.ToolName != "shell" ||
-		string(request.Input) != `{"command":"echo hi"}` || request.ToolUseID != "call_1" {
+		string(request.Input) != shown || request.ToolUseID != "call_1" {
 		t.Errorf("approval request %s", approval.Request)
 	}
 	snapshot := r.agent.Snapshot()
 	if snapshot.State != agent.StateRequiresAction || len(snapshot.Approvals) != 1 ||
-		snapshot.Approvals[0].RequestID != approval.RequestID || snapshot.Approvals[0].ToolName != "shell" {
+		snapshot.Approvals[0].RequestID != approval.RequestID || snapshot.Approvals[0].ToolName != "shell" ||
+		!bytes.Equal(snapshot.Approvals[0].Request, approval.Request) {
 		t.Errorf("snapshot while asking: %+v", snapshot)
 	}
 	if r.agent.Parkable() {
@@ -949,7 +978,8 @@ func TestShellInvalidCall(t *testing.T) {
 			sseCalls(w, "",
 				call{"call_1", "shell", `{"command":"touch wrong","cwd":"/"}`},
 				call{"call_2", "shell", `touch wrong`},
-				call{"call_3", "python", `{"code":"1"}`})
+				call{"call_3", "python", `{"code":"1"}`},
+				call{"call_4", "shell", `{"command":"touch wrong"} extra`})
 			return
 		}
 		sse(w, "ok")
@@ -973,16 +1003,16 @@ func TestShellInvalidCall(t *testing.T) {
 			}
 		}
 	}
-	wantUses := []string{`call_1 shell {"command":"touch wrong","cwd":"/"}`, "call_2 shell {}", `call_3 python {"code":"1"}`}
+	wantUses := []string{`call_1 shell {"command":"touch wrong","cwd":"/"}`, "call_2 shell {}", `call_3 python {"code":"1"}`, "call_4 shell {}"}
 	if !slices.Equal(uses, wantUses) {
 		t.Errorf("tool uses %q, not %q", uses, wantUses)
 	}
-	if len(results) != 3 || results[0] != `arguments: json: unknown field "cwd"` ||
-		!strings.HasPrefix(results[1], "arguments: ") || results[2] != `Ur has no tool "python"` {
+	if len(results) != 4 || results[0] != `arguments: json: unknown field "cwd"` ||
+		!strings.HasPrefix(results[1], "arguments: ") || results[2] != `Ur has no tool "python"` || !strings.HasPrefix(results[3], "arguments: ") {
 		t.Errorf("tool results %q", results)
 	}
 	r.request()
-	if got := roles(r.request().body); !slices.Equal(got, []string{"user", "assistant", "tool", "tool", "tool"}) {
+	if got := roles(r.request().body); !slices.Equal(got, []string{"user", "assistant", "tool", "tool", "tool", "tool"}) {
 		t.Errorf("the second request's roles %q", got)
 	}
 	if _, err := os.Stat(filepath.Join(r.workspace, "wrong")); !errors.Is(err, fs.ErrNotExist) {
@@ -1010,17 +1040,14 @@ func TestShellInterrupt(t *testing.T) {
 		if err := r.agent.Interrupt(); err != nil {
 			t.Fatal(err)
 		}
-		want := []string{"prompt_cancelled p2", "approval_cancelled p1", "tool_result p1", "result p1", "state p1 idle"}
+		want := []string{"prompt_cancelled p2", "approval_cancelled p1", "result p1", "state p1 idle"}
 		if got := kinds(r.updates); !slices.Equal(got, want) {
 			t.Fatalf("interrupt published %q, not %q", got, want)
 		}
 		if u := r.updates[1]; u.RequestID != approval.RequestID {
 			t.Errorf("approval_cancelled %+v", u)
 		}
-		if u := r.updates[2]; u.ToolUseID != "call_1" || !u.Result.IsError || u.Result.Text != stopped {
-			t.Errorf("tool_result %+v %+v", u, u.Result)
-		}
-		if result := r.updates[3].Result; !result.IsError || result.Text != "Interrupted" {
+		if result := r.updates[2].Result; !result.IsError || result.Text != "Interrupted" {
 			t.Errorf("result %+v", result)
 		}
 		if snapshot := r.agent.Snapshot(); len(snapshot.Approvals) != 0 {
@@ -1059,11 +1086,8 @@ func TestShellInterrupt(t *testing.T) {
 		if err := r.agent.Interrupt(); err != nil {
 			t.Fatal(err)
 		}
-		if got := kinds(r.updates); !slices.Equal(got, []string{"tool_result p1", "result p1", "state p1 idle"}) {
+		if got := kinds(r.updates); !slices.Equal(got, []string{"result p1", "state p1 idle"}) {
 			t.Fatalf("interrupt published %q", got)
-		}
-		if u := r.updates[0]; !u.Result.IsError || u.Result.Text != stopped {
-			t.Errorf("tool_result %+v", u.Result)
 		}
 		gone(t, filepath.Join(r.workspace, "child"))
 		r.request()
@@ -1108,15 +1132,15 @@ func TestShellStop(t *testing.T) {
 		r.send("p1", "go")
 		r.until(func(u agent.Update) bool { return u.Type == agent.UpdateToolUse })
 		waitFile(t, filepath.Join(r.workspace, "child"))
-		// WaitAll, which oxd calls as it stops, waits for the command.
+		// children.WaitAll, which oxd calls as it stops, waits for the command.
 		waited := make(chan struct{})
 		go func() {
-			WaitAll()
+			children.WaitAll()
 			close(waited)
 		}()
 		select {
 		case <-waited:
-			t.Error("WaitAll returned while a command ran")
+			t.Error("children.WaitAll returned while a command ran")
 		case <-time.After(100 * time.Millisecond):
 		}
 		r.updates = nil
@@ -1127,7 +1151,7 @@ func TestShellStop(t *testing.T) {
 		select {
 		case <-waited:
 		case <-time.After(2 * time.Second):
-			t.Error("WaitAll did not return once Stop ended the command")
+			t.Error("children.WaitAll did not return once Stop ended the command")
 		}
 		gone(t, filepath.Join(r.workspace, "child"))
 		r.request()

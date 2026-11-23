@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/kkestell/ox/internal/agent"
+	"github.com/kkestell/ox/internal/children"
 	"github.com/kkestell/ox/internal/claude"
 	"github.com/kkestell/ox/internal/config"
 	"github.com/kkestell/ox/internal/fake"
@@ -65,7 +66,7 @@ func main() {
 }
 
 func run(dbPath string, cfg *config.Config, parkAfter time.Duration, harnesses map[string]agent.Harness, mcp server.MCP) error {
-	// Hold the socket until every session has stopped and every Claude
+	// Hold the socket until every session has stopped and every child
 	// process has exited. The store's lock on the database protects the
 	// history repair that loading the server does.
 	listener, err := listen(mcp.Socket)
@@ -95,13 +96,12 @@ func run(dbPath string, cfg *config.Config, parkAfter time.Duration, harnesses m
 	stopped := make(chan struct{})
 	go func() {
 		s.Close()
-		claude.WaitAll()
-		ur.WaitAll()
+		children.WaitAll()
 		close(stopped)
 	}()
 	select {
 	case <-signals:
-		claude.KillAll()
+		children.KillAll()
 		os.Exit(1)
 	case <-stopped:
 	}
