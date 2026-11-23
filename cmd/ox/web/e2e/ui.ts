@@ -168,11 +168,13 @@ export const isRequest = (method: string) => (request: { url(): string; postData
   request.url().includes("/rpc") && request.postDataJSON()?.method === method;
 
 // hold intercepts the page's next request for method until release passes it
-// on (optionally with changed parameters), or fail answers it as a relay error.
+// on (optionally with changed parameters), fail answers it as a relay error, or
+// abort cuts it off as a network error.
 // Only a request whose parameters include every key of params is held.
 export async function hold(page: Page, method: string, params?: Record<string, unknown>) {
   let release!: (changes?: Record<string, unknown>) => void;
   let fail!: (message: string) => void;
+  let abort!: () => void;
   const answer = new Promise<(route: Route) => Promise<void>>((resolve) => {
     release = (changes) =>
       resolve((route) => {
@@ -181,6 +183,7 @@ export async function hold(page: Page, method: string, params?: Record<string, u
         return route.continue({ postData: { ...request, params: { ...request.params, ...changes } } });
       });
     fail = (message) => resolve((route) => route.fulfill({ status: 502, body: message }));
+    abort = () => resolve((route) => route.abort());
   });
   let held!: () => void;
   const arrived = new Promise<void>((resolve) => {
@@ -195,7 +198,7 @@ export async function hold(page: Page, method: string, params?: Record<string, u
     held();
     await (await answer)(route);
   });
-  return { arrived, release, fail };
+  return { arrived, release, fail, abort };
 }
 
 declare global {
