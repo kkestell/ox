@@ -62,14 +62,13 @@ async function until(condition) {
 // named in changed, or exits nonzero when fail is set. The build waits
 // buildDelay seconds first. Each service runs with the trap traps names for
 // it, and the stack takes signals.
-async function start({ changed = [], fail = false, restart = {}, buildDelay = 0, traps = {}, signals } = {}) {
-  const paths = Object.fromEntries(["oxd", "ox", "vite"].map((name) => [name, script(name, traps[name])]));
+async function start({ changed = [], fail = false, buildDelay = 0, traps = {}, signals } = {}) {
+  const paths = Object.fromEntries(["oxd", "ox"].map((name) => [name, script(name, traps[name])]));
   const edits = changed.map((name) => `echo '#' >> ${paths[name]}`).join("; ");
   stack = runStack({
     services: Object.entries(paths).map(([name, command]) => ({
       name,
       command,
-      restart: restart[name] ?? name !== "vite",
     })),
     build: fail ? "exit 1" : `sleep ${buildDelay}; ${edits || ":"}`,
     input,
@@ -92,7 +91,6 @@ test("a changed binary restarts alone", async () => {
   const after = snapshot(paths);
   assert.notEqual(after.ox, before.ox);
   assert.equal(after.oxd, before.oxd);
-  assert.equal(after.vite, before.vite);
   assert.equal(process.kill(Number(after.oxd), 0), true);
 });
 
@@ -116,22 +114,13 @@ test("a failed build restarts nothing", async () => {
   assert.deepEqual(snapshot(paths), before);
 });
 
-test("a service with restart false is not restarted", async () => {
-  const paths = await start({ changed: ["vite"] });
-  const before = snapshot(paths);
-  input.write("\n");
-  await until(() => lines.includes("nothing changed"));
-  assert.deepEqual(snapshot(paths), before);
-});
-
 test("an exit the stack did not cause stops the stack", async () => {
-  const paths = await start({ traps: { vite: "trap 'exit 3' USR1" } });
+  const paths = await start({ traps: { ox: "trap 'exit 3' USR1" } });
   const oxd = Number(pid(paths.oxd));
-  const ox = Number(pid(paths.ox));
-  process.kill(Number(pid(paths.vite)), "SIGUSR1");
+  process.kill(Number(pid(paths.ox)), "SIGUSR1");
   assert.equal(await stack, 3);
   assert.deepEqual(lines, []);
-  assert.ok(!alive(oxd) && !alive(ox));
+  assert.ok(!alive(oxd));
 });
 
 test("an exit after a restart stops the stack", async () => {
@@ -166,7 +155,7 @@ test("a service that fails on Ctrl-C fails the stack", async () => {
 // graceful stop that ends 0.3 seconds later and a second as a forced stop that
 // exits 1, as oxd does.
 async function signalStack(signal, received) {
-  const names = ["oxd", "ox", "vite"];
+  const names = ["oxd", "ox"];
   const signals = new EventEmitter();
   const paths = await start({ traps: Object.fromEntries(names.map((name) => [name, record])), signals });
   const pids = names.map((name) => Number(pid(paths[name])));
@@ -199,7 +188,7 @@ test("a terminal Ctrl-C reaches only the stack", async () => {
 });
 
 test("a second Ctrl-C forwards SIGINT", async () => {
-  const names = ["oxd", "ox", "vite"];
+  const names = ["oxd", "ox"];
   const signals = new EventEmitter();
   const paths = await start({ traps: Object.fromEntries(names.map((name) => [name, record])), signals });
   signals.emit("SIGINT");
