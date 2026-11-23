@@ -83,7 +83,6 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: 
 .search-icon { --icon: url(lucide-static/icons/search.svg); }
 .check { --icon: url(lucide-static/icons/check.svg); }
 .bot { --icon: url(lucide-static/icons/bot.svg); }
-.brain { --icon: url(lucide-static/icons/brain.svg); }
 .loader { --icon: url(lucide-static/icons/loader-circle.svg); }
 .loader::before { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -268,8 +267,9 @@ main { flex: 1 1 0; min-width: min(240px, 50cqi); display: flex; flex-direction:
 :is(details.tool, details.reasoning):not([open]) + :is(details.tool, details.reasoning) { margin-top: -0.75rem; }
 :is(details.tool, details.reasoning) summary { display: flex; align-items: center; padding: 0.25rem 0; list-style: none; cursor: default; }
 :is(details.tool, details.reasoning) summary::-webkit-details-marker { display: none; }
-details.reasoning .marker { color: var(--muted-foreground); }
-details.reasoning .markdown { margin: 0.5rem 0 0 1.5rem; color: var(--muted-foreground); }
+details.reasoning summary .chevron-right { margin-left: 0.25rem; color: var(--muted-foreground); }
+details.reasoning[open] > summary .chevron-right::before { transform: rotate(90deg); }
+details.reasoning .markdown { margin-top: 0.25rem; color: var(--muted-foreground); }
 .marker { flex: none; width: 1.5rem; height: 1.25rem; display: flex; align-items: center; }
 .marker.running::before, .marker.done::before { width: 0.5rem; height: 0.5rem; margin-left: 0.25rem; border-radius: 50%; mask: none; }
 details.tool .name { flex: none; }
