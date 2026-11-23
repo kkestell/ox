@@ -17,7 +17,7 @@ export function createPanels(drawerAtLoad: Drawer | undefined) {
   const [narrow, setNarrow] = createSignal(media.matches);
   const [drawer, setDrawer] = createSignal<Drawer | undefined>(drawerAtLoad);
   const [left, setLeft] = createSignal(true);
-  const [right, setRight] = createSignal(true);
+  const [right, setRight] = createSignal(false);
   const [leftWidth, setLeftWidth] = createSignal(288);
   const [rightWidth, setRightWidth] = createSignal(288);
   onSettled(() => {

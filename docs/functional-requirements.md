@@ -91,18 +91,18 @@ title.
   open in a new tab.
 - **Tool calls.** Each tool call shows its name, a summary of its input, and
   whether it is running, done, failed, or stopped; expanding it shows the full
-  input and the result's text, and a plan renders as Markdown.
-- **Reasoning.** When Claude or Ur reasons, the transcript shows a collapsed
-  Thinking row where the reasoning happened; expanding it shows the reasoning,
-  streaming in as Markdown under the same rules as replies. Claude's reasoning
-  is its own summary of its thinking.
+  input and the result's text, and a plan renders as Markdown. Expanding or
+  collapsing a tool call keeps its summary where it was on screen.
+- **Reasoning.** When Claude or Ur reasons, the transcript shows the reasoning
+  in full where it happened, streaming in as Markdown under the same rules as
+  replies. Claude's reasoning is its own summary of its thinking.
 - **Main conversation only.** The transcript shows the main conversation only,
   not the inner messages of Claude's subagents.
 - **Failed turns.** A failed turn shows its error in the transcript.
 - **Unexpected exits.** A Claude process that exits without Ox stopping it
   leaves the reason in the transcript.
-- **Following output.** The transcript follows new output unless the user has
-  scrolled up.
+- **Following output.** The transcript follows new output while it is scrolled
+  to its bottom.
 - **Claude's own turns.** Turns Claude starts itself, from a schedule or a
   finished background task, run and appear in the transcript like any other
   turn.
@@ -261,8 +261,9 @@ title.
   for every session. Each session and new-session draft keeps its own split
   between the transcript and the file viewer, and a draft's split carries to the
   session it creates. The layout lasts through switching views and reconnecting;
-  reloading the page on a screen 768 px or wider shows both panels at their
-  default widths, with the transcript and file viewer splitting evenly.
+  reloading the page on a screen 768 px or wider shows the session list and
+  hides the file tree, each panel at its default width, with the transcript and
+  file viewer splitting evenly.
 - **Narrow screens.** On a screen narrower than 768 px, the page shows one pane
   at a time: the transcript, or the open file in its place until its tab is
   closed. The session list and the file tree slide in over it from the left and

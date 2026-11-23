@@ -402,26 +402,50 @@ test("the page links a manifest that opens Ox standalone with its icon", async (
   expect(icon.headers()["content-type"]).toBe("image/png");
 });
 
-test("reasoning shows as a collapsed Thinking row, before and after a reload", async ({ ox: page }) => {
+test("reasoning shows in the transcript, before and after a reload", async ({ ox: page }) => {
   await newSessionButton(page).click();
   await prompt(page).fill("think Count to **three**.");
   await prompt(page).press("Enter");
   await expect(replies(page).last()).toHaveText("You said: think Count to three.");
-  const thinking = transcript(page).getByRole("group", { name: "Thinking" });
-  await expect(thinking).toHaveCount(1);
-  const reasoning = thinking.locator(".markdown");
-  await expect(reasoning).toBeHidden();
-  await thinking.getByText("Thinking").click();
-  await expect(reasoning).toBeVisible();
-  await expect(reasoning).toHaveText("Count to three.");
-  await expect(reasoning.locator("strong")).toHaveText("three");
+  const thinking = transcript(page).getByRole("article", { name: "Thinking" });
+  await expect(thinking).toHaveText("Count to three.");
+  await expect(thinking.locator("strong")).toHaveText("three");
 
   await page.reload();
   await expect(replies(page).last()).toHaveText("You said: think Count to three.");
-  await expect(thinking).toHaveCount(1);
-  await expect(reasoning).toBeHidden();
-  await thinking.getByText("Thinking").click();
-  await expect(reasoning).toHaveText("Count to three.");
+  await expect(thinking).toHaveText("Count to three.");
+});
+
+test("opening and closing a tool call keeps its summary in place", async ({ ox: page }) => {
+  // A prompt and reply that overflow the transcript, so it follows its bottom.
+  await newSession(page, Array.from({ length: 12 }, (_, i) => `Sheep${i}.`).join("\n\n"));
+  await allow(await ask(page, "Bash", '{"a":1,"b":2,"c":3,"d":4,"e":5,"f":6}'));
+  await expect(stop(page)).toHaveCount(0);
+  const tool = toolCall(page, "Bash");
+  const input = tool.getByText('"f": 6');
+  const summary = tool.getByText("Bash", { exact: true });
+  await expect(summary).toBeInViewport();
+  const top = async () => (await summary.boundingBox())?.y;
+  const before = await top();
+  // Below the summary, the card would unfold upward and push the summary out of view.
+  await summary.click();
+  await expect(input).toBeVisible();
+  await expect.poll(top).toBe(before);
+  await summary.click();
+  await expect(input).toBeHidden();
+  await expect.poll(top).toBe(before);
+});
+
+test("a reconnecting stream shows as a status, not an error", async ({ ox: page, services }) => {
+  await newSession(page, "still here");
+  const drop = (route: Route) => route.abort();
+  await page.route("**/events", drop);
+  await services.restartRelay();
+  await expect(page.getByRole("status").filter({ hasText: "Reconnecting…" })).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.unroute("**/events", drop);
+  await expect(page.getByRole("status").filter({ hasText: "Reconnecting…" })).toHaveCount(0, { timeout: 10_000 });
+  await expect(send(page)).toBeEnabled();
 });
 
 test("a closed stream offers a Reload button that reconnects", async ({ ox: page, services }) => {
@@ -742,7 +766,7 @@ for (const outcome of ["taken", "dropped"] as const) {
     // The page stays disconnected while the other page resolves the prompt.
     await page.route("**/events", (route) => route.abort());
     await services.restartRelay();
-    await expect(page.getByRole("alert").filter({ hasText: "Lost the connection" })).toBeVisible();
+    await expect(page.getByRole("status").filter({ hasText: "Reconnecting…" })).toBeVisible();
     // Wait for the other page's new snapshot, not its old approval or the
     // HTTP acknowledgement of a session/get for some other session.
     await other.reload();

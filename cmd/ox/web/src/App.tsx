@@ -151,15 +151,21 @@ function Layout() {
       <div class="center">
         <Show when={ox.error()}>
           {(error) => (
-            <p role="alert">
-              {error().message}
-              <Show when={error() instanceof Disconnected && (error() as Disconnected).closed}>
-                {" "}
-                <button type="button" onClick={() => location.reload()}>
-                  Reload
-                </button>
-              </Show>
-            </p>
+            // A dropped stream that is reconnecting is routine, such as after the
+            // phone wakes the page, so it shows as a status rather than an error.
+            <Switch fallback={<p role="alert">{error().message}</p>}>
+              <Match when={error() instanceof Disconnected && !(error() as Disconnected).closed}>
+                <p role="status">Reconnecting…</p>
+              </Match>
+              <Match when={error() instanceof Disconnected}>
+                <p role="alert">
+                  {error().message}{" "}
+                  <button type="button" onClick={() => location.reload()}>
+                    Reload
+                  </button>
+                </p>
+              </Match>
+            </Switch>
           )}
         </Show>
         <For each={liveDrafts().filter((d) => d.control.error() && d !== draft())}>
@@ -183,7 +189,9 @@ function Layout() {
                     fallback={
                       <>
                         <BareHeader />
-                        <p role="status">Loading session…</p>
+                        <p role="status" class="loading">
+                          Loading session…
+                        </p>
                       </>
                     }
                   >

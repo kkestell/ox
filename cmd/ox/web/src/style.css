@@ -229,11 +229,12 @@ nav[hidden] { display: none; }
 /* The transcript and the file viewer each get at least 240px, or half the
    center when it has less than 480px. */
 main { flex: 1 1 0; min-width: min(240px, 50cqi); display: flex; flex-direction: column; background: var(--pane); }
-.center > [role="alert"] { flex: none; padding: 0.5rem var(--inset); font-size: 0.75rem; background: var(--pane); }
+.center > :is([role="alert"], [role="status"]) { flex: none; padding: 0.5rem var(--inset); font-size: 0.75rem; background: var(--pane); }
 .context { flex: none; }
+main > .loading { flex: 1; display: flex; align-items: center; justify-content: center; }
 .context > * { display: flex; align-items: center; padding: 0 var(--inset); border-bottom: 1px solid var(--border); }
 .context .title { height: var(--context-title); }
-.context h1 { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 0.875rem; font-weight: 600; color: var(--foreground); }
+.context h1 { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 1em; font-weight: 600; color: var(--foreground); }
 .context .path { gap: 0.5rem; height: 2.25rem; font-size: 0.8125rem; color: var(--muted-foreground); }
 .context .directory { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 /* Zero scroll offset follows the bottom through content and viewport changes.
@@ -242,7 +243,7 @@ main { flex: 1 1 0; min-width: min(240px, 50cqi); display: flex; flex-direction:
 .transcript { flex: none; min-height: 100%; display: flex; flex-direction: column; gap: 0.75rem; padding: 1rem var(--inset); }
 .log ~ [role="alert"], .log ~ [role="status"] { padding: 0 var(--inset); font-size: 0.75rem; text-align: right; }
 .prompt, .error { white-space: pre-wrap; overflow-wrap: break-word; }
-.log .prompt { align-self: flex-end; max-width: 75%; margin: 0.75rem 0; padding: 0.75rem 1rem; border-radius: calc(var(--radius) + 4px); background: var(--secondary); color: var(--secondary-foreground); box-shadow: var(--shadow-sm); }
+.log .prompt { align-self: flex-end; max-width: 75%; padding: 0.75rem 1rem; border-radius: calc(var(--radius) + 4px); background: var(--secondary); color: var(--secondary-foreground); box-shadow: var(--shadow-sm); }
 .log .prompt.queued { opacity: 0.6; }
 .log .queue { display: flex; flex-direction: column; gap: 0.75rem; }
 .log .message .from { font-size: 0.75rem; color: var(--muted-foreground); }
@@ -250,9 +251,9 @@ main { flex: 1 1 0; min-width: min(240px, 50cqi); display: flex; flex-direction:
 .markdown > :first-child { margin-top: 0; }
 .markdown > :last-child { margin-bottom: 0; }
 .markdown p, .markdown ul, .markdown ol, .markdown pre, .markdown blockquote, .markdown table { margin: 0.5rem 0; }
-.markdown h1, .markdown h2, .markdown h3, .markdown h4, .markdown h5, .markdown h6 { margin: 0.75rem 0 0.5rem; font-weight: 600; font-size: 0.875rem; }
-.markdown h1 { font-size: 1.125rem; }
-.markdown h2 { font-size: 1rem; }
+.markdown h1, .markdown h2, .markdown h3, .markdown h4, .markdown h5, .markdown h6 { margin: 0.75rem 0 0.5rem; font-weight: 600; font-size: 1em; }
+.markdown h1 { font-size: calc(1em + 4px); }
+.markdown h2 { font-size: calc(1em + 2px); }
 .markdown ul, .markdown ol { padding-left: 1.5rem; }
 .markdown code { padding: 0.125rem 0.25rem; border-radius: 0.25rem; background: var(--secondary); font-family: var(--font-mono); font-size: 0.8125rem; }
 .markdown pre { padding: 0.5rem 0.75rem; overflow-x: auto; border-radius: var(--radius); background: var(--secondary); font-family: var(--font-mono); font-size: 0.75rem; white-space: pre; }
@@ -264,12 +265,15 @@ main { flex: 1 1 0; min-width: min(240px, 50cqi); display: flex; flex-direction:
 .markdown a { color: inherit; text-decoration: underline; }
 .log .error { padding: 0.75rem 1rem; border-radius: var(--radius); background: var(--card); }
 
-:is(details.tool, details.reasoning):not([open]) + :is(details.tool, details.reasoning) { margin-top: -0.75rem; }
-:is(details.tool, details.reasoning) summary { display: flex; align-items: center; padding: 0.25rem 0; list-style: none; cursor: default; }
-:is(details.tool, details.reasoning) summary::-webkit-details-marker { display: none; }
-details.reasoning summary .chevron-right { margin-left: 0.25rem; color: var(--muted-foreground); }
-details.reasoning[open] > summary .chevron-right::before { transform: rotate(90deg); }
-details.reasoning .markdown { margin-top: 0.25rem; color: var(--muted-foreground); }
+.log .reasoning { color: var(--muted-foreground); }
+/* A tool call's summary padding widens its hit area into the transcript's gap,
+   so text keeps the gap's distance from the items around it. A tool call after
+   a closed one sits 0.25rem below it. */
+details.tool { margin-top: -0.25rem; }
+details.tool:not([open]) { margin-bottom: -0.25rem; }
+details.tool:not([open]) + details.tool { margin-top: -0.75rem; }
+details.tool summary { display: flex; align-items: center; padding: 0.25rem 0; list-style: none; cursor: default; }
+details.tool summary::-webkit-details-marker { display: none; }
 .marker { flex: none; width: 1.5rem; height: 1.25rem; display: flex; align-items: center; }
 .marker.running::before, .marker.done::before { width: 0.5rem; height: 0.5rem; margin-left: 0.25rem; border-radius: 50%; mask: none; }
 details.tool .name { flex: none; }
@@ -279,7 +283,7 @@ details.tool pre { padding: 0.5rem 0.75rem; overflow-x: auto; white-space: pre-w
 .card > .plan { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); }
 details.tool pre + pre { border-top: 1px solid var(--border); }
 
-.composer { flex: none; margin: var(--composer-margin); margin-bottom: calc(var(--composer-margin) + var(--bottom-inset)); }
+.composer { flex: none; margin: var(--composer-margin); margin-bottom: max(var(--composer-margin), var(--bottom-inset)); }
 .composer.archived { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.75rem 1rem; border: 1px solid var(--border); border-radius: 16px; background: var(--composer); color: var(--muted-foreground); }
 .composer .box { position: relative; display: flex; align-items: flex-end; gap: 0.25rem; padding: 0.5rem 0.75rem 0.5rem 1rem; border: 1px solid var(--border); border-radius: 16px; background: var(--composer); }
 .composer:has(.pending) .box { filter: drop-shadow(0 10px 8px rgb(0 0 0 / 4%)) drop-shadow(0 4px 3px rgb(0 0 0 / 10%)); }
@@ -456,12 +460,15 @@ aside.files .chevron-right.open::before { transform: rotate(90deg); }
 .narrow .sash { display: none; }
 
 /* Touch screens: rows tall enough to tap, row buttons that show without hover,
-   and text fields at 16px, below which Safari zooms the page on focus. */
+   and text at 15px, the text fields and pickers included. The viewport's
+   maximum-scale keeps Safari from zooming in on a field under 16px on focus. */
 @media (pointer: coarse) {
+  body { font-size: 15px; }
   nav { --row: 2.5rem; }
+  nav li.child { font-size: 14px; }
   aside.files .row { height: 2.5rem; }
   nav :is(header, li) .actions { opacity: 1; }
   nav li button.chevron-right { opacity: 1; }
-  textarea, select, input:not([type="radio"], [type="checkbox"], [type="range"]) { font-size: 16px; }
-  .composer .settings > button.picker, .composer .select { height: 2rem; font-size: 1rem; }
+  textarea, select, input:not([type="radio"], [type="checkbox"], [type="range"]) { font-size: 15px; }
+  .composer .settings > button.picker, .composer .select { height: 2rem; font-size: 15px; }
 }

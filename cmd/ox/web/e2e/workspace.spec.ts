@@ -56,6 +56,13 @@ const viewer = (page: Page) => page.getByRole("region", { name: "File" });
 const tab = (page: Page) => viewer(page).getByRole("tab");
 const pane = (page: Page) => viewer(page).getByRole("tabpanel");
 
+// showFiles shows the file tree, which a wide screen hides at load.
+async function showFiles(page: Page) {
+  const toggle = page.getByRole("button", { name: "Toggle files" });
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+}
+
 // openFile opens the file at path from the tree, expanding the folders on the
 // way.
 async function openFile(page: Page, path: string) {
@@ -281,6 +288,7 @@ test("removing a workspace discards its draft", async ({ ox: page, services }) =
 });
 
 test("the file tree lists folders first and hides `.git`", async ({ ox: page, services }) => {
+  await showFiles(page);
   mkdirSync(join(services.workspace, "src"));
   mkdirSync(join(services.workspace, "lib"));
   mkdirSync(join(services.workspace, ".git"));
@@ -307,6 +315,7 @@ test("the file tree lists folders first and hides `.git`", async ({ ox: page, se
 });
 
 test("each session keeps its own expanded folders", async ({ ox: page, services }) => {
+  await showFiles(page);
   mkdirSync(join(services.workspace, "src"));
   writeFileSync(join(services.workspace, "src", "a.txt"), "");
   await newSession(page, "first");
@@ -332,6 +341,7 @@ test("each session keeps its own expanded folders", async ({ ox: page, services 
 });
 
 clocked("the tree shows changes on disk", async ({ ox: page, services }) => {
+  await showFiles(page);
   mkdirSync(join(services.workspace, "src"));
   writeFileSync(join(services.workspace, "src", "a.txt"), "");
   await newSessionButton(page).click();
@@ -356,6 +366,7 @@ clocked("the tree shows changes on disk", async ({ ox: page, services }) => {
 });
 
 clocked("the tree lists nothing while the page is hidden", async ({ ox: page, services }) => {
+  await showFiles(page);
   writeFileSync(join(services.workspace, "a.txt"), "");
   await newSessionButton(page).click();
   await expect(entry(page, "a.txt")).toBeVisible();
@@ -368,6 +379,7 @@ clocked("the tree lists nothing while the page is hidden", async ({ ox: page, se
 });
 
 clocked("a relay error shows in place of a folder's listing until the next listing", async ({ ox: page, services }) => {
+  await showFiles(page);
   mkdirSync(join(services.workspace, "src"));
   writeFileSync(join(services.workspace, "src", "a.txt"), "");
   await newSessionButton(page).click();
@@ -394,6 +406,7 @@ clocked("a relay error shows in place of a folder's listing until the next listi
 });
 
 clocked("a lost connection keeps the last listing", async ({ ox: page, services }) => {
+  await showFiles(page);
   mkdirSync(join(services.workspace, "src"));
   writeFileSync(join(services.workspace, "src", "a.txt"), "");
   await newSessionButton(page).click();
@@ -419,21 +432,22 @@ clocked("a lost connection keeps the last listing", async ({ ox: page, services 
   await page.route("**/events", down);
   await page.route("**/rpc*", aborted);
   await page.clock.runFor(1000);
-  const alert = page.getByRole("alert").filter({ hasText: "Lost the connection" });
-  await expect(alert).toBeVisible();
+  const reconnecting = page.getByRole("status").filter({ hasText: "Reconnecting…" });
+  await expect(reconnecting).toBeVisible();
   // A page that is still reconnecting offers no Reload button.
-  await expect(alert.getByRole("button", { name: "Reload" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Reload" })).toHaveCount(0);
   await expect(entry(page, "a.txt")).toBeVisible();
   await expect(page.getByText("Could not reach ox")).toHaveCount(0);
   await page.unroute("**/rpc*", aborted);
   await page.unroute("**/events", down);
-  await expect(page.getByRole("alert").filter({ hasText: "Lost the connection" })).toHaveCount(0);
+  await expect(page.getByRole("status").filter({ hasText: "Reconnecting…" })).toHaveCount(0);
   await expect(send(page)).toBeEnabled();
 });
 
 clocked(
   "a request cut off after its connection was replaced leaves the new connection alone",
   async ({ ox: page, services }) => {
+    await showFiles(page);
     mkdirSync(join(services.workspace, "src"));
     writeFileSync(join(services.workspace, "src", "a.txt"), "");
     await newSessionButton(page).click();
@@ -443,12 +457,12 @@ clocked(
     await page.clock.runFor(1000);
     await stale.arrived;
     await services.restartRelay();
-    await expect(page.getByRole("alert").filter({ hasText: "Lost the connection" })).toBeVisible();
+    await expect(page.getByRole("status").filter({ hasText: "Reconnecting…" })).toBeVisible();
     await expect(send(page)).toBeEnabled();
     const lists = rpcCalls(page, "workspace/list");
     stale.abort();
     await page.clock.runFor(3000);
-    await expect(page.getByRole("alert").filter({ hasText: "Lost the connection" })).toHaveCount(0);
+    await expect(page.getByRole("status").filter({ hasText: "Reconnecting…" })).toHaveCount(0);
     await expect(send(page)).toBeEnabled();
     expect(lists).toEqual([]);
   },
@@ -457,6 +471,7 @@ clocked(
 clocked(
   "a lost connection keeps the tree and lists nothing until the page has reloaded",
   async ({ ox: page, services }) => {
+    await showFiles(page);
     mkdirSync(join(services.workspace, "src"));
     mkdirSync(join(services.workspace, "lib"));
     writeFileSync(join(services.workspace, "src", "a.txt"), "");
@@ -470,7 +485,7 @@ clocked(
     await inFlight.arrived;
     await page.route("**/events", (route) => route.abort());
     await services.restartRelay();
-    await expect(page.getByRole("alert").filter({ hasText: "Lost the connection" })).toBeVisible();
+    await expect(page.getByRole("status").filter({ hasText: "Reconnecting…" })).toBeVisible();
     const listed = requests(page, "workspace/list_folder");
 
     await entry(page, "lib").click();
@@ -500,6 +515,7 @@ clocked(
 );
 
 test("an unreadable folder says why, and an empty folder says Empty", async ({ ox: page, services }) => {
+  await showFiles(page);
   const locked = join(services.workspace, "locked");
   mkdirSync(locked, { mode: 0o000 });
   mkdirSync(join(services.workspace, "empty"));
@@ -556,6 +572,7 @@ test("a long workspace name runs to its header's edge beneath its buttons' fade"
 });
 
 test("another workspace's draft shows that workspace's tree", async ({ ox: page, services }) => {
+  await showFiles(page);
   writeFileSync(join(services.workspace, "mine.txt"), "");
   const other = mkdtempSync(join(tmpdir(), "ox-e2e-other-"));
   try {
@@ -590,12 +607,16 @@ test.describe("on a wide screen", () => {
     const toggleSessions = page.getByRole("button", { name: "Toggle sessions" });
     const toggleFiles = page.getByRole("button", { name: "Toggle files" });
 
-    // With nothing selected, the toggles sit in the main header.
+    // With nothing selected, the toggles sit in the main header, and the file
+    // tree starts hidden.
     await expect(main.getByRole("button", { name: "Toggle sessions" })).toHaveAttribute("aria-pressed", "true");
-    await expect(main.getByRole("button", { name: "Toggle files" })).toHaveAttribute("aria-pressed", "true");
+    await expect(main.getByRole("button", { name: "Toggle files" })).toHaveAttribute("aria-pressed", "false");
+    await newSession(page, "first");
+    await expect(files(page)).toHaveCount(0);
+    await expect(main.getByRole("button", { name: "Toggle files" })).toHaveAttribute("aria-pressed", "false");
 
     // With the file tree shown, they sit in its header.
-    await newSession(page, "first");
+    await toggleFiles.click();
     await expect(files(page).getByRole("button", { name: "Toggle sessions" })).toHaveAttribute("aria-pressed", "true");
     await expect(files(page).getByRole("button", { name: "Toggle files" })).toHaveAttribute("aria-pressed", "true");
     await expect(main.getByRole("button", { name: /^Toggle/ })).toHaveCount(0);
@@ -632,6 +653,7 @@ test.describe("on a wide screen", () => {
   });
 
   test("dragging a sash resizes its panel within bounds, and only while the button is down", async ({ ox: page }) => {
+    await showFiles(page);
     const nav = sessions(page);
     await newSessionButton(page).click();
     const before = await width(nav);
@@ -662,6 +684,7 @@ test.describe("on a wide screen", () => {
   });
 
   test("the file split leaves each side its minimum and comes back when the file reopens", async ({ ox: page }) => {
+    await showFiles(page);
     const main = page.getByRole("main");
     await newSessionButton(page).click();
     await openFile(page, "src/a.txt");
@@ -699,6 +722,7 @@ test.describe("on a wide screen", () => {
   });
 
   test("panel widths are page-wide and each session keeps its own split", async ({ ox: page }) => {
+    await showFiles(page);
     const main = page.getByRole("main");
     const nav = sessions(page);
     await newSession(page, "first");
@@ -730,6 +754,7 @@ test.describe("on a wide screen", () => {
   });
 
   test("a draft's split carries to the session it creates", async ({ ox: page }) => {
+    await showFiles(page);
     const main = page.getByRole("main");
     await newSessionButton(page).click();
     await openFile(page, "src/a.txt");
@@ -742,7 +767,8 @@ test.describe("on a wide screen", () => {
     await near(main, split);
   });
 
-  test("a reload restores the default widths", async ({ ox: page }) => {
+  test("a reload hides the file tree and restores the default widths", async ({ ox: page }) => {
+    await showFiles(page);
     const main = page.getByRole("main");
     const nav = sessions(page);
     await newSession(page, "first");
@@ -753,6 +779,8 @@ test.describe("on a wide screen", () => {
     await drag(page, "Resize file viewer", -100);
     await page.reload();
     await expect(replies(page)).toHaveText(["You said: first"]);
+    await expect(files(page)).toHaveCount(0);
+    await showFiles(page);
     await openFile(page, "src/a.txt");
     await near(nav, first[0]);
     await near(files(page), first[1]);
@@ -790,7 +818,7 @@ test.describe("on a phone", () => {
     await page.route("**/events", (route) => route.abort());
     await services.restartRelay();
     await expect(viewer(page)).toBeVisible();
-    await expect(page.getByRole("alert").filter({ hasText: "Lost the connection" })).toBeVisible();
+    await expect(page.getByRole("status").filter({ hasText: "Reconnecting…" })).toBeVisible();
   });
 
   test("the session list opens at load only when the URL names no session", async ({ ox: page }) => {
@@ -873,7 +901,7 @@ test.describe("on a phone", () => {
 
     await page.setViewportSize({ width: 1000, height: 844 });
     await expect(nav).toBeVisible();
-    await expect(files(page)).toBeVisible();
+    await expect(files(page)).toHaveCount(0);
     const wide = await width(nav);
     await drag(page, "Resize sessions", 100);
     await near(nav, wide + 100);
@@ -899,8 +927,8 @@ test.describe("on a phone", () => {
     const composer = page.getByRole("main").locator(".composer");
     // frame is the header's top and the composer's bottom.
     const frame = async () => ({ top: (await edges(header)).top, bottom: (await edges(composer)).bottom });
-    // The composer sits its 16 px margin above the home indicator's 34 px inset.
-    await expect.poll(frame).toEqual({ top: 47, bottom: 794 });
+    // The composer ends at the home indicator's 34 px inset, which is wider than its 16 px margin.
+    await expect.poll(frame).toEqual({ top: 47, bottom: 810 });
     await openKeyboard(page, keyboard);
     // Above the keyboard, the home indicator's inset is gone.
     await expect.poll(frame).toEqual({ top: 167, bottom: 612 });
@@ -908,10 +936,10 @@ test.describe("on a phone", () => {
     await panKeyboard(page, 60);
     await expect.poll(frame).toEqual({ top: 107, bottom: 552 });
     await closeKeyboard(page);
-    await expect.poll(frame).toEqual({ top: 47, bottom: 794 });
+    await expect.poll(frame).toEqual({ top: 47, bottom: 810 });
     // A pinch zoom leaves the layout where it was.
     await openKeyboard(page, { ...keyboard, scale: 2 });
-    await expect.poll(frame).toEqual({ top: 47, bottom: 794 });
+    await expect.poll(frame).toEqual({ top: 47, bottom: 810 });
   });
 
   test("a drawer spans the visible area while the keyboard is open", async ({ ox: page }) => {
@@ -928,6 +956,7 @@ test("clicking a file opens it under its tab and marks its row, and another file
   ox: page,
   services,
 }) => {
+  await showFiles(page);
   mkdirSync(join(services.workspace, "src"));
   writeFileSync(join(services.workspace, "src", "a.txt"), "first\n");
   writeFileSync(join(services.workspace, "src", "b.txt"), "second\n");
@@ -953,6 +982,7 @@ test("clicking a file opens it under its tab and marks its row, and another file
 clocked(
   "the pane keeps its scroll position across a re-read and a click on the open file",
   async ({ ox: page, services }) => {
+    await showFiles(page);
     mkdirSync(join(services.workspace, "src"));
     writeFileSync(join(services.workspace, "src", "a.txt"), `first\n${`${"long line ".repeat(200)}\n`.repeat(400)}`);
     await newSessionButton(page).click();
@@ -975,6 +1005,7 @@ clocked(
 );
 
 clocked("a re-read of an unchanged file keeps the text selected in the pane", async ({ ox: page, services }) => {
+  await showFiles(page);
   mkdirSync(join(services.workspace, "src"));
   writeFileSync(join(services.workspace, "src", "main.go"), "package main\n\n// note\nfunc main() {}\n");
   await newSessionButton(page).click();
@@ -990,6 +1021,7 @@ clocked("a re-read of an unchanged file keeps the text selected in the pane", as
 });
 
 clocked("the pane shows changes on disk and why a deleted file cannot be read", async ({ ox: page, services }) => {
+  await showFiles(page);
   const a = join(services.workspace, "src", "a.txt");
   mkdirSync(join(services.workspace, "src"));
   writeFileSync(a, "first\n");
@@ -1009,6 +1041,7 @@ clocked("the pane shows changes on disk and why a deleted file cannot be read", 
 });
 
 test("the pane keeps a file's carriage returns", async ({ ox: page, services }) => {
+  await showFiles(page);
   const template = "let a = 1;\r\nlet b = 2;\rlet c = 3;\n\tindented\n";
   mkdirSync(join(services.workspace, "src"));
   writeFileSync(join(services.workspace, "src", "template.ts"), template);
@@ -1021,6 +1054,7 @@ test("the pane keeps a file's carriage returns", async ({ ox: page, services }) 
 clocked(
   "a read error shows in the pane until the next read, and a binary file says so",
   async ({ ox: page, services }) => {
+    await showFiles(page);
     writeFileSync(join(services.workspace, "bin.dat"), "a\0b");
     await newSessionButton(page).click();
     const read = await hold(page, "workspace/read_file", { path: "bin.dat" });
@@ -1038,6 +1072,7 @@ test("each session and draft keeps its open file, and a draft's carries to its s
   ox: page,
   services,
 }) => {
+  await showFiles(page);
   mkdirSync(join(services.workspace, "src"));
   writeFileSync(join(services.workspace, "src", "a.txt"), "a\n");
   writeFileSync(join(services.workspace, "src", "b.txt"), "b\n");
@@ -1069,12 +1104,14 @@ test("each session and draft keeps its open file, and a draft's carries to its s
 });
 
 test("a reload closes the open file", async ({ ox: page, services }) => {
+  await showFiles(page);
   mkdirSync(join(services.workspace, "src"));
   writeFileSync(join(services.workspace, "src", "a.txt"), "a\n");
   await newSession(page, "first");
   await openFile(page, "src/a.txt");
   await page.reload();
   await expect(replies(page)).toHaveText(["You said: first"]);
+  await showFiles(page);
   await expect(entry(page, "src")).toBeVisible();
   await expect(viewer(page)).toHaveCount(0);
 });
