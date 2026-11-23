@@ -1,4 +1,7 @@
-# Experimental Claude Code multiplexer
+# Ox
+
+Ox runs coding agent sessions, in Claude Code and Ur, side by side in a web
+UI.
 
 Optimize for learning and code that is cheap to change.
 
