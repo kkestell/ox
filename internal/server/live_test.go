@@ -851,8 +851,9 @@ func TestLive(t *testing.T) {
 	})
 }
 
-// TestLiveUr chats with the built-in Ur model through OpenRouter, and parks
-// the session between two turns that share the conversation.
+// TestLiveUr chats with the built-in Ur model through OpenRouter, parks the
+// session between two turns that share the conversation, runs an approved
+// shell command, and interrupts a running one.
 func TestLiveUr(t *testing.T) {
 	if os.Getenv("OX_LIVE") == "" {
 		t.Skip("set OX_LIVE=1 to run against OpenRouter, as make live does")
@@ -901,4 +902,45 @@ func TestLiveUr(t *testing.T) {
 	if reply := turn("What number did I ask you to remember? Reply with just the number."); !strings.Contains(reply, "7341") {
 		t.Errorf("the second turn forgot the first: %q", reply)
 	}
+
+	// In manual mode the command waits for approval, then runs.
+	c.forget(id)
+	c.call("session/send", map[string]string{"session_id": id, "text": "Use the shell tool to run `echo ox-$((6*7))`, then reply with its output."})
+	approval := c.update(id, "approval")
+	var asked struct {
+		ToolName string `json:"tool_name"`
+	}
+	if json.Unmarshal(approval.Request, &asked); asked.ToolName != "shell" {
+		t.Fatalf("approval request %s", approval.Request)
+	}
+	c.call("session/approve", map[string]any{"session_id": id, "request_id": approval.RequestID, "response": json.RawMessage(`{"behavior":"allow"}`)})
+	if ran := c.update(id, "tool_result").Result; ran.IsError || !strings.Contains(ran.Text, "ox-42") {
+		t.Errorf("the command's result %+v", ran)
+	}
+	if result := c.update(id, "result").Result; result.IsError {
+		t.Fatalf("the shell turn failed: %s", result.Text)
+	}
+	for c.update(id, "state").State != "idle" {
+	}
+
+	// In auto mode the command runs at once, and an interrupt stops it.
+	c.call("session/configure", map[string]string{"session_id": id, "permission_mode": "auto"})
+	c.forget(id)
+	c.call("session/send", map[string]string{"session_id": id, "text": "Use the shell tool to run `sleep 30 && echo late`."})
+	c.update(id, "tool_use")
+	interrupted := time.Now()
+	c.call("session/interrupt", map[string]string{"session_id": id})
+	if stopped := c.update(id, "tool_result").Result; !stopped.IsError || !strings.Contains(stopped.Text, "stopped this command") {
+		t.Errorf("the interrupted command's result %+v", stopped)
+	}
+	if result := c.update(id, "result").Result; !result.IsError || result.Text != "Interrupted" {
+		t.Errorf("the interrupted turn's result %+v", result)
+	}
+	for c.update(id, "state").State != "idle" {
+	}
+	if elapsed := time.Since(interrupted); elapsed > 10*time.Second {
+		t.Errorf("the interrupt took %s", elapsed)
+	}
+	// The next request answers the stopped call, or the provider refuses it.
+	turn("Reply with just the word ok.")
 }

@@ -80,7 +80,8 @@
         }
       ],
       "permission_modes": [
-        { "id": "manual", "name": "Manual" }
+        { "id": "manual", "name": "Manual" },
+        { "id": "auto", "name": "Auto" }
       ]
     }
   },

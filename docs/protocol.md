@@ -81,18 +81,20 @@ same file, for its optional `tailscale_ip`.
 Each harness lists at least one model, each with the effort levels it takes, and
 at least one permission mode. Every choice has a nonempty `id`, unique within
 its list and passed to the harness, and a nonempty `name` to show. For Claude,
-use `manual`, not its alias `default`. Ur takes only the permission mode
-`manual`, and the effort levels `max`, `xhigh`, `high`, `medium`, `low`,
-`minimal`, and `none`, which it sends to OpenRouter as the reasoning effort. An
-Ur model may list `providers`, the OpenRouter providers that serve it, in order;
-its requests go to those alone. A model with no effort levels omits `efforts` or
-lists none, and takes an empty `effort`. The required `defaults` name the
-harness, model, effort, and permission mode a new session starts with, each one
-of the configured choices; the daemon refuses to start otherwise. The required
-`max_child_depth`, at least 1, is how many levels of child sessions a top-level
-session can have beneath it; the built-in configuration sets 2. The optional
-`tailscale_ip` is this machine's Tailscale IPv4 address, within `100.64.0.0/10`;
-see [Web UI](architecture.md#web-ui) for what setting it does.
+use `manual`, not its alias `default`. Ur takes the permission modes `manual`,
+where each shell command asks for approval first, and `auto`, where every
+command runs without asking, and the effort levels `max`, `xhigh`, `high`,
+`medium`, `low`, `minimal`, and `none`, which it sends to OpenRouter as the
+reasoning effort. An Ur model may list `providers`, the OpenRouter providers
+that serve it, in order; its requests go to those alone. A model with no effort
+levels omits `efforts` or lists none, and takes an empty `effort`. The required
+`defaults` name the harness, model, effort, and permission mode a new session
+starts with, each one of the configured choices; the daemon refuses to start
+otherwise. The required `max_child_depth`, at least 1, is how many levels of
+child sessions a top-level session can have beneath it; the built-in
+configuration sets 2. The optional `tailscale_ip` is this machine's Tailscale
+IPv4 address, within `100.64.0.0/10`; see [Web UI](architecture.md#web-ui) for
+what setting it does.
 
 ```json
 {"harnesses":{"claude":{"models":[{"id":"claude-haiku-5-5","name":"Haiku 5.5","efforts":[{"id":"low","name":"Low"},{"id":"high","name":"High"}]}],"permission_modes":[{"id":"manual","name":"Manual"},{"id":"plan","name":"Plan"}]}},"defaults":{"harness":"claude","model":"claude-haiku-5-5","effort":"low","permission_mode":"plan"},"max_child_depth":2,"tailscale_ip":"100.101.102.103"}
@@ -358,6 +360,9 @@ Requires `session_id`, `request_id`, and a `response` object whose `behavior` is
 For rejection, use `{"behavior":"deny","message":"Reason for rejection"}` as
 `response`.
 
+Ur reads `behavior` and `message`. Allow runs the shell command as the model
+wrote it; deny answers the call with the message, and the turn goes on.
+
 The Claude harness checks the response shape and preserves its fields. When
 supplied, `updatedInput` must be an object and `updatedPermissions` must be an
 array; a running session returns `-32000` for an invalid shape. See
@@ -506,6 +511,12 @@ question fields:
 
 ```json
 {"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"approval","request_id":"claude-request-id","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"echo hello"},"tool_use_id":"toolu_example","permission_suggestions":[]},"time":"2026-11-18T19:53:51Z"}}
+```
+
+Ur's approval asks about one shell command:
+
+```json
+{"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"approval","request_id":"ur-request-id","request":{"tool_name":"shell","input":{"command":"go test ./..."},"tool_use_id":"call_example"},"time":"2026-11-18T19:53:51Z"}}
 ```
 
 The client chooses how to obtain the decision and replies using

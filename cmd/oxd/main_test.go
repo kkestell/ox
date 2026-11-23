@@ -201,7 +201,7 @@ func TestConfigOffersOnlyWhatHarnessesTake(t *testing.T) {
 		}}},
 		"an Ur permission mode Ur does not take": {Harnesses: map[string]config.Harness{"ur": {
 			Models:          []config.Model{{ID: "m"}},
-			PermissionModes: []config.Option{{ID: "manual"}, {ID: "auto"}},
+			PermissionModes: []config.Option{{ID: "manual"}, {ID: "acceptEdits"}},
 		}}},
 		"an effort level a harness's own check refuses": {Harnesses: map[string]config.Harness{"picky": {
 			Models: []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}}}},

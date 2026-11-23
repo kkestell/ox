@@ -1,6 +1,7 @@
 // Package ur is Ox's built-in harness, which chats through OpenRouter's chat
-// completions API. It runs no process: each turn is one streamed request
-// carrying the conversation so far, which Ur keeps in a file of its own.
+// completions API and runs the model's shell commands. Each turn is a streamed
+// request carrying the conversation so far, which Ur keeps in a file of its
+// own, then a request after each response's commands have run.
 package ur
 
 import (
@@ -33,10 +34,10 @@ func checkEffort(effort string) error {
 	return nil
 }
 
-// checkPermissionMode reports whether Ur takes mode. Ur has no tools, so
-// manual, where every tool call asks first, is the one mode it honors.
+// checkPermissionMode reports whether Ur takes mode: manual, where every shell
+// call asks first, or auto, where every call runs without asking.
 func checkPermissionMode(mode string) error {
-	if mode != "manual" {
+	if mode != "manual" && mode != "auto" {
 		return fmt.Errorf("Ur has no permission mode %q", mode)
 	}
 	return nil
@@ -56,7 +57,7 @@ func Harness(endpoint, dir string, providers map[string][]string) agent.Harness 
 				return nil, errors.New("OPENROUTER_API_KEY is not set")
 			}
 			a := &Agent{
-				endpoint: endpoint, key: key, providers: providers, dir: dir, id: options.Resume,
+				endpoint: endpoint, key: key, providers: providers, dir: dir, id: options.Resume, workspace: options.Workspace,
 				events: make(chan agent.Event), done: make(chan struct{}),
 				onUpdate: options.OnUpdate, onResumable: options.OnResumable,
 				onConfigured: options.OnConfigured, onError: options.OnError, settings: options.Settings,
@@ -87,6 +88,7 @@ type Agent struct {
 	providers    map[string][]string
 	dir          string
 	id           string
+	workspace    string
 	events       chan agent.Event
 	done         chan struct{} // closed on exit, so a request delivers nothing after it
 	onUpdate     func(agent.Update)
@@ -151,11 +153,40 @@ func (a *Agent) save(m message) error {
 	return nil
 }
 
-// turn identifies the running request and allows it to be canceled.
+// turn is the running turn. Canceling its context ends its request or command.
 type turn struct {
-	prompt string // the ID of the input the turn answers
+	prompt string // the ID of the input whose turn it is; a later input taken into the turn replaces it
+	ctx    context.Context
 	cancel context.CancelFunc
+	step   step
 }
+
+// step is what the turn waits on.
+//
+//sumtype:decl
+type step interface{ isStep() }
+
+// streaming waits on the request.
+type streaming struct{}
+
+// asking waits on the approval of calls[0], the first of the response's calls
+// not yet answered.
+type asking struct {
+	calls     []toolCall
+	command   shellCommand // calls[0]'s arguments
+	requestID string
+	request   json.RawMessage
+}
+
+// executing waits on calls[0]'s command, the first of the response's calls not
+// yet answered.
+type executing struct {
+	calls []toolCall
+}
+
+func (streaming) isStep()  {}
+func (*asking) isStep()    {}
+func (*executing) isStep() {}
 
 // delta is reply text streamed for a turn.
 type delta struct {
@@ -163,10 +194,18 @@ type delta struct {
 	text string
 }
 
-// ended ends a turn's request, with the error that ended it early.
+// ended ends a turn's request, with the response's tool calls or the error
+// that ended it early.
 type ended struct {
-	turn *turn
-	err  error
+	turn  *turn
+	calls []toolCall
+	err   error
+}
+
+// ran ends a step's command.
+type ran struct {
+	step    *executing
+	outcome outcome
 }
 
 func (a *Agent) Events() <-chan agent.Event {
@@ -206,20 +245,38 @@ func (a *Agent) Handle(event agent.Event) {
 		if e.turn != a.turn {
 			return
 		}
-		if e.err != nil {
+		switch {
+		case e.err != nil:
 			a.finish(agent.Result{Text: e.err.Error(), IsError: true})
-		} else {
+		case len(e.calls) == 0:
 			var reply string
 			if messages := conversation(a.history); messages[len(messages)-1].Role == "assistant" {
 				reply = messages[len(messages)-1].Content
 			}
 			a.finish(agent.Result{Text: reply})
+		default:
+			if err := a.save(message{Role: "assistant", ToolCalls: e.calls}); err != nil {
+				a.finish(agent.Result{Text: "Ur could not save the reply: " + err.Error(), IsError: true})
+				return
+			}
+			a.next(e.calls)
 		}
+	case ran:
+		if a.turn == nil || a.turn.step != e.step {
+			return
+		}
+		a.answer(e.step.calls, e.outcome)
 	}
 }
 
 func (a *Agent) Snapshot() agent.Snapshot {
-	return agent.Snapshot{State: a.tracker.State(), Approvals: []agent.Approval{}, Queued: a.tracker.Queued()}
+	approvals := []agent.Approval{}
+	if a.turn != nil {
+		if s, ok := a.turn.step.(*asking); ok {
+			approvals = append(approvals, agent.Approval{RequestID: s.requestID, Request: s.request, ToolName: "shell"})
+		}
+	}
+	return agent.Snapshot{State: a.tracker.State(), Approvals: approvals, Queued: a.tracker.Queued()}
 }
 
 // Send queues the input, and starts a turn with it when no turn is running.
@@ -232,42 +289,132 @@ func (a *Agent) Send(input agent.Input) error {
 }
 
 // begin starts a turn with the first queued input. An input sent during a turn
-// waits for it to end: a turn is one request, with no step at which to take it.
+// is taken before the turn's next request, after the commands of the response
+// before it, or waits for the turn to end if the response was its last.
 func (a *Agent) begin() {
-	input := a.tracker.Take()
 	ctx, cancel := context.WithCancel(context.Background())
-	t := &turn{prompt: input.MessageID, cancel: cancel}
-	a.turn = t
-	if err := a.save(message{Role: "user", Content: input.Content}); err != nil {
-		a.finish(agent.Result{Text: "Ur could not save the prompt: " + err.Error(), IsError: true})
-		return
-	}
-	go a.stream(ctx, t, a.request())
+	a.turn = &turn{ctx: ctx, cancel: cancel}
+	a.request()
 }
 
-// request builds the next request from the conversation with the current
+// request takes every queued input into the turn and posts the next request.
+func (a *Agent) request() {
+	for a.tracker.Len() > 0 {
+		input := a.tracker.Take()
+		a.turn.prompt = input.MessageID
+		if err := a.save(message{Role: "user", Content: input.Content}); err != nil {
+			a.finish(agent.Result{Text: "Ur could not save the prompt: " + err.Error(), IsError: true})
+			return
+		}
+	}
+	a.turn.step = streaming{}
+	go a.stream(a.turn.ctx, a.turn, a.body())
+}
+
+// next takes up calls, the response's calls not yet answered, oldest first,
+// and posts the next request once every call is answered. A call whose
+// arguments are invalid is answered at once; a valid one runs in auto mode and
+// asks for approval otherwise.
+func (a *Agent) next(calls []toolCall) {
+	if len(calls) == 0 {
+		a.request()
+		return
+	}
+	call := calls[0]
+	input := json.RawMessage(call.Function.Arguments)
+	var object map[string]json.RawMessage
+	if json.Unmarshal(input, &object) != nil || object == nil {
+		input = json.RawMessage("{}")
+	}
+	a.publish(agent.Update{Type: agent.UpdateToolUse, ToolUseID: call.ID, ToolName: call.Function.Name, Input: input})
+	if call.Function.Name != "shell" {
+		a.answer(calls, outcome{fmt.Sprintf("Ur has no tool %q", call.Function.Name), true})
+		return
+	}
+	command, err := parseShell(call.Function.Arguments)
+	if err != nil {
+		a.answer(calls, outcome{err.Error(), true})
+		return
+	}
+	if a.settings.PermissionMode == "auto" {
+		a.execute(calls, command)
+		return
+	}
+	request, _ := json.Marshal(map[string]any{"tool_name": "shell", "input": input, "tool_use_id": call.ID}) // strings and valid JSON always marshal
+	s := &asking{calls: calls, command: command, requestID: rand.Text(), request: request}
+	a.turn.step = s
+	a.tracker.Report(agent.StateRequiresAction, "")
+	a.publish(agent.Update{Type: agent.UpdateApproval, RequestID: s.requestID, Request: s.request})
+}
+
+// execute runs calls[0]'s command on its own goroutine, which delivers its
+// outcome.
+func (a *Agent) execute(calls []toolCall, command shellCommand) {
+	s := &executing{calls: calls}
+	a.turn.step = s
+	ctx := a.turn.ctx
+	commands.Add(1)
+	go func() {
+		o := runShell(ctx, a.workspace, command)
+		commands.Done()
+		a.deliver(ran{s, o})
+	}()
+}
+
+// answer saves and publishes calls[0]'s outcome and takes up the rest.
+func (a *Agent) answer(calls []toolCall, o outcome) {
+	if err := a.save(message{Role: "tool", ToolCallID: calls[0].ID, Content: o.text}); err != nil {
+		a.finish(agent.Result{Text: "Ur could not save the command's result: " + err.Error(), IsError: true})
+		return
+	}
+	a.publish(agent.Update{Type: agent.UpdateToolResult, ToolUseID: calls[0].ID, Result: &agent.Result{Text: o.text, IsError: o.isError}})
+	a.next(calls[1:])
+}
+
+// body builds the next request from the conversation with the current
 // settings.
-func (a *Agent) request() []byte {
-	body := request{Model: a.settings.Model, Messages: conversation(a.history), Stream: true}
+func (a *Agent) body() []byte {
+	body := request{Model: a.settings.Model, Messages: conversation(a.history), Tools: []json.RawMessage{shellTool}, Stream: true}
 	if a.settings.Effort != "" {
 		body.Reasoning = &reasoning{Effort: a.settings.Effort}
 	}
 	if order := a.providers[a.settings.Model]; len(order) > 0 {
 		body.Provider = &provider{Order: order}
 	}
-	data, _ := json.Marshal(body) // strings and slices of them always marshal
+	data, _ := json.Marshal(body) // strings, slices of them, and valid JSON always marshal
 	return data
 }
 
-// conversation joins each run of assistant entries in history, the deltas of
-// one reply, into one message.
+// stopped answers a call whose command did not finish: an interrupt, Stop, or
+// oxd exiting during it.
+const stopped = "The user stopped this command before it finished."
+
+// conversation joins each run of assistant entries in history, the deltas and
+// tool calls of one response, into one message, and answers each call left
+// without a tool entry before the next user entry with stopped.
 func conversation(history []message) []message {
 	var messages []message
+	var open []string // IDs of the latest response's calls without a tool entry
 	for _, m := range history {
-		if last := len(messages) - 1; m.Role == "assistant" && last >= 0 && messages[last].Role == "assistant" {
+		last := len(messages) - 1
+		switch {
+		case m.Role == "assistant" && last >= 0 && messages[last].Role == "assistant":
 			messages[last].Content += m.Content
-		} else {
+			messages[last].ToolCalls = append(messages[last].ToolCalls, m.ToolCalls...)
+		case m.Role == "tool":
+			open = slices.DeleteFunc(open, func(id string) bool { return id == m.ToolCallID })
 			messages = append(messages, m)
+		default:
+			if m.Role == "user" {
+				for _, id := range open {
+					messages = append(messages, message{Role: "tool", ToolCallID: id, Content: stopped})
+				}
+				open = nil
+			}
+			messages = append(messages, m)
+		}
+		for _, call := range m.ToolCalls {
+			open = append(open, call.ID)
 		}
 	}
 	return messages
@@ -284,16 +431,53 @@ func (a *Agent) finish(result agent.Result) {
 	}
 }
 
-// Approve has nothing to answer: Ur calls no tools.
-func (a *Agent) Approve(string, json.RawMessage) error {
-	return agent.ErrApprovalNotFound
+// Approve answers the pending shell call's approval. Allow runs the command as
+// the model wrote it; deny tells the model the user's message.
+func (a *Agent) Approve(requestID string, raw json.RawMessage) error {
+	var response struct {
+		Behavior string `json:"behavior"`
+		Message  string `json:"message"`
+	}
+	if json.Unmarshal(raw, &response) != nil || (response.Behavior != "allow" && response.Behavior != "deny") {
+		return errors.New("response must be an allow or deny permission response")
+	}
+	var s *asking
+	if a.turn != nil {
+		s, _ = a.turn.step.(*asking)
+	}
+	if s == nil || s.requestID != requestID {
+		return agent.ErrApprovalNotFound
+	}
+	a.publish(agent.Update{Type: agent.UpdateApprovalAnswered, RequestID: requestID})
+	a.tracker.Report(agent.StateRunning, "")
+	if response.Behavior == "allow" {
+		a.execute(s.calls, s.command)
+	} else {
+		a.answer(s.calls, outcome{"The user denied this command: " + response.Message, true})
+	}
+	return nil
 }
 
+// Interrupt ends the turn, answering the call it waits on, if any, with
+// stopped.
 func (a *Agent) Interrupt() error {
 	a.tracker.DropFrom(0)
-	if a.turn != nil {
-		a.finish(agent.Result{Text: "Interrupted", IsError: true})
+	if a.turn == nil {
+		return nil
 	}
+	var calls []toolCall
+	switch s := a.turn.step.(type) {
+	case streaming:
+	case *asking:
+		a.publish(agent.Update{Type: agent.UpdateApprovalCancelled, RequestID: s.requestID})
+		calls = s.calls
+	case *executing:
+		calls = s.calls
+	}
+	if calls != nil {
+		a.publish(agent.Update{Type: agent.UpdateToolResult, ToolUseID: calls[0].ID, Result: &agent.Result{Text: stopped, IsError: true}})
+	}
+	a.finish(agent.Result{Text: "Interrupted", IsError: true})
 	return nil
 }
 
@@ -310,8 +494,8 @@ func (a *Agent) Configure(patch agent.SettingsPatch, done func(error)) {
 	done(nil)
 }
 
-// Parkable is true while idle: the file holds the whole conversation, and Ur
-// runs no background tasks.
+// Parkable is true while idle: the file holds the whole conversation, and no
+// command outlives its turn.
 func (a *Agent) Parkable() bool {
 	return a.tracker.Idle()
 }
@@ -319,6 +503,9 @@ func (a *Agent) Parkable() bool {
 func (a *Agent) Stop() {
 	a.tracker.DropFrom(0)
 	if a.turn != nil {
+		if s, ok := a.turn.step.(*asking); ok {
+			a.publish(agent.Update{Type: agent.UpdateApprovalCancelled, RequestID: s.requestID})
+		}
 		a.turn.cancel()
 		a.publish(agent.Update{Type: agent.UpdateExited, Error: "stopped"})
 		a.turn = nil

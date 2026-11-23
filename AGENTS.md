@@ -91,6 +91,8 @@ We test with `make dev`. Ox's test state is disposable.
 │   │   ├── store_test.go      # store tests
 │   │   └── store.go           # SQLite persistence
 │   └── ur
+│       ├── shell_test.go      # shell tool tests
+│       ├── shell.go           # shell tool
 │       ├── stream.go          # OpenRouter requests and streams
 │       ├── ur_test.go         # Ur tests
 │       └── ur.go              # Ur agent
