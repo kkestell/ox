@@ -148,69 +148,73 @@ function Layout() {
         <Sash label="Resize sessions" drag={(before) => (dx) => panels.setLeftWidth(before + dx)} />
       </Show>
       <div class="center">
-        <main style={{ "flex-grow": share() }}>
-          <Show when={ox.error()}>{(error) => <p role="alert">{error()}</p>}</Show>
-          <For each={liveDrafts().filter((d) => d.control.error() && d !== draft())}>
-            {(failed) => (
-              <p role="alert">
-                {failed.control.error()}{" "}
-                <button type="button" onClick={() => select({ kind: "draft", workspaceId: failed.workspaceId })}>
-                  Reopen draft
-                </button>
-              </p>
-            )}
-          </For>
-          {/* Keyed, so each session and draft gets its own view and view state. */}
-          <Switch fallback={<BareHeader />}>
-            <Match when={session()} keyed>
-              {(session) => (
-                <Show
-                  when={session.load.snapshot}
-                  fallback={
-                    <>
-                      <BareHeader />
-                      <p role="status">Loading session…</p>
-                    </>
-                  }
-                >
-                  {(snapshot) => <SessionView session={session} snapshot={snapshot()} toggles={<Toggles />} />}
-                </Show>
-              )}
-            </Match>
-            <Match when={draft()} keyed>
-              {(current) => <NewSessionView draft={current} onCreated={() => finish(current)} toggles={<Toggles />} />}
-            </Match>
-          </Switch>
-        </main>
-        {/* Keyed by workspace, so sessions of one workspace share its listings,
-            and by path, so a file's view shows only that file. */}
-        <Show when={files()?.workspace.id} keyed>
-          {(workspaceId) => (
-            <Show when={files()}>
-              {(current) => (
-                <Show when={current().control.file()} keyed>
-                  {(path) => (
-                    <>
-                      <Sash
-                        label="Resize file viewer"
-                        drag={(before, after) => {
-                          const control = current().control;
-                          return (dx) => control.setSplit((before + dx) / (before + after));
-                        }}
-                      />
-                      <FileView
-                        workspaceId={workspaceId}
-                        path={path}
-                        share={panels.narrow() ? undefined : 1 - current().control.split()}
-                        onClose={() => current().control.setFile(undefined)}
-                      />
-                    </>
-                  )}
-                </Show>
-              )}
-            </Show>
+        <Show when={ox.error()}>{(error) => <p role="alert">{error()}</p>}</Show>
+        <For each={liveDrafts().filter((d) => d.control.error() && d !== draft())}>
+          {(failed) => (
+            <p role="alert">
+              {failed.control.error()}{" "}
+              <button type="button" onClick={() => select({ kind: "draft", workspaceId: failed.workspaceId })}>
+                Reopen draft
+              </button>
+            </p>
           )}
-        </Show>
+        </For>
+        <div class="panes">
+          <main style={{ "flex-grow": share() }}>
+            {/* Keyed, so each session and draft gets its own view and view state. */}
+            <Switch fallback={<BareHeader />}>
+              <Match when={session()} keyed>
+                {(session) => (
+                  <Show
+                    when={session.load.snapshot}
+                    fallback={
+                      <>
+                        <BareHeader />
+                        <p role="status">Loading session…</p>
+                      </>
+                    }
+                  >
+                    {(snapshot) => <SessionView session={session} snapshot={snapshot()} toggles={<Toggles />} />}
+                  </Show>
+                )}
+              </Match>
+              <Match when={draft()} keyed>
+                {(current) => (
+                  <NewSessionView draft={current} onCreated={() => finish(current)} toggles={<Toggles />} />
+                )}
+              </Match>
+            </Switch>
+          </main>
+          {/* Keyed by workspace, so sessions of one workspace share its listings,
+              and by path, so a file's view shows only that file. */}
+          <Show when={files()?.workspace.id} keyed>
+            {(workspaceId) => (
+              <Show when={files()}>
+                {(current) => (
+                  <Show when={current().control.file()} keyed>
+                    {(path) => (
+                      <>
+                        <Sash
+                          label="Resize file viewer"
+                          drag={(before, after) => {
+                            const control = current().control;
+                            return (dx) => control.setSplit((before + dx) / (before + after));
+                          }}
+                        />
+                        <FileView
+                          workspaceId={workspaceId}
+                          path={path}
+                          share={panels.narrow() ? undefined : 1 - current().control.split()}
+                          onClose={() => current().control.setFile(undefined)}
+                        />
+                      </>
+                    )}
+                  </Show>
+                )}
+              </Show>
+            )}
+          </Show>
+        </div>
       </div>
       {/* Keyed by workspace, as the file viewer is. */}
       <Show when={files()?.workspace.id} keyed>

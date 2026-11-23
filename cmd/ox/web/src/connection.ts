@@ -9,7 +9,8 @@ export class RpcError extends Error {
   }
 }
 
-// Disconnected is a request's failure when the page could not reach ox.
+// Disconnected is a request's failure when the page's event stream, or the
+// relay's oxd connection behind it, is gone.
 export class Disconnected extends Error {}
 
 export type Connection = {
@@ -77,11 +78,11 @@ export function connect(handlers: {
         })
           .then(async (response) => {
             if (response.ok) return;
-            const message = (await response.text()).trim();
+            const message = (await response.text()).trim() || `${response.status} ${response.statusText}`.trim();
             // The relay answers 503 when the page's oxd connection is gone.
             fail(response.status === 503 ? new Disconnected(message) : new Error(message));
           })
-          .catch((e: Error) => fail(new Disconnected(e.message)));
+          .catch(() => fail(new Error("Could not reach ox")));
       });
     },
     close() {

@@ -79,4 +79,10 @@ func TestTurnWithoutStopHookKeepsSchedules(t *testing.T) {
 	if !during.Parkable() {
 		t.Fatal("the next Stop hook did not settle the scheduling tool call")
 	}
+
+	deleted, _, _ := testAgent()
+	failedTurn(deleted, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"CronDelete","input":{"id":"c1"}}]}}`)
+	if !deleted.Parkable() {
+		t.Fatal("a CronDelete call in a failed turn kept a fresh agent from parking")
+	}
 }

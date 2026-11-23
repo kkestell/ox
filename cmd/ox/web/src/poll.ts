@@ -7,7 +7,7 @@ type Polled<T> = { kind: "value"; value: T } | { kind: "error"; message: string 
 
 // createPoll runs request now and on each tick of the page's clock, and
 // returns its latest answer, undefined until the first. Only an answer
-// replaces it; a failure to reach ox keeps the last one, since the page
+// replaces it; a lost stream (Disconnected) keeps the last one, since the page
 // reports the lost connection. One request is in flight at a time, so
 // answers apply in the order sent.
 export function createPoll<T>(request: () => Promise<T>) {
