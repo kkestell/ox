@@ -10,8 +10,9 @@ export class RpcError extends Error {
 }
 
 // Disconnected is a request's failure when the page's connection to oxd,
-// through the relay and its event stream, is gone. closed means the browser
-// has stopped reconnecting the stream, so only a reload restores it.
+// through the relay and its event stream, is gone. closed means the relay
+// refused the stream, so the page has stopped reconnecting and only a reload
+// restores it.
 export class Disconnected extends Error {
   readonly closed: boolean;
   constructor(message: string, closed = false) {
@@ -31,30 +32,41 @@ export function connect(handlers: {
   onError(error: Error): void;
 }): Connection {
   const pending = new Map<number, { resolve(result: unknown): void; reject(error: Error): void }>();
-  let source: EventSource;
-  let connection: string | undefined;
   let nextId = 1;
+
+  // The stream's whole lifecycle: waiting holds the timer that reopens a
+  // dropped stream, and closed is a refused or closed stream, never reopened.
+  type Stream =
+    | { kind: "connecting"; source: EventSource }
+    | { kind: "connected"; source: EventSource; connection: string }
+    | { kind: "waiting"; timer: ReturnType<typeof setTimeout> }
+    | { kind: "closed" };
+  let stream: Stream = { kind: "closed" };
 
   const failPending = (error: Error) => {
     for (const call of pending.values()) call.reject(error);
     pending.clear();
   };
 
-  const lose = (error: Disconnected) => {
-    connection = undefined;
+  // drop ends the current stream and fails its calls. The page reopens the
+  // stream a second later unless the relay refused it.
+  const drop = (error: Disconnected) => {
+    if (stream.kind === "connecting" || stream.kind === "connected") stream.source.close();
+    stream = error.closed ? { kind: "closed" } : { kind: "waiting", timer: setTimeout(open, 1000) };
     failPending(error);
     handlers.onError(error);
   };
 
-  const open = () => {
-    source = new EventSource("/events");
+  function open() {
+    const source = new EventSource("/events");
+    stream = { kind: "connecting", source };
     source.addEventListener("connection", (event) => {
-      connection = event.data;
+      stream = { kind: "connected", source, connection: event.data };
       handlers.onConnect();
     });
     source.onerror = () => {
       const closed = source.readyState === EventSource.CLOSED;
-      lose(
+      drop(
         new Disconnected(closed ? "Lost the connection to ox." : "Lost the connection to ox. Reconnecting.", closed),
       );
     };
@@ -73,14 +85,25 @@ export function connect(handlers: {
       if (message.error) call.reject(new RpcError(message.error.message, message.error.code));
       else call.resolve(message.result);
     };
+  }
+
+  // iOS suspends a hidden page's requests, so a reconnect attempt made before
+  // the suspension can never answer. Replace it when the page is shown.
+  const onVisible = () => {
+    if (document.visibilityState !== "visible") return;
+    if (stream.kind === "connecting") stream.source.close();
+    else if (stream.kind === "waiting") clearTimeout(stream.timer);
+    else return;
+    open();
   };
+  document.addEventListener("visibilitychange", onVisible);
   open();
 
   return {
     rpc(method, params) {
-      if (!connection) return Promise.reject(new Disconnected("Not connected to ox"));
+      if (stream.kind !== "connected") return Promise.reject(new Disconnected("Not connected to ox"));
       const id = nextId++;
-      const sentOn = connection;
+      const sentOn = stream.connection;
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject });
         const fail = (error: Error) => {
@@ -100,16 +123,18 @@ export function connect(handlers: {
             // A POST that cannot reach the relay means the stream cannot either.
             // Replace the stream, which the browser may still hold open, unless
             // the stream already reported the drop or the page has reconnected.
-            if (connection !== sentOn) return fail(new Disconnected("Lost the connection to ox. Reconnecting."));
-            source.close();
-            lose(new Disconnected("Lost the connection to ox. Reconnecting."));
-            open();
+            if (stream.kind !== "connected" || stream.connection !== sentOn) {
+              return fail(new Disconnected("Lost the connection to ox. Reconnecting."));
+            }
+            drop(new Disconnected("Lost the connection to ox. Reconnecting."));
           });
       });
     },
     close() {
-      source.close();
-      connection = undefined;
+      document.removeEventListener("visibilitychange", onVisible);
+      if (stream.kind === "connecting" || stream.kind === "connected") stream.source.close();
+      else if (stream.kind === "waiting") clearTimeout(stream.timer);
+      stream = { kind: "closed" };
       failPending(new Disconnected("Closed"));
     },
   };
