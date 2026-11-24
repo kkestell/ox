@@ -607,11 +607,11 @@ func TestFailedLaunchKeepsItsErrorWhenDeleteFails(t *testing.T) {
 
 type sendGateAgent struct {
 	agent.Agent
-	gate func()
+	gate func(agent.Input)
 }
 
 func (a sendGateAgent) Send(input agent.Input) error {
-	a.gate()
+	a.gate(input)
 	return a.Agent.Send(input)
 }
 
@@ -638,7 +638,7 @@ func TestChildStartHoldsUpNoOtherSession(t *testing.T) {
 				}
 				a, err := fake.Start(o)
 				if gateSend && err == nil {
-					return sendGateAgent{a, gate}, nil
+					return sendGateAgent{a, func(agent.Input) { gate() }}, nil
 				}
 				return a, err
 			}
@@ -1056,7 +1056,24 @@ func TestChildReports(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{
 		"fake": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
 	}, MaxChildDepth: 1}
-	harnesses := map[string]agent.Harness{"fake": {Start: fake.Start}}
+	// The gate holds the Send of a message whose text is "late".
+	gated, release := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unblock)
+	gate := func(input agent.Input) {
+		if input.From != "" && input.Text == "late" {
+			close(gated)
+			<-release
+		}
+	}
+	start := func(o agent.Options) (agent.Agent, error) {
+		a, err := fake.Start(o)
+		if err != nil {
+			return nil, err
+		}
+		return sendGateAgent{a, gate}, nil
+	}
+	harnesses := map[string]agent.Harness{"fake": {Start: start}}
 	st := openStore(t)
 	s, err := newServer(st, cfg, 0, harnesses, MCP{})
 	if err != nil {
@@ -1178,6 +1195,33 @@ func TestChildReports(t *testing.T) {
 	c.call("session/send", map[string]string{"session_id": two, "text": "short"})
 	reportsTaken(t, c, p, map[string]int{two: 1})
 
+	t.Log("a message accepted after its turn ended leaves the next turn's report")
+	c.forget(one)
+	c.call("session/send", map[string]string{"session_id": one, "text": "wait 60000"})
+	c.update(one, agent.UpdatePrompt)
+	late := fromOne.send("tools/call", map[string]any{"name": "send_message", "arguments": map[string]string{"to": p, "text": "late"}})
+	<-gated
+	c.call("session/interrupt", map[string]string{"session_id": one})
+	c.call("session/send", map[string]string{"session_id": one, "text": "approve Bash {}"})
+	asked = c.update(one, agent.UpdateApproval)
+	unblock()
+	if response := fromOne.response(late); response.Error != nil || !strings.Contains(string(response.Result), "Message queued for "+p+".") {
+		t.Fatalf("the late send_message returned %+v", response)
+	}
+	c.call("session/approve", map[string]any{"session_id": one, "request_id": asked.RequestID, "response": json.RawMessage(`{"behavior":"allow"}`)})
+	got = reportsTaken(t, c, p, map[string]int{one: 2})
+	if reports := slices.Concat(reportPrompts(got)...); !slices.Equal(reports, []agent.Report{
+		{From: one, FromLabel: "One", Text: "Turn failed: Interrupted"},
+		{From: one, FromLabel: "One", Text: "You said: approve Bash {}"},
+	}) {
+		t.Fatalf("the parent took reports %+v", reports)
+	}
+	if !slices.ContainsFunc(got, func(u agent.Update) bool {
+		return u.Type == agent.UpdatePrompt && u.From == one && u.Text == "late"
+	}) {
+		t.Fatalf("the parent did not take the late message: %+v", got)
+	}
+
 	t.Log("read_session renders the reports")
 	if text, refused := fromX.tool("read_session", map[string]string{"to": p}); refused ||
 		!strings.Contains(text, "] Reports:\nOne ("+one+"): Turn failed: Interrupted\nTwo ("+two+"): You said: short\n\n") {
@@ -1189,8 +1233,8 @@ func TestChildReports(t *testing.T) {
 		History []agent.Update `json:"history"`
 	}
 	json.Unmarshal(c.call("session/get", map[string]string{"session_id": p}), &history)
-	if prompts := reportPrompts(history.History); len(prompts) != 6 {
-		t.Fatalf("the parent's history kept reports %+v", prompts)
+	if reports := slices.Concat(reportPrompts(history.History)...); len(reports) != 9 {
+		t.Fatalf("the parent's history kept reports %+v", reports)
 	}
 	labelOf := func(c *client) string {
 		var listed struct {

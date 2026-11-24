@@ -746,11 +746,11 @@ session`, `session not found`, or `cursor out of range`.
 A child session makes a report when a turn's `result` arrives: the result's
 text, or `Turn failed: <text>` for an error, including `Turn failed:
 Interrupted`. It makes none for a turn whose last step before the result
-included a `send_message` to its parent that the parent accepted; a step ends at
-the next `tool_use` after one of its `tool_result`s. It also makes one when
-`exited` arrives: `Exited: <error>`. A text over 400 characters keeps its first
-400, then `…` and a line `(first 400 of <n> characters; read the rest with
-read_session on <child>.)`.
+included a `send_message` to its parent, made during that turn, that the parent
+accepted; a step ends at the next `tool_use` after one of its `tool_result`s. It
+also makes one when `exited` arrives: `Exited: <error>`. A text over 400
+characters keeps its first 400, then `…` and a line `(first 400 of <n>
+characters; read the rest with read_session on <child>.)`.
 
 `oxd` delivers a parent's reports when the parent is `idle`, `background`, or
 `parked`, is not archived, and none of its children is `running`; a child in
