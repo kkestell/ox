@@ -997,6 +997,41 @@ test("Decline denies the question", async ({ ox: page }) => {
   await expect(stop(page)).toHaveCount(0);
 });
 
+test("a question form shows no raw input", async ({ ox: page }) => {
+  const { form, color } = await askQuestions(page);
+  await expect(color).toBeVisible();
+  await expect(form).not.toContainText('"multiSelect"');
+});
+
+test("a long question keeps its buttons in view", async ({ ox: page }) => {
+  await newSessionButton(page).click();
+  await page.setViewportSize({ width: 390, height: 700 });
+  const options = Array.from({ length: 12 }, (_, i) => ({
+    label: `Option ${i + 1}`,
+    description: "A description long enough to wrap onto a second line on a phone",
+  }));
+  const form = await ask(
+    page,
+    "AskUserQuestion",
+    JSON.stringify({ questions: [{ question: "Which option?", header: "Option", options, multiSelect: false }] }),
+  );
+  const submit = form.getByRole("button", { name: "Submit" });
+  await expect(form.getByRole("group").getByText("Which option?")).toBeInViewport({ ratio: 1 });
+  await expect(form.getByRole("button", { name: "Decline" })).toBeInViewport({ ratio: 1 });
+  await expect(submit).toBeInViewport({ ratio: 1 });
+  await form.getByRole("radio", { name: "Option 12" }).check();
+  await expect(submit).toBeInViewport({ ratio: 1 });
+  await expect(submit).toBeEnabled();
+});
+
+test("a long permission card keeps Submit in view", async ({ ox: page }) => {
+  await newSessionButton(page).click();
+  await page.setViewportSize({ width: 390, height: 700 });
+  const plan = Array.from({ length: 40 }, (_, i) => `${i + 1}. Step ${i + 1} of the plan`).join("\n");
+  const approval = await ask(page, "ExitPlanMode", JSON.stringify({ plan }));
+  await expect(approval.getByRole("button", { name: "Submit" })).toBeInViewport({ ratio: 1 });
+});
+
 test("a malformed question falls back to Allow and Deny", async ({ ox: page }) => {
   await newSessionButton(page).click();
   const approval = await ask(page, "AskUserQuestion", '{"questions":"x"}');
