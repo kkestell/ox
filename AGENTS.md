@@ -240,10 +240,11 @@ brief, other than its sibling children's, stops and reports it to the session th
    the plan and review, states the verdict, lists the checks run, with
    `make live` run or not run, and adds `Fixes #N` for each issue the change
    resolves. When the change alters the UI, the body ends with a
-   `## Screenshots` table of each view it changes, before and after, taken in
-   headless Chrome from the base and the change. The images are committed
-   under `pr-<N>/` on the orphan `pr-assets` branch and linked through
-   `raw.githubusercontent.com` at that commit.
+   `## Screenshots` table of each view it changes, taken in headless Chrome:
+   before and after from the base and the change for a view that exists on
+   the base, and after alone for a view the change adds. The images are
+   committed under `pr-<N>/` on the orphan `pr-assets` branch and linked
+   through `raw.githubusercontent.com` at that commit.
 8. After the user merges, the top-level agent runs `make prune` and pulls in
    the main checkout. `make prune` removes each local branch whose pull
    request has merged, and its worktree; `make worktree` runs it first.
