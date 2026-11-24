@@ -31,7 +31,10 @@ type Session struct {
 	// ResumeToken is the harness's token for resuming the conversation,
 	// empty until the harness has saved enough to resume it.
 	ResumeToken string
-	CreatedAt   time.Time
+	// Directory is the absolute directory the harness runs in, fixed at
+	// creation.
+	Directory string
+	CreatedAt time.Time
 	// Child is set for a child session, nil for a top-level one.
 	Child    *Child
 	Archived bool
@@ -40,12 +43,11 @@ type Session struct {
 }
 
 // Child is what makes a session a child: its parent, its name among the
-// parent's children, its title, and the directory it runs in.
+// parent's children, and its title.
 type Child struct {
-	ParentID  string `json:"parent_id"`
-	Name      string `json:"name"`
-	Title     string `json:"title"`
-	Directory string `json:"directory"`
+	ParentID string `json:"parent_id"`
+	Name     string `json:"name"`
+	Title    string `json:"title"`
 }
 
 // Image is an image attached to a prompt.
@@ -75,7 +77,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 	effort          TEXT NOT NULL,
 	permission_mode TEXT NOT NULL,
 	resume_token    TEXT NOT NULL,
-	created_at      TEXT NOT NULL
+	created_at      TEXT NOT NULL,
+	directory       TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS events (
 	id         INTEGER PRIMARY KEY,
@@ -88,7 +91,6 @@ CREATE TABLE IF NOT EXISTS children (
 	parent_id  TEXT NOT NULL REFERENCES sessions,
 	name       TEXT NOT NULL,
 	title      TEXT NOT NULL,
-	directory  TEXT NOT NULL,
 	UNIQUE (parent_id, name)
 );
 CREATE TABLE IF NOT EXISTS archived (
@@ -157,7 +159,42 @@ func Open(path string) (*Store, error) {
 		lock.Close()
 		return nil, err
 	}
+	if err := upgrade(db); err != nil {
+		db.Close()
+		lock.Close()
+		return nil, fmt.Errorf("upgrade database: %w", err)
+	}
 	return &Store{db, lock}, nil
+}
+
+// upgrade moves a database whose children alone stored a directory to one
+// where every session stores its own: a top-level session's is its
+// workspace's path.
+func upgrade(db *sql.DB) error {
+	var upgraded bool
+	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('sessions') WHERE name = 'directory'`).Scan(&upgraded); err != nil {
+		return err
+	}
+	if upgraded {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, statement := range []string{
+		`ALTER TABLE sessions ADD COLUMN directory TEXT NOT NULL DEFAULT ''`,
+		`UPDATE sessions SET directory = (SELECT path FROM workspaces WHERE id = sessions.workspace_id)`,
+		`UPDATE sessions SET directory = (SELECT directory FROM children WHERE session_id = sessions.id)
+			WHERE id IN (SELECT session_id FROM children)`,
+		`ALTER TABLE children DROP COLUMN directory`,
+	} {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) Close() error {
@@ -190,8 +227,8 @@ func (s *Store) Workspaces() ([]*Workspace, error) {
 		return nil, err
 	}
 
-	rows, err = s.db.Query(`SELECT s.id, s.workspace_id, s.harness, s.model, s.effort, s.permission_mode, s.resume_token, s.created_at,
-			c.parent_id, c.name, c.title, c.directory, a.session_id IS NOT NULL, coalesce(t.title, '')
+	rows, err = s.db.Query(`SELECT s.id, s.workspace_id, s.harness, s.model, s.effort, s.permission_mode, s.resume_token, s.created_at, s.directory,
+			c.parent_id, c.name, c.title, a.session_id IS NOT NULL, coalesce(t.title, '')
 		FROM sessions s LEFT JOIN children c ON c.session_id = s.id LEFT JOIN archived a ON a.session_id = s.id
 			LEFT JOIN titles t ON t.session_id = s.id
 		ORDER BY s.created_at, s.rowid`)
@@ -202,13 +239,13 @@ func (s *Store) Workspaces() ([]*Workspace, error) {
 	for rows.Next() {
 		r := &Session{}
 		var workspaceID, created string
-		var parentID, name, title, directory sql.NullString
-		if err := rows.Scan(&r.ID, &workspaceID, &r.Harness, &r.Model, &r.Effort, &r.PermissionMode, &r.ResumeToken, &created,
-			&parentID, &name, &title, &directory, &r.Archived, &r.Title); err != nil {
+		var parentID, name, title sql.NullString
+		if err := rows.Scan(&r.ID, &workspaceID, &r.Harness, &r.Model, &r.Effort, &r.PermissionMode, &r.ResumeToken, &created, &r.Directory,
+			&parentID, &name, &title, &r.Archived, &r.Title); err != nil {
 			return nil, err
 		}
 		if parentID.Valid {
-			r.Child = &Child{ParentID: parentID.String, Name: name.String, Title: title.String, Directory: directory.String}
+			r.Child = &Child{ParentID: parentID.String, Name: name.String, Title: title.String}
 		}
 		if r.CreatedAt, err = parseTime(created); err != nil {
 			return nil, err
@@ -227,19 +264,22 @@ func (s *Store) AddWorkspace(w *Workspace) error {
 
 // AddSession stores a session, and a child session's child row with it.
 func (s *Store) AddSession(workspaceID string, r *Session) error {
+	if !filepath.IsAbs(r.Directory) {
+		return errors.New("session directory must be an absolute path")
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`INSERT INTO sessions (id, workspace_id, harness, model, effort, permission_mode, resume_token, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, workspaceID, r.Harness, r.Model, r.Effort, r.PermissionMode, r.ResumeToken, formatTime(r.CreatedAt)); err != nil {
+	if _, err := tx.Exec(`INSERT INTO sessions (id, workspace_id, harness, model, effort, permission_mode, resume_token, created_at, directory)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, workspaceID, r.Harness, r.Model, r.Effort, r.PermissionMode, r.ResumeToken, formatTime(r.CreatedAt), r.Directory); err != nil {
 		return err
 	}
 	if c := r.Child; c != nil {
-		if _, err := tx.Exec(`INSERT INTO children (session_id, parent_id, name, title, directory) VALUES (?, ?, ?, ?, ?)`,
-			r.ID, c.ParentID, c.Name, c.Title, c.Directory); err != nil {
+		if _, err := tx.Exec(`INSERT INTO children (session_id, parent_id, name, title) VALUES (?, ?, ?, ?)`,
+			r.ID, c.ParentID, c.Name, c.Title); err != nil {
 			return err
 		}
 	}

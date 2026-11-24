@@ -44,14 +44,14 @@ implementations. The daemon stores workspaces, sessions, and session history in
 `ox/ox.db` beneath `$XDG_STATE_HOME`, or beneath `~/.local/state` when that is
 unset; `-db /absolute/path/to/ox.db` chooses a different file. They outlive the
 daemon. Each workspace and session records when it was created, as `created_at`,
-an RFC 3339 timestamp.
+an RFC 3339 timestamp. Each session has a `directory`, where its harness runs,
+fixed at creation: a top-level session's is its workspace's directory.
 
 A child session is one a session's Claude started with
 [`create_session`](#tools). It has a `child` object, fixed at creation:
 `parent_id`, the session that started it; `name`, unique among that parent's
-children; `title`, its label; and `directory`, where its harness runs. A child
-belongs to its parent's workspace, whatever its directory. A session without
-`child` is top-level and runs in its workspace's directory. Children nest at
+children; and `title`, its label. A child belongs to its parent's workspace,
+whatever its directory. A session without `child` is top-level. Children nest at
 most [`max_child_depth`](#configuration) levels below a top-level session.
 
 A new session starts parked. `session/send` starts its harness and resumes its
@@ -140,18 +140,18 @@ existing ID.
 ### `workspace/list`
 
 Returns every workspace with its sessions, each oldest first. Each session has
-its `label`, as [`list_sessions`](#tools) gives it, its `state`, as the
-[`state` and `parked` updates](#session-updates) last published it, a child
-session its `child` object, and an archived session `"archived": true`. The list
-follows every `state` and `parked` update it reflects and precedes every one it
-does not. A session's settings come from `session/get`.
+its `label`, as [`list_sessions`](#tools) gives it, its `directory`, its
+`state`, as the [`state` and `parked` updates](#session-updates) last published
+it, a child session its `child` object, and an archived session `"archived":
+true`. The list follows every `state` and `parked` update it reflects and
+precedes every one it does not. A session's settings come from `session/get`.
 
 ```json
 {"jsonrpc":"2.0","id":2,"method":"workspace/list","params":{}}
 ```
 
 ```json
-{"jsonrpc":"2.0","id":2,"result":{"workspaces":[{"workspace_id":"workspace-id","path":"/Users/kyle/src/ox","created_at":"2026-11-18T19:53:47.102Z","sessions":[{"session_id":"session-id","label":"Explain this repository.","harness":"claude","created_at":"2026-11-18T19:53:48.416Z","state":"idle"}]}]}}
+{"jsonrpc":"2.0","id":2,"result":{"workspaces":[{"workspace_id":"workspace-id","path":"/Users/kyle/src/ox","created_at":"2026-11-18T19:53:47.102Z","sessions":[{"session_id":"session-id","label":"Explain this repository.","harness":"claude","created_at":"2026-11-18T19:53:48.416Z","directory":"/Users/kyle/src/ox","state":"idle"}]}]}}
 ```
 
 ### `workspace/remove`
@@ -171,21 +171,26 @@ has sessions`; destroy its sessions first.
 
 ### `workspace/list_folder`
 
-Requires `workspace_id`. `path` is a slash-separated path relative to the
-workspace's directory, empty or omitted for the directory itself. Returns the
-folder's entries in directory order, each with its `name` and whether it is a
-`folder`. `.git`, `.svn`, `.hg`, `.hypercube`, `.DS_Store`, and `Thumbs.db` are
-left out. A symlink is a folder when its relative target leads to a folder
-inside the workspace's directory; one with an absolute target, one that leads
-outside the directory, and one that leads nowhere are not.
+Requires exactly one of `session_id` or `workspace_id`, which names the
+directory: the session's `directory`, or the workspace's. `path` is a
+slash-separated path relative to that directory, empty or omitted for the
+directory itself. Returns the folder's entries in directory order, each with its
+`name` and whether it is a `folder`. `.git`, `.svn`, `.hg`, `.hypercube`,
+`.DS_Store`, and `Thumbs.db` are left out. A symlink is a folder when its
+relative target leads to a folder inside the directory; one with an absolute
+target, one that leads outside the directory, and one that leads nowhere are
+not.
 
-A `path` that is absolute or leaves the directory returns `-32602`; an unknown
-workspace returns `-32001`. A folder that cannot be listed, including one
+Both `session_id` and `workspace_id`, or neither, returns `-32602` `exactly one
+of session_id and workspace_id is required`. A `path` that is absolute or leaves
+the directory returns `-32602` `path must be relative to the directory`. An
+unknown session returns `-32001` `session not found`, and an unknown workspace
+`-32001` `workspace not found`. A folder that cannot be listed, including one
 reached through a symlink that leads outside the directory, returns `-32000`
 with the reason.
 
 ```json
-{"jsonrpc":"2.0","id":4,"method":"workspace/list_folder","params":{"workspace_id":"workspace-id","path":"cmd"}}
+{"jsonrpc":"2.0","id":4,"method":"workspace/list_folder","params":{"session_id":"session-id","path":"cmd"}}
 ```
 
 ```json
@@ -194,16 +199,19 @@ with the reason.
 
 ### `workspace/read_file`
 
-Requires `workspace_id` and `path`, a slash-separated path to a file relative to
-the workspace's directory. Returns the file's `text`.
+Requires `path`, a slash-separated path to a file, and exactly one of
+`session_id` or `workspace_id`, which names the directory `path` is relative to,
+as for [`workspace/list_folder`](#workspacelist_folder). Returns the file's
+`text`.
 
-A `path` that is empty, absolute, or leaves the directory returns `-32602`; an
-unknown workspace returns `-32001`. Each of these returns `-32000` with the
-reason: a path that is not a regular file (`not a regular file`), a file larger
-than 1 MiB (`file is larger than 1 MiB`), one with a NUL byte in its first 8000
-bytes (`file is binary`), one that is not valid UTF-8 (`file is not UTF-8
-text`), and one that cannot be read, including one reached through a symlink
-that leads outside the directory.
+The selector errors are those of `workspace/list_folder`. A `path` that is
+empty, absolute, or leaves the directory returns `-32602` `path must be relative
+to the directory`. Each of these returns `-32000` with the reason: a path that
+is not a regular file (`not a regular file`), a file larger than 1 MiB (`file is
+larger than 1 MiB`), one with a NUL byte in its first 8000 bytes (`file is
+binary`), one that is not valid UTF-8 (`file is not UTF-8 text`), and one that
+cannot be read, including one reached through a symlink that leads outside the
+directory.
 
 ```json
 {"jsonrpc":"2.0","id":5,"method":"workspace/read_file","params":{"workspace_id":"workspace-id","path":"go.mod"}}
@@ -569,19 +577,19 @@ notifications precede the corresponding `idle` or `exited` update:
 
 Every connection is told when workspaces and sessions come and go:
 
-| Method               | `params`                                                                                                                                              | Meaning                                                                                                                                                                                                        |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `workspace/created`  | `workspace_id`, `path`, `created_at`                                                                                                                  | A workspace was registered.                                                                                                                                                                                    |
-| `workspace/removed`  | `workspace_id`                                                                                                                                        | A workspace was removed.                                                                                                                                                                                       |
-| `session/created`    | `session_id`, `workspace_id`, `label` (a child's title, or the first 8 characters of its ID), `harness`, `created_at`, `state`, and a child's `child` | A session was created: a top-level session `parked`, a child `idle` and started with its first message, whose updates follow.                                                                                  |
-| `session/labeled`    | `session_id`, `label`                                                                                                                                 | A top-level session took the first prompt the user sent it, and `label` is its first line, shortened to 48 characters; sent again with the title the titling model generated from that prompt once it arrives. |
-| `session/configured` | `session_id`, `model`, `effort`, `permission_mode`                                                                                                    | A session's settings changed, by `session/configure` or by the harness itself, such as Claude leaving plan mode; the fields are the settings the session now uses.                                             |
-| `session/destroyed`  | `session_id`                                                                                                                                          | A session was destroyed, after its last update.                                                                                                                                                                |
-| `session/archived`   | `session_id`                                                                                                                                          | A session was archived, before the `parked` update that stops its process.                                                                                                                                     |
-| `session/unarchived` | `session_id`                                                                                                                                          | A session was unarchived.                                                                                                                                                                                      |
+| Method               | `params`                                                                                                                                                           | Meaning                                                                                                                                                                                                        |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `workspace/created`  | `workspace_id`, `path`, `created_at`                                                                                                                               | A workspace was registered.                                                                                                                                                                                    |
+| `workspace/removed`  | `workspace_id`                                                                                                                                                     | A workspace was removed.                                                                                                                                                                                       |
+| `session/created`    | `session_id`, `workspace_id`, `label` (a child's title, or the first 8 characters of its ID), `harness`, `created_at`, `directory`, `state`, and a child's `child` | A session was created: a top-level session `parked`, a child `idle` and started with its first message, whose updates follow.                                                                                  |
+| `session/labeled`    | `session_id`, `label`                                                                                                                                              | A top-level session took the first prompt the user sent it, and `label` is its first line, shortened to 48 characters; sent again with the title the titling model generated from that prompt once it arrives. |
+| `session/configured` | `session_id`, `model`, `effort`, `permission_mode`                                                                                                                 | A session's settings changed, by `session/configure` or by the harness itself, such as Claude leaving plan mode; the fields are the settings the session now uses.                                             |
+| `session/destroyed`  | `session_id`                                                                                                                                                       | A session was destroyed, after its last update.                                                                                                                                                                |
+| `session/archived`   | `session_id`                                                                                                                                                       | A session was archived, before the `parked` update that stops its process.                                                                                                                                     |
+| `session/unarchived` | `session_id`                                                                                                                                                       | A session was unarchived.                                                                                                                                                                                      |
 
 ```json
-{"jsonrpc":"2.0","method":"session/created","params":{"session_id":"session-id","workspace_id":"workspace-id","label":"session-","harness":"claude","created_at":"2026-11-18T19:53:48.416Z","state":"parked"}}
+{"jsonrpc":"2.0","method":"session/created","params":{"session_id":"session-id","workspace_id":"workspace-id","label":"session-","harness":"claude","created_at":"2026-11-18T19:53:48.416Z","directory":"/Users/kyle/src/ox","state":"parked"}}
 ```
 
 ## Connections

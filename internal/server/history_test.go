@@ -15,7 +15,7 @@ func TestHistoryMergesTextAndKeepsConversation(t *testing.T) {
 	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: "/w", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.AddSession("w", &store.Session{ID: "s", CreatedAt: time.Now()}); err != nil {
+	if err := st.AddSession("w", &store.Session{ID: "s", Directory: "/w", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	h := &history{store: st, sessionID: "s"}
@@ -67,10 +67,11 @@ func TestHistoryMergesTextAndKeepsConversation(t *testing.T) {
 // killed, is recorded as ended once, when the session next loads.
 func TestUnrecordedEndIsRecordedAtLoad(t *testing.T) {
 	st := openStore(t)
-	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: t.TempDir(), CreatedAt: time.Now()}); err != nil {
+	dir := t.TempDir()
+	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: dir, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.AddSession("w", &store.Session{ID: "s", CreatedAt: time.Now()}); err != nil {
+	if err := st.AddSession("w", &store.Session{ID: "s", Directory: dir, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	h := &history{store: st, sessionID: "s"}

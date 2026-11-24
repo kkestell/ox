@@ -1,7 +1,7 @@
 // The web client against the real relay and oxd, with the fake harness in
 // internal/fake, whose Send describes the prompts it answers.
-import { mkdtempSync } from "node:fs";
-import { basename } from "node:path";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import type { Page, Route } from "@playwright/test";
 import type { Services } from "./services";
 import { fakeConfig, haikuConfig } from "./services";
@@ -1415,7 +1415,7 @@ async function remove(page: Page, title: string) {
   await expect(sessionButton(page, title)).toHaveCount(0);
 }
 
-test("a child session shows its title, its directory, and its parent's message, also after a reload", async ({
+test("a child session shows its title, its directory, its files, and its parent's message, also after a reload", async ({
   ox: page,
   services,
 }) => {
@@ -1424,6 +1424,9 @@ test("a child session shows its title, its directory, and its parent's message, 
   const child = await createChild(services, sessionId(page), "Helper child", { message: "**hello** child", dir });
   const directory = `${services.workspace}/${dir}`;
   expect(child.directory).toBe(directory);
+  writeFileSync(join(directory, "child.txt"), "the child's file\n");
+  writeFileSync(join(services.workspace, "workspace.txt"), "");
+  const files = page.getByRole("complementary", { name: "Files" });
   for (const reload of [false, true]) {
     if (reload) await page.reload();
     await sessionButton(page, "Helper child").click();
@@ -1433,6 +1436,13 @@ test("a child session shows its title, its directory, and its parent's message, 
     const message = transcript(page).getByRole("article", { name: "Message from child parent" });
     await expect(message).toHaveText("child parenthello child");
     await expect(message.getByRole("strong")).toHaveText("hello");
+
+    await page.getByRole("button", { name: "Toggle files" }).click();
+    await expect(files.getByRole("heading", { name: dir })).toBeVisible();
+    await expect(files.getByRole("button", { name: "child.txt", exact: true })).toBeVisible();
+    await expect(files.getByRole("button", { name: "workspace.txt", exact: true })).toHaveCount(0);
+    await files.getByRole("button", { name: "child.txt", exact: true }).click();
+    await expect(page.getByRole("region", { name: "File" }).getByRole("tabpanel")).toHaveText("the child's file");
   }
 });
 

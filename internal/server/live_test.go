@@ -283,7 +283,7 @@ func TestLive(t *testing.T) {
 	}
 	if err := st.AddSession("w", &store.Session{
 		ID: lost, Harness: "claude", Model: haiku, Effort: "low", PermissionMode: "manual",
-		ResumeToken: "00000000-0000-4000-8000-000000000000", CreatedAt: time.Now(),
+		ResumeToken: "00000000-0000-4000-8000-000000000000", Directory: dir, CreatedAt: time.Now(),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -806,15 +806,16 @@ func TestLive(t *testing.T) {
 			l.t.Fatalf("create_session returned no child: %s", describe(l.c.received(parent)))
 		}
 		var childCreated struct {
-			Child *store.Child `json:"child"`
+			Directory string       `json:"directory"`
+			Child     *store.Child `json:"child"`
 		}
 		for _, m := range l.c.received(started.SessionID) {
 			if m.Method == "session/created" {
 				json.Unmarshal(m.Params, &childCreated)
 			}
 		}
-		if childCreated.Child == nil || childCreated.Child.Directory != childDir || childCreated.Child.ParentID != parent {
-			l.t.Errorf("session/created carried %+v", childCreated.Child)
+		if childCreated.Child == nil || childCreated.Directory != childDir || childCreated.Child.ParentID != parent {
+			l.t.Errorf("session/created carried %+v", childCreated)
 		}
 		if u := l.c.update(started.SessionID, "prompt"); u.From != parent {
 			l.t.Errorf("the child took a prompt from %q, not %q", u.From, parent)

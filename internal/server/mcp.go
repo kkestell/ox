@@ -369,11 +369,11 @@ func createSession(s *Server, caller *session, arguments json.RawMessage, respon
 		return
 	}
 	// Kept as given, as workspace/create keeps its path.
-	directory := caller.directory()
+	directory := caller.directory
 	if input.Dir != "" {
 		directory = input.Dir
 		if !filepath.IsAbs(directory) {
-			directory = caller.directory() + "/" + directory
+			directory = caller.directory + "/" + directory
 		}
 		if info, err := os.Stat(directory); err != nil || !info.IsDir() {
 			respond("", errors.New("dir must be an existing directory"))
@@ -394,7 +394,8 @@ func createSession(s *Server, caller *session, arguments json.RawMessage, respon
 			respond("", err)
 			return
 		}
-		record.Child = &store.Child{ParentID: caller.id, Name: input.Name, Title: title, Directory: directory}
+		record.Child = &store.Child{ParentID: caller.id, Name: input.Name, Title: title}
+		record.Directory = directory
 		if err := s.addChild(caller, record, input.Message); err != nil {
 			respond("", err)
 			return

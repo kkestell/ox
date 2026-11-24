@@ -3,13 +3,14 @@ import { highlight } from "./highlight";
 import { Markdown } from "./Markdown";
 import { type MarkdownView, useOx } from "./ox";
 import { createPoll } from "./poll";
+import type { FileRoot } from "./protocol";
 
-// FileView shows one file of a workspace under its tab, read when it appears
-// and on each tick of the page's clock. It is keyed by its workspace and path,
+// FileView shows one file beneath a root under its tab, read when it appears
+// and on each tick of the page's clock. It is keyed by its selection and path,
 // so its text is always that file's. A Markdown file has a view, which shows
 // it rendered or as its numbered source; any other file shows its source.
 export function FileView(props: {
-  workspaceId: string;
+  root: FileRoot;
   path: string;
   share?: number;
   view?: MarkdownView;
@@ -19,10 +20,10 @@ export function FileView(props: {
   onClose: () => void;
 }) {
   const ox = useOx();
-  const workspaceId = untrack(() => props.workspaceId);
+  const root = untrack(() => props.root);
   const path = untrack(() => props.path);
   const name = path.slice(path.lastIndexOf("/") + 1);
-  const read = createPoll(() => ox.readFile(workspaceId, path));
+  const read = createPoll(() => ox.readFile(root, path));
   // A memo, so an unchanged read is not highlighted or rendered again.
   const text = createMemo(() => {
     const current = read();
