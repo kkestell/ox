@@ -21,13 +21,17 @@ export class Disconnected extends Error {
   }
 }
 
+export type Rpc = <M extends keyof Methods>(method: M, params: Methods[M][0]) => Promise<Methods[M][1]>;
+
 export type Connection = {
-  rpc<M extends keyof Methods>(method: M, params: Methods[M][0]): Promise<Methods[M][1]>;
+  rpc: Rpc;
   close(): void;
 };
 
 export function connect(handlers: {
-  onConnect(): void;
+  // onConnect's rpc sends on the stream that connected, and fails once that
+  // stream ends.
+  onConnect(rpc: Rpc): void;
   onNotification(notification: Notification): void;
   onError(error: Error): void;
 }): Connection {
@@ -62,7 +66,7 @@ export function connect(handlers: {
     stream = { kind: "connecting", source };
     source.addEventListener("connection", (event) => {
       stream = { kind: "connected", source, connection: event.data };
-      handlers.onConnect();
+      handlers.onConnect(send(event.data));
     });
     source.onerror = () => {
       const closed = source.readyState === EventSource.CLOSED;
@@ -99,11 +103,14 @@ export function connect(handlers: {
   document.addEventListener("visibilitychange", onVisible);
   open();
 
-  return {
-    rpc(method, params) {
-      if (stream.kind !== "connected") return Promise.reject(new Disconnected("Not connected to ox"));
+  // send returns an Rpc bound to one stream, which fails without a request
+  // once that stream is no longer the connected one.
+  function send(sentOn: string): Rpc {
+    return (method, params) => {
+      if (stream.kind !== "connected" || stream.connection !== sentOn) {
+        return Promise.reject(new Disconnected("Not connected to ox"));
+      }
       const id = nextId++;
-      const sentOn = stream.connection;
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject });
         const fail = (error: Error) => {
@@ -129,6 +136,13 @@ export function connect(handlers: {
             drop(new Disconnected("Lost the connection to ox. Reconnecting."));
           });
       });
+    };
+  }
+
+  return {
+    rpc(method, params) {
+      if (stream.kind !== "connected") return Promise.reject(new Disconnected("Not connected to ox"));
+      return send(stream.connection)(method, params);
     },
     close() {
       document.removeEventListener("visibilitychange", onVisible);

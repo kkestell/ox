@@ -8,7 +8,7 @@ import {
   untrack,
   useContext,
 } from "solid-js";
-import { type Connection, connect, Disconnected, RpcError } from "./connection";
+import { type Connection, connect, Disconnected, type Rpc, RpcError } from "./connection";
 import { languageFor } from "./highlight";
 import {
   type ApprovalRequest,
@@ -473,7 +473,10 @@ function createOx() {
   }>({ sessions: {}, workspaces: {} });
   const [error, setError] = createSignal<Error>();
   const controls = new Map<string, SessionControl>();
-  const [ready, setReady] = createSignal(false);
+  // live is the stream whose reload has installed the catalog and workspace
+  // list, and holds that stream's rpc.
+  const [live, setLive] = createSignal<{ rpc: Rpc }>();
+  const ready = () => live() !== undefined;
   let connection!: Connection;
 
   const workspaceOf = (id: string) => containing(state.workspaces, id);
@@ -554,7 +557,7 @@ function createOx() {
 
   // retry repeats a request each second until it is answered, showing each
   // failure as the page error meanwhile. It returns undefined once the stream
-  // is lost, which the page reports itself.
+  // its request is sent on ends, which the page reports itself.
   async function retry<T>(request: () => Promise<T>): Promise<T | undefined> {
     let shown: Error | undefined;
     for (;;) {
@@ -573,10 +576,10 @@ function createOx() {
 
   // Install the snapshot without replacing the session's view or its open
   // tool details. Live updates start at the session/get response boundary.
-  async function load(id: string) {
+  async function load(id: string, rpc: Rpc) {
     const result = await retry(async () => {
       try {
-        return await connection.rpc("session/get", { session_id: id });
+        return await rpc("session/get", { session_id: id });
       } catch (e) {
         if (e instanceof RpcError && e.code === notFound) return undefined;
         throw e;
@@ -608,12 +611,14 @@ function createOx() {
   }
 
   // A new oxd connection has missed every notification sent while the page
-  // was disconnected, so it reloads everything.
-  async function reload() {
+  // was disconnected, so it reloads everything. A reload belongs to the stream
+  // that started it: it sends only through that stream's rpc, and ends when
+  // that stream does.
+  async function reload(rpc: Rpc) {
     setError(undefined);
-    const harnessList = await retry(() => connection.rpc("harness/list", {}));
+    const harnessList = await retry(() => rpc("harness/list", {}));
     if (!harnessList) return;
-    const workspaceList = await retry(() => connection.rpc("workspace/list", {}));
+    const workspaceList = await retry(() => rpc("workspace/list", {}));
     if (!workspaceList) return;
     const { harnesses, defaults } = harnessList;
     const { workspaces } = workspaceList;
@@ -641,8 +646,8 @@ function createOx() {
       }));
     });
     for (const { session_id, state } of listed) setState(session_id, state);
-    setReady(true);
-    await Promise.all([...ids].map(load));
+    setLive({ rpc });
+    await Promise.all([...ids].map((id) => load(id, rpc)));
   }
 
   function receive({ method, params }: Notification) {
@@ -667,7 +672,7 @@ function createOx() {
         return setStore((s) => {
           s.workspaces = s.workspaces.filter((w) => w.id !== params.workspace_id);
         });
-      case "session/created":
+      case "session/created": {
         setStore((s) => {
           const workspace = s.workspaces.find((w) => w.id === params.workspace_id);
           workspace?.sessions.push({
@@ -680,8 +685,10 @@ function createOx() {
             load: { kind: "reloading" },
           });
         });
-        if (ready()) void load(params.session_id);
+        const current = live();
+        if (current) void load(params.session_id, current.rpc);
         return;
+      }
       case "session/configured":
         return setStore((s) => {
           const load = sessionIn(s.workspaces, params.session_id)?.load;
@@ -719,12 +726,12 @@ function createOx() {
 
   onSettled(() => {
     connection = connect({
-      onConnect: () => {
-        void reload();
+      onConnect: (rpc) => {
+        void reload(rpc);
       },
       onNotification: receive,
       onError: (error) => {
-        setReady(false);
+        setLive(undefined);
         setStore((s) => {
           for (const workspace of s.workspaces) {
             for (const session of workspace.sessions) {
