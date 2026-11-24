@@ -295,6 +295,20 @@ func sendMessage(s *Server, caller *session, arguments json.RawMessage, respond 
 		return
 	}
 	message := messageInput(caller, label, recipient, input.Text)
+	// A child that tells its parent sends no report for the step that made
+	// the call. The call belongs to the turn in progress when it arrives, so
+	// the turn is taken before the wait; a turn that ends during the wait is
+	// replaced, and marking it changes nothing. A free child has no turn the
+	// call could belong to.
+	var current *turn
+	if caller.child != nil && caller.child.ParentID == recipient.id {
+		current = ask(caller, func() *turn {
+			if caller.free() {
+				return nil
+			}
+			return caller.toParent.turn
+		})
+	}
 	accepted := make(chan error, 1)
 	if !recipient.post(func() { accepted <- recipient.acceptMessage(message) }) {
 		respond("", errors.New("session not found"))
@@ -305,17 +319,13 @@ func sendMessage(s *Server, caller *session, arguments json.RawMessage, respond 
 		return
 	}
 	queued := fmt.Sprintf("Message queued for %s.", recipient.id)
-	if caller.child == nil || caller.child.ParentID != recipient.id {
+	if current == nil {
 		respond(queued, nil)
 		return
 	}
-	// A child that told its parent sends no report for the step. The answer
-	// waits for told, so the call's tool_result follows it. A free child has
-	// no step the call could belong to.
+	// The answer waits for told, so the call's tool_result follows it.
 	if !caller.post(func() {
-		if !caller.free() {
-			caller.toParent.told = toldSent
-		}
+		current.told = toldSent
 		respond(queued, nil)
 	}) {
 		respond(queued, nil)

@@ -62,17 +62,24 @@ type session struct {
 }
 
 // toParent is what a child keeps for its parent: the reports its parent has
-// not taken, oldest first, and whether its current step told the parent
-// itself.
+// not taken, oldest first, and its current turn.
 type toParent struct {
 	reports []agent.Report
-	told    told
+	// turn is the turn in progress, or the next one while the child is free.
+	// A turn's result or exit replaces it.
+	turn *turn
+}
+
+// turn is one turn of a child: whether its current step told the parent
+// itself.
+type turn struct {
+	told told
 }
 
 // told tracks a child's send_message to its parent through the step that made
 // it. The call's own tool_use may arrive before or after the call sets
 // toldSent; its tool_result always follows, and the next step's tool_use
-// follows that, which clears it. A turn's result or exit clears it too.
+// follows that, which clears it.
 type told int
 
 const (
@@ -153,7 +160,7 @@ func (s *Server) newSession(record *store.Session, workspace, firstLine string) 
 	}
 	sess.ctx, sess.cancel = context.WithCancel(context.Background())
 	if record.Child != nil {
-		sess.toParent = &toParent{}
+		sess.toParent = &toParent{turn: &turn{}}
 	}
 	return sess
 }
@@ -547,31 +554,32 @@ func (sess *session) update(update agent.Update) {
 }
 
 // report keeps a child's report of a turn's result, unless the child told its
-// parent itself in the turn's last step, or of an exit, and moves told.
+// parent itself in the turn's last step, or of an exit, and moves told. A
+// turn's result or exit starts the next turn.
 func (sess *session) report(update agent.Update) {
 	t := sess.toParent
 	var text string
 	made := false
 	switch update.Type {
 	case agent.UpdateToolResult:
-		if t.told == toldSent {
-			t.told = toldAnswered
+		if t.turn.told == toldSent {
+			t.turn.told = toldAnswered
 		}
 	case agent.UpdateToolUse:
-		if t.told == toldAnswered {
-			t.told = notTold
+		if t.turn.told == toldAnswered {
+			t.turn.told = notTold
 		}
 	case agent.UpdateResult:
-		if made = t.told == notTold; made {
+		if made = t.turn.told == notTold; made {
 			text = update.Result.Text
 			if update.Result.IsError {
 				text = "Turn failed: " + text
 			}
 		}
-		t.told = notTold
+		t.turn = &turn{}
 	case agent.UpdateExited:
 		text, made = "Exited: "+update.Error, true
-		t.told = notTold
+		t.turn = &turn{}
 	}
 	if !made {
 		return

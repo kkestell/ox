@@ -118,19 +118,22 @@ delivery of child reports posts to each child. A descendant reaches an ancestor
 only through a goroutine of its own, so every chain of waits ends at a leaf.
 
 A child keeps its reports for its parent on its own goroutine, in a value only a
-child has, with its `told` state: whether its current step sent its parent a
-message. `send_message`, once a parent accepts a message from its own child,
-posts `toldSent` to the child and answers the call from there, so the call's
-`tool_result` follows it; the next `tool_result` makes it `toldAnswered`, and
-the next `tool_use` clears it. At a `result` the child keeps a report unless
-`told` is set, and at an `exited` it always keeps one; both clear `told`. When a
-session's state becomes anything but `running`, or it parks, it pings its
-parent, and itself when it has children: a new goroutine posts a delivery to the
-target. The delivery runs on the parent's goroutine. It returns unless the
-parent is free, not archived, and the daemon is not shutting down, and no
-child's published state is `running`, then takes every child's reports and hands
-them to the agent as one input through the path a message takes. Messages go
-first because a free session has no untaken input.
+child has, with its current turn, which holds the turn's `told` state: whether
+its current step sent its parent a message. A `send_message` from a child to its
+own parent takes the child's current turn from the child's goroutine before it
+waits on the parent, or none when the child is free. Once the parent accepts, it
+posts `toldSent` for that turn to the child and answers the call from there, so
+the call's `tool_result` follows it; the next `tool_result` makes it
+`toldAnswered`, and the next `tool_use` clears it. At a `result` the child keeps
+a report unless `told` is set, and at an `exited` it always keeps one; both
+replace the turn, so a message accepted after its turn ended marks only that
+ended turn. When a session's state becomes anything but `running`, or it parks,
+it pings its parent, and itself when it has children: a new goroutine posts a
+delivery to the target. The delivery runs on the parent's goroutine. It returns
+unless the parent is free, not archived, and the daemon is not shutting down,
+and no child's published state is `running`, then takes every child's reports
+and hands them to the agent as one input through the path a message takes.
+Messages go first because a free session has no untaken input.
 
 A child session holds a `child` value, fixed at creation and stored in the same
 transaction as its session row, naming its parent, name, title, and directory; a
