@@ -43,7 +43,7 @@ func TestListSessionsReadsEachSessionFromItsOwner(t *testing.T) {
 		}
 	}
 	read, release := make(chan struct{}), make(chan struct{})
-	s, err := New(st, &config.Config{}, 0, map[string]agent.Harness{"fake": {Start: func(o agent.Options) (agent.Agent, error) {
+	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"fake": {Start: func(o agent.Options) (agent.Agent, error) {
 		a, err := fake.Start(o)
 		if o.SessionID == first {
 			return snapshotReadAgent{a, func() { close(read) }}, err
@@ -151,7 +151,7 @@ func TestReadSession(t *testing.T) {
 		agent.Update{Type: "text_delta", MessageID: "m0", Text: filler("a", 19989)},
 		agent.Update{Type: "text_delta", MessageID: "m1", Text: filler("b", 19989)},
 	)
-	s, err := New(st, &config.Config{}, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestCreateSession(t *testing.T) {
 		"broken": {Start: func(agent.Options) (agent.Agent, error) { return nil, errors.New("no such harness binary") }},
 	}
 	st := openStore(t)
-	s, err := New(st, cfg, 0, harnesses, MCP{})
+	s, err := newServer(st, cfg, 0, harnesses, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +470,7 @@ func TestCreateSession(t *testing.T) {
 	startedMu.Lock()
 	clear(started)
 	startedMu.Unlock()
-	s, err = New(st, cfg, 0, harnesses, MCP{})
+	s, err = newServer(st, cfg, 0, harnesses, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -510,7 +510,7 @@ func TestCreateSessionByDeletedCaller(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{
 		"fake": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
 	}, MaxChildDepth: 2}
-	s, err := New(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+	s, err := newServer(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -578,7 +578,7 @@ func TestFailedLaunchKeepsItsErrorWhenDeleteFails(t *testing.T) {
 		st.Close()
 		return nil, errors.New("no such harness binary")
 	}
-	s, err := New(st, cfg, 0, map[string]agent.Harness{"fake": {Start: start}}, MCP{})
+	s, err := newServer(st, cfg, 0, map[string]agent.Harness{"fake": {Start: start}}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -643,7 +643,7 @@ func TestChildStartHoldsUpNoOtherSession(t *testing.T) {
 				return a, err
 			}
 			st := openStore(t)
-			s, err := New(st, cfg, 0, map[string]agent.Harness{"fake": {Start: start}}, MCP{})
+			s, err := newServer(st, cfg, 0, map[string]agent.Harness{"fake": {Start: start}}, MCP{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -716,7 +716,7 @@ func TestChildStartHoldsUpNoOtherSession(t *testing.T) {
 				c.update(late.SessionID, agent.UpdateParked)
 			}
 
-			s, err = New(st, cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+			s, err = newServer(st, cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -761,7 +761,7 @@ func TestChildStartHoldsUpNoOtherSession(t *testing.T) {
 
 // The MCP handshake answers without a session; a tool call needs one.
 func TestMCPHandshakeNeedsNoSession(t *testing.T) {
-	s, err := New(openStore(t), &config.Config{}, 0, map[string]agent.Harness{}, MCP{})
+	s, err := newServer(openStore(t), &config.Config{}, 0, map[string]agent.Harness{}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -791,7 +791,7 @@ func TestArchive(t *testing.T) {
 	}
 	harnesses := map[string]agent.Harness{"fake": {Start: start}}
 	st := openStore(t)
-	s, err := New(st, cfg, 0, harnesses, MCP{})
+	s, err := newServer(st, cfg, 0, harnesses, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1013,7 +1013,7 @@ func TestArchive(t *testing.T) {
 	refused(c.request("session/unarchive", map[string]string{"session_id": k}), operationFailed, "parent session is archived")
 
 	t.Log("archived sessions stay archived through a restart")
-	restarted, err := New(st, cfg, 0, harnesses, MCP{})
+	restarted, err := newServer(st, cfg, 0, harnesses, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1058,7 +1058,7 @@ func TestChildReports(t *testing.T) {
 	}, MaxChildDepth: 1}
 	harnesses := map[string]agent.Harness{"fake": {Start: fake.Start}}
 	st := openStore(t)
-	s, err := New(st, cfg, 0, harnesses, MCP{})
+	s, err := newServer(st, cfg, 0, harnesses, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1213,7 +1213,7 @@ func TestChildReports(t *testing.T) {
 		t.Fatalf("reports labeled the parent %q", label)
 	}
 	s.Close()
-	s, err = New(st, cfg, 0, harnesses, MCP{})
+	s, err = newServer(st, cfg, 0, harnesses, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}

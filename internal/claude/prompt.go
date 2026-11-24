@@ -14,6 +14,7 @@ var Harness = agent.Harness{
 	CheckPrompt:         checkPrompt,
 	CheckEffort:         checkEffort,
 	CheckPermissionMode: checkPermissionMode,
+	Ask:                 Ask,
 }
 
 func checkPrompt(text string) error {

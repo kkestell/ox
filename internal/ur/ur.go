@@ -78,6 +78,9 @@ func Harness(endpoint, dir string, providers map[string][]string) agent.Harness 
 		CheckEffort:         checkEffort,
 		CheckPermissionMode: checkPermissionMode,
 		TakesProviders:      true,
+		Ask: func(ctx context.Context, model, effort, instructions, text string) (string, error) {
+			return ask(ctx, endpoint, providers, model, effort, instructions, text)
+		},
 	}
 }
 

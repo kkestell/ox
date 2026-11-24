@@ -77,7 +77,7 @@ func TestUnrecordedEndIsRecordedAtLoad(t *testing.T) {
 	h.record(agent.Update{MessageID: "p", Type: "prompt", Text: "hi"})
 	h.record(agent.Update{MessageID: "p", Type: "tool_use", ToolUseID: "t", ToolName: "Bash"})
 	for range 2 {
-		s, err := New(st, &config.Config{}, 0, nil, MCP{})
+		s, err := newServer(st, &config.Config{}, 0, nil, MCP{})
 		if err != nil {
 			t.Fatal(err)
 		}

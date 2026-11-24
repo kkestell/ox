@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kkestell/ox/internal/agent"
 	"github.com/kkestell/ox/internal/claude"
@@ -106,6 +107,22 @@ func (l *live) turn(id, text string, answer func(liveRequest) any) []string {
 			return tools
 		}
 	}
+}
+
+// label returns the next label session/labeled gives session id.
+func (l *live) label(id string) string {
+	l.t.Helper()
+	return labelIn(l.c, id)
+}
+
+func labelIn(c *client, id string) string {
+	c.t.Helper()
+	m := c.next(func(m message) bool { return m.Method == "session/labeled" && m.sessionID() == id })
+	var params struct {
+		Label string `json:"label"`
+	}
+	json.Unmarshal(m.Params, &params)
+	return params.Label
 }
 
 func (l *live) idle(id string) {
@@ -285,7 +302,7 @@ func TestLive(t *testing.T) {
 	top := t
 	serve := func(t *testing.T, park time.Duration) (*Server, net.Listener) {
 		t.Helper()
-		s, err := New(st, cfg, park, map[string]agent.Harness{"claude": claude.Harness}, mcp)
+		s, err := newServer(st, cfg, park, map[string]agent.Harness{"claude": claude.Harness}, mcp)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -467,6 +484,14 @@ func TestLive(t *testing.T) {
 		// /cost output is visible as reply text even without deltas from Claude.
 		id := l.create("manual")
 		l.turn(id, "Reply with just the word ok.", allow)
+		// The first prompt labels the session, then the titling model's title
+		// relabels it.
+		if first := l.label(id); first != "Reply with just the word ok." {
+			l.t.Errorf("the first prompt labeled its session %q", first)
+		}
+		if title := l.label(id); strings.TrimSpace(title) == "" || strings.ContainsAny(title, "\r\n") || utf8.RuneCountInString(title) > titleRunes {
+			l.t.Errorf("the session was titled %q", title)
+		}
 		l.turn(id, "/cost", allow)
 		delta, result := l.c.update(id, "text_delta"), l.c.update(id, "result")
 		if result.Result.IsError || delta.Text == "" || delta.Text != result.Result.Text || delta.MessageID != result.MessageID {
@@ -1036,8 +1061,10 @@ func TestLiveUr(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	const deepseek = "deepseek/deepseek-v4.1-flash-1017"
+	cfg.Titling = config.Titling{Harness: "ur", Model: deepseek, Effort: "low"}
 	harnesses := map[string]agent.Harness{"ur": ur.Harness(ur.Endpoint, t.TempDir(), cfg.Harnesses["ur"].Providers())}
-	s, err := New(openStore(t), cfg, time.Second, harnesses, MCP{})
+	s, err := newServer(openStore(t), cfg, time.Second, harnesses, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1053,7 +1080,7 @@ func TestLiveUr(t *testing.T) {
 		SessionID string `json:"session_id"`
 	}
 	json.Unmarshal(c.call("session/create", map[string]string{
-		"workspace_id": workspace.WorkspaceID, "harness": "ur", "model": "deepseek/deepseek-v4.1-flash-1017", "effort": "low", "permission_mode": "manual",
+		"workspace_id": workspace.WorkspaceID, "harness": "ur", "model": deepseek, "effort": "low", "permission_mode": "manual",
 	}), &created)
 	id := created.SessionID
 	turn := func(text string) string {
@@ -1070,6 +1097,10 @@ func TestLiveUr(t *testing.T) {
 		return result.Text
 	}
 	turn("Remember the number 7341. Reply with just the word ok.")
+	labelIn(c, id)
+	if title := labelIn(c, id); strings.TrimSpace(title) == "" {
+		t.Errorf("the session was titled %q", title)
+	}
 	c.update(id, "parked")
 	if reply := turn("What number did I ask you to remember? Reply with just the number."); !strings.Contains(reply, "7341") {
 		t.Errorf("the second turn forgot the first: %q", reply)

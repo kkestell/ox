@@ -2,7 +2,9 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -22,6 +24,8 @@ type Server struct {
 	harnesses map[string]agent.Harness
 	parkAfter time.Duration
 	mcp       MCP
+	// ask is the titling harness's Ask.
+	ask func(ctx context.Context, model, effort, instructions, text string) (string, error)
 
 	// mu guards which workspaces and sessions exist, which sessions are
 	// archived, and closed. A change to them is broadcast, and an answer
@@ -49,12 +53,16 @@ type workspace struct {
 type MCP struct{ Forwarder, Socket string }
 
 func New(st *store.Store, cfg *config.Config, parkAfter time.Duration, harnesses map[string]agent.Harness, mcp MCP) (*Server, error) {
+	titler := harnesses[cfg.Titling.Harness].Ask
+	if titler == nil {
+		return nil, fmt.Errorf("titling harness %q cannot title sessions", cfg.Titling.Harness)
+	}
 	stored, err := st.Workspaces()
 	if err != nil {
 		return nil, err
 	}
 	s := &Server{
-		store: st, config: cfg, harnesses: harnesses, parkAfter: parkAfter, mcp: mcp,
+		store: st, config: cfg, harnesses: harnesses, parkAfter: parkAfter, mcp: mcp, ask: titler,
 		sessions: make(map[string]*session), conns: make(map[*conn]struct{}),
 	}
 	for _, w := range stored {

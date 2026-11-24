@@ -49,7 +49,7 @@ func main() {
 	}
 	harnesses := map[string]agent.Harness{
 		"claude": claude.Harness,
-		"fake":   {Start: fake.Start},
+		"fake":   {Start: fake.Start, Ask: fake.Ask},
 		"ur":     ur.Harness(ur.Endpoint, *urDir, cfg.Harnesses["ur"].Providers()),
 	}
 	if err := checkConfig(cfg, harnesses); err != nil {

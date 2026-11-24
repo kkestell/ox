@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kkestell/ox/internal/agent"
 	"github.com/kkestell/ox/internal/claude"
@@ -54,7 +56,7 @@ func TestInvalidLines(t *testing.T) {
 	if err := st.AddSession("w", &store.Session{ID: "session-one", Harness: "fake", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(st, &config.Config{}, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +119,7 @@ func TestSettingsValidation(t *testing.T) {
 		Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}}}},
 		PermissionModes: []config.Option{{ID: "plan"}},
 	}}}
-	s, err := New(openStore(t), cfg, 0, nil, MCP{})
+	s, err := newServer(openStore(t), cfg, 0, nil, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +171,7 @@ func TestClaudeRefusesSettingCommandsBeforeStarting(t *testing.T) {
 		starts <- struct{}{}
 		return fake.Start(o)
 	}
-	s, err := New(st, &config.Config{}, 0, map[string]agent.Harness{"claude": h}, MCP{})
+	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"claude": h}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +210,7 @@ func TestSendPromptSizeCountsDecodedBytes(t *testing.T) {
 	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "fake", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(st, &config.Config{}, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +245,7 @@ func TestPromptImages(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
 		Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}},
 	}}}
-	s, err := New(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+	s, err := newServer(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +350,8 @@ func TestRepeatSessionCreation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(openStore(t), cfg, 0, nil, MCP{})
+	cfg.Titling = config.Titling{}
+	s, err := newServer(openStore(t), cfg, 0, nil, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,7 +400,7 @@ func TestSessionLifecycle(t *testing.T) {
 		PermissionModes: []config.Option{{ID: "plan"}},
 	}}}
 	st := openStore(t)
-	s, err := New(st, cfg, 300*time.Millisecond, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+	s, err := newServer(st, cfg, 300*time.Millisecond, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -586,7 +589,7 @@ func TestSessionLifecycle(t *testing.T) {
 	}
 
 	// The removal is stored: a daemon over the same store loads no workspace.
-	restarted, err := New(st, cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+	restarted, err := newServer(st, cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -609,7 +612,7 @@ func TestConfigurationTakenButNotStored(t *testing.T) {
 		started <- options.Settings
 		return fake.Start(options)
 	}
-	s, err := New(st, cfg, 100*time.Millisecond, map[string]agent.Harness{"fake": {Start: start}}, MCP{})
+	s, err := newServer(st, cfg, 100*time.Millisecond, map[string]agent.Harness{"fake": {Start: start}}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -655,16 +658,51 @@ func TestConfigurationTakenButNotStored(t *testing.T) {
 	}
 }
 
-// A top-level session is labeled once, with the first nonblank first line of
-// the prompts the user sent it, through a restart and a prompt that could not
-// be stored.
+// A top-level session is labeled with the first line of the first prompt the
+// user sent it, shortened, until the titling model's title replaces it. A
+// session is titled once, and its title survives a restart.
 func TestSessionLabel(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
 		Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}},
-	}}}
-	harnesses := map[string]agent.Harness{"fake": {Start: fake.Start}}
+	}}, Titling: config.Titling{Harness: "fake", Model: "m"}}
+	type reply struct {
+		text string
+		err  error
+	}
+	type asked struct {
+		ctx                 context.Context
+		model, instructions string
+		text                string
+		reply               chan<- reply
+	}
+	asks := make(chan asked)
+	ask := func(ctx context.Context, model, effort, instructions, text string) (string, error) {
+		r := make(chan reply, 1)
+		select {
+		case asks <- asked{ctx, model, instructions, text, r}:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+		select {
+		case r := <-r:
+			return r.text, r.err
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+	nextAsk := func() asked {
+		t.Helper()
+		select {
+		case a := <-asks:
+			return a
+		case <-time.After(5 * time.Second):
+			t.Fatal("titling was not asked")
+			return asked{}
+		}
+	}
+	harnesses := map[string]agent.Harness{"fake": {Start: fake.Start, Ask: ask}}
 	st := openStore(t)
-	s, err := New(st, cfg, 0, harnesses, MCP{})
+	s, err := newServer(st, cfg, 0, harnesses, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -698,6 +736,15 @@ func TestSessionLabel(t *testing.T) {
 		json.Unmarshal(label.Params, &params)
 		return params.Label
 	}
+	labels := func(c *client, id string) []string {
+		var got []string
+		for _, m := range c.received(id) {
+			if m.Method == "session/labeled" {
+				got = append(got, string(m.Params))
+			}
+		}
+		return got
+	}
 	listed := func(c *client, id string) string {
 		t.Helper()
 		var list struct {
@@ -724,46 +771,111 @@ func TestSessionLabel(t *testing.T) {
 	// A no-break space is blank to Go and not to SQLite's trim.
 	c.call("session/send", map[string]any{"session_id": a, "text": "\u00a0", "images": []string{pngBase64(16)}})
 	idle(c, a)
-	for _, m := range c.received(a) {
-		if m.Method == "session/labeled" {
-			t.Fatalf("an image-only prompt labeled A: %s", m.Params)
-		}
+	if got := labels(c, a); got != nil {
+		t.Fatalf("an image-only prompt labeled A: %s", got)
 	}
 	if got := listed(c, a); got != a[:8] {
 		t.Fatalf("an image-only prompt labeled A %q", got)
 	}
 
-	c.call("session/send", map[string]string{"session_id": a, "text": "\u0085\nActual title\nmore"})
+	t.Log("the first prompt labels A with its first line, then its title")
+	first := "\u0085\nActual title\nmore"
+	c.call("session/send", map[string]string{"session_id": a, "text": first})
 	if got := labelOf(c, a); got != "Actual title" {
 		t.Fatalf("session/labeled labeled A %q", got)
+	}
+	titling := nextAsk()
+	if titling.text != first || titling.instructions != titleInstructions || titling.model != "m" {
+		t.Fatalf("titling asked %+v", titling)
+	}
+	titling.reply <- reply{text: "\"Generated title\"\nextra"}
+	if got := labelOf(c, a); got != "Generated title" {
+		t.Fatalf("the title labeled A %q", got)
+	}
+	if got := listed(c, a); got != "Generated title" {
+		t.Fatalf("workspace/list labeled A %q", got)
 	}
 	idle(c, a)
 	c.call("session/send", map[string]string{"session_id": a, "text": "second"})
 	idle(c, a)
-	if got := listed(c, a); got != "Actual title" {
+	if got := listed(c, a); got != "Generated title" {
 		t.Fatalf("a later prompt relabeled A %q", got)
 	}
 
-	t.Log("a restart labels A from its stored history")
+	t.Log("a restart labels A with its stored title, and titles it no more")
 	s.Close()
-	s, err = New(st, cfg, 0, harnesses, MCP{})
+	s, err = newServer(st, cfg, 0, harnesses, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(s.Close)
 	c = connect(t, s)
-	if got := listed(c, a); got != "Actual title" {
+	if got := listed(c, a); got != "Generated title" {
 		t.Fatalf("after a restart, A is labeled %q", got)
 	}
+	c.call("session/send", map[string]string{"session_id": a, "text": "third"})
+	idle(c, a)
 
-	t.Log("a prompt that could not be stored labels B")
+	t.Log("a long first line is shortened, titling reads its start, and a failed title leaves it")
+	long := create()
+	line := strings.Repeat("é", titleInputRunes+10)
+	c.call("session/send", map[string]string{"session_id": long, "text": line})
+	if got := labelOf(c, long); got != strings.Repeat("é", 47)+"…" {
+		t.Fatalf("a long first line labeled its session %q", got)
+	}
+	// The image-only prompt and A's later prompts asked nothing, so this is
+	// the next request.
+	if titling := nextAsk(); titling.text != strings.Repeat("é", titleInputRunes) {
+		t.Fatalf("titling asked %d runes, not the long prompt's first %d", utf8.RuneCountInString(titling.text), titleInputRunes)
+	} else {
+		titling.reply <- reply{err: errors.New("titling failed")}
+	}
+
+	t.Log("a session destroyed while it is titled is labeled no more")
+	doomed := create()
+	c.call("session/send", map[string]string{"session_id": doomed, "text": "Doomed"})
+	labelOf(c, doomed)
+	titling = nextAsk()
+	idle(c, doomed)
+	c.call("session/destroy", map[string]string{"session_id": doomed})
+	select {
+	case <-titling.ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("destroying the session did not cancel its titling")
+	}
+	if got := labels(c, doomed); got != nil {
+		t.Fatalf("a destroyed session was labeled %s", got)
+	}
+
+	t.Log("a prompt and title that could not be stored label B")
 	st.Close()
 	c.call("session/send", map[string]string{"session_id": b, "text": "Unsaved title"})
 	if got := labelOf(c, b); got != "Unsaved title" {
 		t.Fatalf("session/labeled labeled B %q", got)
 	}
-	if got := listed(c, b); got != "Unsaved title" {
+	// A quoted title of the longest length keeps every character.
+	full := "Unsaved generated title " + strings.Repeat("y", titleRunes-24)
+	nextAsk().reply <- reply{text: `"` + full + `"`}
+	if got := labelOf(c, b); got != full {
+		t.Fatalf("the unsaved title labeled B %q", got)
+	}
+	if got := listed(c, b); got != full {
 		t.Fatalf("workspace/list labeled B %q", got)
+	}
+	if got := labels(c, long); got != nil {
+		t.Fatalf("a failed title labeled its session %s", got)
+	}
+	if got := listed(c, long); got != strings.Repeat("é", 47)+"…" {
+		t.Fatalf("a failed title left its session labeled %q", got)
+	}
+}
+
+// New refuses a titling harness that cannot title sessions.
+func TestTitlingHarnessNeedsAsk(t *testing.T) {
+	cfg := &config.Config{Titling: config.Titling{Harness: "fake"}}
+	_, err := New(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+	if err == nil || err.Error() != `titling harness "fake" cannot title sessions` {
+		t.Fatalf("New returned %v", err)
 	}
 }
 
@@ -796,7 +908,7 @@ while [ ! -e '` + exit + `' ]; do sleep .02; done
 		Models:          []config.Model{{ID: "m", Efforts: efforts}, {ID: "new", Efforts: efforts}},
 		PermissionModes: []config.Option{{ID: "plan"}, {ID: "manual"}},
 	}}}
-	s, err := New(openStore(t), cfg, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
+	s, err := newServer(openStore(t), cfg, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -901,7 +1013,7 @@ func TestStartAndStopHoldUpNoOtherSession(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s, err := New(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
+	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1008,7 +1120,7 @@ func TestDestroyWhileStartingOrConfiguring(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s, err := New(st, cfg, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
+	s, err := newServer(st, cfg, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1164,7 +1276,7 @@ func unresumableSession(t *testing.T) (*store.Store, *Server, *client, string) {
 	if err := st.AddSession("w", &store.Session{ID: "sender-session", Harness: "claude", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
+	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1195,7 +1307,7 @@ func TestResumeTokenKeptWhenNotStored(t *testing.T) {
 	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Model: "m", PermissionMode: "plan", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
+	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1240,7 +1352,7 @@ func TestClaudeModeChangeIsAdopted(t *testing.T) {
 	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Model: "m", Effort: "low", PermissionMode: "plan", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
+	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1284,7 +1396,7 @@ func TestApprovalAnsweredOnce(t *testing.T) {
 		Models:          []config.Model{{ID: "m"}},
 		PermissionModes: []config.Option{{ID: "manual"}},
 	}}}
-	s, err := New(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+	s, err := newServer(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1348,7 +1460,7 @@ func TestPromptQueuedWhileClaudeWorks(t *testing.T) {
 		Models:          []config.Model{{ID: "m"}},
 		PermissionModes: []config.Option{{ID: "manual"}},
 	}}}
-	s, err := New(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+	s, err := newServer(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1426,7 +1538,7 @@ func TestPromptQueuedWhileClaudeWorks(t *testing.T) {
 
 // A directory reached through a symlink is the workspace it already is.
 func TestSameDirectoryIsOneWorkspace(t *testing.T) {
-	s, err := New(openStore(t), &config.Config{}, 0, nil, MCP{})
+	s, err := newServer(openStore(t), &config.Config{}, 0, nil, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1465,7 +1577,7 @@ func TestSameDirectoryIsOneWorkspace(t *testing.T) {
 // A workspace's directory is listed and read through its root, which nothing
 // leads outside of.
 func TestWorkspaceFiles(t *testing.T) {
-	s, err := New(openStore(t), &config.Config{}, 0, nil, MCP{})
+	s, err := newServer(openStore(t), &config.Config{}, 0, nil, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1612,7 +1724,14 @@ func TestSendMessage(t *testing.T) {
 		return configuringAgent{a, configuring}, err
 	}
 	broken := func(agent.Options) (agent.Agent, error) { return nil, errors.New("no such harness binary") }
-	s, err := New(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: start}, "broken": {Start: broken}}, MCP{})
+	// asked receives the text of each titling request.
+	asked := make(chan string, 16)
+	cfg.Titling = config.Titling{Harness: "titler"}
+	titler := agent.Harness{Ask: func(ctx context.Context, model, effort, instructions, text string) (string, error) {
+		asked <- text
+		return text, nil
+	}}
+	s, err := newServer(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: start}, "broken": {Start: broken}, "titler": titler}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1742,8 +1861,19 @@ func TestSendMessage(t *testing.T) {
 	}
 
 	t.Log("messages wait their turn in order")
-	asked, waitingInputs := waiting("one from A", "one from C")
-	c.call("session/approve", map[string]any{"session_id": b, "request_id": asked.RequestID, "response": json.RawMessage(`{"behavior":"allow"}`)})
+	approval, waitingInputs := waiting("one from A", "one from C")
+	t.Log("a message does not title its recipient, and the user's first prompt does")
+	for _, want := range []string{"first from A\nmore", "approve T {}"} {
+		select {
+		case got := <-asked:
+			if got != want {
+				t.Fatalf("titling asked %q, not %q", got, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("titling was not asked for %q", want)
+		}
+	}
+	c.call("session/approve", map[string]any{"session_id": b, "request_id": approval.RequestID, "response": json.RawMessage(`{"behavior":"allow"}`)})
 	for _, want := range waitingInputs {
 		if taken := c.update(b, "prompt"); taken.MessageID != want.MessageID || taken.From != want.From || taken.Text != want.Text || taken.FromLabel != want.FromLabel {
 			t.Fatalf("the next message %+v was not taken: %+v", want, taken)
@@ -1935,7 +2065,7 @@ func TestExitDropsWaitingMessages(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s, err := New(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
+	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1989,7 +2119,7 @@ func TestModelChangeKeepsCurrentEffort(t *testing.T) {
 		},
 		PermissionModes: []config.Option{{ID: "plan"}},
 	}}}
-	s, err := New(openStore(t), cfg, time.Minute, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+	s, err := newServer(openStore(t), cfg, time.Minute, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}

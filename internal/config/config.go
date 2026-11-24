@@ -22,6 +22,7 @@ var defaultConfig []byte
 type Config struct {
 	Harnesses map[string]Harness `json:"harnesses"`
 	Defaults  Defaults           `json:"defaults"`
+	Titling   Titling            `json:"titling"`
 	// MaxChildDepth is how many levels of child sessions a top-level session
 	// can have beneath it.
 	MaxChildDepth int `json:"max_child_depth"`
@@ -35,6 +36,13 @@ type Defaults struct {
 	Model          string `json:"model"`
 	Effort         string `json:"effort"`
 	PermissionMode string `json:"permission_mode"`
+}
+
+// Titling is the harness, model, and effort that title top-level sessions.
+type Titling struct {
+	Harness string `json:"harness"`
+	Model   string `json:"model"`
+	Effort  string `json:"effort"`
 }
 
 type Harness struct {
@@ -82,6 +90,9 @@ func Load(path string) (*Config, error) {
 	}
 	if err := config.Defaults.check(config.Harnesses); err != nil {
 		return nil, fmt.Errorf("%s: defaults: %w", path, err)
+	}
+	if err := config.Titling.check(config.Harnesses); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if config.MaxChildDepth < 1 {
 		return nil, fmt.Errorf("%s: max_child_depth must be at least 1", path)
@@ -173,6 +184,20 @@ func (d Defaults) check(harnesses map[string]Harness) error {
 		return err
 	}
 	return harness.CheckPermissionMode(d.PermissionMode)
+}
+
+func (t Titling) check(harnesses map[string]Harness) error {
+	if t.Harness == "" {
+		return errors.New("titling is required: name the harness, model, and effort that title sessions")
+	}
+	harness, ok := harnesses[t.Harness]
+	if !ok {
+		return fmt.Errorf("titling: harness %q is not configured", t.Harness)
+	}
+	if err := harness.CheckModel(t.Model, t.Effort); err != nil {
+		return fmt.Errorf("titling: %w", err)
+	}
+	return nil
 }
 
 // CheckModel reports whether model is one of h's models and effort one of its

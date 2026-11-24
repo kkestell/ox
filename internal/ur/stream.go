@@ -11,6 +11,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 )
@@ -136,7 +137,7 @@ type function struct {
 type request struct {
 	Model     string            `json:"model"`
 	Messages  []message         `json:"messages"`
-	Tools     []json.RawMessage `json:"tools"`
+	Tools     []json.RawMessage `json:"tools,omitempty"`
 	Stream    bool              `json:"stream"`
 	Reasoning *reasoning        `json:"reasoning,omitempty"`
 	Provider  *provider         `json:"provider,omitempty"`
@@ -177,16 +178,39 @@ type apiError struct {
 // end. It runs on its own goroutine and reads only the agent's fields set at
 // start.
 func (a *Agent) stream(ctx context.Context, t *turn, body []byte) {
-	calls, err := a.post(ctx, body, func(text string, reasoning []reasoningDetail) { a.deliver(delta{t, text, reasoning}) })
+	calls, err := post(ctx, a.endpoint, a.key, body, func(text string, reasoning []reasoningDetail) { a.deliver(delta{t, text, reasoning}) })
 	a.deliver(ended{t, calls, err})
 }
 
-func (a *Agent) post(ctx context.Context, body []byte, onDelta func(string, []reasoningDetail)) ([]toolCall, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.endpoint, bytes.NewReader(body))
+// ask posts one request to endpoint with instructions as the system message
+// and text as the user's, without tools, and returns the whole reply.
+func ask(ctx context.Context, endpoint string, providers map[string][]string, model, effort, instructions, text string) (string, error) {
+	key := os.Getenv("OPENROUTER_API_KEY")
+	if key == "" {
+		return "", errors.New("OPENROUTER_API_KEY is not set")
+	}
+	messages := []message{{Role: "system", Content: content{Text: instructions}}, {Role: "user", Content: content{Text: text}}}
+	body := request{Model: model, Messages: messages, Stream: true}
+	if effort != "" {
+		body.Reasoning = &reasoning{Effort: effort}
+	}
+	if order := providers[model]; len(order) > 0 {
+		body.Provider = &provider{Order: order}
+	}
+	data, _ := json.Marshal(body) // strings and slices of them always marshal
+	var reply strings.Builder
+	if _, err := post(ctx, endpoint, key, data, func(text string, _ []reasoningDetail) { reply.WriteString(text) }); err != nil {
+		return "", err
+	}
+	return reply.String(), nil
+}
+
+func post(ctx context.Context, endpoint, key string, body []byte, onDelta func(string, []reasoningDetail)) ([]toolCall, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+a.key)
+	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

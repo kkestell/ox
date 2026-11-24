@@ -723,6 +723,9 @@ claude -p --input-format stream-json --output-format stream-json --verbose \
 - Structured output: `--output-format json --json-schema '<schema>'` returns
   `structured_output` in the result (with `num_turns: 2`, `stop_reason:
   "tool_use"`).
+- `--output-format json` with the prompt on stdin, in place of stream-json,
+  prints one `result` object. An unknown model gives a `result` with `is_error:
+  true` and its reason in `result`, and exits 1 (2.1.331).
 - A cold call takes about 2 s; a 100 KB prompt about 5 s; concurrent calls do
   not serialize.
 

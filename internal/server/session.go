@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/kkestell/ox/internal/agent"
@@ -30,13 +32,21 @@ type session struct {
 	createdAt time.Time
 	ops       chan func()
 	done      chan struct{} // closed once run returns
+	// ctx bounds the work the session starts off its goroutine. run cancels
+	// it before it closes done, so nothing it bounds starts after the
+	// session has ended.
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	// Guarded by Server.mu. An archived session has no agent, and the child
 	// of an archived session is archived.
 	archived bool
 	// The first nonblank first line of the prompts the user sent a top-level
-	// session, empty before it has one. Written only by run.
+	// session, shortened, empty before it has one. Written only by run.
 	firstLine string
+	// The title the titling model wrote for a top-level session, empty
+	// before it has one. Written only by run.
+	title string
 	// The state last published to clients. Written by whoever owns the
 	// session: its builder until run starts, then run.
 	state string
@@ -74,23 +84,59 @@ const (
 // reportRunes is how much of a child's text a report carries.
 const reportRunes = 400
 
-// firstLine is the line of a prompt that labels its session.
+// firstLine is the line of a prompt that labels its session, shortened.
 func firstLine(text string) string {
+	return shorten(leadingLine(text))
+}
+
+// leadingLine is text's first line once surrounding space is trimmed.
+func leadingLine(text string) string {
 	line, _, _ := strings.Cut(strings.TrimSpace(text), "\n")
 	return line
 }
 
-// labelLocked is the session's label: a child's title, or else the first
-// nonblank first line of the prompts the user sent it, or the start of its ID
-// before it has one. The caller holds Server.mu.
+// shorten cuts line to the length of a child's title, ending it with an
+// ellipsis when it is cut.
+func shorten(line string) string {
+	runes := []rune(line)
+	if len(runes) <= titleRunes {
+		return line
+	}
+	return strings.TrimRightFunc(string(runes[:titleRunes-1]), unicode.IsSpace) + "…"
+}
+
+// cleanTitle is the title in a titling model's reply: its first line, without
+// enclosing quotes, shortened, or empty when it has none.
+func cleanTitle(reply string) string {
+	title := leadingLine(reply)
+	if len(title) >= 2 && strings.ContainsRune("\"'`", rune(title[0])) && title[len(title)-1] == title[0] {
+		title = title[1 : len(title)-1]
+	}
+	return shorten(strings.TrimSpace(title))
+}
+
+// labelLocked is the session's label: a child's title, or else its generated
+// title, or else the first nonblank first line of the prompts the user sent
+// it, or the start of its ID before it has one. The caller holds Server.mu.
 func (sess *session) labelLocked() string {
 	switch {
 	case sess.child != nil:
 		return sess.child.Title
+	case sess.title != "":
+		return sess.title
 	case sess.firstLine != "":
 		return sess.firstLine
 	}
 	return sess.id[:8]
+}
+
+// broadcastLabelLocked tells every client the session's label. The caller
+// holds Server.mu.
+func (sess *session) broadcastLabelLocked() {
+	sess.server.broadcast("session/labeled", struct {
+		SessionID string `json:"session_id"`
+		Label     string `json:"label"`
+	}{sess.id, sess.labelLocked()})
 }
 
 // newSession builds a stored session, whose goroutine its caller starts.
@@ -99,12 +145,13 @@ func (sess *session) labelLocked() string {
 func (s *Server) newSession(record *store.Session, workspace, firstLine string) *session {
 	sess := &session{
 		server: s, id: record.ID, harness: record.Harness, workspace: workspace, child: record.Child, createdAt: record.CreatedAt,
-		ops: make(chan func()), done: make(chan struct{}), archived: record.Archived, firstLine: firstLine,
+		ops: make(chan func()), done: make(chan struct{}), archived: record.Archived, firstLine: firstLine, title: record.Title,
 		state:       agent.StateParked,
 		settings:    agent.Settings{Model: record.Model, Effort: record.Effort, PermissionMode: record.PermissionMode},
 		resumeToken: record.ResumeToken,
 		history:     history{store: s.store, sessionID: record.ID},
 	}
+	sess.ctx, sess.cancel = context.WithCancel(context.Background())
 	if record.Child != nil {
 		sess.toParent = &toParent{}
 	}
@@ -122,6 +169,7 @@ func (sess *session) directory() string {
 
 func (sess *session) run() {
 	defer close(sess.done)
+	defer sess.cancel()
 	for !sess.ended {
 		var events <-chan agent.Event
 		if sess.agent != nil {
@@ -604,21 +652,68 @@ func ask[T any](sess *session, f func() T) T {
 }
 
 // labelFrom labels a top-level session with the first prompt the user sent it
-// whose first line is not blank, and tells every client. Later prompts leave
-// the label as it is.
+// whose first line is not blank, tells every client, and starts titling it.
+// Later prompts leave the label as it is.
 func (sess *session) labelFrom(prompt string) {
 	line := firstLine(prompt)
 	s := sess.server
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if sess.firstLine != "" || line == "" {
+		s.mu.Unlock()
 		return
 	}
 	sess.firstLine = line
-	s.broadcast("session/labeled", struct {
-		SessionID string `json:"session_id"`
-		Label     string `json:"label"`
-	}{sess.id, sess.labelLocked()})
+	sess.broadcastLabelLocked()
+	s.mu.Unlock()
+	go sess.generateTitle(prompt)
+}
+
+const (
+	// titleInstructions is the system prompt the titling model writes a
+	// title with.
+	titleInstructions = "Write a title of at most 48 characters for a coding session that begins with the user's message. " +
+		"Reply with the title alone, in plain text, without quotes or a trailing period."
+	// titleInputRunes is how much of the first prompt the titling model reads.
+	titleInputRunes = 4000
+	// titleLimit is how long titling may take.
+	titleLimit = time.Minute
+)
+
+// generateTitle asks the titling model for a title from prompt and hands it
+// to the session. It runs on its own goroutine and touches no session state.
+// It gives up when the session ends.
+func (sess *session) generateTitle(prompt string) {
+	if runes := []rune(prompt); len(runes) > titleInputRunes {
+		prompt = string(runes[:titleInputRunes])
+	}
+	ctx, cancel := context.WithTimeout(sess.ctx, titleLimit)
+	defer cancel()
+	titling := sess.server.config.Titling
+	reply, err := sess.server.ask(ctx, titling.Model, titling.Effort, titleInstructions, prompt)
+	title := cleanTitle(reply)
+	switch {
+	case err != nil:
+	case title == "":
+		err = errors.New("empty reply")
+	case !sess.post(func() { sess.setTitle(title) }):
+		err = errors.New("session ended")
+	}
+	if err != nil {
+		log.Printf("session %s: title: %v", sess.id, err)
+	}
+}
+
+// setTitle labels the session with its generated title, kept even when
+// storing it fails, and tells every client.
+func (sess *session) setTitle(title string) {
+	if err := sess.server.store.SetTitle(sess.id, title); err != nil {
+		log.Printf("session %s: store title: %v", sess.id, err)
+	}
+	s := sess.server
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess.title = title
+	sess.broadcastLabelLocked()
 }
 
 func (sess *session) save(settings agent.Settings, resumeToken string) error {
