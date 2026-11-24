@@ -225,13 +225,6 @@ function QuestionForm(props: Props & { questions: Question[] }) {
           </fieldset>
         )}
       </For>
-      <details class="input">
-        <summary>
-          <span class="subject">Input</span>
-          <span class="icon chevron-down" />
-        </summary>
-        <pre>{toolInputJSON(props.approval.request.input)}</pre>
-      </details>
       <div class="actions">
         <Show when={paged}>
           <span class="position">

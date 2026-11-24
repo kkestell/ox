@@ -356,7 +356,13 @@ details.tool pre + pre { border-top: 1px solid var(--border); }
 .approval .question legend { padding: 0; margin-bottom: 0.25rem; color: var(--foreground); }
 .approval .question .header, .approval .choice .description { display: block; color: var(--muted-foreground); font-size: 0.875rem; }
 .approval input[type="text"] { height: 2rem; }
-.approval .actions { display: flex; justify-content: flex-end; align-items: center; gap: 0.5rem; }
+/* The buttons stay at the foot of the visible region while the card scrolls beneath them. The row's
+   padding, pulled back by its negative margin, fills the strip the composer's box overlaps, so nothing
+   shows between the buttons and the box and the row never reaches into the next card. */
+.approval .actions {
+  position: sticky; bottom: -1rem; display: flex; justify-content: flex-end; align-items: center; gap: 0.5rem;
+  margin-bottom: -1rem; padding-bottom: 1rem; background: var(--card);
+}
 .approval .actions .position { margin-right: auto; font-size: 0.875rem; color: var(--muted-foreground); }
 
 /* Model picker */
