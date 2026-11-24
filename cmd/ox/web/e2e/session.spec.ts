@@ -117,6 +117,14 @@ test("a reply renders Markdown", async ({ ox: page }) => {
   await expect(lists.last().getByRole("listitem")).toHaveText(["first", "second"]);
 });
 
+test("your own prompt stays plain text", async ({ ox: page }) => {
+  await reply(page, "**bold**\n\n- one");
+  const sent = transcript(page).getByRole("article", { name: "Prompt" });
+  await expect(sent).toContainText("**bold**");
+  await expect(sent.getByRole("strong")).toHaveCount(0);
+  await expect(sent.getByRole("list")).toHaveCount(0);
+});
+
 test("a reply shows raw HTML as text, loads no images, and opens safe links in a new tab", async ({ ox: page }) => {
   const markdown = await reply(
     page,
@@ -1326,7 +1334,7 @@ test("a child session shows its title, its directory, and its parent's message, 
 }) => {
   await newSession(page, "child parent");
   const dir = basename(mkdtempSync(`${services.workspace}/child-`));
-  const child = await createChild(services, sessionId(page), "Helper child", { message: "hello child", dir });
+  const child = await createChild(services, sessionId(page), "Helper child", { message: "**hello** child", dir });
   const directory = `${services.workspace}/${dir}`;
   expect(child.directory).toBe(directory);
   for (const reload of [false, true]) {
@@ -1335,9 +1343,9 @@ test("a child session shows its title, its directory, and its parent's message, 
     await expect(heading(page)).toHaveText("Helper child");
     expect(sessionId(page)).toBe(child.session_id);
     await expect(main(page).getByText(directory, { exact: true })).toBeVisible();
-    await expect(transcript(page).getByRole("article", { name: "Message from child parent" })).toHaveText(
-      "child parenthello child",
-    );
+    const message = transcript(page).getByRole("article", { name: "Message from child parent" });
+    await expect(message).toHaveText("child parenthello child");
+    await expect(message.getByRole("strong")).toHaveText("hello");
   }
 });
 
@@ -1347,13 +1355,14 @@ test("a child's reply reaches its parent as a report headed with its title, also
 }) => {
   await newSession(page, "report parent");
   const parent = sessionId(page);
-  await createChild(services, parent, "Report child");
+  await createChild(services, parent, "Report child", { message: "**hello**" });
   for (const reload of [false, true]) {
     if (reload) await page.reload();
     const report = transcript(page)
       .getByRole("article", { name: "Child reports" })
       .getByRole("region", { name: "Report from Report child" });
     await expect(report).toContainText(`Report childYou said: Message from Ox session ${parent} ("report parent")`);
+    await expect(report.getByRole("strong")).toHaveText("hello");
     await expect(replies(page).last()).toContainText("You said: Reports from your child sessions");
   }
 });

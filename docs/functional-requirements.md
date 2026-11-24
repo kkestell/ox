@@ -101,8 +101,9 @@ title.
 - **Prompts as sent.** Prompts show in the transcript as the plain text the user
   sent, followed by the images attached to them.
 - **Messages in the transcript.** A message shows in the recipient's transcript
-  as its text, headed with the label of the session that sent it, pending at the
-  end of the transcript until Claude takes it, on every page and after a reload.
+  rendered as Markdown under the same rules as replies, headed with the label of
+  the session that sent it, pending at the end of the transcript until Claude
+  takes it, on every page and after a reload.
 - **Replies as Markdown.** Claude's replies stream in as Markdown. Raw HTML
   shows as text, images are not loaded, unsafe links are not links, and links
   open in a new tab.
@@ -199,11 +200,11 @@ title.
   child's final reply, or why the turn failed, as a report, without either
   session sending a message. Reports wait until the parent is idle or parked and
   none of its children is working, then arrive together as one message, after
-  any message already waiting, each headed with its child's label; a child
-  waiting on the user does not hold them back. A report carries only the first
-  400 characters of a longer reply, none is sent when the child's last action
-  was a message to its parent, and reports not yet delivered are dropped when
-  `oxd` stops.
+  any message already waiting, each headed with its child's label and rendered
+  as Markdown; a child waiting on the user does not hold them back. A report
+  carries only the first 400 characters of a longer reply, none is sent when the
+  child's last action was a message to its parent, and reports not yet delivered
+  are dropped when `oxd` stops.
 - **Messages stay in Ox.** Claude messages only Ox's own sessions, and only
   through Ox. Other Claude Code sessions on this machine cannot message an Ox
   session.

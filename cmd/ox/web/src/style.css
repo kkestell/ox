@@ -254,7 +254,7 @@ main > .loading { flex: 1; display: flex; align-items: center; justify-content: 
 .prompt:has(> .images) { display: flex; flex-direction: column; gap: 0.5rem; }
 .prompt .images { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .prompt .images > img { max-width: 100%; max-height: 16rem; object-fit: contain; }
-.markdown { overflow-wrap: break-word; }
+.markdown { overflow-wrap: break-word; white-space: normal; }
 .markdown > :first-child { margin-top: 0; }
 .markdown > :last-child { margin-bottom: 0; }
 .markdown p, .markdown ul, .markdown ol, .markdown pre, .markdown blockquote, .markdown table { margin: 0.5rem 0; }
@@ -265,6 +265,8 @@ main > .loading { flex: 1; display: flex; align-items: center; justify-content: 
 .markdown code { padding: 0.125rem 0.25rem; border-radius: 0.25rem; background: var(--secondary); font-family: var(--font-mono); font-size: 0.8125rem; }
 .markdown pre { padding: 0.5rem 0.75rem; overflow-x: auto; border-radius: var(--radius); background: var(--secondary); font-family: var(--font-mono); font-size: 0.75rem; white-space: pre; }
 .markdown pre code { padding: 0; background: none; font-size: inherit; }
+.prompt .markdown code, .prompt .markdown pre { background: var(--background); }
+.prompt .markdown pre code { background: none; }
 .markdown blockquote { padding-left: 0.75rem; border-left: 2px solid var(--border); color: var(--muted-foreground); }
 .markdown table { display: block; overflow-x: auto; border-collapse: collapse; }
 .markdown th, .markdown td { padding: 0.25rem 0.5rem; border: 1px solid var(--border); }
