@@ -245,7 +245,7 @@ function PromptBubble(props: { sessionId: string; input: Prompt; files?: File[];
             {(report) => (
               <section aria-label={`Report from ${report.from_label}`}>
                 <div class="from">{report.from_label}</div>
-                {report.text}
+                <Markdown text={report.text} />
               </section>
             )}
           </For>
@@ -261,10 +261,10 @@ function MessageBubble(props: { sessionId: string; input: Prompt; files?: File[]
       class={["prompt", { queued: props.queued, message: props.input.from !== undefined }]}
       aria-label={props.input.from === undefined ? "Prompt" : `Message from ${props.input.from_label}`}
     >
-      <Show when={props.input.from !== undefined}>
+      <Show when={props.input.from !== undefined} fallback={props.input.text}>
         <div class="from">{props.input.from_label}</div>
+        <Markdown text={props.input.text ?? ""} />
       </Show>
-      {props.input.text}
       <Show when={props.input.images?.length || props.files?.length}>
         <div class="images">
           <For each={props.input.images}>
