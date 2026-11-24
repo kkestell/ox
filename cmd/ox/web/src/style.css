@@ -513,15 +513,19 @@ aside.files .chevron-right.open::before { transform: rotate(90deg); }
 .narrow .sash { display: none; }
 
 /* Touch screens: rows tall enough to tap, row buttons that show without hover,
-   and text at 15px, the text fields and pickers included. The viewport's
-   maximum-scale keeps Safari from zooming in on a field under 16px on focus. */
+   text at 17px, iOS's body size, the text fields included, and the composer's
+   pickers, code, and session path at 15px. The viewport's maximum-scale keeps
+   Safari from zooming in on a field under 16px on focus. */
 @media (pointer: coarse) {
-  body { font-size: 15px; }
+  body { font-size: 17px; }
   nav { --row: 2.5rem; }
-  nav li.child { font-size: 14px; }
+  nav li.child { font-size: 16px; }
   aside.files .row { height: 2.5rem; }
   nav :is(header, li) .actions { opacity: 1; }
   nav li button.chevron-right { opacity: 1; }
-  textarea, select, input:not([type="radio"], [type="checkbox"], [type="range"]) { font-size: 15px; }
+  textarea, select, input:not([type="radio"], [type="checkbox"], [type="range"]) { font-size: 17px; }
   .composer .settings > button.picker, .composer .select { height: 2rem; font-size: 15px; }
+  .composer .select select { font-size: inherit; }
+  .context .path, .markdown code { font-size: 15px; }
+  .markdown pre, details.tool :is(.detail, pre) { font-size: 14px; }
 }
