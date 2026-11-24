@@ -264,7 +264,8 @@ steps below. When in doubt, a change is not small.
    the base, and after alone for a view the change adds. The images are
    committed under `pr-<N>/` on the orphan `pr-assets` branch and linked
    through `raw.githubusercontent.com` at that commit.
-8. After the user merges, the top-level agent runs `make prune` and pulls in
+8. A pull request merges by squash, with its title as the commit subject.
+   After the user merges, the top-level agent runs `make prune` and pulls in
    the main checkout. `make prune` removes each local branch whose pull
    request has merged, and its worktree; `make worktree` runs it first.
 
