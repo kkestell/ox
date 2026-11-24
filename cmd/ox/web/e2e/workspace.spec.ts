@@ -5,20 +5,14 @@ import type { Locator, Page, Request, Route } from "@playwright/test";
 import { fakeConfig } from "./services";
 import {
   addWorkspace,
-  closeKeyboard,
-  edges,
   expect,
-  expectWithin,
-  heading,
   hold,
   isRequest,
   menuItem,
   model,
   newSession,
   newSessionButton,
-  openKeyboard,
   openMenu,
-  panKeyboard,
   permissionMode,
   prompt,
   replies,
@@ -27,7 +21,6 @@ import {
   sessionButton,
   sessionItem,
   sessions,
-  setSafeArea,
   showPage,
   test,
   workspaceSection,
@@ -888,47 +881,6 @@ test.describe("on a phone", () => {
     await toggleSessions(page).tap();
     await expect(nav).toBeVisible();
     await near(nav, drawer);
-  });
-
-  // The keyboard below covers 336 px of the 844 px window, and Safari pans the
-  // page 120 px down, leaving 508 px visible from 120 to 628.
-  const keyboard = { height: 336, offsetTop: 120 };
-  // visible is the part of the 844 px window a keyboard leaves visible.
-  const visible = (k: { height: number; offsetTop: number }) => ({
-    top: k.offsetTop,
-    bottom: k.offsetTop + 844 - k.height,
-  });
-
-  test("the header and composer stay in the visible area as the keyboard opens, pans, and closes", async ({
-    ox: page,
-  }) => {
-    await setSafeArea(page, { top: 47, bottom: 34 });
-    await newSession(page, "first");
-    // frame is the top of the session's title and the bottom of the composer's
-    // last row.
-    const frame = async () => ({ top: (await edges(heading(page))).top, bottom: (await edges(model(page))).bottom });
-    const closed = await frame();
-    await openKeyboard(page, keyboard);
-    await expectWithin(heading(page), visible(keyboard));
-    await expectWithin(model(page), visible(keyboard));
-    // A pan alone moves the layout with the visible area.
-    await panKeyboard(page, 60);
-    await expectWithin(heading(page), visible({ ...keyboard, offsetTop: 60 }));
-    await expectWithin(model(page), visible({ ...keyboard, offsetTop: 60 }));
-    await closeKeyboard(page);
-    await expect.poll(frame).toEqual(closed);
-    // A pinch zoom leaves the layout where it was.
-    await openKeyboard(page, { ...keyboard, scale: 2 });
-    await expect.poll(frame).toEqual(closed);
-  });
-
-  test("a drawer spans the visible area while the keyboard is open", async ({ ox: page }) => {
-    await setSafeArea(page, { top: 47, bottom: 34 });
-    await newSession(page, "first");
-    await openKeyboard(page, keyboard);
-    await toggleSessions(page).tap();
-    await expect(sessions(page)).toBeVisible();
-    await expect.poll(() => edges(sessions(page))).toEqual(visible(keyboard));
   });
 });
 

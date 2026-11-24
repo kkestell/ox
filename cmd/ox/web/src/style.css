@@ -2,6 +2,8 @@
 *, *::before, *::after { box-sizing: border-box; }
 * { margin: 0; padding: 0; }
 html, body { height: 100%; }
+/* The page is fixed to the window; a drag past a scroller's end leaves it in place. */
+html { overscroll-behavior: none; }
 body { -webkit-font-smoothing: antialiased; }
 input, button, textarea, select { font: inherit; color: inherit; }
 p { overflow-wrap: break-word; }
@@ -44,19 +46,20 @@ p { overflow-wrap: break-word; }
 }
 
 body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: var(--text); background: var(--background); }
-/* The page's row of panels fills the visible area, which viewport.ts tracks,
-   clear of the notch and rounded corners. What sits at the bottom takes
-   --bottom-inset, the home indicator's inset where the keyboard does not cover
-   it, so content scrolls beneath the toolbar. The session header's rows, the
-   transcript, the composer's box, its settings row, and the page's alerts start
-   and end at --inset, the composer box's outer edge. An icon at the end of a
-   row puts its glyph on that edge. */
+/* The page's row of panels fills the window, clear of the notch and rounded
+   corners. What sits at the bottom takes --bottom-inset, the home indicator's
+   inset while no text field has focus; a focused field raises the keyboard
+   over the indicator. Content scrolls beneath the toolbar. The session
+   header's rows, the transcript, the composer's box, its settings row, and the
+   page's alerts start and end at --inset, the composer box's outer edge. An
+   icon at the end of a row puts its glyph on that edge. */
 .layout {
   --composer-margin: 1rem; --inset: var(--composer-margin);
-  --bottom-inset: max(0px, env(safe-area-inset-bottom) - var(--keyboard-height));
-  position: fixed; left: 0; right: 0; top: var(--viewport-top); height: var(--viewport-height);
+  --bottom-inset: env(safe-area-inset-bottom);
+  position: fixed; inset: 0;
   display: flex; padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
 }
+.layout:has(textarea:focus, input:not([type="radio"], [type="checkbox"]):focus) { --bottom-inset: 0px; }
 * { scrollbar-width: thin; scrollbar-color: transparent transparent; }
 *:hover { scrollbar-color: color-mix(in oklab, var(--muted-foreground) 50%, transparent) transparent; }
 :focus-visible { outline: 3px solid color-mix(in oklab, var(--ring) 50%, transparent); outline-offset: 0; }
@@ -225,7 +228,7 @@ nav[hidden] { display: none; }
 
 /* The space the transcript and the file viewer share. The side panels leave it
    the transcript's minimum width. */
-.center { flex: 1 1 0; min-width: 240px; height: 100%; display: flex; flex-direction: column; container-type: inline-size; }
+.center { flex: 1 1 0; min-width: 240px; height: 100%; display: flex; flex-direction: column; container-type: size; }
 .panes { flex: 1 1 0; min-height: 0; display: flex; }
 
 /* Session */
@@ -329,7 +332,7 @@ details.tool pre + pre { border-top: 1px solid var(--border); }
 
 /* Pending approvals sit on the composer, their card tucked beneath it. */
 .pending {
-  max-height: calc(var(--viewport-height) / 2); overflow-y: auto; display: flex; flex-direction: column; gap: 1rem;
+  max-height: 50cqh; overflow-y: auto; display: flex; flex-direction: column; gap: 1rem;
   margin: 0 0.75rem -1rem; padding: 1rem 1rem 2rem; border: 1px solid var(--border); border-bottom: 0;
   border-radius: 16px 16px 0 0; background: var(--card);
 }

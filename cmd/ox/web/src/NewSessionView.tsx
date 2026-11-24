@@ -3,7 +3,7 @@ import { createSignal, Show } from "solid-js";
 import { AttachButton, createImageDrop, pasteImages, Thumbnails } from "./Attachments";
 import { newID, useOx } from "./ox";
 import type { Defaults } from "./protocol";
-import { SubmittedPrompt, sendOnEnter } from "./SessionView";
+import { keepPromptFocus, SubmittedPrompt, sendOnEnter } from "./SessionView";
 import { defaultPermissionMode, type ModelChoice, ModelPicker, Select } from "./SettingsFields";
 
 // A submitted draft lives on the page through navigation and reconnect. Its
@@ -80,7 +80,7 @@ export function NewSessionView(props: { draft: Draft; onCreated(): void; toggles
         onDragLeave={drop.handlers.onDragLeave}
         onDrop={drop.handlers.onDrop}
       >
-        <form class={["box", { dragging: drop.dragging() }]} onSubmit={create}>
+        <form class={["box", { dragging: drop.dragging() }]} onSubmit={create} onPointerDown={keepPromptFocus}>
           <Thumbnails control={draft.control} />
           <div class="field">
             <AttachButton control={draft.control} />

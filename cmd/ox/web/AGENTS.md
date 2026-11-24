@@ -14,6 +14,9 @@ Use `make dev` to work on the [web client](../../../docs/architecture.md#web-ui)
   and on failure the page returns to the store and shows the error with
   `createAttempt`. A spec for an action holds `oxd`'s reply and checks that
   the page has already changed.
+- The browser places the page around the on-screen keyboard, scrolls it, and
+  zooms it. The layout is sized by CSS alone, and the page's script reads no
+  viewport measurements.
 - The user judges how UI changes look; the report on a UI change names the
   views it touches. Check how a change behaves in headless Chrome with
   Playwright, through `make e2e` specs or against a stack started on spare
@@ -34,12 +37,18 @@ Use `make dev` to work on the [web client](../../../docs/architecture.md#web-ui)
 
   The exceptions:
   - Geometry that is the behavior: a drag resizing a panel within its bounds,
-    output keeping the bottom in view, the composer staying above the
-    keyboard, a menu staying on screen with `toBeInViewport`.
+    output keeping the bottom in view, a menu staying on screen with
+    `toBeInViewport`.
   - What the browser reads rather than the user, such as `<head>` metadata,
     found by tag or attribute.
   - ARIA state such as `aria-pressed`, `aria-current`, or `aria-expanded`,
     asserted with `toHaveAttribute` on an element found by role.
+- Specs run against the browser's own APIs, unmodified. Behavior that only a
+  phone shows, such as the on-screen keyboard or the Home Screen app, is
+  checked on the user's phone. To serve a worktree's web client to the phone
+  beside the user's agents, run the worktree's `bin/ox` against the user's
+  `oxd` socket on a spare port of the tailnet address, with a copy of the
+  configuration that omits `tailscale_ip`.
 - `make e2e` runs the Playwright specs in `e2e` in headless Chrome against
   `ox` and `oxd` with the fake harness. Each test runs its own `oxd` and relay
   on a temporary socket, database, and port, through the `services` fixture
