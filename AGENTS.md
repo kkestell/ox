@@ -85,6 +85,8 @@ We test with `make dev`. Ox's test state is disposable.
 │   │   ├── files.go           # workspace folder listing and file reads
 │   │   ├── history_test.go    # history tests
 │   │   ├── history.go         # session history
+│   │   ├── id_test.go         # ID tests
+│   │   ├── id.go              # Ox's IDs
 │   │   ├── live_test.go       # live Claude and Ur tests
 │   │   ├── mcp_test.go        # MCP tests
 │   │   ├── mcp.go             # MCP connections

@@ -224,7 +224,7 @@ after it. A setting the [configuration](#configuration) does not offer returns
 
 | Parameter         | Required | Meaning                                                                                                                                                           |
 | ----------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `session_id`      | No       | A client-chosen ID of 32 hexadecimal digits. Omit it for a daemon-generated ID.                                                                                   |
+| `session_id`      | No       | A client-chosen ID: 64 random bits in Bitcoin's base58. Omit it for a daemon-generated ID.                                                                        |
 | `workspace_id`    | Yes      | The workspace whose directory the harness runs in.                                                                                                                |
 | `harness`         | Yes      | A harness in the configuration.                                                                                                                                   |
 | `model`           | Yes      | One of the harness's models; passed to Claude's `--model` flag.                                                                                                   |
@@ -248,13 +248,13 @@ stored settings.
 
 Requires `session_id` and nonblank `text`, `images`, or both. Sends a prompt to
 an idle or working session and returns the prompt's `message_id`: the optional
-`message_id` the client chose, 32 hexadecimal digits, or else one the daemon
-assigns. A malformed `message_id` returns `-32602`. Text over 1,048,576 bytes
-after JSON decoding returns `-32602`. `images` is an array of base64 strings,
-each a PNG, JPEG, GIF, or WebP image, whose type the daemon takes from its
-bytes; any other data, or more than 10,485,760 bytes of images in total after
-decoding, returns `-32602`. The daemon stores each image with the session under
-an image ID, which the prompt's updates carry and
+`message_id` the client chose, 64 random bits in Bitcoin's base58, or else one
+the daemon assigns. A malformed `message_id` returns `-32602`. Text over
+1,048,576 bytes after JSON decoding returns `-32602`. `images` is an array of
+base64 strings, each a PNG, JPEG, GIF, or WebP image, whose type the daemon
+takes from its bytes; any other data, or more than 10,485,760 bytes of images in
+total after decoding, returns `-32602`. The daemon stores each image with the
+session under an image ID, which the prompt's updates carry and
 [`session/image`](#sessionimage) serves; Claude receives the images before the
 text. A parked session first starts a process; a process that cannot be launched
 returns an operation error. Success means the prompt was written to Claude, or

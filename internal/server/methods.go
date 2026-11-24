@@ -2,9 +2,7 @@ package server
 
 import (
 	"cmp"
-	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -142,7 +140,7 @@ func (s *Server) createWorkspace(reply replyFunc, id, params json.RawMessage) {
 			return
 		}
 	}
-	w := &workspace{id: rand.Text(), path: path, createdAt: time.Now()}
+	w := &workspace{id: newID(), path: path, createdAt: time.Now()}
 	if err := s.store.AddWorkspace(&store.Workspace{ID: w.id, Path: w.path, CreatedAt: w.createdAt}); err != nil {
 		reply(failure(id, err))
 		return
@@ -296,13 +294,6 @@ func (s *Server) readFile(reply replyFunc, id, params json.RawMessage) {
 	}{text}))
 }
 
-// isID reports whether id is 32 hexadecimal digits, the form of an ID a page
-// chooses.
-func isID(id string) bool {
-	_, err := hex.DecodeString(id)
-	return len(id) == 32 && err == nil
-}
-
 func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 	var input struct {
 		SessionID   string `json:"session_id"`
@@ -315,7 +306,7 @@ func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 		return
 	}
 	if input.SessionID != "" && !isID(input.SessionID) {
-		reply(invalidParams(id, "session_id must be 32 hexadecimal digits"))
+		reply(invalidParams(id, "session_id must be a base58 ID"))
 		return
 	}
 	s.mu.Lock()
@@ -332,7 +323,7 @@ func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 	}
 	sessionID := input.SessionID
 	if sessionID == "" {
-		sessionID = rand.Text()
+		sessionID = newID()
 	} else if existing := s.sessions[sessionID]; existing != nil {
 		if w == nil || !slices.Contains(w.sessions, existing) {
 			reply(invalidParams(id, "session_id belongs to another workspace"))
@@ -464,7 +455,7 @@ func (s *Server) sendSession(reply replyFunc, id, params json.RawMessage) {
 		return
 	}
 	if input.MessageID != "" && !isID(input.MessageID) {
-		reply(invalidParams(id, "message_id must be 32 hexadecimal digits"))
+		reply(invalidParams(id, "message_id must be a base58 ID"))
 		return
 	}
 	if len(input.Text) > 1<<20 {

@@ -10,6 +10,7 @@ import {
 } from "solid-js";
 import { type Connection, connect, Disconnected, type Rpc, RpcError } from "./connection";
 import { languageFor } from "./highlight";
+import { newID } from "./id";
 import {
   type ApprovalRequest,
   type ApprovalResponse,
@@ -153,11 +154,6 @@ export function createAttempt() {
   };
   return [error, attempt, clear] as const;
 }
-
-// newID is a random ID of 32 hexadecimal digits, as oxd takes for a session
-// or a message the page names.
-export const newID = () =>
-  Array.from(crypto.getRandomValues(new Uint8Array(16)), (n) => n.toString(16).padStart(2, "0")).join("");
 
 // Outgoing is the composer's prompt the page has taken for a session/create
 // or session/send. It is "creating" or "sending" while that request is in

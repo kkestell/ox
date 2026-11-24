@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"log"
@@ -226,7 +225,7 @@ func (sess *session) sendPrompt(messageID, text string, images []agent.Image) (s
 	if len(images) > 0 {
 		stored := make([]store.Image, len(images))
 		for i := range images {
-			images[i].ID = rand.Text()
+			images[i].ID = newID()
 			stored[i] = store.Image{ID: images[i].ID, MimeType: images[i].MimeType, Data: images[i].Data}
 		}
 		if err := sess.server.store.AddImages(sess.id, stored); err != nil {
@@ -234,7 +233,7 @@ func (sess *session) sendPrompt(messageID, text string, images []agent.Image) (s
 		}
 	}
 	if messageID == "" {
-		messageID = rand.Text()
+		messageID = newID()
 	}
 	input := agent.Input{MessageID: messageID, Text: text, Images: images, Content: text}
 	if err := sess.agent.Send(input); err != nil {
@@ -260,7 +259,7 @@ func (sess *session) acceptMessage(message agent.Input) error {
 	if err := sess.startForInput(); err != nil {
 		return err
 	}
-	message.MessageID = rand.Text()
+	message.MessageID = newID()
 	return sess.agent.Send(message)
 }
 
