@@ -146,9 +146,9 @@ func TestSettingsValidation(t *testing.T) {
 			t.Errorf("invalid creation %s: %+v", params, response.Error)
 		}
 	}
-	for _, sessionID := range []string{strings.Repeat("g", 32), strings.Repeat("a", 30)} {
+	for _, sessionID := range []string{"00112233445566778899aabbccddeeff", "12"} {
 		params := `{"session_id":"` + sessionID + `","workspace_id":"missing","harness":"h","model":"m","effort":"low","permission_mode":"plan"}`
-		if response := answer(s, request("session/create", params)); response.Error == nil || response.Error.Message != "session_id must be 32 hexadecimal digits" {
+		if response := answer(s, request("session/create", params)); response.Error == nil || response.Error.Message != "session_id must be a base58 ID" {
 			t.Errorf("malformed session_id %s: %+v", sessionID, response.Error)
 		}
 	}
@@ -207,7 +207,7 @@ func TestSendPromptSizeCountsDecodedBytes(t *testing.T) {
 	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: t.TempDir(), CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "fake", CreatedAt: time.Now()}); err != nil {
+	if err := st.AddSession("w", &store.Session{ID: "00112233445566778899aabbccddeeff", Harness: "fake", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
@@ -216,7 +216,7 @@ func TestSendPromptSizeCountsDecodedBytes(t *testing.T) {
 	}
 	t.Cleanup(s.Close)
 	send := func(text string) *jsonrpc.Response {
-		p, err := json.Marshal(map[string]string{"session_id": "s", "text": text})
+		p, err := json.Marshal(map[string]string{"session_id": "00112233445566778899aabbccddeeff", "text": text})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -226,8 +226,18 @@ func TestSendPromptSizeCountsDecodedBytes(t *testing.T) {
 	if got := send(text + "x"); got.Error == nil || got.Error.Code != jsonrpc.InvalidParams {
 		t.Fatalf("a prompt over 1 MiB was not refused: %+v", got.Error)
 	}
-	if got := send(text); got.Error != nil {
+	got := send(text)
+	if got.Error != nil {
 		t.Fatalf("a 1 MiB prompt was refused: %+v", got.Error)
+	}
+	// The session's ID is a hexadecimal one stored before IDs were base58.
+	var sent struct {
+		MessageID string `json:"message_id"`
+	}
+	out, _ := json.Marshal(got.Result)
+	json.Unmarshal(out, &sent)
+	if !isID(sent.MessageID) {
+		t.Fatalf("a send to a session with a hexadecimal ID returned message_id %q", sent.MessageID)
 	}
 }
 
@@ -364,7 +374,7 @@ func TestRepeatSessionCreation(t *testing.T) {
 		json.Unmarshal(c.call("workspace/create", map[string]string{"path": t.TempDir()}), &w)
 		return w.ID
 	}
-	id := "00112233445566778899aabbccddeeff"
+	id := "C3CPq7c8PY"
 	params := map[string]string{
 		"workspace_id": workspace(), "session_id": id, "harness": cfg.Defaults.Harness,
 		"model": cfg.Defaults.Model, "effort": cfg.Defaults.Effort, "permission_mode": cfg.Defaults.PermissionMode,
@@ -445,14 +455,14 @@ func TestSessionLifecycle(t *testing.T) {
 		t.Fatalf("a new session was published %q and listed %q, not parked", announced.State, listedState())
 	}
 
-	if invalid := c.request("session/send", map[string]string{"session_id": id, "message_id": "not-an-id", "text": "hi"}); invalid.Error == nil || invalid.Error.Code != jsonrpc.InvalidParams {
+	if invalid := c.request("session/send", map[string]string{"session_id": id, "message_id": "00112233445566778899aabbccddeeff", "text": "hi"}); invalid.Error == nil || invalid.Error.Code != jsonrpc.InvalidParams || invalid.Error.Message != "message_id must be a base58 ID" {
 		t.Fatalf("a malformed message_id was taken: %+v", invalid.Error)
 	}
 
 	// The reply outlasts the park period, which starts only once the agent
 	// is parkable.
 	prompt := "one two three four five six seven eight"
-	messageID := "0123456789abcdef0123456789abcdef"
+	messageID := "1AfUXwLfh7d"
 	var sent struct {
 		MessageID string `json:"message_id"`
 	}

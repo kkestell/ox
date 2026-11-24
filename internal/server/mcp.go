@@ -2,7 +2,6 @@ package server
 
 import (
 	"cmp"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -500,7 +499,7 @@ func (s *Server) childRecord(parent *session, harnessName, model, effort string)
 		return nil, err
 	}
 	return &store.Session{
-		ID: rand.Text(), Harness: harnessName, Model: model, Effort: effort, PermissionMode: mode, CreatedAt: time.Now(),
+		ID: newID(), Harness: harnessName, Model: model, Effort: effort, PermissionMode: mode, CreatedAt: time.Now(),
 	}, nil
 }
 

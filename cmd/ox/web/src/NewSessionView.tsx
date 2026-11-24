@@ -1,7 +1,8 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, Show } from "solid-js";
 import { AttachButton, createImageDrop, pasteImages, Thumbnails } from "./Attachments";
-import { newID, useOx } from "./ox";
+import { newID } from "./id";
+import { useOx } from "./ox";
 import type { Defaults } from "./protocol";
 import { keepPromptFocus, SubmittedPrompt, sendOnEnter } from "./SessionView";
 import { defaultPermissionMode, type ModelChoice, ModelPicker, Select } from "./SettingsFields";

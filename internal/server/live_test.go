@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -381,7 +380,7 @@ func TestLive(t *testing.T) {
 		// and returns the turn's result.
 		ask := func(a agent.Agent, text string) string {
 			l.t.Helper()
-			id := rand.Text()
+			id := newID()
 			if err := a.Send(agent.Input{MessageID: id, Text: text, Content: text}); err != nil {
 				l.t.Fatal(err)
 			}
