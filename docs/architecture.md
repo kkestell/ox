@@ -135,21 +135,22 @@ and no child's published state is `running`, then takes every child's reports
 and hands them to the agent as one input through the path a message takes.
 Messages go first because a free session has no untaken input.
 
-A child session holds a `child` value, fixed at creation and stored in the same
-transaction as its session row, naming its parent, name, title, and directory; a
-top-level session has none. The directory its harness runs in is derived: the
-child's directory, else the workspace's. `create_session` checks its arguments
-on the call goroutine, then posts to the parent's goroutine, which resolves the
-child's settings from its own. Under `Server.mu` it checks name uniqueness,
-archive, and depth; without the lock it stores the child and launches its
-harness; under `Server.mu` again it refuses if the daemon is shutting down,
-stopping the agent and deleting the row, and otherwise adds the child to
-membership; then it hands the child's agent the first message and starts its
-goroutine. A request posted to the child waits until then. A harness that cannot
-be launched leaves the child unstored and unpublished. A session belongs to
-whoever builds it until its goroutine starts. A session's destroy operation
-refuses while any session is its child; since children are created only on the
-parent's goroutine, none appears while it runs.
+Every session stores the directory its harness runs in, fixed at creation: a
+top-level session's workspace's path, or the directory `create_session` resolved
+for a child. A child session holds a `child` value, fixed at creation and stored
+in the same transaction as its session row, naming its parent, name, and title;
+a top-level session has none. `create_session` checks its arguments on the call
+goroutine, then posts to the parent's goroutine, which resolves the child's
+settings from its own. Under `Server.mu` it checks name uniqueness, archive, and
+depth; without the lock it stores the child and launches its harness; under
+`Server.mu` again it refuses if the daemon is shutting down, stopping the agent
+and deleting the row, and otherwise adds the child to membership; then it hands
+the child's agent the first message and starts its goroutine. A request posted
+to the child waits until then. A harness that cannot be launched leaves the
+child unstored and unpublished. A session belongs to whoever builds it until its
+goroutine starts. A session's destroy operation refuses while any session is its
+child; since children are created only on the parent's goroutine, none appears
+while it runs.
 
 The session arms a park timer whenever its agent is `Parkable` and stops it when
 the agent stops being parkable, so the full period restarts each time. If the
@@ -310,12 +311,15 @@ composer and let the user decide when to send. A failed creation in another view
 links back to the draft.
 
 The file tree lists each folder it shows with
-[`workspace/list_folder`](protocol.md#workspacelist_folder): the workspace's
-directory, and each expanded folder that its parent's latest listing contains.
-Each folder lists itself when it appears and again once a second while the page
-is visible and connected, with one request in flight at a time.
+[`workspace/list_folder`](protocol.md#workspacelist_folder) beneath the selected
+session's directory, or a draft's workspace: the directory itself, and each
+expanded folder that its parent's latest listing contains. The tree is keyed by
+the selection, so each session and draft mounts its own, which reads beneath
+that selection alone. Each folder lists itself when it appears and again once a
+second while the page is visible and connected, with one request in flight at a
+time.
 
 The file viewer reads the control's open file with
 [`workspace/read_file`](protocol.md#workspaceread_file) on the same clock as the
-tree. Its view is keyed by workspace and path, so its text is always the open
-file's.
+tree. Its view is keyed by the selection and path, so its text is always the
+open file's.

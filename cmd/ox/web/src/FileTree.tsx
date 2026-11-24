@@ -1,11 +1,11 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, For, Match, Show, Switch, untrack } from "solid-js";
-import { type SessionControl, useOx, workspaceName } from "./ox";
+import { directoryName, type SessionControl, useOx } from "./ox";
 import { createPoll } from "./poll";
-import type { FolderEntry } from "./protocol";
+import type { FileRoot, FolderEntry } from "./protocol";
 
 type Tree = {
-  workspaceId: string;
+  root: FileRoot;
   control: () => SessionControl;
   onOpen(): void;
 };
@@ -14,19 +14,20 @@ const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "bas
 const byFolderThenName = (a: FolderEntry, b: FolderEntry) =>
   Number(b.folder) - Number(a.folder) || collator.compare(a.name, b.name);
 
-// FileTree shows a workspace's directory. Each expanded folder lists itself
+// FileTree shows the directory beneath root. Each expanded folder lists itself
 // when it appears and on each tick of the page's clock, so the page asks only
 // for the folders it shows.
 export function FileTree(props: {
-  workspace: { id: string; path: string };
+  root: FileRoot;
+  directory: string;
   control: SessionControl;
   width?: number;
   toggles?: JSX.Element;
   onOpen(): void;
 }) {
-  // The tree is keyed by its workspace, so the workspace ID never changes.
+  // The tree is keyed by its selection, so its root never changes.
   const tree: Tree = {
-    workspaceId: untrack(() => props.workspace.id),
+    root: untrack(() => props.root),
     control: () => props.control,
     onOpen: () => props.onOpen(),
   };
@@ -37,7 +38,7 @@ export function FileTree(props: {
       style={{ width: props.width === undefined ? undefined : `${props.width}px` }}
     >
       <header>
-        <h2>{workspaceName(props.workspace.path)}</h2>
+        <h2>{directoryName(props.directory)}</h2>
         {props.toggles}
       </header>
       <div class="tree">
@@ -50,7 +51,7 @@ export function FileTree(props: {
 // Folder lists the entries of an expanded folder.
 function Folder(props: { tree: Tree; path: string; depth: number }) {
   const ox = useOx();
-  const listing = createPoll(() => ox.listFolder(props.tree.workspaceId, props.path));
+  const listing = createPoll(() => ox.listFolder(props.tree.root, props.path));
   const error = () => {
     const current = listing();
     return current?.kind === "error" ? current.message : undefined;

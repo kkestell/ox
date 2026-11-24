@@ -13,7 +13,7 @@ export type SettingsPatch = {
 export const notFound = -32001;
 
 // Child makes a session a child of the session parent_id.
-export type Child = { parent_id: string; name: string; title: string; directory: string };
+export type Child = { parent_id: string; name: string; title: string };
 
 export type SessionState = "parked" | "running" | "requires_action" | "idle" | "background";
 
@@ -66,6 +66,10 @@ export type UsageWindow = { interval_seconds: number; used_percent: number; rese
 
 export type FolderEntry = { name: string; folder: boolean };
 
+// FileRoot names the directory a file request reads beneath: a session's
+// directory, or a workspace's.
+export type FileRoot = { session_id: string; workspace_id?: never } | { workspace_id: string; session_id?: never };
+
 export type Notification =
   | { method: "session/update"; params: Update & { session_id: string } }
   | { method: "workspace/created"; params: { workspace_id: string; path: string; created_at: string } }
@@ -78,6 +82,7 @@ export type Notification =
         label: string;
         harness: string;
         created_at: string;
+        directory: string;
         child?: Child;
         state: SessionState;
       };
@@ -105,6 +110,7 @@ export type Methods = {
           label: string;
           harness: string;
           created_at: string;
+          directory: string;
           child?: Child;
           archived?: boolean;
           state: SessionState;
@@ -113,8 +119,8 @@ export type Methods = {
     },
   ];
   "workspace/remove": [{ workspace_id: string }, Empty];
-  "workspace/list_folder": [{ workspace_id: string; path: string }, { entries: FolderEntry[] }];
-  "workspace/read_file": [{ workspace_id: string; path: string }, { text: string }];
+  "workspace/list_folder": [FileRoot & { path: string }, { entries: FolderEntry[] }];
+  "workspace/read_file": [FileRoot & { path: string }, { text: string }];
   "session/create": [
     Omit<Settings, "effort"> & { effort?: string; session_id?: string; workspace_id: string; harness: string },
     { session_id: string; existing?: boolean },

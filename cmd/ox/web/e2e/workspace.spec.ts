@@ -281,7 +281,7 @@ test("the file tree lists folders first and hides `.git`", async ({ ox: page, se
   await expect(entry(page, ".git")).toHaveCount(0);
 });
 
-test("each session keeps its own expanded folders", async ({ ox: page, services }) => {
+clocked("each session keeps its own expanded folders", async ({ ox: page, services }) => {
   await showFiles(page);
   mkdirSync(join(services.workspace, "src"));
   writeFileSync(join(services.workspace, "src", "a.txt"), "");
@@ -305,6 +305,22 @@ test("each session keeps its own expanded folders", async ({ ox: page, services 
   await sessionButton(page, "first").click();
   await expect(entry(page, "src")).toHaveAttribute("aria-expanded", "true");
   await expect(entry(page, "a.txt")).toBeVisible();
+
+  // A tree shown for the first session lists through the second once the
+  // second is selected, so deleting the first leaves it listing.
+  const toggle = page.getByRole("button", { name: "Toggle files" });
+  await toggle.click();
+  await expect(files(page)).toHaveCount(0);
+  await showFiles(page);
+  await expect(entry(page, "a.txt")).toBeVisible();
+  await sessionButton(page, "second").click();
+  await expect(entry(page, "src")).toHaveAttribute("aria-expanded", "false");
+  await menuItem(await openMenu(sessionItem(page, "first")), "Delete").click();
+  await page.getByRole("alertdialog", { name: "Delete session?" }).getByRole("button", { name: "Delete" }).click();
+  await expect(sessionButton(page, "first")).toHaveCount(0);
+  await answered(page, "workspace/list_folder", "");
+  await expect(entry(page, "src")).toBeVisible();
+  await expect(files(page).getByText("session not found")).toHaveCount(0);
 });
 
 clocked("the tree shows changes on disk", async ({ ox: page, services }) => {
@@ -901,7 +917,7 @@ test("clicking a file opens it under its tab and marks its row, and another file
 });
 
 clocked(
-  "the pane keeps its scroll position across a re-read and a click on the open file",
+  "the pane keeps its scroll position across a re-read, a click on the open file, and a click on the selected draft",
   async ({ ox: page, services }) => {
     await showFiles(page);
     mkdirSync(join(services.workspace, "src"));
@@ -919,6 +935,11 @@ clocked(
     await expect(pane(page)).toHaveJSProperty("scrollLeft", 300);
 
     await entry(page, "a.txt").click();
+    await answered(page, "workspace/read_file", "src/a.txt");
+    await expect(pane(page)).toHaveJSProperty("scrollTop", 2000);
+    await expect(pane(page)).toHaveJSProperty("scrollLeft", 300);
+
+    await newSessionButton(page).click();
     await answered(page, "workspace/read_file", "src/a.txt");
     await expect(pane(page)).toHaveJSProperty("scrollTop", 2000);
     await expect(pane(page)).toHaveJSProperty("scrollLeft", 300);

@@ -33,12 +33,13 @@ func (a snapshotReadAgent) Snapshot() agent.Snapshot {
 
 func TestListSessionsReadsEachSessionFromItsOwner(t *testing.T) {
 	st := openStore(t)
-	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: t.TempDir(), CreatedAt: time.Now()}); err != nil {
+	dir := t.TempDir()
+	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: dir, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	const caller, first, last = "caller-session", "first-session", "last-session"
 	for _, id := range []string{caller, first, last} {
-		if err := st.AddSession("w", &store.Session{ID: id, Harness: "fake", CreatedAt: time.Now()}); err != nil {
+		if err := st.AddSession("w", &store.Session{ID: id, Harness: "fake", Directory: dir, CreatedAt: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -95,12 +96,13 @@ func TestListSessionsReadsEachSessionFromItsOwner(t *testing.T) {
 
 func TestReadSession(t *testing.T) {
 	st := openStore(t)
-	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: t.TempDir(), CreatedAt: time.Now()}); err != nil {
+	dir := t.TempDir()
+	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: dir, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	const caller, short, long, multibyte, tight, background = "caller-session", "short-session", "long-session", "multibyte-session", "tight-session", "background-session"
 	for _, id := range []string{caller, short, long, multibyte, tight, background} {
-		if err := st.AddSession("w", &store.Session{ID: id, Harness: "fake", CreatedAt: time.Now()}); err != nil {
+		if err := st.AddSession("w", &store.Session{ID: id, Harness: "fake", Directory: dir, CreatedAt: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -227,8 +229,8 @@ func TestReadSession(t *testing.T) {
 
 // Claude in a session starts children, down to the configured depth, which
 // take its settings and directory unless the call overrides them, hear from it
-// first, list beneath it, and outlive a restart; a parent cannot be deleted
-// while it has them.
+// first, list beneath it, show their own directory's files, and outlive a
+// restart; a parent cannot be deleted while it has them.
 func TestCreateSession(t *testing.T) {
 	models := []config.Model{
 		{ID: "m", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}},
@@ -267,6 +269,9 @@ func TestCreateSession(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "sub", "only-in-sub.txt"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	var workspace struct {
 		WorkspaceID string `json:"workspace_id"`
 	}
@@ -302,24 +307,31 @@ func TestCreateSession(t *testing.T) {
 		}
 		return child
 	}
-	createdChild := func(c *client, id string) store.Child {
+	// createdChild returns the child and directory session/created carried.
+	createdChild := func(c *client, id string) (store.Child, string) {
 		t.Helper()
 		var params struct {
-			Label string       `json:"label"`
-			Child *store.Child `json:"child"`
-			State string       `json:"state"`
+			Label     string          `json:"label"`
+			Directory string          `json:"directory"`
+			Child     json.RawMessage `json:"child"`
+			State     string          `json:"state"`
 		}
 		json.Unmarshal(c.next(func(m message) bool { return m.Method == "session/created" && m.sessionID() == id }).Params, &params)
 		if params.State != "idle" {
 			t.Fatalf("session/created published child %s %q, not idle", id, params.State)
 		}
-		if params.Child == nil {
+		var child *store.Child
+		var fields map[string]any
+		if json.Unmarshal(params.Child, &child); child == nil {
 			t.Fatalf("session/created for %s has no child", id)
 		}
-		if params.Label != params.Child.Title {
-			t.Fatalf("session/created labeled child %s %q, not its title %q", id, params.Label, params.Child.Title)
+		if json.Unmarshal(params.Child, &fields); fields["directory"] != nil {
+			t.Fatalf("session/created for %s carried a directory in its child: %s", id, params.Child)
 		}
-		return *params.Child
+		if params.Label != child.Title {
+			t.Fatalf("session/created labeled child %s %q, not its title %q", id, params.Label, child.Title)
+		}
+		return *child, params.Directory
 	}
 
 	t.Log("a child takes its parent's settings and directory and hears from it first")
@@ -328,9 +340,9 @@ func TestCreateSession(t *testing.T) {
 		Model: "m", Effort: "high", PermissionMode: "manual", Directory: dir}); worker != want {
 		t.Fatalf("create_session returned %+v, not %+v", worker, want)
 	}
-	workerChild := store.Child{ParentID: a, Name: "worker", Title: "Worker", Directory: dir}
-	if got := createdChild(c, worker.SessionID); got != workerChild {
-		t.Fatalf("session/created carried %+v", got)
+	workerChild := store.Child{ParentID: a, Name: "worker", Title: "Worker"}
+	if got, directory := createdChild(c, worker.SessionID); got != workerChild || directory != dir {
+		t.Fatalf("session/created carried %+v in %q", got, directory)
 	}
 	if state := c.update(worker.SessionID, "state").State; state != "running" {
 		t.Fatalf("the child's first state update was %q, not running", state)
@@ -359,6 +371,7 @@ func TestCreateSession(t *testing.T) {
 	type listedSession struct {
 		SessionID string       `json:"session_id"`
 		Label     string       `json:"label"`
+		Directory string       `json:"directory"`
 		Child     *store.Child `json:"child"`
 	}
 	listWorkspace := func(c *client) []listedSession {
@@ -371,8 +384,8 @@ func TestCreateSession(t *testing.T) {
 		json.Unmarshal(c.call("workspace/list", map[string]any{}), &listed)
 		return listed.Workspaces[0].Sessions
 	}
-	if got := listWorkspace(c); len(got) != 2 || got[0].SessionID != a || got[0].Child != nil ||
-		got[1].SessionID != worker.SessionID || got[1].Label != "Worker" || got[1].Child == nil || *got[1].Child != workerChild {
+	if got := listWorkspace(c); len(got) != 2 || got[0].SessionID != a || got[0].Directory != dir || got[0].Child != nil ||
+		got[1].SessionID != worker.SessionID || got[1].Label != "Worker" || got[1].Directory != dir || got[1].Child == nil || *got[1].Child != workerChild {
 		t.Fatalf("workspace/list listed %+v", got)
 	}
 	if text, _ := fromA.tool("list_sessions", map[string]any{}); !strings.Contains(text, `"session_id":"`+worker.SessionID+`","label":"Worker"`) {
@@ -403,6 +416,21 @@ func TestCreateSession(t *testing.T) {
 	c.update(sub.SessionID, "prompt")
 	if got := startedIn(sub.SessionID); got != dir+"/sub" {
 		t.Fatalf("the child in sub started in %q", got)
+	}
+	if _, directory := createdChild(c, sub.SessionID); directory != dir+"/sub" {
+		t.Fatalf("session/created put the child in sub in %q", directory)
+	}
+	if listed := listWorkspace(c); listed[len(listed)-1].SessionID != sub.SessionID || listed[len(listed)-1].Directory != dir+"/sub" {
+		t.Fatalf("workspace/list listed the child in sub as %+v", listed[len(listed)-1])
+	}
+	var folder struct {
+		Entries []struct {
+			Name string `json:"name"`
+		} `json:"entries"`
+	}
+	json.Unmarshal(c.call("workspace/list_folder", map[string]string{"session_id": sub.SessionID, "path": ""}), &folder)
+	if len(folder.Entries) != 1 || folder.Entries[0].Name != "only-in-sub.txt" {
+		t.Fatalf("the child in sub's folder listed %+v", folder.Entries)
 	}
 	reportsTaken(t, c, a, map[string]int{worker.SessionID: 2, other: 1, low: 1, abs: 1, sub.SessionID: 1})
 	c.call("session/configure", map[string]string{"session_id": a, "permission_mode": "plan"})
@@ -442,8 +470,8 @@ func TestCreateSession(t *testing.T) {
 	if err := json.Unmarshal([]byte(text), &leaf); refused || err != nil {
 		t.Fatalf("the child's create_session returned %q, %v", text, refused)
 	}
-	if got, want := createdChild(c, leaf.SessionID), (store.Child{ParentID: worker.SessionID, Name: "leaf", Title: "Leaf", Directory: dir}); got != want {
-		t.Fatalf("session/created for the grandchild carried %+v, not %+v", got, want)
+	if got, directory := createdChild(c, leaf.SessionID); got != (store.Child{ParentID: worker.SessionID, Name: "leaf", Title: "Leaf"}) || directory != dir {
+		t.Fatalf("session/created for the grandchild carried %+v in %q", got, directory)
 	}
 	if taken := c.update(leaf.SessionID, "prompt"); taken.From != worker.SessionID || taken.FromLabel != "Worker" || taken.Text != "hello grandchild" {
 		t.Fatalf("the grandchild did not take the message from its parent: %+v", taken)
@@ -481,7 +509,7 @@ func TestCreateSession(t *testing.T) {
 		t.Fatalf("after a restart workspace/list listed %+v, not %+v", after, before)
 	}
 	for i := range before {
-		if after[i].SessionID != before[i].SessionID || after[i].Label != before[i].Label ||
+		if after[i].SessionID != before[i].SessionID || after[i].Label != before[i].Label || after[i].Directory != before[i].Directory ||
 			(after[i].Child == nil) != (before[i].Child == nil) || after[i].Child != nil && *after[i].Child != *before[i].Child {
 			t.Fatalf("after a restart workspace/list listed %+v, not %+v", after[i], before[i])
 		}

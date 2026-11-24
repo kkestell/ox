@@ -16,6 +16,7 @@ import {
   type ApprovalResponse,
   type Child,
   type Defaults,
+  type FileRoot,
   type Harness,
   type Notification,
   notFound,
@@ -54,6 +55,8 @@ export type OpenFile = { path: string; view?: MarkdownView };
 export type Session = {
   id: string;
   harness: string;
+  // directory is where the session's harness runs.
+  directory: string;
   child?: Child;
   // label is the session's label, as oxd lists and announces it.
   label: string;
@@ -79,8 +82,8 @@ const settingsOf = (p: Settings): Settings => ({
   permission_mode: p.permission_mode,
 });
 
-// workspaceName is the name of a workspace's directory.
-export const workspaceName = (path: string) => path.replace(/\/+$/, "").split("/").at(-1) || path;
+// directoryName is the name of a directory.
+export const directoryName = (path: string) => path.replace(/\/+$/, "").split("/").at(-1) || path;
 
 function stopTools(session: SessionSnapshot) {
   for (const e of session.entries) if (e.kind === "tool" && !e.result) e.stopped = true;
@@ -639,9 +642,9 @@ function createOx() {
       s.workspaces = workspaces.map((w) => ({
         id: w.workspace_id,
         path: w.path,
-        sessions: w.sessions.map(({ session_id: id, label, harness, child, archived = false, state }) => {
+        sessions: w.sessions.map(({ session_id: id, label, harness, directory, child, archived = false, state }) => {
           const session = previous.get(id);
-          if (!session) return { id, harness, child, label, archived, state, load: { kind: "reloading" } };
+          if (!session) return { id, harness, directory, child, label, archived, state, load: { kind: "reloading" } };
           session.label = label;
           session.archived = archived;
           return session;
@@ -681,6 +684,7 @@ function createOx() {
           workspace?.sessions.push({
             id: params.session_id,
             harness: params.harness,
+            directory: params.directory,
             child: params.child,
             label: params.label,
             archived: false,
@@ -771,10 +775,8 @@ function createOx() {
         }),
       );
     },
-    listFolder: (workspaceId: string, path: string) =>
-      connection.rpc("workspace/list_folder", { workspace_id: workspaceId, path }),
-    readFile: (workspaceId: string, path: string) =>
-      connection.rpc("workspace/read_file", { workspace_id: workspaceId, path }),
+    listFolder: (root: FileRoot, path: string) => connection.rpc("workspace/list_folder", { ...root, path }),
+    readFile: (root: FileRoot, path: string) => connection.rpc("workspace/read_file", { ...root, path }),
     control,
     release,
     destroy: (id: string) => requestFor(id, "destroy"),

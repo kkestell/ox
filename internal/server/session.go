@@ -27,6 +27,7 @@ type session struct {
 	id        string
 	harness   string
 	workspace string       // the workspace's path
+	directory string       // where the harness runs
 	child     *store.Child // nil for a top-level session
 	createdAt time.Time
 	ops       chan func()
@@ -150,7 +151,7 @@ func (sess *session) broadcastLabelLocked() {
 // or "".
 func (s *Server) newSession(record *store.Session, workspace, firstLine string) *session {
 	sess := &session{
-		server: s, id: record.ID, harness: record.Harness, workspace: workspace, child: record.Child, createdAt: record.CreatedAt,
+		server: s, id: record.ID, harness: record.Harness, workspace: workspace, directory: record.Directory, child: record.Child, createdAt: record.CreatedAt,
 		ops: make(chan func()), done: make(chan struct{}), archived: record.Archived, firstLine: firstLine, title: record.Title,
 		state:       agent.StateParked,
 		settings:    agent.Settings{Model: record.Model, Effort: record.Effort, PermissionMode: record.PermissionMode},
@@ -162,15 +163,6 @@ func (s *Server) newSession(record *store.Session, workspace, firstLine string) 
 		sess.toParent = &toParent{turn: &turn{}}
 	}
 	return sess
-}
-
-// directory is where the harness runs: a child's own directory, or the
-// workspace's.
-func (sess *session) directory() string {
-	if sess.child != nil {
-		return sess.child.Directory
-	}
-	return sess.workspace
 }
 
 func (sess *session) run() {
@@ -445,7 +437,7 @@ func (sess *session) start() error {
 	}
 	a, err := start(agent.Options{
 		SessionID: sess.id,
-		Workspace: sess.directory(),
+		Workspace: sess.directory,
 		Resume:    sess.resumeToken,
 		Settings:  sess.settings,
 		MCP: agent.MCPServer{

@@ -3,12 +3,21 @@ import { Disconnected } from "./connection";
 import { FileTree } from "./FileTree";
 import { FileView } from "./FileView";
 import { createDraft, type Draft, NewSessionView } from "./NewSessionView";
-import { OxProvider, useOx } from "./ox";
+import { OxProvider, type SessionControl, useOx } from "./ox";
 import { createPanels, PanelToggles, Sash } from "./Panels";
+import type { FileRoot } from "./protocol";
 import { SessionView } from "./SessionView";
 import { Sidebar } from "./Sidebar";
 
 export type Selection = { kind: "session"; id: string } | { kind: "draft"; workspaceId: string };
+
+// sameSelection is whether a and b select the same session or draft.
+const sameSelection = (a: Selection | undefined, b: Selection | undefined) =>
+  a?.kind === "session" && b?.kind === "session"
+    ? a.id === b.id
+    : a?.kind === "draft" && b?.kind === "draft"
+      ? a.workspaceId === b.workspaceId
+      : a === b;
 
 // The URL's hash holds the selected session, so a reload or a hash change
 // selects it.
@@ -32,7 +41,9 @@ export default function App() {
 
 function Layout() {
   const ox = useOx();
-  const [selected, setSelected] = createSignal<Selection | undefined>(selectionFromHash());
+  // Selecting the selected session or draft again changes nothing, so the
+  // views keyed by the selection stay mounted.
+  const [selected, setSelected] = createSignal<Selection | undefined>(selectionFromHash(), { equals: sameSelection });
   const [drafts, setDrafts] = createSignal<Draft[]>([]);
   const select = (selection: Selection) => {
     if (selection.kind === "draft" && !drafts().some((d) => d.workspaceId === selection.workspaceId)) {
@@ -68,17 +79,15 @@ function Layout() {
     return s?.kind === "draft" ? liveDrafts().find((d) => d.workspaceId === s.workspaceId) : undefined;
   };
 
-  // The file tree shows the selected session's or draft's workspace, with
-  // that session's or draft's expanded folders.
-  const files = () => {
+  // The file tree shows the selected session's directory, or a draft's
+  // workspace, with that session's or draft's expanded folders.
+  const files = (): { root: FileRoot; directory: string; control: SessionControl } | undefined => {
     const current = session();
-    if (current) {
-      const workspace = ox.workspaceOf(current.id);
-      return workspace && { workspace, control: ox.control(current.id) };
-    }
+    if (current)
+      return { root: { session_id: current.id }, directory: current.directory, control: ox.control(current.id) };
     const d = draft();
     const workspace = d && ox.workspaces().find((w) => w.id === d.workspaceId);
-    return workspace && { workspace, control: d.control };
+    return workspace && { root: { workspace_id: workspace.id }, directory: workspace.path, control: d.control };
   };
 
   // With no session named, the transcript is empty, so a narrow page opens
@@ -208,49 +217,48 @@ function Layout() {
               </Match>
             </Switch>
           </main>
-          {/* Keyed by workspace, so sessions of one workspace share its listings,
-              and by path, so a file's view shows only that file. */}
-          <Show when={files()?.workspace.id} keyed>
-            {(workspaceId) => (
-              <Show when={files()}>
-                {(current) => (
-                  <Show when={current().control.file()?.path} keyed>
-                    {(path) => (
-                      <>
-                        <Sash
-                          label="Resize file viewer"
-                          drag={(before, after) => {
-                            const control = current().control;
-                            return (dx) => control.setSplit((before + dx) / (before + after));
-                          }}
-                        />
-                        <FileView
-                          workspaceId={workspaceId}
-                          path={path}
-                          share={panels.narrow() ? undefined : 1 - current().control.split()}
-                          view={current().control.file()?.view}
-                          onView={(view) => current().control.setView(view)}
-                          wrap={wrap()}
-                          onWrap={setWrap}
-                          onClose={() => current().control.setFile(undefined)}
-                        />
-                      </>
-                    )}
-                  </Show>
-                )}
-              </Show>
-            )}
+          {/* Keyed by selection, so the view reads beneath that selection's
+              root, and by path, so a file's view shows only that file. */}
+          <Show when={selected()} keyed>
+            <Show when={files()}>
+              {(current) => (
+                <Show when={current().control.file()?.path} keyed>
+                  {(path) => (
+                    <>
+                      <Sash
+                        label="Resize file viewer"
+                        drag={(before, after) => {
+                          const control = current().control;
+                          return (dx) => control.setSplit((before + dx) / (before + after));
+                        }}
+                      />
+                      <FileView
+                        root={current().root}
+                        path={path}
+                        share={panels.narrow() ? undefined : 1 - current().control.split()}
+                        view={current().control.file()?.view}
+                        onView={(view) => current().control.setView(view)}
+                        wrap={wrap()}
+                        onWrap={setWrap}
+                        onClose={() => current().control.setFile(undefined)}
+                      />
+                    </>
+                  )}
+                </Show>
+              )}
+            </Show>
           </Show>
         </div>
       </div>
-      {/* Keyed by workspace, as the file viewer is. */}
-      <Show when={files()?.workspace.id} keyed>
+      {/* Keyed by selection, as the file viewer is. */}
+      <Show when={selected()} keyed>
         <Show when={tree()}>
           {(shown) => (
             <>
               <Sash label="Resize files" drag={(_, after) => (dx) => panels.setRightWidth(after - dx)} />
               <FileTree
-                workspace={shown().workspace}
+                root={shown().root}
+                directory={shown().directory}
                 control={shown().control}
                 width={width(panels.rightWidth())}
                 toggles={togglesInTree() ? <PanelToggles panels={panels} /> : undefined}

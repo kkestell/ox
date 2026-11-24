@@ -46,7 +46,6 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
   const ox = useOx();
   // Layout keys this view by session, so the control is stable for its lifetime.
   const control = ox.control(untrack(() => props.session.id));
-  const directory = () => props.session.child?.directory ?? ox.workspaceOf(props.session.id)?.path;
   // A stop sent before oxd reports a prompt running can overtake the send.
   const running = () => props.session.state === "running" || props.session.state === "requires_action";
   const archived = () => ox.archived(props.session);
@@ -71,7 +70,7 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
           {props.toggles}
         </div>
         <p class="path">
-          <span class="directory">{directory()}</span>
+          <span class="directory">{props.session.directory}</span>
         </p>
       </header>
       <div

@@ -160,6 +160,7 @@ func (s *Server) listWorkspaces(reply replyFunc, id json.RawMessage) {
 		Label     string       `json:"label"`
 		Harness   string       `json:"harness"`
 		CreatedAt time.Time    `json:"created_at"`
+		Directory string       `json:"directory"`
 		Child     *store.Child `json:"child,omitempty"`
 		Archived  bool         `json:"archived,omitempty"`
 		State     string       `json:"state"`
@@ -177,7 +178,7 @@ func (s *Server) listWorkspaces(reply replyFunc, id json.RawMessage) {
 	for i, w := range s.workspaces {
 		workspaces[i] = workspaceInfo{WorkspaceID: w.id, Path: w.path, CreatedAt: w.createdAt, Sessions: make([]sessionInfo, len(w.sessions))}
 		for j, sess := range w.sessions {
-			workspaces[i].Sessions[j] = sessionInfo{sess.id, sess.labelLocked(), sess.harness, sess.createdAt, sess.child, sess.archived, sess.state}
+			workspaces[i].Sessions[j] = sessionInfo{sess.id, sess.labelLocked(), sess.harness, sess.createdAt, sess.directory, sess.child, sess.archived, sess.state}
 		}
 	}
 	reply(jsonrpc.Success(id, struct {
@@ -220,31 +221,52 @@ func (s *Server) removeWorkspace(reply replyFunc, id, params json.RawMessage) {
 	reply(jsonrpc.Success(id, struct{}{}))
 }
 
-// listFolder lists a folder in a workspace's directory. The directory is read
-// outside s.mu, so a slow disk holds up no other request.
-func (s *Server) listFolder(reply replyFunc, id, params json.RawMessage) {
-	var input struct {
-		WorkspaceID string `json:"workspace_id"`
-		Path        string `json:"path"`
+// fileParams are the params of the file methods: a path relative to the
+// directory of exactly one session or workspace.
+type fileParams struct {
+	SessionID   string `json:"session_id"`
+	WorkspaceID string `json:"workspace_id"`
+	Path        string `json:"path"`
+}
+
+// fileRoot returns the directory a file request reads beneath: its session's
+// directory, or its workspace's path. On failure it returns the error
+// response instead.
+func (s *Server) fileRoot(id json.RawMessage, input fileParams) (string, *jsonrpc.Response) {
+	if (input.SessionID == "") == (input.WorkspaceID == "") {
+		return "", invalidParams(id, "exactly one of session_id and workspace_id is required")
 	}
-	if err := json.Unmarshal(params, &input); err != nil || input.WorkspaceID == "" {
-		reply(invalidParams(id, "workspace_id is required"))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if input.SessionID != "" {
+		sess := s.sessions[input.SessionID]
+		if sess == nil {
+			return "", sessionNotFound(id)
+		}
+		return sess.directory, nil
+	}
+	w := s.workspace(input.WorkspaceID)
+	if w == nil {
+		return "", jsonrpc.Failure(id, notFound, "workspace not found")
+	}
+	return w.path, nil
+}
+
+// listFolder lists a folder in a session's or workspace's directory. The
+// directory is read outside s.mu, so a slow disk holds up no other request.
+func (s *Server) listFolder(reply replyFunc, id, params json.RawMessage) {
+	var input fileParams
+	if err := json.Unmarshal(params, &input); err != nil {
+		reply(invalidParams(id, "exactly one of session_id and workspace_id is required"))
 		return
 	}
 	if input.Path != "" && !filepath.IsLocal(input.Path) {
-		reply(invalidParams(id, "path must be relative to the workspace"))
+		reply(invalidParams(id, "path must be relative to the directory"))
 		return
 	}
-
-	s.mu.Lock()
-	w := s.workspace(input.WorkspaceID)
-	var dir string
-	if w != nil {
-		dir = w.path
-	}
-	s.mu.Unlock()
-	if w == nil {
-		reply(jsonrpc.Failure(id, notFound, "workspace not found"))
+	dir, failed := s.fileRoot(id, input)
+	if failed != nil {
+		reply(failed)
 		return
 	}
 	entries, err := listFolder(dir, input.Path)
@@ -257,31 +279,22 @@ func (s *Server) listFolder(reply replyFunc, id, params json.RawMessage) {
 	}{entries}))
 }
 
-// readFile returns the text of a file in a workspace's directory. The file is
-// read outside s.mu, so a slow disk holds up no other request.
+// readFile returns the text of a file in a session's or workspace's
+// directory. The file is read outside s.mu, so a slow disk holds up no other
+// request.
 func (s *Server) readFile(reply replyFunc, id, params json.RawMessage) {
-	var input struct {
-		WorkspaceID string `json:"workspace_id"`
-		Path        string `json:"path"`
-	}
-	if err := json.Unmarshal(params, &input); err != nil || input.WorkspaceID == "" {
-		reply(invalidParams(id, "workspace_id is required"))
+	var input fileParams
+	if err := json.Unmarshal(params, &input); err != nil {
+		reply(invalidParams(id, "exactly one of session_id and workspace_id is required"))
 		return
 	}
 	if !filepath.IsLocal(input.Path) {
-		reply(invalidParams(id, "path must be relative to the workspace"))
+		reply(invalidParams(id, "path must be relative to the directory"))
 		return
 	}
-
-	s.mu.Lock()
-	w := s.workspace(input.WorkspaceID)
-	var dir string
-	if w != nil {
-		dir = w.path
-	}
-	s.mu.Unlock()
-	if w == nil {
-		reply(jsonrpc.Failure(id, notFound, "workspace not found"))
+	dir, failed := s.fileRoot(id, input)
+	if failed != nil {
+		reply(failed)
 		return
 	}
 	text, err := readFile(dir, input.Path)
@@ -348,7 +361,7 @@ func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 	}
 	record := &store.Session{
 		ID: sessionID, Harness: input.Harness, Model: input.Model, Effort: input.Effort, PermissionMode: input.PermissionMode,
-		CreatedAt: time.Now(),
+		Directory: w.path, CreatedAt: time.Now(),
 	}
 	sess, err := s.addSession(w, record)
 	if err != nil {
@@ -383,9 +396,10 @@ func (s *Server) publishLocked(w *workspace, sess *session) {
 		Label       string       `json:"label"`
 		Harness     string       `json:"harness"`
 		CreatedAt   time.Time    `json:"created_at"`
+		Directory   string       `json:"directory"`
 		Child       *store.Child `json:"child,omitempty"`
 		State       string       `json:"state"`
-	}{sess.id, w.id, sess.labelLocked(), sess.harness, sess.createdAt, sess.child, sess.state})
+	}{sess.id, w.id, sess.labelLocked(), sess.harness, sess.createdAt, sess.directory, sess.child, sess.state})
 }
 
 // getSession returns a session's settings, history, queue, approvals, and

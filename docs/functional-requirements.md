@@ -300,19 +300,19 @@ title.
 
 ## Files
 
-- **File tree.** Beside the transcript, a panel shows the selected session's
-  workspace directory as a tree, folders first, whose folders expand and
-  collapse. It hides version-control folders and operating-system metadata files
-  at any depth, such as `.git` and `.DS_Store`, shows files Git ignores, lists
-  nothing outside the workspace directory, and shows why a folder cannot be
-  read.
+- **File tree.** Beside the transcript, a panel shows the directory the selected
+  session works in, or a new-session draft's workspace directory, as a tree,
+  folders first, whose folders expand and collapse. It hides version-control
+  folders and operating-system metadata files at any depth, such as `.git` and
+  `.DS_Store`, shows files Git ignores, lists nothing outside that directory,
+  and shows why a folder cannot be read.
 - **File tree updates.** While the page is visible, the tree shows changes on
   disk to the folders it shows within about a second.
 - **File viewer.** Clicking a file in the file tree opens it beside the
   transcript, or in its place on a narrow screen, under a tab with its name that
   closes it, and marks its row; clicking another file replaces it. The pane
   shows the file's text, or why, when the file is binary, larger than 1 MiB, not
-  UTF-8 text, or cannot be read, and reads nothing outside the workspace
+  UTF-8 text, or cannot be read, and reads nothing outside the file tree's
   directory.
 - **File viewer updates.** While the page is visible, the open file shows
   changes on disk within about a second; a file deleted or renamed keeps its tab

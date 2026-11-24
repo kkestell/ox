@@ -50,10 +50,11 @@ func answer(s *Server, line string) *jsonrpc.Response {
 // ID is dropped without ending the connection.
 func TestInvalidLines(t *testing.T) {
 	st := openStore(t)
-	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: t.TempDir(), CreatedAt: time.Now()}); err != nil {
+	dir := t.TempDir()
+	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: dir, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.AddSession("w", &store.Session{ID: "session-one", Harness: "fake", CreatedAt: time.Now()}); err != nil {
+	if err := st.AddSession("w", &store.Session{ID: "session-one", Harness: "fake", Directory: dir, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
@@ -159,10 +160,11 @@ func TestSettingsValidation(t *testing.T) {
 
 func TestClaudeRefusesSettingCommandsBeforeStarting(t *testing.T) {
 	st := openStore(t)
-	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: t.TempDir(), CreatedAt: time.Now()}); err != nil {
+	dir := t.TempDir()
+	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: dir, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", CreatedAt: time.Now()}); err != nil {
+	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Directory: dir, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	starts := make(chan struct{}, 1)
@@ -204,10 +206,11 @@ func TestClaudeRefusesSettingCommandsBeforeStarting(t *testing.T) {
 
 func TestSendPromptSizeCountsDecodedBytes(t *testing.T) {
 	st := openStore(t)
-	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: t.TempDir(), CreatedAt: time.Now()}); err != nil {
+	dir := t.TempDir()
+	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: dir, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.AddSession("w", &store.Session{ID: "00112233445566778899aabbccddeeff", Harness: "fake", CreatedAt: time.Now()}); err != nil {
+	if err := st.AddSession("w", &store.Session{ID: "00112233445566778899aabbccddeeff", Harness: "fake", Directory: dir, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
@@ -1019,7 +1022,7 @@ func TestStartAndStopHoldUpNoOtherSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"session-a", "session-b"} {
-		if err := st.AddSession("w", &store.Session{ID: id, Harness: "claude", Model: "m", PermissionMode: "manual", CreatedAt: time.Now()}); err != nil {
+		if err := st.AddSession("w", &store.Session{ID: id, Harness: "claude", Model: "m", PermissionMode: "manual", Directory: dir, CreatedAt: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1126,7 +1129,7 @@ func TestDestroyWhileStartingOrConfiguring(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"session-d", "session-b"} {
-		if err := st.AddSession("w", &store.Session{ID: id, Harness: "claude", Model: "m", Effort: "low", PermissionMode: "manual", CreatedAt: time.Now()}); err != nil {
+		if err := st.AddSession("w", &store.Session{ID: id, Harness: "claude", Model: "m", Effort: "low", PermissionMode: "manual", Directory: dir, CreatedAt: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1280,10 +1283,10 @@ func unresumableSession(t *testing.T) (*store.Store, *Server, *client, string) {
 	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: dir, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Model: "m", PermissionMode: "plan", ResumeToken: "gone", CreatedAt: time.Now()}); err != nil {
+	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Model: "m", PermissionMode: "plan", ResumeToken: "gone", Directory: dir, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.AddSession("w", &store.Session{ID: "sender-session", Harness: "claude", CreatedAt: time.Now()}); err != nil {
+	if err := st.AddSession("w", &store.Session{ID: "sender-session", Harness: "claude", Directory: dir, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
@@ -1314,7 +1317,7 @@ func TestResumeTokenKeptWhenNotStored(t *testing.T) {
 	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: dir, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Model: "m", PermissionMode: "plan", CreatedAt: time.Now()}); err != nil {
+	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Model: "m", PermissionMode: "plan", Directory: dir, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
@@ -1359,7 +1362,7 @@ func TestClaudeModeChangeIsAdopted(t *testing.T) {
 	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: dir, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Model: "m", Effort: "low", PermissionMode: "plan", CreatedAt: time.Now()}); err != nil {
+	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Model: "m", Effort: "low", PermissionMode: "plan", Directory: dir, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
@@ -1584,15 +1587,9 @@ func TestSameDirectoryIsOneWorkspace(t *testing.T) {
 	}
 }
 
-// A workspace's directory is listed and read through its root, which nothing
-// leads outside of.
+// A workspace's or session's directory is listed and read through its root,
+// which nothing leads outside of.
 func TestWorkspaceFiles(t *testing.T) {
-	s, err := newServer(openStore(t), &config.Config{}, 0, nil, MCP{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(s.Close)
-	c := connect(t, s)
 	dir, outside := t.TempDir(), t.TempDir()
 	for _, folder := range []string{"src", "src/nested", ".git", "empty"} {
 		if err := os.Mkdir(filepath.Join(dir, folder), 0o755); err != nil {
@@ -1628,16 +1625,26 @@ func TestWorkspaceFiles(t *testing.T) {
 	if err := os.Symlink(filepath.Join("src", "nested"), filepath.Join(dir, "alias")); err != nil {
 		t.Fatal(err)
 	}
-	var w struct {
-		ID string `json:"workspace_id"`
+	st := openStore(t)
+	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: dir, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
 	}
-	json.Unmarshal(c.call("workspace/create", map[string]string{"path": dir}), &w)
+	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "fake", Directory: dir, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := newServer(st, &config.Config{}, 0, nil, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c := connect(t, s)
 
-	list := func(path string) map[string]bool {
+	listIn := func(selector, id, path string) map[string]bool {
+		t.Helper()
 		var result struct {
 			Entries []folderEntry `json:"entries"`
 		}
-		raw := c.call("workspace/list_folder", map[string]string{"workspace_id": w.ID, "path": path})
+		raw := c.call("workspace/list_folder", map[string]string{selector: id, "path": path})
 		if err := json.Unmarshal(raw, &result); err != nil || result.Entries == nil {
 			t.Fatalf("listing %q returned %s", path, raw)
 		}
@@ -1647,6 +1654,10 @@ func TestWorkspaceFiles(t *testing.T) {
 		}
 		return folders
 	}
+	list := func(path string) map[string]bool {
+		t.Helper()
+		return listIn("workspace_id", "w", path)
+	}
 	want := map[string]bool{
 		"src": true, "empty": true, "inside": true, "alias": true, "outside": false, "absolute": false, "notes": false,
 		".gitignore": false, "ignored.log": false, "bin.dat": false, "big.txt": false, "latin1.txt": false,
@@ -1654,6 +1665,9 @@ func TestWorkspaceFiles(t *testing.T) {
 	}
 	if got := list(""); !maps.Equal(got, want) {
 		t.Errorf("root listed %v, want %v", got, want)
+	}
+	if got := listIn("session_id", "s", ""); !maps.Equal(got, want) {
+		t.Errorf("the session's root listed %v, want %v", got, want)
 	}
 	srcWant := map[string]bool{"main.go": false, "nested": true, "sibling": true}
 	if got := list("src"); !maps.Equal(got, srcWant) {
@@ -1675,17 +1689,30 @@ func TestWorkspaceFiles(t *testing.T) {
 			t.Errorf("%s %q in %q: %.200s %+v, want error %d %q", method, path, workspaceID, response.Result, response.Error, code, message)
 		}
 	}
-	refused("workspace/list_folder", -32602, w.ID, "../x", "")
-	refused("workspace/list_folder", -32602, w.ID, outside, "")
-	refused("workspace/list_folder", -32000, w.ID, "outside", "")
-	refused("workspace/list_folder", -32000, w.ID, ".gitignore", "")
+	refused("workspace/list_folder", -32602, "w", "../x", "")
+	refused("workspace/list_folder", -32602, "w", outside, "")
+	refused("workspace/list_folder", -32000, "w", "outside", "")
+	refused("workspace/list_folder", -32000, "w", ".gitignore", "")
 	refused("workspace/list_folder", -32001, "missing", "", "")
+	refusedParams := func(method string, params map[string]string, code int, message string) {
+		t.Helper()
+		response := c.request(method, params)
+		if response.Error == nil || response.Error.Code != code || response.Error.Message != message {
+			t.Errorf("%s %v: %.200s %+v, want error %d %q", method, params, response.Result, response.Error, code, message)
+		}
+	}
+	for _, method := range []string{"workspace/list_folder", "workspace/read_file"} {
+		refusedParams(method, map[string]string{"workspace_id": "w", "session_id": "s", "path": "notes"}, -32602,
+			"exactly one of session_id and workspace_id is required")
+		refusedParams(method, map[string]string{"path": "notes"}, -32602, "exactly one of session_id and workspace_id is required")
+		refusedParams(method, map[string]string{"session_id": "missing", "path": "notes"}, -32001, "session not found")
+	}
 
 	read := func(path string) string {
 		var result struct {
 			Text *string `json:"text"`
 		}
-		raw := c.call("workspace/read_file", map[string]string{"workspace_id": w.ID, "path": path})
+		raw := c.call("workspace/read_file", map[string]string{"workspace_id": "w", "path": path})
 		if err := json.Unmarshal(raw, &result); err != nil || result.Text == nil {
 			t.Fatalf("reading %q returned %s", path, raw)
 		}
@@ -1697,16 +1724,23 @@ func TestWorkspaceFiles(t *testing.T) {
 	if got := read("notes"); got != "ignored.log\n" {
 		t.Errorf("notes read %q", got)
 	}
-	refused("workspace/read_file", -32000, w.ID, "bin.dat", "file is binary")
-	refused("workspace/read_file", -32000, w.ID, "big.txt", "file is larger than 1 MiB")
-	refused("workspace/read_file", -32000, w.ID, "latin1.txt", "file is not UTF-8 text")
-	refused("workspace/read_file", -32000, w.ID, "src", "not a regular file")
-	refused("workspace/read_file", -32000, w.ID, "pipe", "not a regular file")
-	refused("workspace/read_file", -32000, w.ID, "leak", "")
-	refused("workspace/read_file", -32000, w.ID, "missing.txt", "no such file or directory")
-	refused("workspace/read_file", -32602, w.ID, "", "path must be relative to the workspace")
-	refused("workspace/read_file", -32602, w.ID, "../x", "path must be relative to the workspace")
-	refused("workspace/read_file", -32602, w.ID, filepath.Join(outside, "secret"), "path must be relative to the workspace")
+	var fromSession struct {
+		Text string `json:"text"`
+	}
+	json.Unmarshal(c.call("workspace/read_file", map[string]string{"session_id": "s", "path": "src/main.go"}), &fromSession)
+	if fromSession.Text != "package main\n" {
+		t.Errorf("src/main.go read through the session %q", fromSession.Text)
+	}
+	refused("workspace/read_file", -32000, "w", "bin.dat", "file is binary")
+	refused("workspace/read_file", -32000, "w", "big.txt", "file is larger than 1 MiB")
+	refused("workspace/read_file", -32000, "w", "latin1.txt", "file is not UTF-8 text")
+	refused("workspace/read_file", -32000, "w", "src", "not a regular file")
+	refused("workspace/read_file", -32000, "w", "pipe", "not a regular file")
+	refused("workspace/read_file", -32000, "w", "leak", "")
+	refused("workspace/read_file", -32000, "w", "missing.txt", "no such file or directory")
+	refused("workspace/read_file", -32602, "w", "", "path must be relative to the directory")
+	refused("workspace/read_file", -32602, "w", "../x", "path must be relative to the directory")
+	refused("workspace/read_file", -32602, "w", filepath.Join(outside, "secret"), "path must be relative to the directory")
 	refused("workspace/read_file", -32001, "missing", "notes", "workspace not found")
 }
 
@@ -2071,7 +2105,7 @@ func TestExitDropsWaitingMessages(t *testing.T) {
 	}
 	const sender, recipient = "sender-session", "recipient-session"
 	for _, id := range []string{sender, recipient} {
-		if err := st.AddSession("w", &store.Session{ID: id, Harness: "claude", Model: "m", PermissionMode: "manual", CreatedAt: time.Now()}); err != nil {
+		if err := st.AddSession("w", &store.Session{ID: id, Harness: "claude", Model: "m", PermissionMode: "manual", Directory: dir, CreatedAt: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
 	}

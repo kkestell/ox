@@ -1,6 +1,6 @@
 import { createMemo, createSignal, createUniqueId, For, onSettled, Show } from "solid-js";
 import type { Selection } from "./App";
-import { createAttempt, type Session, useOx, type Workspace, workspaceName } from "./ox";
+import { createAttempt, directoryName, type Session, useOx, type Workspace } from "./ox";
 import { settled } from "./protocol";
 
 type DialogRequest =
@@ -450,7 +450,7 @@ export function Sidebar(props: {
                 }}
               >
                 <h2 id={id} class="name">
-                  {workspaceName(workspace.path)}
+                  {directoryName(workspace.path)}
                 </h2>
                 <div class="actions">
                   <MenuButton label="Workspace actions" onMenu={menuOf("workspace", workspace.id)} />
