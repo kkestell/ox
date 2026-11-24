@@ -160,6 +160,23 @@ func (l *live) resumeToken(id string) string {
 	return ""
 }
 
+// usage returns the windows of the last usage update in session id's
+// history.
+func (l *live) usage(id string) []agent.UsageWindow {
+	l.t.Helper()
+	var got struct {
+		History []agent.Update `json:"history"`
+	}
+	json.Unmarshal(l.c.call("session/get", map[string]string{"session_id": id}), &got)
+	var windows []agent.UsageWindow
+	for _, u := range got.History {
+		if u.Type == agent.UpdateUsage {
+			windows = u.Usage
+		}
+	}
+	return windows
+}
+
 // listModels has session id list Ox's models without asking.
 func (l *live) listModels(id string) {
 	l.t.Helper()
@@ -461,6 +478,15 @@ func TestLive(t *testing.T) {
 		// /clear replaces the resume token even with an empty result.
 		cleared := l.create("manual")
 		l.turn(cleared, "Reply with just the word ok.", allow)
+		usage := l.usage(cleared)
+		if len(usage) == 0 {
+			l.t.Fatalf("the first turn recorded no usage: %s", describe(l.c.received(cleared)))
+		}
+		for _, w := range usage {
+			if w.IntervalSeconds <= 0 || !w.ResetsAt.After(time.Now()) {
+				l.t.Fatalf("unexpected usage window: %+v", w)
+			}
+		}
 		old := l.resumeToken(cleared)
 		l.turn(cleared, "/clear", allow)
 		clearedToken := l.resumeToken(cleared)
@@ -469,6 +495,11 @@ func TestLive(t *testing.T) {
 		}
 
 		l = restart(l, parkAfter)
+		if after := l.usage(cleared); !slices.EqualFunc(after, usage, func(a, b agent.UsageWindow) bool {
+			return a.IntervalSeconds == b.IntervalSeconds && a.UsedPercent == b.UsedPercent && a.ResetsAt.Equal(b.ResetsAt)
+		}) {
+			l.t.Fatalf("the usage reading did not survive the restart: %+v, then %+v", usage, after)
+		}
 		l.turn(pendingID, "What exact filename did my first prompt ask to create? Reply with just the filename; do not call tools.", allow)
 		if r := l.c.update(pendingID, "result").Result; r.IsError || !strings.Contains(r.Text, marker) || l.resumeToken(pendingID) != pendingToken {
 			l.t.Fatalf("the reply did not resume the unfinished conversation: %+v", r)

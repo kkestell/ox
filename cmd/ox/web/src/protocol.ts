@@ -58,7 +58,11 @@ type OtherUpdate =
   | { type: "approval"; request_id: string; request: ApprovalRequest }
   | { type: "approval_answered"; request_id: string }
   | { type: "approval_cancelled"; request_id: string }
-  | { type: "exited"; error: string };
+  | { type: "exited"; error: string }
+  | { type: "usage"; usage: UsageWindow[] };
+
+// UsageWindow is one window of a harness's subscription usage.
+export type UsageWindow = { interval_seconds: number; used_percent: number; resets_at: string };
 
 export type FolderEntry = { name: string; folder: boolean };
 

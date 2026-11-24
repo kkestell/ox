@@ -7,6 +7,7 @@ import { type Entry, type Outgoing, type Session, type SessionControl, type Sess
 import type { Prompt, Settings } from "./protocol";
 import { ModelPicker, Select } from "./SettingsFields";
 import { planOf, toolInputJSON, toolLabel, toolSummary } from "./toolInput";
+import { Usage } from "./Usage";
 
 type Tool = Extract<Entry, { kind: "tool" }>;
 
@@ -155,7 +156,12 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
               <button type="submit" class="icon send" aria-label="Send" title="Send" disabled={!control.canSend()} />
             </div>
           </form>
-          <SettingsForm harness={props.session.harness} settings={props.snapshot.settings} control={control} />
+          <div class="settings">
+            <SettingsForm harness={props.session.harness} settings={props.snapshot.settings} control={control} />
+            <Show when={props.snapshot.usage}>
+              {(windows) => <Usage harness={props.session.harness} windows={windows()} />}
+            </Show>
+          </div>
         </div>
       </Show>
     </>
@@ -328,7 +334,7 @@ function SettingsForm(props: { harness: string; settings: Settings; control: Ses
 
   // Once the session starts, the picker offers only its harness's models.
   return (
-    <div class="settings">
+    <>
       <ModelPicker
         harnesses={{ [props.harness]: harness() }}
         value={{ harness: props.harness, model: shown().model, effort: shown().effort }}
@@ -349,6 +355,6 @@ function SettingsForm(props: { harness: string; settings: Settings; control: Ses
         pending={pending("permission_mode")}
         onChange={(mode) => props.control.configure({ permission_mode: mode })}
       />
-    </div>
+    </>
   );
 }

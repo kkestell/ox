@@ -345,6 +345,11 @@ title.
   in a child session, the directory it was created in.
 - **Subscription billing.** Claude's work is billed to the user's Claude
   subscription, never to an API key or token in Ox's environment.
+- **Subscription usage.** Under the composer, a Claude session shows how much of
+  its shortest subscription usage limit is used and how long until it resets;
+  clicking it lists every limit Claude reports. The session shows the reading
+  from its latest turn, through parking and restarts, dimmed once its limit has
+  reset, and shows nothing before Claude has reported one.
 - **Ox's instructions.** Claude knows that it is an Ox session, which one, and
   how to reach the other sessions, and follows Ox's style.
 - **Claude's workspace access.** Claude changes the workspace only as its
