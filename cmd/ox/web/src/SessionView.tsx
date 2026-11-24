@@ -11,6 +11,8 @@ import { planOf, toolInputJSON, toolLabel, toolSummary } from "./toolInput";
 type Tool = Extract<Entry, { kind: "tool" }>;
 
 export function sendOnEnter(event: KeyboardEvent & { currentTarget: HTMLTextAreaElement }) {
+  // A phone keyboard has no Shift+Return, so Return there starts a new line and Send sends.
+  if (matchMedia("(pointer: coarse)").matches) return;
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
     if (!event.repeat) event.currentTarget.form?.requestSubmit();

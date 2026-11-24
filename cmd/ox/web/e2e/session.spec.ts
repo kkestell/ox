@@ -101,7 +101,7 @@ test("text retyped equal to the prompt stays after the creation", async ({ ox: p
 async function reply(page: Page, text: string) {
   await newSessionButton(page).click();
   await prompt(page).fill(text);
-  await prompt(page).press("Enter");
+  await send(page).click();
   await expect(stop(page)).toHaveCount(0);
   await expect(replies(page)).toHaveCount(1);
   return replies(page);
@@ -1486,6 +1486,15 @@ test("collapsing the open session's family leaves it open, and a new child stays
 
 test.describe("on a touch screen", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  test("Return starts a new line", async ({ ox: page }) => {
+    await newSession(page, "keyboard test");
+    await prompt(page).fill("first line");
+    await prompt(page).press("Enter");
+    await prompt(page).pressSequentially("second line");
+    await expect(prompt(page)).toHaveValue("first line\nsecond line");
+    await expect(prompts(page)).toHaveText(["keyboard test"]);
+  });
 
   test("a parent's chevron works without hover and keeps the session list open", async ({ ox: page, services }) => {
     await newSession(page, "Parent");
