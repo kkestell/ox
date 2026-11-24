@@ -87,6 +87,27 @@ No new findings.
 
 Checks: the temporary spec above, removed afterward. `make test` and `make e2e` pass according to the fixing session (157 passed, 4 skipped); not rerun here. `make live` is not required.
 
+## Verification 2
+
+Checked commit `a9205fc` on base `b90e637`, which adds one change since Verification 1. Tapping Send on an emulated phone missed: a tapped button takes focus in Chrome, the prompt loses focus, `--bottom-inset` returns to the home indicator's inset, and the composer moves out from under the tap before it lands. `keepPromptFocus` (`SessionView.tsx:22`) cancels `pointerdown` inside the composer's box except on the textarea, and both forms use it. The spec "tapping Send sends and keeps the keyboard on the prompt" in `session.spec.ts` covers it.
+
+| ID | Status   | Evidence |
+| -- | -------- | -------- |
+| F1 | Resolved | Unchanged since Verification 1. |
+| F2 | Resolved | Unchanged since Verification 1. |
+
+The box holds only the thumbnails with their remove buttons, Attach Image, the prompt, Stop, and Send. The settings row and the approvals sit outside it, so the cancelled `pointerdown` reaches no select, picker, or text field that needs focus. Each button still gets its `click`. Keeping the keyboard up after Send matches the standard chat-app pattern, and no requirement covers it.
+
+No new findings.
+
+Checks:
+
+- The new spec passes as committed.
+- With `onPointerDown={keepPromptFocus}` removed from `SessionView`'s form, the spec fails on the second reply.
+- With it removed from `NewSessionView`'s form, the spec fails on the first reply.
+- Both edits were reverted.
+- `make test` and `make e2e` pass according to the fixing session (159 passed, 4 skipped); not rerun here.
+
 ## Verdict
 
-Ready to commit. F1 and F2 are resolved; F3 and F4 stay rejected.
+Ready to commit. F1 and F2 are resolved, F3 and F4 stay rejected, and Verification 2 found no new defects in the Send fix.
