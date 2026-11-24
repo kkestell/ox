@@ -3,6 +3,9 @@ package claude
 import (
 	"encoding/json"
 	"strings"
+	"time"
+
+	"github.com/kkestell/ox/internal/agent"
 )
 
 type message struct {
@@ -21,7 +24,13 @@ type message struct {
 	Request         json.RawMessage   `json:"request"`
 	Response        controlReply      `json:"response"`
 	Tasks           []json.RawMessage `json:"tasks"` // background_tasks_changed: the live set
-	Message         struct {
+	RateLimitInfo   struct {
+		UnifiedWindows map[string]struct {
+			Utilization float64 `json:"utilization"` // a fraction
+			ResetsAt    int64   `json:"resetsAt"`    // Unix seconds
+		} `json:"unifiedWindows"`
+	} `json:"rate_limit_info"`
+	Message struct {
 		Content json.RawMessage `json:"content"` // a string or an array of blocks
 	} `json:"message"`
 	Event struct {
@@ -48,6 +57,21 @@ func (m message) errorText() string {
 		return strings.Join(m.Errors, "\n")
 	}
 	return m.Subtype
+}
+
+// windowSeconds is the length of each rate_limit_event window Claude Code
+// names.
+var windowSeconds = map[string]int64{"five_hour": 5 * 3600, "seven_day": 7 * 24 * 3600}
+
+// usageWindows is a rate_limit_event's windows whose length is known.
+func (m message) usageWindows() []agent.UsageWindow {
+	var windows []agent.UsageWindow
+	for key, w := range m.RateLimitInfo.UnifiedWindows {
+		if seconds, ok := windowSeconds[key]; ok {
+			windows = append(windows, agent.UsageWindow{IntervalSeconds: seconds, UsedPercent: w.Utilization * 100, ResetsAt: time.Unix(w.ResetsAt, 0)})
+		}
+	}
+	return windows
 }
 
 type controlReply struct {

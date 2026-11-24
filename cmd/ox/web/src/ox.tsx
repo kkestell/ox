@@ -26,6 +26,7 @@ import {
   settled,
   type ToolResult,
   type Update,
+  type UsageWindow,
 } from "./protocol";
 
 export type Workspace = { id: string; path: string; sessions: Session[] };
@@ -68,6 +69,8 @@ export type SessionSnapshot = {
   entries: Entry[];
   approvals: Approval[];
   queued: Prompt[];
+  // usage is the windows of the session's latest usage update, shortest first.
+  usage?: UsageWindow[];
 };
 
 const settingsOf = (p: Settings): Settings => ({
@@ -134,6 +137,9 @@ function apply(session: SessionSnapshot, u: Update) {
     case "exited":
       session.entries.push({ kind: "exited", error: u.error });
       stopTools(session);
+      break;
+    case "usage":
+      session.usage = u.usage;
       break;
   }
 }
@@ -598,6 +604,7 @@ function createOx() {
       if (previous) {
         previous.settings = snapshot.settings;
         previous.queued = snapshot.queued;
+        previous.usage = snapshot.usage;
         reconcile(snapshot.entries, null)(previous.entries);
         reconcile(snapshot.approvals, "id")(previous.approvals);
       }

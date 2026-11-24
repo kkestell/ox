@@ -156,8 +156,10 @@ func (a *Agent) idle() bool {
 // the count of its images, streamed in at most a few pieces. An input
 // "background <milliseconds>" also starts a background task that runs that
 // long, an input "wait <milliseconds>" keeps the turn running that long before
-// the reply, and an input "think <text>" streams text as reasoning before the
-// reply.
+// the reply, an input "think <text>" streams text as reasoning before the
+// reply, an input "usage" reports a 5-hour and a 7-day usage window before
+// the reply, and an input "usage reset" reports them with the 5-hour window
+// already reset.
 func (a *Agent) Send(input agent.Input) error {
 	idle := a.idle()
 	a.tracker.Accept(input)
@@ -178,6 +180,17 @@ func (a *Agent) begin() {
 	a.pieces = split(a.reply)
 	if thought, ok := strings.CutPrefix(input.Content, "think "); ok {
 		a.thoughts = split(thought)
+	}
+	if input.Content == "usage" || input.Content == "usage reset" {
+		now := time.Now()
+		fiveHour := now.Add(2 * time.Hour)
+		if input.Content == "usage reset" {
+			fiveHour = now.Add(-time.Minute)
+		}
+		a.publish(agent.UsageUpdate([]agent.UsageWindow{
+			{IntervalSeconds: 7 * 24 * 3600, UsedPercent: 40, ResetsAt: now.Add(3 * 24 * time.Hour)},
+			{IntervalSeconds: 5 * 3600, UsedPercent: 80, ResetsAt: fiveHour},
+		}))
 	}
 	if d, ok := durationRequest("background", input.Content); ok {
 		a.tracker.SetTasks(a.tracker.Tasks() + 1)

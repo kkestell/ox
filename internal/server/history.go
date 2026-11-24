@@ -18,7 +18,7 @@ type history struct {
 
 func (h *history) record(update agent.Update) {
 	switch update.Type {
-	case agent.UpdatePrompt, agent.UpdateTextDelta, agent.UpdateReasoningDelta, agent.UpdateToolUse, agent.UpdateToolResult, agent.UpdateResult, agent.UpdateExited, agent.UpdateParked:
+	case agent.UpdatePrompt, agent.UpdateTextDelta, agent.UpdateReasoningDelta, agent.UpdateToolUse, agent.UpdateToolResult, agent.UpdateResult, agent.UpdateExited, agent.UpdateParked, agent.UpdateUsage:
 		h.append(update)
 	}
 }

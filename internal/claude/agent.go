@@ -246,6 +246,10 @@ func (a *Agent) handleOutput(m message) {
 		case delta.Type == "thinking_delta" && delta.Thinking != "":
 			a.publish(agent.Update{Type: agent.UpdateReasoningDelta, Text: delta.Thinking})
 		}
+	case "rate_limit_event":
+		if windows := m.usageWindows(); len(windows) > 0 {
+			a.publish(agent.UsageUpdate(windows))
+		}
 	case "result":
 		result := agent.Result{Text: m.Result, IsError: m.failed()}
 		if strings.HasPrefix(m.TerminalReason, "aborted") {

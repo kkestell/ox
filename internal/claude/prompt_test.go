@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"os/exec"
 	"reflect"
 	"slices"
@@ -526,6 +527,32 @@ func TestThinkingIsPublished(t *testing.T) {
 	}
 	if u := (*updates)[0]; u.Type != "reasoning_delta" || u.Text != "Two plus two." || u.MessageID != id {
 		t.Fatalf("unexpected reasoning update: %+v", u)
+	}
+}
+
+func TestUsageIsPublished(t *testing.T) {
+	a, _, updates, id := promptingAgent(t)
+	output(t, a, `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","unifiedWindows":{`+
+		`"seven_day":{"utilization":0.39,"resetsAt":1794193200,"status":"allowed"},`+
+		`"five_hour":{"utilization":0.01,"resetsAt":1793767800,"status":"allowed"},`+
+		`"seven_day_opus":{"utilization":0.5,"resetsAt":1794193200,"status":"allowed"}}}}`)
+	output(t, a, `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1793767800}}`)
+	if len(*updates) != 1 {
+		t.Fatalf("expected one usage update: %+v", *updates)
+	}
+	u := (*updates)[0]
+	want := []agent.UsageWindow{
+		{IntervalSeconds: 18000, UsedPercent: 1, ResetsAt: time.Unix(1793767800, 0)},
+		{IntervalSeconds: 604800, UsedPercent: 39, ResetsAt: time.Unix(1794193200, 0)},
+	}
+	if u.Type != "usage" || u.MessageID != id || len(u.Usage) != len(want) {
+		t.Fatalf("unexpected usage update: %+v", u)
+	}
+	for i, w := range want {
+		got := u.Usage[i]
+		if got.IntervalSeconds != w.IntervalSeconds || math.Abs(got.UsedPercent-w.UsedPercent) > 1e-9 || !got.ResetsAt.Equal(w.ResetsAt) {
+			t.Fatalf("window %d is %+v, want %+v", i, got, w)
+		}
 	}
 }
 
