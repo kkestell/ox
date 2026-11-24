@@ -4,6 +4,8 @@
 html, body { height: 100%; }
 /* The page is fixed to the window; a drag past a scroller's end leaves it in place. */
 html { overscroll-behavior: none; }
+/* iOS Safari enlarges text in wide blocks, such as a file's unwrapped lines. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body { -webkit-font-smoothing: antialiased; }
 input, button, textarea, select { font: inherit; color: inherit; }
 p { overflow-wrap: break-word; }

@@ -229,6 +229,14 @@ alters there. A change to `AGENTS.md`, a skill, or a requirement reaches other
 worktrees only when they rebase, so its agent sends the new text to every
 other top-level agent with a change in flight.
 
+The steps scale with what the change can break. A small change is one whose
+whole effect a single check observes, and that touches no state owner,
+protocol, persistence, harness driving, or requirement: a style rule, copy, or
+a contained bug fix with an obvious cause. The top-level agent makes a small
+change itself in its worktree, runs the checks that observe it, and opens the
+pull request, with no plan or review session. Every other change takes the
+steps below. When in doubt, a change is not small.
+
 1. A child session on Opus 5.5 at high effort runs `/ox-plan`. The user
    approves the plan's requirement changes with its other product questions.
 2. The top-level agent sanity-checks the plan with a quick look at the code it
@@ -243,8 +251,8 @@ other top-level agent with a change in flight.
    the verdict is Ready to commit.
 7. The top-level agent sanity-checks the result, including the requirements
    diff, and commits the change with its plan and review in `agents/`. It runs
-   `git fetch` and `git rebase origin/main`, then re-runs `make test` and
-   `make e2e`. When the rebase resolved a conflict in code, the reviewing
+   `git fetch` and `git rebase origin/main`, then re-runs the checks that
+   observe the change when the rebase brought in new commits. When the rebase resolved a conflict in code, the reviewing
    session runs `/ox-review verify` on the rebased commit before the push. The
    top-level agent pushes with `git push -u origin <slug>` and opens the pull
    request with `gh pr create`. Its title is the commit subject. Its body links
@@ -292,11 +300,14 @@ corrects or closes it.
 - Keep test setup simple; avoid elaborate mocks and fake runtimes.
 - `make test`, `make e2e`, and `make dev` build with the race detector. A data race fails
   the test, or stops `oxd` with the race's report.
-- A change is done once every check that covers it has run: `make test` and
-  `make e2e`; `make live` when it changes how Ox drives Claude Code; and a
-  check in headless Chrome through `make dev` in the change's worktree when it
-  changes how the page reaches `oxd`. A check is reported as not run only when
-  something the agent cannot change blocks it, named in the report.
+- A change is done once the checks that can observe it have run: `make test`
+  for Go and the Node suites; `make e2e` when it changes what the page does;
+  `make live` when it changes how Ox drives Claude Code; a check in headless
+  Chrome through `make dev` in the change's worktree when it changes how the
+  page reaches `oxd`; and the user's phone for behavior only a phone shows. A
+  check that cannot observe the change is skipped, and the pull request says
+  so. A check that can observe it is reported as not run only when something
+  the agent cannot change blocks it, named in the report.
 
 ## Documentation
 
