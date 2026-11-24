@@ -52,7 +52,7 @@ func (a *Agent) Send(input agent.Input) error {
 // write writes input to Claude, which holds the agent in prompting until
 // Claude reports idle with nothing untaken.
 func (a *Agent) write(input agent.Input) error {
-	if err := a.input.Prompt(input.MessageID, input.Content); err != nil {
+	if err := a.input.Prompt(input.MessageID, input.Content, input.Images); err != nil {
 		return fmt.Errorf("send prompt to Claude: %w", err)
 	}
 	p, ok := a.phase.(*prompting)

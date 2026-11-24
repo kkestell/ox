@@ -3,10 +3,12 @@ package server
 import (
 	"cmp"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -50,6 +52,8 @@ func (s *Server) handle(reply replyFunc, request jsonrpc.Request) {
 		s.getSession(reply, id, params)
 	case "session/send":
 		s.sendSession(reply, id, params)
+	case "session/image":
+		s.imageSession(reply, id, params)
 	case "session/approve":
 		s.approveSession(reply, id, params)
 	case "session/interrupt":
@@ -410,17 +414,52 @@ func (s *Server) getSession(reply replyFunc, id, params json.RawMessage) {
 	})
 }
 
+// imageTypes are the image types a prompt takes.
+var imageTypes = []string{"image/png", "image/jpeg", "image/gif", "image/webp"}
+
+// maxImageBytes is the most image data, decoded, one prompt takes.
+const maxImageBytes = 10 << 20
+
+// decodeImages decodes a prompt's base64 images, taking each one's type from
+// its bytes.
+func decodeImages(encoded []string) ([]agent.Image, error) {
+	var images []agent.Image
+	total := 0
+	for _, e := range encoded {
+		data, err := base64.StdEncoding.DecodeString(e)
+		if err != nil {
+			return nil, errors.New("images must be base64")
+		}
+		mimeType := http.DetectContentType(data)
+		if !slices.Contains(imageTypes, mimeType) {
+			return nil, errors.New("images must be PNG, JPEG, GIF, or WebP")
+		}
+		if total += len(data); total > maxImageBytes {
+			return nil, errors.New("images are larger than 10 MiB")
+		}
+		images = append(images, agent.Image{MimeType: mimeType, Data: data})
+	}
+	return images, nil
+}
+
 func (s *Server) sendSession(reply replyFunc, id, params json.RawMessage) {
 	var input struct {
-		SessionID string `json:"session_id"`
-		Text      string `json:"text"`
+		SessionID string   `json:"session_id"`
+		Text      string   `json:"text"`
+		Images    []string `json:"images"`
 	}
-	if err := json.Unmarshal(params, &input); err != nil || input.SessionID == "" || strings.TrimSpace(input.Text) == "" {
-		reply(invalidParams(id, "session_id and text are required"))
+	if err := json.Unmarshal(params, &input); err != nil || input.SessionID == "" ||
+		(strings.TrimSpace(input.Text) == "" && len(input.Images) == 0) {
+		reply(invalidParams(id, "session_id and text or images are required"))
 		return
 	}
 	if len(input.Text) > 1<<20 {
 		reply(invalidParams(id, "prompt is larger than 1 MiB"))
+		return
+	}
+	images, err := decodeImages(input.Images)
+	if err != nil {
+		reply(invalidParams(id, err.Error()))
 		return
 	}
 	s.onSession(reply, id, input.SessionID, func(sess *session) {
@@ -430,7 +469,7 @@ func (s *Server) sendSession(reply replyFunc, id, params json.RawMessage) {
 				return
 			}
 		}
-		messageID, err := sess.sendPrompt(input.Text)
+		messageID, err := sess.sendPrompt(input.Text, images)
 		if err != nil {
 			reply(failure(id, err))
 			return
@@ -438,6 +477,32 @@ func (s *Server) sendSession(reply replyFunc, id, params json.RawMessage) {
 		reply(jsonrpc.Success(id, struct {
 			MessageID string `json:"message_id"`
 		}{messageID}))
+	})
+}
+
+// imageSession returns an image attached to one of a session's prompts.
+func (s *Server) imageSession(reply replyFunc, id, params json.RawMessage) {
+	var input struct {
+		SessionID string `json:"session_id"`
+		ImageID   string `json:"image_id"`
+	}
+	if err := json.Unmarshal(params, &input); err != nil || input.SessionID == "" || input.ImageID == "" {
+		reply(invalidParams(id, "session_id and image_id are required"))
+		return
+	}
+	s.onSession(reply, id, input.SessionID, func(sess *session) {
+		image, err := s.store.Image(sess.id, input.ImageID)
+		switch {
+		case err != nil:
+			reply(failure(id, err))
+		case image == nil:
+			reply(jsonrpc.Failure(id, notFound, "image not found"))
+		default:
+			reply(jsonrpc.Success(id, struct {
+				MimeType string `json:"mime_type"`
+				Data     []byte `json:"data"`
+			}{image.MimeType, image.Data}))
+		}
 	})
 }
 

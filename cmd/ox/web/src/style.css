@@ -78,6 +78,7 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: 
 .folder-open { --icon: url(lucide-static/icons/folder-open.svg); }
 .file { --icon: url(lucide-static/icons/file.svg); }
 .x { --icon: url(lucide-static/icons/x.svg); }
+.paperclip { --icon: url(lucide-static/icons/paperclip.svg); }
 .wrap-text { --icon: url(lucide-static/icons/wrap-text.svg); }
 .eye { --icon: url(lucide-static/icons/eye.svg); }
 .panel-left { --icon: url(lucide-static/icons/panel-left.svg); }
@@ -249,6 +250,9 @@ main > .loading { flex: 1; display: flex; align-items: center; justify-content: 
 .log .prompt.queued { opacity: 0.6; }
 .log .queue { display: flex; flex-direction: column; gap: 0.75rem; }
 .log .message .from { font-size: 0.75rem; color: var(--muted-foreground); }
+.prompt:has(> .images) { display: flex; flex-direction: column; gap: 0.5rem; }
+.prompt .images { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.prompt .images > img { max-width: 100%; max-height: 16rem; object-fit: contain; }
 .markdown { overflow-wrap: break-word; }
 .markdown > :first-child { margin-top: 0; }
 .markdown > :last-child { margin-bottom: 0; }
@@ -287,10 +291,19 @@ details.tool pre + pre { border-top: 1px solid var(--border); }
 
 .composer { flex: none; margin: var(--composer-margin); margin-bottom: max(var(--composer-margin), var(--bottom-inset)); }
 .composer.archived { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.75rem 1rem; border: 1px solid var(--border); border-radius: 16px; background: var(--composer); color: var(--muted-foreground); }
-.composer .box { position: relative; display: flex; align-items: flex-end; gap: 0.25rem; padding: 0.5rem 0.75rem 0.5rem 1rem; border: 1px solid var(--border); border-radius: 16px; background: var(--composer); }
+.composer .box { position: relative; display: flex; flex-direction: column; gap: 0.25rem; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: 16px; background: var(--composer); }
+.composer .box.dragging { border-style: dashed; border-color: var(--ring); }
+.composer .box .field { display: flex; align-items: flex-end; gap: 0.25rem; }
+.composer .box .paperclip { color: var(--muted-foreground); }
+.composer .thumbnails { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.composer .thumbnail { position: relative; }
+.composer .thumbnail > img { display: block; width: 4rem; height: 4rem; object-fit: cover; }
 .composer:has(.pending) .box { filter: drop-shadow(0 10px 8px rgb(0 0 0 / 4%)) drop-shadow(0 4px 3px rgb(0 0 0 / 10%)); }
 .composer textarea { flex: 1; min-height: 0; max-height: calc(8lh + 0.5rem); padding: 0.25rem; border: 0; outline: none; resize: none; field-sizing: content; background: transparent; line-height: 1.5rem; }
 .composer .box button.icon { width: 2rem; height: 2rem; }
+.composer .thumbnail button.icon { position: absolute; top: 0.125rem; right: 0.125rem; display: grid; place-items: center; width: 1.25rem; height: 1.25rem; border-radius: 50%; background: var(--secondary); color: var(--secondary-foreground); }
+.composer .thumbnail button.icon::before { width: 0.75rem; height: 0.75rem; }
+.composer .thumbnail button.icon:hover { background: color-mix(in oklab, var(--secondary) 80%, transparent); }
 .composer .box .send::before { translate: 0 1px; }
 .composer .settings { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; margin: 0.5rem -0.5rem 0; }
 .composer .settings > button.picker, .composer .select {

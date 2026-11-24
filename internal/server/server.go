@@ -62,11 +62,14 @@ func New(st *store.Store, cfg *config.Config, parkAfter time.Duration, harnesses
 		for _, record := range w.Sessions {
 			var first string
 			if record.Child == nil {
-				text, err := st.FirstPrompt(record.ID)
-				if err != nil {
-					return nil, err
+				for text, err := range st.UserPrompts(record.ID) {
+					if err != nil {
+						return nil, err
+					}
+					if first = firstLine(text); first != "" {
+						break
+					}
 				}
-				first = firstLine(text)
 			}
 			sess := s.newSession(record, w.Path, first)
 			// A session starts parked, so any earlier process has ended.

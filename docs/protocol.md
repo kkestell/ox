@@ -244,18 +244,24 @@ stored settings.
 
 ### `session/send`
 
-Requires `session_id` and nonblank `text`. Sends a prompt to an idle or working
-session and returns the prompt's `message_id`. Text over 1,048,576 bytes after
-JSON decoding returns `-32602`. A parked session first starts a process; a
-process that cannot be launched returns an operation error. Success means the
-prompt was written to Claude, or is held until Claude has started or a
-configuration has ended; its output and eventual result arrive through
-`session/update` notifications. A start that fails, within a one-minute
-initialization limit, drops the prompt with `prompt_cancelled` and reports why
-with `exited`. For Claude, a prompt whose first word is `/model` or `/effort` is
-refused with `-32602`, without starting a parked session. Use
-[`session/configure`](#sessionconfigure) to change those settings. An archived
-session refuses the prompt with `-32000` `session is archived`.
+Requires `session_id` and nonblank `text`, `images`, or both. Sends a prompt to
+an idle or working session and returns the prompt's `message_id`. Text over
+1,048,576 bytes after JSON decoding returns `-32602`. `images` is an array of
+base64 strings, each a PNG, JPEG, GIF, or WebP image, whose type the daemon
+takes from its bytes; any other data, or more than 10,485,760 bytes of images in
+total after decoding, returns `-32602`. The daemon stores each image with the
+session under an image ID, which the prompt's updates carry and
+[`session/image`](#sessionimage) serves; Claude receives the images before the
+text. A parked session first starts a process; a process that cannot be launched
+returns an operation error. Success means the prompt was written to Claude, or
+is held until Claude has started or a configuration has ended; its output and
+eventual result arrive through `session/update` notifications. A start that
+fails, within a one-minute initialization limit, drops the prompt with
+`prompt_cancelled` and reports why with `exited`. For Claude, a prompt whose
+first word is `/model` or `/effort` is refused with `-32602`, without starting a
+parked session. Use [`session/configure`](#sessionconfigure) to change those
+settings. An archived session refuses the prompt with `-32000` `session is
+archived`.
 
 ```json
 {"jsonrpc":"2.0","id":4,"method":"session/send","params":{"session_id":"session-id","text":"Explain this repository."}}
@@ -274,6 +280,21 @@ a message from another session ([`send_message`](#tools)), returns `-32002`. A
 send while a configuration runs waits for it to end, and is written even when
 Claude refused the change.
 
+### `session/image`
+
+Requires `session_id` and `image_id`. Returns an image attached to one of the
+session's prompts: its `mime_type` and its `data` as base64. An image whose
+prompt was dropped before Claude took it, or that the session does not have,
+returns `-32001` `image not found`.
+
+```json
+{"jsonrpc":"2.0","id":6,"method":"session/image","params":{"session_id":"session-id","image_id":"image-id"}}
+```
+
+```json
+{"jsonrpc":"2.0","id":6,"result":{"mime_type":"image/png","data":"iVBORw0KGgo..."}}
+```
+
 ### `session/get`
 
 Requires `session_id`. Returns the session's settings, its conversation so far,
@@ -290,13 +311,13 @@ response arrives.
 {"jsonrpc":"2.0","id":5,"result":{"model":"claude-haiku-5-5","effort":"low","permission_mode":"manual","state":"requires_action","queued":[],"approvals":[{"request_id":"claude-request-id","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch notes.txt"}}}],"history":[{"message_id":"prompt-id","type":"prompt","text":"Create notes.txt.","time":"2026-11-18T19:53:50Z"},{"message_id":"prompt-id","type":"text_delta","text":"I'll create the file.","time":"2026-11-18T19:53:51Z"}]}}
 ```
 
-| Field                                | Meaning                                                                                                                                                                    |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `model`, `effort`, `permission_mode` | The settings the session now uses.                                                                                                                                         |
-| `state`                              | `parked`, or the execution state: `running`, `requires_action`, `idle`, or `background`. A prompt is `running` from the moment `session/send` accepts it.                  |
-| `approvals`                          | Pending approvals in the order they arrived, each with `request_id` and Claude's `request`, whether or not a prompt is active.                                             |
-| `queued`                             | All inputs Claude has not taken, prompts and messages, oldest first. Each has `message_id` and `text`, with `from` and `from_label` for a message. An empty queue is `[]`. |
-| `history`                            | The session's recorded updates, oldest first, in the form of `session/update` params without `session_id`.                                                                 |
+| Field                                | Meaning                                                                                                                                                                                                          |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `model`, `effort`, `permission_mode` | The settings the session now uses.                                                                                                                                                                               |
+| `state`                              | `parked`, or the execution state: `running`, `requires_action`, `idle`, or `background`. A prompt is `running` from the moment `session/send` accepts it.                                                        |
+| `approvals`                          | Pending approvals in the order they arrived, each with `request_id` and Claude's `request`, whether or not a prompt is active.                                                                                   |
+| `queued`                             | All inputs Claude has not taken, prompts and messages, oldest first. Each has `message_id` and `text`, with `images` for a prompt with images and `from` and `from_label` for a message. An empty queue is `[]`. |
+| `history`                            | The session's recorded updates, oldest first, in the form of `session/update` params without `session_id`.                                                                                                       |
 
 The daemon records every session's `prompt`, `text_delta`, `reasoning_delta`,
 `tool_use`, `tool_result`, `result`, `exited`, and `parked` updates, including
@@ -467,22 +488,22 @@ the `idle` or `background` that releases it:
 {"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"text_delta","text":"This repository ","time":"2026-11-18T19:53:50.674Z"}}
 ```
 
-| `type`               | Additional fields                                                  | Meaning                                                                                                                                                                                                                                      |
-| -------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `prompt_queued`      | `text`: string; `from`, `from_label`: strings for a message        | The prompt or message was accepted, behind every input Claude has not taken. Claude has not taken it yet. Each is announced once, at acceptance.                                                                                             |
-| `prompt`             | `text`: string; `from`, `from_label`: strings for a message        | Claude took this prompt or message into its conversation.                                                                                                                                                                                    |
-| `prompt_cancelled`   | `text`: string; `from`, `from_label`: strings for a message        | This input was dropped before Claude took it, on interrupt, process exit, or a failed start.                                                                                                                                                 |
-| `text_delta`         | `text`: string                                                     | Append this fragment of top-level assistant text. If a successful turn result has text but none was streamed, the daemon publishes its text here before the result.                                                                          |
-| `reasoning_delta`    | `text`: string                                                     | Append this fragment of top-level reasoning: Claude's summary of its thinking, or Ur's model's reasoning text. Consecutive fragments form one stretch of reasoning; any other entry between them starts a new one.                           |
-| `tool_use`           | `tool_use_id`: string; `tool_name`: string; `input`: object        | Claude called a tool at the top level. A call with no `tool_result` when its turn's `result`, `exited`, or `parked` arrives did not finish.                                                                                                  |
-| `tool_result`        | `tool_use_id`: string; `result`: object with `text` and `is_error` | The outcome of the top-level tool call with this `tool_use_id`. `text` joins the result's text blocks.                                                                                                                                       |
-| `state`              | `state`: `running`, `requires_action`, `idle`, or `background`     | The session's execution state: Claude's report, `running` for a prompt Claude has not taken yet, or `background` while Claude is idle with background tasks running.                                                                         |
-| `result`             | `result`: object with `text` and `is_error`                        | Claude's final response or turn error. The text is a complete result, not another delta to append.                                                                                                                                           |
-| `approval`           | `request_id`: string; `request`: object                            | A pending Claude request needing a client decision.                                                                                                                                                                                          |
-| `approval_answered`  | `request_id`: string                                               | A client answered the approval.                                                                                                                                                                                                              |
-| `approval_cancelled` | `request_id`: string                                               | Withdraw an unanswered approval. Discard any later answer.                                                                                                                                                                                   |
-| `exited`             | `error`: string                                                    | The process exited during an active prompt or without being stopped, it was stopped during an active prompt, or it could not start or resume. The text includes the available reason, including Claude's stderr tail for an unexpected exit. |
-| `parked`             | —                                                                  | The session's harness has stopped, for any reason, though its process may still be exiting. The session's last update until its next process starts.                                                                                         |
+| `type`               | Additional fields                                                                                         | Meaning                                                                                                                                                                                                                                      |
+| -------------------- | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prompt_queued`      | `text`: string; `images`: image IDs for a prompt with images; `from`, `from_label`: strings for a message | The prompt or message was accepted, behind every input Claude has not taken. Claude has not taken it yet. Each is announced once, at acceptance.                                                                                             |
+| `prompt`             | `text`: string; `images`: image IDs for a prompt with images; `from`, `from_label`: strings for a message | Claude took this prompt or message into its conversation.                                                                                                                                                                                    |
+| `prompt_cancelled`   | `text`: string; `images`: image IDs for a prompt with images; `from`, `from_label`: strings for a message | This input was dropped before Claude took it, on interrupt, process exit, or a failed start.                                                                                                                                                 |
+| `text_delta`         | `text`: string                                                                                            | Append this fragment of top-level assistant text. If a successful turn result has text but none was streamed, the daemon publishes its text here before the result.                                                                          |
+| `reasoning_delta`    | `text`: string                                                                                            | Append this fragment of top-level reasoning: Claude's summary of its thinking, or Ur's model's reasoning text. Consecutive fragments form one stretch of reasoning; any other entry between them starts a new one.                           |
+| `tool_use`           | `tool_use_id`: string; `tool_name`: string; `input`: object                                               | Claude called a tool at the top level. A call with no `tool_result` when its turn's `result`, `exited`, or `parked` arrives did not finish.                                                                                                  |
+| `tool_result`        | `tool_use_id`: string; `result`: object with `text` and `is_error`                                        | The outcome of the top-level tool call with this `tool_use_id`. `text` joins the result's text blocks.                                                                                                                                       |
+| `state`              | `state`: `running`, `requires_action`, `idle`, or `background`                                            | The session's execution state: Claude's report, `running` for a prompt Claude has not taken yet, or `background` while Claude is idle with background tasks running.                                                                         |
+| `result`             | `result`: object with `text` and `is_error`                                                               | Claude's final response or turn error. The text is a complete result, not another delta to append.                                                                                                                                           |
+| `approval`           | `request_id`: string; `request`: object                                                                   | A pending Claude request needing a client decision.                                                                                                                                                                                          |
+| `approval_answered`  | `request_id`: string                                                                                      | A client answered the approval.                                                                                                                                                                                                              |
+| `approval_cancelled` | `request_id`: string                                                                                      | Withdraw an unanswered approval. Discard any later answer.                                                                                                                                                                                   |
+| `exited`             | `error`: string                                                                                           | The process exited during an active prompt or without being stopped, it was stopped during an active prompt, or it could not start or resume. The text includes the available reason, including Claude's stderr tail for an unexpected exit. |
+| `parked`             | —                                                                                                         | The session's harness has stopped, for any reason, though its process may still be exiting. The session's last update until its next process starts.                                                                                         |
 
 For a message, `from` is the sender's session ID and `from_label` is its label
 when the message was sent. The recorded `prompt` keeps this label even if the
@@ -719,6 +740,6 @@ underlying process or I/O errors.
 | `-32601` | Unknown method.                                                                                                                                                    |
 | `-32602` | Missing or invalid method parameters.                                                                                                                              |
 | `-32000` | Operation failed, such as a Claude process that cannot be launched, a process write failure, a database write failure, or an approval response Claude cannot take. |
-| `-32001` | Workspace or session not found.                                                                                                                                    |
+| `-32001` | Workspace, session, or image not found.                                                                                                                            |
 | `-32002` | Session is busy; a prompt or message is already queued, or a configuration cannot start yet.                                                                       |
 | `-32003` | Approval request is no longer pending, including duplicate or cancelled answers.                                                                                   |

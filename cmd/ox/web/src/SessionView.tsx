@@ -1,6 +1,7 @@
 import type { JSX } from "@solidjs/web";
 import { For, Match, Show, Switch, untrack } from "solid-js";
 import { ApprovalRequest } from "./ApprovalRequest";
+import { AttachButton, createImageDrop, pasteImages, Thumbnails } from "./Attachments";
 import { Markdown } from "./Markdown";
 import { type Entry, type Session, type SessionControl, type SessionSnapshot, useOx } from "./ox";
 import type { Prompt, Settings } from "./protocol";
@@ -46,6 +47,7 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
     event.preventDefault();
     control.send(control.text());
   };
+  const drop = createImageDrop(control, () => !props.session.archived);
 
   return (
     <>
@@ -58,9 +60,17 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
           <span class="directory">{directory()}</span>
         </p>
       </header>
-      <div class="log" role="log" aria-label="Transcript" onClick={keepRowInPlace}>
+      <div
+        class="log"
+        role="log"
+        aria-label="Transcript"
+        onClick={keepRowInPlace}
+        onDragOver={drop.handlers.onDragOver}
+        onDragLeave={drop.handlers.onDragLeave}
+        onDrop={drop.handlers.onDrop}
+      >
         <div class="transcript">
-          <Transcript snapshot={props.snapshot} />
+          <Transcript sessionId={props.session.id} snapshot={props.snapshot} />
         </div>
       </div>
       <Show when={control.error()}>{(error) => <p role="alert">{error()}</p>}</Show>
@@ -76,7 +86,13 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
           </div>
         }
       >
-        <div class="composer">
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: a drop attaches images, which Attach Image and a paste attach from the keyboard. */}
+        <div
+          class="composer"
+          onDragOver={drop.handlers.onDragOver}
+          onDragLeave={drop.handlers.onDragLeave}
+          onDrop={drop.handlers.onDrop}
+        >
           <Show when={props.snapshot.approvals.length}>
             <section class="pending" aria-label="Waiting on you">
               <For each={props.snapshot.approvals}>
@@ -89,26 +105,31 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
               </For>
             </section>
           </Show>
-          <form class="box" onSubmit={send}>
-            <textarea
-              name="text"
-              rows="1"
-              aria-label="Prompt"
-              required
-              value={control.text()}
-              onInput={(event) => control.setText(event.currentTarget.value)}
-              onKeyDown={sendOnEnter}
-            />
-            <Show when={running()}>
-              <button
-                type="button"
-                class="icon stop"
-                aria-label="Stop"
-                title="Stop"
-                onClick={() => control.interrupt()}
+          <form class={["box", { dragging: drop.dragging() }]} onSubmit={send}>
+            <Thumbnails control={control} />
+            <div class="field">
+              <AttachButton control={control} />
+              <textarea
+                name="text"
+                rows="1"
+                aria-label="Prompt"
+                required={!control.images().length}
+                value={control.text()}
+                onInput={(event) => control.setText(event.currentTarget.value)}
+                onKeyDown={sendOnEnter}
+                onPaste={pasteImages(control)}
               />
-            </Show>
-            <button type="submit" class="icon send" aria-label="Send" title="Send" disabled={!control.canSend()} />
+              <Show when={running()}>
+                <button
+                  type="button"
+                  class="icon stop"
+                  aria-label="Stop"
+                  title="Stop"
+                  onClick={() => control.interrupt()}
+                />
+              </Show>
+              <button type="submit" class="icon send" aria-label="Send" title="Send" disabled={!control.canSend()} />
+            </div>
           </form>
           <SettingsForm harness={props.session.harness} settings={props.snapshot.settings} control={control} />
         </div>
@@ -118,13 +139,15 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
 }
 
 // Transcript shows the conversation followed by every pending input, in order.
-function Transcript(props: { snapshot: SessionSnapshot }) {
+function Transcript(props: { sessionId: string; snapshot: SessionSnapshot }) {
   return (
     <>
       <For each={props.snapshot.entries}>
         {(entry) => (
           <Switch>
-            <Match when={entry.kind === "prompt" && entry}>{(prompt) => <PromptBubble input={prompt().input} />}</Match>
+            <Match when={entry.kind === "prompt" && entry}>
+              {(prompt) => <PromptBubble sessionId={props.sessionId} input={prompt().input} />}
+            </Match>
             <Match when={entry.kind === "reply" && entry}>
               {(reply) => (
                 <article aria-label="Reply">
@@ -160,15 +183,18 @@ function Transcript(props: { snapshot: SessionSnapshot }) {
       </For>
       <Show when={props.snapshot.queued.length}>
         <section class="queue" aria-label="Pending">
-          <For each={props.snapshot.queued}>{(input) => <PromptBubble input={input} queued />}</For>
+          <For each={props.snapshot.queued}>
+            {(input) => <PromptBubble sessionId={props.sessionId} input={input} queued />}
+          </For>
         </section>
       </Show>
     </>
   );
 }
 
-// PromptBubble shows a prompt, or a message headed with its sender's label.
-function PromptBubble(props: { input: Prompt; queued?: boolean }) {
+// PromptBubble shows a prompt and its images, or a message headed with its
+// sender's label.
+function PromptBubble(props: { sessionId: string; input: Prompt; queued?: boolean }) {
   return (
     <article
       class={["prompt", { queued: props.queued, message: props.input.from !== undefined }]}
@@ -178,6 +204,13 @@ function PromptBubble(props: { input: Prompt; queued?: boolean }) {
         <div class="from">{props.input.from_label}</div>
       </Show>
       {props.input.text}
+      <Show when={props.input.images?.length}>
+        <div class="images">
+          <For each={props.input.images}>
+            {(image) => <img src={`/images/${props.sessionId}/${image}`} alt="Attachment" />}
+          </For>
+        </div>
+      </Show>
     </article>
   );
 }

@@ -588,7 +588,11 @@ func renderEntry(u agent.Update, failed map[string]bool) (string, bool) {
 		if u.From != "" {
 			return fmt.Sprintf("[%s] Message from %s (%s): %s", when, u.FromLabel, u.From, u.Text), true
 		}
-		return fmt.Sprintf("[%s] User: %s", when, u.Text), true
+		text := u.Text
+		if len(u.Images) > 0 {
+			text = strings.TrimSpace(fmt.Sprintf("%s [images: %d]", text, len(u.Images)))
+		}
+		return fmt.Sprintf("[%s] User: %s", when, text), true
 	case agent.UpdateTextDelta:
 		return "Assistant: " + u.Text, true
 	case agent.UpdateToolUse:

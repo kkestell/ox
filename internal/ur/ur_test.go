@@ -2,6 +2,7 @@ package ur
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -648,6 +650,55 @@ func TestResume(t *testing.T) {
 	}
 	if got := systemMessages(body); len(got) != 1 || body["messages"].([]any)[0].(map[string]any)["role"] != "system" {
 		t.Errorf("the resumed request has system messages %q, not one first", got)
+	}
+}
+
+// A prompt's images reach the model as image_url parts before its text, in
+// every later request of the conversation and after it resumes.
+func TestImages(t *testing.T) {
+	r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
+		sse(w, "seen")
+	})
+	png := agent.Image{ID: "i1", MimeType: "image/png", Data: []byte("png bytes")}
+	url := "data:image/png;base64," + base64.StdEncoding.EncodeToString(png.Data)
+	imagePart := map[string]any{"type": "image_url", "image_url": map[string]any{"url": url}}
+	userParts := func(body map[string]any) [][]any {
+		var parts [][]any
+		for _, m := range messages(body) {
+			if m["role"] == "user" {
+				p, _ := m["content"].([]any)
+				parts = append(parts, p)
+			}
+		}
+		return parts
+	}
+	withText := []any{imagePart, map[string]any{"type": "text", "text": "what is this"}}
+	imageOnly := []any{imagePart}
+
+	if err := r.agent.Send(agent.Input{MessageID: "p1", Text: "what is this", Images: []agent.Image{png}, Content: "what is this"}); err != nil {
+		t.Fatal(err)
+	}
+	r.idle()
+	if got := userParts(r.request().body); !reflect.DeepEqual(got, [][]any{withText}) {
+		t.Errorf("the prompt with an image posted %v", got)
+	}
+
+	if err := r.agent.Send(agent.Input{MessageID: "p2", Images: []agent.Image{png}}); err != nil {
+		t.Fatal(err)
+	}
+	r.idle()
+	if got := userParts(r.request().body); !reflect.DeepEqual(got, [][]any{withText, imageOnly}) {
+		t.Errorf("the next turn, an image alone, posted %v", got)
+	}
+	r.agent.Stop()
+
+	if err := r.launch(r.tokens[0]); err != nil {
+		t.Fatal(err)
+	}
+	r.send("p3", "and now")
+	r.idle()
+	if got := userParts(r.request().body); !reflect.DeepEqual(got, [][]any{withText, imageOnly, nil}) {
+		t.Errorf("the resumed conversation posted %v", got)
 	}
 }
 

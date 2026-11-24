@@ -33,8 +33,8 @@ type session struct {
 	// Guarded by Server.mu. An archived session has no agent, and the child
 	// of an archived session is archived.
 	archived bool
-	// The first line of the first prompt the user sent a top-level session,
-	// empty before it has one. Written only by run.
+	// The first nonblank first line of the prompts the user sent a top-level
+	// session, empty before it has one. Written only by run.
 	firstLine string
 
 	// Owned by run.
@@ -52,9 +52,9 @@ func firstLine(text string) string {
 	return line
 }
 
-// labelLocked is the session's label: a child's title, or else the first line
-// of the first prompt the user sent it, or the start of its ID before it has
-// one. The caller holds Server.mu.
+// labelLocked is the session's label: a child's title, or else the first
+// nonblank first line of the prompts the user sent it, or the start of its ID
+// before it has one. The caller holds Server.mu.
 func (sess *session) labelLocked() string {
 	switch {
 	case sess.child != nil:
@@ -66,7 +66,8 @@ func (sess *session) labelLocked() string {
 }
 
 // newSession builds a stored session, whose goroutine its caller starts.
-// firstLine is the first line of the first prompt the user sent it, or "".
+// firstLine is the first nonblank first line of the prompts the user sent it,
+// or "".
 func (s *Server) newSession(record *store.Session, workspace, firstLine string) *session {
 	sess := &session{
 		server: s, id: record.ID, harness: record.Harness, workspace: workspace, child: record.Child, createdAt: record.CreatedAt,
@@ -124,16 +125,42 @@ func (sess *session) snapshot() agent.Snapshot {
 }
 
 // sendPrompt refuses a user prompt while any input waits for the agent to
-// take it; a message waits its turn instead.
-func (sess *session) sendPrompt(text string) (string, error) {
+// take it; a message waits its turn instead. It stores the prompt's images
+// before sending, so a page can load them as soon as it sees the prompt, and
+// deletes them when the send fails.
+func (sess *session) sendPrompt(text string, images []agent.Image) (string, error) {
 	if len(sess.snapshot().Queued) != 0 {
 		return "", agent.ErrBusy
 	}
 	if err := sess.startForInput(); err != nil {
 		return "", err
 	}
-	input := agent.Input{MessageID: rand.Text(), Text: text, Content: text}
-	return input.MessageID, sess.agent.Send(input)
+	if len(images) > 0 {
+		stored := make([]store.Image, len(images))
+		for i := range images {
+			images[i].ID = rand.Text()
+			stored[i] = store.Image{ID: images[i].ID, MimeType: images[i].MimeType, Data: images[i].Data}
+		}
+		if err := sess.server.store.AddImages(sess.id, stored); err != nil {
+			return "", err
+		}
+	}
+	input := agent.Input{MessageID: rand.Text(), Text: text, Images: images, Content: text}
+	if err := sess.agent.Send(input); err != nil {
+		sess.deleteImages(input.ImageIDs())
+		return "", err
+	}
+	return input.MessageID, nil
+}
+
+// deleteImages deletes the images of a prompt that was dropped or never sent.
+func (sess *session) deleteImages(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	if err := sess.server.store.DeleteImages(ids); err != nil {
+		log.Printf("session %s: delete images: %v", sess.id, err)
+	}
 }
 
 // acceptMessage hands a message to the agent, which queues it behind every
@@ -404,21 +431,26 @@ func (sess *session) update(update agent.Update) {
 		SessionID string `json:"session_id"`
 		agent.Update
 	}{sess.id, update})
-	if update.Type == agent.UpdatePrompt && update.From == "" && sess.child == nil {
+	switch {
+	case update.Type == agent.UpdatePromptCancelled:
+		sess.deleteImages(update.Images)
+	case update.Type == agent.UpdatePrompt && update.From == "" && sess.child == nil:
 		sess.labelFrom(update.Text)
 	}
 }
 
 // labelFrom labels a top-level session with the first prompt the user sent it
-// and tells every client. Later prompts leave the label as it is.
+// whose first line is not blank, and tells every client. Later prompts leave
+// the label as it is.
 func (sess *session) labelFrom(prompt string) {
+	line := firstLine(prompt)
 	s := sess.server
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if sess.firstLine != "" {
+	if sess.firstLine != "" || line == "" {
 		return
 	}
-	sess.firstLine = firstLine(prompt)
+	sess.firstLine = line
 	s.broadcast("session/labeled", struct {
 		SessionID string `json:"session_id"`
 		Label     string `json:"label"`

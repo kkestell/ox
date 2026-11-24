@@ -1,9 +1,15 @@
 package server
 
 import (
+	"bytes"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"net"
 	"os"
 	"os/exec"
@@ -465,6 +471,29 @@ func TestLive(t *testing.T) {
 		delta, result := l.c.update(id, "text_delta"), l.c.update(id, "result")
 		if result.Result.IsError || delta.Text == "" || delta.Text != result.Result.Text || delta.MessageID != result.MessageID {
 			l.t.Fatalf("local command output was not published as the reply: %+v, %+v", delta, result)
+		}
+	})
+
+	section("image prompt", func(l *live) {
+		picture := image.NewRGBA(image.Rect(0, 0, 64, 64))
+		draw.Draw(picture, picture.Bounds(), image.NewUniform(color.RGBA{R: 255, A: 255}), image.Point{}, draw.Src)
+		var encoded bytes.Buffer
+		if err := png.Encode(&encoded, picture); err != nil {
+			l.t.Fatal(err)
+		}
+		id := l.create("manual")
+		var sent struct {
+			MessageID string `json:"message_id"`
+		}
+		json.Unmarshal(l.c.call("session/send", map[string]any{
+			"session_id": id, "text": "What color is this image? Reply with one word.",
+			"images": []string{base64.StdEncoding.EncodeToString(encoded.Bytes())},
+		}), &sent)
+		if u := l.c.update(id, "prompt"); u.MessageID != sent.MessageID || len(u.Images) != 1 {
+			l.t.Errorf("Claude took %+v, not the image prompt with its image", u)
+		}
+		if u := l.c.update(id, "result"); u.Result.IsError {
+			l.t.Errorf("the image prompt's turn failed: %s", u.Result.Text)
 		}
 	})
 

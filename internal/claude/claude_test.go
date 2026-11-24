@@ -261,7 +261,7 @@ exit 3
 		}
 	})
 	sent := make(chan error, 1)
-	go func() { sent <- in.Prompt(newUUID(), strings.Repeat("x", 256<<10)) }()
+	go func() { sent <- in.Prompt(newUUID(), strings.Repeat("x", 256<<10), nil) }()
 	select {
 	case err := <-sent:
 		if err != nil {

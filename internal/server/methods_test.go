@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"maps"
@@ -225,6 +226,118 @@ func TestSendPromptSizeCountsDecodedBytes(t *testing.T) {
 	}
 	if got := send(text); got.Error != nil {
 		t.Fatalf("a 1 MiB prompt was refused: %+v", got.Error)
+	}
+}
+
+// pngBase64 is n bytes of data with PNG's signature, which oxd takes as a
+// PNG, as base64.
+func pngBase64(n int) string {
+	data := make([]byte, n)
+	copy(data, "\x89PNG\r\n\x1a\n")
+	return base64.StdEncoding.EncodeToString(data)
+}
+
+// A prompt's images are stored with the session, named by their IDs in its
+// updates and history, and served by session/image until the prompt drops.
+func TestPromptImages(t *testing.T) {
+	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
+		Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}},
+	}}}
+	s, err := New(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c := connect(t, s)
+	var workspace struct {
+		WorkspaceID string `json:"workspace_id"`
+	}
+	json.Unmarshal(c.call("workspace/create", map[string]string{"path": t.TempDir()}), &workspace)
+	var created struct {
+		SessionID string `json:"session_id"`
+	}
+	json.Unmarshal(c.call("session/create", map[string]string{
+		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "permission_mode": "manual",
+	}), &created)
+	id := created.SessionID
+	image := func(imageID string) message {
+		return c.request("session/image", map[string]string{"session_id": id, "image_id": imageID})
+	}
+	png := pngBase64(16)
+
+	t.Log("a prompt with text and an image")
+	c.call("session/send", map[string]any{"session_id": id, "text": "look", "images": []string{png}})
+	queued := c.update(id, "prompt_queued")
+	prompt := c.update(id, "prompt")
+	if len(queued.Images) != 1 || !slices.Equal(prompt.Images, queued.Images) {
+		t.Fatalf("prompt_queued carried %q and prompt %q, not one image ID", queued.Images, prompt.Images)
+	}
+	imageID := prompt.Images[0]
+	var served struct {
+		MimeType string `json:"mime_type"`
+		Data     string `json:"data"`
+	}
+	json.Unmarshal(c.call("session/image", map[string]string{"session_id": id, "image_id": imageID}), &served)
+	if served.MimeType != "image/png" || served.Data != png {
+		t.Fatalf("session/image returned %s with other data", served.MimeType)
+	}
+	if result := c.update(id, "result"); !strings.HasSuffix(result.Result.Text, "[images: 1]") {
+		t.Fatalf("the harness's reply %q reports no image", result.Result.Text)
+	}
+	var got struct {
+		History []agent.Update `json:"history"`
+	}
+	json.Unmarshal(c.call("session/get", map[string]string{"session_id": id}), &got)
+	if i := slices.IndexFunc(got.History, func(u agent.Update) bool { return u.Type == "prompt" }); i < 0 ||
+		!slices.Equal(got.History[i].Images, []string{imageID}) {
+		t.Fatalf("session/get's history does not name the image: %+v", got.History)
+	}
+	for c.update(id, "state").State != "idle" {
+	}
+
+	t.Log("a prompt with blank text and an image")
+	c.call("session/send", map[string]any{"session_id": id, "text": " ", "images": []string{png}})
+	if prompt := c.update(id, "prompt"); len(prompt.Images) != 1 {
+		t.Fatalf("an image-only prompt carried %q", prompt.Images)
+	}
+	for c.update(id, "state").State != "idle" {
+	}
+	c.forget(id)
+
+	t.Log("bad requests")
+	for _, bad := range []struct {
+		name   string
+		params map[string]any
+	}{
+		{"blank text and no images", map[string]any{"session_id": id, "text": " "}},
+		{"base64 that does not decode", map[string]any{"session_id": id, "text": "x", "images": []string{"not base64!"}}},
+		{"text sent as an image", map[string]any{"session_id": id, "text": "x", "images": []string{base64.StdEncoding.EncodeToString([]byte("plain text"))}}},
+		{"images over 10 MiB", map[string]any{"session_id": id, "text": "x", "images": []string{pngBase64(5 << 20), pngBase64(5<<20 + 1)}}},
+	} {
+		if response := c.request("session/send", bad.params); response.Error == nil || response.Error.Code != jsonrpc.InvalidParams {
+			t.Errorf("%s: %+v", bad.name, response.Error)
+		}
+	}
+	if received := c.received(id); len(received) != 0 {
+		t.Fatalf("a refused prompt started something: %+v", received)
+	}
+
+	t.Log("a queued image prompt dropped by an interrupt")
+	c.call("session/send", map[string]string{"session_id": id, "text": `approve Bash {}`})
+	c.update(id, "approval")
+	var sent struct {
+		MessageID string `json:"message_id"`
+	}
+	json.Unmarshal(c.call("session/send", map[string]any{"session_id": id, "text": "later", "images": []string{png}}), &sent)
+	var dropped agent.Update
+	for dropped.MessageID != sent.MessageID {
+		dropped = c.update(id, "prompt_queued")
+	}
+	c.call("session/interrupt", map[string]string{"session_id": id})
+	for c.update(id, "prompt_cancelled").MessageID != sent.MessageID {
+	}
+	if response := image(dropped.Images[0]); response.Error == nil || response.Error.Code != notFound {
+		t.Fatalf("a dropped prompt's image answered %+v", response.Error)
 	}
 }
 
@@ -497,8 +610,9 @@ func TestConfigurationTakenButNotStored(t *testing.T) {
 	}
 }
 
-// A top-level session is labeled once, with the first line of the first prompt
-// the user sent it, through a restart and a prompt that could not be stored.
+// A top-level session is labeled once, with the first nonblank first line of
+// the prompts the user sent it, through a restart and a prompt that could not
+// be stored.
 func TestSessionLabel(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
 		Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}},
@@ -560,6 +674,18 @@ func TestSessionLabel(t *testing.T) {
 	idle := func(c *client, id string) {
 		for c.update(id, "state").State != "idle" {
 		}
+	}
+
+	// A no-break space is blank to Go and not to SQLite's trim.
+	c.call("session/send", map[string]any{"session_id": a, "text": "\u00a0", "images": []string{pngBase64(16)}})
+	idle(c, a)
+	for _, m := range c.received(a) {
+		if m.Method == "session/labeled" {
+			t.Fatalf("an image-only prompt labeled A: %s", m.Params)
+		}
+	}
+	if got := listed(c, a); got != a[:8] {
+		t.Fatalf("an image-only prompt labeled A %q", got)
 	}
 
 	c.call("session/send", map[string]string{"session_id": a, "text": "\u0085\nActual title\nmore"})

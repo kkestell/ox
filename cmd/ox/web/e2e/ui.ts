@@ -62,6 +62,29 @@ export const sessionItem = (page: Page, title: string) =>
     .getByRole("listitem")
     .filter({ has: page.getByRole("button", { name: title, exact: true }) });
 
+// pixel is a 1×1 PNG.
+export const pixel = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  "base64",
+);
+
+export type Picked = { name: string; mimeType: string; buffer: Buffer };
+
+// pickFiles attaches files through the Attach Image button's file picker.
+export async function pickFiles(page: Page, files: Picked[]) {
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("main").getByRole("button", { name: "Attach Image" }).click();
+  await (await chooser).setFiles(files);
+}
+
+// attachPixel attaches pixel as name through the file picker.
+export const attachPixel = (page: Page, name = "pixel.png") =>
+  pickFiles(page, [{ name, mimeType: "image/png", buffer: pixel }]);
+
+// thumbnail is the composer's thumbnail of the image attached as name.
+export const thumbnail = (page: Page, name = "pixel.png") =>
+  page.getByRole("main").getByRole("img", { name, exact: true });
+
 // openMenu opens the menu of a session's item or a workspace's section with
 // its ⋯ button, the first in either, and returns the menu.
 export async function openMenu(scope: Locator) {

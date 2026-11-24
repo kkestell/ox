@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"iter"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -45,6 +46,13 @@ type Child struct {
 	Directory string `json:"directory"`
 }
 
+// Image is an image attached to a prompt.
+type Image struct {
+	ID       string
+	MimeType string
+	Data     []byte
+}
+
 // Event is one recorded session update, as JSON.
 type Event struct {
 	CreatedAt time.Time
@@ -84,7 +92,14 @@ CREATE TABLE IF NOT EXISTS children (
 CREATE TABLE IF NOT EXISTS archived (
 	session_id TEXT PRIMARY KEY REFERENCES sessions ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS images (
+	id         TEXT PRIMARY KEY,
+	session_id TEXT NOT NULL REFERENCES sessions ON DELETE CASCADE,
+	mime_type  TEXT NOT NULL,
+	data       BLOB NOT NULL
+);
 CREATE INDEX IF NOT EXISTS events_session ON events (session_id, id);
+CREATE INDEX IF NOT EXISTS images_session ON images (session_id);
 `
 
 // Store holds its database exclusively, through a lock on a file beside it,
@@ -297,17 +312,75 @@ func (s *Store) LastEvent(sessionID string) ([]byte, error) {
 	return []byte(data), err
 }
 
-// FirstPrompt returns the text of the session's earliest prompt event the
-// user sent, which has no sender, or "" when it has none.
-func (s *Store) FirstPrompt(sessionID string) (string, error) {
-	var text string
-	err := s.db.QueryRow(`SELECT json_extract(data, '$.text') FROM events WHERE session_id = ?
-		AND json_extract(data, '$.type') = 'prompt' AND json_extract(data, '$.from') IS NULL
-		ORDER BY id LIMIT 1`, sessionID).Scan(&text)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
+// UserPrompts yields the text of each prompt event the user sent the session,
+// which has no sender, oldest first; a prompt of images alone has text "".
+// The caller makes no other store call until it stops.
+func (s *Store) UserPrompts(sessionID string) iter.Seq2[string, error] {
+	return func(yield func(string, error) bool) {
+		rows, err := s.db.Query(`SELECT coalesce(json_extract(data, '$.text'), '') FROM events WHERE session_id = ?
+			AND json_extract(data, '$.type') = 'prompt' AND json_extract(data, '$.from') IS NULL
+			ORDER BY id`, sessionID)
+		if err != nil {
+			yield("", err)
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var text string
+			if err := rows.Scan(&text); err != nil {
+				yield("", err)
+				return
+			}
+			if !yield(text, nil) {
+				return
+			}
+		}
+		if err := rows.Err(); err != nil {
+			yield("", err)
+		}
 	}
-	return text, err
+}
+
+// AddImages stores a session's images together.
+func (s *Store) AddImages(sessionID string, images []Image) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, image := range images {
+		if _, err := tx.Exec(`INSERT INTO images (id, session_id, mime_type, data) VALUES (?, ?, ?, ?)`,
+			image.ID, sessionID, image.MimeType, image.Data); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// Image returns the session's image with the ID, or nil when it has none.
+func (s *Store) Image(sessionID, id string) (*Image, error) {
+	image := &Image{ID: id}
+	err := s.db.QueryRow(`SELECT mime_type, data FROM images WHERE session_id = ? AND id = ?`, sessionID, id).
+		Scan(&image.MimeType, &image.Data)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return image, err
+}
+
+// DeleteImages deletes the images with the IDs.
+func (s *Store) DeleteImages(ids []string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, id := range ids {
+		if _, err := tx.Exec(`DELETE FROM images WHERE id = ?`, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // Times are stored as fixed-width UTC RFC 3339 text, so they sort as text.

@@ -184,7 +184,12 @@ runs and no conversation is created:
 - `content` may be a string or content blocks:
   - `{"type":"text","text":"..."}`
   - `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"..."}}`
-    (PNG, JPEG, GIF, WebP)
+    (PNG, JPEG, GIF, WebP). A prompt of image blocks, with or without a text
+    block, is taken as a text prompt is: `command_lifecycle` reports it the same
+    way, and its replay echo carries the image blocks. Claude normalizes the
+    images itself: a 6.75 MB PNG, a 9000×100 PNG, and JPEG data labeled
+    `image/png` all succeed, and later turns and `--resume` still work
+    (2.1.331).
   - `{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"..."}}`
   - Embedded text can be sent as a text block wrapping it in `<context
     ref="uri">…</context>`; a file link as `[@name](uri)`, which Claude opens
