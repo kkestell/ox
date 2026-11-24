@@ -3,13 +3,33 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
 	"testing"
 	"time"
 
 	"github.com/kkestell/ox/internal/agent"
+	"github.com/kkestell/ox/internal/config"
+	"github.com/kkestell/ox/internal/fake"
 	"github.com/kkestell/ox/internal/jsonrpc"
+	"github.com/kkestell/ox/internal/store"
 )
+
+// newServer builds a server with New. A configuration that names no titling
+// harness titles sessions with a titler harness that echoes the prompt.
+func newServer(st *store.Store, cfg *config.Config, parkAfter time.Duration, harnesses map[string]agent.Harness, mcp MCP) (*Server, error) {
+	if cfg.Titling.Harness == "" {
+		titled := *cfg
+		titled.Titling.Harness = "titler"
+		cfg = &titled
+		harnesses = maps.Clone(harnesses)
+		if harnesses == nil {
+			harnesses = map[string]agent.Harness{}
+		}
+		harnesses["titler"] = agent.Harness{Ask: fake.Ask}
+	}
+	return New(st, cfg, parkAfter, harnesses, mcp)
+}
 
 type message struct {
 	ID     json.RawMessage `json:"id"`

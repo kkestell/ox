@@ -19,8 +19,11 @@ title.
   each followed by its child sessions, oldest first and indented beneath it; a
   child's own children follow it the same way, indented one level further.
 - **Session labels.** A child session is labeled with the title it was created
-  with. Any other session is labeled with the first line of the first prompt the
-  user sent it, or a short identifier before it has one.
+  with. Any other session is labeled with a short title the configured titling
+  model writes from the first prompt the user sent it, which replaces the label
+  everywhere it shows once it arrives and lasts through restarts. Until then, or
+  if titling fails, the session is labeled with that prompt's first line,
+  shortened, or a short identifier before it has one.
 - **Session status.** Each session shows whether it is parked, idle, idle while
   background work Claude started still runs, running, waiting on the user, or
   archived, as soon as the session list shows it.
@@ -371,6 +374,8 @@ title.
 - **Built-in catalog.** When Ox starts without a configuration file, it writes
   one for the user to edit, offering the Claude and Ur models Ox supports with
   their effort levels and permission modes.
+- **Titling model.** The user chooses in the configuration the harness, model,
+  and effort that title sessions, from those Ox offers.
 - **Configuration checks.** `oxd` refuses to start with a configuration that is
   malformed or that it cannot honor, and says why.
 - **File locations.** Ox reads its configuration and keeps its database, socket,

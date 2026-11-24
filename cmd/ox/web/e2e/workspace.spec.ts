@@ -184,6 +184,7 @@ test.describe(() => {
       ...fakeConfig,
       harnesses: { fake: { ...fake, models: fake.models.map((model) => ({ ...model, efforts: [] })) } },
       defaults: { ...fakeConfig.defaults, effort: "" },
+      titling: { ...fakeConfig.titling, effort: "" },
     },
   });
 

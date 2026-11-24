@@ -121,12 +121,7 @@ func startProcess(workspace, oxSessionID, sessionID string, resume bool, setting
 
 	cmd := exec.Command("claude", args...)
 	cmd.Dir = workspace
-	// In -p mode Claude bills an API key it inherits instead of the user's
-	// subscription.
-	env := slices.DeleteFunc(cmd.Environ(), func(v string) bool {
-		return strings.HasPrefix(v, "ANTHROPIC_API_KEY=") || strings.HasPrefix(v, "ANTHROPIC_AUTH_TOKEN=")
-	})
-	cmd.Env = append(env, "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1")
+	cmd.Env = append(subscriptionEnv(cmd), "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, nil, err
@@ -164,6 +159,15 @@ func startProcess(workspace, oxSessionID, sessionID string, resume bool, setting
 	go p.read(stderrTail, captured)
 	go deliverOutput(captured, events, done)
 	return p, newWriter(stdin), nil
+}
+
+// subscriptionEnv is cmd's environment without Anthropic credentials: in -p
+// mode Claude bills an API key it inherits instead of the user's
+// subscription.
+func subscriptionEnv(cmd *exec.Cmd) []string {
+	return slices.DeleteFunc(cmd.Environ(), func(v string) bool {
+		return strings.HasPrefix(v, "ANTHROPIC_API_KEY=") || strings.HasPrefix(v, "ANTHROPIC_AUTH_TOKEN=")
+	})
 }
 
 // stderrKept is how much of Claude's stderr a failed start or exit reports.

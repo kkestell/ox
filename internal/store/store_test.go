@@ -137,3 +137,37 @@ func TestImagesDeletedWithSession(t *testing.T) {
 		t.Fatalf("%d images outlived their session: %v", left, err)
 	}
 }
+
+// A session's generated title is read with it and goes with it.
+func TestTitles(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "ox.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.AddWorkspace(&Workspace{ID: "w", Path: "/w", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"titled", "untitled"} {
+		if err := st.AddSession("w", &Session{ID: id, CreatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.SetTitle("titled", "A title"); err != nil {
+		t.Fatal(err)
+	}
+	workspaces, err := st.Workspaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessions := workspaces[0].Sessions; len(sessions) != 2 || sessions[0].Title != "A title" || sessions[1].Title != "" {
+		t.Fatalf("Workspaces read %+v", sessions)
+	}
+	if err := st.DeleteSession("titled"); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	if err := st.db.QueryRow(`SELECT count(*) FROM titles`).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("%d titles outlived their session: %v", left, err)
+	}
+}

@@ -540,6 +540,62 @@ func TestConfigure(t *testing.T) {
 	}
 }
 
+// Ask posts one request without tools, with the instructions as the system
+// message, and returns the whole streamed reply.
+func TestAsk(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
+	requests := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		data, _ := io.ReadAll(req.Body)
+		var body map[string]any
+		json.Unmarshal(data, &body)
+		requests <- body
+		if body["model"] == "unknown" {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":{"code":400,"message":"model not found"}}`)
+			return
+		}
+		sse(w, "A ", "title")
+	}))
+	t.Cleanup(server.Close)
+	h := Harness(server.URL, t.TempDir(), map[string][]string{model: {"a/x", "b/y"}})
+
+	reply, err := h.Ask(t.Context(), model, "low", "Write a title.", "the prompt")
+	if err != nil || reply != "A title" {
+		t.Fatalf("Ask = %q, %v", reply, err)
+	}
+	body := <-requests
+	if body["model"] != model {
+		t.Errorf("model %v", body["model"])
+	}
+	if _, ok := body["tools"]; ok {
+		t.Errorf("tools sent: %v", body["tools"])
+	}
+	want := []any{
+		map[string]any{"role": "system", "content": "Write a title."},
+		map[string]any{"role": "user", "content": "the prompt"},
+	}
+	if !reflect.DeepEqual(body["messages"], want) {
+		t.Errorf("messages %v", body["messages"])
+	}
+	if !reflect.DeepEqual(body["reasoning"], map[string]any{"effort": "low"}) {
+		t.Errorf("reasoning %v", body["reasoning"])
+	}
+	if !reflect.DeepEqual(body["provider"], map[string]any{"order": []any{"a/x", "b/y"}, "allow_fallbacks": false}) {
+		t.Errorf("provider %v", body["provider"])
+	}
+
+	if _, err := h.Ask(t.Context(), "unknown", "", "i", "t"); err == nil || err.Error() != "OpenRouter 400 Bad Request: model not found" {
+		t.Errorf("refused Ask: %v", err)
+	}
+	<-requests
+
+	t.Setenv("OPENROUTER_API_KEY", "")
+	if _, err := h.Ask(t.Context(), model, "", "i", "t"); err == nil || !strings.Contains(err.Error(), "OPENROUTER_API_KEY") {
+		t.Errorf("Ask without a key: %v", err)
+	}
+}
+
 func TestStartWithoutKey(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "")
 	_, err := Harness("http://unused", t.TempDir(), nil).Start(agent.Options{})

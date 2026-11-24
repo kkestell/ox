@@ -1,6 +1,7 @@
 package fake
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -48,6 +49,11 @@ type taskEnded struct{}
 type configured struct {
 	settings agent.Settings
 	done     func(error)
+}
+
+// Ask echoes text, as the fake harness echoes prompts.
+func Ask(ctx context.Context, model, effort, instructions, text string) (string, error) {
+	return text, nil
 }
 
 func Start(options agent.Options) (agent.Agent, error) {

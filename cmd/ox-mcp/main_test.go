@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kkestell/ox/internal/agent"
 	"github.com/kkestell/ox/internal/config"
+	"github.com/kkestell/ox/internal/fake"
 	"github.com/kkestell/ox/internal/server"
 	"github.com/kkestell/ox/internal/store"
 )
@@ -134,7 +136,9 @@ func startOxd(t *testing.T) (s *server.Server, socket string, p *page, sessionID
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err = server.New(st, cfg, 0, nil, server.MCP{})
+	// The built-in configuration titles with Claude; this one echoes.
+	harnesses := map[string]agent.Harness{cfg.Titling.Harness: {Ask: fake.Ask}}
+	s, err = server.New(st, cfg, 0, harnesses, server.MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}

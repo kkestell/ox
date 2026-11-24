@@ -17,6 +17,7 @@ func TestDefaultsMustBeConfiguredChoices(t *testing.T) {
 		t.Fatalf("built-in configuration: %v", err)
 	}
 	const harnesses = `"harnesses":{"h":{"models":[{"id":"m","name":"M","efforts":[{"id":"low","name":"Low"}]},{"id":"plain","name":"Plain","efforts":[]}],"permission_modes":[{"id":"auto","name":"Auto"}]}}`
+	const titling = `"titling":{"harness":"h","model":"m","effort":"low"}`
 	for defaults, valid := range map[string]bool{
 		`{"harness":"h","model":"m","effort":"low","permission_mode":"auto"}`:  true,
 		`{"harness":"h","model":"plain","effort":"","permission_mode":"auto"}`: true,
@@ -28,9 +29,9 @@ func TestDefaultsMustBeConfiguredChoices(t *testing.T) {
 		`{"harness":"h","model":"m","effort":"low","permission_mode":"x"}`:        false,
 	} {
 		path := filepath.Join(t.TempDir(), "config.json")
-		data := `{` + harnesses + `,"max_child_depth":2}`
+		data := `{` + harnesses + `,` + titling + `,"max_child_depth":2}`
 		if defaults != "" {
-			data = `{` + harnesses + `,"defaults":` + defaults + `,"max_child_depth":2}`
+			data = `{` + harnesses + `,"defaults":` + defaults + `,` + titling + `,"max_child_depth":2}`
 		}
 		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 			t.Fatal(err)
@@ -43,7 +44,7 @@ func TestDefaultsMustBeConfiguredChoices(t *testing.T) {
 	const defaults = `"defaults":{"harness":"h","model":"m","effort":"low","permission_mode":"auto"}`
 	for _, depth := range []string{`,"max_child_depth":0`, ``} {
 		path := filepath.Join(t.TempDir(), "config.json")
-		if err := os.WriteFile(path, []byte(`{`+harnesses+`,`+defaults+depth+`}`), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte(`{`+harnesses+`,`+defaults+`,`+titling+depth+`}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := Load(path); err == nil || !strings.HasSuffix(err.Error(), "max_child_depth must be at least 1") {
@@ -52,7 +53,7 @@ func TestDefaultsMustBeConfiguredChoices(t *testing.T) {
 	}
 
 	path := filepath.Join(t.TempDir(), "config.json")
-	data := `{` + harnesses + `,` + defaults + `,"max_child_depth":2}}`
+	data := `{` + harnesses + `,` + defaults + `,` + titling + `,"max_child_depth":2}}`
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -61,11 +62,43 @@ func TestDefaultsMustBeConfiguredChoices(t *testing.T) {
 	}
 }
 
+// The configuration names the harness, model, and effort that title sessions,
+// from those it offers.
+func TestTitling(t *testing.T) {
+	cfg, err := Load(filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil {
+		t.Fatalf("built-in configuration: %v", err)
+	}
+	if cfg.Titling != (Titling{Harness: "claude", Model: "claude-haiku-5-5", Effort: "low"}) {
+		t.Errorf("built-in titling = %+v", cfg.Titling)
+	}
+	const catalog = `"harnesses":{"h":{"models":[{"id":"m","name":"M","efforts":[{"id":"low","name":"Low"}]}],"permission_modes":[{"id":"auto","name":"Auto"}]}},` +
+		`"defaults":{"harness":"h","model":"m","effort":"low","permission_mode":"auto"},"max_child_depth":2`
+	for _, c := range []struct{ titling, err string }{
+		{`,"titling":{"harness":"h","model":"m","effort":"low"}`, ""},
+		{``, "titling is required: name the harness, model, and effort that title sessions"},
+		{`,"titling":{"harness":"","model":"m","effort":"low"}`, "titling is required: name the harness, model, and effort that title sessions"},
+		{`,"titling":{"harness":"x","model":"m","effort":"low"}`, `titling: harness "x" is not configured`},
+		{`,"titling":{"harness":"h","model":"x","effort":"low"}`, `titling: model "x" is not configured`},
+		{`,"titling":{"harness":"h","model":"m","effort":"max"}`, `titling: effort "max" is not one of m's`},
+	} {
+		path := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(path, []byte(`{`+catalog+c.titling+`}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Load(path)
+		if c.err == "" && err != nil || c.err != "" && (err == nil || err.Error() != path+": "+c.err) {
+			t.Errorf("%s: want %q, got %v", c.titling, c.err, err)
+		}
+	}
+}
+
 // A tailscale_ip must be an IPv4 address within Tailscale's range. Without
 // one, Ox serves only its local address.
 func TestTailscaleIP(t *testing.T) {
 	const catalog = `"harnesses":{"h":{"models":[{"id":"m","name":"M"}],"permission_modes":[{"id":"auto","name":"Auto"}]}},` +
-		`"defaults":{"harness":"h","model":"m","effort":"","permission_mode":"auto"},"max_child_depth":2`
+		`"defaults":{"harness":"h","model":"m","effort":"","permission_mode":"auto"},` +
+		`"titling":{"harness":"h","model":"m","effort":""},"max_child_depth":2`
 	for _, c := range []struct {
 		setting string
 		ok      bool
@@ -98,7 +131,8 @@ func TestCatalogListsArePresent(t *testing.T) {
 	load := func(other string) (*Config, error) {
 		path := filepath.Join(t.TempDir(), "config.json")
 		data := `{"harnesses":{"h":{"models":[{"id":"m","name":"M"}],"permission_modes":[{"id":"auto","name":"Auto"}]},` +
-			`"other":` + other + `},"defaults":{"harness":"h","model":"m","effort":"","permission_mode":"auto"},"max_child_depth":2}`
+			`"other":` + other + `},"defaults":{"harness":"h","model":"m","effort":"","permission_mode":"auto"},` +
+			`"titling":{"harness":"h","model":"m","effort":""},"max_child_depth":2}`
 		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 			t.Fatal(err)
 		}

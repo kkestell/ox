@@ -91,5 +91,10 @@
     "effort": "low",
     "permission_mode": "acceptEdits"
   },
+  "titling": {
+    "harness": "claude",
+    "model": "claude-haiku-5-5",
+    "effort": "low"
+  },
   "max_child_depth": 2
 }

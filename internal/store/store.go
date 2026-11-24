@@ -35,6 +35,8 @@ type Session struct {
 	// Child is set for a child session, nil for a top-level one.
 	Child    *Child
 	Archived bool
+	// Title is a top-level session's generated title, empty until it has one.
+	Title string
 }
 
 // Child is what makes a session a child: its parent, its name among the
@@ -91,6 +93,10 @@ CREATE TABLE IF NOT EXISTS children (
 );
 CREATE TABLE IF NOT EXISTS archived (
 	session_id TEXT PRIMARY KEY REFERENCES sessions ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS titles (
+	session_id TEXT PRIMARY KEY REFERENCES sessions ON DELETE CASCADE,
+	title      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS images (
 	id         TEXT PRIMARY KEY,
@@ -185,8 +191,9 @@ func (s *Store) Workspaces() ([]*Workspace, error) {
 	}
 
 	rows, err = s.db.Query(`SELECT s.id, s.workspace_id, s.harness, s.model, s.effort, s.permission_mode, s.resume_token, s.created_at,
-			c.parent_id, c.name, c.title, c.directory, a.session_id IS NOT NULL
+			c.parent_id, c.name, c.title, c.directory, a.session_id IS NOT NULL, coalesce(t.title, '')
 		FROM sessions s LEFT JOIN children c ON c.session_id = s.id LEFT JOIN archived a ON a.session_id = s.id
+			LEFT JOIN titles t ON t.session_id = s.id
 		ORDER BY s.created_at, s.rowid`)
 	if err != nil {
 		return nil, err
@@ -197,7 +204,7 @@ func (s *Store) Workspaces() ([]*Workspace, error) {
 		var workspaceID, created string
 		var parentID, name, title, directory sql.NullString
 		if err := rows.Scan(&r.ID, &workspaceID, &r.Harness, &r.Model, &r.Effort, &r.PermissionMode, &r.ResumeToken, &created,
-			&parentID, &name, &title, &directory, &r.Archived); err != nil {
+			&parentID, &name, &title, &directory, &r.Archived, &r.Title); err != nil {
 			return nil, err
 		}
 		if parentID.Valid {
@@ -242,6 +249,12 @@ func (s *Store) AddSession(workspaceID string, r *Session) error {
 func (s *Store) SaveSession(r *Session) error {
 	_, err := s.db.Exec(`UPDATE sessions SET model = ?, effort = ?, permission_mode = ?, resume_token = ? WHERE id = ?`,
 		r.Model, r.Effort, r.PermissionMode, r.ResumeToken, r.ID)
+	return err
+}
+
+// SetTitle stores a top-level session's generated title.
+func (s *Store) SetTitle(sessionID, title string) error {
+	_, err := s.db.Exec(`INSERT INTO titles (session_id, title) VALUES (?, ?)`, sessionID, title)
 	return err
 }
 

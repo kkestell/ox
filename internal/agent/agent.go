@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"time"
@@ -68,6 +69,10 @@ type Harness struct {
 	CheckEffort         func(string) error // nil means the harness takes every effort level
 	CheckPermissionMode func(string) error // nil means the harness takes every permission mode
 	TakesProviders      bool               // whether a model may set a provider order
+	// Ask sends one stateless request to model at effort, with instructions
+	// as the system prompt and text as the user's message, and returns the
+	// reply's text. nil means the harness takes no one-shot requests.
+	Ask func(ctx context.Context, model, effort, instructions, text string) (string, error)
 }
 
 type Options struct {
