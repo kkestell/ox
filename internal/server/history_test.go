@@ -41,6 +41,8 @@ func TestHistoryMergesTextAndKeepsConversation(t *testing.T) {
 		t.Fatalf("history mid-reply lacks the reply text so far, timed by its first fragment: %+v", entries)
 	}
 
+	resets := time.Date(2026, 11, 18, 17, 0, 0, 0, time.UTC)
+	h.record(agent.Update{MessageID: "p", Type: "usage", Usage: []agent.UsageWindow{{IntervalSeconds: 18000, UsedPercent: 12.5, ResetsAt: resets}, {IntervalSeconds: 604800, UsedPercent: 40, ResetsAt: resets.Add(72 * time.Hour)}}})
 	h.record(agent.Update{MessageID: "p", Type: "result", Result: &agent.Result{Text: "hello"}})
 	h.record(agent.Update{MessageID: "p", Type: "state", State: "idle"})
 	h.record(agent.Update{Type: "text_delta", Text: "tick"})
@@ -55,11 +57,15 @@ func TestHistoryMergesTextAndKeepsConversation(t *testing.T) {
 	for _, e := range entries {
 		got = append(got, e.Type+":"+e.Text)
 	}
-	if strings.Join(got, ",") != "prompt:hi,reasoning_delta:Greet them.,text_delta:hello,result:,text_delta:tick,text_delta:tock,reasoning_delta:hm,parked:" {
+	if strings.Join(got, ",") != "prompt:hi,reasoning_delta:Greet them.,text_delta:hello,usage:,result:,text_delta:tick,text_delta:tock,reasoning_delta:hm,parked:" {
 		t.Fatalf("unexpected history: %v", got)
 	}
 	if !entries[2].Time.Equal(replyStarted) {
 		t.Fatalf("merged text is not timed by its first fragment: %v", entries[1].Time)
+	}
+	if u := entries[3].Usage; len(u) != 2 || u[0].IntervalSeconds != 18000 || u[0].UsedPercent != 12.5 || !u[0].ResetsAt.Equal(resets) ||
+		u[1].IntervalSeconds != 604800 || u[1].UsedPercent != 40 || !u[1].ResetsAt.Equal(resets.Add(72*time.Hour)) {
+		t.Fatalf("usage windows did not survive the restart: %+v", u)
 	}
 }
 

@@ -382,6 +382,66 @@ test("reasoning shows in the transcript, before and after a reload", async ({ ox
   await expect(thinking).toHaveText("Count to three.");
 });
 
+const usage = (page: Page) => main(page).getByRole("button", { name: "Subscription usage" });
+const usageWindows = (page: Page) => page.getByRole("dialog", { name: "Subscription usage" }).getByRole("meter");
+
+test("subscription usage shows under the composer once the harness reports it", async ({ ox: page }) => {
+  await newSession(page, "hello");
+  await expect(usage(page)).toHaveCount(0);
+  await prompt(page).fill("usage");
+  await prompt(page).press("Enter");
+  await expect(replies(page).last()).toHaveText("You said: usage");
+  await expect(usage(page)).toContainText("5h");
+  await expect(usage(page)).toContainText("80%");
+  await expect(usage(page)).toContainText(/1h 59m|2h 0m/);
+  await expect(usage(page)).toHaveAccessibleName(/80%/);
+  await expect(usage(page).getByRole("meter", { name: "5h usage" })).toHaveAttribute("aria-valuenow", "80");
+});
+
+test("a usage window that has reset shows it is waiting for a new reading", async ({ ox: page }) => {
+  await newSession(page, "usage reset");
+  await expect(usage(page)).toContainText("Waiting");
+  await expect(usage(page).getByRole("meter", { name: "5h usage" })).toHaveAttribute(
+    "aria-valuetext",
+    /Waiting for a new reading/,
+  );
+});
+
+test("a usage reading reported while the page is disconnected shows once it reconnects", async ({
+  ox: page,
+  context,
+  services,
+}) => {
+  await newSession(page, "hello");
+  const drop = (route: Route) => route.abort();
+  await page.route("**/events", drop);
+  await services.restartRelay();
+  await expect(page.getByRole("status").filter({ hasText: "Reconnecting…" })).toBeVisible();
+  const other = await context.newPage();
+  await other.goto(page.url());
+  await prompt(other).fill("usage");
+  await prompt(other).press("Enter");
+  await expect(replies(other).last()).toHaveText("You said: usage");
+  await expect(usage(page)).toHaveCount(0);
+  await page.unroute("**/events", drop);
+  await expect(usage(page)).toContainText("5h", { timeout: 10_000 });
+});
+
+test("clicking subscription usage lists every window, shortest first", async ({ ox: page }) => {
+  await newSession(page, "usage");
+  await usage(page).click();
+  await expect(usageWindows(page)).toHaveCount(2);
+  await expect(usageWindows(page).nth(0)).toHaveAccessibleName("5h usage");
+  await expect(usageWindows(page).nth(1)).toHaveAccessibleName("7d usage");
+});
+
+test("subscription usage survives a reload", async ({ ox: page }) => {
+  await newSession(page, "usage");
+  await expect(usage(page)).toContainText("5h");
+  await page.reload();
+  await expect(usage(page)).toContainText("5h");
+});
+
 test("opening and closing a tool call keeps its summary in place", async ({ ox: page }) => {
   // A prompt and reply that overflow the transcript, so it follows its bottom.
   await newSession(page, Array.from({ length: 12 }, (_, i) => `Sheep${i}.`).join("\n\n"));

@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"time"
 )
 
@@ -146,6 +148,7 @@ const (
 	UpdateApprovalCancelled = "approval_cancelled"
 	UpdateExited            = "exited"
 	UpdateParked            = "parked"
+	UpdateUsage             = "usage" // the harness's subscription usage, after a turn
 )
 
 // Execution states, which state updates and snapshots carry.
@@ -173,7 +176,24 @@ type Update struct {
 	Input     json.RawMessage `json:"input,omitempty"`
 	Images    []string        `json:"images,omitempty"`  // the image IDs of a prompt's lifecycle updates
 	Reports   []Report        `json:"reports,omitempty"` // the child reports of a reports input's lifecycle updates
+	Usage     []UsageWindow   `json:"usage,omitempty"`   // a usage update's windows, shortest first
 	Time      time.Time       `json:"time,omitzero"`     // when the agent published it
+}
+
+// UsageWindow is one subscription usage window: its length, how much of it
+// is used, and when it resets.
+type UsageWindow struct {
+	IntervalSeconds int64     `json:"interval_seconds"`
+	UsedPercent     float64   `json:"used_percent"`
+	ResetsAt        time.Time `json:"resets_at"`
+}
+
+// UsageUpdate builds the usage update for windows, which is non-empty, sorted
+// shortest first. Every harness builds its usage updates with it.
+func UsageUpdate(windows []UsageWindow) Update {
+	windows = slices.Clone(windows)
+	slices.SortFunc(windows, func(a, b UsageWindow) int { return cmp.Compare(a.IntervalSeconds, b.IntervalSeconds) })
+	return Update{Type: UpdateUsage, Usage: windows}
 }
 
 type Result struct {
