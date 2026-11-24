@@ -106,7 +106,7 @@ export const menuItem = (menu: Locator, label: string) => menu.getByRole("menuit
 export async function newSession(page: Page, text: string) {
   await newSessionButton(page).click();
   await prompt(page).fill(text);
-  await prompt(page).press("Enter");
+  await send(page).click();
   await expect(replies(page).last()).toHaveText(`You said: ${text}`);
   await expect(stop(page)).toHaveCount(0);
 }
@@ -115,7 +115,7 @@ export async function newSession(page: Page, text: string) {
 // with inputJSON, and returns the approval.
 export async function ask(page: Page, tool: string, inputJSON: string) {
   await prompt(page).fill(`approve ${tool} ${inputJSON}`);
-  await prompt(page).press("Enter");
+  await send(page).click();
   const approval = waiting(page).getByRole("article");
   await expect(approval).toHaveCount(1);
   return approval;

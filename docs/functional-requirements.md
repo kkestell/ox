@@ -77,8 +77,9 @@ title.
 - **Attached images in the composer.** Attached images survive switching views
   and reconnecting as unsent text does, clear with the text after a send, and
   return to the composer with a dropped prompt's text.
-- **Enter to send.** Enter sends and Shift+Enter starts a new line; Enter while
-  composing with an input method does not send.
+- **Enter to send.** On a computer, Enter sends and Shift+Enter starts a new
+  line; Enter while composing with an input method does not send. On a phone or
+  tablet, Return starts a new line and only Send sends.
 - **Prompt size limit.** A prompt over 1 MiB is refused with an error and stays
   in the composer.
 - **One prompt at a time.** While Claude works, the user can send a prompt,
