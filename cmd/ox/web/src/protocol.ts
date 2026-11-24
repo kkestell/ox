@@ -30,10 +30,11 @@ export type ApprovalResponse =
   | { behavior: "deny"; message: string; interrupt?: boolean };
 
 // Prompt is a client prompt, named by the message ID session/send returned,
-// or a message from the session from.
-export type Prompt = { message_id: string; text: string } & (
-  | { from?: never; from_label?: never }
-  | { from: string; from_label: string }
+// with the IDs of its images, or a message from the session from. A prompt
+// with only images has no text.
+export type Prompt = { message_id: string; text?: string } & (
+  | { from?: never; from_label?: never; images?: string[] }
+  | { from: string; from_label: string; images?: never }
 );
 
 export type Update = { time: string } & (
@@ -116,7 +117,7 @@ export type Methods = {
       history: Update[];
     },
   ];
-  "session/send": [{ session_id: string; text: string }, { message_id: string }];
+  "session/send": [{ session_id: string; text: string; images?: string[] }, { message_id: string }];
   "session/interrupt": [{ session_id: string }, Empty];
   "session/configure": [SettingsPatch & { session_id: string }, Empty];
   "session/approve": [{ session_id: string; request_id: string; response: ApprovalResponse }, Empty];

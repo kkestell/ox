@@ -2,8 +2,10 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"embed"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -18,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/kkestell/ox/internal/config"
+	"github.com/kkestell/ox/internal/jsonrpc"
 	"github.com/kkestell/ox/internal/paths"
 )
 
@@ -119,11 +122,12 @@ func newRelay(socket string, addrs []string) (*relay, error) {
 	return r, nil
 }
 
-// handler serves the web UI, /events, and /rpc.
+// handler serves the web UI, /events, /rpc, and /images.
 func (r *relay) handler(web fs.FS) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /", http.FileServerFS(web))
 	mux.Handle("GET /events", r.checkHost(http.HandlerFunc(r.events)))
+	mux.Handle("GET /images/{session_id}/{image_id}", r.checkHost(http.HandlerFunc(r.image)))
 	mux.Handle("POST /rpc", r.checkHost(http.NewCrossOriginProtection().Handler(http.HandlerFunc(r.rpc))))
 	return mux
 }
@@ -194,10 +198,11 @@ func (r *relay) rpc(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "unknown connection", http.StatusServiceUnavailable)
 		return
 	}
-	// A 1 MiB prompt can take six times that as JSON escapes, plus the envelope.
-	body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, 8<<20))
+	// A 1 MiB prompt can take six times that as JSON escapes, and 10 MiB of
+	// images about 13.3 MiB as base64, plus the envelope.
+	body, err := io.ReadAll(http.MaxBytesReader(w, req.Body, 24<<20))
 	if _, tooLarge := errors.AsType[*http.MaxBytesError](err); tooLarge {
-		http.Error(w, "request is larger than 8 MiB", http.StatusRequestEntityTooLarge)
+		http.Error(w, "request is larger than 24 MiB", http.StatusRequestEntityTooLarge)
 		return
 	}
 	if err != nil {
@@ -210,3 +215,66 @@ func (r *relay) rpc(w http.ResponseWriter, req *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// image serves an image attached to a prompt, which it asks oxd for over a
+// connection of its own, so image data never travels a page's event stream.
+// The type is the one oxd took from the image's bytes, and an image ID never
+// names other bytes, so the browser may keep it.
+func (r *relay) image(w http.ResponseWriter, req *http.Request) {
+	conn, err := net.Dial("unix", r.socket)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("connect to oxd: %v", err), http.StatusBadGateway)
+		return
+	}
+	defer conn.Close()
+	stop := context.AfterFunc(req.Context(), func() { conn.Close() })
+	defer stop()
+
+	request, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "session/image",
+		"params": map[string]string{"session_id": req.PathValue("session_id"), "image_id": req.PathValue("image_id")},
+	})
+	if _, err := conn.Write(append(request, '\n')); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	type answer struct {
+		ID     json.RawMessage `json:"id"`
+		Result *struct {
+			MimeType string `json:"mime_type"`
+			Data     []byte `json:"data"`
+		} `json:"result"`
+		Error *jsonrpc.Error `json:"error"`
+	}
+	var response answer
+	lines := bufio.NewReader(conn)
+	// Notifications oxd broadcasts to every connection can come before the
+	// answer.
+	for string(response.ID) != "1" {
+		line, err := lines.ReadBytes('\n')
+		if err == nil {
+			response = answer{}
+			err = json.Unmarshal(line, &response)
+		}
+		if err != nil {
+			http.Error(w, fmt.Sprintf("read from oxd: %v", err), http.StatusBadGateway)
+			return
+		}
+	}
+	switch {
+	case response.Error != nil && response.Error.Code == notFound:
+		http.Error(w, response.Error.Message, http.StatusNotFound)
+	case response.Error != nil:
+		http.Error(w, response.Error.Message, http.StatusBadGateway)
+	case response.Result == nil:
+		http.Error(w, "oxd answered without an image", http.StatusBadGateway)
+	default:
+		w.Header().Set("Content-Type", response.Result.MimeType)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+		w.Write(response.Result.Data)
+	}
+}
+
+// notFound is oxd's error code for a session or image that does not exist.
+const notFound = -32001

@@ -18,10 +18,61 @@ import (
 // message is one entry of the conversation, in OpenRouter's request shape.
 type message struct {
 	Role             string            `json:"role"`
-	Content          string            `json:"content,omitempty"`
+	Content          content           `json:"content,omitzero"`
 	ReasoningDetails []reasoningDetail `json:"reasoning_details,omitempty"`
 	ToolCalls        []toolCall        `json:"tool_calls,omitempty"`
 	ToolCallID       string            `json:"tool_call_id,omitempty"`
+}
+
+// content is a message's text and a user message's images, as data URLs. It
+// is a JSON string without images, and OpenRouter's content parts with them:
+// the images, then the text when it is not blank.
+type content struct {
+	Text   string
+	Images []string
+}
+
+type contentPart struct {
+	Type     string    `json:"type"` // text or image_url
+	Text     string    `json:"text,omitempty"`
+	ImageURL *imageURL `json:"image_url,omitempty"`
+}
+
+type imageURL struct {
+	URL string `json:"url"`
+}
+
+func (c content) MarshalJSON() ([]byte, error) {
+	if len(c.Images) == 0 {
+		return json.Marshal(c.Text)
+	}
+	parts := []contentPart{}
+	for _, url := range c.Images {
+		parts = append(parts, contentPart{Type: "image_url", ImageURL: &imageURL{url}})
+	}
+	if strings.TrimSpace(c.Text) != "" {
+		parts = append(parts, contentPart{Type: "text", Text: c.Text})
+	}
+	return json.Marshal(parts)
+}
+
+func (c *content) UnmarshalJSON(data []byte) error {
+	if json.Unmarshal(data, &c.Text) == nil {
+		return nil
+	}
+	var parts []contentPart
+	if err := json.Unmarshal(data, &parts); err != nil {
+		return err
+	}
+	for _, p := range parts {
+		switch {
+		case p.Type == "image_url" && p.ImageURL != nil:
+			c.Images = append(c.Images, p.ImageURL.URL)
+		case p.Type == "text":
+			c.Text += p.Text
+		}
+	}
+	return nil
 }
 
 // reasoningDetail is one block of a model's reasoning, or a fragment of one

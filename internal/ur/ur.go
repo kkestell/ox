@@ -8,6 +8,7 @@ package ur
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -245,7 +246,7 @@ func (a *Agent) Handle(event agent.Event) {
 		if e.turn != a.turn {
 			return
 		}
-		if err := a.save(message{Role: "assistant", Content: e.text, ReasoningDetails: e.reasoning}); err != nil {
+		if err := a.save(message{Role: "assistant", Content: content{Text: e.text}, ReasoningDetails: e.reasoning}); err != nil {
 			a.finish(agent.Result{Text: "Ur could not save the reply: " + err.Error(), IsError: true})
 			return
 		}
@@ -269,7 +270,7 @@ func (a *Agent) Handle(event agent.Event) {
 		case len(e.calls) == 0:
 			var reply string
 			if messages := conversation(a.history); messages[len(messages)-1].Role == "assistant" {
-				reply = messages[len(messages)-1].Content
+				reply = messages[len(messages)-1].Content.Text
 			}
 			a.finish(agent.Result{Text: reply})
 		default:
@@ -320,7 +321,11 @@ func (a *Agent) request() {
 	for a.tracker.Len() > 0 {
 		input := a.tracker.Take()
 		a.turn.prompt = input.MessageID
-		if err := a.save(message{Role: "user", Content: input.Content}); err != nil {
+		var images []string
+		for _, image := range input.Images {
+			images = append(images, "data:"+image.MimeType+";base64,"+base64.StdEncoding.EncodeToString(image.Data))
+		}
+		if err := a.save(message{Role: "user", Content: content{Text: input.Content, Images: images}}); err != nil {
 			a.finish(agent.Result{Text: "Ur could not save the prompt: " + err.Error(), IsError: true})
 			return
 		}
@@ -398,7 +403,7 @@ func (a *Agent) execute(calls []toolCall, command shellCommand) {
 // outcome that cannot be saved is published, then ends the turn.
 func (a *Agent) answer(calls []toolCall, o outcome) {
 	a.publish(agent.Update{Type: agent.UpdateToolResult, ToolUseID: calls[0].ID, Result: &agent.Result{Text: o.text, IsError: o.isError}})
-	if err := a.save(message{Role: "tool", ToolCallID: calls[0].ID, Content: o.text}); err != nil {
+	if err := a.save(message{Role: "tool", ToolCallID: calls[0].ID, Content: content{Text: o.text}}); err != nil {
 		a.finish(agent.Result{Text: "Ur could not save the command's result: " + err.Error(), IsError: true})
 		return
 	}
@@ -419,7 +424,7 @@ func (a *Agent) body() ([]byte, error) {
 	for i := range a.turn.start {
 		history[i].ReasoningDetails = nil
 	}
-	messages := append([]message{{Role: "system", Content: text}}, conversation(history)...)
+	messages := append([]message{{Role: "system", Content: content{Text: text}}}, conversation(history)...)
 	body := request{Model: a.settings.Model, Messages: messages, Tools: []json.RawMessage{shellTool}, Stream: true}
 	if a.settings.Effort != "" {
 		body.Reasoning = &reasoning{Effort: a.settings.Effort}
@@ -448,7 +453,7 @@ func conversation(history []message) []message {
 		m.ReasoningDetails = appendReasoning(nil, m.ReasoningDetails)
 		switch {
 		case m.Role == "assistant" && last >= 0 && messages[last].Role == "assistant":
-			messages[last].Content += m.Content
+			messages[last].Content.Text += m.Content.Text
 			messages[last].ReasoningDetails = appendReasoning(messages[last].ReasoningDetails, m.ReasoningDetails)
 			messages[last].ToolCalls = append(messages[last].ToolCalls, m.ToolCalls...)
 		case m.Role == "tool":
@@ -457,7 +462,7 @@ func conversation(history []message) []message {
 		default:
 			if m.Role == "user" {
 				for _, id := range open {
-					messages = append(messages, message{Role: "tool", ToolCallID: id, Content: stopped})
+					messages = append(messages, message{Role: "tool", ToolCallID: id, Content: content{Text: stopped}})
 				}
 				open = nil
 			}

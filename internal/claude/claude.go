@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -305,11 +306,29 @@ func (in *writer) write(message any) error {
 }
 
 // Prompt sends a user message. Claude reports the uuid in command_lifecycle
-// messages once it takes the prompt into its conversation.
-func (in *writer) Prompt(uuid, text string) error {
+// messages once it takes the prompt into its conversation. A prompt with
+// images is content blocks: the images first, since Claude reads an image best
+// before the text that refers to it, then the text when it is not blank.
+func (in *writer) Prompt(uuid, text string, images []agent.Image) error {
+	var content any = text
+	if len(images) > 0 {
+		blocks := []map[string]any{}
+		for _, image := range images {
+			blocks = append(blocks, map[string]any{
+				"type": "image",
+				"source": map[string]string{
+					"type": "base64", "media_type": image.MimeType, "data": base64.StdEncoding.EncodeToString(image.Data),
+				},
+			})
+		}
+		if strings.TrimSpace(text) != "" {
+			blocks = append(blocks, map[string]any{"type": "text", "text": text})
+		}
+		content = blocks
+	}
 	return in.write(map[string]any{
 		"type": "user", "uuid": uuid, "session_id": "", "priority": "next",
-		"message": map[string]string{"role": "user", "content": text},
+		"message": map[string]any{"role": "user", "content": content},
 	})
 }
 

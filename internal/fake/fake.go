@@ -3,6 +3,7 @@ package fake
 import (
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -141,10 +142,10 @@ func (a *Agent) idle() bool {
 }
 
 // Send queues the input, and starts a turn with it when the agent is idle.
-// The reply echoes the input's Content, which the model would receive. An
-// input "background <milliseconds>" also starts a background task that runs
-// that long, and an input "think <text>" streams text as reasoning before the
-// reply.
+// The reply echoes the input's Content, which the model would receive, and
+// the count of its images. An input "background <milliseconds>" also starts a
+// background task that runs that long, and an input "think <text>" streams
+// text as reasoning before the reply.
 func (a *Agent) Send(input agent.Input) error {
 	idle := a.idle()
 	a.tracker.Accept(input)
@@ -159,6 +160,9 @@ func (a *Agent) begin() {
 	input := a.tracker.Take()
 	a.prompt = input.MessageID
 	a.reply = "You said: " + input.Content
+	if len(input.Images) > 0 {
+		a.reply += fmt.Sprintf(" [images: %d]", len(input.Images))
+	}
 	a.words = strings.SplitAfter(a.reply, " ")
 	if thought, ok := strings.CutPrefix(input.Content, "think "); ok {
 		a.thoughts = strings.SplitAfter(thought, " ")

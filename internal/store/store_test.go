@@ -109,3 +109,31 @@ func TestStoreHoldsDatabaseUntilClose(t *testing.T) {
 	}
 	again.Close()
 }
+
+// A session's images go with it.
+func TestImagesDeletedWithSession(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "ox.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.AddWorkspace(&Workspace{ID: "w", Path: "/w", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSession("w", &Session{ID: "s", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddImages("s", []Image{{ID: "i", MimeType: "image/png", Data: []byte("png")}}); err != nil {
+		t.Fatal(err)
+	}
+	if image, err := st.Image("s", "i"); err != nil || image == nil || string(image.Data) != "png" {
+		t.Fatalf("the stored image read %+v, %v", image, err)
+	}
+	if err := st.DeleteSession("s"); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	if err := st.db.QueryRow(`SELECT count(*) FROM images`).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("%d images outlived their session: %v", left, err)
+	}
+}

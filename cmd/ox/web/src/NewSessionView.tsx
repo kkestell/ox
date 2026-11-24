@@ -1,5 +1,6 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, Show } from "solid-js";
+import { AttachButton, createImageDrop, pasteImages, Thumbnails } from "./Attachments";
 import { useOx } from "./ox";
 import type { Defaults } from "./protocol";
 import { sendOnEnter } from "./SessionView";
@@ -36,6 +37,7 @@ export function NewSessionView(props: { draft: Draft; onCreated(): void; toggles
     const { harness, ...settings } = choice;
     draft.control.create(draft.workspaceId, harness, settings, props.onCreated);
   };
+  const drop = createImageDrop(draft.control, () => true);
   return (
     <>
       <header class="context">
@@ -47,27 +49,44 @@ export function NewSessionView(props: { draft: Draft; onCreated(): void; toggles
           <span class="directory">{workspace()}</span>
         </p>
       </header>
-      <div class="log" />
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: a drop attaches images, which Attach Image and a paste attach from the keyboard. */}
+      <div
+        class="log"
+        onDragOver={drop.handlers.onDragOver}
+        onDragLeave={drop.handlers.onDragLeave}
+        onDrop={drop.handlers.onDrop}
+      />
       <Show when={draft.control.error()}>{(error) => <p role="alert">{error()}</p>}</Show>
-      <div class="composer">
-        <form class="box" onSubmit={create}>
-          <textarea
-            value={draft.control.text()}
-            onInput={(event) => draft.control.setText(event.currentTarget.value)}
-            name="text"
-            rows="1"
-            aria-label="Prompt"
-            required
-            autofocus
-            onKeyDown={sendOnEnter}
-          />
-          <button
-            type="submit"
-            class="icon send"
-            aria-label="Send"
-            title="Send"
-            disabled={!draft.control.canCreate()}
-          />
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: a drop attaches images, which Attach Image and a paste attach from the keyboard. */}
+      <div
+        class="composer"
+        onDragOver={drop.handlers.onDragOver}
+        onDragLeave={drop.handlers.onDragLeave}
+        onDrop={drop.handlers.onDrop}
+      >
+        <form class={["box", { dragging: drop.dragging() }]} onSubmit={create}>
+          <Thumbnails control={draft.control} />
+          <div class="field">
+            <AttachButton control={draft.control} />
+            <textarea
+              value={draft.control.text()}
+              onInput={(event) => draft.control.setText(event.currentTarget.value)}
+              name="text"
+              rows="1"
+              aria-label="Prompt"
+              required={!draft.control.images().length}
+              autofocus
+              onKeyDown={sendOnEnter}
+              onPaste={pasteImages(draft.control)}
+            />
+            <button
+              type="submit"
+              class="icon send"
+              aria-label="Send"
+              title="Send"
+              disabled={!draft.control.canCreate()}
+            />
+          </div>
         </form>
         <Show when={draft.choice()}>
           {(choice) => (

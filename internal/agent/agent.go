@@ -166,7 +166,8 @@ type Update struct {
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	ToolName  string          `json:"tool_name,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
-	Time      time.Time       `json:"time,omitzero"` // when the agent published it
+	Images    []string        `json:"images,omitempty"` // the image IDs of a prompt's lifecycle updates
+	Time      time.Time       `json:"time,omitzero"`    // when the agent published it
 }
 
 type Result struct {
@@ -183,17 +184,40 @@ type Snapshot struct {
 
 // Input is the user prompt or wrapped message the harness writes to the model.
 type Input struct {
-	MessageID string `json:"message_id"`
-	Text      string `json:"text"`
-	From      string `json:"from,omitempty"` // the sending session of a message
-	FromLabel string `json:"from_label,omitempty"`
-	Content   string `json:"-"` // what the model receives
+	MessageID string  `json:"message_id"`
+	Text      string  `json:"text"`
+	From      string  `json:"from,omitempty"` // the sending session of a message
+	FromLabel string  `json:"from_label,omitempty"`
+	Images    []Image `json:"images,omitempty"` // a user prompt's images, which the model receives with Content
+	Content   string  `json:"-"`                // what the model receives
 }
 
 // Update builds a lifecycle update of kind for the input. Its Time is left for
 // the publisher.
 func (i Input) Update(kind string) Update {
-	return Update{Type: kind, MessageID: i.MessageID, Text: i.Text, From: i.From, FromLabel: i.FromLabel}
+	return Update{Type: kind, MessageID: i.MessageID, Text: i.Text, From: i.From, FromLabel: i.FromLabel, Images: i.ImageIDs()}
+}
+
+// ImageIDs is the IDs of the input's images, or nil when it has none.
+func (i Input) ImageIDs() []string {
+	var ids []string
+	for _, image := range i.Images {
+		ids = append(ids, image.ID)
+	}
+	return ids
+}
+
+// Image is an image attached to a user prompt, stored under its ID. Its type
+// is PNG, JPEG, GIF, or WebP, taken from its bytes. It marshals as its ID, so
+// updates and snapshots carry the IDs of the data the harness writes.
+type Image struct {
+	ID       string
+	MimeType string
+	Data     []byte
+}
+
+func (i Image) MarshalJSON() ([]byte, error) {
+	return json.Marshal(i.ID)
 }
 
 type Approval struct {

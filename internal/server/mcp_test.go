@@ -119,6 +119,8 @@ func TestReadSession(t *testing.T) {
 	longInput := `{"text":"` + strings.Repeat("x", 300) + `"}`
 	seed(short,
 		agent.Update{Type: "prompt", MessageID: "m1", Text: "hi"},
+		agent.Update{Type: "prompt", MessageID: "m3", Text: "see", Images: []string{"i1", "i2"}},
+		agent.Update{Type: "prompt", MessageID: "m4", Images: []string{"i3"}},
 		agent.Update{Type: "prompt", MessageID: "m2", Text: "hello", From: "other", FromLabel: "Other label"},
 		agent.Update{Type: "text_delta", MessageID: "m2", Text: "Hello there"},
 		agent.Update{Type: "tool_use", ToolUseID: "t1", ToolName: "Bash", Input: json.RawMessage(longInput)},
@@ -160,6 +162,8 @@ func TestReadSession(t *testing.T) {
 
 	want := strings.Join([]string{
 		"[" + stamp + "] User: hi",
+		"[" + stamp + "] User: see [images: 2]",
+		"[" + stamp + "] User: [images: 1]",
 		"[" + stamp + "] Message from Other label (other): hello",
 		"Assistant: Hello there",
 		"Tool: Bash " + longInput[:200] + "… (failed)",

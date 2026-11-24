@@ -156,11 +156,29 @@ export function createAttempt() {
   return [error, attempt, clear] as const;
 }
 
-// SessionControl is the page's side of one session: its composer text, the
-// folders its file tree has expanded, its open file, and the requests the page
+// imageTypes are the image types a prompt takes.
+export const imageTypes = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+// maxImageBytes is the most image data one prompt takes.
+const maxImageBytes = 10 << 20;
+
+// base64 reads a file as base64.
+const base64 = (file: File) =>
+  new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const url = reader.result as string;
+      resolve(url.slice(url.indexOf(",") + 1));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error(`could not read ${file.name}`));
+    reader.readAsDataURL(file);
+  });
+
+// SessionControl is the page's side of one session: its composer text and
+// attached images, the folders its file tree has expanded, its open file, and the requests the page
 // has in flight for it, with their errors. It outlives the session's view, so
-// leaving the view, or reconnecting, keeps the text, expanded folders, and open
-// file and repeats no request. A send and a configuration exclude each other, so a
+// leaving the view, or reconnecting, keeps the text, images, expanded folders,
+// and open file and repeats no request. A send and a configuration exclude each other, so a
 // prompt runs with the settings the page shows. A new session's control
 // starts as its draft's composer, and its first send starts before its
 // session/get returns. The control remembers the prompt it sent last, so a
@@ -172,12 +190,17 @@ function createSessionControl(
   connected: () => boolean,
 ) {
   const [text, writeText] = createSignal("");
-  // edits counts every write to the text, so a send can tell whether the box
-  // changed since its submit.
+  const [images, writeImages] = createSignal<File[]>([]);
+  // edits counts every write to the text and images, so a send can tell
+  // whether the box changed since its submit.
   let edits = 0;
   const setText = (next: string | ((draft: string) => string)) => {
     edits++;
     writeText(next);
+  };
+  const setImages = (next: File[] | ((draft: File[]) => File[])) => {
+    edits++;
+    writeImages(next);
   };
   const [sending, setSending] = createSignal(false);
   const [requested, setRequested] = createSignal<SettingsPatch>();
@@ -196,7 +219,7 @@ function createSessionControl(
   const [file, writeFile] = createSignal<OpenFile>();
   const [split, writeSplit] = createSignal(0.5);
   // Keep a successfully sent prompt only until Claude takes it or it drops.
-  let sent: { id: string; text: string } | undefined;
+  let sent: { id: string; text: string; images: File[] } | undefined;
   const live = () => {
     const load = session()?.load;
     return load?.kind === "live" ? load.snapshot : undefined;
@@ -210,9 +233,11 @@ function createSessionControl(
 
   function finishPrompt(id: string, dropped: boolean) {
     if (sent?.id !== id) return;
-    const { text: prompt } = sent;
+    const { text: prompt, images: files } = sent;
     sent = undefined;
-    if (dropped) setText((draft) => (draft ? `${prompt}\n${draft}` : prompt));
+    if (!dropped) return;
+    if (prompt) setText((draft) => (draft ? `${prompt}\n${draft}` : prompt));
+    if (files.length) setImages((draft) => [...files, ...draft]);
   }
 
   function reconcilePrompt(snapshot: SessionSnapshot) {
@@ -224,18 +249,25 @@ function createSessionControl(
     setNotice(undefined);
     return attempt(request);
   };
-  // post sends a prompt, submitted when the text had the given edit count.
-  // Text changed since the submit stays in the box.
-  function post(prompt: string, submitted: number) {
+  // post sends a prompt and its images, submitted when the box had the given
+  // edit count. A box changed since the submit keeps its text and images.
+  function post(prompt: string, files: File[], submitted: number) {
     setSending(true);
-    const request = rpc("session/send", { session_id: id, text: prompt }).then((result) => {
-      sent = { id: result.message_id, text: prompt };
-      if (edits === submitted) setText("");
-      // The daemon publishes the input before replying, so a live snapshot
-      // already knows whether it was queued, taken, or dropped.
-      const snapshot = live();
-      if (snapshot) reconcilePrompt(snapshot);
-    });
+    const request = Promise.all(files.map(base64))
+      .then((encoded) =>
+        rpc("session/send", { session_id: id, text: prompt, ...(encoded.length ? { images: encoded } : {}) }),
+      )
+      .then((result) => {
+        sent = { id: result.message_id, text: prompt, images: files };
+        if (edits === submitted) {
+          setText("");
+          setImages([]);
+        }
+        // The daemon publishes the input before replying, so a live snapshot
+        // already knows whether it was queued, taken, or dropped.
+        const snapshot = live();
+        if (snapshot) reconcilePrompt(snapshot);
+      });
     start(request).finally(() => setSending(false));
   }
   // recover returns to a session whose creation was unconfirmed, with its
@@ -245,9 +277,27 @@ function createSessionControl(
     clearError();
     setNotice("Session recovered. Review its settings and send your prompt.");
   }
+  // sendable is whether a prompt has text or images to send.
+  const sendable = (prompt: string) => prompt.trim() !== "" || images().length > 0;
   return {
     text,
     setText,
+    images,
+    // attach adds images to the composer, or refuses them all with an error.
+    attach(files: File[]) {
+      if (!files.length) return;
+      if (files.some((f) => !imageTypes.includes(f.type))) {
+        start(Promise.reject(new Error("Attach PNG, JPEG, GIF, or WebP images.")));
+        return;
+      }
+      const total = [...images(), ...files].reduce((sum, f) => sum + f.size, 0);
+      if (total > maxImageBytes) {
+        start(Promise.reject(new Error("Images can total at most 10 MiB.")));
+        return;
+      }
+      setImages((draft) => [...draft, ...files]);
+    },
+    removeImage: (file: File) => setImages((draft) => draft.filter((f) => f !== file)),
     error,
     // notice is information about the session that is not an error.
     notice,
@@ -289,8 +339,9 @@ function createSessionControl(
     // Otherwise the creation is unconfirmed, and nothing is sent.
     create(workspaceId: string, harness: string, settings: Settings, onCreated: () => void) {
       const prompt = text();
+      const files = images();
       const submitted = edits;
-      if (!free() || !prompt.trim()) return;
+      if (!free() || !sendable(prompt)) return;
       setCreation("creating");
       const { effort, ...required } = settings;
       const request = rpc("session/create", {
@@ -306,7 +357,7 @@ function createSessionControl(
             return;
           }
           setCreation("none");
-          post(prompt, submitted);
+          post(prompt, files, submitted);
           onCreated();
         },
         (e: Error) => {
@@ -318,7 +369,7 @@ function createSessionControl(
     },
     recover,
     send(prompt: string) {
-      if (canSend() && prompt.trim()) post(prompt, edits);
+      if (canSend() && sendable(prompt)) post(prompt, images(), edits);
     },
     finishPrompt,
     reconcilePrompt,

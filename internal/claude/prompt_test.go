@@ -3,6 +3,7 @@ package claude
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -217,6 +218,52 @@ func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
 	}
 	if err := a.Send(prompt("next")); err != nil {
 		t.Fatalf("the released agent refused a prompt: %v", err)
+	}
+}
+
+// A prompt with images writes an image block for each, then its text unless
+// the text is blank.
+func TestPromptWritesImages(t *testing.T) {
+	png := agent.Image{ID: "a", MimeType: "image/png", Data: []byte("png bytes")}
+	jpeg := agent.Image{ID: "b", MimeType: "image/jpeg", Data: []byte("jpeg bytes")}
+	type block struct {
+		Type   string `json:"type"`
+		Text   string `json:"text"`
+		Source struct {
+			Type      string `json:"type"`
+			MediaType string `json:"media_type"`
+			Data      string `json:"data"`
+		} `json:"source"`
+	}
+	image := func(i agent.Image) block {
+		b := block{Type: "image"}
+		b.Source.Type, b.Source.MediaType, b.Source.Data = "base64", i.MimeType, base64.StdEncoding.EncodeToString(i.Data)
+		return b
+	}
+	for _, c := range []struct {
+		name   string
+		text   string
+		images []agent.Image
+		want   []block
+	}{
+		{"text and two images", "compare these", []agent.Image{png, jpeg}, []block{image(png), image(jpeg), {Type: "text", Text: "compare these"}}},
+		{"an image and blank text", " ", []agent.Image{png}, []block{image(png)}},
+	} {
+		a, input, _ := testAgent()
+		if err := a.Send(agent.Input{MessageID: newUUID(), Text: c.text, Images: c.images, Content: c.text}); err != nil {
+			t.Fatal(err)
+		}
+		var wire struct {
+			Message struct {
+				Content []block `json:"content"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(input.Bytes(), &wire); err != nil {
+			t.Fatalf("%s: the prompt's content is not blocks: %s: %v", c.name, input, err)
+		}
+		if !reflect.DeepEqual(wire.Message.Content, c.want) {
+			t.Errorf("%s: wrote %+v, want %+v", c.name, wire.Message.Content, c.want)
+		}
 	}
 }
 

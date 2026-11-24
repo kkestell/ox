@@ -65,7 +65,14 @@ title.
   it, and removing a workspace discards its draft.
 - **Composer after a send.** After a successful send the composer clears,
   keeping anything typed since the send.
-- **Blank prompts.** A blank prompt is not sent.
+- **Blank prompts.** A prompt with blank text and no images is not sent.
+- **Attaching images.** The user attaches PNG, JPEG, GIF, or WebP images to a
+  prompt by picking files, pasting, or dropping them on the session, and sees
+  each as a thumbnail that can be removed before sending. Other files, and
+  images over 10 MiB in total for one prompt, are refused with an error.
+- **Attached images in the composer.** Attached images survive switching views
+  and reconnecting as unsent text does, clear with the text after a send, and
+  return to the composer with a dropped prompt's text.
 - **Enter to send.** Enter sends and Shift+Enter starts a new line; Enter while
   composing with an input method does not send.
 - **Prompt size limit.** A prompt over 1 MiB is refused with an error and stays
@@ -87,7 +94,7 @@ title.
 - **Session header.** A session's view shows its label and the directory it
   works in.
 - **Prompts as sent.** Prompts show in the transcript as the plain text the user
-  sent.
+  sent, followed by the images attached to them.
 - **Messages in the transcript.** A message shows in the recipient's transcript
   as its text, headed with the label of the session that sent it, pending at the
   end of the transcript until Claude takes it, on every page and after a reload.

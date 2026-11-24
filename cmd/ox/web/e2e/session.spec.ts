@@ -1,8 +1,9 @@
 // The web client against the real relay and oxd, with the fake harness,
-// which echoes each prompt back a word at a time, or first asks to approve a
-// tool call for a prompt "approve <tool> <input JSON>", or first streams
-// <text> as reasoning for a prompt "think <text>", or also runs a background
-// task for a prompt "background <milliseconds>".
+// which echoes each prompt back a word at a time, with the count of its
+// images, or first asks to approve a tool call for a prompt "approve <tool>
+// <input JSON>", or first streams <text> as reasoning for a prompt "think
+// <text>", or also runs a background task for a prompt "background
+// <milliseconds>".
 import { mkdtempSync } from "node:fs";
 import { basename } from "node:path";
 import type { Page, Route } from "@playwright/test";
@@ -12,6 +13,7 @@ import {
   addWorkspace,
   allow,
   ask,
+  attachPixel,
   cutReply,
   errors,
   expect,
@@ -26,6 +28,8 @@ import {
   openMenu,
   pending,
   permissionMode,
+  pickFiles,
+  pixel,
   prompt,
   prompts,
   replies,
@@ -38,6 +42,7 @@ import {
   setSafeArea,
   stop,
   test,
+  thumbnail,
   toolCall,
   transcript,
   waiting,
@@ -194,6 +199,7 @@ test("a rejected creation keeps the draft and its settings after switching views
   await newSessionButton(page).click();
   await permissionMode(page).selectOption("plan");
   const create = await hold(page, "session/create");
+  await attachPixel(page);
   await prompt(page).fill("keep this draft");
   await prompt(page).press("Enter");
   await create.arrived;
@@ -205,6 +211,7 @@ test("a rejected creation keeps the draft and its settings after switching views
   await error.getByRole("button", { name: "Reopen draft" }).click();
   await expect(main(page).getByRole("alert")).toContainText("not-offered");
   await expect(prompt(page)).toHaveValue("keep this draft");
+  await expect(thumbnail(page)).toBeVisible();
   await expect(permissionMode(page)).toHaveValue("plan");
   await send(page).click();
   await expect(prompts(page)).toHaveText(["keep this draft"]);
@@ -595,17 +602,20 @@ test("a prompt sent while Claude works stays pending until Claude takes it", asy
   await expect(transcript(page).getByRole("article")).toHaveText(["approve Bash {}", "steer", "You said: steer"]);
 });
 
-test("Stop drops a pending prompt and returns its text to the composer", async ({ ox: page }) => {
+test("Stop drops a pending prompt and returns its text and image to the composer", async ({ ox: page }) => {
   await newSessionButton(page).click();
   await ask(page, "Bash", "{}");
+  await attachPixel(page, "steer.png");
   await prompt(page).fill("steer");
   await prompt(page).press("Enter");
   await expect(pending(page).getByRole("article")).toHaveText(["steer"]);
   await expect(prompt(page)).toHaveValue("");
+  await expect(thumbnail(page, "steer.png")).toHaveCount(0);
   await prompt(page).fill("more");
   await stop(page).click();
   await expect(pending(page)).toHaveCount(0);
   await expect(prompt(page)).toHaveValue("steer\nmore");
+  await expect(thumbnail(page, "steer.png")).toBeVisible();
   await expect(errors(page)).toHaveText(["Interrupted"]);
 });
 
@@ -1651,4 +1661,118 @@ test("a reload hides archived sessions, and an archived session's URL opens it",
   await expect(main(page).getByText("This session is archived.")).toBeVisible();
   await expect(heading(page)).toHaveText("archive me");
   await expect(sessionButton(page, "archive me")).toHaveCount(0);
+});
+
+// transfer is a DataTransfer in the page carrying a file named name, of type,
+// holding the bytes of base64, as a paste or drop carries it.
+const transfer = (page: Page, name: string, type: string, base64: string) =>
+  page.evaluateHandle(
+    ([name, type, base64]) => {
+      const data = new DataTransfer();
+      data.items.add(new File([Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))], name, { type }));
+      return data;
+    },
+    [name, type, base64],
+  );
+
+// attachment is the image shown in a sent prompt's bubble.
+const attachment = (page: Page) => prompts(page).getByRole("img", { name: "Attachment" });
+
+// loaded is how wide an image loaded, 0 until it has.
+const loaded = (image: ReturnType<typeof attachment>) => image.evaluate((img: HTMLImageElement) => img.naturalWidth);
+
+test("an image picked through Attach Image shows as a thumbnail", async ({ ox: page }) => {
+  await newSessionButton(page).click();
+  await attachPixel(page);
+  await expect(thumbnail(page)).toBeVisible();
+});
+
+test("a pasted image shows as a thumbnail", async ({ ox: page }) => {
+  await newSessionButton(page).click();
+  const data = await transfer(page, "pasted.png", "image/png", pixel.toString("base64"));
+  await prompt(page).evaluate(
+    (field, clipboardData) => field.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true })),
+    data,
+  );
+  await expect(thumbnail(page, "pasted.png")).toBeVisible();
+});
+
+test("an image dropped on the transcript shows as a thumbnail", async ({ ox: page }) => {
+  await newSession(page, "drop here");
+  const data = await transfer(page, "dropped.png", "image/png", pixel.toString("base64"));
+  await transcript(page).dispatchEvent("dragover", { dataTransfer: data });
+  await transcript(page).dispatchEvent("drop", { dataTransfer: data });
+  await expect(thumbnail(page, "dropped.png")).toBeVisible();
+});
+
+test("an image dropped on an archived session's transcript is not attached", async ({ ox: page }) => {
+  await newSession(page, "archive me");
+  await archive(page, "archive me");
+  const data = await transfer(page, "dropped.png", "image/png", pixel.toString("base64"));
+  await transcript(page).dispatchEvent("dragover", { dataTransfer: data });
+  await transcript(page).dispatchEvent("drop", { dataTransfer: data });
+  await main(page).getByRole("button", { name: "Unarchive" }).click();
+  await expect(prompt(page)).toBeVisible();
+  await expect(thumbnail(page, "dropped.png")).toHaveCount(0);
+});
+
+test("Remove Image removes the attached image", async ({ ox: page }) => {
+  await newSessionButton(page).click();
+  await attachPixel(page);
+  await main(page).getByRole("button", { name: "Remove Image" }).click();
+  await expect(thumbnail(page)).toHaveCount(0);
+});
+
+test("a file that is not an image is refused with an error", async ({ ox: page }) => {
+  await newSessionButton(page).click();
+  await pickFiles(page, [{ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("notes") }]);
+  await expect(main(page).getByRole("alert")).toHaveText("Attach PNG, JPEG, GIF, or WebP images.");
+  await expect(thumbnail(page, "notes.txt")).toHaveCount(0);
+});
+
+test("images over 10 MiB in total are refused with an error", async ({ ox: page }) => {
+  await newSessionButton(page).click();
+  const half = Buffer.alloc(5 << 20);
+  await pickFiles(page, [
+    { name: "a.png", mimeType: "image/png", buffer: half },
+    { name: "b.png", mimeType: "image/png", buffer: Buffer.alloc((5 << 20) + 1) },
+  ]);
+  await expect(main(page).getByRole("alert")).toHaveText("Images can total at most 10 MiB.");
+  await expect(thumbnail(page, "a.png")).toHaveCount(0);
+});
+
+test("a prompt of an image alone sends, and its bubble shows only the image", async ({ ox: page }) => {
+  await newSessionButton(page).click();
+  await attachPixel(page);
+  await prompt(page).press("Enter");
+  await expect(replies(page)).toHaveText(["You said:  [images: 1]"]);
+  await expect(prompts(page)).toHaveText([""]);
+  await expect(attachment(page)).toBeVisible();
+});
+
+test("a sent image shows in its prompt on every page and after a reload", async ({ ox: page, context }) => {
+  await newSession(page, "first");
+  await attachPixel(page);
+  await prompt(page).fill("look");
+  await prompt(page).press("Enter");
+  await expect(replies(page).last()).toHaveText("You said: look [images: 1]");
+  await expect.poll(() => loaded(attachment(page))).toBe(1);
+
+  const other = await context.newPage();
+  await other.goto(page.url());
+  await expect(prompts(other)).toHaveText(["first", "look"]);
+  await expect.poll(() => loaded(attachment(other))).toBe(1);
+
+  await page.reload();
+  await expect(prompts(page)).toHaveText(["first", "look"]);
+  await expect.poll(() => loaded(attachment(page))).toBe(1);
+});
+
+test("a send clears the composer's images", async ({ ox: page }) => {
+  await newSession(page, "first");
+  await attachPixel(page);
+  await prompt(page).fill("look");
+  await prompt(page).press("Enter");
+  await expect(replies(page).last()).toHaveText("You said: look [images: 1]");
+  await expect(thumbnail(page)).toHaveCount(0);
 });
