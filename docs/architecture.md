@@ -271,9 +271,11 @@ have bound; both listeners serve the same relay and UI.
 The page reopens the event stream a second after it drops, and at once when the
 page becomes visible while it is not connected. It shows stream errors while
 reconnecting and asks for a reload once `ox` refuses the stream. A request that
-cannot reach the relay drops the connection as a stream error does. A reload
-request that fails while the stream is connected repeats each second, and its
-failure shows as the page error until it is answered.
+cannot reach the relay drops the connection as a stream error does. Each
+stream's reload sends its requests, and their repeats, only on that stream, and
+ends when the stream drops. A reload request that fails while its stream is
+connected repeats each second, and its failure shows as the page error until it
+is answered. Only the current stream's reload marks the page caught up.
 
 A session's control owns the page's requests for that session: its composer text
 and attached images, the folders its file tree has expanded, its open file with

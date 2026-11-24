@@ -5,6 +5,7 @@ import type { Locator, Page, Request, Route } from "@playwright/test";
 import { fakeConfig } from "./services";
 import {
   addWorkspace,
+  clocked,
   expect,
   hold,
   isRequest,
@@ -25,20 +26,6 @@ import {
   test,
   workspaceSection,
 } from "./ui";
-
-// clocked runs the page under Playwright's clock, paused once the page has
-// loaded, so the page's clock ticks only on runFor(1000).
-const start = new Date("2026-01-01T00:00:00Z");
-const clocked = test.extend({
-  page: async ({ page }, use) => {
-    await page.clock.install({ time: start });
-    await use(page);
-  },
-  ox: async ({ ox }, use) => {
-    await ox.clock.pauseAt(new Date(start.getTime() + 3_600_000));
-    await use(ox);
-  },
-});
 
 const files = (page: Page) => page.getByRole("complementary", { name: "Files" });
 // entry is the file tree's button for the file or folder called name.

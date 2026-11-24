@@ -22,6 +22,20 @@ export const test = base.extend<{ config: object; services: Services; ox: Page }
   },
 });
 
+// clocked runs the page under Playwright's clock, paused once the page has
+// loaded, so the page's clock ticks only on runFor(1000).
+const start = new Date("2026-01-01T00:00:00Z");
+export const clocked = test.extend({
+  page: async ({ page }, use) => {
+    await page.clock.install({ time: start });
+    await use(page);
+  },
+  ox: async ({ ox }, use) => {
+    await ox.clock.pauseAt(new Date(start.getTime() + 3_600_000));
+    await use(ox);
+  },
+});
+
 // addWorkspace adds the directory at path through the Add workspace dialog.
 export async function addWorkspace(page: Page, path: string) {
   await page.getByRole("button", { name: "Add workspace" }).click();

@@ -10,6 +10,7 @@ import {
   allow,
   ask,
   attachPixel,
+  clocked,
   cutReply,
   errors,
   expect,
@@ -1278,6 +1279,59 @@ test("a reconnect repeats a failed request until the page catches up", async ({ 
   await expect(prompts(page)).toHaveText(["second", "while failing"]);
   await expect(send(page)).toBeEnabled();
   await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+clocked("a retry from a dropped stream does not use the next stream", async ({ ox: page, services }) => {
+  await newSession(page, "first");
+  const reconnecting = page.getByRole("status").filter({ hasText: "Reconnecting…" });
+  // The first stream's reload sleeps on the paused clock after a failure.
+  const listing = await hold(page, "workspace/list");
+  await services.restartRelay();
+  await expect(reconnecting).toBeVisible();
+  await showPage(page);
+  await listing.arrived;
+  listing.fail("listing unavailable");
+  await expect(page.getByRole("alert").filter({ hasText: "listing unavailable" })).toBeVisible();
+
+  const catalog = await hold(page, "harness/list");
+  const lists = rpcCalls(page, "workspace/list");
+  await services.restartRelay();
+  await expect(reconnecting).toBeVisible();
+  await showPage(page);
+  await catalog.arrived;
+  // Wakes the first stream's retry while the second stream's reload waits.
+  await page.clock.runFor(1000);
+  catalog.release();
+  await expect(send(page)).toBeEnabled();
+  expect(lists).toHaveLength(1);
+});
+
+clocked("a session's load from a dropped stream does not use the next stream", async ({ ox: page, services }) => {
+  await newSession(page, "parent");
+  // The load that the child's session/created starts sleeps on the paused
+  // clock after a failure.
+  const snapshot = await hold(page, "session/get");
+  const child = await createChild(services, sessionId(page), "Child");
+  await snapshot.arrived;
+  snapshot.fail("snapshot unavailable");
+  await expect(page.getByRole("alert").filter({ hasText: "snapshot unavailable" })).toBeVisible();
+
+  const posted: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() !== "POST" || !request.url().includes("/rpc")) return;
+    const { method, params } = request.postDataJSON();
+    if (method === "session/get" && params.session_id !== child.session_id) return;
+    if (["harness/list", "workspace/list", "session/get"].includes(method)) posted.push(method);
+  });
+  const catalog = await hold(page, "harness/list");
+  await services.restartRelay();
+  await expect(page.getByRole("status").filter({ hasText: "Reconnecting…" })).toBeVisible();
+  await showPage(page);
+  await catalog.arrived;
+  // Wakes the dropped stream's load while the next stream's reload waits.
+  await page.clock.runFor(1000);
+  catalog.release();
+  await expect.poll(() => posted).toEqual(["harness/list", "workspace/list", "session/get"]);
 });
 
 // createChild has session parent create a child titled title, which starts
