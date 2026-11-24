@@ -30,12 +30,16 @@ export type ApprovalResponse =
   | { behavior: "deny"; message: string; interrupt?: boolean };
 
 // Prompt is a client prompt, named by the message ID session/send returned,
-// with the IDs of its images, or a message from the session from. A prompt
-// with only images has no text.
+// with the IDs of its images, a message from the session from, or the reports
+// of the session's children. A prompt with only images has no text.
 export type Prompt = { message_id: string; text?: string } & (
-  | { from?: never; from_label?: never; images?: string[] }
-  | { from: string; from_label: string; images?: never }
+  | { from?: never; from_label?: never; images?: string[]; reports?: never }
+  | { from: string; from_label: string; images?: never; reports?: never }
+  | { from?: never; from_label?: never; images?: never; reports: Report[] }
 );
+
+// Report is a child session's account of one of its turns.
+export type Report = { from: string; from_label: string; text: string };
 
 export type Update = { time: string } & (
   | ({ type: "prompt" | "prompt_queued" | "prompt_cancelled" } & Prompt)

@@ -166,8 +166,9 @@ type Update struct {
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	ToolName  string          `json:"tool_name,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
-	Images    []string        `json:"images,omitempty"` // the image IDs of a prompt's lifecycle updates
-	Time      time.Time       `json:"time,omitzero"`    // when the agent published it
+	Images    []string        `json:"images,omitempty"`  // the image IDs of a prompt's lifecycle updates
+	Reports   []Report        `json:"reports,omitempty"` // the child reports of a reports input's lifecycle updates
+	Time      time.Time       `json:"time,omitzero"`     // when the agent published it
 }
 
 type Result struct {
@@ -182,20 +183,31 @@ type Snapshot struct {
 	Queued []Input `json:"queued"`
 }
 
-// Input is the user prompt or wrapped message the harness writes to the model.
+// Input is the user prompt, wrapped message, or child reports the harness
+// writes to the model.
 type Input struct {
-	MessageID string  `json:"message_id"`
-	Text      string  `json:"text"`
-	From      string  `json:"from,omitempty"` // the sending session of a message
-	FromLabel string  `json:"from_label,omitempty"`
-	Images    []Image `json:"images,omitempty"` // a user prompt's images, which the model receives with Content
-	Content   string  `json:"-"`                // what the model receives
+	MessageID string   `json:"message_id"`
+	Text      string   `json:"text"`
+	From      string   `json:"from,omitempty"` // the sending session of a message
+	FromLabel string   `json:"from_label,omitempty"`
+	Images    []Image  `json:"images,omitempty"`  // a user prompt's images, which the model receives with Content
+	Reports   []Report `json:"reports,omitempty"` // the child reports of a reports input
+	Content   string   `json:"-"`                 // what the model receives
+}
+
+// Report is a child session's account of one of its turns, which Ox sends to
+// its parent: the child's ID, its label when the report was made, and the
+// report's text.
+type Report struct {
+	From      string `json:"from"`
+	FromLabel string `json:"from_label"`
+	Text      string `json:"text"`
 }
 
 // Update builds a lifecycle update of kind for the input. Its Time is left for
 // the publisher.
 func (i Input) Update(kind string) Update {
-	return Update{Type: kind, MessageID: i.MessageID, Text: i.Text, From: i.From, FromLabel: i.FromLabel, Images: i.ImageIDs()}
+	return Update{Type: kind, MessageID: i.MessageID, Text: i.Text, From: i.From, FromLabel: i.FromLabel, Images: i.ImageIDs(), Reports: i.Reports}
 }
 
 // ImageIDs is the IDs of the input's images, or nil when it has none.

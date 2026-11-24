@@ -55,9 +55,9 @@ title.
 ## Sending prompts
 
 - **Only the user sends.** A prompt is sent only when the user submits it, and a
-  message only when another session's Claude sends it: showing a view,
-  reconnecting, or reloading sends nothing, and a failed send is never retried
-  automatically.
+  message only when another session sends it or Ox reports a child's turn to its
+  parent: showing a view, reconnecting, or reloading sends nothing, and a failed
+  send is never retried automatically.
 - **Send cut off.** A send cut off by a lost connection shows an error even if
   Claude received the prompt; the transcript shows whether it did.
 - **Unsent text.** Unsent text, in a session or in a workspace's new-session
@@ -190,6 +190,15 @@ title.
   sending Claude gets the reason. Messages Claude has not taken are dropped if
   Claude fails to start, when Claude exits, or when `oxd` stops; a failed start
   shows why in the transcript.
+- **Child reports.** When a child session's turn ends, its parent receives the
+  child's final reply, or why the turn failed, as a report, without either
+  session sending a message. Reports wait until the parent is idle or parked and
+  none of its children is working, then arrive together as one message, after
+  any message already waiting, each headed with its child's label; a child
+  waiting on the user does not hold them back. A report carries only the first
+  400 characters of a longer reply, none is sent when the child's last action
+  was a message to its parent, and reports not yet delivered are dropped when
+  `oxd` stops.
 - **Messages stay in Ox.** Claude messages only Ox's own sessions, and only
   through Ox. Other Claude Code sessions on this machine cannot message an Ox
   session.

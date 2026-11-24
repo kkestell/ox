@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kkestell/ox/internal/agent"
 	"github.com/kkestell/ox/internal/store"
@@ -44,7 +45,31 @@ type session struct {
 	agent       agent.Agent // nil while parked
 	parkTimer   *time.Timer // armed while the agent is parkable
 	ended       bool
+	toParent    *toParent // nil for a top-level session
 }
+
+// toParent is what a child keeps for its parent: the reports its parent has
+// not taken, oldest first, and whether its current step told the parent
+// itself.
+type toParent struct {
+	reports []agent.Report
+	told    told
+}
+
+// told tracks a child's send_message to its parent through the step that made
+// it. The call's own tool_use may arrive before or after the call sets
+// toldSent; its tool_result always follows, and the next step's tool_use
+// follows that, which clears it. A turn's result or exit clears it too.
+type told int
+
+const (
+	notTold      told = iota
+	toldSent          // the parent accepted the message; its tool_result has not arrived
+	toldAnswered      // a tool_result arrived since; the next tool_use is a later step
+)
+
+// reportRunes is how much of a child's text a report carries.
+const reportRunes = 400
 
 // firstLine is the line of a prompt that labels its session.
 func firstLine(text string) string {
@@ -75,6 +100,9 @@ func (s *Server) newSession(record *store.Session, workspace, firstLine string) 
 		settings:    agent.Settings{Model: record.Model, Effort: record.Effort, PermissionMode: record.PermissionMode},
 		resumeToken: record.ResumeToken,
 		history:     history{store: s.store, sessionID: record.ID},
+	}
+	if record.Child != nil {
+		sess.toParent = &toParent{}
 	}
 	return sess
 }
@@ -434,9 +462,124 @@ func (sess *session) update(update agent.Update) {
 	switch {
 	case update.Type == agent.UpdatePromptCancelled:
 		sess.deleteImages(update.Images)
-	case update.Type == agent.UpdatePrompt && update.From == "" && sess.child == nil:
+	case update.Type == agent.UpdatePrompt && update.From == "" && update.Reports == nil && sess.child == nil:
 		sess.labelFrom(update.Text)
 	}
+	if sess.toParent != nil {
+		sess.report(update)
+	}
+	if update.Type == agent.UpdateParked || update.Type == agent.UpdateState && update.State != agent.StateRunning {
+		sess.pingFamily()
+	}
+}
+
+// report keeps a child's report of a turn's result, unless the child told its
+// parent itself in the turn's last step, or of an exit, and moves told.
+func (sess *session) report(update agent.Update) {
+	t := sess.toParent
+	var text string
+	made := false
+	switch update.Type {
+	case agent.UpdateToolResult:
+		if t.told == toldSent {
+			t.told = toldAnswered
+		}
+	case agent.UpdateToolUse:
+		if t.told == toldAnswered {
+			t.told = notTold
+		}
+	case agent.UpdateResult:
+		if made = t.told == notTold; made {
+			text = update.Result.Text
+			if update.Result.IsError {
+				text = "Turn failed: " + text
+			}
+		}
+		t.told = notTold
+	case agent.UpdateExited:
+		text, made = "Exited: "+update.Error, true
+		t.told = notTold
+	}
+	if !made {
+		return
+	}
+	if n := utf8.RuneCountInString(text); n > reportRunes {
+		text = fmt.Sprintf("%s…\n(first %d of %d characters; read the rest with read_session on %s.)",
+			string([]rune(text)[:reportRunes]), reportRunes, n, sess.id)
+	}
+	t.reports = append(t.reports, agent.Report{From: sess.id, FromLabel: sess.child.Title, Text: text})
+}
+
+// pingFamily has the session's parent, and the session itself when it has
+// children, try to deliver reports, now that it has stopped working.
+func (sess *session) pingFamily() {
+	s := sess.server
+	s.mu.Lock()
+	var targets []*session
+	if sess.child != nil {
+		if parent := s.sessions[sess.child.ParentID]; parent != nil {
+			targets = append(targets, parent)
+		}
+	}
+	if len(s.children(sess)) > 0 {
+		targets = append(targets, sess)
+	}
+	s.mu.Unlock()
+	for _, target := range targets {
+		// A later operation, so the session never waits on another here.
+		go target.post(target.deliverReports)
+	}
+}
+
+// deliverReports sends the session every untaken report of its children as
+// one input, once it is free and none of its children is running. It runs on
+// the session's goroutine. A free session has no input untaken, so messages
+// already waiting go first. It waits on each child's goroutine; a session
+// goroutine waits on another only from an ancestor to a descendant, so no
+// chain of waits returns to it.
+func (sess *session) deliverReports() {
+	if !sess.free() {
+		return
+	}
+	s := sess.server
+	s.mu.Lock()
+	closed, archived, children := s.closed, sess.archived, s.children(sess)
+	s.mu.Unlock()
+	if closed || archived {
+		return
+	}
+	slices.SortFunc(children, func(a, b *session) int { return a.createdAt.Compare(b.createdAt) })
+	for _, c := range children {
+		if ask(c, func() bool { return c.snapshot().State == agent.StateRunning }) {
+			return
+		}
+	}
+	var reports []agent.Report
+	for _, c := range children {
+		taken := ask(c, func() []agent.Report {
+			taken := c.toParent.reports
+			c.toParent.reports = nil
+			return taken
+		})
+		reports = append(reports, taken...)
+	}
+	if len(reports) == 0 {
+		return
+	}
+	if err := sess.acceptMessage(reportsInput(reports)); err != nil {
+		log.Printf("session %s: deliver reports: %v", sess.id, err)
+	}
+}
+
+// ask runs f on the session's goroutine and returns its result, or the zero
+// value once the session has ended.
+func ask[T any](sess *session, f func() T) T {
+	result := make(chan T, 1)
+	if !sess.post(func() { result <- f() }) {
+		var zero T
+		return zero
+	}
+	return <-result
 }
 
 // labelFrom labels a top-level session with the first prompt the user sent it

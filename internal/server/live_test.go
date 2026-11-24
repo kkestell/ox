@@ -818,6 +818,104 @@ func TestLive(t *testing.T) {
 		l.c.call("session/destroy", map[string]string{"session_id": started.SessionID})
 	})
 
+	section("child reports", func(l *live) {
+		// A child's final reply reaches its parent as a report, unless the
+		// child's last step before it was a message to the parent. Each case
+		// has its own parent, and Haiku may add turns of its own, so each
+		// checks only the reports of its child.
+		const noAnswer = "Hello, nothing to answer."
+		// child has a new parent start a child with message and returns both.
+		child := func(name, message string) (string, string) {
+			l.t.Helper()
+			parent := l.create("manual")
+			tools := l.turn(parent, "Load and call the mcp__ox__create_session tool with name "+name+", title "+name+
+				`, and message "`+message+`" Then reply with just ok.`, l.refuse)
+			if !slices.Contains(tools, "mcp__ox__create_session") {
+				l.t.Fatalf("Haiku did not call create_session (%v); run again: %s", tools, describe(l.c.received(parent)))
+			}
+			for _, m := range l.c.created() {
+				var created struct {
+					Child *store.Child `json:"child"`
+				}
+				json.Unmarshal(m.Params, &created)
+				if created.Child != nil && created.Child.ParentID == parent && created.Child.Name == name {
+					return parent, m.sessionID()
+				}
+			}
+			l.t.Fatalf("create_session started no child %s: %s", name, describe(l.c.received(parent)))
+			return "", ""
+		}
+		// reportsUntil consumes parent's updates until it takes a report from
+		// child with text, and returns every report it took from child.
+		reportsUntil := func(parent, child, text string) []string {
+			l.t.Helper()
+			var reports []string
+			for {
+				u := l.c.update(parent, agent.UpdatePrompt)
+				for _, r := range u.Reports {
+					if r.From == child {
+						reports = append(reports, r.Text)
+					}
+				}
+				if slices.Contains(reports, text) {
+					return reports
+				}
+			}
+		}
+		// told has a new parent start a child that messages it, then calls
+		// the tools in between, then replies, and returns the parent, the
+		// child, and the child's reply once it is idle.
+		told := func(name, between string) (string, string, string) {
+			l.t.Helper()
+			parent, id := child(name, "Step 1: load and call the mcp__ox__send_message tool with to set to your parent session, "+
+				"and text '"+noAnswer+"'. "+between+"Then reply with just the word done, without calling any other tool.")
+			reply := l.c.update(id, agent.UpdateResult).Result.Text
+			l.idle(id)
+			var got struct {
+				History []agent.Update `json:"history"`
+			}
+			json.Unmarshal(l.c.call("session/get", map[string]string{"session_id": parent}), &got)
+			if !slices.ContainsFunc(got.History, func(u agent.Update) bool { return u.Type == agent.UpdatePrompt && u.From == id }) {
+				l.t.Fatalf("the child sent its parent no message; run again: %s", describe(l.c.received(id)))
+			}
+			return parent, id, reply
+		}
+
+		parent, done := child("done", "Reply with just the word done, without calling any tool.")
+		reply := l.c.update(done, agent.UpdateResult).Result.Text
+		if reports := reportsUntil(parent, done, reply); len(reports) != 1 {
+			l.t.Errorf("the parent took reports %q before the child's reply %q", reports, reply)
+		}
+
+		parent, quiet, reply := told("quiet", "")
+		l.turn(quiet, "Reply with just the word again, without calling any tool.", l.refuse)
+		again := l.c.update(quiet, agent.UpdateResult).Result.Text
+		if reports := reportsUntil(parent, quiet, again); slices.Contains(reports, reply) {
+			l.t.Errorf("a child that told its parent in its last step reported %q", reply)
+		}
+
+		parent, later, reply := told("later", "Step 2: after send_message returns, load and call the mcp__ox__list_sessions tool. ")
+		// The list_sessions call is a later step: its tool_use follows the
+		// message's tool_result. Calls in one step would send no report.
+		sendID, answered, stepped := "", false, false
+		for _, m := range l.c.received(later) {
+			var u agent.Update
+			json.Unmarshal(m.Params, &u)
+			switch {
+			case u.Type == agent.UpdateToolUse && u.ToolName == "mcp__ox__send_message":
+				sendID = u.ToolUseID
+			case u.Type == agent.UpdateToolResult && sendID != "" && u.ToolUseID == sendID:
+				answered = true
+			case u.Type == agent.UpdateToolUse && u.ToolName == "mcp__ox__list_sessions":
+				stepped = answered
+			}
+		}
+		if !stepped {
+			l.t.Fatalf("Haiku did not call list_sessions in a step after send_message; run again: %s", describe(l.c.received(later)))
+		}
+		reportsUntil(parent, later, reply)
+	})
+
 	section("no subagents", func(l *live) {
 		// Claude has no subagent tool; Ox's child sessions take its place.
 		session := l.create("manual")

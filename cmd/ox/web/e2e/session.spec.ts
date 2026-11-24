@@ -1,9 +1,5 @@
-// The web client against the real relay and oxd, with the fake harness,
-// which echoes each prompt back a word at a time, with the count of its
-// images, or first asks to approve a tool call for a prompt "approve <tool>
-// <input JSON>", or first streams <text> as reasoning for a prompt "think
-// <text>", or also runs a background task for a prompt "background
-// <milliseconds>".
+// The web client against the real relay and oxd, with the fake harness in
+// internal/fake, whose Send describes the prompts it answers.
 import { mkdtempSync } from "node:fs";
 import { basename } from "node:path";
 import type { Page, Route } from "@playwright/test";
@@ -51,7 +47,6 @@ import {
 } from "./ui";
 
 const main = (page: Page) => page.getByRole("main");
-const words = (n: number) => Array.from({ length: n }, (_, i) => `word${i}`).join(" ");
 
 test("edits typed while a new session is created and sent stay in the composer", async ({ ox: page }) => {
   await newSessionButton(page).click();
@@ -526,7 +521,7 @@ test("an oversized prompt fails visibly and stays in the box", async ({ ox: page
 test("Stop appears once the page's send is accepted, and stops it", async ({ ox: page }) => {
   await newSession(page, "earlier prompt");
   const held = await hold(page, "session/send");
-  await prompt(page).fill(words(200));
+  await prompt(page).fill("wait 60000");
   await prompt(page).press("Enter");
   await held.arrived;
   await expect(send(page)).toBeDisabled();
@@ -1229,11 +1224,14 @@ async function createChild(services: Services, parent: string, title: string, ar
 }
 
 // family creates the session "Parent", its child "Child", and the child's
-// child "Grandchild", and waits until all three are idle.
+// child "Grandchild", and waits until all three are idle. Child reports its
+// own turn and its turn on Grandchild's report, and Parent takes both before
+// the family goes quiet.
 async function family(page: Page, services: Services) {
   await newSession(page, "Parent");
   const child = await createChild(services, sessionId(page), "Child");
   await createChild(services, child.session_id, "Grandchild");
+  await expect(transcript(page).getByRole("region", { name: "Report from Child" })).toHaveCount(2);
   for (const title of ["Parent", "Child", "Grandchild"]) {
     await expect(sessionButton(page, title)).toHaveAccessibleDescription("idle");
   }
@@ -1275,6 +1273,23 @@ test("a child session shows its title, its directory, and its parent's message, 
     await expect(transcript(page).getByRole("article", { name: "Message from child parent" })).toHaveText(
       "child parenthello child",
     );
+  }
+});
+
+test("a child's reply reaches its parent as a report headed with its title, also after a reload", async ({
+  ox: page,
+  services,
+}) => {
+  await newSession(page, "report parent");
+  const parent = sessionId(page);
+  await createChild(services, parent, "Report child");
+  for (const reload of [false, true]) {
+    if (reload) await page.reload();
+    const report = transcript(page)
+      .getByRole("article", { name: "Child reports" })
+      .getByRole("region", { name: "Report from Report child" });
+    await expect(report).toContainText(`Report childYou said: Message from Ox session ${parent} ("report parent")`);
+    await expect(replies(page).last()).toContainText("You said: Reports from your child sessions");
   }
 });
 

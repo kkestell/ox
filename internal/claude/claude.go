@@ -46,7 +46,8 @@ func systemPrompt(oxSessionID, workspace string) string {
 		"Answer with `send_message` only when the sender needs something back, " +
 		"and don't reply to a reply that needs no answer.\n\n" +
 		"`send_message` returns once the message is queued. " +
-		"Answers arrive later as new input, so end your turn instead of waiting.\n\n" +
+		"Answers arrive later as new input, and when a child session's turn ends, Ox sends you its final reply, " +
+		"so end your turn instead of waiting or polling with `read_session`.\n\n" +
 		"A parked session has no running process, and a message starts it. Message one only when you need it."
 }
 

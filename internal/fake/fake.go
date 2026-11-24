@@ -22,8 +22,8 @@ type Agent struct {
 	settings agent.Settings
 	prompt   string // the ID of the input whose turn is running
 	reply    string
-	thoughts []string // the reasoning still to stream before the reply
-	words    []string
+	thoughts []string        // the reasoning still to stream before the reply
+	pieces   []string        // the reply still to stream
 	tool     string          // the tool call the prompt asked to approve
 	approval *agent.Approval // pending until answered, interrupted, or stopped
 	config   *configured     // the configuration awaiting its tick
@@ -33,7 +33,11 @@ type Agent struct {
 // step is the delay between a turn's steps.
 const step = 50 * time.Millisecond
 
-// tick streams the next word of prompt's reply.
+// maxPieces is the most steps a reply or its reasoning streams in, so a turn's
+// length does not grow with its input.
+const maxPieces = 4
+
+// tick streams the next piece of prompt's reply.
 type tick struct{ prompt string }
 
 // taskEnded ends a background task.
@@ -108,9 +112,9 @@ func (a *Agent) Handle(event agent.Event) {
 			a.after(step, tick{a.prompt})
 			return
 		}
-		if len(a.words) > 0 {
-			a.publish(agent.Update{Type: agent.UpdateTextDelta, Text: a.words[0]})
-			a.words = a.words[1:]
+		if len(a.pieces) > 0 {
+			a.publish(agent.Update{Type: agent.UpdateTextDelta, Text: a.pieces[0]})
+			a.pieces = a.pieces[1:]
 			a.after(step, tick{a.prompt})
 			return
 		}
@@ -119,7 +123,7 @@ func (a *Agent) Handle(event agent.Event) {
 }
 
 func (a *Agent) finish(result agent.Result) {
-	a.thoughts, a.words = nil, nil
+	a.thoughts, a.pieces = nil, nil
 	a.publish(agent.Update{Type: agent.UpdateResult, Result: &result})
 	if a.onResumable != nil {
 		a.onResumable(rand.Text())
@@ -143,9 +147,11 @@ func (a *Agent) idle() bool {
 
 // Send queues the input, and starts a turn with it when the agent is idle.
 // The reply echoes the input's Content, which the model would receive, and
-// the count of its images. An input "background <milliseconds>" also starts a
-// background task that runs that long, and an input "think <text>" streams
-// text as reasoning before the reply.
+// the count of its images, streamed in at most a few pieces. An input
+// "background <milliseconds>" also starts a background task that runs that
+// long, an input "wait <milliseconds>" keeps the turn running that long before
+// the reply, and an input "think <text>" streams text as reasoning before the
+// reply.
 func (a *Agent) Send(input agent.Input) error {
 	idle := a.idle()
 	a.tracker.Accept(input)
@@ -163,24 +169,41 @@ func (a *Agent) begin() {
 	if len(input.Images) > 0 {
 		a.reply += fmt.Sprintf(" [images: %d]", len(input.Images))
 	}
-	a.words = strings.SplitAfter(a.reply, " ")
+	a.pieces = split(a.reply)
 	if thought, ok := strings.CutPrefix(input.Content, "think "); ok {
-		a.thoughts = strings.SplitAfter(thought, " ")
+		a.thoughts = split(thought)
 	}
-	if d, ok := backgroundRequest(input.Content); ok {
+	if d, ok := durationRequest("background", input.Content); ok {
 		a.tracker.SetTasks(a.tracker.Tasks() + 1)
 		a.after(d, taskEnded{})
 	}
 	if tool, toolInput, ok := approvalRequest(input.Content); ok {
 		a.ask(tool, toolInput)
-	} else {
-		a.after(step, tick{a.prompt})
+		return
 	}
+	delay := step
+	if d, ok := durationRequest("wait", input.Content); ok {
+		delay = d
+	}
+	a.after(delay, tick{a.prompt})
 }
 
-// backgroundRequest reads a prompt of the form "background <milliseconds>".
-func backgroundRequest(text string) (time.Duration, bool) {
-	rest, ok := strings.CutPrefix(text, "background ")
+// split cuts text into at most maxPieces runs of whole words.
+func split(text string) []string {
+	words := strings.SplitAfter(text, " ")
+	size := (len(words) + maxPieces - 1) / maxPieces
+	var runs []string
+	for len(words) > 0 {
+		n := min(size, len(words))
+		runs = append(runs, strings.Join(words[:n], ""))
+		words = words[n:]
+	}
+	return runs
+}
+
+// durationRequest reads a prompt of the form "<verb> <milliseconds>".
+func durationRequest(verb, text string) (time.Duration, bool) {
+	rest, ok := strings.CutPrefix(text, verb+" ")
 	if !ok {
 		return 0, false
 	}
