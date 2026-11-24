@@ -216,26 +216,6 @@ test("a cancelled add cannot settle the next add dialog", async ({ page, service
   await expect(workspaceSection(page, services.workspace)).toBeVisible();
 });
 
-test("a cancelled removal cannot settle the next removal dialog", async ({ ox: page, services }) => {
-  await addWorkspace(page, "/");
-  const dialog = page.getByRole("alertdialog", { name: "Remove workspace?" });
-  const remove = async (path: string) =>
-    menuItem(await openMenu(workspaceSection(page, path)), "Remove workspace").click();
-  const first = await hold(page, "workspace/remove");
-  await remove("/");
-  await dialog.getByRole("button", { name: "Remove", exact: true }).click();
-  await first.arrived;
-  await dialog.getByRole("button", { name: "Cancel" }).click();
-  await remove(services.workspace);
-  first.release();
-  await expect(workspaceSection(page, "/")).toHaveCount(0);
-  await expect(dialog).toHaveAccessibleDescription(
-    `This removes "${services.workspace}" from Ox. The directory stays on disk.`,
-  );
-  await dialog.getByRole("button", { name: "Remove", exact: true }).click();
-  await expect(workspaceSection(page, services.workspace)).toHaveCount(0);
-});
-
 test("Remove workspace gives its reason while sessions remain, archived ones included", async ({
   ox: page,
   services,
@@ -262,7 +242,10 @@ test("Remove workspace gives its reason while sessions remain, archived ones inc
   await expect(await removeItem()).toBeEnabled();
 });
 
-test("removing a workspace asks first and shows a failure in the dialog", async ({ ox: page, services }) => {
+test("removing a workspace asks first, removes its section before oxd answers, and shows a failure in the session list", async ({
+  ox: page,
+  services,
+}) => {
   const workspace = workspaceSection(page, services.workspace);
   await menuItem(await openMenu(workspace), "Remove workspace").click();
   const dialog = page.getByRole("alertdialog", { name: "Remove workspace?" });
@@ -272,13 +255,11 @@ test("removing a workspace asks first and shows a failure in the dialog", async 
   const removal = await hold(page, "workspace/remove");
   await dialog.getByRole("button", { name: "Remove", exact: true }).click();
   await removal.arrived;
-  removal.fail("relay unavailable");
-  await expect(dialog.getByRole("alert")).toHaveText("relay unavailable");
-  await expect(workspace).toBeVisible();
-
-  await dialog.getByRole("button", { name: "Remove", exact: true }).click();
   await expect(dialog).toBeHidden();
   await expect(workspace).toHaveCount(0);
+  removal.fail("relay unavailable");
+  await expect(sessions(page).getByRole("alert")).toHaveText("relay unavailable");
+  await expect(workspace).toBeVisible();
 });
 
 test("removing a workspace discards its draft", async ({ ox: page, services }) => {

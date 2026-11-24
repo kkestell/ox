@@ -1,9 +1,9 @@
 import type { JSX } from "@solidjs/web";
-import { For, Match, Show, Switch, untrack } from "solid-js";
+import { For, Match, onCleanup, Show, Switch, untrack } from "solid-js";
 import { ApprovalRequest } from "./ApprovalRequest";
 import { AttachButton, createImageDrop, pasteImages, Thumbnails } from "./Attachments";
 import { Markdown } from "./Markdown";
-import { type Entry, type Session, type SessionControl, type SessionSnapshot, useOx } from "./ox";
+import { type Entry, type Outgoing, type Session, type SessionControl, type SessionSnapshot, useOx } from "./ox";
 import type { Prompt, Settings } from "./protocol";
 import { ModelPicker, Select } from "./SettingsFields";
 import { planOf, toolInputJSON, toolLabel, toolSummary } from "./toolInput";
@@ -37,17 +37,20 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
   const control = ox.control(untrack(() => props.session.id));
   const directory = () => props.session.child?.directory ?? ox.workspaceOf(props.session.id)?.path;
   // A stop sent before oxd reports a prompt running can overtake the send.
-  const running = () => props.snapshot.state === "running" || props.snapshot.state === "requires_action";
+  const running = () => props.session.state === "running" || props.session.state === "requires_action";
+  const archived = () => ox.archived(props.session);
   // A child of an archived session is unarchived with its parent.
+  const parent = () => props.session.child && ox.session(props.session.child.parent_id);
   const parentArchived = () => {
-    const parent = props.session.child && ox.session(props.session.child.parent_id);
-    return parent?.archived === true;
+    const p = parent();
+    return p !== undefined && ox.archived(p);
   };
   const send = (event: SubmitEvent) => {
     event.preventDefault();
-    control.send(control.text());
+    control.send();
   };
-  const drop = createImageDrop(control, () => !props.session.archived);
+  const drop = createImageDrop(control, () => !archived());
+  const answering = (approvalId: string) => control.answering().has(approvalId);
 
   return (
     <>
@@ -70,17 +73,21 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
         onDrop={drop.handlers.onDrop}
       >
         <div class="transcript">
-          <Transcript sessionId={props.session.id} snapshot={props.snapshot} />
+          <Transcript sessionId={props.session.id} snapshot={props.snapshot} outgoing={control.outgoing()} />
         </div>
       </div>
       <Show when={control.error()}>{(error) => <p role="alert">{error()}</p>}</Show>
       <Show when={control.notice()}>{(notice) => <p role="status">{notice()}</p>}</Show>
       <Show
-        when={!props.session.archived}
+        when={!archived()}
         fallback={
           <div class="composer archived">
             <p>{parentArchived() ? "This session is archived with its parent." : "This session is archived."}</p>
-            <button type="button" disabled={!ox.ready() || parentArchived()} onClick={() => control.unarchive()}>
+            <button
+              type="button"
+              disabled={!ox.ready() || parent()?.archived === true || ox.busy(props.session.id)}
+              onClick={() => control.unarchive()}
+            >
               Unarchive
             </button>
           </div>
@@ -93,12 +100,19 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
           onDragLeave={drop.handlers.onDragLeave}
           onDrop={drop.handlers.onDrop}
         >
+          {/* An approval being answered stays mounted, hidden, so a refused
+              answer brings it back as the user left it. */}
           <Show when={props.snapshot.approvals.length}>
-            <section class="pending" aria-label="Waiting on you">
+            <section
+              class="pending"
+              aria-label="Waiting on you"
+              hidden={props.snapshot.approvals.every((a) => answering(a.id))}
+            >
               <For each={props.snapshot.approvals}>
                 {(approval) => (
                   <ApprovalRequest
                     approval={approval}
+                    hidden={answering(approval.id)}
                     onAnswer={(response) => control.approve(approval.id, response)}
                   />
                 )}
@@ -119,7 +133,7 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
                 onKeyDown={sendOnEnter}
                 onPaste={pasteImages(control)}
               />
-              <Show when={running()}>
+              <Show when={running() && !control.stopping()}>
                 <button
                   type="button"
                   class="icon stop"
@@ -138,8 +152,17 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
   );
 }
 
-// Transcript shows the conversation followed by every pending input, in order.
-function Transcript(props: { sessionId: string; snapshot: SessionSnapshot }) {
+// Transcript shows the conversation followed by every pending input, in order,
+// ending with the page's prompt in flight until oxd reports it.
+function Transcript(props: { sessionId: string; snapshot: SessionSnapshot; outgoing?: Outgoing }) {
+  const submitted = () => {
+    const prompt = props.outgoing;
+    if (!prompt || prompt.phase === "sent") return;
+    const reported =
+      props.snapshot.queued.some((p) => p.message_id === prompt.id) ||
+      props.snapshot.entries.some((e) => e.kind === "prompt" && e.input.message_id === prompt.id);
+    return reported ? undefined : prompt;
+  };
   return (
     <>
       <For each={props.snapshot.entries}>
@@ -181,20 +204,37 @@ function Transcript(props: { sessionId: string; snapshot: SessionSnapshot }) {
           </Switch>
         )}
       </For>
-      <Show when={props.snapshot.queued.length}>
+      <Show when={props.snapshot.queued.length || submitted()}>
         <section class="queue" aria-label="Pending">
           <For each={props.snapshot.queued}>
             {(input) => <PromptBubble sessionId={props.sessionId} input={input} queued />}
           </For>
+          <Show when={submitted()} keyed>
+            {(prompt) => <SubmittedPrompt prompt={prompt} />}
+          </Show>
         </section>
       </Show>
     </>
   );
 }
 
-// PromptBubble shows a prompt and its images, a message headed with its
-// sender's label, or child reports each headed with its child's label.
-function PromptBubble(props: { sessionId: string; input: Prompt; queued?: boolean }) {
+// SubmittedPrompt is a prompt the page has sent and oxd has not reported,
+// with its images from the composer.
+export function SubmittedPrompt(props: { prompt: Outgoing }) {
+  return (
+    <PromptBubble
+      sessionId=""
+      input={{ message_id: props.prompt.id, text: props.prompt.text }}
+      files={props.prompt.images}
+      queued
+    />
+  );
+}
+
+// PromptBubble shows a prompt and its images, stored or local, a message
+// headed with its sender's label, or child reports each headed with its
+// child's label.
+function PromptBubble(props: { sessionId: string; input: Prompt; files?: File[]; queued?: boolean }) {
   return (
     <Show when={props.input.reports} fallback={<MessageBubble {...props} />}>
       {(reports) => (
@@ -213,7 +253,7 @@ function PromptBubble(props: { sessionId: string; input: Prompt; queued?: boolea
   );
 }
 
-function MessageBubble(props: { sessionId: string; input: Prompt; queued?: boolean }) {
+function MessageBubble(props: { sessionId: string; input: Prompt; files?: File[]; queued?: boolean }) {
   return (
     <article
       class={["prompt", { queued: props.queued, message: props.input.from !== undefined }]}
@@ -223,15 +263,23 @@ function MessageBubble(props: { sessionId: string; input: Prompt; queued?: boole
         <div class="from">{props.input.from_label}</div>
       </Show>
       {props.input.text}
-      <Show when={props.input.images?.length}>
+      <Show when={props.input.images?.length || props.files?.length}>
         <div class="images">
           <For each={props.input.images}>
             {(image) => <img src={`/images/${props.sessionId}/${image}`} alt="Attachment" />}
           </For>
+          <For each={props.files}>{(file) => <LocalImage file={file} />}</For>
         </div>
       </Show>
     </article>
   );
+}
+
+// LocalImage shows an image file the page holds.
+function LocalImage(props: { file: File }) {
+  const url = URL.createObjectURL(untrack(() => props.file));
+  onCleanup(() => URL.revokeObjectURL(url));
+  return <img src={url} alt="Attachment" />;
 }
 
 function ToolCall(props: { tool: Tool }) {

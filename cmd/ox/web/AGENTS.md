@@ -8,6 +8,12 @@ Use `make dev` to work on the [web client](../../../docs/architecture.md#web-ui)
   that state, so each field exists only in the states where it means
   something. Derive what a view shows from the store with `createMemo` or in
   JSX instead of writing a second copy to the store.
+- An action changes the page as soon as the user takes it, showing the result
+  it expects. The page holds each request in flight in one place and shows it
+  over the store until `oxd` answers: on success the store carries the result,
+  and on failure the page returns to the store and shows the error with
+  `createAttempt`. A spec for an action holds `oxd`'s reply and checks that
+  the page has already changed.
 - The user judges how UI changes look; the report on a UI change names the
   views it touches. Check how a change behaves in headless Chrome with
   Playwright, through `make e2e` specs or against a stack started on spare

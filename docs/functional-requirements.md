@@ -23,7 +23,7 @@ title.
   user sent it, or a short identifier before it has one.
 - **Session status.** Each session shows whether it is parked, idle, idle while
   background work Claude started still runs, running, waiting on the user, or
-  archived.
+  archived, as soon as the session list shows it.
 - **Collapsing child sessions.** A session with child sessions has a control on
   its row that hides or shows every session beneath it; clicking elsewhere on
   the row opens the session. Children start shown, a child created under a
@@ -45,9 +45,9 @@ title.
   prompt exactly once.
 - **Creation keeps the user's view.** A session whose creation finishes after
   the user has moved to another view does not take them away from it.
-- **Failed creation.** If creating a session fails, the draft keeps its text and
-  settings and shows the error, with a way back to the draft from any other
-  view, and the user can submit again.
+- **Failed creation.** If creating a session fails, its text and images return
+  to the draft with its settings and the error, with a way back to the draft
+  from any other view, and the user can submit again.
 - **Lost creation reply.** If the page loses the reply to a creation but the
   session exists, the page opens the session with the prompt unsent and asks the
   user to review its settings and send.
@@ -63,8 +63,9 @@ title.
 - **Unsent text.** Unsent text, in a session or in a workspace's new-session
   draft, survives switching views and reconnecting. Reloading the page discards
   it, and removing a workspace discards its draft.
-- **Composer after a send.** After a successful send the composer clears,
-  keeping anything typed since the send.
+- **Composer after a send.** Sending clears the composer at once. If the send
+  fails, its text and images return to the composer ahead of anything typed
+  since.
 - **Blank prompts.** A prompt with blank text and no images is not sent.
 - **Attaching images.** The user attaches PNG, JPEG, GIF, or WebP images to a
   prompt by picking files, pasting, or dropping them on the session, and sees
@@ -209,9 +210,10 @@ title.
   transcripts survive parking and `oxd` restarts.
 - **Resuming the conversation.** A parked session resumes its Claude
   conversation on the next send or message.
-- **Database failures.** Adding or removing a workspace shows a failure to save
-  in its dialog; any other failure to save goes to `oxd`'s log. A session whose
-  conversation could not be saved still resumes it until `oxd` restarts.
+- **Database failures.** Adding a workspace shows a failure to save in its
+  dialog, and removing one in the session list; any other failure to save goes
+  to `oxd`'s log. A session whose conversation could not be saved still resumes
+  it until `oxd` restarts.
 - **Lost conversation.** If Claude can no longer resume the conversation, the
   prompt is dropped with a notice in the transcript and its text returns to the
   composer, and the next send starts a new conversation without the earlier
@@ -247,6 +249,10 @@ title.
 
 - **Every page in sync.** Changes made from another page, to workspaces,
   sessions, settings, or a conversation, appear on every page as they happen.
+- **Actions show at once.** Each action shows its result on the page as soon as
+  the user takes it, and adding a workspace as soon as Ox has checked the
+  directory. If Ox refuses an action, the page goes back to how things stand and
+  shows why where the action was taken.
 - **Every request settles.** Every request ends in its result or an error, shown
   in the view that made it. The error stays until that view's next request, even
   if a later request finishes first.

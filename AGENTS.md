@@ -154,7 +154,8 @@ need them cannot happen.
   In TypeScript, a state with its own fields is a discriminated union.
 - Give each fact one source. Derive whatever can be derived from it instead of
   storing a copy and keeping the copy in sync. Two places that must agree
-  become one place that the other reads.
+  become one place that the other reads. A request the page has sent and
+  `oxd` has not answered is the page's own fact, not a copy of `oxd`'s state.
 - Decide each rule in one place. When several callers handle the same case,
   such as a parked session, the case belongs to the state's owner, and the
   callers take its answer.
@@ -217,6 +218,16 @@ The main checkout stays on `main` and only pulls. Each change starts with
 runs in that worktree. A child session that finds uncommitted work outside its
 brief, other than its sibling children's, stops and reports it to the session that started it. Changes reach
 `main` only by pull request, which the user merges.
+
+Several changes run at once, each with its own top-level agent. Those agents
+are peers: each decides for its own change, and they settle what their changes
+share by talking with `send_message`. Before its plan starts, and again before
+its push, a top-level agent checks the other worktrees (`git worktree list`)
+and open pull requests for changes to the same code, protocol, requirements,
+or agent instructions, and tells each one's top-level agent what its change
+alters there. A change to `AGENTS.md`, a skill, or a requirement reaches other
+worktrees only when they rebase, so its agent sends the new text to every
+other top-level agent with a change in flight.
 
 1. A child session on Opus 5.5 at high effort runs `/ox-plan`. The user
    approves the plan's requirement changes with its other product questions.

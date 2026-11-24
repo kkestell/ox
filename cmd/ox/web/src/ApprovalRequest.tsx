@@ -6,10 +6,11 @@ import { planOf, type Question, questionsOf, toolInputJSON, toolLabel, toolSubje
 
 type Choice = "allow" | "deny" | "other";
 
-type Props = { approval: Approval; onAnswer(response: ApprovalResponse): Promise<unknown> };
+type Props = { approval: Approval; hidden: boolean; onAnswer(response: ApprovalResponse): void };
 
 // ApprovalRequest answers one approval. An AskUserQuestion call shows its
-// questions as a form; any other approval shows a card.
+// questions as a form; any other approval shows a card. The page hides it
+// while its answer is in flight.
 export function ApprovalRequest(props: Props) {
   return (
     <Show
@@ -28,7 +29,6 @@ function PermissionCard(props: Props) {
   const id = createUniqueId();
   const [choice, setChoice] = createSignal<Choice>();
   const [reply, setReply] = createSignal("");
-  const [sending, setSending] = createSignal(false);
   let field!: HTMLInputElement;
   const plan = () => planOf(props.approval.request.tool_name, props.approval.request.input);
   const subject = () =>
@@ -41,13 +41,12 @@ function PermissionCard(props: Props) {
     else setReply("");
   };
   const submit = () => {
-    if (!ready() || sending()) return;
+    if (!ready()) return;
     const response: ApprovalResponse =
       choice() === "allow"
         ? { behavior: "allow", updatedInput: snapshot(props.approval.request.input) }
         : { behavior: "deny", message: choice() === "other" ? reply().trim() : "Denied by user" };
-    setSending(true);
-    props.onAnswer(response).finally(() => setSending(false));
+    props.onAnswer(response);
   };
 
   const radio = (value: Choice, label?: string) => (
@@ -56,14 +55,13 @@ function PermissionCard(props: Props) {
       id={`${id}-${value}`}
       name={id}
       checked={choice() === value}
-      disabled={sending()}
       aria-label={label}
       onChange={() => pick(value)}
     />
   );
 
   return (
-    <article class="approval" aria-labelledby={`${id}-title`}>
+    <article class="approval" aria-labelledby={`${id}-title`} hidden={props.hidden}>
       <p id={`${id}-title`}>Allow {toolLabel(props.approval.request.tool_name)}?</p>
       <Show when={plan()}>{(text) => <Markdown class="plan" text={text()} />}</Show>
       {/* The subject summarizes the input; expanding shows all of it. */}
@@ -91,7 +89,6 @@ function PermissionCard(props: Props) {
             placeholder="Other"
             aria-label="Other response"
             value={reply()}
-            disabled={sending()}
             onInput={(event) => {
               setReply(event.currentTarget.value);
               setChoice("other");
@@ -103,7 +100,7 @@ function PermissionCard(props: Props) {
         </div>
       </div>
       <div class="actions">
-        <button type="button" class="primary" disabled={!ready() || sending()} onClick={submit}>
+        <button type="button" class="primary" disabled={!ready()} onClick={submit}>
           Submit
         </button>
       </div>
@@ -131,18 +128,13 @@ function QuestionForm(props: Props & { questions: Question[] }) {
   const questions = untrack(() => props.questions);
   const [answers, setAnswers] = createStore<Answer[]>(questions.map(() => ({ labels: [], other: false, text: "" })));
   const [page, setPage] = createSignal(0);
-  const [sending, setSending] = createSignal(false);
   let form!: HTMLElement;
   const paged = questions.length > 1;
   const last = () => page() === questions.length - 1;
   const current = () => answerOf(questions[page()], answers[page()]) !== "";
   const answered = () => questions.every((q, i) => answerOf(q, answers[i]) !== "");
 
-  const send = (response: ApprovalResponse) => {
-    if (sending()) return;
-    setSending(true);
-    props.onAnswer(response).finally(() => setSending(false));
-  };
+  const send = (response: ApprovalResponse) => props.onAnswer(response);
   const submit = () => {
     if (!answered()) return;
     const result: Record<string, string> = {};
@@ -161,7 +153,7 @@ function QuestionForm(props: Props & { questions: Question[] }) {
   };
   const advance = () => {
     if (last()) submit();
-    else if (current() && !sending()) go(page() + 1);
+    else if (current()) go(page() + 1);
   };
   const pick = (i: number, question: Question, label: string, checked: boolean) =>
     setAnswers((draft) => {
@@ -174,7 +166,7 @@ function QuestionForm(props: Props & { questions: Question[] }) {
     });
 
   return (
-    <article ref={form} class="approval" aria-labelledby={`${id}-title`}>
+    <article ref={form} class="approval" aria-labelledby={`${id}-title`} hidden={props.hidden}>
       <p id={`${id}-title`}>Claude asks</p>
       <For each={questions}>
         {(question, i) => (
@@ -191,7 +183,6 @@ function QuestionForm(props: Props & { questions: Question[] }) {
                     id={`${id}-${i()}-${j()}`}
                     name={`${id}-${i()}`}
                     checked={answers[i()].labels.includes(option.label)}
-                    disabled={sending()}
                     onChange={(event) => pick(i(), question, option.label, event.currentTarget.checked)}
                   />
                   <label for={`${id}-${i()}-${j()}`}>
@@ -207,7 +198,6 @@ function QuestionForm(props: Props & { questions: Question[] }) {
                 name={`${id}-${i()}`}
                 aria-label="Other"
                 checked={answers[i()].other}
-                disabled={sending()}
                 onChange={(event) =>
                   setAnswers((draft) => {
                     draft[i()].other = event.currentTarget.checked;
@@ -220,7 +210,6 @@ function QuestionForm(props: Props & { questions: Question[] }) {
                 placeholder="Other"
                 aria-label="Other answer"
                 value={answers[i()].text}
-                disabled={sending()}
                 onInput={(event) =>
                   setAnswers((draft) => {
                     draft[i()].text = event.currentTarget.value;
@@ -249,27 +238,23 @@ function QuestionForm(props: Props & { questions: Question[] }) {
             {page() + 1} of {questions.length}
           </span>
         </Show>
-        <button
-          type="button"
-          disabled={sending()}
-          onClick={() => send({ behavior: "deny", message: "User declined to answer" })}
-        >
+        <button type="button" onClick={() => send({ behavior: "deny", message: "User declined to answer" })}>
           Decline
         </button>
         <Show when={paged}>
-          <button type="button" disabled={page() === 0 || sending()} onClick={() => go(page() - 1)}>
+          <button type="button" disabled={page() === 0} onClick={() => go(page() - 1)}>
             Previous
           </button>
         </Show>
         <Show
           when={last()}
           fallback={
-            <button type="button" class="primary" disabled={!current() || sending()} onClick={() => go(page() + 1)}>
+            <button type="button" class="primary" disabled={!current()} onClick={() => go(page() + 1)}>
               Next
             </button>
           }
         >
-          <button type="button" class="primary" disabled={!answered() || sending()} onClick={submit}>
+          <button type="button" class="primary" disabled={!answered()} onClick={submit}>
             Submit
           </button>
         </Show>

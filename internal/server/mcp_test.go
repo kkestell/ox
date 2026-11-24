@@ -307,8 +307,12 @@ func TestCreateSession(t *testing.T) {
 		var params struct {
 			Label string       `json:"label"`
 			Child *store.Child `json:"child"`
+			State string       `json:"state"`
 		}
 		json.Unmarshal(c.next(func(m message) bool { return m.Method == "session/created" && m.sessionID() == id }).Params, &params)
+		if params.State != "idle" {
+			t.Fatalf("session/created published child %s %q, not idle", id, params.State)
+		}
 		if params.Child == nil {
 			t.Fatalf("session/created for %s has no child", id)
 		}
@@ -327,6 +331,9 @@ func TestCreateSession(t *testing.T) {
 	workerChild := store.Child{ParentID: a, Name: "worker", Title: "Worker", Directory: dir}
 	if got := createdChild(c, worker.SessionID); got != workerChild {
 		t.Fatalf("session/created carried %+v", got)
+	}
+	if state := c.update(worker.SessionID, "state").State; state != "running" {
+		t.Fatalf("the child's first state update was %q, not running", state)
 	}
 	if taken := c.update(worker.SessionID, "prompt"); taken.From != a || taken.FromLabel != "parent A" || taken.Text != "hello child" {
 		t.Fatalf("the child did not take the message from its parent: %+v", taken)

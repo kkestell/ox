@@ -164,6 +164,7 @@ func (s *Server) listWorkspaces(reply replyFunc, id json.RawMessage) {
 		CreatedAt time.Time    `json:"created_at"`
 		Child     *store.Child `json:"child,omitempty"`
 		Archived  bool         `json:"archived,omitempty"`
+		State     string       `json:"state"`
 	}
 	type workspaceInfo struct {
 		WorkspaceID string        `json:"workspace_id"`
@@ -178,7 +179,7 @@ func (s *Server) listWorkspaces(reply replyFunc, id json.RawMessage) {
 	for i, w := range s.workspaces {
 		workspaces[i] = workspaceInfo{WorkspaceID: w.id, Path: w.path, CreatedAt: w.createdAt, Sessions: make([]sessionInfo, len(w.sessions))}
 		for j, sess := range w.sessions {
-			workspaces[i].Sessions[j] = sessionInfo{sess.id, sess.labelLocked(), sess.harness, sess.createdAt, sess.child, sess.archived}
+			workspaces[i].Sessions[j] = sessionInfo{sess.id, sess.labelLocked(), sess.harness, sess.createdAt, sess.child, sess.archived, sess.state}
 		}
 	}
 	reply(jsonrpc.Success(id, struct {
@@ -295,6 +296,13 @@ func (s *Server) readFile(reply replyFunc, id, params json.RawMessage) {
 	}{text}))
 }
 
+// isID reports whether id is 32 hexadecimal digits, the form of an ID a page
+// chooses.
+func isID(id string) bool {
+	_, err := hex.DecodeString(id)
+	return len(id) == 32 && err == nil
+}
+
 func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 	var input struct {
 		SessionID   string `json:"session_id"`
@@ -306,11 +314,9 @@ func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 		reply(invalidParams(id, "workspace_id, harness, model, and permission_mode are required"))
 		return
 	}
-	if input.SessionID != "" {
-		if _, err := hex.DecodeString(input.SessionID); len(input.SessionID) != 32 || err != nil {
-			reply(invalidParams(id, "session_id must be 32 hexadecimal digits"))
-			return
-		}
+	if input.SessionID != "" && !isID(input.SessionID) {
+		reply(invalidParams(id, "session_id must be 32 hexadecimal digits"))
+		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -374,8 +380,10 @@ func (s *Server) addSession(w *workspace, record *store.Session) (*session, erro
 }
 
 // publishLocked adds sess to w and to the sessions requests reach, and tells
-// every client. The caller holds s.mu.
+// every client. The caller holds s.mu and still owns sess, whose goroutine
+// has not started.
 func (s *Server) publishLocked(w *workspace, sess *session) {
+	sess.state = sess.snapshot().State
 	w.sessions = append(w.sessions, sess)
 	s.sessions[sess.id] = sess
 	s.broadcast("session/created", struct {
@@ -385,7 +393,8 @@ func (s *Server) publishLocked(w *workspace, sess *session) {
 		Harness     string       `json:"harness"`
 		CreatedAt   time.Time    `json:"created_at"`
 		Child       *store.Child `json:"child,omitempty"`
-	}{sess.id, w.id, sess.labelLocked(), sess.harness, sess.createdAt, sess.child})
+		State       string       `json:"state"`
+	}{sess.id, w.id, sess.labelLocked(), sess.harness, sess.createdAt, sess.child, sess.state})
 }
 
 // getSession returns a session's settings, history, queue, approvals, and
@@ -445,12 +454,17 @@ func decodeImages(encoded []string) ([]agent.Image, error) {
 func (s *Server) sendSession(reply replyFunc, id, params json.RawMessage) {
 	var input struct {
 		SessionID string   `json:"session_id"`
+		MessageID string   `json:"message_id"`
 		Text      string   `json:"text"`
 		Images    []string `json:"images"`
 	}
 	if err := json.Unmarshal(params, &input); err != nil || input.SessionID == "" ||
 		(strings.TrimSpace(input.Text) == "" && len(input.Images) == 0) {
 		reply(invalidParams(id, "session_id and text or images are required"))
+		return
+	}
+	if input.MessageID != "" && !isID(input.MessageID) {
+		reply(invalidParams(id, "message_id must be 32 hexadecimal digits"))
 		return
 	}
 	if len(input.Text) > 1<<20 {
@@ -469,7 +483,7 @@ func (s *Server) sendSession(reply replyFunc, id, params json.RawMessage) {
 				return
 			}
 		}
-		messageID, err := sess.sendPrompt(input.Text, images)
+		messageID, err := sess.sendPrompt(input.MessageID, input.Text, images)
 		if err != nil {
 			reply(failure(id, err))
 			return
