@@ -40,6 +40,7 @@ import {
   sessionItem,
   sessions,
   setSafeArea,
+  showPage,
   stop,
   test,
   thumbnail,
@@ -420,6 +421,25 @@ test("a closed stream offers a Reload button that reconnects", async ({ ox: page
   await page.unroute("**/events", refuse);
   await alert.getByRole("button", { name: "Reload" }).click();
   await expect(alert).toHaveCount(0);
+  await expect(send(page)).toBeEnabled();
+});
+
+test("a stalled reconnect resumes when the page is shown", async ({ ox: page, services }) => {
+  await newSession(page, "stalled");
+  // A request that is never answered, as when iOS suspends the page mid-reconnect.
+  // The handler stays installed because removing the route releases the requests it holds.
+  let stalled = true;
+  const held: Route[] = [];
+  await page.route("**/events", (route) => {
+    if (stalled) held.push(route);
+    else route.fallback();
+  });
+  await services.restartRelay();
+  await expect(page.getByRole("status").filter({ hasText: "Reconnecting…" })).toBeVisible();
+  await expect.poll(() => held.length).toBeGreaterThan(0);
+  stalled = false;
+  await showPage(page);
+  await expect(page.getByRole("status").filter({ hasText: "Reconnecting…" })).toHaveCount(0);
   await expect(send(page)).toBeEnabled();
 });
 

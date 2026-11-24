@@ -28,6 +28,7 @@ import {
   sessionItem,
   sessions,
   setSafeArea,
+  showPage,
   test,
   workspaceSection,
 } from "./ui";
@@ -444,6 +445,7 @@ clocked("a lost connection keeps the last listing", async ({ ox: page, services 
   await expect(page.getByText("Could not reach ox")).toHaveCount(0);
   await page.unroute("**/rpc*", aborted);
   await page.unroute("**/events", down);
+  await page.clock.runFor(1000);
   await expect(page.getByRole("status").filter({ hasText: "Reconnecting…" })).toHaveCount(0);
   await expect(send(page)).toBeEnabled();
 });
@@ -466,6 +468,7 @@ clocked(
     await services.restartRelay();
     await expect(page.getByRole("status").filter({ hasText: "Reconnecting…" })).toBeVisible();
     await page.unroute("**/events", down);
+    await page.clock.runFor(1000);
     await expect(send(page)).toBeEnabled({ timeout: 10_000 });
     const lists = rpcCalls(page, "workspace/list");
     stale.abort();
@@ -475,6 +478,20 @@ clocked(
     expect(lists).toEqual([]);
   },
 );
+
+clocked("a page shown while connected keeps a request in flight", async ({ ox: page, services }) => {
+  await showFiles(page);
+  mkdirSync(join(services.workspace, "src"));
+  writeFileSync(join(services.workspace, "src", "a.txt"), "");
+  await newSessionButton(page).click();
+  const listing = await hold(page, "workspace/list_folder", { path: "src" });
+  await entry(page, "src").click();
+  await listing.arrived;
+  await showPage(page);
+  listing.release();
+  await expect(entry(page, "a.txt")).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
 
 clocked(
   "a lost connection keeps the tree and lists nothing until the page has reloaded",
@@ -513,7 +530,17 @@ clocked(
 
     const reload = await hold(page, "workspace/list");
     await page.unroute("**/events");
-    await reload.arrived;
+    // The last attempt may still be failing, so fire the reconnect timer until one gets through.
+    let reloading = false;
+    void reload.arrived.then(() => {
+      reloading = true;
+    });
+    await expect
+      .poll(async () => {
+        await page.clock.runFor(1000);
+        return reloading;
+      })
+      .toBe(true);
     await page.clock.runFor(3000);
     reload.release();
     await expect(send(page)).toBeEnabled();

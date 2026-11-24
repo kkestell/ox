@@ -127,6 +127,9 @@ export async function allow(approval: Locator) {
   await approval.getByRole("button", { name: "Submit" }).click();
 }
 
+// showPage fires the event a browser sends when the page is shown again.
+export const showPage = (page: Page) => page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+
 // setSafeArea gives the page a phone's safe-area insets, in px.
 export async function setSafeArea(page: Page, insets: { top: number; bottom: number }) {
   const cdp = await page.context().newCDPSession(page);
