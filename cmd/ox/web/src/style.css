@@ -34,7 +34,7 @@ p { overflow-wrap: break-word; }
   --ring: light-dark(oklch(0.708 0 0), oklch(0.556 0 0));
   --sidebar: light-dark(oklch(0.985 0 0), oklch(0.205 0 0));
   --sidebar-accent: light-dark(oklch(0.97 0 0), color-mix(in srgb, oklch(0.269 0 0) 50%, var(--sidebar)));
-  --sidebar-selected: var(--secondary);
+  --sidebar-selected: light-dark(oklch(0.94 0 0), var(--secondary));
   --pane: color-mix(in oklab, var(--background), var(--card));
   --composer: light-dark(var(--card), color-mix(in oklab, oklch(0.205 0 0), white 4%));
   --radius: 0.625rem;
