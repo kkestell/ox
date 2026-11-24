@@ -298,11 +298,12 @@ details.tool pre + pre { border-top: 1px solid var(--border); }
 .composer .thumbnails { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .composer .thumbnail { position: relative; }
 .composer .thumbnail > img { display: block; width: 4rem; height: 4rem; object-fit: cover; }
-.composer .thumbnail button.icon { position: absolute; top: 0; right: 0; width: 2.25rem; height: 2.25rem; border-radius: var(--radius-md); background: var(--secondary); color: var(--secondary-foreground); }
-.composer .thumbnail button.icon:hover { background: color-mix(in oklab, var(--secondary) 80%, transparent); }
 .composer:has(.pending) .box { filter: drop-shadow(0 10px 8px rgb(0 0 0 / 4%)) drop-shadow(0 4px 3px rgb(0 0 0 / 10%)); }
 .composer textarea { flex: 1; min-height: 0; max-height: calc(8lh + 0.5rem); padding: 0.25rem; border: 0; outline: none; resize: none; field-sizing: content; background: transparent; line-height: 1.5rem; }
 .composer .box button.icon { width: 2rem; height: 2rem; }
+.composer .thumbnail button.icon { position: absolute; top: 0.125rem; right: 0.125rem; display: grid; place-items: center; width: 1.25rem; height: 1.25rem; border-radius: 50%; background: var(--secondary); color: var(--secondary-foreground); }
+.composer .thumbnail button.icon::before { width: 0.75rem; height: 0.75rem; }
+.composer .thumbnail button.icon:hover { background: color-mix(in oklab, var(--secondary) 80%, transparent); }
 .composer .box .send::before { translate: 0 1px; }
 .composer .settings { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; margin: 0.5rem -0.5rem 0; }
 .composer .settings > button.picker, .composer .select {
