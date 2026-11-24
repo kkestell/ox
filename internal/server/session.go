@@ -37,6 +37,9 @@ type session struct {
 	// The first nonblank first line of the prompts the user sent a top-level
 	// session, empty before it has one. Written only by run.
 	firstLine string
+	// The state last published to clients. Written by whoever owns the
+	// session: its builder until run starts, then run.
+	state string
 
 	// Owned by run.
 	settings    agent.Settings
@@ -97,6 +100,7 @@ func (s *Server) newSession(record *store.Session, workspace, firstLine string) 
 	sess := &session{
 		server: s, id: record.ID, harness: record.Harness, workspace: workspace, child: record.Child, createdAt: record.CreatedAt,
 		ops: make(chan func()), done: make(chan struct{}), archived: record.Archived, firstLine: firstLine,
+		state:       agent.StateParked,
 		settings:    agent.Settings{Model: record.Model, Effort: record.Effort, PermissionMode: record.PermissionMode},
 		resumeToken: record.ResumeToken,
 		history:     history{store: s.store, sessionID: record.ID},
@@ -156,7 +160,8 @@ func (sess *session) snapshot() agent.Snapshot {
 // take it; a message waits its turn instead. It stores the prompt's images
 // before sending, so a page can load them as soon as it sees the prompt, and
 // deletes them when the send fails.
-func (sess *session) sendPrompt(text string, images []agent.Image) (string, error) {
+// An empty messageID gets a generated one.
+func (sess *session) sendPrompt(messageID, text string, images []agent.Image) (string, error) {
 	if len(sess.snapshot().Queued) != 0 {
 		return "", agent.ErrBusy
 	}
@@ -173,7 +178,10 @@ func (sess *session) sendPrompt(text string, images []agent.Image) (string, erro
 			return "", err
 		}
 	}
-	input := agent.Input{MessageID: rand.Text(), Text: text, Images: images, Content: text}
+	if messageID == "" {
+		messageID = rand.Text()
+	}
+	input := agent.Input{MessageID: messageID, Text: text, Images: images, Content: text}
 	if err := sess.agent.Send(input); err != nil {
 		sess.deleteImages(input.ImageIDs())
 		return "", err
@@ -453,12 +461,29 @@ func (sess *session) end() {
 	sess.ended = true
 }
 
+// update records an update and tells every client. A state or parked update
+// is broadcast under Server.mu as it sets the published state, so it and
+// workspace/list reach every connection in one order.
 func (sess *session) update(update agent.Update) {
 	sess.history.record(update)
-	sess.server.broadcast("session/update", struct {
+	notification := struct {
 		SessionID string `json:"session_id"`
 		agent.Update
-	}{sess.id, update})
+	}{sess.id, update}
+	s := sess.server
+	switch update.Type {
+	case agent.UpdateState, agent.UpdateParked:
+		state := update.State
+		if update.Type == agent.UpdateParked {
+			state = agent.StateParked
+		}
+		s.mu.Lock()
+		sess.state = state
+		s.broadcast("session/update", notification)
+		s.mu.Unlock()
+	default:
+		s.broadcast("session/update", notification)
+	}
 	switch {
 	case update.Type == agent.UpdatePromptCancelled:
 		sess.deleteImages(update.Images)
@@ -544,16 +569,12 @@ func (sess *session) deliverReports() {
 	s := sess.server
 	s.mu.Lock()
 	closed, archived, children := s.closed, sess.archived, s.children(sess)
+	running := slices.ContainsFunc(children, func(c *session) bool { return c.state == agent.StateRunning })
 	s.mu.Unlock()
-	if closed || archived {
+	if closed || archived || running {
 		return
 	}
 	slices.SortFunc(children, func(a, b *session) int { return a.createdAt.Compare(b.createdAt) })
-	for _, c := range children {
-		if ask(c, func() bool { return c.snapshot().State == agent.StateRunning }) {
-			return
-		}
-	}
 	var reports []agent.Report
 	for _, c := range children {
 		taken := ask(c, func() []agent.Report {

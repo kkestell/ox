@@ -27,13 +27,13 @@ sessions. Requests sent without waiting for earlier responses can run in any
 order. The daemon gives each socket write five seconds to complete and buffers a
 limited backlog; a client that stops reading loses its connection.
 
-| Identifier     | Meaning                                                                                                                              |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `id`           | Client-chosen JSON-RPC request identifier, echoed in its response.                                                                   |
-| `workspace_id` | Opaque identifier returned by `workspace/create`.                                                                                    |
-| `session_id`   | Opaque identifier returned by `session/create`.                                                                                      |
-| `message_id`   | Input identifier returned by `session/send` for a user prompt, and included in [updates](#session-updates) for prompts and messages. |
-| `request_id`   | Claude's identifier for an approval, used to answer or withdraw it.                                                                  |
+| Identifier     | Meaning                                                                                                                                                      |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `id`           | Client-chosen JSON-RPC request identifier, echoed in its response.                                                                                           |
+| `workspace_id` | Opaque identifier returned by `workspace/create`.                                                                                                            |
+| `session_id`   | Opaque identifier returned by `session/create`.                                                                                                              |
+| `message_id`   | Input identifier chosen by the client or returned by `session/send` for a user prompt, and included in [updates](#session-updates) for prompts and messages. |
+| `request_id`   | Claude's identifier for an approval, used to answer or withdraw it.                                                                                          |
 
 ## Workspaces and sessions
 
@@ -140,16 +140,18 @@ existing ID.
 ### `workspace/list`
 
 Returns every workspace with its sessions, each oldest first. Each session has
-its `label`, as [`list_sessions`](#tools) gives it, a child session its `child`
-object, and an archived session `"archived": true`. A session's settings and
-state come from `session/get`.
+its `label`, as [`list_sessions`](#tools) gives it, its `state`, as the
+[`state` and `parked` updates](#session-updates) last published it, a child
+session its `child` object, and an archived session `"archived": true`. The list
+follows every `state` and `parked` update it reflects and precedes every one it
+does not. A session's settings come from `session/get`.
 
 ```json
 {"jsonrpc":"2.0","id":2,"method":"workspace/list","params":{}}
 ```
 
 ```json
-{"jsonrpc":"2.0","id":2,"result":{"workspaces":[{"workspace_id":"workspace-id","path":"/Users/kyle/src/ox","created_at":"2026-11-18T19:53:47.102Z","sessions":[{"session_id":"session-id","label":"Explain this repository.","harness":"claude","created_at":"2026-11-18T19:53:48.416Z"}]}]}}
+{"jsonrpc":"2.0","id":2,"result":{"workspaces":[{"workspace_id":"workspace-id","path":"/Users/kyle/src/ox","created_at":"2026-11-18T19:53:47.102Z","sessions":[{"session_id":"session-id","label":"Explain this repository.","harness":"claude","created_at":"2026-11-18T19:53:48.416Z","state":"idle"}]}]}}
 ```
 
 ### `workspace/remove`
@@ -245,12 +247,14 @@ stored settings.
 ### `session/send`
 
 Requires `session_id` and nonblank `text`, `images`, or both. Sends a prompt to
-an idle or working session and returns the prompt's `message_id`. Text over
-1,048,576 bytes after JSON decoding returns `-32602`. `images` is an array of
-base64 strings, each a PNG, JPEG, GIF, or WebP image, whose type the daemon
-takes from its bytes; any other data, or more than 10,485,760 bytes of images in
-total after decoding, returns `-32602`. The daemon stores each image with the
-session under an image ID, which the prompt's updates carry and
+an idle or working session and returns the prompt's `message_id`: the optional
+`message_id` the client chose, 32 hexadecimal digits, or else one the daemon
+assigns. A malformed `message_id` returns `-32602`. Text over 1,048,576 bytes
+after JSON decoding returns `-32602`. `images` is an array of base64 strings,
+each a PNG, JPEG, GIF, or WebP image, whose type the daemon takes from its
+bytes; any other data, or more than 10,485,760 bytes of images in total after
+decoding, returns `-32602`. The daemon stores each image with the session under
+an image ID, which the prompt's updates carry and
 [`session/image`](#sessionimage) serves; Claude receives the images before the
 text. A parked session first starts a process; a process that cannot be launched
 returns an operation error. Success means the prompt was written to Claude, or
@@ -565,19 +569,19 @@ notifications precede the corresponding `idle` or `exited` update:
 
 Every connection is told when workspaces and sessions come and go:
 
-| Method               | `params`                                                                                                                                     | Meaning                                                                                                                                                            |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `workspace/created`  | `workspace_id`, `path`, `created_at`                                                                                                         | A workspace was registered.                                                                                                                                        |
-| `workspace/removed`  | `workspace_id`                                                                                                                               | A workspace was removed.                                                                                                                                           |
-| `session/created`    | `session_id`, `workspace_id`, `label` (a child's title, or the first 8 characters of its ID), `harness`, `created_at`, and a child's `child` | A session was created: a top-level session parked, a child started with its first message, whose updates follow.                                                   |
-| `session/labeled`    | `session_id`, `label`                                                                                                                        | A top-level session took the first prompt the user sent it, and `label` is its first line. Sent once per session.                                                  |
-| `session/configured` | `session_id`, `model`, `effort`, `permission_mode`                                                                                           | A session's settings changed, by `session/configure` or by the harness itself, such as Claude leaving plan mode; the fields are the settings the session now uses. |
-| `session/destroyed`  | `session_id`                                                                                                                                 | A session was destroyed, after its last update.                                                                                                                    |
-| `session/archived`   | `session_id`                                                                                                                                 | A session was archived, before the `parked` update that stops its process.                                                                                         |
-| `session/unarchived` | `session_id`                                                                                                                                 | A session was unarchived.                                                                                                                                          |
+| Method               | `params`                                                                                                                                              | Meaning                                                                                                                                                            |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `workspace/created`  | `workspace_id`, `path`, `created_at`                                                                                                                  | A workspace was registered.                                                                                                                                        |
+| `workspace/removed`  | `workspace_id`                                                                                                                                        | A workspace was removed.                                                                                                                                           |
+| `session/created`    | `session_id`, `workspace_id`, `label` (a child's title, or the first 8 characters of its ID), `harness`, `created_at`, `state`, and a child's `child` | A session was created: a top-level session `parked`, a child `idle` and started with its first message, whose updates follow.                                      |
+| `session/labeled`    | `session_id`, `label`                                                                                                                                 | A top-level session took the first prompt the user sent it, and `label` is its first line. Sent once per session.                                                  |
+| `session/configured` | `session_id`, `model`, `effort`, `permission_mode`                                                                                                    | A session's settings changed, by `session/configure` or by the harness itself, such as Claude leaving plan mode; the fields are the settings the session now uses. |
+| `session/destroyed`  | `session_id`                                                                                                                                          | A session was destroyed, after its last update.                                                                                                                    |
+| `session/archived`   | `session_id`                                                                                                                                          | A session was archived, before the `parked` update that stops its process.                                                                                         |
+| `session/unarchived` | `session_id`                                                                                                                                          | A session was unarchived.                                                                                                                                          |
 
 ```json
-{"jsonrpc":"2.0","method":"session/created","params":{"session_id":"session-id","workspace_id":"workspace-id","label":"session-","harness":"claude","created_at":"2026-11-18T19:53:48.416Z"}}
+{"jsonrpc":"2.0","method":"session/created","params":{"session_id":"session-id","workspace_id":"workspace-id","label":"session-","harness":"claude","created_at":"2026-11-18T19:53:48.416Z","state":"parked"}}
 ```
 
 ## Connections

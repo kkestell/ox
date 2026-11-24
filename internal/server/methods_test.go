@@ -415,11 +415,53 @@ func TestSessionLifecycle(t *testing.T) {
 		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "effort": "low", "permission_mode": "plan",
 	}), &created)
 	id := created.SessionID
+	listedState := func() string {
+		var list struct {
+			Workspaces []struct {
+				Sessions []struct {
+					SessionID string `json:"session_id"`
+					State     string `json:"state"`
+				} `json:"sessions"`
+			} `json:"workspaces"`
+		}
+		json.Unmarshal(c.call("workspace/list", struct{}{}), &list)
+		for _, w := range list.Workspaces {
+			for _, sess := range w.Sessions {
+				if sess.SessionID == id {
+					return sess.State
+				}
+			}
+		}
+		return ""
+	}
+	var announced struct {
+		State string `json:"state"`
+	}
+	json.Unmarshal(c.next(func(m message) bool { return m.Method == "session/created" && m.sessionID() == id }).Params, &announced)
+	if announced.State != "parked" || listedState() != "parked" {
+		t.Fatalf("a new session was published %q and listed %q, not parked", announced.State, listedState())
+	}
+
+	if invalid := c.request("session/send", map[string]string{"session_id": id, "message_id": "not-an-id", "text": "hi"}); invalid.Error == nil || invalid.Error.Code != jsonrpc.InvalidParams {
+		t.Fatalf("a malformed message_id was taken: %+v", invalid.Error)
+	}
 
 	// The reply outlasts the park period, which starts only once the agent
 	// is parkable.
 	prompt := "one two three four five six seven eight"
-	c.call("session/send", map[string]string{"session_id": id, "text": prompt})
+	messageID := "0123456789abcdef0123456789abcdef"
+	var sent struct {
+		MessageID string `json:"message_id"`
+	}
+	json.Unmarshal(c.call("session/send", map[string]string{"session_id": id, "message_id": messageID, "text": prompt}), &sent)
+	if sent.MessageID != messageID {
+		t.Fatalf("a send with message_id %s returned %s", messageID, sent.MessageID)
+	}
+	for _, kind := range []string{"prompt_queued", "prompt"} {
+		if u := c.update(id, kind); u.MessageID != messageID {
+			t.Fatalf("%s carried message %s, not %s", kind, u.MessageID, messageID)
+		}
+	}
 	for {
 		var u agent.Update
 		c.next(func(m message) bool {
@@ -436,6 +478,9 @@ func TestSessionLifecycle(t *testing.T) {
 		if u.State == "idle" {
 			break
 		}
+	}
+	if state := listedState(); state != "idle" {
+		t.Fatalf("an idle session was listed %q", state)
 	}
 
 	if invalid := c.request("session/configure", map[string]string{"session_id": id, "effort": "max"}); invalid.Error == nil || invalid.Error.Code != jsonrpc.InvalidParams {

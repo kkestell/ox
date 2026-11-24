@@ -9,7 +9,14 @@ type DialogRequest =
   | { kind: "remove"; id: string; path: string };
 
 // The keyed view gives each opening its own element, target, and attempt.
-function WorkspaceDialog(props: { request: DialogRequest; onClose(): void }) {
+// Adding a workspace waits in the dialog for oxd, which checks the directory;
+// a deletion or removal closes the dialog at once and reports its request
+// through onRequest.
+function WorkspaceDialog(props: {
+  request: DialogRequest;
+  onClose(): void;
+  onRequest(request: Promise<unknown>): void;
+}) {
   const ox = useOx();
   const [error, attempt] = createAttempt();
   const [busy, setBusy] = createSignal(false);
@@ -20,14 +27,14 @@ function WorkspaceDialog(props: { request: DialogRequest; onClose(): void }) {
 
   const submit = (event: SubmitEvent & { currentTarget: HTMLFormElement }) => {
     event.preventDefault();
+    if (request.kind !== "add") {
+      dialog.close();
+      props.onRequest(request.kind === "delete" ? ox.destroy(request.id) : ox.removeWorkspace(request.id));
+      return;
+    }
     if (busy()) return;
-    const operation =
-      request.kind === "add"
-        ? ox.addWorkspace(String(new FormData(event.currentTarget).get("path")))
-        : request.kind === "delete"
-          ? ox.destroy(request.id)
-          : ox.removeWorkspace(request.id);
     setBusy(true);
+    const operation = ox.addWorkspace(String(new FormData(event.currentTarget).get("path")));
     attempt(operation.then(() => dialog.close())).finally(() => setBusy(false));
   };
 
@@ -133,7 +140,9 @@ function SessionRow(props: {
   onToggle(): void;
   onMenu(at: MenuAt): void;
 }) {
+  const ox = useOx();
   const session = () => props.row.session;
+  const archived = () => ox.archived(session());
   const id = createUniqueId();
   return (
     // biome-ignore lint/a11y/useAriaPropsSupportedByRole: WAI-ARIA 1.2 gives listitem aria-level, the session's depth in the tree.
@@ -144,7 +153,7 @@ function SessionRow(props: {
         child: props.row.depth > 0,
         first: props.row.first,
         last: props.row.last,
-        archived: session().archived,
+        archived: archived(),
       }}
       style={{ "--depth": props.row.depth, "--rise": props.row.rise }}
       onClick={(event) => {
@@ -165,22 +174,18 @@ function SessionRow(props: {
           onClick={() => props.onSelect()}
         >
           <Show
-            when={!session().archived}
+            when={!archived()}
             fallback={
               <span id={`${id}-status`} class="icon archive" role="img" title="archived" aria-label="archived" />
             }
           >
-            <Show when={session().load.snapshot?.state}>
-              {(status) => (
-                <span
-                  id={`${id}-status`}
-                  class={["status", status()]}
-                  role="img"
-                  title={status()}
-                  aria-label={status()}
-                />
-              )}
-            </Show>
+            <span
+              id={`${id}-status`}
+              class={["status", session().state]}
+              role="img"
+              title={session().state}
+              aria-label={session().state}
+            />
           </Show>
           <span id={`${id}-title`} class="title">
             {session().label}
@@ -318,30 +323,36 @@ export function Sidebar(props: {
     ox.workspaceOf(session.id)?.sessions.filter((other) => other.child?.parent_id === session.id) ?? [];
   const descendantsOf = (session: Session): Session[] =>
     childrenOf(session).flatMap((child) => [child, ...descendantsOf(child)]);
-  const visible = (workspaceId: string, session: Session) => !session.archived || shown().has(workspaceId);
+  const visible = (workspaceId: string, session: Session) => !ox.archived(session) || shown().has(workspaceId);
 
   // oxd archives a family only when each member is settled.
   const archiveBlocked = (session: Session) => {
     if (!ox.ready()) return "Not connected";
     const descendants = descendantsOf(session);
-    const free = [session, ...descendants].every((s) => s.load.kind === "live" && settled(s.load.snapshot.state));
-    if (free) return undefined;
+    if ([session, ...descendants].every((s) => settled(s.state))) return undefined;
     return descendants.length ? "Wait until it and its child sessions are idle" : "Wait until it is idle";
   };
+  // A session's items wait while it or an ancestor has a request in flight.
   const sessionItems = (session: Session): MenuItem[] => {
     const parent = session.child && ox.session(session.child.parent_id);
-    const archiveItem: MenuItem = session.archived
+    const waiting = ox.busy(session.id) ? "Wait until Ox answers" : undefined;
+    const archiveItem: MenuItem = ox.archived(session)
       ? {
           label: "Unarchive",
-          disabledBecause: parent?.archived ? "Unarchive its parent first" : ox.ready() ? undefined : "Not connected",
+          disabledBecause:
+            waiting ?? (parent?.archived ? "Unarchive its parent first" : ox.ready() ? undefined : "Not connected"),
           onChoose: () => attempt(ox.unarchive(session.id)),
         }
-      : { label: "Archive", disabledBecause: archiveBlocked(session), onChoose: () => attempt(ox.archive(session.id)) };
+      : {
+          label: "Archive",
+          disabledBecause: waiting ?? archiveBlocked(session),
+          onChoose: () => attempt(ox.archive(session.id)),
+        };
     return [
       archiveItem,
       {
         label: "Delete",
-        disabledBecause: childrenOf(session).length ? "Delete its child sessions first" : undefined,
+        disabledBecause: waiting ?? (childrenOf(session).length ? "Delete its child sessions first" : undefined),
         onChoose: () => setRequest({ kind: "delete", id: session.id, label: session.label }),
       },
     ];
@@ -380,7 +391,7 @@ export function Sidebar(props: {
       const session = ox.session(id);
       return session && { request: current, label: "Session actions", items: sessionItems(session) };
     }
-    const workspace = ox.state.workspaces.find((w) => w.id === id);
+    const workspace = ox.workspaces().find((w) => w.id === id);
     return workspace && { request: current, label: "Workspace actions", items: workspaceItems(workspace) };
   };
   const menuOf = (kind: "session" | "workspace", id: string) => (at: MenuAt) =>
@@ -401,7 +412,7 @@ export function Sidebar(props: {
       />
       <Show when={error()}>{(message) => <p role="alert">{message()}</p>}</Show>
       <Show when={request()} keyed>
-        {(current) => <WorkspaceDialog request={current} onClose={() => setRequest(undefined)} />}
+        {(current) => <WorkspaceDialog request={current} onClose={() => setRequest(undefined)} onRequest={attempt} />}
       </Show>
       {/* Keyed by request, so each opening gets its own popover; a stale
           close leaves a newer request open. */}
@@ -419,11 +430,11 @@ export function Sidebar(props: {
           </Show>
         )}
       </Show>
-      <For each={ox.state.workspaces}>
+      <For each={ox.workspaces()}>
         {(workspace) => {
           const rows = createMemo(() =>
             rowsOf(
-              workspace.sessions.filter((session) => visible(workspace.id, session)),
+              ox.sessionsOf(workspace).filter((session) => visible(workspace.id, session)),
               collapsed(),
             ),
           );

@@ -55,7 +55,9 @@ test("edits typed while a new session is created and sent stay in the composer",
   await prompt(page).fill("first prompt");
   await prompt(page).press("Enter");
   await create.arrived;
-  await prompt(page).pressSequentially(" and more");
+  await expect(prompt(page)).toHaveValue("");
+  await expect(pending(page).getByRole("article", { name: "Prompt" })).toHaveText(["first prompt"]);
+  await prompt(page).pressSequentially("more");
   create.release();
   await firstSend.arrived;
   await expect(heading(page)).not.toHaveText("New session");
@@ -63,7 +65,7 @@ test("edits typed while a new session is created and sent stay in the composer",
   firstSend.release();
   await expect(replies(page)).toHaveText(["You said: first prompt"]);
   await expect(prompts(page)).toHaveText(["first prompt"]);
-  await expect(prompt(page)).toHaveValue("first prompt and more again");
+  await expect(prompt(page)).toHaveValue("more again");
 });
 
 test("text retyped equal to the sent prompt stays after the send", async ({ ox: page }) => {
@@ -526,10 +528,60 @@ test("Stop appears once the page's send is accepted, and stops it", async ({ ox:
   await held.arrived;
   await expect(send(page)).toBeDisabled();
   await expect(stop(page)).toHaveCount(0);
+  const interrupt = await hold(page, "session/interrupt");
   held.release();
   await stop(page).click();
+  await interrupt.arrived;
+  await expect(stop(page)).toHaveCount(0);
+  interrupt.release();
   await expect(errors(page)).toHaveText(["Interrupted"]);
   await expect(stop(page)).toHaveCount(0);
+  await prompt(page).fill("wait 60000");
+  await prompt(page).press("Enter");
+  await expect(stop(page)).toBeVisible();
+});
+
+test("a refused Stop shows Stop again with the error", async ({ ox: page }) => {
+  await newSession(page, "earlier prompt");
+  await prompt(page).fill("wait 60000");
+  await prompt(page).press("Enter");
+  const interrupt = await hold(page, "session/interrupt");
+  await stop(page).click();
+  await interrupt.arrived;
+  await expect(stop(page)).toHaveCount(0);
+  interrupt.fail("relay unavailable");
+  await expect(main(page).getByRole("alert")).toHaveText("relay unavailable");
+  await expect(stop(page)).toBeVisible();
+});
+
+test("a send clears the composer and shows the prompt pending before oxd answers", async ({ ox: page }) => {
+  await newSession(page, "earlier prompt");
+  const held = await hold(page, "session/send");
+  await prompt(page).fill("held prompt");
+  await prompt(page).press("Enter");
+  await held.arrived;
+  await expect(prompt(page)).toHaveValue("");
+  await expect(pending(page).getByRole("article", { name: "Prompt" })).toHaveText(["held prompt"]);
+  await expect(send(page)).toBeDisabled();
+  held.release();
+  await expect(replies(page).last()).toHaveText("You said: held prompt");
+  await expect(prompts(page)).toHaveText(["earlier prompt", "held prompt"]);
+});
+
+test("a refused send returns its text and images ahead of text typed since", async ({ ox: page }) => {
+  await newSession(page, "earlier prompt");
+  const held = await hold(page, "session/send");
+  await prompt(page).fill("refused prompt");
+  await attachPixel(page);
+  await prompt(page).press("Enter");
+  await held.arrived;
+  await expect(thumbnail(page)).toHaveCount(0);
+  await prompt(page).fill("typed since");
+  held.fail("relay unavailable");
+  await expect(main(page).getByRole("alert")).toHaveText("relay unavailable");
+  await expect(prompt(page)).toHaveValue("refused prompt\ntyped since");
+  await expect(thumbnail(page)).toBeVisible();
+  await expect(pending(page)).toHaveCount(0);
 });
 
 test("a session in the background shows its status and stays configurable and archivable", async ({ ox: page }) => {
@@ -576,6 +628,20 @@ test("Allow sends the exact numbers displayed in the tool input", async ({ ox: p
   await expect(approval).toHaveCount(0);
   await expect(toolCall(page, "Example")).toContainText(`{"behavior":"allow","updatedInput":${input}}`);
   await expect(stop(page)).toHaveCount(0);
+});
+
+test("an answer hides its approval before oxd answers, and a refusal brings it back with the choice", async ({
+  ox: page,
+}) => {
+  await newSessionButton(page).click();
+  const approval = await ask(page, "Bash", '{"command":"ls"}');
+  const held = await hold(page, "session/approve");
+  await allow(approval);
+  await held.arrived;
+  await expect(waiting(page)).toBeHidden();
+  held.fail("relay unavailable");
+  await expect(main(page).getByRole("alert")).toHaveText("relay unavailable");
+  await expect(waiting(page).getByRole("radio", { name: "Allow" })).toBeChecked();
 });
 
 test("Ox's own tools show readable names and the message they send", async ({ ox: page }) => {
@@ -1036,15 +1102,15 @@ test("a lost creation reply is recovered after leaving the draft", async ({ page
   await prompt(page).press("Enter");
   await cutoff.cut;
   await expect(listed).toHaveCount(2);
-  await prompt(page).fill("recover my edited prompt");
+  await expect(prompt(page)).toHaveValue("");
   await sessionButton(page, "another conversation").click();
   await services.restartRelay();
   await page.getByRole("button", { name: "Reopen draft" }).click();
-  await expect(prompt(page)).toHaveValue("recover my edited prompt");
+  await expect(prompt(page)).toHaveValue("recover my prompt");
   await expect(main(page).getByRole("status")).toContainText("Session recovered");
   await expect(prompts(page)).toHaveCount(0);
   await send(page).click();
-  await expect(replies(page)).toHaveText(["You said: recover my edited prompt"]);
+  await expect(replies(page)).toHaveText(["You said: recover my prompt"]);
   await expect(listed).toHaveCount(2);
 });
 
@@ -1105,6 +1171,8 @@ test("session list membership and order don't wait for transcripts", async ({ ox
   await reloadSnapshot.arrived;
   await expect(replies(page)).toHaveText(["You said: younger session"]);
   await expect(listed).toHaveText(["younger session", "older session"]);
+  for (const title of ["younger session", "older session"])
+    await expect(sessionItem(page, title).getByRole("img", { name: "idle" })).toBeVisible();
   reloadSnapshot.release();
   await expect(listed).toHaveText(["younger session", "older session"]);
 });
@@ -1118,23 +1186,20 @@ test("a hash change selects the session it names", async ({ ox: page }) => {
   await expect(replies(page)).toHaveText(["You said: older session"]);
 });
 
-test("a cancelled deletion's reply cannot close the next confirmation", async ({ ox: page }) => {
-  await newSession(page, "old deletion");
-  await newSession(page, "new deletion");
-  const remove = async (title: string) => menuItem(await openMenu(sessionItem(page, title)), "Delete").click();
-  const first = await hold(page, "session/destroy");
+test("Delete closes its dialog and removes the row before oxd answers, and a refusal brings it back with the error", async ({
+  ox: page,
+}) => {
+  await newSession(page, "delete me");
+  const held = await hold(page, "session/destroy");
+  await menuItem(await openMenu(sessionItem(page, "delete me")), "Delete").click();
   const dialog = page.getByRole("alertdialog", { name: "Delete session?" });
-  await remove("old deletion");
   await dialog.getByRole("button", { name: "Delete" }).click();
-  await first.arrived;
-  await page.keyboard.press("Escape");
-  await remove("new deletion");
-  first.release();
-  await expect(sessionButton(page, "old deletion")).toHaveCount(0);
-  await expect(dialog).toBeVisible();
-  await expect(dialog).toHaveAccessibleDescription('This deletes "new deletion" and its history.');
-  await dialog.getByRole("button", { name: "Delete" }).click();
-  await expect(sessionButton(page, "new deletion")).toHaveCount(0);
+  await held.arrived;
+  await expect(dialog).toBeHidden();
+  await expect(sessionButton(page, "delete me")).toHaveCount(0);
+  held.fail("relay unavailable");
+  await expect(sessions(page).getByRole("alert")).toHaveText("relay unavailable");
+  await expect(sessionButton(page, "delete me")).toBeVisible();
 });
 
 test("on reconnect each session waits for its own settings", async ({ ox: page, services, context }) => {
@@ -1587,15 +1652,27 @@ test("Archive and Unarchive are unavailable while not connected", async ({ ox: p
   await expect(unarchive).toBeEnabled();
 });
 
-test("a failed archive shows its error in the session list", async ({ ox: page }) => {
+test("a failed archive shows its error in the session list", async ({ ox: page, services }) => {
   await newSession(page, "archive me");
   const failed = await hold(page, "session/archive");
   await menuItem(await openMenu(sessionItem(page, "archive me")), "Archive").click();
   await failed.arrived;
+  await expect(sessionButton(page, "archive me")).toHaveCount(0);
+
+  // Shown with the archived sessions, the row offers nothing until oxd answers.
+  await showArchived(page, services);
+  const menu = await openMenu(sessionItem(page, "archive me"));
+  for (const label of ["Unarchive", "Delete"]) {
+    await expect(menuItem(menu, label)).toBeDisabled();
+    await expect(menuItem(menu, label)).toHaveAccessibleDescription("Wait until Ox answers");
+  }
+  await page.keyboard.press("Escape");
+
   failed.fail("relay unavailable");
   await expect(sessions(page).getByRole("alert")).toHaveText("relay unavailable");
-  await expect(sessionButton(page, "archive me")).toBeVisible();
-  await archive(page, "archive me");
+  await expect(sessionButton(page, "archive me")).toHaveAccessibleDescription("idle");
+  await menuItem(await openMenu(sessionItem(page, "archive me")), "Archive").click();
+  await expect(sessionButton(page, "archive me")).toHaveAccessibleDescription("archived");
   await expect(sessions(page).getByRole("alert")).toHaveCount(0);
 });
 
@@ -1671,6 +1748,19 @@ test("unarchiving returns the unsent text", async ({ ox: page }) => {
   await main(page).getByRole("button", { name: "Unarchive" }).click();
   await expect(prompt(page)).toHaveValue("kept while archived");
   await expect(sessionButton(page, "archive me")).not.toHaveAccessibleDescription("archived");
+});
+
+test("Unarchive shows the composer before oxd answers", async ({ ox: page }) => {
+  await newSession(page, "archive me");
+  await archive(page, "archive me");
+  const held = await hold(page, "session/unarchive");
+  await main(page).getByRole("button", { name: "Unarchive" }).click();
+  await held.arrived;
+  await expect(prompt(page)).toBeVisible();
+  await expect(send(page)).toBeDisabled();
+  held.release();
+  await prompt(page).fill("after unarchive");
+  await expect(send(page)).toBeEnabled();
 });
 
 test("an archive missed while disconnected shows after reconnecting", async ({ ox: page, services, context }) => {

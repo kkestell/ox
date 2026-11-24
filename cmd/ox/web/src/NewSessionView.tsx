@@ -1,15 +1,15 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, Show } from "solid-js";
 import { AttachButton, createImageDrop, pasteImages, Thumbnails } from "./Attachments";
-import { useOx } from "./ox";
+import { newID, useOx } from "./ox";
 import type { Defaults } from "./protocol";
-import { sendOnEnter } from "./SessionView";
+import { SubmittedPrompt, sendOnEnter } from "./SessionView";
 import { defaultPermissionMode, type ModelChoice, ModelPicker, Select } from "./SettingsFields";
 
 // A submitted draft lives on the page through navigation and reconnect. Its
 // composer belongs to the same control that the new session will use.
 export function createDraft(workspaceId: string, ox: ReturnType<typeof useOx>) {
-  const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), (n) => n.toString(16).padStart(2, "0")).join("");
+  const id = newID();
   const [chosen, setChoice] = createSignal<Defaults>();
   const choice = () => chosen() ?? ox.state.defaults;
   return { workspaceId, id, control: ox.control(id), choice, setChoice };
@@ -20,7 +20,12 @@ export type Draft = ReturnType<typeof createDraft>;
 export function NewSessionView(props: { draft: Draft; onCreated(): void; toggles?: JSX.Element }) {
   const ox = useOx();
   const draft = props.draft;
-  const workspace = () => ox.state.workspaces.find((w) => w.id === draft.workspaceId)?.path;
+  const workspace = () => ox.workspaces().find((w) => w.id === draft.workspaceId)?.path;
+  // The prompt being created shows pending until the view moves to its session.
+  const creating = () => {
+    const prompt = draft.control.outgoing();
+    return prompt?.phase === "creating" ? prompt : undefined;
+  };
   const pick = (value: ModelChoice) => {
     const catalog = ox.state.harnesses[value.harness];
     const currentMode = draft.choice()?.permission_mode;
@@ -49,13 +54,24 @@ export function NewSessionView(props: { draft: Draft; onCreated(): void; toggles
           <span class="directory">{workspace()}</span>
         </p>
       </header>
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: a drop attaches images, which Attach Image and a paste attach from the keyboard. */}
       <div
         class="log"
+        role="log"
+        aria-label="Transcript"
         onDragOver={drop.handlers.onDragOver}
         onDragLeave={drop.handlers.onDragLeave}
         onDrop={drop.handlers.onDrop}
-      />
+      >
+        <Show when={creating()} keyed>
+          {(prompt) => (
+            <div class="transcript">
+              <section class="queue" aria-label="Pending">
+                <SubmittedPrompt prompt={prompt} />
+              </section>
+            </div>
+          )}
+        </Show>
+      </div>
       <Show when={draft.control.error()}>{(error) => <p role="alert">{error()}</p>}</Show>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: a drop attaches images, which Attach Image and a paste attach from the keyboard. */}
       <div

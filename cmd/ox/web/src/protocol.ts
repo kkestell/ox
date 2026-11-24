@@ -29,9 +29,10 @@ export type ApprovalResponse =
   | { behavior: "allow"; updatedInput: Record<string, unknown> }
   | { behavior: "deny"; message: string; interrupt?: boolean };
 
-// Prompt is a client prompt, named by the message ID session/send returned,
-// with the IDs of its images, a message from the session from, or the reports
-// of the session's children. A prompt with only images has no text.
+// Prompt is a client prompt, named by the message ID the page chose or
+// session/send returned, with the IDs of its images, a message from the
+// session from, or the reports of the session's children. A prompt with only
+// images has no text.
 export type Prompt = { message_id: string; text?: string } & (
   | { from?: never; from_label?: never; images?: string[]; reports?: never }
   | { from: string; from_label: string; images?: never; reports?: never }
@@ -74,6 +75,7 @@ export type Notification =
         harness: string;
         created_at: string;
         child?: Child;
+        state: SessionState;
       };
     }
   | { method: "session/labeled"; params: { session_id: string; label: string } }
@@ -101,6 +103,7 @@ export type Methods = {
           created_at: string;
           child?: Child;
           archived?: boolean;
+          state: SessionState;
         }[];
       }[];
     },
@@ -121,7 +124,10 @@ export type Methods = {
       history: Update[];
     },
   ];
-  "session/send": [{ session_id: string; text: string; images?: string[] }, { message_id: string }];
+  "session/send": [
+    { session_id: string; message_id?: string; text: string; images?: string[] },
+    { message_id: string },
+  ];
   "session/interrupt": [{ session_id: string }, Empty];
   "session/configure": [SettingsPatch & { session_id: string }, Empty];
   "session/approve": [{ session_id: string; request_id: string; response: ApprovalResponse }, Empty];

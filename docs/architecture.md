@@ -127,10 +127,10 @@ the next `tool_use` clears it. At a `result` the child keeps a report unless
 session's state becomes anything but `running`, or it parks, it pings its
 parent, and itself when it has children: a new goroutine posts a delivery to the
 target. The delivery runs on the parent's goroutine. It returns unless the
-parent is free, not archived, and the daemon is not shutting down, asks each
-child whether it is `running`, then takes every child's reports and hands them
-to the agent as one input through the path a message takes. Messages go first
-because a free session has no untaken input.
+parent is free, not archived, and the daemon is not shutting down, and no
+child's published state is `running`, then takes every child's reports and hands
+them to the agent as one input through the path a message takes. Messages go
+first because a free session has no untaken input.
 
 A child session holds a `child` value, fixed at creation and stored in the same
 transaction as its session row, naming its parent, name, title, and directory; a
@@ -255,16 +255,16 @@ When the configuration sets `tailscale_ip`, `ox` also binds that address at port
 17840, alongside the listener at `-addr`, and prints the tailnet URL once both
 have bound; both listeners serve the same relay and UI.
 
-| File                                                                                                                                                                                                               | Owns                                                                                                                                                                                                                                                                       |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `protocol.ts`                                                                                                                                                                                                      | Types for the `oxd` methods, updates, and notifications.                                                                                                                                                                                                                   |
-| `connection.ts`                                                                                                                                                                                                    | Opening the event stream and reopening it after a drop, sending requests, matching replies, and reporting stream errors.                                                                                                                                                   |
-| `ox.tsx`                                                                                                                                                                                                           | A provider that reloads the catalog, workspaces, and sessions on each connection, updating loaded sessions in place so their views keep their state, applies notifications, and exposes RPC calls; each session's control; `createAttempt`, which shows a request's error. |
-| `viewport.ts`                                                                                                                                                                                                      | Sizing the page to the browser's visible area for the life of the page.                                                                                                                                                                                                    |
-| `poll.ts`                                                                                                                                                                                                          | The page's polling: a request repeated on each tick of the provider's clock, one in flight at a time.                                                                                                                                                                      |
-| `highlight.ts`                                                                                                                                                                                                     | Syntax highlighting: the registered languages and the file names that choose them.                                                                                                                                                                                         |
-| `toolInput.ts`                                                                                                                                                                                                     | Readers of Claude's tool calls: a call's label, its subject, an `ExitPlanMode` plan, `AskUserQuestion` questions, and a call's input as JSON.                                                                                                                              |
-| `App.tsx`, `Panels.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `NewSessionView.tsx`, `Attachments.tsx`, `FileTree.tsx`, `FileView.tsx`, `ApprovalRequest.tsx`, `SettingsFields.tsx`, `HarnessIcon.tsx`, `Markdown.tsx` | The components. `Layout` in `App.tsx` owns the page's panels for the life of the page: which show and their widths in the wide layout, and which drawer is open in the narrow one, below 768 px. It also owns whether the file viewer wraps long lines.                    |
+| File                                                                                                                                                                                                               | Owns                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `protocol.ts`                                                                                                                                                                                                      | Types for the `oxd` methods, updates, and notifications.                                                                                                                                                                                                                                                          |
+| `connection.ts`                                                                                                                                                                                                    | Opening the event stream and reopening it after a drop, sending requests, matching replies, and reporting stream errors.                                                                                                                                                                                          |
+| `ox.tsx`                                                                                                                                                                                                           | A provider that reloads the catalog, workspaces, and sessions on each connection, updating loaded sessions in place so their views keep their state, applies notifications, and exposes RPC calls; the session list's requests in flight; each session's control; `createAttempt`, which shows a request's error. |
+| `viewport.ts`                                                                                                                                                                                                      | Sizing the page to the browser's visible area for the life of the page.                                                                                                                                                                                                                                           |
+| `poll.ts`                                                                                                                                                                                                          | The page's polling: a request repeated on each tick of the provider's clock, one in flight at a time.                                                                                                                                                                                                             |
+| `highlight.ts`                                                                                                                                                                                                     | Syntax highlighting: the registered languages and the file names that choose them.                                                                                                                                                                                                                                |
+| `toolInput.ts`                                                                                                                                                                                                     | Readers of Claude's tool calls: a call's label, its subject, an `ExitPlanMode` plan, `AskUserQuestion` questions, and a call's input as JSON.                                                                                                                                                                     |
+| `App.tsx`, `Panels.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `NewSessionView.tsx`, `Attachments.tsx`, `FileTree.tsx`, `FileView.tsx`, `ApprovalRequest.tsx`, `SettingsFields.tsx`, `HarnessIcon.tsx`, `Markdown.tsx` | The components. `Layout` in `App.tsx` owns the page's panels for the life of the page: which show and their widths in the wide layout, and which drawer is open in the narrow one, below 768 px. It also owns whether the file viewer wraps long lines.                                                           |
 
 The page reopens the event stream a second after it drops, and at once when the
 page becomes visible while it is not connected. It shows stream errors while
@@ -277,16 +277,27 @@ A session's control owns the page's requests for that session: its composer text
 and attached images, the folders its file tree has expanded, its open file with
 a Markdown file's choice of preview or source, and the split between the
 transcript and the file viewer, creation, sends, configuration, interrupts,
-approval answers, and their errors. It outlives the session's view, so leaving
-the view or reconnecting keeps the text, images, expanded folders, open file,
-and split and repeats no request. A send and a configuration exclude each other.
-The control remembers the prompt it sent last, so a prompt dropped before Claude
-took it returns, with its images, to the composer of the page that sent it. The
-settings form sends a patch to
-[`session/configure`](protocol.md#sessionconfigure) and shows the requested
-values, each changed one with a spinner, and Send disabled until the request
-settles. After a reconnect each session waits for its own snapshot before
-allowing another send or settings change.
+approval answers, and their errors. It shows each request in flight until `oxd`
+answers: a submitted prompt leaves the composer at once and shows pending under
+the ID the page chose, Stop hides, and an answered approval hides; a refusal
+returns each to `oxd`'s state with its error. It outlives the session's view, so
+leaving the view or reconnecting keeps the text, images, expanded folders, open
+file, and split and repeats no request. A send and a configuration exclude each
+other. The control remembers the prompt it sent last, so a prompt refused or
+dropped before Claude took it returns, with its images, to the composer of the
+page that sent it, ahead of anything typed since. The settings form sends a
+patch to [`session/configure`](protocol.md#sessionconfigure) and shows the
+requested values, each changed one with a spinner, and Send disabled until the
+request settles. After a reconnect each session waits for its own snapshot
+before allowing another send or settings change. A session's state comes from
+`workspace/list`, `session/created`, and its `state` and `parked` updates, so it
+shows before the session's snapshot loads.
+
+The provider holds the session list's requests in flight, at most one for each
+session or workspace, and shows each result at once: a session being deleted and
+a workspace being removed are gone, and a session being archived or unarchived
+shows as it will be, with every session beneath it. Whether the list offers an
+action follows `oxd`'s store.
 
 The page keeps one draft per workspace. Its ID and composer carry over to the
 created session. A successful create sends the submitted text once. If the reply

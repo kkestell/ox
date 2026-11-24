@@ -56,11 +56,13 @@ export type Session = {
   // label is the session's label, as oxd lists and announces it.
   label: string;
   archived: boolean;
+  // state is the state oxd last published for the session, which the page
+  // follows whether or not the session is loaded.
+  state: SessionState;
   load: { kind: "reloading"; snapshot?: SessionSnapshot } | { kind: "live"; snapshot: SessionSnapshot };
 };
 
 export type SessionSnapshot = {
-  state: SessionState;
   settings: Settings;
   entries: Entry[];
   approvals: Approval[];
@@ -116,11 +118,7 @@ function apply(session: SessionSnapshot, u: Update) {
       session.entries.push({ kind: "result", result: u.result });
       stopTools(session);
       break;
-    case "state":
-      session.state = u.state;
-      break;
     case "parked":
-      session.state = "parked";
       stopTools(session);
       break;
     case "approval":
@@ -156,6 +154,16 @@ export function createAttempt() {
   return [error, attempt, clear] as const;
 }
 
+// newID is a random ID of 32 hexadecimal digits, as oxd takes for a session
+// or a message the page names.
+export const newID = () =>
+  Array.from(crypto.getRandomValues(new Uint8Array(16)), (n) => n.toString(16).padStart(2, "0")).join("");
+
+// Outgoing is the composer's prompt the page has taken for a session/create
+// or session/send. It is "creating" or "sending" while that request is in
+// flight, and "sent" once oxd accepted it, until Claude takes it or it drops.
+export type Outgoing = { id: string; text: string; images: File[]; phase: "creating" | "sending" | "sent" };
+
 // imageTypes are the image types a prompt takes.
 export const imageTypes = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
@@ -175,41 +183,39 @@ const base64 = (file: File) =>
   });
 
 // SessionControl is the page's side of one session: its composer text and
-// attached images, the folders its file tree has expanded, its open file, and the requests the page
-// has in flight for it, with their errors. It outlives the session's view, so
-// leaving the view, or reconnecting, keeps the text, images, expanded folders,
-// and open file and repeats no request. A send and a configuration exclude each other, so a
-// prompt runs with the settings the page shows. A new session's control
-// starts as its draft's composer, and its first send starts before its
-// session/get returns. The control remembers the prompt it sent last, so a
-// prompt dropped before Claude took it returns to this page's composer.
+// attached images, the folders its file tree has expanded, its open file, and
+// the requests the page has in flight for it, with their errors. It outlives
+// the session's view, so leaving the view, or reconnecting, keeps the text,
+// images, expanded folders, and open file and repeats no request. A send and a
+// configuration exclude each other, so a prompt runs with the settings the
+// page shows. A new session's control starts as its draft's composer, and its
+// first send starts before its session/get returns. Submitting takes the
+// prompt out of the composer at once; a prompt oxd refuses, or one dropped
+// before Claude took it, returns to this page's composer. busy is whether the
+// session or an ancestor has a session list request in flight, and unarchive
+// sends this session's.
 function createSessionControl(
   id: string,
   rpc: Connection["rpc"],
   session: () => Session | undefined,
   connected: () => boolean,
+  busy: () => boolean,
+  unarchive: () => Promise<unknown>,
 ) {
-  const [text, writeText] = createSignal("");
-  const [images, writeImages] = createSignal<File[]>([]);
-  // edits counts every write to the text and images, so a send can tell
-  // whether the box changed since its submit.
-  let edits = 0;
-  const setText = (next: string | ((draft: string) => string)) => {
-    edits++;
-    writeText(next);
-  };
-  const setImages = (next: File[] | ((draft: File[]) => File[])) => {
-    edits++;
-    writeImages(next);
-  };
-  const [sending, setSending] = createSignal(false);
+  const [text, setText] = createSignal("");
+  const [images, setImages] = createSignal<File[]>([]);
+  const [outgoing, setOutgoing] = createSignal<Outgoing>();
+  // stopping is set by a Stop and lasts until the session leaves running or
+  // oxd refuses the Stop.
+  const [stopping, setStopping] = createSignal(false);
+  // answering holds the approvals whose answers are in flight.
+  const [answering, setAnswering] = createSignal<ReadonlySet<string>>(new Set());
   const [requested, setRequested] = createSignal<SettingsPatch>();
   const [error, attempt, clearError] = createAttempt();
   const [notice, setNotice] = createSignal<string>();
-  // creation is the state of this control's session/create. "unconfirmed"
-  // means a create was sent and oxd did not confirm it as new: its request
-  // failed, or oxd answered that the session already existed.
-  const [creation, setCreation] = createSignal<"none" | "creating" | "unconfirmed">("none");
+  // unconfirmed means a create was sent and oxd did not confirm it as new:
+  // its request failed, or oxd answered that the session already existed.
+  const [unconfirmed, setUnconfirmed] = createSignal(false);
   // expanded holds the paths of the expanded folders in the file tree.
   const [expanded, setExpandedStore] = createStore<Record<string, true>>({});
   // file is the file open in the file viewer, with its Markdown view, and
@@ -218,67 +224,99 @@ function createSessionControl(
   // changing it.
   const [file, writeFile] = createSignal<OpenFile>();
   const [split, writeSplit] = createSignal(0.5);
-  // Keep a successfully sent prompt only until Claude takes it or it drops.
-  let sent: { id: string; text: string; images: File[] } | undefined;
   const live = () => {
     const load = session()?.load;
     return load?.kind === "live" ? load.snapshot : undefined;
   };
-  const free = () => connected() && creation() !== "creating" && !sending() && requested() === undefined;
+  // submitting is whether the composer's prompt is in a request.
+  const submitting = () => {
+    const phase = outgoing()?.phase;
+    return phase === "creating" || phase === "sending";
+  };
+  const free = () => connected() && !submitting() && requested() === undefined && !busy();
   const canSend = () => free() && live()?.queued.length === 0;
   const canConfigure = () => {
-    const state = live()?.state;
-    return free() && state !== undefined && settled(state);
+    const state = session()?.state;
+    return free() && live() !== undefined && state !== undefined && settled(state);
   };
 
-  function finishPrompt(id: string, dropped: boolean) {
-    if (sent?.id !== id) return;
-    const { text: prompt, images: files } = sent;
-    sent = undefined;
-    if (!dropped) return;
-    if (prompt) setText((draft) => (draft ? `${prompt}\n${draft}` : prompt));
-    if (files.length) setImages((draft) => [...files, ...draft]);
+  // restore returns a prompt to the composer, ahead of anything typed since.
+  function restore(prompt: Outgoing) {
+    if (outgoing()?.id !== prompt.id) return;
+    setOutgoing(undefined);
+    if (prompt.text) setText((draft) => (draft ? `${prompt.text}\n${draft}` : prompt.text));
+    if (prompt.images.length) setImages((draft) => [...prompt.images, ...draft]);
   }
 
+  // finishPrompt ends the outgoing prompt once Claude took it or it dropped,
+  // returning a dropped one to the composer.
+  function finishPrompt(messageId: string, dropped: boolean) {
+    const prompt = outgoing();
+    if (prompt?.id !== messageId) return;
+    if (dropped) restore(prompt);
+    else setOutgoing(undefined);
+  }
+
+  // reconcilePrompt finishes the outgoing prompt by a snapshot: taken when its
+  // entries hold it, and dropped when oxd accepted it and the snapshot no
+  // longer has it.
   function reconcilePrompt(snapshot: SessionSnapshot) {
-    const id = sent?.id;
-    if (id === undefined || snapshot.queued.some((p) => p.message_id === id)) return;
-    finishPrompt(id, !snapshot.entries.some((e) => e.kind === "prompt" && e.input.message_id === id));
+    const prompt = outgoing();
+    if (!prompt || snapshot.queued.some((p) => p.message_id === prompt.id)) return;
+    if (snapshot.entries.some((e) => e.kind === "prompt" && e.input.message_id === prompt.id))
+      finishPrompt(prompt.id, false);
+    else if (prompt.phase === "sent") finishPrompt(prompt.id, true);
   }
   const start = (request: Promise<unknown>) => {
     setNotice(undefined);
     return attempt(request);
   };
-  // post sends a prompt and its images, submitted when the box had the given
-  // edit count. A box changed since the submit keeps its text and images.
-  function post(prompt: string, files: File[], submitted: number) {
-    setSending(true);
-    const request = Promise.all(files.map(base64))
+  // take moves the composer's text and images into a new outgoing prompt.
+  function take(phase: Outgoing["phase"]): Outgoing {
+    const prompt: Outgoing = { id: newID(), text: text(), images: images(), phase };
+    setOutgoing(prompt);
+    setText("");
+    setImages([]);
+    return prompt;
+  }
+  // post sends a prompt and its images under the prompt's ID.
+  function post(prompt: Outgoing) {
+    const sending: Outgoing = { ...prompt, phase: "sending" };
+    setOutgoing(sending);
+    const request = Promise.all(sending.images.map(base64))
       .then((encoded) =>
-        rpc("session/send", { session_id: id, text: prompt, ...(encoded.length ? { images: encoded } : {}) }),
+        rpc("session/send", {
+          session_id: id,
+          message_id: sending.id,
+          text: sending.text,
+          ...(encoded.length ? { images: encoded } : {}),
+        }),
       )
-      .then((result) => {
-        sent = { id: result.message_id, text: prompt, images: files };
-        if (edits === submitted) {
-          setText("");
-          setImages([]);
-        }
-        // The daemon publishes the input before replying, so a live snapshot
-        // already knows whether it was queued, taken, or dropped.
-        const snapshot = live();
-        if (snapshot) reconcilePrompt(snapshot);
-      });
-    start(request).finally(() => setSending(false));
+      .then(
+        () => {
+          if (outgoing()?.id !== sending.id) return;
+          setOutgoing({ ...sending, phase: "sent" });
+          // The daemon publishes the input before replying, so a live snapshot
+          // already knows whether it was queued, taken, or dropped.
+          const snapshot = live();
+          if (snapshot) reconcilePrompt(snapshot);
+        },
+        (e: Error) => {
+          restore(sending);
+          throw e;
+        },
+      );
+    start(request);
   }
   // recover returns to a session whose creation was unconfirmed, with its
-  // current settings, and waits for the user to send the retained text.
+  // current settings, and waits for the user to send the returned text.
   function recover() {
-    setCreation("none");
+    setUnconfirmed(false);
     clearError();
     setNotice("Session recovered. Review its settings and send your prompt.");
   }
-  // sendable is whether a prompt has text or images to send.
-  const sendable = (prompt: string) => prompt.trim() !== "" || images().length > 0;
+  // sendable is whether the composer has text or images to send.
+  const sendable = () => text().trim() !== "" || images().length > 0;
   return {
     text,
     setText,
@@ -301,11 +339,14 @@ function createSessionControl(
     error,
     // notice is information about the session that is not an error.
     notice,
+    outgoing,
+    stopping,
+    answering,
     // canCreate is whether a draft can submit its first prompt.
     canCreate: free,
     // recoverable is whether the session exists although its creation was
     // unconfirmed, so the draft returns to it instead of sending.
-    recoverable: () => creation() === "unconfirmed" && live() !== undefined,
+    recoverable: () => unconfirmed() && live() !== undefined,
     canSend,
     canConfigure,
     // requested is the settings a configuration in flight asks for.
@@ -334,15 +375,14 @@ function createSessionControl(
     // setSplit sets the transcript's share of the width it shares with the
     // viewer.
     setSplit: (share: number) => writeSplit(share),
-    // create creates the session with the composer's text as its first
-    // prompt, and calls onCreated once oxd confirms the session as new.
-    // Otherwise the creation is unconfirmed, and nothing is sent.
+    // create creates the session with the composer's prompt as its first,
+    // sends it, and calls onCreated once oxd confirms the session as new.
+    // Otherwise the creation is unconfirmed, and the prompt returns to the
+    // composer unsent.
     create(workspaceId: string, harness: string, settings: Settings, onCreated: () => void) {
-      const prompt = text();
-      const files = images();
-      const submitted = edits;
-      if (!free() || !sendable(prompt)) return;
-      setCreation("creating");
+      if (!free() || !sendable()) return;
+      setUnconfirmed(false);
+      const prompt = take("creating");
       const { effort, ...required } = settings;
       const request = rpc("session/create", {
         session_id: id,
@@ -353,23 +393,24 @@ function createSessionControl(
       }).then(
         (result) => {
           if (result.existing) {
-            setCreation("unconfirmed");
+            setUnconfirmed(true);
+            restore(prompt);
             return;
           }
-          setCreation("none");
-          post(prompt, files, submitted);
+          post(prompt);
           onCreated();
         },
         (e: Error) => {
-          setCreation("unconfirmed");
+          setUnconfirmed(true);
+          restore(prompt);
           throw e;
         },
       );
       start(request);
     },
     recover,
-    send(prompt: string) {
-      if (canSend() && sendable(prompt)) post(prompt, images(), edits);
+    send() {
+      if (canSend() && sendable()) post(take("sending"));
     },
     finishPrompt,
     reconcilePrompt,
@@ -385,17 +426,38 @@ function createSessionControl(
       const request = rpc("session/configure", { session_id: id, ...patch });
       start(request).finally(() => setRequested(undefined));
     },
-    interrupt: () => start(rpc("session/interrupt", { session_id: id })),
-    approve: (requestId: string, response: ApprovalResponse) =>
-      start(rpc("session/approve", { session_id: id, request_id: requestId, response })),
-    unarchive: () => start(rpc("session/unarchive", { session_id: id })),
+    interrupt() {
+      setStopping(true);
+      start(
+        rpc("session/interrupt", { session_id: id }).catch((e: Error) => {
+          setStopping(false);
+          throw e;
+        }),
+      );
+    },
+    // stopped ends a Stop once the session has left running.
+    stopped: () => setStopping(false),
+    approve(requestId: string, response: ApprovalResponse) {
+      setAnswering((ids) => new Set(ids).add(requestId));
+      start(rpc("session/approve", { session_id: id, request_id: requestId, response })).finally(() =>
+        setAnswering((ids) => {
+          const next = new Set(ids);
+          next.delete(requestId);
+          return next;
+        }),
+      );
+    },
+    unarchive: () => start(unarchive()),
   };
 }
 
 export type SessionControl = ReturnType<typeof createSessionControl>;
 
+// ListRequest is a session list request the page has in flight for a session.
+type ListRequest = "archive" | "unarchive" | "destroy";
+
 function createOx() {
-  const [state, setState] = createStore<{
+  const [state, setStore] = createStore<{
     harnesses: Record<string, Harness>;
     defaults?: Defaults;
     workspaces: Workspace[];
@@ -403,6 +465,12 @@ function createOx() {
     harnesses: {},
     workspaces: [],
   });
+  // listing holds the session list's requests in flight, at most one for each
+  // session or workspace, until each settles.
+  const [listing, setListing] = createStore<{
+    sessions: Record<string, ListRequest>;
+    workspaces: Record<string, "remove">;
+  }>({ sessions: {}, workspaces: {} });
   const [error, setError] = createSignal<Error>();
   const controls = new Map<string, SessionControl>();
   const [ready, setReady] = createSignal(false);
@@ -413,7 +481,44 @@ function createOx() {
     workspaces.find((w) => w.sessions.some((s) => s.id === id));
   const sessionIn = (workspaces: Workspace[], id: string) =>
     containing(workspaces, id)?.sessions.find((s) => s.id === id);
-  const session = (id: string) => sessionIn(state.workspaces, id);
+  const stored = (id: string) => sessionIn(state.workspaces, id);
+  // lineOf is a session and its ancestors, nearest first.
+  function* lineOf(session: Session | undefined) {
+    for (let s = session; s; s = s.child && stored(s.child.parent_id)) yield s;
+  }
+
+  // The page shows a session list request's result while it is in flight: a
+  // session being deleted and a workspace being removed are gone, and a
+  // session being archived or unarchived, with every session beneath it,
+  // shows as it will be.
+  const session = (id: string) => (listing.sessions[id] === "destroy" ? undefined : stored(id));
+  const workspaces = () => state.workspaces.filter((w) => listing.workspaces[w.id] === undefined);
+  const sessionsOf = (workspace: Workspace) => workspace.sessions.filter((s) => listing.sessions[s.id] !== "destroy");
+  const archived = (session: Session) => {
+    for (const s of lineOf(session)) {
+      const request = listing.sessions[s.id];
+      if (request === "archive") return true;
+      if (request === "unarchive") return false;
+    }
+    return session.archived;
+  };
+  // busy is whether a session or an ancestor has a session list request in
+  // flight.
+  const busy = (id: string) => [...lineOf(stored(id))].some((s) => listing.sessions[s.id] !== undefined);
+
+  // requestFor sends a session list request for a session, and returns its
+  // promise once it settles.
+  function requestFor(id: string, kind: ListRequest) {
+    setListing((l) => {
+      l.sessions[id] = kind;
+    });
+    return connection.rpc(`session/${kind}`, { session_id: id }).finally(() =>
+      setListing((l) => {
+        delete l.sessions[id];
+      }),
+    );
+  }
+  const unarchive = (id: string) => requestFor(id, "unarchive");
 
   // control returns the page's control of a session, which may not be loaded
   // yet.
@@ -423,8 +528,10 @@ function createOx() {
       c = createSessionControl(
         id,
         (method, params) => connection.rpc(method, params),
-        () => session(id),
+        () => stored(id),
         ready,
+        () => busy(id),
+        () => unarchive(id),
       );
       controls.set(id, c);
     }
@@ -433,6 +540,17 @@ function createOx() {
 
   // release forgets the page's control of a session that will never exist.
   const release = (id: string) => controls.delete(id);
+
+  // setState writes the state oxd published for a session, from the session
+  // list, a session/created, or a state or parked update. A session that
+  // leaves running ends the page's Stop.
+  function setState(id: string, sessionState: SessionState) {
+    setStore((s) => {
+      const session = sessionIn(s.workspaces, id);
+      if (session) session.state = sessionState;
+    });
+    if (sessionState !== "running" && sessionState !== "requires_action") controls.get(id)?.stopped();
+  }
 
   // retry repeats a request each second until it is answered, showing each
   // failure as the page error meanwhile. It returns undefined once the stream
@@ -466,23 +584,19 @@ function createOx() {
     });
     if (!result) return;
     const snapshot: SessionSnapshot = {
-      state: result.state,
       settings: settingsOf(result),
       entries: [],
       approvals: [],
       queued: [],
     };
     for (const u of result.history) apply(snapshot, u);
-    // History can include old parked updates. The response has current state.
-    snapshot.state = result.state;
     snapshot.approvals = result.approvals.map((a) => ({ id: a.request_id, request: a.request }));
     snapshot.queued = result.queued;
-    setState((s) => {
+    setStore((s) => {
       const loaded = sessionIn(s.workspaces, id);
       if (!loaded) return;
       const previous = loaded.load.snapshot;
       if (previous) {
-        previous.state = snapshot.state;
         previous.settings = snapshot.settings;
         previous.queued = snapshot.queued;
         reconcile(snapshot.entries, null)(previous.entries);
@@ -503,54 +617,58 @@ function createOx() {
     if (!workspaceList) return;
     const { harnesses, defaults } = harnessList;
     const { workspaces } = workspaceList;
-    const listed = new Set(workspaces.flatMap((w) => w.sessions.map((s) => s.session_id)));
-    setState((s) => {
+    const listed = workspaces.flatMap((w) => w.sessions);
+    const ids = new Set(listed.map((s) => s.session_id));
+    setStore((s) => {
       s.harnesses = harnesses;
       s.defaults = defaults;
       const previous = new Map(
         s.workspaces.flatMap((w) => w.sessions.map((session) => [session.id, session] as const)),
       );
       for (const id of previous.keys()) {
-        if (!listed.has(id)) controls.delete(id);
+        if (!ids.has(id)) controls.delete(id);
       }
       s.workspaces = workspaces.map((w) => ({
         id: w.workspace_id,
         path: w.path,
-        sessions: w.sessions.map(({ session_id: id, label, harness, child, archived = false }) => {
+        sessions: w.sessions.map(({ session_id: id, label, harness, child, archived = false, state }) => {
           const session = previous.get(id);
-          if (!session) return { id, harness, child, label, archived, load: { kind: "reloading" } };
+          if (!session) return { id, harness, child, label, archived, state, load: { kind: "reloading" } };
           session.label = label;
           session.archived = archived;
           return session;
         }),
       }));
     });
+    for (const { session_id, state } of listed) setState(session_id, state);
     setReady(true);
-    await Promise.all([...listed].map(load));
+    await Promise.all([...ids].map(load));
   }
 
   function receive({ method, params }: Notification) {
     switch (method) {
       case "session/update": {
-        if (session(params.session_id)?.load.kind !== "live") return;
+        if (params.type === "state") setState(params.session_id, params.state);
+        else if (params.type === "parked") setState(params.session_id, "parked");
+        if (stored(params.session_id)?.load.kind !== "live") return;
         if (params.type === "prompt" || params.type === "prompt_cancelled") {
           controls.get(params.session_id)?.finishPrompt(params.message_id, params.type === "prompt_cancelled");
         }
-        return setState((s) => {
+        return setStore((s) => {
           const load = sessionIn(s.workspaces, params.session_id)?.load;
           if (load?.kind === "live") apply(load.snapshot, params);
         });
       }
       case "workspace/created":
-        return setState((s) => {
+        return setStore((s) => {
           s.workspaces.push({ id: params.workspace_id, path: params.path, sessions: [] });
         });
       case "workspace/removed":
-        return setState((s) => {
+        return setStore((s) => {
           s.workspaces = s.workspaces.filter((w) => w.id !== params.workspace_id);
         });
       case "session/created":
-        setState((s) => {
+        setStore((s) => {
           const workspace = s.workspaces.find((w) => w.id === params.workspace_id);
           workspace?.sessions.push({
             id: params.session_id,
@@ -558,30 +676,31 @@ function createOx() {
             child: params.child,
             label: params.label,
             archived: false,
+            state: params.state,
             load: { kind: "reloading" },
           });
         });
         if (ready()) void load(params.session_id);
         return;
       case "session/configured":
-        return setState((s) => {
+        return setStore((s) => {
           const load = sessionIn(s.workspaces, params.session_id)?.load;
           if (load?.kind === "live") load.snapshot.settings = settingsOf(params);
         });
       case "session/labeled":
-        return setState((s) => {
+        return setStore((s) => {
           const session = sessionIn(s.workspaces, params.session_id);
           if (session) session.label = params.label;
         });
       case "session/archived":
       case "session/unarchived":
-        return setState((s) => {
+        return setStore((s) => {
           const session = sessionIn(s.workspaces, params.session_id);
           if (session) session.archived = method === "session/archived";
         });
       case "session/destroyed":
         controls.delete(params.session_id);
-        return setState((s) => {
+        return setStore((s) => {
           const workspace = containing(s.workspaces, params.session_id);
           if (workspace) workspace.sessions = workspace.sessions.filter((s) => s.id !== params.session_id);
         });
@@ -606,7 +725,7 @@ function createOx() {
       onNotification: receive,
       onError: (error) => {
         setReady(false);
-        setState((s) => {
+        setStore((s) => {
           for (const workspace of s.workspaces) {
             for (const session of workspace.sessions) {
               session.load = { kind: "reloading", snapshot: session.load.snapshot };
@@ -626,17 +745,31 @@ function createOx() {
     clock,
     workspaceOf,
     session,
+    workspaces,
+    sessionsOf,
+    archived,
+    busy,
     addWorkspace: (path: string) => connection.rpc("workspace/create", { path }),
-    removeWorkspace: (id: string) => connection.rpc("workspace/remove", { workspace_id: id }),
+    // removeWorkspace sends a workspace's removal, which shows at once.
+    removeWorkspace(id: string) {
+      setListing((l) => {
+        l.workspaces[id] = "remove";
+      });
+      return connection.rpc("workspace/remove", { workspace_id: id }).finally(() =>
+        setListing((l) => {
+          delete l.workspaces[id];
+        }),
+      );
+    },
     listFolder: (workspaceId: string, path: string) =>
       connection.rpc("workspace/list_folder", { workspace_id: workspaceId, path }),
     readFile: (workspaceId: string, path: string) =>
       connection.rpc("workspace/read_file", { workspace_id: workspaceId, path }),
     control,
     release,
-    destroy: (id: string) => connection.rpc("session/destroy", { session_id: id }),
-    archive: (id: string) => connection.rpc("session/archive", { session_id: id }),
-    unarchive: (id: string) => connection.rpc("session/unarchive", { session_id: id }),
+    destroy: (id: string) => requestFor(id, "destroy"),
+    archive: (id: string) => requestFor(id, "archive"),
+    unarchive,
   };
 }
 
