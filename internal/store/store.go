@@ -313,13 +313,13 @@ func (s *Store) LastEvent(sessionID string) ([]byte, error) {
 }
 
 // UserPrompts yields the text of each prompt event the user sent the session,
-// which has no sender, oldest first; a prompt of images alone has text "".
+// which has no sender or reports, oldest first; a prompt of images alone has text "".
 // The caller makes no other store call until it stops.
 func (s *Store) UserPrompts(sessionID string) iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
 		rows, err := s.db.Query(`SELECT coalesce(json_extract(data, '$.text'), '') FROM events WHERE session_id = ?
 			AND json_extract(data, '$.type') = 'prompt' AND json_extract(data, '$.from') IS NULL
-			ORDER BY id`, sessionID)
+			AND json_extract(data, '$.reports') IS NULL ORDER BY id`, sessionID)
 		if err != nil {
 			yield("", err)
 			return

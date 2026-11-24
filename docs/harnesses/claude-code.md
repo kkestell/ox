@@ -332,6 +332,10 @@ Stdout carries JSON lines and can carry plain text on
   `tool_reference` and other blocks.
 - An MCP tool result with `isError: true` arrives as a `tool_result` with
   `is_error: true` and the result's text (2.1.328).
+- An MCP call's `tool_result` line follows the MCP server's answer to it, and
+  the next step's `tool_use` follows that line: a turn that calls
+  `send_message`, then `list_sessions` in a later step, emits each call's
+  `tool_use` and `tool_result` in that order (2.1.331, Haiku).
 - Structured tool output is on the line as `tool_use_result` (in transcripts:
   `toolUseResult`). It belongs to the line, so it is ambiguous when one line
   carries several `tool_result` blocks.

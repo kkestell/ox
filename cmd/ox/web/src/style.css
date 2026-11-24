@@ -250,6 +250,7 @@ main > .loading { flex: 1; display: flex; align-items: center; justify-content: 
 .log .prompt.queued { opacity: 0.6; }
 .log .queue { display: flex; flex-direction: column; gap: 0.75rem; }
 .log .message .from { font-size: 0.75rem; color: var(--muted-foreground); }
+.log .reports { display: flex; flex-direction: column; gap: 0.75rem; }
 .prompt:has(> .images) { display: flex; flex-direction: column; gap: 0.5rem; }
 .prompt .images { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .prompt .images > img { max-width: 100%; max-height: 16rem; object-fit: contain; }

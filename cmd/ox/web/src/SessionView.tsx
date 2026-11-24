@@ -192,9 +192,28 @@ function Transcript(props: { sessionId: string; snapshot: SessionSnapshot }) {
   );
 }
 
-// PromptBubble shows a prompt and its images, or a message headed with its
-// sender's label.
+// PromptBubble shows a prompt and its images, a message headed with its
+// sender's label, or child reports each headed with its child's label.
 function PromptBubble(props: { sessionId: string; input: Prompt; queued?: boolean }) {
+  return (
+    <Show when={props.input.reports} fallback={<MessageBubble {...props} />}>
+      {(reports) => (
+        <article class={["prompt", "message", "reports", { queued: props.queued }]} aria-label="Child reports">
+          <For each={reports()}>
+            {(report) => (
+              <section aria-label={`Report from ${report.from_label}`}>
+                <div class="from">{report.from_label}</div>
+                {report.text}
+              </section>
+            )}
+          </For>
+        </article>
+      )}
+    </Show>
+  );
+}
+
+function MessageBubble(props: { sessionId: string; input: Prompt; queued?: boolean }) {
   return (
     <article
       class={["prompt", { queued: props.queued, message: props.input.from !== undefined }]}
