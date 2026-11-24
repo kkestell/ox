@@ -33,8 +33,8 @@ p { overflow-wrap: break-word; }
   --input-background: light-dark(transparent, oklch(1 0 0 / 4.5%));
   --ring: light-dark(oklch(0.708 0 0), oklch(0.556 0 0));
   --sidebar: light-dark(oklch(0.985 0 0), oklch(0.205 0 0));
-  --sidebar-accent: light-dark(oklch(0.97 0 0), oklch(0.269 0 0));
-  --sidebar-selected: light-dark(oklch(0.94 0 0), oklch(0.32 0 0));
+  --sidebar-accent: light-dark(oklch(0.97 0 0), color-mix(in srgb, oklch(0.269 0 0) 50%, var(--sidebar)));
+  --sidebar-selected: var(--secondary);
   --pane: color-mix(in oklab, var(--background), var(--card));
   --composer: light-dark(var(--card), color-mix(in oklab, oklch(0.205 0 0), white 4%));
   --radius: 0.625rem;
@@ -168,7 +168,7 @@ nav li.selected button.open { font-weight: 500; }
 nav li.child { font-size: 13px; }
 nav li.child::before {
   content: ""; position: absolute; left: calc(1rem - 0.5px + (var(--depth) - 1) * 1.25rem); top: calc(var(--row) / 2 - var(--rise) * var(--row)); bottom: calc(50% - 0.5px); width: calc(1rem + 0.5px);
-  border: solid light-dark(oklch(0.87 0 0), oklch(0.35 0 0)); border-width: 0 0 1px 1px; pointer-events: none;
+  border: solid var(--border); border-width: 0 0 1px 1px; pointer-events: none;
 }
 nav li.child.first::before { top: calc(var(--row) / 2 + 4px - var(--rise) * var(--row)); }
 nav li.child.last::before { border-bottom-left-radius: 6px; }
