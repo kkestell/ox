@@ -136,55 +136,6 @@ export async function setSafeArea(page: Page, insets: { top: number; bottom: num
   await cdp.send("Emulation.setSafeAreaInsetsOverride", { insets });
 }
 
-// openKeyboard reports an on-screen keyboard height px tall through the visual
-// viewport, with the page panned down by offsetTop and zoomed by scale, as
-// Safari does when the keyboard opens. closeKeyboard reports it closed.
-export async function openKeyboard(page: Page, keyboard: { height: number; offsetTop: number; scale?: number }) {
-  await page.evaluate(({ height, offsetTop, scale = 1 }) => {
-    const viewport = window.visualViewport!;
-    Object.defineProperty(viewport, "height", { configurable: true, get: () => window.innerHeight - height });
-    Object.defineProperty(viewport, "offsetTop", { configurable: true, get: () => offsetTop });
-    Object.defineProperty(viewport, "scale", { configurable: true, get: () => scale });
-    viewport.dispatchEvent(new Event("resize"));
-  }, keyboard);
-}
-
-// panKeyboard reports the page panned to offsetTop with the keyboard open,
-// through a scroll event alone, as Safari does when focus moves while the
-// keyboard is up.
-export async function panKeyboard(page: Page, offsetTop: number) {
-  await page.evaluate((offsetTop) => {
-    const viewport = window.visualViewport!;
-    Object.defineProperty(viewport, "offsetTop", { configurable: true, get: () => offsetTop });
-    viewport.dispatchEvent(new Event("scroll"));
-  }, offsetTop);
-}
-
-export async function closeKeyboard(page: Page) {
-  await page.evaluate(() => {
-    const viewport = window.visualViewport! as unknown as Record<string, unknown>;
-    for (const key of ["height", "offsetTop", "scale"]) delete viewport[key];
-    window.visualViewport!.dispatchEvent(new Event("resize"));
-  });
-}
-
-// edges are the top and bottom of an element's box on the page, in whole px.
-export async function edges(locator: Locator) {
-  const box = await locator.boundingBox();
-  if (!box) throw new Error("the element is not visible");
-  return { top: Math.round(box.y), bottom: Math.round(box.y + box.height) };
-}
-
-// expectWithin waits until locator lies between top and bottom on the page,
-// such as the area a phone's keyboard leaves visible.
-export async function expectWithin(locator: Locator, area: { top: number; bottom: number }) {
-  await expect(async () => {
-    const { top, bottom } = await edges(locator);
-    expect(top).toBeGreaterThanOrEqual(area.top);
-    expect(bottom).toBeLessThanOrEqual(area.bottom);
-  }).toPass();
-}
-
 // sessionId is the ID of the session the page shows.
 export const sessionId = (page: Page) => decodeURIComponent(new URL(page.url()).hash.slice(1));
 

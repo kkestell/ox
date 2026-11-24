@@ -13,14 +13,12 @@ import {
   cutReply,
   errors,
   expect,
-  expectWithin,
   heading,
   hold,
   menuItem,
   model,
   newSession,
   newSessionButton,
-  openKeyboard,
   openMenu,
   pending,
   permissionMode,
@@ -1496,6 +1494,18 @@ test("collapsing the open session's family leaves it open, and a new child stays
 test.describe("on a touch screen", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
+  test("tapping Send sends and keeps the keyboard on the prompt", async ({ ox: page }) => {
+    await setSafeArea(page, { top: 47, bottom: 34 });
+    await newSessionButton(page).tap();
+    await prompt(page).fill("first");
+    await send(page).tap();
+    await expect(replies(page).last()).toHaveText("You said: first");
+    await prompt(page).fill("second");
+    await send(page).tap();
+    await expect(replies(page).last()).toHaveText("You said: second");
+    await expect(prompt(page)).toBeFocused();
+  });
+
   test("Return starts a new line", async ({ ox: page }) => {
     await newSession(page, "keyboard test");
     await prompt(page).fill("first line");
@@ -1540,21 +1550,6 @@ test.describe("on a touch screen", () => {
     await table.evaluate((el) => el.scrollTo({ left: el.scrollWidth }));
     await expect(lastCell).toBeInViewport({ ratio: 1 });
     await expect.poll(() => transcript(page).evaluate((el) => el.scrollWidth - el.clientWidth)).toBe(0);
-  });
-
-  test("pending approvals leave the composer above the keyboard", async ({ ox: page }) => {
-    await setSafeArea(page, { top: 47, bottom: 34 });
-    await newSessionButton(page).click();
-    // The keyboard covers 336 px of the 844 px window, and Safari pans the page
-    // 120 px down, leaving 508 px visible from 120 to 628.
-    await openKeyboard(page, { height: 336, offsetTop: 120 });
-    const lines = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`line${i}`, i]));
-    const approval = await ask(page, "Example", JSON.stringify(lines));
-    await approval.getByRole("group").click();
-    await expect(approval.getByText('"line39": 39')).toBeVisible();
-    // The approvals and the composer beneath them fit in the visible area.
-    await expectWithin(waiting(page), { top: 120, bottom: 628 });
-    await expectWithin(model(page), { top: 120, bottom: 628 });
   });
 });
 

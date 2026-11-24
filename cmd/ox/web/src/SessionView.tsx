@@ -19,6 +19,14 @@ export function sendOnEnter(event: KeyboardEvent & { currentTarget: HTMLTextArea
   }
 }
 
+// keepPromptFocus leaves focus in the prompt when the user presses a button in
+// the composer's box, as a chat app keeps its keyboard up after Send. The
+// composer's inset follows the prompt's focus, so a button that took focus
+// would move under the pointer before the click.
+export function keepPromptFocus(event: PointerEvent) {
+  if (!(event.target instanceof HTMLTextAreaElement)) event.preventDefault();
+}
+
 // keepRowInPlace opens or closes the tool call whose summary was clicked
 // and scrolls the transcript so the summary stays where it was on screen. The
 // transcript is anchored at its bottom, so without this a row opened at the
@@ -121,7 +129,7 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
               </For>
             </section>
           </Show>
-          <form class={["box", { dragging: drop.dragging() }]} onSubmit={send}>
+          <form class={["box", { dragging: drop.dragging() }]} onSubmit={send} onPointerDown={keepPromptFocus}>
             <Thumbnails control={control} />
             <div class="field">
               <AttachButton control={control} />
