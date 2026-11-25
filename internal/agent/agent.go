@@ -85,10 +85,13 @@ type Options struct {
 	Workspace string
 	// Resume is the harness's token for the conversation to continue; empty
 	// starts a new one.
-	Resume   string
-	Settings Settings
-	MCP      MCPServer
-	OnUpdate func(Update)
+	Resume string
+	// ToolNames are the names of the tool calls the session's history
+	// records, each once.
+	ToolNames []string
+	Settings  Settings
+	MCP       MCPServer
+	OnUpdate  func(Update)
 	// OnResumable receives the token when a newly observed conversation is
 	// saved and can be resumed, including when the conversation changes, and
 	// an empty token when the harness no longer has the conversation to

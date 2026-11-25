@@ -1,6 +1,6 @@
 # Driving Claude Code with `claude -p` and stream-json
 
-Observed with Claude Code 2.1.312 through 2.1.329 (October–November 2026).
+Observed with Claude Code 2.1.312 through 2.1.331 (October–November 2026).
 
 ## 1. Launch
 
@@ -166,8 +166,10 @@ runs and no conversation is created:
   `supportedEffortLevels` lists the effort choices for models with
   `supportsEffort`.
 - A refusal is `{"subtype":"error","request_id":"initialize","error":"..."}`.
+- The response carries `session_state` (`idle` or `running`). Sent during a
+  turn, `initialize` is answered at once with `running` (2.1.331).
 - The response does not wait for MCP servers to connect. The first turn waits
-  for them.
+  for them. It does wait for SessionStart hooks to finish (2.1.331).
 - Claude accepts any model in `--model` or a runtime change and fails only on
   the next prompt. An unknown `--effort` value produces a stderr warning, and
   Claude runs at its default effort.
@@ -432,6 +434,12 @@ receiving a prompt, before taking it (2.1.328).
   main-thread `result`.
 - A resumed conversation can start a turn during startup, for example to handle
   a background task notification.
+- A resumed process starts its restored schedules once its SessionStart hooks
+  finish, whether or not the host has sent `initialize`. Without `initialize` a
+  due job runs a full turn, approval requests included, and the hooks
+  `initialize` would declare are not called. `interrupt` before `initialize`
+  stops such a turn exactly as after it. A host that writes `initialize` at
+  spawn gets the response before any scheduled turn (2.1.331).
 - A successful `result` confirms the newest main-thread assistant message as the
   final answer. A bookkeeping result preserves that answer.
 
@@ -572,6 +580,7 @@ text, all questions in one response:
   {"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"1111...","total_cost_usd":0,"modelUsage":{},
    "errors":["No conversation found with session ID: 1111..."]}
   ```
+  No `session_state_changed` precedes it (2.1.331).
 - Claude can exit before reading `initialize`; the write can then fail with
   EPIPE while the error result is still readable.
 - Claude can emit an error `result` while a prompt is waiting to enter a turn.
@@ -631,30 +640,37 @@ text, all questions in one response:
     subagent finishes.
   - A turn that ends by interrupt or error sends no Stop callback (an API error
     fires `StopFailure`, which has no `session_crons`), and a resumed process
-    reports its restored jobs only when its first turn ends.
+    reports its restored jobs only when its first turn ends. No startup line,
+    `initialize` response included, names them (2.1.331).
   - A fired one-shot job or wakeup is gone from the list at the end of its fire
     turn.
 - The tool calls and their structured results describe each schedule:
   - `CronCreate` input `{cron, prompt, recurring?, durable?}`, result `{id,
-    humanSchedule, recurring, durable?, nextFireAt}` (epoch ms).
+    humanSchedule, recurring, durable?, nextFireAt, maxAgeMs?}` (epoch ms;
+    `maxAgeMs` on recurring jobs).
+  - A `/loop` with an interval schedules its job with a main-thread `CronCreate`
+    call (2.1.331).
   - `CronDelete` input `{id}`.
   - `ScheduleWakeup` input `{delaySeconds?, reason?, prompt?, stop?}`, result
     `{scheduledFor, clampedDelaySeconds, wasClamped, stopped?,
     cancelledWakeups?}`.
   - Times may be floats.
-- Rules: recurring jobs expire 7 days after creation, deleted after their final
-  fire; a one-shot job is done once a turn starting at or after its fire time
-  ends; in `-p` mode a dynamic `/loop` ends when a wakeup turn schedules nothing
-  (2.1.327); `ScheduleWakeup{stop:true}` clears wakeups only once its result is
-  successful.
+- Rules: recurring jobs expire 30 days after creation (2.1.331, the result's
+  `maxAgeMs`), deleted after their final fire; a one-shot job is done once a
+  turn starting at or after its fire time ends; in `-p` mode a dynamic `/loop`
+  ends when a wakeup turn schedules nothing (2.1.327);
+  `ScheduleWakeup{stop:true}` clears wakeups only once its result is successful.
 - A turn Claude starts for a schedule carries `wakeup_source` on its
   `command_lifecycle` `started` line: `schedule_wakeup` for a cron job, or
   `loop_wakeup` with `scheduled_for` (epoch ms) for a dynamic `/loop` wakeup.
-- `CronCreate` with `durable:true` returns `durable:false` in 2.1.327; durable
-  persistence is unavailable.
+- `CronCreate` with `durable:true` returns `durable:false` (2.1.327, 2.1.331);
+  durable persistence is unavailable.
 - `claude --resume` restores unexpired main-thread recurring jobs and future
   one-shot jobs, not wakeups or jobs created by subagents. Durable jobs of other
-  sessions in `.claude/scheduled_tasks.json` are not visible.
+  sessions in `.claude/scheduled_tasks.json` are not visible. The transcript's
+  only record of a job is its `CronCreate` call and result, and a restored job
+  keeps its `id` across successive resumes. A missed fire is not caught up: a
+  recurring job next fires at its next scheduled time (2.1.331).
 
 ## 9. Usage and cost
 
@@ -749,6 +765,9 @@ claude -p --input-format stream-json --output-format stream-json --verbose \
 `SendMessage{to,message,summary,notify_when_idle}`, `PushNotification{message}`,
 `AskUserQuestion{questions}`.
 
-`ExitPlanMode` can also arrive with `{}` after Claude writes its plan to a file
-under `~/.claude/plans/`; its `can_use_tool` request still carries `plan`
-(2.1.329, once in three Haiku runs).
+Haiku writes its plan to a file in the plans directory and calls `ExitPlanMode`
+with empty input. Claude fills in `{plan, planFilePath}` from the file in the
+`assistant` `tool_use`, the transcript, and `can_use_tool` (2.1.331; on 2.1.329
+the `tool_use` kept `{}`). An approved call's `tool_result` text ends with `##
+Approved Plan:` and the plan, and its `tool_use_result` is `{plan, isAgent,
+filePath}`. A denied call's result is the deny message.

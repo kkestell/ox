@@ -69,7 +69,8 @@ shutdown.
 The daemon parks a session after five minutes of harness inactivity
 (`-park-after` changes the period). For Claude, that means idle with no prompt,
 configuration, approval, background task, or pending schedule. A scheduling tool
-call or a resumed conversation keeps the harness active until its next
+call, or a resumed conversation whose history has a `CronCreate` call, keeps the
+harness active until its next
 [Stop hook schedule report](harnesses/claude-code.md#8-background-work-and-schedules).
 
 ## Configuration
@@ -439,14 +440,14 @@ reading prompt updates for the outcome.
 
 Requires `session_id`. Asks a running session to stop its turn and the tools it
 runs, using Claude's [interrupt](harnesses/claude-code.md#interrupt). Success
-means the request was written, or, while Claude is starting or a configuration
-runs, that nothing needed writing and the state settles once that ends; a
-session that is idle or parked has nothing to stop and also succeeds. The
-stopped turn ends with an error `result` whose text is `Interrupted`, and an
-`idle` or `background` state, which release a prompt as usual. Every prompt and
-message Claude has not taken is dropped with a `prompt_cancelled` update each.
-When no turn is running, Claude's interrupt ends with the cancellations and
-`idle`, with no `result`; an idle Ur session sends nothing.
+means the request was written, or, while a configuration runs, that nothing
+needed writing and the state settles once it ends; a session that is idle or
+parked has nothing to stop and also succeeds. The stopped turn ends with an
+error `result` whose text is `Interrupted`, and an `idle` or `background` state,
+which release a prompt as usual. Every prompt and message Claude has not taken
+is dropped with a `prompt_cancelled` update each. When no turn is running,
+Claude's interrupt ends with the cancellations and `idle`, with no `result`; an
+idle Ur session sends nothing.
 
 ```json
 {"jsonrpc":"2.0","id":8,"method":"session/interrupt","params":{"session_id":"session-id"}}

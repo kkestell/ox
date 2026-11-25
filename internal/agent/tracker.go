@@ -33,6 +33,11 @@ func (t *Tracker) State() string {
 	return StateIdle
 }
 
+// Reported is the harness's last reported state.
+func (t *Tracker) Reported() string {
+	return t.reported
+}
+
 // Idle reports that the published state is idle or background.
 func (t *Tracker) Idle() bool {
 	state := t.State()

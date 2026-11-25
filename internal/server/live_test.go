@@ -1102,26 +1102,34 @@ func TestLive(t *testing.T) {
 
 	section("restored schedules", func(l *live) {
 		// A resumed session keeps the schedules --resume restored, through an
-		// interrupted first turn and after its next completed one.
-		scheduled, control := l.create("manual"), l.create("manual")
+		// interrupted first turn and after its next completed one. A resumed
+		// session whose history has no CronCreate call parks after the same
+		// interrupted first turn.
+		scheduled, unscheduled, control := l.create("manual"), l.create("manual"), l.create("manual")
 		tools := l.turn(scheduled, "Use the CronCreate tool to create a recurring job with cron '*/30 * * * *' and prompt 'say hi'. "+
 			"Then reply with just the word ok.", allow)
 		if !slices.Contains(tools, "CronCreate") {
 			l.t.Fatalf("Haiku did not call CronCreate (%v); run again", tools)
 		}
+		l.turn(unscheduled, "Reply with just the word ok.", allow)
 		l.turn(control, "Reply with just the word ok.", allow)
 		l = restart(l, 2*time.Second)
 
 		// Deny the first tool on resume so Claude sends no Stop schedule report.
-		var denied bool
-		l.turn(scheduled, "Run the Bash command `touch resumed.txt` now.", denyBash(&denied))
-		if !denied {
-			l.t.Fatal("the first turn on resume did not reach an interrupting denial")
+		for _, id := range []string{scheduled, unscheduled} {
+			var denied bool
+			l.turn(id, "Run the Bash command `touch resumed.txt` now.", denyBash(&denied))
+			if !denied {
+				l.t.Fatal("the first turn on resume did not reach an interrupting denial")
+			}
 		}
 		l.turn(control, "Reply with just the word ok.", allow)
 		l.c.update(control, "parked")
 		if l.parked(scheduled) {
 			l.t.Error("the interrupted first turn let the resumed session park")
+		}
+		if !l.parked(unscheduled) {
+			l.t.Error("the interrupted first turn kept a resumed session without a CronCreate call from parking")
 		}
 
 		// The next completed turn's Stop report lists the restored job.

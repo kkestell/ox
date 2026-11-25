@@ -734,6 +734,41 @@ func TestInputWaitsForStartup(t *testing.T) {
 		t.Fatalf("the started agent refused a prompt: %v", err)
 	}
 
+	// A resumed process can run a turn of its own before Claude answers.
+	// Interrupt drops the held inputs and stops that turn.
+	input = new(bytes.Buffer)
+	a, updates = startingAgent(input, make(chan agent.Event), nil)
+	state(t, a, "running")
+	ids = sendHeld(t, a)
+	*updates = nil
+	if err := a.Interrupt(); err != nil {
+		t.Fatal(err)
+	}
+	if !cancelled(*updates, ids) || !strings.Contains(input.String(), `"subtype":"interrupt"`) || strings.Contains(input.String(), "cancel_queued") {
+		t.Fatalf("an interrupt during a startup turn did not drop the held inputs and stop the turn: %+v, %q", *updates, input)
+	}
+	*updates = nil
+	output(t, a, `{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_tools"}`)
+	state(t, a, "idle")
+	if len(*updates) != 2 || (*updates)[0].Type != "result" || (*updates)[0].Result.Text != "Interrupted" || (*updates)[1].State != "idle" {
+		t.Fatalf("the stopped startup turn did not end as interrupted and idle: %+v", *updates)
+	}
+
+	// A startup turn that fails publishes its error, and the start goes on.
+	a, updates = startingAgent(io.Discard, make(chan agent.Event), nil)
+	state(t, a, "running")
+	*updates = nil
+	output(t, a, `{"type":"result","subtype":"success","is_error":true,"result":"API Error: 529 overloaded","terminal_reason":"model_error"}`)
+	state(t, a, "idle")
+	if len(*updates) != 2 || (*updates)[0].Type != "result" || !(*updates)[0].Result.IsError ||
+		(*updates)[0].Result.Text != "API Error: 529 overloaded" || (*updates)[1].State != "idle" {
+		t.Fatalf("the failed startup turn did not publish its error: %+v", *updates)
+	}
+	a.Handle(initialized)
+	if !a.idle() || a.Exited() {
+		t.Fatalf("a failed startup turn ended the start: %+v", a.Snapshot())
+	}
+
 	// Held inputs Claude's pipe refuses are dropped once Claude answers, and
 	// the exit that follows reports the process.
 	var failures []error
