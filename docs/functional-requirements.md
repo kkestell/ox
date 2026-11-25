@@ -297,11 +297,12 @@ title.
 - **Resizing panels.** On a wide screen, dragging the boundary beside the
   session list, the file tree, or between the transcript and the file viewer
   resizes them.
-- **Layout through navigation.** Which panels show and their widths are the same
-  for every session. Each session and new-session draft keeps its own split
-  between the transcript and the file viewer, and a draft's split carries to the
-  session it creates. The layout lasts through switching views and reconnecting;
-  reloading the page restores the default layout.
+- **Layout through navigation.** Which panels show, which tab the file tree's
+  panel shows, and their widths are the same for every session. Each session and
+  new-session draft keeps its own split between the transcript and the file
+  viewer, and a draft's split carries to the session it creates. The layout
+  lasts through switching views and reconnecting; reloading the page restores
+  the default layout.
 - **Narrow screens.** On a narrow screen, such as a phone's, the page shows one
   pane at a time: the transcript, or the open file in its place until its tab is
   closed. The session list and the file tree open over it from buttons in the
@@ -350,6 +351,21 @@ title.
   stays open in the session it creates; reloading the page closes it.
 - **File tree expansion.** Each session keeps which folders are expanded through
   switching views and reconnecting; reloading the page collapses them.
+- **Changes view.** The panel that shows the file tree has a Files tab, the
+  tree, and a Changes tab, which lists each file in the selected session's
+  directory, or a new-session draft's workspace directory, that differs from
+  where the session's branch left the workspace's branch, counting commits,
+  uncommitted edits, and untracked files but not files Git ignores. The tab
+  shows the branch and the lines added and removed, in total and for each file,
+  and says why when the directory is not in a Git repository.
+- **Change diffs.** Each file in the Changes tab has a button that opens it in
+  the file viewer, unless it was deleted, and shows its changed lines with the
+  lines around them in sections that collapse and start expanded, numbered,
+  colored by whether they were added or removed, and highlighted as the file
+  viewer highlights them. A binary file, or one whose diff is larger than 1 MiB
+  or not UTF-8 text, says so instead.
+- **Changes updates.** While the page is visible, the Changes tab shows changes
+  on disk and new commits within about a second.
 
 ## Claude Code
 

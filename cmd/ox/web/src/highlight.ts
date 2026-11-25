@@ -137,20 +137,26 @@ function escapeHtml(text: string): string {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll("\r", "&#13;");
 }
 
-// The file's text reaches the DOM only through escapeHtml, inside the <span>
-// elements written here: one <span class="line"> per line, holding the line's
-// token spans and its \n, and token spans whose style attributes hold only the
-// bundled themes' colors. The HTML adds no other elements and loads nothing.
-// A file name no language claims is plain text, escaped the same way. The
-// empty piece after a final \n is not a line, so an empty file has none.
-export function highlight(path: string, text: string): { html: string; lines: number } {
+// highlightLines returns the HTML of each line of the text. The text reaches
+// the DOM only through escapeHtml, inside token spans whose style attributes
+// hold only the bundled themes' colors. The HTML adds no other elements and
+// loads nothing. A file name no language claims is plain text, escaped the
+// same way. The empty piece after a final \n is not a line, so an empty text
+// has none.
+export function highlightLines(path: string, text: string): string[] {
   const pieces = text.split("\n");
   const lines = pieces.at(-1) === "" ? pieces.length - 1 : pieces.length;
-  const html = linesOf(path, text, pieces)
-    .slice(0, lines)
-    .map((line, i) => `<span class="line">${line}${i < pieces.length - 1 ? "\n" : ""}</span>`)
+  return linesOf(path, text, pieces).slice(0, lines);
+}
+
+// highlight returns the HTML of the file's text: one <span class="line"> per
+// line, holding the line's HTML and its \n.
+export function highlight(path: string, text: string): { html: string; lines: number } {
+  const lines = highlightLines(path, text);
+  const html = lines
+    .map((line, i) => `<span class="line">${line}${i < lines.length - 1 || text.endsWith("\n") ? "\n" : ""}</span>`)
     .join("");
-  return { html, lines };
+  return { html, lines: lines.length };
 }
 
 // linesOf returns the HTML of each of the text's pieces between newlines.

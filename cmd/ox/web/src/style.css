@@ -28,6 +28,7 @@ p { overflow-wrap: break-word; }
   --muted-foreground: light-dark(oklch(0.556 0 0), oklch(0.708 0 0));
   --accent: light-dark(oklch(0.97 0 0), oklch(0.269 0 0 / 50%));
   --destructive: light-dark(oklch(0.577 0.245 27.325), oklch(0.704 0.191 22.216));
+  --added: light-dark(oklch(0.527 0.154 150.069), oklch(0.723 0.219 149.579));
   --border: light-dark(oklch(0.922 0 0), oklch(1 0 0 / 10%));
   --input: light-dark(oklch(0.922 0 0), oklch(1 0 0 / 15%));
   --input-background: light-dark(transparent, oklch(1 0 0 / 4.5%));
@@ -88,6 +89,8 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: 
 .eye { --icon: url(lucide-static/icons/eye.svg); }
 .panel-left { --icon: url(lucide-static/icons/panel-left.svg); }
 .panel-right { --icon: url(lucide-static/icons/panel-right.svg); }
+.git-branch { --icon: url(lucide-static/icons/git-branch.svg); }
+.square-arrow-out-up-right { --icon: url(lucide-static/icons/square-arrow-out-up-right.svg); }
 .search-icon { --icon: url(lucide-static/icons/search.svg); }
 .check { --icon: url(lucide-static/icons/check.svg); }
 .bot { --icon: url(lucide-static/icons/bot.svg); }
@@ -443,7 +446,6 @@ aside.files { flex: none; min-width: 160px; max-width: 640px; height: 100%; disp
 /* Matches the session header's title row, so the panel toggles keep their place as they move between them. */
 .files > header { flex: none; display: flex; align-items: center; height: var(--context-title); padding: 0 var(--inset) 0 1rem; border-bottom: 1px solid transparent; }
 aside.files .tree { flex: 1; min-height: 0; overflow-y: auto; padding: 0 0.5rem calc(0.5rem + var(--bottom-inset)); }
-.files > header h2 { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; text-transform: uppercase; font-weight: inherit; color: var(--muted-foreground); }
 aside.files ul { list-style: none; }
 aside.files .row {
   display: flex; align-items: center; justify-content: flex-start; gap: 0.25rem; width: 100%; height: 1.75rem;
@@ -515,7 +517,50 @@ aside.files .chevron-right.open::before { transform: rotate(90deg); }
 .viewer .preview { flex: 1; min-height: 0; overflow: auto; padding: 0.75rem 1rem calc(0.75rem + var(--bottom-inset)); font-size: 0.875rem; color: var(--foreground); }
 
 /* Shiki gives font styles of dual themes only as these variables; both GitHub themes share them. */
-.viewer pre[role="tabpanel"] span[style] { font-style: var(--shiki-light-font-style); font-weight: var(--shiki-light-font-weight); }
+.viewer pre[role="tabpanel"] span[style], .hunk span[style] { font-style: var(--shiki-light-font-style); font-weight: var(--shiki-light-font-weight); }
+
+/* The panel's tabs: a segmented control, as shadcn/ui's Tabs list. */
+.files > header [role="tablist"] { display: inline-flex; align-items: center; height: 1.75rem; padding: 3px; border-radius: var(--radius); background: var(--muted); }
+.files > header [role="tab"] {
+  height: 100%; padding: 0 0.625rem; border: 1px solid transparent; border-radius: var(--radius-md); background: transparent; box-shadow: none;
+  font-size: 0.8125rem; font-weight: 500; color: var(--muted-foreground);
+}
+.files > header [role="tab"][aria-selected="true"] { background: light-dark(var(--background), var(--input-background)); border-color: light-dark(transparent, var(--input)); color: var(--foreground); box-shadow: var(--shadow-sm); }
+
+/* Changes: a card per file, after GitHub's pull request files, each hunk under
+   a header that collapses it. Added lines and counts are green, removed red.
+   Line numbers are generated content in a sticky gutter, as the viewer's. */
+.changes { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 0.5rem; padding: 0 0.5rem calc(0.5rem + var(--bottom-inset)); }
+.changes .message { padding: 0.25rem 0.5rem; font-size: 0.75rem; color: var(--muted-foreground); overflow-wrap: anywhere; }
+.changes .summary { flex: none; display: flex; align-items: center; gap: 0.375rem; min-height: 1.75rem; padding: 0 0.5rem; color: var(--muted-foreground); }
+.changes .summary .branch { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 0.75rem; font-family: var(--font-mono); color: var(--text); }
+.changes .counts { flex: none; display: flex; gap: 0.375rem; margin-left: auto; font-size: 0.75rem; font-family: var(--font-mono); }
+.changes .counts .added { color: var(--added); }
+.changes .counts .removed { color: var(--destructive); }
+.change { flex: none; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--pane); overflow: hidden; }
+.change > header { display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0.25rem 0.375rem 0.5rem; }
+.change .title { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.change .title > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.change .name { font-size: 0.8125rem; color: var(--foreground); }
+.change .folder { font-size: 0.75rem; color: var(--muted-foreground); }
+.change > header .counts { margin-left: 0; }
+.change > header button.icon { color: var(--muted-foreground); }
+.change > header button.icon:hover { color: var(--foreground); }
+.hunk { border-top: 1px solid var(--border); }
+.hunk > button {
+  display: flex; justify-content: flex-start; gap: 0.25rem; width: 100%; height: 1.75rem; padding: 0 0.5rem 0 0.25rem;
+  border: 0; border-radius: 0; background: var(--muted); box-shadow: none; font-size: 0.75rem; font-weight: 400; color: var(--muted-foreground);
+}
+.hunk > button:hover { background: var(--accent); }
+.hunk pre { overflow-x: auto; font-size: 0.75rem; font-family: var(--font-mono); color: var(--foreground); white-space: pre; }
+.hunk code { --gutter: calc(0.5rem + var(--digits) * 1ch + 0.75rem); display: block; width: max-content; min-width: 100%; }
+.hunk .line { display: block; min-height: 1lh; padding-left: var(--gutter); text-indent: calc(-1 * var(--gutter)); text-decoration: none; }
+.hunk .line::before {
+  content: attr(data-line); position: sticky; left: 0; display: inline-block; width: var(--gutter);
+  padding: 0 0.75rem 0 0.5rem; text-indent: 0; text-align: right; color: var(--muted-foreground); background: var(--line-background, var(--pane));
+}
+.hunk ins.line { --line-background: color-mix(in oklab, var(--added) 15%, var(--pane)); background: var(--line-background); }
+.hunk del.line { --line-background: color-mix(in oklab, var(--destructive) 15%, var(--pane)); background: var(--line-background); }
 
 /* Narrow screens show one pane at a time, as the ChatGPT and Claude mobile web
    apps do: the side panels are drawers over a dimmed page, opened from the
@@ -545,7 +590,9 @@ aside.files .chevron-right.open::before { transform: rotate(90deg); }
   body { font-size: 17px; }
   nav { --row: 2.5rem; }
   nav li.child { font-size: 16px; }
-  aside.files .row { height: 2.5rem; }
+  aside.files .row, .hunk > button { height: 2.5rem; }
+  .files > header [role="tablist"] { height: 2.25rem; }
+  .change > header button.icon { width: 2.5rem; height: 2.5rem; }
   nav :is(header, li) .actions { opacity: 1; }
   nav li button.chevron-right { opacity: 1; }
   textarea, select, input:not([type="radio"], [type="checkbox"], [type="range"]) { font-size: 17px; }

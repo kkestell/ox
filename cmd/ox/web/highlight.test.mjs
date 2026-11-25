@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { highlight } from "./src/highlight.ts";
+import { highlight, highlightLines } from "./src/highlight.ts";
 
 // text is what the page shows for html: its tags stripped and its character
 // references decoded.
@@ -61,5 +61,24 @@ test("each line of a file is one line element, and a final newline starts none",
     assert.equal(two.lines, 2, path);
     assert.deepEqual(highlight(path, "\n"), { html: '<span class="line">\n</span>', lines: 1 }, path);
     assert.deepEqual(highlight(path, ""), { html: "", lines: 0 }, path);
+  }
+});
+
+test("highlightLines gives each line's HTML, the same HTML highlight wraps", () => {
+  for (const path of ["notes.txt", "main.go"]) {
+    for (const source of ["package main\n\nfunc main() {}\n", "one\ntwo", "\n", ""]) {
+      const lines = highlightLines(path, source);
+      const pieces = source.split("\n");
+      assert.equal(
+        lines.length,
+        pieces.at(-1) === "" ? pieces.length - 1 : pieces.length,
+        `${path} ${JSON.stringify(source)}`,
+      );
+      assert.equal(lines.map(text).join("\n"), source.replace(/\n$/, ""), path);
+      const wrapped = lines
+        .map((line, i) => `<span class="line">${line}${i < pieces.length - 1 ? "\n" : ""}</span>`)
+        .join("");
+      assert.equal(highlight(path, source).html, wrapped, path);
+    }
   }
 });

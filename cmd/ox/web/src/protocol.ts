@@ -70,6 +70,19 @@ export type FolderEntry = { name: string; folder: boolean };
 // directory, or a workspace's.
 export type FileRoot = { session_id: string; workspace_id?: never } | { workspace_id: string; session_id?: never };
 
+// Hunk is one section of a file's diff. Each line keeps git's one-character
+// prefix: a space for context, - for a removed line, + for an added one.
+export type Hunk = { old_start: number; new_start: number; lines: string[] };
+
+// ChangedFile is a file that differs from where its session's branch left the
+// workspace's branch: its hunks, or the reason they cannot be shown.
+export type ChangedFile = { path: string; status: "added" | "modified" | "deleted" } & (
+  | { hunks: Hunk[]; reason?: never }
+  | { hunks: null; reason: string }
+);
+
+export type Changes = { branch?: string; files: ChangedFile[] };
+
 export type Notification =
   | { method: "session/update"; params: Update & { session_id: string } }
   | { method: "workspace/created"; params: { workspace_id: string; path: string; created_at: string } }
@@ -123,6 +136,7 @@ export type Methods = {
   "workspace/remove": [{ workspace_id: string }, Empty];
   "workspace/list_folder": [FileRoot & { path: string }, { entries: FolderEntry[] }];
   "workspace/read_file": [FileRoot & { path: string }, { text: string }];
+  "workspace/list_changes": [FileRoot, Changes];
   "session/create": [
     Omit<Settings, "effort"> & {
       effort?: string;

@@ -560,11 +560,9 @@ test("another workspace's draft shows that workspace's tree", async ({ ox: page,
   try {
     writeFileSync(join(other, "other.txt"), "");
     await workspaceSection(page, services.workspace).getByRole("button", { name: "New session" }).click();
-    await expect(files(page).getByRole("heading", { name: basename(services.workspace) })).toBeVisible();
     await expect(entry(page, "mine.txt")).toBeVisible();
     await addWorkspace(page, other);
     await workspaceSection(page, other).getByRole("button", { name: "New session" }).click();
-    await expect(files(page).getByRole("heading", { name: basename(other) })).toBeVisible();
     await expect(files(page)).toMatchAriaSnapshot(`
       - list:
         - /children: deep-equal
@@ -574,6 +572,92 @@ test("another workspace's draft shows that workspace's tree", async ({ ox: page,
   } finally {
     rmSync(other, { recursive: true, force: true });
   }
+});
+
+const changesTab = (page: Page) => files(page).getByRole("tab", { name: "Changes" });
+const changes = (page: Page) => files(page).getByRole("tabpanel", { name: "Changes" });
+const change = (page: Page, path: string) => changes(page).getByRole("article", { name: path });
+
+// showChanges makes the workspace a git repository with an edit to
+// committed.txt, and shows the Changes tab of its draft's panel.
+async function showChanges(page: Page, workspace: string) {
+  gitRepo(workspace);
+  writeFileSync(join(workspace, "committed.txt"), "edited\nmore\n");
+  await showFiles(page);
+  await newSessionButton(page).click();
+  await changesTab(page).click();
+  await expect(changesTab(page)).toHaveAttribute("aria-selected", "true");
+}
+
+test("the Changes tab lists each changed file with its counts and diff", async ({ ox: page, services }) => {
+  await showChanges(page, services.workspace);
+  await expect(changes(page)).toMatchAriaSnapshot(`
+    - tabpanel "Changes":
+      - text: master +2 −1
+      - article "committed.txt":
+        - text: committed.txt +2 −1
+        - button "Open committed.txt"
+        - button "Lines 1–2 +2 −1" [expanded]
+        - code:
+          - deletion: 1 committed
+          - insertion: 1 edited
+          - insertion: 2 more
+      - article "untracked.txt":
+        - text: untracked.txt +0 −0
+        - button "Open untracked.txt"
+  `);
+});
+
+test("a section's header collapses and expands its lines", async ({ ox: page, services }) => {
+  await showChanges(page, services.workspace);
+  const section = change(page, "committed.txt").getByRole("button", { name: /^Lines 1–2/ });
+  const insertions = change(page, "committed.txt").getByRole("insertion");
+  await expect(section).toHaveAttribute("aria-expanded", "true");
+  await expect(insertions).toHaveCount(2);
+  await section.click();
+  await expect(section).toHaveAttribute("aria-expanded", "false");
+  await expect(insertions).toHaveCount(0);
+  await section.click();
+  await expect(section).toHaveAttribute("aria-expanded", "true");
+  await expect(insertions).toHaveCount(2);
+});
+
+test("a changed file's Open button opens it in the file viewer", async ({ ox: page, services }) => {
+  await showChanges(page, services.workspace);
+  await change(page, "committed.txt").getByRole("button", { name: "Open committed.txt" }).click();
+  await expect(tab(page)).toHaveText("committed.txt");
+  await expect(pane(page)).toHaveText("edited\nmore\n");
+});
+
+test("the Changes tab holds through switching sessions and resets on reload", async ({ ox: page, services }) => {
+  await showChanges(page, services.workspace);
+  await newSession(page, "first");
+  await expect(changesTab(page)).toHaveAttribute("aria-selected", "true");
+  await expect(change(page, "committed.txt")).toBeVisible();
+  await newSessionButton(page).click();
+  await expect(changesTab(page)).toHaveAttribute("aria-selected", "true");
+  await sessionButton(page, "first").click();
+  await expect(changesTab(page)).toHaveAttribute("aria-selected", "true");
+  await page.reload();
+  await expect(replies(page)).toHaveText(["You said: first"]);
+  await showFiles(page);
+  await expect(files(page).getByRole("tab", { name: "Files" })).toHaveAttribute("aria-selected", "true");
+  await expect(changesTab(page)).toHaveAttribute("aria-selected", "false");
+});
+
+test("a directory outside a Git repository says why in the Changes tab", async ({ ox: page }) => {
+  await showFiles(page);
+  await newSessionButton(page).click();
+  await changesTab(page).click();
+  await expect(changes(page).getByText("not a git repository")).toBeVisible();
+});
+
+clocked("the Changes tab shows a new edit on the next tick", async ({ ox: page, services }) => {
+  await showChanges(page, services.workspace);
+  await expect(change(page, "committed.txt")).toBeVisible();
+  writeFileSync(join(services.workspace, "later.txt"), "later\n");
+  await page.clock.runFor(1000);
+  await expect(change(page, "later.txt")).toBeVisible();
 });
 
 test.describe("on a wide screen", () => {
@@ -857,6 +941,18 @@ test.describe("on a phone", () => {
     await expect(viewer(page)).toHaveCount(0);
     await expect(page.getByRole("main")).toBeVisible();
     await expect(replies(page)).toHaveText(["You said: first"]);
+  });
+
+  test("a changed file's Open button closes the drawer and replaces the transcript", async ({ ox: page, services }) => {
+    gitRepo(services.workspace);
+    writeFileSync(join(services.workspace, "committed.txt"), "edited\n");
+    await newSession(page, "first");
+    await toggleFiles(page).tap();
+    await changesTab(page).tap();
+    await change(page, "committed.txt").getByRole("button", { name: "Open committed.txt" }).tap();
+    await expect(files(page)).toHaveCount(0);
+    await expect(tab(page)).toHaveText("committed.txt");
+    await expect(page.getByRole("main")).toBeHidden();
   });
 
   test("panels cannot be resized on a narrow screen", async ({ ox: page }) => {

@@ -81,13 +81,12 @@ function Layout() {
 
   // The file tree shows the selected session's directory, or a draft's
   // workspace, with that session's or draft's expanded folders.
-  const files = (): { root: FileRoot; directory: string; control: SessionControl } | undefined => {
+  const files = (): { root: FileRoot; control: SessionControl } | undefined => {
     const current = session();
-    if (current)
-      return { root: { session_id: current.id }, directory: current.directory, control: ox.control(current.id) };
+    if (current) return { root: { session_id: current.id }, control: ox.control(current.id) };
     const d = draft();
     const workspace = d && ox.workspaces().find((w) => w.id === d.workspaceId);
-    return workspace && { root: { workspace_id: workspace.id }, directory: workspace.path, control: d.control };
+    return workspace && { root: { workspace_id: workspace.id }, control: d.control };
   };
 
   // With no session named, the transcript is empty, so a narrow page opens
@@ -258,8 +257,9 @@ function Layout() {
               <Sash label="Resize files" drag={(_, after) => (dx) => panels.setRightWidth(after - dx)} />
               <FileTree
                 root={shown().root}
-                directory={shown().directory}
                 control={shown().control}
+                tab={panels.tab()}
+                onTab={panels.setTab}
                 width={width(panels.rightWidth())}
                 toggles={togglesInTree() ? <PanelToggles panels={panels} /> : undefined}
                 onOpen={() => panels.dismiss()}
