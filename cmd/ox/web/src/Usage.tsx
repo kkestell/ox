@@ -47,7 +47,9 @@ export function Usage(props: { harness: string; windows: UsageWindow[] }) {
         class="usage-windows"
         style={{ "position-anchor": `--${id}` }}
       >
-        <For each={props.windows}>{(window) => <WindowRow harness={props.harness} window={window} />}</For>
+        <div class="rows">
+          <For each={props.windows}>{(window) => <WindowRow harness={props.harness} window={window} />}</For>
+        </div>
       </div>
     </>
   );
