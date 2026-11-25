@@ -240,8 +240,11 @@ workspace directory, and for a workspace, it is `HEAD` itself, so only
 uncommitted edits and untracked files show. In a repository with no commits, the
 base is the empty tree, so every file shows as added. The listing counts commits
 since the base, uncommitted edits, and untracked files Git does not ignore, and
-leaves out files outside the directory. A renamed file shows as its old path
-deleted and its new path added. Listing writes nothing in the repository.
+leaves out files outside the directory. Each path shows once, with its change
+from the base, including a file removed from the index but kept on disk. A
+renamed file shows as its old path deleted and its new path added. A submodule
+shows as a change to the commit it records. Listing writes nothing in the
+repository.
 
 The result holds `branch`, the directory's current branch, omitted when `HEAD`
 is detached, and `files`, sorted by `path`. Each file has:
@@ -257,7 +260,8 @@ Each hunk has `old_start` and `new_start`, the line numbers where it starts in
 the base and in the directory, and `lines`, each keeping Git's one-character
 prefix: a space for context, `-` for a removed line, `+` for an added one. An
 untracked file is one hunk of added lines starting at line 1, and an empty one
-has no hunks.
+has no hunks; an untracked symlink's one line is its target. The repository's
+diff configuration does not change the hunks.
 
 The selector errors are those of `workspace/list_folder`. A directory outside a
 Git repository returns `-32000` `not a git repository`, and one whose branch

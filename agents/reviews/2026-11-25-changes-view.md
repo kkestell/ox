@@ -91,6 +91,75 @@ Checks run:
 - `make e2e` and the `make dev` check: not re-run, since the fixes change only Go server code and the protocol doc, which `make test` observes. Both passed on the reviewed tree.
 - `make live`: not run, since the change does not alter how Ox drives Claude Code.
 
+## Copilot
+
+Copilot's review of PR #100 raised four defects in `internal/server/changes.go`. Each is fixed in the uncommitted tree on `fcb3b50`, with a case in `TestListChanges`'s workspace listing that fails with its fix reverted.
+
+| ID | Status | Title                                                        |
+| -- | ------ | ------------------------------------------------------------ |
+| C1 | Fixed  | Repository diff configuration changes the parsed hunks       |
+| C2 | Fixed  | An untracked symlink shows its target's contents             |
+| C3 | Fixed  | A file removed from the index but kept on disk shows twice   |
+| C4 | Fixed  | An untracked file's added lines can exceed the 1 MiB limit   |
+
+### C1. Repository diff configuration changes the parsed hunks
+
+With `diff.suppressBlankEmpty=true`, git writes a blank context line without its space and the parser drops it, so context and line numbers go wrong. `diff.submodule=log` or `diff` changes a submodule's section in the same way: `log` replaces the `diff --git` section with a `Submodule` summary, so the numstat records and patch sections no longer pair up. The diff now runs with `-c diff.suppressBlankEmpty=false` and `--submodule=short`. Every other diff setting is overridden by a flag the command already passes (`--no-color`, `--no-ext-diff`, `--no-textconv`, `--no-renames`, `--unified=3`, `--relative`, the prefixes), affects only paths the parser reads from numstat (`core.quotePath`), or still produces well-formed hunks (`diff.algorithm`, `diff.indentHeuristic`, `diff.interHunkContext`). `diff.orderFile` orders numstat and patch alike, which a probe confirmed.
+
+Test: the workspace listing sets both in the repository's configuration. `blank.txt` must read `" a"`, `" "`, `"-b"`, `"+B"`, and a staged submodule `inner` must read `+Subproject commit <sha>`. Without `diff.suppressBlankEmpty=false`, `blank.txt` loses its `" "` line. Without `--submodule=short`, the listing fails with `6 numstat records but 5 patch sections`.
+
+### C2. An untracked symlink shows its target's contents
+
+`untrackedText` reads an untracked file with `Lstat` through the directory's `os.Root`, and returns a symlink's target with `Root.Readlink`, as Git records it. Other files still go through `readFile`, which the file viewer uses unchanged.
+
+Test: an untracked `link` to `file.txt` must be one hunk `+file.txt`. Without the fix it lists `file.txt`'s 20 lines.
+
+### C3. A file removed from the index but kept on disk shows twice
+
+After `git rm --cached`, the path was both deleted in the diff and untracked. The listing now finds such paths before the diff: untracked paths that `git diff --cached --diff-filter=D <base>` reports as removed. When there are any, it copies the index into a new temporary directory and runs `git --literal-pathspecs reset -q --pathspec-from-file=- --pathspec-file-nul <base>` on the copy, which sets those paths to the base's version. The diff then runs with `GIT_INDEX_FILE` set to the copy, and those paths are left out of the untracked files. The copy is removed afterwards. The base's blobs already exist, so nothing is written in `.git`. `git add -N` on a copy was rejected because it writes the empty blob into `.git/objects` and fails the whole diff on an unreadable file. `git`'s body moved to `gitCommand` in `worktree.go` so the listing can pass an environment and stdin.
+
+Test: `file.txt` is removed from the index and edited on line 5. It must show once, as `modified`, with one hunk from line 2. Every file beneath `.git` must keep its modification time across the listing. Without the fix, `file.txt` lists as deleted, and again as added.
+
+### C4. An untracked file's added lines can exceed the 1 MiB limit
+
+`added` counts the synthesized diff's size, a `+` and newline per line, and returns `diff is larger than 1 MiB` over `maxFileSize`.
+
+Test: an untracked `many.txt` of 400,000 `a` lines must carry that reason. Without the fix it lists all its lines.
+
+### Checks run
+
+- `make test`: passed.
+- Each fix reverted on its own (C1's two overrides separately): `TestListChanges` failed on the case named above, and passes on the final tree.
+- `make e2e`: not re-run, since the fixes change only server code and the protocol doc.
+
+## Verification 2
+
+Checked the uncommitted fixes for C1–C4 on `fcb3b50`, in `internal/server/changes.go`, `changes_test.go`, `worktree.go`, and `docs/protocol.md`.
+
+| ID | Status   | Evidence                                                                                                                                                                                                 |
+| -- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C1 | Resolved | Removing `-c diff.suppressBlankEmpty=false` fails on `blank.txt`, which loses its `" "` line. Removing `--submodule=short` fails with `6 numstat records but 5 patch sections`.                              |
+| C2 | Resolved | Disabling the symlink branch in `untrackedText` fails `TestListChanges` on the workspace listing.                                                                                                       |
+| C3 | Resolved | Skipping the restored index fails with `file.txt` listed as `deleted`. The `.git` modification-time check covers the `git reset` on the copied index.                                                      |
+| C4 | Resolved | Disabling the size check in `added` fails on `many.txt`.                                                                                                                                                 |
+
+The fixes bring no regressions:
+
+- `git` keeps its behavior through `gitCommand`, with stdin still closed.
+- The temporary index is removed on every path after `restoredIndex` creates it.
+- `git reset <base> -- <paths>` on `GIT_INDEX_FILE` writes only the copy and its lock in the temporary directory.
+- The worktree session's index check still passes.
+
+No new findings.
+
+Checks run:
+
+- `make test`: passed.
+- `dprint check`: passed.
+- The five removals above, each restored afterwards.
+- `make e2e`: not re-run, since the fixes change only server code and the protocol doc, which `make test` observes.
+- `make live`: not run, since the change does not alter how Ox drives Claude Code.
+
 ## Verdict
 
-Ready to commit. F1 and F2 are resolved.
+Ready to commit. F1, F2, and C1–C4 are resolved.

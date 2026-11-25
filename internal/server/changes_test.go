@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -21,10 +22,10 @@ func writeFiles(t *testing.T, dir string, files map[string]string) {
 	}
 }
 
-// numbered is lines l1 through ln, with line i replaced by edits[i].
-func numbered(n int, edits map[int]string) string {
+// numbered is lines l01 through l20, with line i replaced by edits[i].
+func numbered(edits map[int]string) string {
 	var b strings.Builder
-	for i := 1; i <= n; i++ {
+	for i := 1; i <= 20; i++ {
 		if line, ok := edits[i]; ok {
 			b.WriteString(line + "\n")
 		} else {
@@ -66,6 +67,26 @@ func find(t *testing.T, files []changedFile, path string) changedFile {
 	return changedFile{}
 }
 
+// gitState records the modification time of each file beneath gitDir.
+func gitState(t *testing.T, gitDir string) map[string]time.Time {
+	t.Helper()
+	state := map[string]time.Time{}
+	err := filepath.WalkDir(gitDir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		info, err := entry.Info()
+		if err == nil {
+			state[path] = info.ModTime()
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
 // A session's changes are the files in its directory that differ from where
 // its branch left the workspace's branch, as hunks or the reason they cannot
 // be shown; a session in the workspace directory shows only uncommitted
@@ -73,7 +94,7 @@ func find(t *testing.T, files []changedFile, path string) changedFile {
 func TestListChanges(t *testing.T) {
 	repo := gitRepo(t)
 	sub := filepath.Join(repo, "sub")
-	writeFiles(t, sub, map[string]string{"file.txt": numbered(20, nil), "still.txt": "still\n", "tail.txt": "first\nold"})
+	writeFiles(t, sub, map[string]string{"file.txt": numbered(nil), "still.txt": "still\n", "tail.txt": "first\nold", "blank.txt": "a\n\nb\n"})
 	runGit(t, "-C", repo, "add", ".")
 	runGit(t, "-C", repo, "commit", "-q", "-m", "numbered")
 
@@ -84,7 +105,7 @@ func TestListChanges(t *testing.T) {
 	dir := sess.Directory
 
 	writeFiles(t, dir, map[string]string{
-		"file.txt": numbered(20, map[int]string{2: "two"}),
+		"file.txt": numbered(map[int]string{2: "two"}),
 		"gone.txt": "gone\n",
 		"bin.dat":  "\x00\x01",
 	})
@@ -93,7 +114,7 @@ func TestListChanges(t *testing.T) {
 	runGit(t, "-C", dir, "rm", "-q", "gone.txt")
 	runGit(t, "-C", dir, "commit", "-q", "-m", "remove")
 	writeFiles(t, dir, map[string]string{
-		"file.txt":       numbered(20, map[int]string{2: "two", 18: "eighteen"}),
+		"file.txt":       numbered(map[int]string{2: "two", 18: "eighteen"}),
 		"tail.txt":       "first\nnew",
 		"new.txt":        "hello\nworld\n",
 		"untracked.bin":  "\x00\x02",
@@ -151,22 +172,48 @@ func TestListChanges(t *testing.T) {
 
 	// The workspace directory forks from its own HEAD, so it shows only
 	// uncommitted and untracked files, including a deletion, a diff too large
-	// to show, and one that is not UTF-8.
+	// to show, and one that is not UTF-8. A file removed from the index but
+	// kept on disk shows once, as its change from the base; an untracked
+	// symlink shows its target; and an untracked file whose added lines make
+	// a diff over 1 MiB says so. The repository's diff configuration changes
+	// none of the hunks.
+	runGit(t, "-C", repo, "config", "diff.suppressBlankEmpty", "true")
+	runGit(t, "-C", repo, "config", "diff.submodule", "log")
 	runGit(t, "-C", sub, "rm", "-q", "still.txt")
+	runGit(t, "-C", sub, "rm", "-q", "--cached", "file.txt")
 	writeFiles(t, sub, map[string]string{
 		"big.txt":    strings.Repeat("a line of text\n", 80000),
 		"latin1.txt": "caf\xe9\n",
 		"fresh.txt":  "",
+		"file.txt":   numbered(map[int]string{5: "five"}),
+		"blank.txt":  "a\n\nB\n",
+		"many.txt":   strings.Repeat("a\n", 400000),
 	})
-	runGit(t, "-C", sub, "add", "big.txt", "latin1.txt")
+	if err := os.Symlink("file.txt", filepath.Join(sub, "link")); err != nil {
+		t.Fatal(err)
+	}
+	inner := filepath.Join(sub, "inner")
+	runGit(t, "init", "-q", inner)
+	runGit(t, "-C", inner, "commit", "-q", "--allow-empty", "-m", "inner")
+	runGit(t, "-C", sub, "add", "big.txt", "latin1.txt", "inner")
+	gitDir := filepath.Join(repo, ".git")
+	state := gitState(t, gitDir)
 	result = listedChanges(t, c, map[string]string{"workspace_id": workspaceID})
+	if after := gitState(t, gitDir); !reflect.DeepEqual(after, state) {
+		t.Errorf("listing the workspace's changes wrote in .git")
+	}
 	if result.Branch != "main" {
 		t.Errorf("the workspace's branch is %q", result.Branch)
 	}
 	want := []changedFile{
 		{Path: "big.txt", Status: "added", Reason: "diff is larger than 1 MiB"},
+		{Path: "blank.txt", Status: "modified", Hunks: []hunk{{OldStart: 1, NewStart: 1, Lines: []string{" a", " ", "-b", "+B"}}}},
+		{Path: "file.txt", Status: "modified", Hunks: []hunk{{OldStart: 2, NewStart: 2, Lines: []string{" l02", " l03", " l04", "-l05", "+five", " l06", " l07", " l08"}}}},
 		{Path: "fresh.txt", Status: "added", Hunks: []hunk{}},
+		{Path: "inner", Status: "added", Hunks: []hunk{{OldStart: 0, NewStart: 1, Lines: []string{"+Subproject commit " + runGit(t, "-C", inner, "rev-parse", "HEAD")}}}},
 		{Path: "latin1.txt", Status: "added", Reason: "file is not UTF-8 text"},
+		{Path: "link", Status: "added", Hunks: []hunk{{OldStart: 0, NewStart: 1, Lines: []string{"+file.txt"}}}},
+		{Path: "many.txt", Status: "added", Reason: "diff is larger than 1 MiB"},
 		{Path: "still.txt", Status: "deleted", Hunks: []hunk{{OldStart: 1, NewStart: 0, Lines: []string{"-still"}}}},
 	}
 	if !reflect.DeepEqual(result.Files, want) {

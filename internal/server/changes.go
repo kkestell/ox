@@ -3,7 +3,10 @@ package server
 import (
 	"errors"
 	"fmt"
+	"iter"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -57,10 +60,7 @@ func changed(path, status string, hunks []hunk, err error) changedFile {
 // files Git does not ignore, with paths relative to dir. Listing writes
 // nothing in the repository.
 func listChanges(workspace, dir string) (changes, error) {
-	const step = "list changes"
-	run := func(dir string, args ...string) (string, error) {
-		return git(step, append([]string{"--no-optional-locks", "-C", dir}, args...)...)
-	}
+	run := func(dir string, args ...string) (string, error) { return listGit(dir, nil, "", args...) }
 	branch, err := run(dir, "branch", "--show-current")
 	if err != nil {
 		if _, ok := errors.AsType[*gitError](err); ok {
@@ -72,12 +72,46 @@ func listChanges(workspace, dir string) (changes, error) {
 	if err != nil {
 		return changes{}, err
 	}
+	untracked, err := run(dir, "ls-files", "-z", "--others", "--exclude-standard")
+	if err != nil {
+		return changes{}, err
+	}
+	// A file removed from the index but kept on disk, as git rm --cached
+	// leaves it, is both deleted from the index and untracked. The diff runs
+	// on a copy of the index that holds the base's version of each such file,
+	// so it shows the file's change from the base once.
+	removed, err := run(dir, "diff", "--cached", "--name-only", "-z", "--no-renames", "--relative", "--diff-filter=D", base, "--")
+	if err != nil {
+		return changes{}, err
+	}
+	restore := map[string]bool{}
+	for path := range nulSeparated(removed) {
+		restore[path] = true
+	}
+	var env []string
+	var paths []string
+	for path := range nulSeparated(untracked) {
+		if restore[path] {
+			paths = append(paths, path)
+		}
+	}
+	if len(paths) > 0 {
+		index, err := restoredIndex(dir, base, paths)
+		if err != nil {
+			return changes{}, err
+		}
+		defer os.RemoveAll(filepath.Dir(index))
+		env = []string{"GIT_INDEX_FILE=" + index}
+	}
 	// git diff refreshes the index whenever it finds a file whose stat
 	// changed but whose content did not, optional locks or not; with
 	// diff.autoRefreshIndex off it still compares and skips such files but
-	// writes nothing.
-	diff, err := run(dir, "-c", "diff.autoRefreshIndex=false", "diff", "--numstat", "-z", "-p", "--no-renames", "--no-color", "--no-ext-diff",
-		"--no-textconv", "--unified=3", "--relative", "--src-prefix=a/", "--dst-prefix=b/", base, "--")
+	// writes nothing. Blank context lines keep their space, and a submodule
+	// shows as its commit, so every section reads the same whatever the
+	// repository's configuration.
+	diff, err := listGit(dir, env, "", "-c", "diff.autoRefreshIndex=false", "-c", "diff.suppressBlankEmpty=false",
+		"diff", "--numstat", "-z", "-p", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short",
+		"--unified=3", "--relative", "--src-prefix=a/", "--dst-prefix=b/", base, "--")
 	if err != nil {
 		return changes{}, err
 	}
@@ -85,19 +119,67 @@ func listChanges(workspace, dir string) (changes, error) {
 	if err != nil {
 		return changes{}, err
 	}
-	untracked, err := run(dir, "ls-files", "-z", "--others", "--exclude-standard")
-	if err != nil {
-		return changes{}, err
-	}
-	for path := range strings.SplitSeq(strings.TrimSuffix(untracked, "\x00"), "\x00") {
-		if path == "" {
-			continue
+	for path := range nulSeparated(untracked) {
+		if !restore[path] {
+			files = append(files, untrackedFile(dir, path))
 		}
-		text, err := readFile(dir, path)
-		files = append(files, changed(path, "added", added(text), err))
 	}
 	slices.SortFunc(files, func(a, b changedFile) int { return strings.Compare(a.Path, b.Path) })
 	return changes{strings.TrimSpace(branch), files}, nil
+}
+
+// listGit runs git in dir for a listing, without git's optional locks, with
+// env added to its environment and stdin as its input.
+func listGit(dir string, env []string, stdin string, args ...string) (string, error) {
+	cmd := exec.Command("git", append([]string{"--no-optional-locks", "-C", dir}, args...)...)
+	if env != nil {
+		cmd.Env = append(os.Environ(), env...)
+	}
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
+	return gitCommand("list changes", cmd)
+}
+
+// nulSeparated yields each path in git's NUL-terminated output.
+func nulSeparated(out string) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		for path := range strings.SplitSeq(out, "\x00") {
+			if path != "" && !yield(path) {
+				return
+			}
+		}
+	}
+}
+
+// restoredIndex copies dir's index into a new temporary directory and sets
+// each of paths in the copy to its version in base, and returns the copy's
+// path. The repository is left as it was.
+func restoredIndex(dir, base string, paths []string) (string, error) {
+	real, err := listGit(dir, nil, "", "rev-parse", "--path-format=absolute", "--git-path", "index")
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(strings.TrimSpace(real))
+	if err != nil {
+		return "", err
+	}
+	tmp, err := os.MkdirTemp("", "ox-index-")
+	if err != nil {
+		return "", err
+	}
+	index := filepath.Join(tmp, "index")
+	if err := os.WriteFile(index, data, 0o600); err != nil {
+		os.RemoveAll(tmp)
+		return "", err
+	}
+	_, err = listGit(dir, []string{"GIT_INDEX_FILE=" + index}, strings.Join(paths, "\x00"),
+		"--literal-pathspecs", "reset", "-q", "--pathspec-from-file=-", "--pathspec-file-nul", base)
+	if err != nil {
+		os.RemoveAll(tmp)
+		return "", err
+	}
+	return index, nil
 }
 
 // forkPoint returns where dir's branch left workspace's branch: the merge
@@ -126,17 +208,53 @@ func quietFailure(err error) bool {
 	return ok && failed.code == 1 && failed.stderr == ""
 }
 
+// untrackedFile builds an untracked file's entry from what Git would record
+// for it: a symlink's target, or a regular file's text, as one hunk of added
+// lines from line 1.
+func untrackedFile(dir, path string) changedFile {
+	text, err := untrackedText(dir, path)
+	if err != nil {
+		return changed(path, "added", nil, err)
+	}
+	hunks, err := added(text)
+	return changed(path, "added", hunks, err)
+}
+
+// untrackedText returns a symlink's target or a regular file's text.
+func untrackedText(dir, path string) (string, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	info, err := root.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return root.Readlink(path)
+	}
+	return readFile(dir, path)
+}
+
 // added is the one hunk of a new file's text, every line added from line 1,
-// or none for an empty file.
-func added(text string) []hunk {
+// or none for an empty file. Its diff, a + before each line, is held to the
+// limit of a tracked file's.
+func added(text string) ([]hunk, error) {
 	if text == "" {
-		return nil
+		return nil, nil
 	}
 	var lines []string
+	size := 0
 	for line := range strings.Lines(text) {
-		lines = append(lines, "+"+strings.TrimSuffix(line, "\n"))
+		line = "+" + strings.TrimSuffix(line, "\n")
+		size += len(line) + 1
+		lines = append(lines, line)
 	}
-	return []hunk{{OldStart: 0, NewStart: 1, Lines: lines}}
+	if size > maxFileSize {
+		return nil, errDiffTooLarge
+	}
+	return []hunk{{OldStart: 0, NewStart: 1, Lines: lines}}, nil
 }
 
 // parseDiff reads the output of git diff --numstat -z -p: NUL-terminated

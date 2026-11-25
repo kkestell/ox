@@ -27,7 +27,11 @@ func (e *gitError) Error() string {
 // git runs git with args and stdin closed, and returns its stdout. A failure
 // is a *gitError naming step, unless git cannot be run at all.
 func git(step string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	return gitCommand(step, exec.Command("git", args...))
+}
+
+// gitCommand runs cmd, a git command, and returns its stdout, as git does.
+func gitCommand(step string, cmd *exec.Cmd) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
