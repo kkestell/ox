@@ -60,6 +60,8 @@ claude -p \
   or `=Task`, or a bare `Agent` in `permissions.deny`, removes it from the
   model's tool list. Skills with `context: fork` still run in their subagent
   (2.1.330).
+- `--disallowedTools=EnterWorktree,ExitWorktree` drops both tools from the
+  `init` line's tool list (2.1.331).
 - The `crossSessionInbound` setting takes `accept`, `hold`, or `refuse`. Unset,
   a message is delivered only when the sender's permission-mode class matches
   the receiver's. `--settings '{"crossSessionInbound":"refuse"}'` outranks

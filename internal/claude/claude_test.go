@@ -466,8 +466,8 @@ func TestClaudeRunsAsAnOxSession(t *testing.T) {
 		if !slices.Contains(args, "--thinking-display=summarized") {
 			t.Errorf("resume %v: thinking is not displayed in %q", resume, args)
 		}
-		if !slices.Contains(args, "--disallowedTools=SendMessage,ListAgents,Agent") {
-			t.Errorf("resume %v: built-in messaging and subagents are not disallowed in %q", resume, args)
+		if !slices.Contains(args, "--disallowedTools=SendMessage,ListAgents,Agent,EnterWorktree,ExitWorktree") {
+			t.Errorf("resume %v: built-in messaging, subagents, and worktrees are not disallowed in %q", resume, args)
 		}
 		var settings struct {
 			CrossSessionInbound string `json:"crossSessionInbound"`
