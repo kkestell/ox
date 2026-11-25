@@ -4,6 +4,11 @@ Ox runs coding agent sessions side by side on your own machine in a web UI.
 Follow and approve work from your desk or phone, and let sessions delegate
 tasks to each other.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.png">
+  <img src="docs/images/hero-light.png" alt="Ox with sessions across three workspaces: a working Claude session with two child sessions, one reporting back, a parked session, a session waiting on approval, and an archived session, beside the transcript and an open file">
+</picture>
+
 ## Features
 
 - Run Claude Code with your Claude subscription alongside Ur, Ox's built-in
@@ -19,6 +24,11 @@ tasks to each other.
   restarts, and idle sessions park and resume automatically.
 - Stay in sync across every open tab, or serve the UI over Tailscale to check
   in and approve work from your phone.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-phone-dark.png">
+  <img src="docs/images/hero-phone-light.png" width="300" alt="Ox on a phone, showing a Claude session asking to run a Bash command">
+</picture>
 
 See [docs/functional-requirements.md](docs/functional-requirements.md) for the
 full behavior Ox guarantees.
@@ -91,12 +101,13 @@ schema, including `tailscale_ip` and `max_child_depth`.
 ## Development
 
 ```sh
-make build   # build the web UI and Go binaries into bin/
-make test    # run linters, Go tests (with -race), and web unit tests
-make e2e     # run Playwright end-to-end tests against the fake harness
-make live    # run live tests against Claude Code (Haiku) and Ur (OpenRouter)
-make docs    # format docs/ with dprint
-make hooks   # install the git pre-commit hook
+make build       # build the web UI and Go binaries into bin/
+make test        # run linters, Go tests (with -race), and web unit tests
+make e2e         # run Playwright end-to-end tests against the fake harness
+make live        # run live tests against Claude Code (Haiku) and Ur (OpenRouter)
+make screenshots # capture the README's screenshots from docs/screenshots/hero.json
+make docs        # format docs/ with dprint
+make hooks       # install the git pre-commit hook
 ```
 
 ## Documentation

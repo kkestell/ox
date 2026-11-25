@@ -21,14 +21,15 @@ type Agent struct {
 
 	tracker  *agent.Tracker // inputs not taken, the reported state, and background tasks
 	settings agent.Settings
-	prompt   string // the ID of the input whose turn is running
-	reply    string
-	thoughts []string        // the reasoning still to stream before the reply
-	pieces   []string        // the reply still to stream
+	prompt   string          // the ID of the input whose turn is running
+	steps    []agent.Update  // the turn's updates still to publish, one per tick
+	then     func()          // ends the turn once its steps are published; nil keeps it running
 	tool     string          // the tool call the prompt asked to approve
 	approval *agent.Approval // pending until answered, interrupted, or stopped
 	config   *configured     // the configuration awaiting its tick
 	exited   bool
+
+	script *script // what a scripted agent plays; nil for an echo agent
 }
 
 // step is the delay between a turn's steps.
@@ -38,7 +39,7 @@ const step = 50 * time.Millisecond
 // length does not grow with its input.
 const maxPieces = 4
 
-// tick streams the next piece of prompt's reply.
+// tick publishes the next step of prompt's turn.
 type tick struct{ prompt string }
 
 // taskEnded ends a background task.
@@ -57,6 +58,10 @@ func Ask(ctx context.Context, model, effort, instructions, text string) (string,
 }
 
 func Start(options agent.Options) (agent.Agent, error) {
+	return start(options), nil
+}
+
+func start(options agent.Options) *Agent {
 	a := &Agent{
 		events: make(chan agent.Event), done: make(chan struct{}),
 		onUpdate: options.OnUpdate, onConfigured: options.OnConfigured, settings: options.Settings,
@@ -65,7 +70,7 @@ func Start(options agent.Options) (agent.Agent, error) {
 	if options.Resume == "" {
 		a.onResumable = options.OnResumable
 	}
-	return a, nil
+	return a
 }
 
 func (a *Agent) Events() <-chan agent.Event {
@@ -112,24 +117,21 @@ func (a *Agent) Handle(event agent.Event) {
 			a.begin()
 			return
 		}
-		if len(a.thoughts) > 0 {
-			a.publish(agent.Update{Type: agent.UpdateReasoningDelta, Text: a.thoughts[0]})
-			a.thoughts = a.thoughts[1:]
+		if len(a.steps) > 0 {
+			a.publish(a.steps[0])
+			a.steps = a.steps[1:]
 			a.after(step, tick{a.prompt})
 			return
 		}
-		if len(a.pieces) > 0 {
-			a.publish(agent.Update{Type: agent.UpdateTextDelta, Text: a.pieces[0]})
-			a.pieces = a.pieces[1:]
-			a.after(step, tick{a.prompt})
-			return
+		if then := a.then; then != nil {
+			a.then = nil
+			then()
 		}
-		a.finish(agent.Result{Text: a.reply})
 	}
 }
 
 func (a *Agent) finish(result agent.Result) {
-	a.thoughts, a.pieces = nil, nil
+	a.steps, a.then = nil, nil
 	a.publish(agent.Update{Type: agent.UpdateResult, Result: &result})
 	if a.onResumable != nil {
 		a.onResumable(rand.Text())
@@ -173,14 +175,20 @@ func (a *Agent) Send(input agent.Input) error {
 func (a *Agent) begin() {
 	input := a.tracker.Take()
 	a.prompt = input.MessageID
-	a.reply = "You said: " + input.Content
+	if a.script != nil {
+		a.play(input)
+		return
+	}
+	reply := "You said: " + input.Content
 	if len(input.Images) > 0 {
-		a.reply += fmt.Sprintf(" [images: %d]", len(input.Images))
+		reply += fmt.Sprintf(" [images: %d]", len(input.Images))
 	}
-	a.pieces = split(a.reply)
+	a.steps = nil
 	if thought, ok := strings.CutPrefix(input.Content, "think "); ok {
-		a.thoughts = split(thought)
+		a.steps = deltas(agent.UpdateReasoningDelta, thought)
 	}
+	a.steps = append(a.steps, deltas(agent.UpdateTextDelta, reply)...)
+	a.then = func() { a.finish(agent.Result{Text: reply}) }
 	if input.Content == "usage" || input.Content == "usage reset" {
 		now := time.Now()
 		fiveHour := now.Add(2 * time.Hour)
@@ -218,6 +226,18 @@ func split(text string) []string {
 		words = words[n:]
 	}
 	return runs
+}
+
+// deltas is text split into updates of kind, or none for empty text.
+func deltas(kind, text string) []agent.Update {
+	if text == "" {
+		return nil
+	}
+	var updates []agent.Update
+	for _, piece := range split(text) {
+		updates = append(updates, agent.Update{Type: kind, Text: piece})
+	}
+	return updates
 }
 
 // durationRequest reads a prompt of the form "<verb> <milliseconds>".
@@ -303,6 +323,7 @@ func (a *Agent) Parkable() bool {
 func (a *Agent) Stop() {
 	a.withdraw()
 	a.tracker.DropFrom(0)
+	a.steps, a.then = nil, nil
 	if a.prompt != "" {
 		a.publish(agent.Update{Type: agent.UpdateExited, Error: "stopped"})
 		a.prompt = ""

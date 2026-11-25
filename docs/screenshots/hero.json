@@ -1,0 +1,405 @@
+{
+  "workspaces": [
+    {
+      "repo": "field-sync",
+      "sessions": [
+        {
+          "title": "Back off sync retries",
+          "harness": "claude",
+          "model": "claude-opus-5-5",
+          "effort": "high",
+          "permission_mode": "auto",
+          "worktree": true,
+          "prompt": "Uploads hammer the records API while it's down. Make the sync client back off with jitter, and stop retrying 4xx responses.",
+          "turns": [
+            {
+              "usage": [
+                {
+                  "interval_seconds": 18000,
+                  "used_percent": 62,
+                  "resets_in_minutes": 95
+                },
+                {
+                  "interval_seconds": 604800,
+                  "used_percent": 38,
+                  "resets_in_minutes": 5760
+                }
+              ],
+              "updates": [
+                {
+                  "type": "reasoning_delta",
+                  "text": "Retry sleeps a fixed 500ms and retries every error, so a 400 is sent five times. Capped exponential backoff with full jitter spreads the tablets out, and 4xx should fail at once."
+                },
+                {
+                  "type": "tool_use",
+                  "tool_use_id": "read-1",
+                  "tool_name": "Read",
+                  "input": {
+                    "file_path": "internal/sync/retry.go"
+                  }
+                },
+                {
+                  "type": "tool_result",
+                  "tool_use_id": "read-1",
+                  "result": {
+                    "text": "package sync\n\nimport (\n\t\"context\"\n\t\"errors\"\n\t\"math/rand/v2\"\n\t\"time\"\n)\n\n// ErrPermanent marks a failure retrying cannot fix.\nvar ErrPermanent = errors.New(\"permanent failure\")\n\n// Op is one attempt at a request.\ntype Op func(context.Context) error\n\n// Policy bounds how a request is retried.\ntype Policy struct {\n\tAttempts int\n\tBase     time.Duration\n\tMax      time.Duration\n}\n\n// DefaultPolicy backs off from 200ms up to 10s.\nvar DefaultPolicy = Policy{\n\tAttempts: 5,\n\tBase:     200 * time.Millisecond,\n\tMax:      10 * time.Second,\n}\n\n// Retry runs op until it succeeds or fails for good.\nfunc Retry(ctx context.Context, p Policy, op Op) error {\n\tvar err error\n\tfor attempt := range p.Attempts {\n\t\terr = op(ctx)\n\t\tif err == nil || errors.Is(err, ErrPermanent) {\n\t\t\treturn err\n\t\t}\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\treturn ctx.Err()\n\t\tcase <-time.After(p.backoff(attempt)):\n\t\t}\n\t}\n\treturn err\n}\n\n// backoff is full jitter up to a capped exponential.\nfunc (p Policy) backoff(attempt int) time.Duration {\n\tbound := min(p.Base<<attempt, p.Max)\n\treturn rand.N(bound) + 1\n}\n",
+                    "is_error": false
+                  }
+                },
+                {
+                  "type": "tool_use",
+                  "tool_use_id": "edit-1",
+                  "tool_name": "Edit",
+                  "input": {
+                    "file_path": "internal/sync/retry.go",
+                    "old_string": "time.Sleep(500 * time.Millisecond)",
+                    "new_string": "p.backoff(attempt)"
+                  }
+                },
+                {
+                  "type": "tool_result",
+                  "tool_use_id": "edit-1",
+                  "result": {
+                    "text": "The file internal/sync/retry.go has been updated.",
+                    "is_error": false
+                  }
+                },
+                {
+                  "type": "tool_use",
+                  "tool_use_id": "create-1",
+                  "tool_name": "mcp__ox__create_session",
+                  "input": {
+                    "name": "review-retry",
+                    "title": "Review retry backoff",
+                    "harness": "ur",
+                    "model": "deepseek/deepseek-v4.1-flash-1017",
+                    "effort": "high",
+                    "message": "Review the retry change in internal/sync/retry.go. Check the jitter bounds, the cap at Max, and that ErrPermanent stops retrying."
+                  }
+                },
+                {
+                  "type": "tool_result",
+                  "tool_use_id": "create-1",
+                  "result": {
+                    "text": "{\"session_id\":\"review\",\"name\":\"review-retry\"}",
+                    "is_error": false
+                  }
+                }
+              ],
+              "reply": "Retries now back off exponentially with full jitter, capped at 10 s, and a 4xx response returns `ErrPermanent` without retrying.\n\n```go\nfunc (p Policy) backoff(attempt int) time.Duration {\n\tbound := min(p.Base<<attempt, p.Max)\n\treturn rand.N(bound) + 1\n}\n```\n\nA DeepSeek session is reviewing the change before I add tests.",
+              "end": "idle"
+            },
+            {
+              "usage": [
+                {
+                  "interval_seconds": 18000,
+                  "used_percent": 62,
+                  "resets_in_minutes": 95
+                },
+                {
+                  "interval_seconds": 604800,
+                  "used_percent": 38,
+                  "resets_in_minutes": 5760
+                }
+              ],
+              "updates": [
+                {
+                  "type": "reasoning_delta",
+                  "text": "The review found no problems. Sonnet can write the table tests while I run the suite."
+                },
+                {
+                  "type": "tool_use",
+                  "tool_use_id": "create-2",
+                  "tool_name": "mcp__ox__create_session",
+                  "input": {
+                    "name": "retry-tests",
+                    "title": "Test retry backoff",
+                    "harness": "claude",
+                    "model": "claude-sonnet-5-5",
+                    "effort": "high",
+                    "message": "Write table tests in internal/sync/retry_test.go for Policy.backoff's bounds and for Retry giving up after Attempts."
+                  }
+                },
+                {
+                  "type": "tool_result",
+                  "tool_use_id": "create-2",
+                  "result": {
+                    "text": "{\"session_id\":\"tests\",\"name\":\"retry-tests\"}",
+                    "is_error": false
+                  }
+                },
+                {
+                  "type": "text_delta",
+                  "text": "Review passed. A Sonnet session is writing the backoff tests; running the suite meanwhile."
+                },
+                {
+                  "type": "tool_use",
+                  "tool_use_id": "bash-1",
+                  "tool_name": "Bash",
+                  "input": {
+                    "command": "go test ./...",
+                    "description": "Run the tests"
+                  }
+                }
+              ],
+              "end": "working"
+            }
+          ],
+          "children": [
+            {
+              "name": "review-retry",
+              "title": "Review retry backoff",
+              "harness": "ur",
+              "model": "deepseek/deepseek-v4.1-flash-1017",
+              "effort": "high",
+              "message": "Review the retry change in internal/sync/retry.go. Check the jitter bounds, the cap at Max, and that ErrPermanent stops retrying.",
+              "turns": [
+                {
+                  "updates": [
+                    {
+                      "type": "reasoning_delta",
+                      "text": "Check that the jitter stays above zero and below the cap, and that permanent errors skip the sleep."
+                    },
+                    {
+                      "type": "tool_use",
+                      "tool_use_id": "shell-1",
+                      "tool_name": "shell",
+                      "input": {
+                        "command": "sed -n '25,55p' internal/sync/retry.go"
+                      }
+                    },
+                    {
+                      "type": "tool_result",
+                      "tool_use_id": "shell-1",
+                      "result": {
+                        "text": "package sync\n\nimport (\n\t\"context\"\n\t\"errors\"\n\t\"math/rand/v2\"\n\t\"time\"\n)\n\n// ErrPermanent marks a failure retrying cannot fix.\nvar ErrPermanent = errors.New(\"permanent failure\")\n\n// Op is one attempt at a request.\ntype Op func(context.Context) error\n\n// Policy bounds how a request is retried.\ntype Policy struct {\n\tAttempts int\n\tBase     time.Duration\n\tMax      time.Duration\n}\n\n// DefaultPolicy backs off from 200ms up to 10s.\nvar DefaultPolicy = Policy{\n\tAttempts: 5,\n\tBase:     200 * time.Millisecond,\n\tMax:      10 * time.Second,\n}\n\n// Retry runs op until it succeeds or fails for good.\nfunc Retry(ctx context.Context, p Policy, op Op) error {\n\tvar err error\n\tfor attempt := range p.Attempts {\n\t\terr = op(ctx)\n\t\tif err == nil || errors.Is(err, ErrPermanent) {\n\t\t\treturn err\n\t\t}\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\treturn ctx.Err()\n\t\tcase <-time.After(p.backoff(attempt)):\n\t\t}\n\t}\n\treturn err\n}\n\n// backoff is full jitter up to a capped exponential.\nfunc (p Policy) backoff(attempt int) time.Duration {\n\tbound := min(p.Base<<attempt, p.Max)\n\treturn rand.N(bound) + 1\n}\n",
+                        "is_error": false
+                      }
+                    }
+                  ],
+                  "reply": "Looks correct. `rand.N(bound) + 1` keeps each delay in (0, bound], `min` holds the cap at `Max`, and `ErrPermanent` returns before the sleep. `Base<<attempt` would overflow past 40 attempts, but `DefaultPolicy` makes five.",
+                  "end": "idle"
+                }
+              ]
+            },
+            {
+              "name": "retry-tests",
+              "title": "Test retry backoff",
+              "harness": "claude",
+              "model": "claude-sonnet-5-5",
+              "effort": "high",
+              "message": "Write table tests in internal/sync/retry_test.go for Policy.backoff's bounds and for Retry giving up after Attempts.",
+              "turns": [
+                {
+                  "updates": [
+                    {
+                      "type": "reasoning_delta",
+                      "text": "Table cases for attempts 0 through 6 against Base and Max, then a Retry that fails every attempt."
+                    },
+                    {
+                      "type": "tool_use",
+                      "tool_use_id": "read-1",
+                      "tool_name": "Read",
+                      "input": {
+                        "file_path": "internal/sync/retry_test.go"
+                      }
+                    },
+                    {
+                      "type": "tool_result",
+                      "tool_use_id": "read-1",
+                      "result": {
+                        "text": "package sync\n",
+                        "is_error": false
+                      }
+                    },
+                    {
+                      "type": "tool_use",
+                      "tool_use_id": "edit-1",
+                      "tool_name": "Edit",
+                      "input": {
+                        "file_path": "internal/sync/retry_test.go",
+                        "old_string": "",
+                        "new_string": "func TestBackoffBounds(t *testing.T) {"
+                      }
+                    }
+                  ],
+                  "end": "working"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "title": "Add sync status command",
+          "harness": "claude",
+          "model": "claude-sonnet-5-5",
+          "effort": "medium",
+          "permission_mode": "acceptEdits",
+          "parked": true,
+          "prompt": "Add a `field-sync status` command that prints the last sync time and how many records are pending.",
+          "turns": [
+            {
+              "updates": [
+                {
+                  "type": "tool_use",
+                  "tool_use_id": "read-1",
+                  "tool_name": "Read",
+                  "input": {
+                    "file_path": "cmd/field-sync/main.go"
+                  }
+                },
+                {
+                  "type": "tool_result",
+                  "tool_use_id": "read-1",
+                  "result": {
+                    "text": "package main\n",
+                    "is_error": false
+                  }
+                }
+              ],
+              "reply": "Added `field-sync status`, which prints the last successful sync and the count of pending records.",
+              "end": "idle"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "repo": "harbor-themes",
+      "sessions": [
+        {
+          "title": "Raise muted text contrast",
+          "harness": "claude",
+          "model": "claude-sonnet-5-5",
+          "effort": "high",
+          "permission_mode": "manual",
+          "prompt": "Muted text in harbor-dark fails WCAG AA on the panel background. Raise its contrast and rebuild the theme.",
+          "turns": [
+            {
+              "usage": [
+                {
+                  "interval_seconds": 18000,
+                  "used_percent": 62,
+                  "resets_in_minutes": 95
+                },
+                {
+                  "interval_seconds": 604800,
+                  "used_percent": 38,
+                  "resets_in_minutes": 5760
+                }
+              ],
+              "updates": [
+                {
+                  "type": "reasoning_delta",
+                  "text": "--text-muted on --panel is about 3.9:1. AA needs 4.5:1 for body text."
+                },
+                {
+                  "type": "tool_use",
+                  "tool_use_id": "read-1",
+                  "tool_name": "Read",
+                  "input": {
+                    "file_path": "src/themes/harbor-dark.css"
+                  }
+                },
+                {
+                  "type": "tool_result",
+                  "tool_use_id": "read-1",
+                  "result": {
+                    "text": "--text-muted: #6b7a8c;",
+                    "is_error": false
+                  }
+                },
+                {
+                  "type": "tool_use",
+                  "tool_use_id": "edit-1",
+                  "tool_name": "Edit",
+                  "input": {
+                    "file_path": "src/themes/harbor-dark.css",
+                    "old_string": "--text-muted: #6b7a8c;",
+                    "new_string": "--text-muted: #8b99aa;"
+                  }
+                },
+                {
+                  "type": "tool_result",
+                  "tool_use_id": "edit-1",
+                  "result": {
+                    "text": "The file src/themes/harbor-dark.css has been updated.",
+                    "is_error": false
+                  }
+                }
+              ],
+              "reply": "Raised `--text-muted` to `#8b99aa` for 5.1:1 contrast. Rebuilding to check the output.",
+              "end": "waiting",
+              "approval": {
+                "tool_name": "Bash",
+                "input": {
+                  "command": "npm run build",
+                  "description": "Build the theme CSS"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "title": "Document theme tokens",
+          "harness": "ur",
+          "model": "z-ai/glm-5.3-flash",
+          "effort": "low",
+          "permission_mode": "auto",
+          "prompt": "List the color tokens in src/tokens.css and what each one is for.",
+          "turns": [
+            {
+              "updates": [
+                {
+                  "type": "tool_use",
+                  "tool_use_id": "shell-1",
+                  "tool_name": "shell",
+                  "input": {
+                    "command": "cat src/tokens.css"
+                  }
+                },
+                {
+                  "type": "tool_result",
+                  "tool_use_id": "shell-1",
+                  "result": {
+                    "text": "/* Design tokens every theme sets. */\n:root {\n  --surface: #ffffff;\n  --panel: #f4f6f8;\n  --text: #1c2430;\n  --text-muted: #5b6676;\n  --accent: #0b6bcb;\n  --danger: #c4302b;\n  --radius: 6px;\n}\n",
+                    "is_error": false
+                  }
+                }
+              ],
+              "reply": "`--surface` and `--panel` are the page and panel backgrounds, `--text` and `--text-muted` the body and secondary text, `--accent` links and focus rings, and `--danger` errors.",
+              "end": "idle"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "repo": "notes",
+      "sessions": [
+        {
+          "title": "Summarize planning notes",
+          "harness": "claude",
+          "model": "claude-haiku-5-5",
+          "effort": "low",
+          "permission_mode": "acceptEdits",
+          "archived": true,
+          "prompt": "Summarize the decisions in 2026-11-18-planning.md.",
+          "turns": [
+            {
+              "reply": "Three decisions: ship offline sync before the December survey, move theme tokens into a shared package, and retire the CSV export once the records API is stable.",
+              "end": "idle"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "desktop": {
+    "session": "Back off sync retries",
+    "file": "internal/sync/retry.go"
+  },
+  "phone": {
+    "session": "Raise muted text contrast"
+  }
+}

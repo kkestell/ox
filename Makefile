@@ -1,4 +1,4 @@
-.PHONY: dev build web test live lint e2e metrics docs hooks prune
+.PHONY: dev build web test live lint e2e screenshots metrics docs hooks prune
 
 # A recipe that fails leaves no target behind, such as a partial download.
 .DELETE_ON_ERROR:
@@ -28,6 +28,7 @@ lint: web $(GOLANGCI_LINT)
 	go mod tidy -diff
 	go fix -diff ./...
 	$(GOLANGCI_LINT) run ./...
+	go vet -tags screenshots ./cmd/oxd
 	npm --prefix cmd/ox/web run lint
 
 # live drives real Claude Code processes with Haiku, through oxd and through
@@ -39,6 +40,12 @@ live: cmd/ox/web/node_modules
 # e2e drives the web client in headless Chromium against oxd and the fake harness.
 e2e: cmd/ox/web/node_modules
 	npm --prefix cmd/ox/web run e2e
+
+# screenshots plays docs/screenshots/hero.json through oxd and the web client,
+# and captures the README's screenshots in docs/images. /tmp keeps the session
+# directories the page shows short.
+screenshots: cmd/ox/web/node_modules
+	TMPDIR=/tmp OX_SCREENSHOTS=1 npm --prefix cmd/ox/web run e2e -- hero
 
 web: cmd/ox/web/node_modules
 	npm --prefix cmd/ox/web run build

@@ -56,6 +56,9 @@ export type Services = {
   // callTool calls an MCP tool as session from's Claude does, through an MCP
   // connection to oxd's socket attached to it, and returns the tool's text.
   callTool(from: string, name: string, args: Record<string, string>): Promise<string>;
+  // request makes one JSON-RPC request over oxd's socket and returns its
+  // result.
+  request<T>(method: string, params: object): Promise<T>;
   restartRelay(): Promise<void>;
   // restartDaemon restarts oxd over the same database with config. SIGKILL
   // stops it without its shutdown, as a crash does.
@@ -63,7 +66,9 @@ export type Services = {
   stop(): Promise<void>;
 };
 
-export async function startServices(config: object): Promise<Services> {
+// startServices starts oxd with config, playing the scene file at scene in
+// place of Claude and Ur when given, as a screenshots build does.
+export async function startServices(config: object, scene?: string): Promise<Services> {
   const bin = process.env.OX_E2E_BIN;
   if (!bin) throw new Error("global-setup.ts did not build ox");
   const dir = mkdtempSync(join(tmpdir(), "ox-e2e-"));
@@ -82,6 +87,7 @@ export async function startServices(config: object): Promise<Services> {
       `-db=${database}`,
       `-config=${join(dir, "config.json")}`,
       `-worktrees=${worktrees}`,
+      ...(scene ? [`-scene=${scene}`] : []),
     ]);
   let daemon = startDaemon();
   let relay!: ChildProcess;
@@ -109,6 +115,7 @@ export async function startServices(config: object): Promise<Services> {
     workspace,
     worktrees,
     callTool: (from, name, args) => callTool(socket, from, name, args),
+    request: <T>(method: string, params: object) => request(socket, method, params) as Promise<T>,
     async restartRelay() {
       await stopProcess(relay);
       await startRelay();
@@ -131,26 +138,42 @@ export async function startServices(config: object): Promise<Services> {
   };
 }
 
-function callTool(socket: string, from: string, name: string, args: Record<string, string>) {
-  return new Promise<string>((resolve, reject) => {
+async function callTool(socket: string, from: string, name: string, args: Record<string, string>) {
+  const line = await exchange(socket, [
+    ["mcp/attach", { session_id: from }],
+    ["tools/call", { name, arguments: args }],
+  ]);
+  const result = line.result as { isError?: boolean; content: { text: string }[] } | undefined;
+  if (!result || result.isError) throw new Error(JSON.stringify(line));
+  return result.content[0].text;
+}
+
+async function request(socket: string, method: string, params: object) {
+  const line = await exchange(socket, [[method, params]]);
+  if (line.error) throw new Error(`${method}: ${JSON.stringify(line.error)}`);
+  return line.result;
+}
+
+// exchange sends calls, in order, over one connection to socket, and returns
+// the response to the last.
+function exchange(socket: string, calls: [string, object][]) {
+  return new Promise<{ result?: unknown; error?: unknown }>((resolve, reject) => {
     const connection = createConnection(socket);
-    const call = (id: number, method: string, params: object) =>
-      connection.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
     let buffered = "";
     connection.on("data", (data) => {
       buffered += data;
       for (let i = buffered.indexOf("\n"); i >= 0; i = buffered.indexOf("\n")) {
         const line = JSON.parse(buffered.slice(0, i));
         buffered = buffered.slice(i + 1);
-        if (line.id !== 2) continue;
+        if (line.id !== calls.length) continue;
         connection.end();
-        if (line.error || line.result.isError) reject(new Error(JSON.stringify(line)));
-        else resolve(line.result.content[0].text);
+        resolve(line);
       }
     });
     connection.on("error", reject);
-    call(1, "mcp/attach", { session_id: from });
-    call(2, "tools/call", { name, arguments: args });
+    calls.forEach(([method, params], i) => {
+      connection.write(`${JSON.stringify({ jsonrpc: "2.0", id: i + 1, method, params })}\n`);
+    });
   });
 }
 

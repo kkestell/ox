@@ -82,7 +82,7 @@ flowchart TD
 | `children`   | The set of child processes `oxd` waits for on shutdown and kills on a second stop signal. A process joins on start and leaves once reaped; none can start after the set is killed.                                      |
 | `claude`     | The Claude Code harness: launching and initializing `claude`, its stream-json wire format, and its `Agent` state machine.                                                                                               |
 | `ur`         | The OpenRouter harness: streaming chat completions, shell command execution, and JSONL conversation persistence.                                                                                                        |
-| `fake`       | In-process echo harness used by tests.                                                                                                                                                                                  |
+| `fake`       | In-process echo harness used by tests, and scene player for the README's screenshots.                                                                                                                                   |
 
 ## Sessions
 
@@ -377,13 +377,22 @@ stateDiagram-v2
 ### The Fake agent
 
 Runs no external process and echoes each prompt back (in at most four runs of
-words) with its image count. Recognizes three test prompts:
+words) with its image count. Recognizes these test prompts:
 
 | Prompt                        | Behavior                                                                       |
 | ----------------------------- | ------------------------------------------------------------------------------ |
 | `approve <tool> <input JSON>` | Requests approval for that tool call; returns the user's answer as the result. |
 | `background <milliseconds>`   | Runs a background task for that duration alongside the turn.                   |
 | `wait <milliseconds>`         | Keeps the turn running for that duration before replying.                      |
+| `think <text>`                | Streams the text as reasoning before the reply.                                |
+| `usage`                       | Reports a 5-hour and a 7-day usage window before the reply.                    |
+| `usage reset`                 | Reports the same windows with the 5-hour window already reset.                 |
+
+Its scripted mode plays a scene's turns in place of a model: each session's
+first input binds it to the scene session whose prompt or message it holds, and
+each input plays that session's next turn. `oxd` built with `-tags screenshots`
+runs the scripted mode as `claude` and `ur`, playing the scene file named by
+`-scene`.
 
 ## Web UI
 

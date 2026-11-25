@@ -1,0 +1,10 @@
+/* Design tokens every theme sets. */
+:root {
+  --surface: #ffffff;
+  --panel: #f4f6f8;
+  --text: #1c2430;
+  --text-muted: #5b6676;
+  --accent: #0b6bcb;
+  --danger: #c4302b;
+  --radius: 6px;
+}

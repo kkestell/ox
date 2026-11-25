@@ -10,10 +10,12 @@ import { fakeConfig, type Services, startServices } from "./services";
 
 export { expect };
 
-export const test = base.extend<{ config: object; services: Services; ox: Page }>({
+export const test = base.extend<{ config: object; scene: string | undefined; services: Services; ox: Page }>({
   config: [fakeConfig, { option: true }],
-  services: async ({ config }, use) => {
-    const services = await startServices(config);
+  // scene is the scene file oxd plays in place of Claude and Ur.
+  scene: [undefined, { option: true }],
+  services: async ({ config, scene }, use) => {
+    const services = await startServices(config, scene);
     await use(services);
     await services.stop();
   },
@@ -127,26 +129,27 @@ export const menuItem = (menu: Locator, label: string) => menu.getByRole("menuit
 // location is the new-session draft's choice of where the session runs.
 export const location = (page: Page) => page.getByRole("combobox", { name: "Location" });
 
+// gitEnv keeps git from the user's own configuration.
+export const gitEnv = {
+  ...process.env,
+  GIT_CONFIG_GLOBAL: devNull,
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_AUTHOR_NAME: "Ox",
+  GIT_AUTHOR_EMAIL: "ox@example.com",
+  GIT_COMMITTER_NAME: "Ox",
+  GIT_COMMITTER_EMAIL: "ox@example.com",
+};
+
 // gitRepo makes dir a git repository whose one commit holds committed.txt,
-// beside the untracked file untracked.txt, with git kept from the user's own
-// configuration.
+// beside the untracked file untracked.txt.
 export function gitRepo(dir: string) {
-  const env = {
-    ...process.env,
-    GIT_CONFIG_GLOBAL: devNull,
-    GIT_CONFIG_NOSYSTEM: "1",
-    GIT_AUTHOR_NAME: "Ox",
-    GIT_AUTHOR_EMAIL: "ox@example.com",
-    GIT_COMMITTER_NAME: "Ox",
-    GIT_COMMITTER_EMAIL: "ox@example.com",
-  };
   writeFileSync(join(dir, "committed.txt"), "committed\n");
   for (const args of [
     ["init", "-q"],
     ["add", "."],
     ["commit", "-q", "-m", "init"],
   ]) {
-    execFileSync("git", ["-C", dir, ...args], { env });
+    execFileSync("git", ["-C", dir, ...args], { env: gitEnv });
   }
   writeFileSync(join(dir, "untracked.txt"), "");
 }
