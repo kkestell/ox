@@ -1,13 +1,12 @@
 import { createEffect, createSignal, For, Match, onSettled, Show, Switch } from "solid-js";
 import { Disconnected } from "./connection";
-import { FileTree } from "./FileTree";
-import { FileView } from "./FileView";
 import { createDraft, type Draft, NewSessionView } from "./NewSessionView";
 import { OxProvider, type SessionControl, useOx } from "./ox";
-import { createPanels, PanelToggles, Sash } from "./Panels";
+import { createPanels, PanelToggles, Sash, SessionsToggle } from "./Panels";
 import type { FileRoot } from "./protocol";
 import { SessionView } from "./SessionView";
 import { Sidebar } from "./Sidebar";
+import { Workbench } from "./Workbench";
 
 export type Selection = { kind: "session"; id: string } | { kind: "draft"; workspaceId: string };
 
@@ -79,8 +78,8 @@ function Layout() {
     return s?.kind === "draft" ? liveDrafts().find((d) => d.workspaceId === s.workspaceId) : undefined;
   };
 
-  // The file tree shows the selected session's directory, or a draft's
-  // workspace, with that session's or draft's expanded folders.
+  // The workbench shows the selected session's directory, or a draft's
+  // workspace, with that session's or draft's open file and expanded folders.
   const files = (): { root: FileRoot; control: SessionControl } | undefined => {
     const current = session();
     if (current) return { root: { session_id: current.id }, control: ox.control(current.id) };
@@ -92,27 +91,14 @@ function Layout() {
   // With no session named, the transcript is empty, so a narrow page opens
   // with the session list.
   const panels = createPanels(selectionFromHash() ? undefined : "sessions");
-  // Whether the file viewer wraps long lines, for every file until reload.
+  // Whether the file view wraps long lines, for every file until reload.
   const [wrap, setWrap] = createSignal(false);
-  // The file tree, when it shows.
-  const tree = () => (panels.files() ? files() : undefined);
-  // The toggles sit in the file tree's header while it shows in the wide
-  // layout, and in the session's header otherwise.
-  const togglesInTree = () => !panels.narrow() && tree() !== undefined;
+  // The workbench, when it shows.
+  const workbench = () => (panels.mode() ? files() : undefined);
   // Panel widths and the split apply only to the wide layout's side-by-side
   // panels.
   const width = (pixels: number) => (panels.narrow() ? undefined : pixels);
-  // The transcript's share of the width, while the file viewer shows beside it.
-  // Alone, it fills the space.
-  const share = () => {
-    const current = files();
-    return current?.control.file() ? current.control.split() : undefined;
-  };
-  const Toggles = () => (
-    <Show when={!togglesInTree()}>
-      <PanelToggles panels={panels} />
-    </Show>
-  );
+  const Toggles = () => <PanelToggles panels={panels} workbench={files() !== undefined} />;
   // The title row of a view that has no header of its own.
   const BareHeader = () => (
     <header class="context">
@@ -150,15 +136,16 @@ function Layout() {
         }}
         width={width(panels.leftWidth())}
         hidden={!panels.sessions()}
+        toggle={<SessionsToggle panels={panels} />}
       />
-      <Show when={panels.narrow() && (panels.sessions() || tree() !== undefined)}>
+      <Show when={panels.narrow() && (panels.sessions() || panels.treeDrawer())}>
         {/* biome-ignore lint/a11y/noStaticElementInteractions: a tap outside the drawer closes it; the header's toggles close it from the keyboard. */}
         <div class="scrim" onClick={() => panels.dismiss()} />
       </Show>
       <Show when={panels.sessions()}>
         <Sash label="Resize sessions" drag={(before) => (dx) => panels.setLeftWidth(before + dx)} />
       </Show>
-      <div class="center">
+      <div class="center" style={{ "--tree": `${panels.rightWidth()}px` }}>
         <Show when={ox.error()}>
           {(error) => (
             // A dropped stream that is reconnecting is routine, such as after the
@@ -188,8 +175,8 @@ function Layout() {
             </p>
           )}
         </For>
-        <div class="panes">
-          <main style={{ "flex-grow": share() }}>
+        <div class="panes" style={{ "--split": files()?.control.split() }}>
+          <main>
             {/* Keyed, so each session and draft gets its own view and view state. */}
             <Switch fallback={<BareHeader />}>
               <Match when={session()} keyed>
@@ -216,58 +203,23 @@ function Layout() {
               </Match>
             </Switch>
           </main>
-          {/* Keyed by selection, so the view reads beneath that selection's
-              root, and by path, so a file's view shows only that file. */}
+          {/* Keyed by selection, so the workbench reads beneath that
+              selection's root. */}
           <Show when={selected()} keyed>
-            <Show when={files()}>
+            <Show when={workbench()}>
               {(current) => (
-                <Show when={current().control.file()?.path} keyed>
-                  {(path) => (
-                    <>
-                      <Sash
-                        label="Resize file viewer"
-                        drag={(before, after) => {
-                          const control = current().control;
-                          return (dx) => control.setSplit((before + dx) / (before + after));
-                        }}
-                      />
-                      <FileView
-                        root={current().root}
-                        path={path}
-                        share={panels.narrow() ? undefined : 1 - current().control.split()}
-                        view={current().control.file()?.view}
-                        onView={(view) => current().control.setView(view)}
-                        wrap={wrap()}
-                        onWrap={setWrap}
-                        onClose={() => current().control.setFile(undefined)}
-                      />
-                    </>
-                  )}
-                </Show>
+                <Workbench
+                  root={current().root}
+                  control={current().control}
+                  panels={panels}
+                  wrap={wrap()}
+                  onWrap={setWrap}
+                />
               )}
             </Show>
           </Show>
         </div>
       </div>
-      {/* Keyed by selection, as the file viewer is. */}
-      <Show when={selected()} keyed>
-        <Show when={tree()}>
-          {(shown) => (
-            <>
-              <Sash label="Resize files" drag={(_, after) => (dx) => panels.setRightWidth(after - dx)} />
-              <FileTree
-                root={shown().root}
-                control={shown().control}
-                tab={panels.tab()}
-                onTab={panels.setTab}
-                width={width(panels.rightWidth())}
-                toggles={togglesInTree() ? <PanelToggles panels={panels} /> : undefined}
-                onOpen={() => panels.dismiss()}
-              />
-            </>
-          )}
-        </Show>
-      </Show>
     </div>
   );
 }

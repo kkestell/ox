@@ -1,6 +1,5 @@
 import { createContext, createSignal, createStore, onSettled, type ParentProps, reconcile, useContext } from "solid-js";
 import { type Connection, connect, Disconnected, type Rpc, RpcError } from "./connection";
-import { languageFor } from "./highlight";
 import { newID } from "./id";
 import {
   type ApprovalRequest,
@@ -37,11 +36,13 @@ export type Entry =
 
 export type Approval = { id: string; request: ApprovalRequest };
 
-export type MarkdownView = "preview" | "source";
+// FileMode is how the file view shows a file: its changes, its source, or, for
+// a Markdown file, rendered.
+export type FileMode = "diff" | "source" | "preview";
 
-// OpenFile is the file open in the file viewer. Only a Markdown file has a
-// view, which shows it rendered or as its source.
-export type OpenFile = { path: string; view?: MarkdownView };
+// OpenFile is the file chosen in the file tree, with the mode chosen for it.
+// Without a chosen mode, the file view picks one from the file.
+export type OpenFile = { path: string; mode?: FileMode };
 
 export type Session = {
   id: string;
@@ -216,11 +217,10 @@ function createSessionControl(
   const [unconfirmed, setUnconfirmed] = createSignal(false);
   // expanded holds the paths of the expanded folders in the file tree.
   const [expanded, setExpandedStore] = createStore<Record<string, true>>({});
-  // file is the file open in the file viewer, with its Markdown view, and
-  // split the transcript's share of the width it shares with the viewer. The
-  // layout renders the share within each side's minimum width without
-  // changing it.
-  const [file, writeFile] = createSignal<OpenFile>();
+  // file is the file chosen in the file tree, and split the transcript's share
+  // of the width it shares with the workbench. The layout renders the share
+  // within each side's minimum width without changing it.
+  const [file, setFile] = createSignal<OpenFile>();
   const [split, writeSplit] = createSignal(0.5);
   const live = () => {
     const load = session()?.load;
@@ -357,18 +357,13 @@ function createSessionControl(
       });
     },
     file,
-    // setFile opens the file at path, a Markdown file as its preview, or
-    // closes the open file. Opening the open file keeps its view.
-    setFile(path: string | undefined) {
-      if (path === undefined) writeFile(undefined);
-      else if (file()?.path !== path)
-        writeFile(languageFor(path) === "markdown" ? { path, view: "preview" } : { path });
+    // openFile opens the file at path. Opening the open file keeps its mode.
+    openFile(path: string) {
+      if (file()?.path !== path) setFile({ path });
     },
-    // setView switches the open Markdown file between its preview and source.
-    setView(view: MarkdownView) {
-      const current = file();
-      if (current?.view) writeFile({ ...current, view });
-    },
+    // setMode shows the file at path in mode, opening it if another is open.
+    setMode: (path: string, mode: FileMode) => setFile({ path, mode }),
+    closeFile: () => setFile(undefined),
     split,
     // setSplit sets the transcript's share of the width it shares with the
     // viewer.
