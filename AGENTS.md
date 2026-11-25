@@ -237,9 +237,10 @@ The steps scale with what the change can break. A small change is one whose
 whole effect a single check observes, and that touches no state owner,
 protocol, persistence, harness driving, or requirement: a style rule, copy, or
 a contained bug fix with an obvious cause. The top-level agent makes a small
-change itself in its worktree, runs the checks that observe it, and opens the
-pull request, with no plan or review session. Every other change takes the
-steps below. When in doubt, a change is not small.
+change itself in its worktree, runs the checks that observe it, opens the
+pull request, and handles Copilot's review as in step 8, with no plan or
+review session. Every other change takes the steps below. When in doubt, a
+change is not small.
 
 1. A child session on Opus 5.5 at high effort runs `/ox-plan`. The user
    approves the plan's requirement changes with its other product questions.
@@ -268,7 +269,19 @@ steps below. When in doubt, a change is not small.
    the base, and after alone for a view the change adds. The images are
    committed under `pr-<N>/` on the orphan `pr-assets` branch and linked
    through `raw.githubusercontent.com` at that commit.
-8. A pull request merges by squash, with its title as the commit subject.
+8. GitHub requests a Copilot review when the pull request opens. Unless
+   Copilot has already reviewed, the top-level agent waits for it with
+   `gh event listen --resource <PR URL> --event
+   com.github.pull_request.review.submitted.v1 --timeout 30m`, then reads the
+   review and its comments with `gh api`. It gives each comment an
+   outcome from Defects. It fixes each comment marked to fix the way it would
+   fix a review finding: itself for a small fix, and through the implementing
+   session and `/ox-review verify` otherwise, then re-runs the checks that
+   observe the fix and pushes. It replies to each comment it rejects or
+   records with the reason or the issue. When no Copilot review arrives
+   within the timeout, the pull request is ready without one. The top-level
+   agent then tells the user the pull request is ready to merge.
+9. A pull request merges by squash, with its title as the commit subject.
    After the user merges, the top-level agent runs `make prune` and pulls in
    the main checkout. `make prune` removes each local branch whose pull
    request has merged, and its worktree; `make worktree` runs it first.
