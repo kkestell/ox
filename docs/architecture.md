@@ -3,6 +3,33 @@
 `oxd` keeps workspaces and agent sessions, runs their harnesses, and serves
 clients over a Unix socket. `ox` serves the [web UI](#web-ui).
 
+## Runtime overview
+
+```mermaid
+flowchart LR
+  browser["Browser (cmd/ox/web)"]
+  ox["ox (HTTP relay + embedded UI)"]
+  oxd["oxd (daemon)"]
+  db[("SQLite (ox.db)")]
+  claude["Claude Code (claude -p)"]
+  oxmcp["ox-mcp (stdio forwarder)"]
+  ur["Ur (OpenRouter + local shell)"]
+  urfiles[("Ur JSONL files")]
+  fake["Fake harness"]
+
+  browser -- "SSE /events, POST /rpc, GET /images" --> ox
+  ox -- "Unix socket (JSON-RPC 2.0)" --> oxd
+  oxd --> db
+  oxd -- "stream-json" --> claude
+  claude -- "MCP stdio" --> oxmcp
+  oxmcp -- "Unix socket (mcp/attach)" --> oxd
+  oxd --> ur
+  ur --> urfiles
+  oxd --> fake
+```
+
+## Packages
+
 Each package of `oxd` depends only on the packages beneath it. The server and
 each harness meet only at `internal/agent`; `cmd/oxd` gives the server each
 harness by name, with its `Start` function and its prompt and configuration
@@ -42,337 +69,406 @@ flowchart TD
   server --> agent
 ```
 
-| Package      | Owns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `cmd/ox-mcp` | Connecting a harness's MCP client, over stdio, to `oxd`'s socket for one session: attaching, then copying each line between stdin and the socket and the socket and stdout.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `cmd/oxd`    | Choosing the socket, database, and configuration, checking the configured harnesses, and holding the socket until sessions have stopped and every process in the `children` set has exited. A second stop signal kills every process in the set, including Claude processes still initializing and Ur commands, and ends the daemon.                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `paths`      | The XDG locations of the configuration, database, socket, Ur's conversation directory, and the session worktree directory, which `cmd/oxd` uses unless a flag overrides them and `cmd/ox` uses for the socket.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `config`     | Writing the built-in default to a missing configuration file, reading the file into each harness's models, efforts, and permission modes, the new-session defaults, and the harness, model, and effort that title sessions, and checking settings against them.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `server`     | Client and MCP connections, each session's goroutine and the agent it runs, and the mapping from each method to a session operation and its error codes. Each connection writes through its own queue, so sessions never wait on a client.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `store`      | The SQLite database of workspaces, sessions, child sessions' `children` rows, worktree sessions' `worktrees` rows, archived sessions' `archived` rows, session events, and the images attached to prompts, held exclusively through a lock file beside it from opening to closing.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `jsonrpc`    | Request validation and the response and notification types.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `agent`      | The `Agent` interface a harness implements, its `Start` function, its `Ask` function for one-shot requests, prompt and configuration checks, and options, and the updates, snapshots, settings, and errors they share.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `fake`       | A harness that runs no process and echoes each prompt back, in at most four runs of words, with the count of its images. A prompt `approve <tool> <input JSON>` first asks to approve that tool call, and the call's result is the answer. A prompt `background <milliseconds>` also runs a background task that long, and a prompt `wait <milliseconds>` keeps its turn running that long before the reply.                                                                                                                                                                                                                                                                                                                                                                                           |
-| `ur`         | A harness that streams each turn from OpenRouter chat completions requests and checks each shell call's arguments once, so the transcript, the approval card, and the command are one value, and runs the call in the session's workspace, in its own process group registered with `children`, which ends with the call or its turn. It appends each prompt, each reply delta as it streams, each response's tool calls, and each finished call's outcome to the JSONL file named by its resume token, reconstructs an interrupted call's outcome when it reads the file back to resume, and reports itself parkable when idle. Each request starts with a system message built from the workspace, the OS, the date, and the workspace's `AGENTS.md`, which is never saved to the conversation file. |
-| `children`   | The set of processes `oxd` waits for before exiting and kills on a second stop signal: a process joins it when a harness starts it and leaves it once reaped, and none starts once the set has been killed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `claude`     | The Claude Code harness: starting and initializing Claude, its stream-json wire format, and the state machine that runs it as an `Agent`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Package      | Owns                                                                                                                                                                                                                    |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cmd/ox-mcp` | Bridging a harness's stdio MCP client to `oxd`'s socket for one session: attaching, then copying lines in both directions.                                                                                              |
+| `cmd/oxd`    | Resolving socket, database, and config paths, checking configured harnesses, and holding the socket until sessions stop and every process in `children` exits. A second stop signal kills `children` and exits at once. |
+| `paths`      | XDG locations of the configuration, database, socket, Ur conversation directory, and session worktrees (`cmd/oxd` flags can override them; `cmd/ox` uses `paths` for the socket and config).                            |
+| `config`     | Writing the built-in default to a missing config file, loading each harness's models, efforts, permission modes, defaults, and titling model, and validating settings against them.                                     |
+| `server`     | Client and MCP connections, each session's goroutine and agent, method dispatch, and error codes. Each connection writes through its own queue so sessions never wait on a client.                                      |
+| `store`      | SQLite database of workspaces, sessions, `children`, `worktrees`, `archived`, session events, and prompt images, held exclusively through an adjacent lock file from open to close.                                     |
+| `jsonrpc`    | Request validation and the response and notification types.                                                                                                                                                             |
+| `agent`      | The `Agent` interface, `Start` and one-shot `Ask` functions, prompt and config checks, options, and shared updates, snapshots, settings, and errors.                                                                    |
+| `children`   | The set of child processes `oxd` waits for on shutdown and kills on a second stop signal. A process joins on start and leaves once reaped; none can start after the set is killed.                                      |
+| `claude`     | The Claude Code harness: launching and initializing `claude`, its stream-json wire format, and its `Agent` state machine.                                                                                               |
+| `ur`         | The OpenRouter harness: streaming chat completions, shell command execution, and JSONL conversation persistence.                                                                                                        |
+| `fake`       | In-process echo harness used by tests.                                                                                                                                                                                  |
 
 ## Sessions
 
-The server loads the stored workspaces and sessions at startup, all parked. A
-session's ID is Ox's own. The session stores the harness's conversation token
-when it receives `OnResumable` and supplies it at later starts. An empty token
-from `OnResumable` clears it, so the next start begins a new conversation. See
-the [session lifecycle](protocol.md#workspaces-and-sessions) for client
-behavior.
+### State ownership and locking
 
-Each session runs on its own goroutine, which owns its settings, resume token,
-history, agent, and park timer. Every request that reads or changes that state,
-archive included, is an operation posted to that goroutine, and the agent's
-events and the park timer are handled there between operations. An operation
-queues its own response there: at once; for a configuration Claude must
-acknowledge, from the event that finishes it; and for an archive, once every
-member has stopped. Unarchive changes only state `Server.mu` guards and is not
-posted to a goroutine. Nothing else touches a session's state, and a response
-lands in a connection's queue after every update it reflects and before every
-update it does not. The server handles each connection's requests on separate
-goroutines. Workspace and session membership changes are stored before they are
-applied in memory. The session keeps the settings it adopts and the resume token
-it receives or clears even when storing them fails.
+Session state is split strictly between `Server.mu` and per-session goroutines.
+Each connection handles incoming requests on separate goroutines, and each
+connection writes through its own queue.
 
-`Server.mu` guards workspace and session membership, each session's archived
-flag, the shutdown flag, and admission to `Server.creations`. Membership and
-archive changes and `workspace/list` queue their messages under the same lock so
-every connection sees them in one order. Unarchive looks its session up and
-queues its response under the lock. Nothing posts to a session, launches a
-harness, or hands an agent input while holding it.
+| Owner             | Owns                                                                                                  | Access rule                                                                                                                                                                                                                                                                                                         |
+| ----------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Server.mu`       | Workspace and session membership, archived flags, shutdown flag, and admission to `Server.creations`. | Membership and archive changes and `workspace/list` queue messages under this lock so every connection sees one order. Never held while posting to a session, launching a harness, running git, or handing input to an agent.                                                                                       |
+| Session goroutine | Settings, resume token, history, active agent, park timer, child reports, `exiting`, and `deleting`.  | Every request reading or changing this state (including archive) posts an operation here. Responses are queued from here—at once, on the finishing event for Claude config changes, or after all members stop for archive—so each response lands strictly after updates it reflects and before updates it does not. |
+| Unarchive         | Archived flags only (under `Server.mu`).                                                              | Looks up the session, refuses a child with an archived parent, clears flags across its subtree, and queues its response in one critical section without posting to a goroutine.                                                                                                                                     |
 
-An archived session has no agent, and a child of an archived session is
-archived. An archive runs on the session's goroutine. It holds every session
-beneath it, breadth-first, each with an operation that reports whether the
-session is idle, in the background, or parked and then waits. Each member is
-held before its children are read, which fixes them, since they are created only
-on its goroutine; an archive posts only from an ancestor to its descendants, so
-two archives in one family cannot deadlock. With every member free, the archive
-stores and sets the flags under `Server.mu`, stops its own agent, and releases
-the members, which stop theirs, and replies once each has stopped; otherwise it
-releases them unchanged. Unarchiving, in one critical section under `Server.mu`,
-looks the session up by ID, refuses a child whose parent is archived, clears the
-flags of the session and every session beneath it, and queues its response. The
-one place an input starts a parked session refuses an archived one, and so does
-`create_session` for an archived caller.
+Synchronous waits between session goroutines flow in one direction only, so
+cycles cannot happen:
 
-The session writes each conversation event to the store as it arrives. See
-[the snapshot and history contract](protocol.md#sessionget).
+```mermaid
+flowchart TD
+  ancestor["Ancestor session goroutine"]
+  descendant["Descendant session goroutine"]
+  helper["Spawned goroutine"]
 
-The agent owns every input it has not taken, user prompts and messages alike,
-with their IDs, text, and attribution, from acceptance until each is taken or
-dropped. The session hands it each input as it arrives, starting a parked
-session first, and refuses a user prompt while the agent reports any input
-untaken. `send_message` posts to the recipient's goroutine and `list_sessions`
-captures each entry on its owning goroutine. `read_session` reads the target's
-snapshot and history on the target's goroutine and starts nothing. A session
-goroutine waits on another only from an ancestor to a descendant: an archive
-holds each descendant's goroutine, ancestors first, until it ends, and a
-delivery of child reports posts to each child. A descendant reaches an ancestor
-only through a goroutine of its own, so every chain of waits ends at a leaf.
+  ancestor -- "Synchronous post (archive hold, child report collection)" --> descendant
+  descendant -- "Async ping (state change, park, send_message)" --> helper
+  helper -- "Post delivery / operation" --> ancestor
+```
 
-A child keeps its reports for its parent on its own goroutine, in a value only a
-child has, with its current turn, which holds the turn's `told` state: whether
-its current step sent its parent a message. A `send_message` from a child to its
-own parent takes the child's current turn from the child's goroutine before it
-waits on the parent, or none when the child is free. Once the parent accepts, it
-posts `toldSent` for that turn to the child and answers the call from there, so
-the call's `tool_result` follows it; the next `tool_result` makes it
-`toldAnswered`, and the next `tool_use` clears it. At a `result` the child keeps
-a report unless `told` is set, and at an `exited` it always keeps one; both
-replace the turn, so a message accepted after its turn ended marks only that
-ended turn. When a session's state becomes anything but `running`, or it parks,
-it pings its parent, and itself when it has children: a new goroutine posts a
-delivery to the target. The delivery runs on the parent's goroutine. It returns
-unless the parent is free, not archived, and the daemon is not shutting down,
-and no child's published state is `running`, then takes every child's reports
-and hands them to the agent as one input through the path a message takes.
-Messages go first because a free session has no untaken input.
+- Every chain of synchronous waits ends at a leaf.
+- A descendant reaches an ancestor only through a goroutine of its own.
 
-Every session stores the directory its harness runs in, fixed at creation: a
-top-level session's workspace's path, or the directory `create_session` resolved
-for a child. A child session holds a `child` value, fixed at creation and stored
-in the same transaction as its session row, naming its parent, name, and title;
-a top-level session has none. `create_session` checks its arguments on the call
-goroutine, then posts to the parent's goroutine, which resolves the child's
-settings from its own. Under `Server.mu` it checks name uniqueness, archive, and
-depth; without the lock it stores the child and launches its harness; under
-`Server.mu` again it refuses if the daemon is shutting down, stopping the agent
-and deleting the row, and otherwise adds the child to membership; then it hands
-the child's agent the first message and starts its goroutine. A request posted
-to the child waits until then. A harness that cannot be launched leaves the
-child unstored and unpublished. A session belongs to whoever builds it until its
-goroutine starts. A session's destroy operation refuses while any session is its
-child; since children are created only on the parent's goroutine, none appears
-while it runs.
+### Lifecycle, persistence, and parking
 
-The session arms a park timer whenever its agent is `Parkable` and stops it when
-the agent stops being parkable, so the full period restarts each time. If the
-timer fires, the session stops the agent, which ends at once while its process
-exits in the background.
+- **Startup:** `oxd` loads stored workspaces and sessions at startup, all
+  parked. Every session has an Ox-assigned ID and a `directory` fixed at
+  creation (its workspace's path, its worktree copy, or the directory
+  `create_session` resolved for a child).
+- **Resume tokens:** The session saves the harness's conversation token on
+  `OnResumable` and passes it on later starts. An empty token clears it so the
+  next start begins a fresh conversation. See the
+  [session lifecycle](protocol.md#workspaces-and-sessions).
+- **Persistence order:** Workspace and session membership changes are stored
+  before being applied in memory. Each conversation event is written to the
+  store as it arrives; see
+  [the snapshot and history contract](protocol.md#sessionget). A session keeps
+  adopted settings and updated or cleared resume tokens in memory even if
+  storing them fails.
+- **Input acceptance:** The agent owns every untaken input (user prompts and
+  messages) with its ID, text, and attribution until taken or dropped. The
+  session hands inputs to the agent as they arrive, starting a parked session
+  first, and refuses a user prompt while any input is untaken.
+- **Inter-session reads and messages:** `send_message` posts to the recipient's
+  goroutine, `list_sessions` captures each entry on its owning goroutine, and
+  `read_session` reads the target's snapshot and history on its goroutine
+  without starting it.
+- **Parking:** The session arms its park timer whenever the agent is `Parkable`
+  and stops it when it ceases to be `Parkable`, restarting the full period each
+  time. Firing the timer stops the agent at once while its process exits in the
+  background.
+
+### Archiving
+
+An archived session has no running agent, and every child of an archived session
+is archived.
+
+1. Archive runs on the target session's goroutine and walks descendants
+   breadth-first.
+2. It posts a hold operation to each descendant (ancestor before children, so no
+   new children can be created on a held parent). Each member reports whether it
+   is idle, in the background, or parked, then waits.
+3. If every member is free, archive stores and sets the archived flags under
+   `Server.mu`, stops its own agent, releases the descendants to stop theirs,
+   and replies once every member has stopped. Otherwise it releases them
+   unchanged.
+4. Two concurrent archives in the same family cannot deadlock because holds
+   travel strictly from ancestor to descendant.
+
+The single path that starts a parked session on input refuses archived sessions,
+and `create_session` refuses an archived caller.
+
+### Child sessions and reports
+
+A child session holds an immutable `child` value (parent, name, title) stored in
+the same transaction as its session row; top-level sessions have none.
+
+**Creation flow (`create_session`):**
+
+1. Validate arguments on the call goroutine, then post to the parent's goroutine
+   to resolve inherited settings.
+2. Under `Server.mu`, check name uniqueness, archive state, and depth.
+3. Without the lock, store the child row and launch its harness (a launch
+   failure leaves the child unstored and unpublished).
+4. Under `Server.mu`, abort (stopping the agent and deleting the row) if `oxd`
+   is shutting down; otherwise publish the child into membership.
+5. Hand the child's agent its first message and start its goroutine (requests
+   posted to the child wait until then).
+
+A session belongs to its builder until its goroutine starts. Destroying a
+session refuses while it has any children; because children are created only on
+the parent's goroutine, none can appear during destroy.
+
+**Child turn reports (`told` state machine):**
+
+Each child keeps pending parent reports and its current turn's `told` state on
+its own goroutine. When a child calls `send_message` to its own parent, the call
+snapshots the child's current turn before waiting on the parent (or none if
+free). Once the parent accepts, it posts `toldSent` for that turn back to the
+child and answers the call from there, guaranteeing `toldSent` precedes the
+call's `tool_result`.
+
+```mermaid
+stateDiagram-v2
+  [*] --> untold
+  untold --> toldSent: parent accepts send_message for this turn
+  toldSent --> toldAnswered: next tool_result
+  toldAnswered --> untold: next tool_use
+```
+
+- On `result`: the child keeps a report unless `told` is set, then replaces the
+  turn (a message accepted after a turn ended marks only that ended turn).
+- On `exited`: the child always keeps a report and replaces the turn.
+- **Delivery:** Whenever a session leaves `running` or parks, a spawned
+  goroutine pings its parent (and itself if it has children). The delivery runs
+  on the parent's goroutine: if the parent is free, not archived, not shutting
+  down, and no child's published state is `running`, it collects every child's
+  reports and hands them to the parent's agent as one message. Queued messages
+  go first because a free session has no untaken input.
 
 ### Worktrees
 
-A top-level session created with `worktree` stores the root of its git worktree
-in a `worktrees` row, written with its session row and fixed at creation; the
-store refuses one for a child. Ownership is read from that row, so a changed
-worktree directory leaves existing worktrees owned. Git's own state, the branch,
-`HEAD`, cleanliness, and registration, is read live. Every git command runs
-through `server/worktree.go`, with stdin closed and git's stderr as the error.
+A top-level session created with `worktree` stores its worktree root in a
+`worktrees` row written with its session row and fixed at creation (the store
+refuses worktrees for children). Ownership comes from that row, so changing the
+configured worktrees directory leaves existing worktrees owned. Branch, `HEAD`,
+cleanliness, and registration are read live via `server/worktree.go` with stdin
+closed and git's stderr surfaced as the error.
 
-Creation runs in three steps. Under `Server.mu`, `session/create` makes the
-checks it makes without a worktree and adds itself to `Server.creations`.
-Without the lock, it makes the worktree under a fresh name, on a branch of the
-same name, with hooks off, and checks that the workspace's copy is a directory
-inside it. Under `Server.mu` again, it refuses if the daemon is shutting down or
-the workspace is gone, answers as an existing session if one with its ID was
-created meanwhile, and otherwise stores and publishes the session. Publication
-is the one transfer of the worktree from the request to the session; every other
-outcome discards the worktree and branch, with force, before it replies, since
-no process has run in them. Git never runs under `Server.mu`. `Close` sets the
-shutdown flag, so no creation is admitted after it, and waits for its sessions
-and then for `Server.creations`. A second stop signal exits without waiting, and
-can leave a worktree and branch being made; the log line that starts each
-checkout names the session.
+**Creation (git never runs under `Server.mu`):**
 
-`Server.worktreeOwnerLocked` decides who works in a worktree: the session whose
-worktree holds a physical path. `workspace/create` refuses a path it owns, and
-`create_session` refuses a `dir`, resolved to its physical form on the call
-goroutine, that a session other than the caller's top-level ancestor owns. So
-only the owner and its descendants run there, and the owner is deleted only
-after them.
+1. Under `Server.mu`, run normal creation checks and register in
+   `Server.creations`.
+2. Without the lock, create the git worktree under a fresh name on a matching
+   branch with hooks disabled, and verify the workspace's copy exists inside it.
+3. Under `Server.mu`, refuse if shutting down or the workspace is gone, return
+   the existing session if the same ID appeared meanwhile, or store and publish
+   the session.
 
-`Agent.Reaped` is closed once every process the agent started has exited: for
-Claude, when the read goroutine has reaped Claude; for Ur, when every command's
-process group has been killed and its command reaped. Every drop of an agent
-goes through the session's `parked`, which keeps the dropped agent's `Reaped` in
-`session.exiting`, pruning those already closed. A destroy, on the session's
-goroutine, refuses a session with children, stops its agent, and sets
-`session.deleting`, which holds the reply and exists only while the delete
-waits. A goroutine of the delete's own waits on every channel in `exiting`,
-removes the worktree, and posts the outcome back, so the session's goroutine
-keeps answering meanwhile. The posted operation deletes the row and unpublishes
-the session, or clears `deleting` and replies with the error, leaving the
-session listed and parked. While `deleting` is set, the session refuses to
-start, to start a child, and a second destroy; if shutdown ends the goroutine
-first, the delete's goroutine replies that the daemon is shutting down. The
-removal reads the registration and the folder live, running git in the worktree
-while it is present and in the workspace otherwise, so a repeated destroy
-finishes what an earlier one left, and a workspace folder removed meanwhile does
-not stop it. Claude ends its Bash tool processes when it exits on SIGTERM; a
-Claude killed after the ten-second limit can leave tool processes Ox cannot
-reach, since they run in their own sessions. A session's start refuses a
-directory that no longer exists.
+Publication is the sole ownership transfer from the request to the session; any
+other outcome force-removes the worktree and branch before replying. `Close`
+sets the shutdown flag (blocking new creations), waits for sessions, and then
+waits for `Server.creations`. A second stop signal exits immediately and can
+leave an in-progress checkout behind (logged with its session ID).
+
+**Ownership:** `Server.worktreeOwnerLocked` maps a physical path to its owning
+worktree session. `workspace/create` refuses any path it owns, and
+`create_session` refuses a `dir` (resolved physically on the call goroutine)
+owned by a session other than the caller's top-level ancestor. Only the owner
+and its descendants can run there, and the owner cannot be deleted until its
+descendants are gone.
+
+**Deletion and process reaping:**
+
+```mermaid
+flowchart LR
+  destroy["destroy on session goroutine"]
+  stop["Stop agent, set session.deleting"]
+  wait["Delete goroutine waits on exiting Reaped channels"]
+  gitrm["Remove git worktree"]
+  done["Post outcome back to session goroutine"]
+  ok["Delete row and unpublish"]
+  fail["Clear deleting, reply error (remains parked)"]
+
+  destroy --> stop --> wait --> gitrm --> done
+  done -- "success" --> ok
+  done -- "error" --> fail
+```
+
+- `Agent.Reaped` closes once every process the agent started has exited (Claude
+  reaped by its reader; Ur process groups killed and reaped). Every dropped
+  agent passes through `session.parked`, which appends its `Reaped` channel to
+  `session.exiting` and prunes closed ones.
+- While `session.deleting` is set, the session keeps answering unrelated
+  operations while refusing starts, child starts, and a second destroy. If
+  shutdown ends the goroutine first, the delete goroutine replies that `oxd` is
+  shutting down.
+- Worktree removal checks registration and directory presence live (running git
+  in the worktree if present, otherwise in the workspace), so retrying a partial
+  delete or deleting after the workspace folder vanished still succeeds.
+- Claude ends its Bash tool processes on `SIGTERM`; a Claude killed after the
+  ten-second limit can leave tool processes running in their own sessions that
+  Ox cannot reach. Starting a session refuses a missing directory.
 
 ## Agents
 
-An `Agent` runs one harness instance. `Start` returns at once with the agent
-starting, and fails only when the harness cannot be launched; a start that fails
-later ends the agent with its reason. `Stop` ends the agent at once. The session
-goroutine drives it by calling its methods and passing each event from `Events`
-to `Handle`. The agent publishes through `OnUpdate` during those calls, and
-reports failures no call returns, such as a failed write to its process, through
-`OnError`, which the session logs under its ID. `Send` receives the input with
-its session-assigned ID, text, and attribution, and queues it behind every input
-the harness has not taken. The harness decides when an input is written, taken,
-or dropped, and records each take and drop, with its own reported execution
-state, in an `agent.Tracker`. The tracker keeps the untaken inputs, oldest
-first, and publishes their lifecycle updates with the input's text and
-attribution. It derives the published state: the harness's report, except that
-an idle harness is `running` while any input is untaken, and otherwise
-`background` while background tasks run. `Snapshot` reports both from the
-tracker. The agent reports settings changes through `OnConfigured`, as they
-happen, separately from the outcome of a `Configure` request. See the
-[update contract](protocol.md#session-updates).
+An `Agent` runs one harness instance. `Start` returns immediately in a starting
+state and fails only if the harness cannot launch; later startup failures end
+the agent with a reason. `Stop` ends the agent at once.
 
-Each harness receives Ox's MCP server for its session: the `ox-mcp` beside
-`oxd`, its environment naming the socket and the session, and the tools that run
-without an approval prompt where the permission mode allows.
+- **Event loop:** The session goroutine drives the agent by calling its methods
+  and passing each event from `Events` to `Handle`. The agent publishes updates
+  via `OnUpdate` during those calls, reports asynchronous errors (such as a
+  failed write) via `OnError` (logged with the session ID), and reports adopted
+  settings changes via `OnConfigured` separately from `Configure` replies. See
+  the [update contract](protocol.md#session-updates).
+- **Input and state tracking (`agent.Tracker`):** `Send` queues an input (with
+  its session-assigned ID, text, and attribution) behind untaken inputs. The
+  harness decides when each input is written, taken, or dropped, recording each
+  transition and its reported execution state in `agent.Tracker`. The tracker
+  publishes input lifecycle updates and derives the published state: an idle
+  harness publishes `running` while any input is untaken, `background` while
+  background tasks run, and its own reported state otherwise. `Snapshot` reads
+  both from the tracker.
+- **MCP server:** Each harness receives Ox's MCP server for its session—the
+  `ox-mcp` binary beside `oxd`, environment naming the socket and session, and
+  the tools allowed without an approval prompt where the permission mode
+  permits.
 
 ### The Claude agent
 
-Ox assigns a fresh UUID when launching a new Claude conversation. The agent
-tracks the conversation ID Claude reports and calls `OnResumable` once a changed
-ID is known to be resumable. See Claude's
-[transcript timing](harnesses/claude-code.md#session-ids). On every launch,
-resumes included, it registers Ox's MCP server as `ox` and pre-approves its
-tools; see Claude's [launch flags](harnesses/claude-code.md#persistent-session).
+The Claude agent runs an explicit phase state machine alongside `agent.Tracker`
+(which holds Claude's last reported execution state and background task count):
 
-One stdout reader, from spawn to exit, drains the pipe into a delivery queue
-independently of the session, delivering each JSON line and each other nonblank
-line as plain text. The reader's inherited-descriptor cutoff does not limit
-delivery; all captured output arrives before the exit event, which includes the
-stderr tail. Once the agent has ended, delivery discards the rest. The output
-queue, the startup limit, and control-request timers deliver through `Events`.
-The session publishes updates in the order it handles operations and events.
+```mermaid
+stateDiagram-v2
+  [*] --> starting
+  starting --> available: initialize response
+  available --> prompting: send input
+  available --> configuring: configure
+  prompting --> available: idle with no untaken input
+  configuring --> available: last ack / refusal / write error
+  configuring --> timedOut: control request timeout
+  starting --> exited: refusal / startup limit / exit / Stop
+  available --> exited: exit / Stop
+  prompting --> exited: exit / Stop
+  configuring --> exited: exit / Stop
+  timedOut --> exited: process exits
+```
 
-The phase identifies the current operation and holds the fields valid only
-during it:
+| Phase         | Meaning                                                                                                                               | Leaves on                                                               |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `starting`    | Claude has not answered `initialize`. Holds Claude's last failure output; inputs sent meanwhile wait unwritten.                       | `initialize` response, refusal, startup limit, process exit, or `Stop`. |
+| `available`   | Ready for a prompt or configuration, with no input untaken.                                                                           | Prompt or configuration starts.                                         |
+| `prompting`   | Client prompts hold the agent. The first untaken input, if any, has been written; `command_lifecycle started` or `cancelled` ends it. | Claude reports `idle` with no input untaken.                            |
+| `configuring` | Control requests are in flight, one at a time; inputs sent meanwhile wait unwritten.                                                  | Last acknowledgement, refusal, write failure, or timeout.               |
+| `timedOut`    | A control request went unanswered and Ox asked the process to exit.                                                                   | Process exits.                                                          |
+| `exited`      | The agent has ended (any transition here drops all untaken inputs).                                                                   | —                                                                       |
 
-| Phase         | Meaning                                                                                                                                          | Leaves on                                                                               |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
-| `starting`    | Claude has not answered `initialize`. It holds Claude's last failure output; inputs sent meanwhile wait unwritten.                               | The `initialize` response, a refusal, the startup limit, the process's exit, or `Stop`. |
-| `available`   | Available for a prompt or configuration, with no input untaken.                                                                                  | A prompt or configuration starts.                                                       |
-| `prompting`   | Client prompts hold the agent. The first untaken input, if any, has been written, and `command_lifecycle started` or `cancelled` for it ends it. | Claude reports `idle` with no input untaken.                                            |
-| `configuring` | Control requests are in flight, one at a time; inputs sent meanwhile wait unwritten.                                                             | The last acknowledgement, a refusal, a write failure, or a timeout.                     |
-| `timedOut`    | A control request went unanswered and Ox asked the process to exit.                                                                              | The process exits.                                                                      |
-| `exited`      | The agent has ended.                                                                                                                             | —                                                                                       |
+- **Launch and resume:** Ox assigns a fresh UUID for a new Claude conversation,
+  tracks the conversation ID Claude reports, and calls `OnResumable` once a
+  changed ID is known to be resumable (see
+  [transcript timing](harnesses/claude-code.md#session-ids)). Every launch
+  registers `ox-mcp` as `ox` and pre-approves its tools (see
+  [launch flags](harnesses/claude-code.md#persistent-session)).
+- **Output reader:** One stdout reader runs from spawn to exit, draining the
+  pipe into an independent delivery queue. Each JSON line and each other
+  nonblank line (as plain text) is delivered before the exit event (which
+  carries the stderr tail), unaffected by inherited-descriptor cutoffs. Output
+  after the agent ends is discarded. The output queue, startup limit, and
+  control-request timers all deliver through `Events`, and the session publishes
+  updates in handling order.
+- **Writing inputs and configuring:** The agent writes only the first untaken
+  input—immediately in `available`, or in `prompting` when nothing is untaken;
+  otherwise it waits until `initialize` completes, a configuration ends, or
+  Claude takes or drops the written input. Taking a `Configure` request requires
+  both `available` and a published state of `idle` or `background`.
+- **Interrupts:** Drops every unwritten input. In `available` or `prompting`
+  when published state is neither `idle` nor `background`, it sends an interrupt
+  to Claude and drops the written untaken input. In `starting`, `configuring`,
+  and `timedOut`, it sends nothing.
+- **Parking:** `Parkable` is derived from phase, state, pending approvals, and
+  [Claude's reports of background work](harnesses/claude-code.md#8-background-work-and-schedules).
+  On resume or after a scheduling tool call, only a Stop report with an empty
+  schedule list clears possible pending work. See the
+  [parking rule](protocol.md#workspaces-and-sessions).
 
-The process's exit, `Stop`, or a failed start moves any live phase to `exited`,
-dropping every untaken input. Alongside the phase, the agent's tracker keeps
-Claude's last reported execution state and the count of background tasks Claude
-reports.
+### The Ur agent
 
-The agent writes only the first untaken input. An input is written at once in
-`available`, or in `prompting` when nothing is untaken; otherwise it waits. When
-Claude answers `initialize`, a configuration ends, or Claude takes or drops the
-written input, the agent writes the next. Both `available` and an `idle` or
-`background` published state are required to take a configuration. An interrupt
-drops every input not yet written; in `available` or `prompting` with the
-published state not `idle` or `background` it is then sent to Claude, dropping
-the written input Claude has not taken. In `starting`, `configuring`, and
-`timedOut` it sends nothing.
+- Streams each turn from OpenRouter chat completions with an ephemeral system
+  message built from the workspace, OS, date, and the workspace's `AGENTS.md`
+  (never written to the conversation file).
+- Validates each shell call's arguments once, so the transcript, approval card,
+  and executed command share one value.
+- Runs each shell call in the session's workspace inside its own process group
+  registered with `children`, ending with the call or its turn.
+- Appends prompts, streamed reply deltas, tool calls, and finished outcomes to
+  the JSONL file named by its resume token, reconstructing an interrupted call's
+  outcome when resuming. Reports `Parkable` when idle.
 
-The agent derives `Parkable` from its phase, its state, pending approvals, and
-[Claude's reports of background work](harnesses/claude-code.md#8-background-work-and-schedules).
-On resume or after a scheduling tool call, only a Stop report with an empty
-schedule list clears the possible pending work. See the
-[parking rule](protocol.md#workspaces-and-sessions).
+### The Fake agent
+
+Runs no external process and echoes each prompt back (in at most four runs of
+words) with its image count. Recognizes three test prompts:
+
+| Prompt                        | Behavior                                                                       |
+| ----------------------------- | ------------------------------------------------------------------------------ |
+| `approve <tool> <input JSON>` | Requests approval for that tool call; returns the user's answer as the result. |
+| `background <milliseconds>`   | Runs a background task for that duration alongside the turn.                   |
+| `wait <milliseconds>`         | Keeps the turn running for that duration before replying.                      |
 
 ## Web UI
 
-The web UI in `cmd/ox/web` is a Solid 2.0 app written in TypeScript. `make web`
-builds it with Vite into `cmd/ox/web/dist`, which `ox` embeds, and `make build`
-builds it before the binaries. `make dev` runs `oxd` and `ox`, which serves the
-UI at http://localhost:8080. Enter in the `make dev` terminal rebuilds the web
-client and the binaries and restarts `ox` or `oxd` if its binary changed. In a
-linked worktree, `make dev` keeps its configuration, state, and socket under the
-checkout's `.state`, serves on a free port, and prints the page's URL.
+The web UI in `cmd/ox/web` is a Solid 2.0 TypeScript app built with Vite into
+`cmd/ox/web/dist` (`make web`) and embedded in `ox` (`make build`).
 
-Each page gets an `oxd` connection through `ox`: `/events` relays socket lines
-as Server-Sent Events, and `/rpc` posts the page's JSON-RPC requests to the
-socket. Its 24 MiB request body cap leaves space for JSON escaping and base64
-images under the [decoded prompt limits](protocol.md#sessionsend).
-`/images/{session_id}/{image_id}` serves a prompt's image, which `ox` asks
-[`session/image`](protocol.md#sessionimage) for over a socket connection of its
-own, so image data never travels a page's event stream. `ox` answers all three
-only when the request's `Host` names `localhost`, `127.0.0.1`, `[::1]`, the host
-given to `-addr`, or the configured [`tailscale_ip`](protocol.md#configuration),
-and refuses an `/rpc` post from another origin, so a page whose domain rebinds
-to one of these addresses cannot reach `oxd`. `/rpc` answers `503` when the
-page's `oxd` connection is gone, and the page treats it as a lost connection.
+`make dev` runs `oxd` and `ox` together at `http://localhost:8080`; pressing
+Enter rebuilds the web client and binaries and restarts whichever binary
+changed. In a linked worktree, `make dev` keeps its config, state, and socket
+under `.state`, serves on a free port, and prints the URL.
 
-When the configuration sets `tailscale_ip`, `ox` also binds that address at port
-17840, alongside the listener at `-addr`, and prints the tailnet URL once both
-have bound; both listeners serve the same relay and UI.
+### Relay endpoints and security
 
-| File                                                                                                                                                                                                               | Owns                                                                                                                                                                                                                                                                                                              |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `protocol.ts`                                                                                                                                                                                                      | Types for the `oxd` methods, updates, and notifications.                                                                                                                                                                                                                                                          |
-| `connection.ts`                                                                                                                                                                                                    | Opening the event stream and reopening it after a drop, sending requests, matching replies, and reporting stream errors.                                                                                                                                                                                          |
-| `ox.tsx`                                                                                                                                                                                                           | A provider that reloads the catalog, workspaces, and sessions on each connection, updating loaded sessions in place so their views keep their state, applies notifications, and exposes RPC calls; the session list's requests in flight; each session's control; `createAttempt`, which shows a request's error. |
-| `poll.ts`                                                                                                                                                                                                          | The page's polling: a request repeated on each tick of the provider's clock, one in flight at a time.                                                                                                                                                                                                             |
-| `highlight.ts`                                                                                                                                                                                                     | Syntax highlighting: the registered languages and the file names that choose them.                                                                                                                                                                                                                                |
-| `toolInput.ts`                                                                                                                                                                                                     | Readers of Claude's tool calls: a call's label, its subject, an `ExitPlanMode` plan, `AskUserQuestion` questions, and a call's input as JSON.                                                                                                                                                                     |
-| `App.tsx`, `Panels.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `NewSessionView.tsx`, `Attachments.tsx`, `FileTree.tsx`, `FileView.tsx`, `ApprovalRequest.tsx`, `SettingsFields.tsx`, `HarnessIcon.tsx`, `Markdown.tsx` | The components. `Layout` in `App.tsx` owns the page's panels for the life of the page: which show and their widths in the wide layout, and which drawer is open in the narrow one, below 768 px. It also owns whether the file viewer wraps long lines.                                                           |
+| Route                                 | Purpose                                                                                                                                                                                                  |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /events`                         | Opens a dedicated `oxd` socket connection for the page and relays socket lines as Server-Sent Events.                                                                                                    |
+| `POST /rpc`                           | Posts JSON-RPC requests to that page's `oxd` socket (24 MiB cap leaves room for JSON escaping and base64 under [decoded prompt limits](protocol.md#sessionsend)). Returns `503` when the socket is gone. |
+| `GET /images/{session_id}/{image_id}` | Fetches a prompt image via [`session/image`](protocol.md#sessionimage) on its own socket so image data never travels `/events`.                                                                          |
 
-The page reopens the event stream a second after it drops, and at once when the
-page becomes visible while it is not connected. It shows stream errors while
-reconnecting and asks for a reload once `ox` refuses the stream. A request that
-cannot reach the relay drops the connection as a stream error does. Each
-stream's reload sends its requests, and their repeats, only on that stream, and
-ends when the stream drops. A reload request that fails while its stream is
-connected repeats each second, and its failure shows as the page error until it
-is answered. Only the current stream's reload marks the page caught up.
+- **Host and origin checks:** `ox` answers all three routes only when `Host`
+  matches `localhost`, `127.0.0.1`, `[::1]`, the `-addr` host, or the configured
+  [`tailscale_ip`](protocol.md#configuration), and refuses cross-origin `POST`
+  to `/rpc`, preventing DNS rebinding from reaching `oxd`.
+- **Tailscale listener:** When `tailscale_ip` is configured, `ox` also binds
+  that address on port `17840` alongside `-addr` and prints the tailnet URL once
+  both bind; both listeners serve the same relay and UI.
 
-A session's control owns the page's requests for that session: its composer text
-and attached images, the folders its file tree has expanded, its open file with
-a Markdown file's choice of preview or source, and the split between the
-transcript and the file viewer, creation, sends, configuration, interrupts,
-approval answers, and their errors. It shows each request in flight until `oxd`
-answers: a submitted prompt leaves the composer at once and shows pending under
-the ID the page chose, Stop hides, and an answered approval hides; a refusal
-returns each to `oxd`'s state with its error. It outlives the session's view, so
-leaving the view or reconnecting keeps the text, images, expanded folders, open
-file, and split and repeats no request. A send and a configuration exclude each
-other. The control remembers the prompt it sent last, so a prompt refused or
-dropped before Claude took it returns, with its images, to the composer of the
-page that sent it, ahead of anything typed since. The settings form sends a
-patch to [`session/configure`](protocol.md#sessionconfigure) and shows the
-requested values, each changed one with a spinner, and Send disabled until the
-request settles. After a reconnect each session waits for its own snapshot
-before allowing another send or settings change. A session's state comes from
-`workspace/list`, `session/created`, and its `state` and `parked` updates, so it
-shows before the session's snapshot loads.
+### Client modules
 
-The provider holds the session list's requests in flight, at most one for each
-session or workspace, and shows each result at once: a session being deleted and
-a workspace being removed are gone, and a session being archived or unarchived
-shows as it will be, with every session beneath it. Whether the list offers an
-action follows `oxd`'s store.
+| File                                                                                                                                                                                                               | Owns                                                                                                                                                                                                                                              |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `protocol.ts`                                                                                                                                                                                                      | Types for `oxd` methods, updates, and notifications.                                                                                                                                                                                              |
+| `connection.ts`                                                                                                                                                                                                    | Opening and reopening `/events`, sending `/rpc` requests, matching replies, and reporting stream errors.                                                                                                                                          |
+| `ox.tsx`                                                                                                                                                                                                           | Provider that reloads catalog, workspaces, and sessions on each connection (updating loaded sessions in place), applies notifications, exposes RPC calls, tracks list actions in flight, owns per-session controls, and provides `createAttempt`. |
+| `poll.ts`                                                                                                                                                                                                          | Repeating a request on each tick of the provider's clock, at most one in flight at a time.                                                                                                                                                        |
+| `highlight.ts`                                                                                                                                                                                                     | Syntax highlighting: registered languages and file-name matching.                                                                                                                                                                                 |
+| `toolInput.ts`                                                                                                                                                                                                     | Readers of Claude tool calls: label, subject, `ExitPlanMode` plan, `AskUserQuestion` questions, and JSON input.                                                                                                                                   |
+| `App.tsx`, `Panels.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `NewSessionView.tsx`, `Attachments.tsx`, `FileTree.tsx`, `FileView.tsx`, `ApprovalRequest.tsx`, `SettingsFields.tsx`, `HarnessIcon.tsx`, `Markdown.tsx` | UI components. `Layout` in `App.tsx` owns panel visibility and widths (wide layout), open drawer (narrow layout, `< 768 px`), and file viewer word wrap for the life of the page.                                                                 |
 
-The page keeps one draft per workspace. Its ID and composer carry over to the
-created session. A successful create sends the submitted text once. If the reply
-is lost, the page can recognize the session after reconnect, restore its
-composer and let the user decide when to send. A failed creation in another view
-links back to the draft.
+### Connection and reload
 
-The file tree lists each folder it shows with
-[`workspace/list_folder`](protocol.md#workspacelist_folder) beneath the selected
-session's directory, or a draft's workspace: the directory itself, and each
-expanded folder that its parent's latest listing contains. The tree is keyed by
-the selection, so each session and draft mounts its own, which reads beneath
-that selection alone. Each folder lists itself when it appears and again once a
-second while the page is visible and connected, with one request in flight at a
-time.
+- **Reconnect:** Reopens `/events` one second after a drop, or immediately when
+  the page becomes visible while disconnected. A failed `/rpc` (including `503`)
+  drops the connection like a stream error. Stream errors show while
+  reconnecting; if `ox` refuses the stream, the page asks for a reload.
+- **Stream-scoped reload:** Each stream's reload sends its requests (and
+  1-second retries on failure) only on that stream and stops when it drops.
+  Reload errors show as the page error until answered, and only the current
+  stream's reload marks the page caught up.
+- **Early status:** A session's state comes from `workspace/list`,
+  `session/created`, and `state`/`parked` updates, so it renders before the
+  session's snapshot loads. After a reconnect, each session waits for its own
+  snapshot before allowing another send or settings change.
 
-The file viewer reads the control's open file with
-[`workspace/read_file`](protocol.md#workspaceread_file) on the same clock as the
-tree. Its view is keyed by the selection and path, so its text is always the
-open file's.
+### Session control, drafts, and optimistic state
+
+- **Session control:** Outlives the session's view and reconnects. Owns composer
+  text and attached images, expanded folders, open file (and Markdown
+  preview/source toggle), transcript/file split, and in-flight requests
+  (creation, sends, configuration, interrupts, approvals, and their errors).
+  - Applies actions optimistically until `oxd` answers: a sent prompt clears the
+    composer and shows pending under the page's ID; Stop hides; an answered
+    approval hides. A refusal reverts to `oxd`'s state with the error.
+  - Sends and settings changes are mutually exclusive. Settings changes send a
+    patch to [`session/configure`](protocol.md#sessionconfigure), show requested
+    values with spinners on changed fields, and disable Send until settled.
+  - Remembers the last prompt sent so a prompt refused or dropped before Claude
+    took it returns (with its images) to the sending page's composer ahead of
+    anything typed since.
+- **List actions:** The provider tracks at most one in-flight delete, remove,
+  archive, or unarchive per session or workspace and applies it optimistically
+  (including descendants on archive/unarchive). Available menu actions follow
+  `oxd`'s store.
+- **Workspace drafts:** One draft per workspace; its ID and composer carry over
+  to the created session, sending submitted text once. If the create reply is
+  lost, the page recognizes the session after reconnect, restores the composer,
+  and lets the user decide when to send. A failed creation in another view links
+  back to the draft.
+
+### File tree and viewer
+
+- **File tree:** Lists the selected session's directory (or draft's workspace)
+  and each expanded folder present in its parent's latest listing via
+  [`workspace/list_folder`](protocol.md#workspacelist_folder). Keyed by the
+  selection so each session or draft mounts its own tree. Polls on mount and
+  once per second while visible and connected, one request in flight per folder.
+- **File viewer:** Reads the open file via
+  [`workspace/read_file`](protocol.md#workspaceread_file) on the same 1-second
+  clock, keyed by selection and path so rendered text always matches the open
+  file.
