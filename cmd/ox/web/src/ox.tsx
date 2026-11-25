@@ -1,4 +1,14 @@
-import { createContext, createSignal, createStore, onSettled, type ParentProps, reconcile, useContext } from "solid-js";
+import {
+  createContext,
+  createSignal,
+  createStore,
+  onSettled,
+  type ParentProps,
+  reconcile,
+  type Store,
+  type StoreSetter,
+  useContext,
+} from "solid-js";
 import { type Connection, connect, Disconnected, type Rpc, RpcError } from "./connection";
 import { newID } from "./id";
 import {
@@ -181,11 +191,24 @@ const base64 = (file: File) =>
     reader.readAsDataURL(file);
   });
 
+// CardDraft is a permission card's unsent answer: its choice, and the reply
+// typed for Other.
+export type CardDraft = { choice?: "allow" | "deny" | "other"; reply: string };
+
+// QuestionAnswer is a question form's unsent answer to one question.
+export type QuestionAnswer = { labels: string[]; other: boolean; text: string };
+
+// FormDraft is a question form's unsent answers and the question it shows.
+export type FormDraft = { answers: QuestionAnswer[]; page: number };
+
+type Draft<T> = [Store<T>, StoreSetter<T>];
+
 // SessionControl is the page's side of one session: its composer text and
-// attached images, the folders its file tree has expanded, its open file, and
-// the requests the page has in flight for it, with their errors. It outlives
-// the session's view, so leaving the view, or reconnecting, keeps the text,
-// images, expanded folders, and open file and repeats no request. A send and a
+// attached images, each pending approval's unsent answers, the folders its
+// file tree has expanded, its open file, and the requests the page has in
+// flight for it, with their errors. It outlives the session's view, so leaving
+// the view, or reconnecting, keeps the text, images, answers, expanded
+// folders, and open file and repeats no request. A send and a
 // configuration exclude each other, so a prompt runs with the settings the
 // page shows. A new session's control starts as its draft's composer, and its
 // first send starts before its session/get returns. Submitting takes the
@@ -209,6 +232,11 @@ function createSessionControl(
   const [stopping, setStopping] = createSignal(false);
   // answering holds the approvals whose answers are in flight.
   const [answering, setAnswering] = createSignal<ReadonlySet<string>>(new Set());
+  // cardDrafts and formDrafts hold the unsent answers of approvals pending on
+  // this page, by approval ID, from the first time a view shows each until it
+  // is answered or cancelled.
+  const cardDrafts = new Map<string, Draft<CardDraft>>();
+  const formDrafts = new Map<string, Draft<FormDraft>>();
   const [requested, setRequested] = createSignal<SettingsPatch>();
   const [error, attempt, clearError] = createAttempt();
   const [notice, setNotice] = createSignal<string>();
@@ -264,6 +292,21 @@ function createSessionControl(
     if (snapshot.entries.some((e) => e.kind === "prompt" && e.input.message_id === prompt.id))
       finishPrompt(prompt.id, false);
     else if (prompt.phase === "sent") finishPrompt(prompt.id, true);
+  }
+  // endApproval drops an approval's unsent answers once it is no longer
+  // pending.
+  function endApproval(requestId: string) {
+    cardDrafts.delete(requestId);
+    formDrafts.delete(requestId);
+  }
+
+  // reconcileApprovals drops the unsent answers of every approval a snapshot
+  // no longer holds.
+  function reconcileApprovals(snapshot: SessionSnapshot) {
+    const pending = new Set(snapshot.approvals.map((a) => a.id));
+    for (const id of [...cardDrafts.keys(), ...formDrafts.keys()]) {
+      if (!pending.has(id)) endApproval(id);
+    }
   }
   const start = (request: Promise<unknown>) => {
     setNotice(undefined);
@@ -340,6 +383,29 @@ function createSessionControl(
     outgoing,
     stopping,
     answering,
+    // cardDraft is a permission card's unsent answer, created empty on first
+    // request.
+    cardDraft(requestId: string): Draft<CardDraft> {
+      let draft = cardDrafts.get(requestId);
+      if (!draft) {
+        draft = createStore<CardDraft>({ reply: "" });
+        cardDrafts.set(requestId, draft);
+      }
+      return draft;
+    },
+    // formDraft is a question form's unsent answers, created on first request
+    // with an empty answer to each of its questions, on the first question.
+    formDraft(requestId: string, questions: number): Draft<FormDraft> {
+      let draft = formDrafts.get(requestId);
+      if (!draft) {
+        const answers = Array.from({ length: questions }, () => ({ labels: [], other: false, text: "" }));
+        draft = createStore<FormDraft>({ answers, page: 0 });
+        formDrafts.set(requestId, draft);
+      }
+      return draft;
+    },
+    endApproval,
+    reconcileApprovals,
     // canCreate is whether a draft can submit its first prompt.
     canCreate: free,
     // recoverable is whether the session exists although its creation was
@@ -604,6 +670,7 @@ function createOx() {
       loaded.load = { kind: "live", snapshot: previous ?? snapshot };
     });
     controls.get(id)?.reconcilePrompt(snapshot);
+    controls.get(id)?.reconcileApprovals(snapshot);
   }
 
   // A new oxd connection has missed every notification sent while the page
@@ -657,6 +724,9 @@ function createOx() {
         if (stored(params.session_id)?.load.kind !== "live") return;
         if (params.type === "prompt" || params.type === "prompt_cancelled") {
           controls.get(params.session_id)?.finishPrompt(params.message_id, params.type === "prompt_cancelled");
+        }
+        if (params.type === "approval_answered" || params.type === "approval_cancelled") {
+          controls.get(params.session_id)?.endApproval(params.request_id);
         }
         return setStore((s) => {
           const load = sessionIn(s.workspaces, params.session_id)?.load;

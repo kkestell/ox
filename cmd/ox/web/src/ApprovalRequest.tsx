@@ -1,16 +1,17 @@
-import { createSignal, createStore, createUniqueId, For, flush, Show, snapshot, untrack } from "solid-js";
+import { createUniqueId, For, flush, Show, snapshot, untrack } from "solid-js";
 import { Markdown } from "./Markdown";
-import type { Approval } from "./ox";
+import type { Approval, CardDraft, QuestionAnswer, SessionControl } from "./ox";
 import type { ApprovalResponse } from "./protocol";
 import { planOf, type Question, questionsOf, toolInputJSON, toolLabel, toolSubject } from "./toolInput";
 
-type Choice = "allow" | "deny" | "other";
+type Choice = NonNullable<CardDraft["choice"]>;
 
-type Props = { approval: Approval; hidden: boolean; onAnswer(response: ApprovalResponse): void };
+type Props = { approval: Approval; control: SessionControl };
 
 // ApprovalRequest answers one approval. An AskUserQuestion call shows its
-// questions as a form; any other approval shows a card. The page hides it
-// while its answer is in flight.
+// questions as a form; any other approval shows a card. Its unsent answers
+// live in the session control, so they survive the view and return with an
+// approval whose answer oxd refuses.
 export function ApprovalRequest(props: Props) {
   return (
     <Show
@@ -27,8 +28,19 @@ export function ApprovalRequest(props: Props) {
 // clears the reply.
 function PermissionCard(props: Props) {
   const id = createUniqueId();
-  const [choice, setChoice] = createSignal<Choice>();
-  const [reply, setReply] = createSignal("");
+  // An approval's ID never changes, so its draft is fixed for the card's
+  // lifetime.
+  const [draft, setDraft] = untrack(() => props.control.cardDraft(props.approval.id));
+  const choice = () => draft.choice;
+  const reply = () => draft.reply;
+  const setChoice = (picked: Choice) =>
+    setDraft((d) => {
+      d.choice = picked;
+    });
+  const setReply = (text: string) =>
+    setDraft((d) => {
+      d.reply = text;
+    });
   let field!: HTMLInputElement;
   const plan = () => planOf(props.approval.request.tool_name, props.approval.request.input);
   const subject = () =>
@@ -46,7 +58,7 @@ function PermissionCard(props: Props) {
       choice() === "allow"
         ? { behavior: "allow", updatedInput: snapshot(props.approval.request.input) }
         : { behavior: "deny", message: choice() === "other" ? reply().trim() : "Denied by user" };
-    props.onAnswer(response);
+    props.control.approve(props.approval.id, response);
   };
 
   const radio = (value: Choice, label?: string) => (
@@ -61,7 +73,7 @@ function PermissionCard(props: Props) {
   );
 
   return (
-    <article class="approval" aria-labelledby={`${id}-title`} hidden={props.hidden}>
+    <article class="approval" aria-labelledby={`${id}-title`}>
       <p id={`${id}-title`}>Allow {toolLabel(props.approval.request.tool_name)}?</p>
       <Show when={plan()}>{(text) => <Markdown class="plan" text={text()} />}</Show>
       {/* The subject summarizes the input; expanding shows all of it. */}
@@ -108,10 +120,8 @@ function PermissionCard(props: Props) {
   );
 }
 
-type Answer = { labels: string[]; other: boolean; text: string };
-
 // answerOf is the answer to a question, or "" when it is unanswered.
-function answerOf(question: Question, a: Answer) {
+function answerOf(question: Question, a: QuestionAnswer) {
   const text = a.other ? a.text.trim() : "";
   if (!question.multiSelect) return text || a.labels[0] || "";
   const chosen = question.options.map((o) => o.label).filter((label) => a.labels.includes(label));
@@ -126,15 +136,17 @@ function QuestionForm(props: Props & { questions: Question[] }) {
   // An approval's input never changes, so its questions are fixed for the
   // form's lifetime.
   const questions = untrack(() => props.questions);
-  const [answers, setAnswers] = createStore<Answer[]>(questions.map(() => ({ labels: [], other: false, text: "" })));
-  const [page, setPage] = createSignal(0);
+  const [draft, setDraft] = untrack(() => props.control.formDraft(props.approval.id, questions.length));
+  const answers = draft.answers;
+  const page = () => draft.page;
+  const setAnswers = (write: (answers: QuestionAnswer[]) => void) => setDraft((d) => write(d.answers));
   let form!: HTMLElement;
   const paged = questions.length > 1;
   const last = () => page() === questions.length - 1;
   const current = () => answerOf(questions[page()], answers[page()]) !== "";
   const answered = () => questions.every((q, i) => answerOf(q, answers[i]) !== "");
 
-  const send = (response: ApprovalResponse) => props.onAnswer(response);
+  const send = (response: ApprovalResponse) => props.control.approve(props.approval.id, response);
   const submit = () => {
     if (!answered()) return;
     const result: Record<string, string> = {};
@@ -146,7 +158,9 @@ function QuestionForm(props: Props & { questions: Question[] }) {
   // go shows another question and focuses its answer, or its first input, so
   // focus never rests on a hidden question or a newly disabled button.
   const go = (to: number) => {
-    setPage(to);
+    setDraft((d) => {
+      d.page = to;
+    });
     flush();
     const shown = form.querySelectorAll(".question")[to];
     (shown.querySelector<HTMLInputElement>("input:checked") ?? shown.querySelector("input"))?.focus();
@@ -166,7 +180,7 @@ function QuestionForm(props: Props & { questions: Question[] }) {
     });
 
   return (
-    <article ref={form} class="approval" aria-labelledby={`${id}-title`} hidden={props.hidden}>
+    <article ref={form} class="approval" aria-labelledby={`${id}-title`}>
       <p id={`${id}-title`}>Claude asks</p>
       <For each={questions}>
         {(question, i) => (

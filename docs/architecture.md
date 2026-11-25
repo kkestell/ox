@@ -451,12 +451,14 @@ under `.state`, serves on a free port, and prints the URL.
 ### Session control, drafts, and optimistic state
 
 - **Session control:** Outlives the session's view and reconnects. Owns composer
-  text and attached images, expanded folders, open file and its chosen mode,
-  transcript/workbench split, and in-flight requests (creation, sends,
-  configuration, interrupts, approvals, and their errors).
+  text and attached images, each pending approval's unsent answers, expanded
+  folders, open file and its chosen mode, transcript/workbench split, and
+  in-flight requests (creation, sends, configuration, interrupts, approvals, and
+  their errors).
   - Applies actions optimistically until `oxd` answers: a sent prompt clears the
-    composer and shows pending under the page's ID; Stop hides; an answered
-    approval hides. A refusal reverts to `oxd`'s state with the error.
+    composer and shows pending under the page's ID; Stop hides; an approval
+    being answered disappears and returns with its answers if refused. A refusal
+    reverts to `oxd`'s state with the error.
   - Sends and settings changes are mutually exclusive. Settings changes send a
     patch to [`session/configure`](protocol.md#sessionconfigure), show requested
     values with spinners on changed fields, and disable Send until settled.
