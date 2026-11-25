@@ -1069,6 +1069,16 @@ func TestLive(t *testing.T) {
 		}
 	})
 
+	section("no Claude Code worktrees", func(l *live) {
+		// Claude has no worktree tools; it works in the worktree Ox gives it.
+		session := l.create("manual")
+		tools := l.turn(session, "Load and call the EnterWorktree tool to create a worktree named scratch. "+
+			"Then reply with just ok.", l.refuse)
+		if slices.Contains(tools, "EnterWorktree") || slices.Contains(tools, "ExitWorktree") {
+			l.t.Errorf("Claude entered a worktree: %v", tools)
+		}
+	})
+
 	section("parking", func(l *live) {
 		// Pending schedules keep a session running, even after a failed turn.
 		var denied bool

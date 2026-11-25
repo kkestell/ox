@@ -116,9 +116,10 @@ func startProcess(workspace, oxSessionID, sessionID string, resume bool, setting
 	args = append(args, "--mcp-config", string(mcpConfig), "--allowedTools="+strings.Join(approved, ","))
 	// Claude Code's own cross-session messaging reaches every local Claude
 	// session, so an Ox session would message and be messaged outside Ox. Ox's
-	// sessions message only through Ox, and hand work to another agent by
-	// starting an Ox child session instead of a subagent.
-	args = append(args, "--disallowedTools=SendMessage,ListAgents,Agent", `--settings={"crossSessionInbound":"refuse"}`)
+	// sessions message only through Ox, hand work to another agent by starting
+	// an Ox child session instead of a subagent, and work in the worktree Ox
+	// gives them instead of one Claude Code creates.
+	args = append(args, "--disallowedTools=SendMessage,ListAgents,Agent,EnterWorktree,ExitWorktree", `--settings={"crossSessionInbound":"refuse"}`)
 
 	cmd := exec.Command("claude", args...)
 	cmd.Dir = workspace
