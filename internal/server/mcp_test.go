@@ -1382,6 +1382,45 @@ func TestChildReports(t *testing.T) {
 	if !slices.Equal(taken, []string{"waiting", "reports"}) {
 		t.Fatalf("the parent took %q", taken)
 	}
+
+	t.Log("a child that starts after the parent's check holds a sibling's later report")
+	fromP = attach(t, s, p)
+	three := createChild("three", "Three")
+	reportsTaken(t, c, p, map[string]int{three: 1})
+	// Holding the oldest child's goroutine stops any delivery that visits it.
+	s.mu.Lock()
+	oneSession := s.sessions[one]
+	s.mu.Unlock()
+	entered, hold := make(chan struct{}), make(chan struct{})
+	releaseOne := sync.OnceFunc(func() { close(hold) })
+	t.Cleanup(releaseOne)
+	go oneSession.post(func() {
+		close(entered)
+		<-hold
+	})
+	<-entered
+	c.forget(p)
+	c.call("session/send", map[string]string{"session_id": p, "text": "short"})
+	for c.update(p, agent.UpdateState).State != agent.StateIdle {
+	}
+	c.forget(p)
+	c.forget(three)
+	c.call("session/send", map[string]string{"session_id": three, "text": "wait 60000"})
+	c.update(three, agent.UpdatePrompt)
+	c.forget(two)
+	c.call("session/send", map[string]string{"session_id": two, "text": "short"})
+	replied(c, two, "You said: short")
+	for c.update(two, agent.UpdateState).State != agent.StateIdle {
+	}
+	releaseOne()
+	c.call("session/interrupt", map[string]string{"session_id": three})
+	got = reportsTaken(t, c, p, map[string]int{two: 1, three: 1})
+	if prompts := reportPrompts(got); len(prompts) != 1 || !slices.Equal(prompts[0], []agent.Report{
+		{From: two, FromLabel: "Two", Text: "You said: short"},
+		{From: three, FromLabel: "Three", Text: "Turn failed: Interrupted"},
+	}) {
+		t.Fatalf("the parent took reports %+v", prompts)
+	}
 }
 
 // reportsTaken consumes parent's updates in arrival order until it has taken
