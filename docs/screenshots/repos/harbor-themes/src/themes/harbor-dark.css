@@ -1,0 +1,11 @@
+@import "../tokens.css";
+
+/* Harbor Dark: deep navy panels with a teal accent. */
+:root[data-theme="harbor-dark"] {
+  --surface: #0f1722;
+  --panel: #172231;
+  --text: #e3e9f0;
+  --text-muted: #8b99aa;
+  --accent: #3cc4b4;
+  --danger: #f0716b;
+}

@@ -59,6 +59,7 @@ func main() {
 		"fake":   {Start: fake.Start, Ask: fake.Ask},
 		"ur":     ur.Harness(ur.Endpoint, *urDir, cfg.Harnesses["ur"].Providers()),
 	}
+	playScene(harnesses)
 	if err := checkConfig(cfg, harnesses); err != nil {
 		log.Fatalf("%s: %v", *configPath, err)
 	}

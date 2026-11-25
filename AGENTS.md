@@ -39,13 +39,17 @@ We test with `make dev`. Ox's test state is disposable.
 │   │   └── main.go            # stdio forwarder to oxd
 │   └── oxd                    # daemon
 │       ├── main_test.go       # startup tests
-│       └── main.go            # daemon startup
+│       ├── main.go            # daemon startup
+│       ├── noscene.go         # no scene player in normal builds
+│       └── scene.go           # -scene flag in screenshots builds
 ├── docs
 │   ├── architecture.md        # how oxd and ox are built
 │   ├── functional-requirements.md # what users see and rely on
 │   ├── harnesses
 │   │   └── claude-code.md     # observed Claude Code behavior
-│   └── protocol.md            # the interface oxd serves
+│   ├── images                 # README screenshots
+│   ├── protocol.md            # the interface oxd serves
+│   └── screenshots            # README screenshot scene and fixture repos
 ├── dprint.json                # Markdown formatting for docs
 ├── go.mod                     # Go module
 ├── go.sum                     # dependency checksums
@@ -74,7 +78,9 @@ We test with `make dev`. Ox's test state is disposable.
 │   │   ├── config.go          # user configuration
 │   │   └── default.json       # built-in configuration
 │   ├── fake
-│   │   └── fake.go            # echo harness
+│   │   ├── fake.go            # echo harness
+│   │   ├── scene_test.go      # scene tests
+│   │   └── scene.go           # scripted harness that plays a scene
 │   ├── jsonrpc
 │   │   └── jsonrpc.go         # JSON-RPC messages
 │   ├── paths

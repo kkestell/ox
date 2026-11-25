@@ -1,0 +1,12 @@
+{
+  "name": "harbor-themes",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "lightningcss --bundle --minify src/themes/*.css -d dist"
+  },
+  "devDependencies": {
+    "lightningcss-cli": "^1.28.0"
+  }
+}
