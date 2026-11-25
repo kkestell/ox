@@ -23,6 +23,7 @@ import {
   newSession,
   newSessionButton,
   openMenu,
+  openModelPicker,
   pending,
   permissionMode,
   pickFiles,
@@ -191,7 +192,7 @@ test("Enter in the new-session settings sends nothing", async ({ ox: page }) => 
   await newSessionButton(page).click();
   const creates = rpcCalls(page, "session/create");
   await prompt(page).fill("keep this draft");
-  await model(page).click();
+  await openModelPicker(page);
   await page.getByRole("slider", { name: "Effort" }).press("Enter");
   await page.keyboard.press("Escape");
   await expect(heading(page)).toHaveText("New session");
@@ -311,7 +312,7 @@ test("another page's change during a pending one shows without being marked pend
   await configure.arrived;
   await expect(permissionMode(page)).toHaveAttribute("aria-busy", "true");
   await expect(model(page)).not.toHaveAttribute("aria-busy");
-  await model(other).click();
+  await openModelPicker(other);
   await other.getByRole("slider", { name: "Effort" }).press("End");
   await expect(model(page)).toContainText("High");
   await expect(model(page)).not.toHaveAttribute("aria-busy");

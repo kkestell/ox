@@ -54,6 +54,12 @@ export const stop = (page: Page) => page.getByRole("button", { name: "Stop", exa
 export const newSessionButton = (page: Page) => page.getByRole("button", { name: "New session" });
 // The model picker is named "Model" followed by what it shows.
 export const model = (page: Page) => page.getByRole("main").getByRole("button", { name: /^Model\b/ });
+// openModelPicker opens the model picker and waits for its toggle handler,
+// which runs a task after the click and focuses the search field.
+export async function openModelPicker(page: Page) {
+  await model(page).click();
+  await expect(page.getByRole("combobox", { name: "Search models" })).toBeFocused();
+}
 export const permissionMode = (page: Page) => page.getByRole("combobox", { name: "Permission mode" });
 export const heading = (page: Page) => page.getByRole("main").getByRole("heading", { level: 1 });
 
