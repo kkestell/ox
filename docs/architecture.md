@@ -46,10 +46,10 @@ flowchart TD
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `cmd/ox-mcp` | Connecting a harness's MCP client, over stdio, to `oxd`'s socket for one session: attaching, then copying each line between stdin and the socket and the socket and stdout.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `cmd/oxd`    | Choosing the socket, database, and configuration, checking the configured harnesses, and holding the socket until sessions have stopped and every process in the `children` set has exited. A second stop signal kills every process in the set, including Claude processes still initializing and Ur commands, and ends the daemon.                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `paths`      | The XDG locations of the configuration, database, socket, and Ur's conversation directory, which `cmd/oxd` uses unless a flag overrides them and `cmd/ox` uses for the socket.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `paths`      | The XDG locations of the configuration, database, socket, Ur's conversation directory, and the session worktree directory, which `cmd/oxd` uses unless a flag overrides them and `cmd/ox` uses for the socket.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `config`     | Writing the built-in default to a missing configuration file, reading the file into each harness's models, efforts, and permission modes, the new-session defaults, and the harness, model, and effort that title sessions, and checking settings against them.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `server`     | Client and MCP connections, each session's goroutine and the agent it runs, and the mapping from each method to a session operation and its error codes. Each connection writes through its own queue, so sessions never wait on a client.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `store`      | The SQLite database of workspaces, sessions, child sessions' `children` rows, archived sessions' `archived` rows, session events, and the images attached to prompts, held exclusively through a lock file beside it from opening to closing.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `store`      | The SQLite database of workspaces, sessions, child sessions' `children` rows, worktree sessions' `worktrees` rows, archived sessions' `archived` rows, session events, and the images attached to prompts, held exclusively through a lock file beside it from opening to closing.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `jsonrpc`    | Request validation and the response and notification types.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `agent`      | The `Agent` interface a harness implements, its `Start` function, its `Ask` function for one-shot requests, prompt and configuration checks, and options, and the updates, snapshots, settings, and errors they share.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `fake`       | A harness that runs no process and echoes each prompt back, in at most four runs of words, with the count of its images. A prompt `approve <tool> <input JSON>` first asks to approve that tool call, and the call's result is the answer. A prompt `background <milliseconds>` also runs a background task that long, and a prompt `wait <milliseconds>` keeps its turn running that long before the reply.                                                                                                                                                                                                                                                                                                                                                                                           |
@@ -81,11 +81,11 @@ applied in memory. The session keeps the settings it adopts and the resume token
 it receives or clears even when storing them fails.
 
 `Server.mu` guards workspace and session membership, each session's archived
-flag, and the shutdown flag. Membership and archive changes and `workspace/list`
-queue their messages under the same lock so every connection sees them in one
-order. Unarchive looks its session up and queues its response under the lock.
-Nothing posts to a session, launches a harness, or hands an agent input while
-holding it.
+flag, the shutdown flag, and admission to `Server.creations`. Membership and
+archive changes and `workspace/list` queue their messages under the same lock so
+every connection sees them in one order. Unarchive looks its session up and
+queues its response under the lock. Nothing posts to a session, launches a
+harness, or hands an agent input while holding it.
 
 An archived session has no agent, and a child of an archived session is
 archived. An archive runs on the session's goroutine. It holds every session
@@ -156,6 +156,59 @@ The session arms a park timer whenever its agent is `Parkable` and stops it when
 the agent stops being parkable, so the full period restarts each time. If the
 timer fires, the session stops the agent, which ends at once while its process
 exits in the background.
+
+### Worktrees
+
+A top-level session created with `worktree` stores the root of its git worktree
+in a `worktrees` row, written with its session row and fixed at creation; the
+store refuses one for a child. Ownership is read from that row, so a changed
+worktree directory leaves existing worktrees owned. Git's own state, the branch,
+`HEAD`, cleanliness, and registration, is read live. Every git command runs
+through `server/worktree.go`, with stdin closed and git's stderr as the error.
+
+Creation runs in three steps. Under `Server.mu`, `session/create` makes the
+checks it makes without a worktree and adds itself to `Server.creations`.
+Without the lock, it makes the worktree under a fresh name, on a branch of the
+same name, with hooks off, and checks that the workspace's copy is a directory
+inside it. Under `Server.mu` again, it refuses if the daemon is shutting down or
+the workspace is gone, answers as an existing session if one with its ID was
+created meanwhile, and otherwise stores and publishes the session. Publication
+is the one transfer of the worktree from the request to the session; every other
+outcome discards the worktree and branch, with force, before it replies, since
+no process has run in them. Git never runs under `Server.mu`. `Close` sets the
+shutdown flag, so no creation is admitted after it, and waits for its sessions
+and then for `Server.creations`. A second stop signal exits without waiting, and
+can leave a worktree and branch being made; the log line that starts each
+checkout names the session.
+
+`Server.worktreeOwnerLocked` decides who works in a worktree: the session whose
+worktree holds a physical path. `workspace/create` refuses a path it owns, and
+`create_session` refuses a `dir`, resolved to its physical form on the call
+goroutine, that a session other than the caller's top-level ancestor owns. So
+only the owner and its descendants run there, and the owner is deleted only
+after them.
+
+`Agent.Reaped` is closed once every process the agent started has exited: for
+Claude, when the read goroutine has reaped Claude; for Ur, when every command's
+process group has been killed and its command reaped. Every drop of an agent
+goes through the session's `parked`, which keeps the dropped agent's `Reaped` in
+`session.exiting`, pruning those already closed. A destroy, on the session's
+goroutine, refuses a session with children, stops its agent, and sets
+`session.deleting`, which holds the reply and exists only while the delete
+waits. A goroutine of the delete's own waits on every channel in `exiting`,
+removes the worktree, and posts the outcome back, so the session's goroutine
+keeps answering meanwhile. The posted operation deletes the row and unpublishes
+the session, or clears `deleting` and replies with the error, leaving the
+session listed and parked. While `deleting` is set, the session refuses to
+start, to start a child, and a second destroy; if shutdown ends the goroutine
+first, the delete's goroutine replies that the daemon is shutting down. The
+removal reads the registration and the folder live, running git in the worktree
+while it is present and in the workspace otherwise, so a repeated destroy
+finishes what an earlier one left, and a workspace folder removed meanwhile does
+not stop it. Claude ends its Bash tool processes when it exits on SIGTERM; a
+Claude killed after the ten-second limit can leave tool processes Ox cannot
+reach, since they run in their own sessions. A session's start refuses a
+directory that no longer exists.
 
 ## Agents
 

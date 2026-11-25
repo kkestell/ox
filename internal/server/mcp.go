@@ -368,8 +368,10 @@ func createSession(s *Server, caller *session, arguments json.RawMessage, respon
 		respond("", errors.New("message is required"))
 		return
 	}
-	// Kept as given, as workspace/create keeps its path.
-	directory := caller.directory
+	// Kept as given, as workspace/create keeps its path. Its physical form
+	// decides whose worktree it is in; the caller's own directory is in its
+	// family's worktree, if any.
+	directory, physical := caller.directory, ""
 	if input.Dir != "" {
 		directory = input.Dir
 		if !filepath.IsAbs(directory) {
@@ -377,6 +379,11 @@ func createSession(s *Server, caller *session, arguments json.RawMessage, respon
 		}
 		if info, err := os.Stat(directory); err != nil || !info.IsDir() {
 			respond("", errors.New("dir must be an existing directory"))
+			return
+		}
+		var err error
+		if physical, err = filepath.EvalSymlinks(directory); err != nil {
+			respond("", err)
 			return
 		}
 	}
@@ -396,7 +403,7 @@ func createSession(s *Server, caller *session, arguments json.RawMessage, respon
 		}
 		record.Child = &store.Child{ParentID: caller.id, Name: input.Name, Title: title}
 		record.Directory = directory
-		if err := s.addChild(caller, record, input.Message); err != nil {
+		if err := s.addChild(caller, record, physical, input.Message); err != nil {
 			respond("", err)
 			return
 		}
@@ -408,14 +415,15 @@ func createSession(s *Server, caller *session, arguments json.RawMessage, respon
 	}
 }
 
-// addChild checks that parent may have the child record names now, then adds
+// addChild checks that parent may have the child record names now, in the
+// directory whose physical form is physical, or "" for parent's own, then adds
 // it with text as its first message, on parent's goroutine. The checks hold
 // until publication: only parent's goroutine creates its children or archives
 // it, and its depth is fixed. Only shutdown can intervene, so it is decided at
 // publication. The store write, launch, and first Send run without s.mu.
-func (s *Server) addChild(parent *session, record *store.Session, text string) error {
+func (s *Server) addChild(parent *session, record *store.Session, physical, text string) error {
 	s.mu.Lock()
-	err := s.checkChildLocked(parent, record.Child.Name)
+	err := s.checkChildLocked(parent, record.Child.Name, physical)
 	// The parent is a member while its goroutine runs.
 	w := s.workspaceOf(parent)
 	label := parent.labelLocked()
@@ -439,7 +447,7 @@ func (s *Server) addChild(parent *session, record *store.Session, text string) e
 		// sess.stop would publish parked for a session no client knows.
 		sess.agent.Stop()
 		s.deleteUnpublished(sess)
-		return errors.New("daemon is shutting down")
+		return errShuttingDown
 	}
 	s.publishLocked(w, sess)
 	s.mu.Unlock()
@@ -451,17 +459,27 @@ func (s *Server) addChild(parent *session, record *store.Session, text string) e
 	return err
 }
 
-// checkChildLocked reports why parent may not have a child named name now.
-// The caller holds s.mu.
-func (s *Server) checkChildLocked(parent *session, name string) error {
+// checkChildLocked reports why parent may not have a child named name now, in
+// the directory whose physical form is physical, or "" for parent's own. Only
+// the family of a worktree's owner works in it. The caller holds s.mu.
+func (s *Server) checkChildLocked(parent *session, name, physical string) error {
 	if slices.ContainsFunc(s.children(parent), func(other *session) bool { return other.child.Name == name }) {
 		return fmt.Errorf("a child named %q already exists", name)
 	}
 	if parent.archived {
 		return errArchived
 	}
+	// The parent's goroutine runs this, so it may read the parent's deleting.
+	if parent.deleting != nil {
+		return errDeleting
+	}
 	if s.depthLocked(parent) >= s.config.MaxChildDepth {
 		return fmt.Errorf("child sessions nest at most %d deep", s.config.MaxChildDepth)
+	}
+	if physical != "" {
+		if owner := s.worktreeOwnerLocked(physical); owner != nil && owner != s.topLocked(parent) {
+			return errors.New("dir is in another session's worktree")
+		}
 	}
 	return nil
 }

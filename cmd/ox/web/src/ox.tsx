@@ -57,6 +57,8 @@ export type Session = {
   harness: string;
   // directory is where the session's harness runs.
   directory: string;
+  // worktree is the root of the git worktree the session was created in.
+  worktree?: string;
   child?: Child;
   // label is the session's label, as oxd lists and announces it.
   label: string;
@@ -380,11 +382,12 @@ function createSessionControl(
     // setSplit sets the transcript's share of the width it shares with the
     // viewer.
     setSplit: (share: number) => writeSplit(share),
-    // create creates the session with the composer's prompt as its first,
-    // sends it, and calls onCreated once oxd confirms the session as new.
+    // create creates the session with the composer's prompt as its first, in
+    // a worktree of its own when worktree is set, sends it, and calls
+    // onCreated once oxd confirms the session as new.
     // Otherwise the creation is unconfirmed, and the prompt returns to the
     // composer unsent.
-    create(workspaceId: string, harness: string, settings: Settings, onCreated: () => void) {
+    create(workspaceId: string, harness: string, settings: Settings, worktree: boolean, onCreated: () => void) {
       if (!free() || !sendable()) return;
       setUnconfirmed(false);
       const prompt = take("creating");
@@ -395,6 +398,7 @@ function createSessionControl(
         harness,
         ...required,
         ...(effort ? { effort } : {}),
+        ...(worktree ? { worktree } : {}),
       }).then(
         (result) => {
           if (result.existing) {
@@ -642,13 +646,16 @@ function createOx() {
       s.workspaces = workspaces.map((w) => ({
         id: w.workspace_id,
         path: w.path,
-        sessions: w.sessions.map(({ session_id: id, label, harness, directory, child, archived = false, state }) => {
-          const session = previous.get(id);
-          if (!session) return { id, harness, directory, child, label, archived, state, load: { kind: "reloading" } };
-          session.label = label;
-          session.archived = archived;
-          return session;
-        }),
+        sessions: w.sessions.map(
+          ({ session_id: id, label, harness, directory, worktree, child, archived = false, state }) => {
+            const session = previous.get(id);
+            if (!session)
+              return { id, harness, directory, worktree, child, label, archived, state, load: { kind: "reloading" } };
+            session.label = label;
+            session.archived = archived;
+            return session;
+          },
+        ),
       }));
     });
     for (const { session_id, state } of listed) setState(session_id, state);
@@ -685,6 +692,7 @@ function createOx() {
             id: params.session_id,
             harness: params.harness,
             directory: params.directory,
+            worktree: params.worktree,
             child: params.child,
             label: params.label,
             archived: false,

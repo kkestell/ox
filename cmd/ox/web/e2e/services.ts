@@ -51,6 +51,8 @@ export type Services = {
   url: string;
   // workspace is an empty directory for the sessions to run in.
   workspace: string;
+  // worktrees is the directory oxd makes session worktrees in.
+  worktrees: string;
   // callTool calls an MCP tool as session from's Claude does, through an MCP
   // connection to oxd's socket attached to it, and returns the tool's text.
   callTool(from: string, name: string, args: Record<string, string>): Promise<string>;
@@ -68,13 +70,19 @@ export async function startServices(config: object): Promise<Services> {
   const workspace = mkdtempSync(join(tmpdir(), "ox-e2e-workspace-"));
   const socket = join(dir, "oxd.sock");
   const database = join(dir, "ox.db");
+  const worktrees = join(dir, "worktrees");
   writeFileSync(join(dir, "config.json"), JSON.stringify(config));
   const port = await freePort();
   const url = `http://127.0.0.1:${port}`;
   const env = { ...process.env, GORACE: "halt_on_error=1" };
 
   const startDaemon = () =>
-    run(join(bin, "oxd"), [`-socket=${socket}`, `-db=${database}`, `-config=${join(dir, "config.json")}`]);
+    run(join(bin, "oxd"), [
+      `-socket=${socket}`,
+      `-db=${database}`,
+      `-config=${join(dir, "config.json")}`,
+      `-worktrees=${worktrees}`,
+    ]);
   let daemon = startDaemon();
   let relay!: ChildProcess;
   const startRelay = async () => {
@@ -99,6 +107,7 @@ export async function startServices(config: object): Promise<Services> {
   return {
     url,
     workspace,
+    worktrees,
     callTool: (from, name, args) => callTool(socket, from, name, args),
     async restartRelay() {
       await stopProcess(relay);

@@ -1,7 +1,10 @@
 // The specs' fixtures and page helpers. Each test runs its own oxd and relay
 // through the services fixture, with the configuration the config option
 // names.
-import { basename } from "node:path";
+import { execFileSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { devNull } from "node:os";
+import { basename, join } from "node:path";
 import { test as base, expect, type Locator, type Page, type Route } from "@playwright/test";
 import { fakeConfig, type Services, startServices } from "./services";
 
@@ -114,6 +117,33 @@ export async function openMenu(scope: Locator) {
 // menuItem is a menu's item named label. A disabled item's reason is its
 // description.
 export const menuItem = (menu: Locator, label: string) => menu.getByRole("menuitem", { name: label, exact: true });
+
+// location is the new-session draft's choice of where the session runs.
+export const location = (page: Page) => page.getByRole("combobox", { name: "Location" });
+
+// gitRepo makes dir a git repository whose one commit holds committed.txt,
+// beside the untracked file untracked.txt, with git kept from the user's own
+// configuration.
+export function gitRepo(dir: string) {
+  const env = {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: devNull,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_NAME: "Ox",
+    GIT_AUTHOR_EMAIL: "ox@example.com",
+    GIT_COMMITTER_NAME: "Ox",
+    GIT_COMMITTER_EMAIL: "ox@example.com",
+  };
+  writeFileSync(join(dir, "committed.txt"), "committed\n");
+  for (const args of [
+    ["init", "-q"],
+    ["add", "."],
+    ["commit", "-q", "-m", "init"],
+  ]) {
+    execFileSync("git", ["-C", dir, ...args], { env });
+  }
+  writeFileSync(join(dir, "untracked.txt"), "");
+}
 
 // newSession sends text as the first prompt of a new session and waits for
 // its reply.

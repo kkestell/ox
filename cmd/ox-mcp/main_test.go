@@ -138,7 +138,7 @@ func startOxd(t *testing.T) (s *server.Server, socket string, p *page, sessionID
 	}
 	// The built-in configuration titles with Claude; this one echoes.
 	harnesses := map[string]agent.Harness{cfg.Titling.Harness: {Ask: fake.Ask}}
-	s, err = server.New(st, cfg, 0, harnesses, server.MCP{})
+	s, err = server.New(st, cfg, 0, harnesses, server.MCP{}, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

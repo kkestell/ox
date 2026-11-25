@@ -14,8 +14,10 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1420,6 +1422,45 @@ func TestShellStop(t *testing.T) {
 			t.Errorf("approval_cancelled %+v", r.updates[0])
 		}
 	})
+}
+
+// Reaped stays open after an interrupt and a stop until the running
+// command's wait has returned: here, until WaitDelay gives up on the output
+// pipe a process outside the command's group holds.
+func TestShellReaped(t *testing.T) {
+	r := start(t, agent.Settings{Model: model, PermissionMode: "auto"}, nil, func(w http.ResponseWriter, _ *http.Request, n int) {
+		if n == 0 {
+			sseCalls(w, "", call{"call_1", "shell", `{"command":"set -m; sleep 30 & echo $! > escaped; sleep 60"}`})
+			return
+		}
+		sse(w, "ok")
+	})
+	escaped := filepath.Join(r.workspace, "escaped")
+	t.Cleanup(func() {
+		if data, err := os.ReadFile(escaped); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
+				syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+	r.send("p1", "go")
+	r.until(func(u agent.Update) bool { return u.Type == agent.UpdateToolUse })
+	waitFile(t, escaped)
+	if err := r.agent.Interrupt(); err != nil {
+		t.Fatal(err)
+	}
+	r.agent.Stop()
+	reaped := r.agent.Reaped()
+	select {
+	case <-reaped:
+		t.Fatal("Reaped closed while the command's wait was running")
+	default:
+	}
+	select {
+	case <-reaped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Reaped stayed open after the command's wait returned")
+	}
 }
 
 // A prompt sent while a call waits is taken after the call's result, before

@@ -76,13 +76,15 @@ func agentRunning(t *testing.T, cmd *exec.Cmd) (*Agent, *bytes.Buffer, *recorder
 	t.Helper()
 	t.Cleanup(func() { cmd.Process.Kill() })
 	events := make(chan agent.Event, 1)
+	proc := &process{cmd: cmd, reaped: make(chan struct{})}
 	go func() {
 		err := cmd.Wait()
 		children.Done(cmd)
+		close(proc.reaped)
 		events <- processExit{err: err}
 	}()
 	input := new(bytes.Buffer)
-	a, updates := startingAgent(input, events, &process{cmd: cmd})
+	a, updates := startingAgent(input, events, proc)
 	return a, input, updates
 }
 
@@ -630,6 +632,19 @@ func TestStopKillsClaudeIgnoringSIGTERM(t *testing.T) {
 	}
 	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
 		t.Fatalf("Stop waited for Claude to exit: %v", err)
+	}
+	select {
+	case <-a.Reaped():
+		t.Fatal("Reaped closed while Claude was running")
+	default:
+	}
+	select {
+	case <-a.Reaped():
+	case <-time.After(5 * time.Second):
+		t.Fatal("Reaped stayed open past the kill of a Claude that ignores SIGTERM")
+	}
+	if err := cmd.Process.Signal(syscall.Signal(0)); err == nil {
+		t.Fatal("Reaped closed while Claude was running")
 	}
 	waited := make(chan struct{})
 	go func() {

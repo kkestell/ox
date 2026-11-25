@@ -56,6 +56,9 @@ type Agent interface {
 	Stop()
 	// Exited reports that the agent has ended and published its last update.
 	Exited() bool
+	// Reaped is closed once every process the agent started has exited. It
+	// is called once the agent has ended.
+	Reaped() <-chan struct{}
 }
 
 // Event is a harness's own input, opaque to the server.

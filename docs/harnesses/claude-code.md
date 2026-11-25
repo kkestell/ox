@@ -246,7 +246,12 @@ reach the host.
 
 ### Stopping
 
-Closing stdin lets Claude exit on its own.
+Closing stdin lets Claude exit on its own once no foreground tool runs; while
+one runs, Claude keeps running (2.1.331).
+
+Each Bash tool call, foreground or background, runs in its own session
+(`setsid`), outside Claude's process group. SIGTERM to Claude alone ends them
+with Claude, which exits within about a second (2.1.331).
 
 A new process can `--resume` a conversation at once after the process running it
 receives SIGTERM, while that process is still exiting; the resumed conversation

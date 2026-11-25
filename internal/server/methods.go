@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -122,6 +123,11 @@ func (s *Server) createWorkspace(reply replyFunc, id, params json.RawMessage) {
 		reply(invalidParams(id, "path must be an existing directory"))
 		return
 	}
+	physical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		reply(failure(id, err))
+		return
+	}
 	type result struct {
 		WorkspaceID string `json:"workspace_id"`
 	}
@@ -130,6 +136,10 @@ func (s *Server) createWorkspace(reply replyFunc, id, params json.RawMessage) {
 	defer s.mu.Unlock()
 	if s.closed {
 		reply(shuttingDown(id))
+		return
+	}
+	if s.worktreeOwnerLocked(physical) != nil {
+		reply(invalidParams(id, "path is inside a session's worktree"))
 		return
 	}
 	// A symlink or a path that differs only in case can name a workspace's
@@ -161,6 +171,7 @@ func (s *Server) listWorkspaces(reply replyFunc, id json.RawMessage) {
 		Harness   string       `json:"harness"`
 		CreatedAt time.Time    `json:"created_at"`
 		Directory string       `json:"directory"`
+		Worktree  string       `json:"worktree,omitempty"`
 		Child     *store.Child `json:"child,omitempty"`
 		Archived  bool         `json:"archived,omitempty"`
 		State     string       `json:"state"`
@@ -178,7 +189,7 @@ func (s *Server) listWorkspaces(reply replyFunc, id json.RawMessage) {
 	for i, w := range s.workspaces {
 		workspaces[i] = workspaceInfo{WorkspaceID: w.id, Path: w.path, CreatedAt: w.createdAt, Sessions: make([]sessionInfo, len(w.sessions))}
 		for j, sess := range w.sessions {
-			workspaces[i].Sessions[j] = sessionInfo{sess.id, sess.labelLocked(), sess.harness, sess.createdAt, sess.directory, sess.child, sess.archived, sess.state}
+			workspaces[i].Sessions[j] = sessionInfo{sess.id, sess.labelLocked(), sess.harness, sess.createdAt, sess.directory, sess.worktree, sess.child, sess.archived, sess.state}
 		}
 	}
 	reply(jsonrpc.Success(id, struct {
@@ -307,11 +318,24 @@ func (s *Server) readFile(reply replyFunc, id, params json.RawMessage) {
 	}{text}))
 }
 
+// created is session/create's result.
+type created struct {
+	SessionID string `json:"session_id"`
+	Existing  bool   `json:"existing,omitempty"`
+}
+
+// createSession creates a session in a single s.mu section, or, with a
+// worktree, in three steps: it admits the creation under s.mu, makes the
+// worktree without it, and publishes the session under s.mu, deciding then
+// whether the daemon, the workspace, and another session with the ID allow
+// it. A creation that does not publish discards its worktree before it
+// replies, and Close waits for every admitted creation to reply.
 func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 	var input struct {
 		SessionID   string `json:"session_id"`
 		WorkspaceID string `json:"workspace_id"`
 		Harness     string `json:"harness"`
+		Worktree    bool   `json:"worktree"`
 		agent.Settings
 	}
 	if err := json.Unmarshal(params, &input); err != nil || input.WorkspaceID == "" || input.Harness == "" {
@@ -323,52 +347,108 @@ func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	// Close ends the goroutine of every session that exists when it starts.
-	if s.closed {
-		reply(shuttingDown(id))
+	w, record, answer := s.admitSessionLocked(id, input.SessionID, input.WorkspaceID, input.Harness, input.Settings)
+	switch {
+	case answer != nil:
+		reply(answer)
+		s.mu.Unlock()
+		return
+	case !input.Worktree:
+		reply(s.addSessionReplyLocked(id, w, record))
+		s.mu.Unlock()
 		return
 	}
-	w := s.workspace(input.WorkspaceID)
-	type result struct {
-		SessionID string `json:"session_id"`
-		Existing  bool   `json:"existing,omitempty"`
-	}
-	sessionID := input.SessionID
-	if sessionID == "" {
-		sessionID = newID()
-	} else if existing := s.sessions[sessionID]; existing != nil {
-		if w == nil || !slices.Contains(w.sessions, existing) {
-			reply(invalidParams(id, "session_id belongs to another workspace"))
-			return
-		}
-		reply(jsonrpc.Success(id, result{SessionID: sessionID, Existing: true}))
-		return
-	}
-	harness, offered := s.config.Harnesses[input.Harness]
-	if !offered {
-		reply(invalidParams(id, fmt.Sprintf("harness %q is not configured", input.Harness)))
-		return
-	}
-	if err := cmp.Or(harness.CheckModel(input.Model, input.Effort), harness.CheckPermissionMode(input.PermissionMode)); err != nil {
-		reply(invalidParams(id, err.Error()))
-		return
-	}
+	s.creations.Add(1)
+	s.mu.Unlock()
+	defer s.creations.Done()
 
-	if w == nil {
-		reply(jsonrpc.Failure(id, notFound, "workspace not found"))
-		return
-	}
-	record := &store.Session{
-		ID: sessionID, Harness: input.Harness, Model: input.Model, Effort: input.Effort, PermissionMode: input.PermissionMode,
-		Directory: w.path, CreatedAt: time.Now(),
-	}
-	sess, err := s.addSession(w, record)
+	log.Printf("session %s: creating worktree in %s", record.ID, s.worktrees)
+	root, directory, err := addWorktree(w.path, s.worktrees)
 	if err != nil {
 		reply(failure(id, err))
 		return
 	}
-	reply(jsonrpc.Success(id, result{SessionID: sess.id}))
+	record.Directory, record.Worktree = directory, root
+
+	s.mu.Lock()
+	switch {
+	case s.closed:
+		answer = shuttingDown(id)
+	case !slices.Contains(s.workspaces, w):
+		answer = jsonrpc.Failure(id, notFound, "workspace not found")
+	default:
+		answer = s.existingAnswerLocked(id, w, record.ID)
+	}
+	if answer == nil {
+		if answer = s.addSessionReplyLocked(id, w, record); answer.Error == nil {
+			reply(answer)
+			s.mu.Unlock()
+			return
+		}
+	}
+	s.mu.Unlock()
+	if err := discardWorktree(w.path, root); err != nil {
+		if answer.Error == nil {
+			log.Printf("session %s: %v", record.ID, err)
+		} else {
+			answer = jsonrpc.Failure(id, answer.Error.Code, errors.Join(errors.New(answer.Error.Message), err).Error())
+		}
+	}
+	reply(answer)
+}
+
+// admitSessionLocked checks a top-level session's creation and returns its
+// workspace and the record to store, with the workspace's path as its
+// directory, or the answer to reply with instead. The caller holds s.mu.
+func (s *Server) admitSessionLocked(id json.RawMessage, sessionID, workspaceID, harnessName string, settings agent.Settings) (*workspace, *store.Session, *jsonrpc.Response) {
+	// Close ends the goroutine of every session that exists when it starts.
+	if s.closed {
+		return nil, nil, shuttingDown(id)
+	}
+	w := s.workspace(workspaceID)
+	if sessionID == "" {
+		sessionID = newID()
+	} else if answer := s.existingAnswerLocked(id, w, sessionID); answer != nil {
+		return nil, nil, answer
+	}
+	harness, offered := s.config.Harnesses[harnessName]
+	if !offered {
+		return nil, nil, invalidParams(id, fmt.Sprintf("harness %q is not configured", harnessName))
+	}
+	if err := cmp.Or(harness.CheckModel(settings.Model, settings.Effort), harness.CheckPermissionMode(settings.PermissionMode)); err != nil {
+		return nil, nil, invalidParams(id, err.Error())
+	}
+	if w == nil {
+		return nil, nil, jsonrpc.Failure(id, notFound, "workspace not found")
+	}
+	return w, &store.Session{
+		ID: sessionID, Harness: harnessName, Model: settings.Model, Effort: settings.Effort, PermissionMode: settings.PermissionMode,
+		Directory: w.path, CreatedAt: time.Now(),
+	}, nil
+}
+
+// existingAnswerLocked answers a creation whose session_id names an existing
+// session: that session, when it is in w, or a refusal. It returns nil when no
+// session has the ID. The caller holds s.mu.
+func (s *Server) existingAnswerLocked(id json.RawMessage, w *workspace, sessionID string) *jsonrpc.Response {
+	existing := s.sessions[sessionID]
+	switch {
+	case existing == nil:
+		return nil
+	case w == nil || !slices.Contains(w.sessions, existing):
+		return invalidParams(id, "session_id belongs to another workspace")
+	}
+	return jsonrpc.Success(id, created{SessionID: sessionID, Existing: true})
+}
+
+// addSessionReplyLocked adds the session record describes to w and returns
+// the reply. The caller holds s.mu.
+func (s *Server) addSessionReplyLocked(id json.RawMessage, w *workspace, record *store.Session) *jsonrpc.Response {
+	sess, err := s.addSession(w, record)
+	if err != nil {
+		return failure(id, err)
+	}
+	return jsonrpc.Success(id, created{SessionID: sess.id})
 }
 
 // addSession stores a session in w, publishes it, and starts its goroutine.
@@ -397,9 +477,10 @@ func (s *Server) publishLocked(w *workspace, sess *session) {
 		Harness     string       `json:"harness"`
 		CreatedAt   time.Time    `json:"created_at"`
 		Directory   string       `json:"directory"`
+		Worktree    string       `json:"worktree,omitempty"`
 		Child       *store.Child `json:"child,omitempty"`
 		State       string       `json:"state"`
-	}{sess.id, w.id, sess.labelLocked(), sess.harness, sess.createdAt, sess.directory, sess.child, sess.state})
+	}{sess.id, w.id, sess.labelLocked(), sess.harness, sess.createdAt, sess.directory, sess.worktree, sess.child, sess.state})
 }
 
 // getSession returns a session's settings, history, queue, approvals, and
@@ -633,11 +714,13 @@ func (s *Server) destroySession(reply replyFunc, id, params json.RawMessage) {
 		return
 	}
 	s.onSession(reply, id, input.SessionID, func(sess *session) {
-		if err := sess.destroy(); err != nil {
-			reply(failure(id, err))
-			return
-		}
-		reply(jsonrpc.Success(id, struct{}{}))
+		sess.destroy(func(err error) {
+			if err != nil {
+				reply(failure(id, err))
+				return
+			}
+			reply(jsonrpc.Success(id, struct{}{}))
+		})
 	})
 }
 

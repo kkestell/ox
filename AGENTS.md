@@ -93,7 +93,9 @@ We test with `make dev`. Ox's test state is disposable.
 │   │   ├── methods_test.go    # method tests
 │   │   ├── methods.go         # RPC methods
 │   │   ├── server.go          # listener, workspaces, and sessions
-│   │   └── session.go         # session goroutine and lifecycle
+│   │   ├── session.go         # session goroutine and lifecycle
+│   │   ├── worktree_test.go   # worktree tests
+│   │   └── worktree.go        # session worktrees
 │   ├── store
 │   │   ├── store_test.go      # store tests
 │   │   └── store.go           # SQLite persistence
