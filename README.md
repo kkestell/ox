@@ -42,7 +42,8 @@ See [docs/architecture.md](docs/architecture.md) and
 - Go (see `go.mod` for the version)
 - Node.js and npm (for building the web UI)
 - Claude Code (`claude` on `PATH`) for Claude sessions
-- `OPENROUTER_API_KEY` (in the environment or `.env`) for Ur sessions
+- `OPENROUTER_API_KEY` in `oxd`'s environment (or in `.env` when running via
+  `make`) for Ur sessions
 - `git` for worktree sessions
 
 ## Quick start
@@ -66,8 +67,9 @@ bin/oxd   # in one terminal
 bin/ox    # in another terminal
 ```
 
-`oxd` requires `ox-mcp` in the same directory. Run `bin/oxd -help` or
-`bin/ox -help` for path, address, and parking-timeout flags.
+`oxd` requires `ox-mcp` in the same directory; export `OPENROUTER_API_KEY` before
+starting `bin/oxd` directly if you use Ur (`.env` is loaded only by `make`). Run
+`bin/oxd -help` or `bin/ox -help` for path, address, and parking-timeout flags.
 
 ## Configuration and state
 
@@ -78,7 +80,8 @@ Ox keeps its files in the XDG base directories (all overridable by flag):
   catalog on first start.
 - **Database and Ur conversations:** `$XDG_STATE_HOME/ox/ox.db` and
   `$XDG_STATE_HOME/ox/ur/` (default `~/.local/state/ox/`).
-- **Socket:** `$XDG_RUNTIME_DIR/ox/oxd.sock`, or beside `ox.db` when unset.
+- **Socket:** `$XDG_RUNTIME_DIR/ox/oxd.sock`, or `$XDG_STATE_HOME/ox/oxd.sock`
+  (default `~/.local/state/ox/oxd.sock`) when `$XDG_RUNTIME_DIR` is unset.
 - **Session worktrees:** `$XDG_DATA_HOME/ox/worktrees/` (default
   `~/.local/share/ox/worktrees/`).
 
