@@ -403,45 +403,40 @@ clocked("a relay error shows in place of a folder's listing until the next listi
   }
 });
 
-clocked("a lost connection keeps the last listing", async ({ ox: page, services }) => {
-  await showFiles(page);
-  mkdirSync(join(services.workspace, "src"));
-  writeFileSync(join(services.workspace, "src", "a.txt"), "");
-  await newSessionButton(page).click();
-  await entry(page, "src").click();
-  await expect(entry(page, "a.txt")).toBeVisible();
-  const listing = (route: Route) => {
-    const body = route.request().postDataJSON();
-    if (body?.method !== "workspace/list_folder" || body.params.path !== "src") return route.fallback();
-    return route.fulfill({ status: 503, body: "unknown connection" });
-  };
-  await page.route("**/rpc*", listing);
-  await answered(page, "workspace/list_folder", "src");
-  await expect(entry(page, "a.txt")).toBeVisible();
-  await page.unroute("**/rpc*", listing);
-  // A POST that cannot reach the relay under a healthy stream.
-  const aborted = (route: Route) => {
-    const body = route.request().postDataJSON();
-    if (body?.method !== "workspace/list_folder" || body.params.path !== "src") return route.fallback();
-    return route.abort();
-  };
-  // The replacement stream stays down, so the alert stays up to be read.
-  const down = (route: Route) => route.abort();
-  await page.route("**/events", down);
-  await page.route("**/rpc*", aborted);
-  await page.clock.runFor(1000);
-  const reconnecting = page.getByRole("status").filter({ hasText: "Reconnecting…" });
-  await expect(reconnecting).toBeVisible();
-  // A page that is still reconnecting offers no Reload button.
-  await expect(page.getByRole("button", { name: "Reload" })).toHaveCount(0);
-  await expect(entry(page, "a.txt")).toBeVisible();
-  await expect(page.getByText("Could not reach ox")).toHaveCount(0);
-  await page.unroute("**/rpc*", aborted);
-  await page.unroute("**/events", down);
-  await page.clock.runFor(1000);
-  await expect(page.getByRole("status").filter({ hasText: "Reconnecting…" })).toHaveCount(0);
-  await expect(send(page)).toBeEnabled();
-});
+for (const [failure, fail] of [
+  ["a 503", (route: Route) => route.fulfill({ status: 503, body: "unknown connection" })],
+  ["a POST that cannot reach the relay", (route: Route) => route.abort()],
+] as const) {
+  clocked(`a lost connection keeps the last listing after ${failure}`, async ({ ox: page, services }) => {
+    await showFiles(page);
+    mkdirSync(join(services.workspace, "src"));
+    writeFileSync(join(services.workspace, "src", "a.txt"), "");
+    await newSessionButton(page).click();
+    await entry(page, "src").click();
+    await expect(entry(page, "a.txt")).toBeVisible();
+    const listing = (route: Route) => {
+      const body = route.request().postDataJSON();
+      if (body?.method !== "workspace/list_folder" || body.params.path !== "src") return route.fallback();
+      return fail(route);
+    };
+    // The replacement stream stays down, so the status stays up to be read.
+    const down = (route: Route) => route.abort();
+    await page.route("**/events", down);
+    await page.route("**/rpc*", listing);
+    await page.clock.runFor(1000);
+    const reconnecting = page.getByRole("status").filter({ hasText: "Reconnecting…" });
+    await expect(reconnecting).toBeVisible();
+    // A page that is still reconnecting offers no Reload button.
+    await expect(page.getByRole("button", { name: "Reload" })).toHaveCount(0);
+    await expect(entry(page, "a.txt")).toBeVisible();
+    await expect(page.getByText("Could not reach ox")).toHaveCount(0);
+    await page.unroute("**/rpc*", listing);
+    await page.unroute("**/events", down);
+    await page.clock.runFor(1000);
+    await expect(page.getByRole("status").filter({ hasText: "Reconnecting…" })).toHaveCount(0);
+    await expect(send(page)).toBeEnabled();
+  });
+}
 
 clocked(
   "a request cut off after its connection was replaced leaves the new connection alone",

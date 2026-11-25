@@ -359,6 +359,37 @@ test("a send cut off after acceptance shows an error without resending", async (
   expect(sends.map((params) => params.text)).toEqual(["accepted once"]);
 });
 
+test("a 503 on a catch-up request reconnects the page", async ({ ox: page, services }) => {
+  await newSession(page, "still here");
+  // The event stream stays open while the relay refuses the replacement stream's first catch-up request.
+  let refused = false;
+  await page.route("**/rpc*", (route) => {
+    if (refused || route.request().postDataJSON()?.method !== "harness/list") return route.fallback();
+    refused = true;
+    return route.fulfill({ status: 503, body: "unknown connection" });
+  });
+  await services.restartRelay();
+  await expect.poll(() => refused).toBe(true);
+  await expect(send(page)).toBeEnabled({ timeout: 10_000 });
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("a 503 on a send reconnects the page without resending", async ({ ox: page }) => {
+  await newSession(page, "before");
+  const sends = rpcCalls(page, "session/send");
+  let refused = false;
+  await page.route("**/rpc*", (route) => {
+    if (refused || route.request().postDataJSON()?.method !== "session/send") return route.fallback();
+    refused = true;
+    return route.fulfill({ status: 503, body: "unknown connection" });
+  });
+  await prompt(page).fill("refused once");
+  await prompt(page).press("Enter");
+  await expect(main(page).getByRole("alert")).toHaveText(["Lost the connection to ox. Reconnecting."]);
+  await expect(send(page)).toBeEnabled({ timeout: 10_000 });
+  expect(sends.map((params) => params.text)).toEqual(["refused once"]);
+});
+
 test("the page links a manifest that opens Ox standalone with its icon", async ({ page, services }) => {
   await page.goto(services.url);
   const href = await page.locator("link[rel=manifest]").getAttribute("href");
