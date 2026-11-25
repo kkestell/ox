@@ -1,36 +1,24 @@
 # Ox
 
 Ox runs coding agent sessions side by side on your own machine in a web UI.
-Start Claude Code and Ur sessions across your repositories, follow and approve
-their work from your computer or phone, and let sessions delegate tasks to each
-other.
+Follow and approve work from your desk or phone, and let sessions delegate
+tasks to each other.
 
 ## Features
 
-- Run Claude Code using your Claude subscription alongside Ur, Ox's built-in
-  harness for OpenRouter models with shell commands. Choose the model, reasoning
-  effort, and permission mode for each session, and monitor your Claude
-  subscription limits under the composer.
-- Organize sessions by workspace directory, or start a session in its own Git
-  worktree on a new branch outside the repository so parallel tasks stay
-  isolated.
-- Let a Claude session start child sessions (in Claude or Ur), message other
-  sessions, and read their transcripts. When a child finishes a turn, Ox sends
-  its final reply back to the parent automatically.
-- Follow streaming Markdown replies, reasoning, and expandable tool calls,
-  attach images by pasting or dropping them, send a follow-up prompt while an
-  agent works, and stop a turn at any time.
-- Review and approve tool requests or answer Claude's multi-step questions from
-  any open page.
-- Browse each session's working directory in a live-updating file tree and read
-  files beside the transcript with syntax highlighting, line numbers, and
-  rendered Markdown preview.
-- Keep workspaces, settings, and transcripts across restarts, and archive
-  finished sessions without losing their history. Idle sessions park
-  automatically and resume their conversation on the next prompt.
-- Stay in sync across every open browser tab while sessions keep running with
-  no tabs open. Expose the web UI over Tailscale to follow and steer sessions
-  from your phone, including as an iPhone Home Screen app.
+- Run Claude Code with your Claude subscription alongside Ur, Ox's built-in
+  harness for OpenRouter models.
+- Run sessions across your local repositories, or give a session its own Git
+  worktree on a new branch.
+- Let a Claude session start child sessions in Claude or Ur, message other
+  sessions, and read their transcripts. Finished child turns report back
+  automatically.
+- Approve tool calls, answer questions, send follow-up prompts mid-turn, and
+  browse each session's files beside its transcript.
+- Keep sessions running after you close the browser. Transcripts survive
+  restarts, and idle sessions park and resume automatically.
+- Stay in sync across every open tab, or serve the UI over Tailscale to check
+  in and approve work from your phone.
 
 See [docs/functional-requirements.md](docs/functional-requirements.md) for the
 full behavior Ox guarantees.
