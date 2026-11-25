@@ -14,34 +14,7 @@ Review the code and write a review that tells whoever implemented it exactly wha
 - `Record`: a confirmed defect that cannot be fixed yet, because it needs reproducing or depends on Claude Code behavior Ox cannot change. The implementer opens a `bug` issue.
 - `Rejected`: speculative, a misreading of the intended behavior, or cheaper to keep than to fix, such as an unmeasured scaling cost. The reason is recorded so the finding is not raised again.
 
-Change no code, tests, or documentation, and stage or commit nothing. Edit only the review file. Start other agents only as [Child sessions](#child-sessions) describes.
-
-## Child sessions
-
-Review a change through three concern reviewers, child sessions started concurrently with Ox's `create_session` on this session's model and effort. Each one gives a single concern its whole attention:
-
-- **Lifecycle:** `Requirements`, `Ownership`, `Settling`. It lists every asynchronous edge the change adds or alters: a request and its reply, an event, a stream opening or closing, a timer, a process exit, a child report. For each edge it checks every state the edge can arrive in: its request in flight, its reply lost, a reconnect, navigation away and back, a second page acting on the same session, the process exiting or parking, and `oxd` running independent requests in any order.
-- **Boundaries:** `Settings`, `Process I/O`, `Claude Code`, `Security`, `Correctness`. It checks every input the change reads from outside Ox's code, such as Claude's output, Git's output, files on disk, the environment, configuration, and a page's requests, against each form that input takes in normal use, such as a user's Git settings, a symlink, a file at a stated limit, and output that ends at EOF.
-- **Construction:** `Construction`, `Simplicity`, `Testing`, `Conventions`, `Documentation`.
-
-Start a further child for a suspected finding whose confirmation needs a long reproduction, such as a stand-in `claude` script or a probe against built binaries on a temporary socket.
-
-Brief each child as follows:
-
-- Give it the base revision, the revision or working tree under review, the plan's path when there is one, and its concern or suspected finding with the categories from step 5 that apply. Give it nothing else, so it reads the code without the implementer's account or your suspicions.
-- Tell it to report each suspected finding with its location and the evidence that confirms it, and to propose no action. A concern reviewer also lists the edges or inputs it checked.
-- Tell it to change no files except temporary ones it removes, reply with `send_message`, and start no sessions of its own.
-- End your turn until every child has answered.
-
-A child proposes findings, and you decide them. Confirm every finding a child reports yourself, as step 6 describes, and give it its action.
-
-Keep this work in this session:
-
-- The plan's intent and the word-for-word requirements diff.
-- Product questions to the user.
-- Running the checks at step 9.
-- Verifying fixes, which works from the review's own findings.
-- Writing the review.
+Change no code, tests, or documentation, and stage or commit nothing. Edit only the review file. Do the whole review in this session, and start no other sessions or subagents.
 
 Correctness matters for what happens in normal use and for the requirements in `docs/functional-requirements.md`. Handling every case that could occur does not.
 
@@ -54,7 +27,7 @@ Correctness matters for what happens in normal use and for the requirements in `
 ## Review
 
 4. Trace behavior through callers, state owners, resource lifetimes, and tests. Judge implementation choices by their purpose and consequence. Do not treat a language feature or coding pattern as a defect on its own.
-5. Check the code for each of these categories the scope reaches. Check `Intent` yourself, and the concern reviewers check the rest:
+5. Check the code for each of these categories the scope reaches, and skip the ones it does not:
    - **Intent.** The change delivers the plan's Goal, keeps its Decisions and the user's answers, and stays within it. Behavior the user can observe changes only as the plan's Requirement changes say, and `docs/functional-requirements.md` carries exactly those changes, word for word. Observable behavior that changes without a requirement change, and a requirement edit the plan does not make, are findings.
    - **Requirements.** Each functional requirement the code touches, cited by title, holds through the whole lifecycle of a page's request: in flight, its reply lost, a reconnect, navigation away and back, a second page acting on the same session, the process exiting or parking, and `oxd` running a page's independent requests in any order. Text the user typed is never lost or sent twice. The page offers an action unless the state it has from `oxd` rules it out, and shows its result as soon as the user takes it, returning to `oxd`'s state with the error if `oxd` refuses it.
    - **Settings.** The Claude process runs with the model, effort, permission mode, and account the page shows, including after a partial failure, a restart, or with an inherited environment. A setting Claude would silently ignore or default is refused.
@@ -71,7 +44,7 @@ Correctness matters for what happens in normal use and for the requirements in `
    - **Documentation.** Each changed fact is stated by the document `AGENTS.md` assigns it, and no document contradicts the code.
 6. Confirm each suspected finding by tracing the code, reproducing it, or running a focused check: a stand-in `claude` script, an injected `/rpc` delay or failure in an e2e spec, or a probe against built binaries on a temporary socket, database, and port. Report missing handling only when a requirement or a reachable failure needs it. Do not ask for tests of hypothetical cases. Leave out what you cannot confirm. Revert every edit a check needs before you finish.
 7. Skip a defect that an open `bug` issue records, unless the change resolves that issue or what the issue waits on has changed. Check that the change fixes each issue it resolves.
-8. Check the Tests proved results from `/ox-work`'s final response, which the request passes on, against the change: each new or changed test failed without the change. Spot-check a few branches, guards, or state transitions the change adds by removing them one at a time and confirming a test fails. A test that passes without the change, and a branch, guard, or state transition no test protects, is a `Testing` finding.
+8. Check the Tests proved results from `/ox-work`'s final response: each behavior the change adds or fixes has a test that failed without the change. A behavior with no such test is a `Testing` finding.
 9. Take the checks from the Checks in `/ox-work`'s final response: each check `AGENTS.md` ("Verification") requires for the change ran on the final tree and passed. A required check that is missing, failed, or blocked by something the implementer could change is a finding. Run another suite only to confirm or reject a finding, as step 6 describes.
 
 ## Write the review
