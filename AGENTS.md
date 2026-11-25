@@ -269,11 +269,11 @@ change is not small.
    the base, and after alone for a view the change adds. The images are
    committed under `pr-<N>/` on the orphan `pr-assets` branch and linked
    through `raw.githubusercontent.com` at that commit.
-8. GitHub requests a Copilot review when the pull request opens. Unless
-   Copilot has already reviewed, the top-level agent waits for it with
-   `gh event listen --resource <PR URL> --event
-   com.github.pull_request.review.submitted.v1 --timeout 30m`, then reads the
-   review and its comments with `gh api`. It gives each comment an
+8. GitHub requests a Copilot review when the pull request opens. The
+   top-level agent checks the pull request's reviews with `gh api` once a
+   minute, for up to 30 minutes, until one from
+   `copilot-pull-request-reviewer[bot]` appears, then reads it and its
+   comments. It gives each comment an
    outcome from Defects. It fixes each comment marked to fix the way it would
    fix a review finding: itself for a small fix, and through the implementing
    session and `/ox-review verify` otherwise, then re-runs the checks that
