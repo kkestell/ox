@@ -1598,7 +1598,7 @@ test("a child session shows its title, its directory, its files, and its parent'
     await expect(message).toHaveText("child parenthello child");
     await expect(message.getByRole("strong")).toHaveText("hello");
 
-    await page.getByRole("button", { name: "Toggle files" }).click();
+    await page.getByRole("tab", { name: "Files", exact: true }).click();
     await expect(files.getByRole("button", { name: "child.txt", exact: true })).toBeVisible();
     await expect(files.getByRole("button", { name: "workspace.txt", exact: true })).toHaveCount(0);
     await files.getByRole("button", { name: "child.txt", exact: true }).click();

@@ -1,77 +1,56 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, For, Match, Show, Switch, untrack } from "solid-js";
-import { Changes } from "./Changes";
+import { BranchSummary, type Listing } from "./Changes";
 import { type SessionControl, useOx } from "./ox";
-import type { Tab } from "./Panels";
 import { createPoll } from "./poll";
 import type { FileRoot, FolderEntry } from "./protocol";
 
 type Tree = {
   root: FileRoot;
   control: () => SessionControl;
-  onOpen(): void;
+  listing: Listing;
+  current: () => string | undefined;
+  onOpen(path: string): void;
 };
 
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 const byFolderThenName = (a: FolderEntry, b: FolderEntry) =>
   Number(b.folder) - Number(a.folder) || collator.compare(a.name, b.name);
 
-// FileTree shows the directory beneath root, under the Files tab, or its
-// changes, under the Changes tab. Each expanded folder lists itself when it
-// appears and on each tick of the page's clock, so the page asks only for the
-// folders it shows.
+// FileTree shows the directory beneath root under its branch and changes,
+// between start and end, each changed file and folder colored by its status,
+// and marks current, the file the file view shows. Each expanded folder lists
+// itself when it appears and on each tick of the page's clock, so the page asks
+// only for the folders it shows.
 export function FileTree(props: {
   root: FileRoot;
   control: SessionControl;
-  tab: Tab;
-  onTab(tab: Tab): void;
-  width?: number;
-  toggles?: JSX.Element;
-  onOpen(): void;
+  listing: Listing;
+  current?: string;
+  drawer: boolean;
+  start?: JSX.Element;
+  end?: JSX.Element;
+  onOpen(path: string): void;
 }) {
   // The tree is keyed by its selection, so its root never changes.
   const tree: Tree = {
     root: untrack(() => props.root),
     control: () => props.control,
-    onOpen: () => props.onOpen(),
+    listing: untrack(() => props.listing),
+    current: () => props.current,
+    onOpen: (path) => props.onOpen(path),
   };
   return (
-    <aside
-      class="files"
-      aria-label="Files"
-      style={{ width: props.width === undefined ? undefined : `${props.width}px` }}
-    >
+    <aside class={["files", { drawer: props.drawer }]} aria-label="Files">
       <header>
-        <div role="tablist" aria-label="View">
-          <TabButton tab="files" label="Files" selected={props.tab} onTab={(tab) => props.onTab(tab)} />
-          <TabButton tab="changes" label="Changes" selected={props.tab} onTab={(tab) => props.onTab(tab)} />
-        </div>
-        {props.toggles}
+        {props.start}
+        <BranchSummary listing={props.listing} />
+        {props.end}
       </header>
-      <Show
-        when={props.tab === "changes"}
-        fallback={
-          <div role="tabpanel" aria-label="Files" class="tree">
-            <Folder tree={tree} path="" depth={0} />
-          </div>
-        }
-      >
-        <Changes root={tree.root} control={props.control} onOpen={() => props.onOpen()} />
-      </Show>
+      <div class="tree">
+        <Folder tree={tree} path="" depth={0} />
+      </div>
     </aside>
-  );
-}
-
-function TabButton(props: { tab: Tab; label: string; selected: Tab; onTab(tab: Tab): void }) {
-  return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={props.selected === props.tab ? "true" : "false"}
-      onClick={() => props.onTab(props.tab)}
-    >
-      {props.label}
-    </button>
   );
 }
 
@@ -125,6 +104,7 @@ function FolderRow(props: { tree: Tree; path: string; name: string; depth: numbe
         class="row"
         style={{ "--depth": props.depth }}
         title={props.path}
+        data-status={props.tree.listing.status(props.path)}
         aria-expanded={open() ? "true" : "false"}
         onClick={() => props.tree.control().setExpanded(props.path, !open())}
       >
@@ -140,7 +120,7 @@ function FolderRow(props: { tree: Tree; path: string; name: string; depth: numbe
 }
 
 function FileRow(props: { tree: Tree; path: string; name: string; depth: number }) {
-  const open = () => props.tree.control().file()?.path === props.path;
+  const open = () => props.tree.current() === props.path;
   return (
     <li>
       <button
@@ -148,11 +128,9 @@ function FileRow(props: { tree: Tree; path: string; name: string; depth: number 
         class="row file-row"
         style={{ "--depth": props.depth }}
         title={props.path}
+        data-status={props.tree.listing.status(props.path)}
         aria-current={open() ? "true" : undefined}
-        onClick={() => {
-          props.tree.control().setFile(props.path);
-          props.tree.onOpen();
-        }}
+        onClick={() => props.tree.onOpen(props.path)}
       >
         <span class="icon file" />
         <span class="name">{props.name}</span>

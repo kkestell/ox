@@ -1,3 +1,4 @@
+import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, createUniqueId, For, onSettled, Show } from "solid-js";
 import type { Selection } from "./App";
 import { createAttempt, directoryName, type Session, useOx, type Workspace } from "./ox";
@@ -305,6 +306,7 @@ export function Sidebar(props: {
   onSelect(selection: Selection): void;
   width?: number;
   hidden: boolean;
+  toggle: JSX.Element;
 }) {
   const ox = useOx();
   const [request, setRequest] = createSignal<DialogRequest>();
@@ -406,14 +408,7 @@ export function Sidebar(props: {
       hidden={props.hidden}
       style={{ width: props.width === undefined ? undefined : `${props.width}px` }}
     >
-      <button
-        type="button"
-        class="icon folder-plus"
-        aria-label="Add workspace"
-        title="Add workspace"
-        onClick={() => setRequest({ kind: "add" })}
-      />
-      <Show when={error()}>{(message) => <p role="alert">{message()}</p>}</Show>
+      <div class="bar">{props.toggle}</div>
       <Show when={request()} keyed>
         {(current) => <WorkspaceDialog request={current} onClose={() => setRequest(undefined)} onRequest={attempt} />}
       </Show>
@@ -433,56 +428,68 @@ export function Sidebar(props: {
           </Show>
         )}
       </Show>
-      <For each={ox.workspaces()}>
-        {(workspace) => {
-          const rows = createMemo(() =>
-            rowsOf(
-              ox.sessionsOf(workspace).filter((session) => visible(workspace.id, session)),
-              collapsed(),
-            ),
-          );
-          const id = createUniqueId();
-          return (
-            <section aria-labelledby={id}>
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: a right-click opens the menu that Workspace actions opens from the keyboard. */}
-              <header
-                title={workspace.path}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  menuOf("workspace", workspace.id)({ x: event.clientX, y: event.clientY });
-                }}
-              >
-                <h2 id={id} class="name">
-                  {directoryName(workspace.path)}
-                </h2>
-                <div class="actions">
-                  <MenuButton label="Workspace actions" onMenu={menuOf("workspace", workspace.id)} />
-                  <button
-                    type="button"
-                    class="icon plus"
-                    aria-label="New session"
-                    title="New session"
-                    onClick={() => props.onSelect({ kind: "draft", workspaceId: workspace.id })}
-                  />
-                </div>
-              </header>
-              <ul>
-                <For each={rows()} keyed={(row) => row.session.id}>
-                  {(row) => (
-                    <SessionRow
-                      row={row()}
-                      selected={isSelected(row().session)}
-                      onSelect={() => props.onSelect({ kind: "session", id: row().session.id })}
-                      onToggle={() => toggle(row().session.id)}
-                      onMenu={menuOf("session", row().session.id)}
+      <div class="workspaces">
+        <Show when={error()}>{(message) => <p role="alert">{message()}</p>}</Show>
+        <For each={ox.workspaces()}>
+          {(workspace) => {
+            const rows = createMemo(() =>
+              rowsOf(
+                ox.sessionsOf(workspace).filter((session) => visible(workspace.id, session)),
+                collapsed(),
+              ),
+            );
+            const id = createUniqueId();
+            return (
+              <section aria-labelledby={id}>
+                {/* biome-ignore lint/a11y/noStaticElementInteractions: a right-click opens the menu that Workspace actions opens from the keyboard. */}
+                <header
+                  title={workspace.path}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    menuOf("workspace", workspace.id)({ x: event.clientX, y: event.clientY });
+                  }}
+                >
+                  <h2 id={id} class="name">
+                    {directoryName(workspace.path)}
+                  </h2>
+                  <div class="actions">
+                    <MenuButton label="Workspace actions" onMenu={menuOf("workspace", workspace.id)} />
+                    <button
+                      type="button"
+                      class="icon plus"
+                      aria-label="New session"
+                      title="New session"
+                      onClick={() => props.onSelect({ kind: "draft", workspaceId: workspace.id })}
                     />
-                  )}
-                </For>
-              </ul>
-            </section>
-          );
-        }}
-      </For>
+                  </div>
+                </header>
+                <ul>
+                  <For each={rows()} keyed={(row) => row.session.id}>
+                    {(row) => (
+                      <SessionRow
+                        row={row()}
+                        selected={isSelected(row().session)}
+                        onSelect={() => props.onSelect({ kind: "session", id: row().session.id })}
+                        onToggle={() => toggle(row().session.id)}
+                        onMenu={menuOf("session", row().session.id)}
+                      />
+                    )}
+                  </For>
+                </ul>
+              </section>
+            );
+          }}
+        </For>
+      </div>
+      <footer class="bar">
+        <button
+          type="button"
+          class="icon folder-plus"
+          aria-label="Add workspace"
+          title="Add workspace"
+          onClick={() => setRequest({ kind: "add" })}
+        />
+      </footer>
     </nav>
   );
 }

@@ -292,23 +292,34 @@ title.
 
 ## Layout
 
-- **Panel toggles.** Two buttons show and hide the session list and the file
-  tree, each showing whether its panel is shown.
+- **Panel toggles.** A button shows and hides the session list, showing whether
+  it is shown: in the list's header while the list shows, and in the session's
+  header otherwise. Files and Changes tabs in the session's header open the
+  workbench beside the transcript on the files or the changes, showing which one
+  it shows, with neither selected while it is closed. A button at the start of
+  the workbench's header closes it.
 - **Resizing panels.** On a wide screen, dragging the boundary beside the
-  session list, the file tree, or between the transcript and the file viewer
-  resizes them.
-- **Layout through navigation.** Which panels show, which tab the file tree's
-  panel shows, and their widths are the same for every session. Each session and
-  new-session draft keeps its own split between the transcript and the file
-  viewer, and a draft's split carries to the session it creates. The layout
-  lasts through switching views and reconnecting; reloading the page restores
-  the default layout.
+  session list or the file tree, or between the transcript and the open file or
+  the changes, resizes them.
+- **Layout through navigation.** Whether the session list shows, whether the
+  workbench shows the files, the changes, or nothing, and the panels' widths are
+  the same for every session. Each session and new-session draft keeps its own
+  split between the transcript and the workbench, and a draft's split carries to
+  the session it creates. The layout lasts through switching views and
+  reconnecting. Reloading the page restores the default layout, with the
+  workbench closed.
 - **Narrow screens.** On a narrow screen, such as a phone's, the page shows one
-  pane at a time: the transcript, or the open file in its place until its tab is
-  closed. The session list and the file tree open over it from buttons in the
-  session's header, and close when the user taps outside them, picks a session
-  or a new-session draft, or opens a file; panels cannot be resized. At load,
-  the session list is open when the URL names no session, and closed otherwise.
+  pane at a time: the transcript, or the workbench in its place. The Files and
+  Changes tabs in the session's header open the workbench, which repeats them in
+  its own header, and its header's button returns to the transcript. With a file
+  open, the file tree opens over the file from a button in the file's header;
+  with none, the tree fills the workbench. The session list opens over the
+  transcript from a button in the session's header. Either one closes when the
+  user taps outside it, picks a session or a new-session draft, or opens a file,
+  and panels cannot be resized. At load, the session list is open when the URL
+  names no session, and closed otherwise. Switching between a narrow and a wide
+  screen closes the narrow screen's workbench and leaves the wide screen's
+  panels as they were.
 - **Touch screens.** On a touch screen, session and file rows are tall enough to
   tap, controls that appear on hover elsewhere always show, focusing a text
   field does not zoom the page, and the page keeps its controls clear of the
@@ -316,20 +327,26 @@ title.
 
 ## Files
 
-- **File tree.** Beside the transcript, a panel shows the directory the selected
+- **File tree.** The workbench's Files tab shows the directory the selected
   session works in, or a new-session draft's workspace directory, as a tree,
   folders first, whose folders expand and collapse. It hides version-control
   folders and operating-system metadata files at any depth, such as `.git` and
   `.DS_Store`, shows files Git ignores, lists nothing outside that directory,
-  and shows why a folder cannot be read.
+  and shows why a folder cannot be read. Its header shows the branch and the
+  lines added and removed across the changes, or why the changes cannot be
+  listed. Each changed file, and each folder above one, is colored by its
+  change: modified, added, or deleted, and modified for a folder whose files
+  changed in different ways.
 - **File tree updates.** While the page is visible, the tree shows changes on
   disk to the folders it shows within about a second.
-- **File viewer.** Clicking a file in the file tree opens it beside the
-  transcript, or in its place on a narrow screen, under a tab with its name that
-  closes it, and marks its row; clicking another file replaces it. The pane
-  shows the file's text, or why, when the file is binary, larger than 1 MiB, not
-  UTF-8 text, or cannot be read, and reads nothing outside the file tree's
-  directory.
+- **File viewer.** Clicking a file in the file tree opens it between the
+  transcript and the tree, or in the transcript's place on a narrow screen,
+  under a tab with its name that closes it, and marks its row. Clicking another
+  file replaces it. Opening the Files tab shows the tree alone beside the
+  transcript until a file is opened, and closing the file's tab returns to that.
+  The pane shows the file's text, or why, when the file is binary, larger than 1
+  MiB, not UTF-8 text, or cannot be read, and reads nothing outside the file
+  tree's directory.
 - **File viewer updates.** While the page is visible, the open file shows
   changes on disk within about a second; a file deleted or renamed keeps its tab
   and shows why it cannot be read until it returns.
@@ -342,30 +359,35 @@ title.
 - **Word wrap.** A button above the file's text wraps long lines to the pane's
   width and turns wrapping off again. The choice holds for every file the page
   opens until the page reloads, and starts off.
-- **Markdown preview.** A Markdown file opens rendered, as the transcript
-  renders Markdown, and a button above it switches between the rendering and its
-  source. The choice lasts while the file stays open in its session, through
-  switching views and reconnecting.
+- **File view modes.** An open file can show its changes in place, its source,
+  or, for a Markdown file, its rendering, each offered by a button above the
+  file only where it applies. A file with changes opens showing the whole file
+  with its removed and added lines in place, colored and numbered as the Changes
+  tab shows them. Otherwise a Markdown file opens rendered, as the transcript
+  renders Markdown, and any other file opens as its source. The choice lasts
+  while the file stays open in its session, through switching views and
+  reconnecting. The next file opens in its own default.
 - **Open file.** Each session, and each workspace's new-session draft, keeps its
   open file through switching views and reconnecting, and a draft's open file
   stays open in the session it creates; reloading the page closes it.
 - **File tree expansion.** Each session keeps which folders are expanded through
   switching views and reconnecting; reloading the page collapses them.
-- **Changes view.** The panel that shows the file tree has a Files tab, the
-  tree, and a Changes tab, which lists each file in the selected session's
-  directory, or a new-session draft's workspace directory, that differs from
-  where the session's branch left the workspace's branch, counting commits,
-  uncommitted edits, and untracked files but not files Git ignores. The tab
-  shows the branch and the lines added and removed, in total and for each file,
-  and says why when the directory is not in a Git repository.
-- **Change diffs.** Each file in the Changes tab has a button that opens it in
-  the file viewer, unless it was deleted, and shows its changed lines with the
-  lines around them in sections that collapse and start expanded, numbered,
+- **Changes view.** The workbench's Changes tab shows, in place of the file
+  tree, each file in the selected session's directory, or a new-session draft's
+  workspace directory, that differs from where the session's branch left the
+  workspace's branch, counting commits, uncommitted edits, and untracked files
+  but not files Git ignores. It shows the branch and the lines added and
+  removed, in total and for each file, and says why when the directory is not in
+  a Git repository.
+- **Change diffs.** Each file in the Changes tab has a button that opens it
+  under the Files tab, unless it was deleted, and shows its changed lines with
+  the lines around them in sections that collapse and start expanded, numbered,
   colored by whether they were added or removed, and highlighted as the file
   viewer highlights them. A binary file, or one whose diff is larger than 1 MiB
   or not UTF-8 text, says so instead.
-- **Changes updates.** While the page is visible, the Changes tab shows changes
-  on disk and new commits within about a second.
+- **Changes updates.** While the page is visible, the Changes tab, the file
+  tree's colors and header, and an open file's changes show changes on disk and
+  new commits within about a second.
 
 ## Claude Code
 

@@ -159,6 +159,47 @@ export function highlight(path: string, text: string): { html: string; lines: nu
   return { html, lines: lines.length };
 }
 
+// rowsHtml writes a hunk's lines as rows: an added line in <ins>, a removed one
+// in <del>, a context line in a <span>, each with its line number in
+// data-line, the new side's for context and added lines and the old side's for
+// removed ones. Each side highlights as one text, so a line's colors follow
+// the lines before it.
+export function rowsHtml(path: string, lines: string[], oldStart: number, newStart: number) {
+  const side = (skip: string) =>
+    highlightLines(
+      path,
+      lines
+        .filter((line) => line[0] !== skip)
+        .map((line) => `${line.slice(1)}\n`)
+        .join(""),
+    );
+  const oldSide = side("+");
+  const newSide = side("-");
+  let oldLine = oldStart;
+  let newLine = newStart;
+  let o = 0;
+  let n = 0;
+  let html = "";
+  let widest = 0;
+  for (const line of lines) {
+    let tag: string;
+    let number: number;
+    let text: string;
+    if (line[0] === "-") {
+      [tag, number, text] = ["del", oldLine++, oldSide[o++]];
+    } else if (line[0] === "+") {
+      [tag, number, text] = ["ins", newLine++, newSide[n++]];
+    } else {
+      [tag, number, text] = ["span", newLine++, newSide[n++]];
+      oldLine++;
+      o++;
+    }
+    widest = Math.max(widest, number);
+    html += `<${tag} class="line" data-line="${number}">${text}\n</${tag}>`;
+  }
+  return { html, digits: String(widest).length };
+}
+
 // linesOf returns the HTML of each of the text's pieces between newlines.
 function linesOf(path: string, text: string, pieces: string[]): string[] {
   const language = languageFor(path);

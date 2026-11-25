@@ -55,8 +55,8 @@ Use `make dev` to work on the [web client](../../../docs/architecture.md#web-ui)
   in `e2e/ui.ts`. `approval.spec.ts` uses Haiku and runs with `make live`.
   `hero.spec.ts` plays `docs/screenshots/hero.json` and captures the README's
   screenshots in `docs/images`; it runs with `make screenshots`.
-  `make test` runs the Node suites `highlight.test.mjs`, `stack.test.mjs`, and
-  `toolInput.test.mjs` with `node:test`.
+  `make test` runs the Node suites `highlight.test.mjs`, `stack.test.mjs`,
+  `toolInput.test.mjs`, and `diff.test.mjs` with `node:test`.
 
 ## Solid 2.0
 
