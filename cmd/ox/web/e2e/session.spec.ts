@@ -430,6 +430,29 @@ test("a usage reading reported while the page is disconnected shows once it reco
   await expect(usage(page)).toContainText("5h", { timeout: 10_000 });
 });
 
+// The fake harness reports resets_at from the daemon's real time, so the page
+// runs on Playwright's clock set to the real time.
+const realClock = test.extend({
+  page: async ({ page }, use) => {
+    await page.clock.install();
+    await use(page);
+  },
+});
+
+realClock("a usage reading keeps counting down while the page is disconnected", async ({ ox: page, services }) => {
+  await newSession(page, "usage");
+  await expect(usage(page)).toContainText(/1h 59m|2h 0m/);
+  await page.route("**/events", (route: Route) => route.abort());
+  await services.restartRelay();
+  await expect(page.getByRole("status").filter({ hasText: "Reconnecting…" })).toBeVisible();
+  await page.clock.fastForward("03:00:00");
+  await expect(usage(page)).toContainText("Waiting");
+  await expect(usage(page).getByRole("meter", { name: "5h usage" })).toHaveAttribute(
+    "aria-valuetext",
+    /Waiting for a new reading/,
+  );
+});
+
 test("clicking subscription usage lists every window, shortest first", async ({ ox: page }) => {
   await newSession(page, "usage");
   await usage(page).click();
