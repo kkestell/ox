@@ -469,8 +469,8 @@ waits, the session answers other requests, and refuses a prompt, a message, a
 child, and another destroy with `-32000` `session is being deleted`.
 
 A worktree session's worktree is then removed with git, without force; its
-branch stays. Files git ignores go with it. These return `-32000` and leave the
-session parked and listed:
+branch is not deleted. Files git ignores are deleted with the worktree. These
+return `-32000` and leave the session parked and listed:
 
 - untracked files or uncommitted changes: `worktree has uncommitted changes`;
 - a `HEAD` on no branch: `worktree HEAD is not on a branch`;

@@ -1344,7 +1344,7 @@ test("deleting a worktree session says it deletes the worktree and keeps the bra
   await menuItem(await openMenu(sessionItem(page, "delete my worktree")), "Delete").click();
   const dialog = page.getByRole("alertdialog", { name: "Delete session?" });
   await expect(dialog).toHaveAccessibleDescription(
-    'This deletes "delete my worktree", its history, and its worktree. Its branch stays.',
+    'This deletes "delete my worktree", its history, and its worktree. The branch and its commits are not deleted.',
   );
   await dialog.getByRole("button", { name: "Delete" }).click();
   await expect(sessionButton(page, "delete my worktree")).toHaveCount(0);

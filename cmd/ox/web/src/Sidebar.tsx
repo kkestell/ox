@@ -62,7 +62,7 @@ function WorkspaceDialog(props: {
             <h2 id={`${id}-title`}>Delete session?</h2>
             <p id={`${id}-description`} class="description">
               {request.worktree
-                ? `This deletes "${request.label}", its history, and its worktree. Its branch stays.`
+                ? `This deletes "${request.label}", its history, and its worktree. The branch and its commits are not deleted.`
                 : `This deletes "${request.label}" and its history.`}
             </p>
           </>
