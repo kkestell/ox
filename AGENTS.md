@@ -273,14 +273,14 @@ change is not small.
    top-level agent checks the pull request's reviews with `gh api` once a
    minute, for up to 30 minutes, until one from
    `copilot-pull-request-reviewer[bot]` appears, then reads it and its
-   comments. It gives each comment an
-   outcome from Defects. It fixes each comment marked to fix the way it would
-   fix a review finding: itself for a small fix, and through the implementing
-   session and `/ox-review verify` otherwise, then re-runs the checks that
-   observe the fix and pushes. It replies to each comment it rejects or
-   records with the reason or the issue. When no Copilot review arrives
-   within the timeout, the pull request is ready without one. The top-level
-   agent then tells the user the pull request is ready to merge.
+   comments. It gives each comment an outcome from Defects. It fixes each
+   comment marked to fix the way it would fix a review finding: itself for a
+   small fix, and through the implementing session and `/ox-review verify`
+   otherwise, then re-runs the checks that observe the fix and pushes. It
+   replies to each comment it rejects or records with the reason or the
+   issue. When no Copilot review arrives within the 30 minutes, the pull
+   request is ready without one. The top-level agent then tells the user the
+   pull request is ready to merge.
 9. A pull request merges by squash, with its title as the commit subject.
    After the user merges, the top-level agent runs `make prune` and pulls in
    the main checkout. `make prune` removes each local branch whose pull
