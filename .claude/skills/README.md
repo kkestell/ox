@@ -84,7 +84,7 @@ flowchart LR
     Work --> Review["Reviewer checks the diff<br/>word for word"]
     Review --> Orch["Orchestrator checks<br/>the requirements diff<br/>before opening the PR"]
     Orch --> FR[("functional-requirements.md")]
-    FR -. "cited by title in every plan and review;<br/>a whole-repository review checks them all" .-> Plan
+    FR -. "cited by title in every plan and review;<br/>a whole-repository sweep checks them all" .-> Plan
 
     classDef you fill:#fde68a,stroke:#92400e,color:#000
     classDef doc fill:#dbeafe,stroke:#1e3a8a,color:#000
