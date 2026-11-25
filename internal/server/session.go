@@ -31,6 +31,7 @@ type session struct {
 	directory string       // where the harness runs
 	worktree  string       // the root of the session's worktree, or ""
 	child     *store.Child // nil for a top-level session
+	toParent  *toParent    // nil for a top-level session
 	createdAt time.Time
 	ops       chan func()
 	done      chan struct{} // closed once run returns
@@ -60,7 +61,6 @@ type session struct {
 	agent       agent.Agent // nil while parked
 	parkTimer   *time.Timer // armed while the agent is parkable
 	ended       bool
-	toParent    *toParent // nil for a top-level session
 	// exiting holds the Reaped channels of dropped agents whose processes
 	// may still be running, so a delete waits for them.
 	exiting []<-chan struct{}
@@ -78,9 +78,11 @@ type deleting struct {
 // toParent is what a child keeps for its parent: the reports its parent has
 // not taken, oldest first, and its current turn.
 type toParent struct {
+	// Guarded by Server.mu, beside the child's published state, so its parent
+	// reads both in one critical section.
 	reports []agent.Report
 	// turn is the turn in progress, or the next one while the child is free.
-	// A turn's result or exit replaces it.
+	// A turn's result or exit replaces it. Owned by the child's run.
 	turn *turn
 }
 
@@ -650,7 +652,10 @@ func (sess *session) report(update agent.Update) {
 		text = fmt.Sprintf("%s…\n(first %d of %d characters; read the rest with read_session on %s.)",
 			string([]rune(text)[:reportRunes]), reportRunes, n, sess.id)
 	}
+	s := sess.server
+	s.mu.Lock()
 	t.reports = append(t.reports, agent.Report{From: sess.id, FromLabel: sess.child.Title, Text: text})
+	s.mu.Unlock()
 }
 
 // pingFamily has the session's parent, and the session itself when it has
@@ -676,38 +681,41 @@ func (sess *session) pingFamily() {
 
 // deliverReports sends the session every untaken report of its children as
 // one input, once it is free and none of its children is running. It runs on
-// the session's goroutine. A free session has no input untaken, so messages
-// already waiting go first. It waits on each child's goroutine; a session
-// goroutine waits on another only from an ancestor to a descendant, so no
-// chain of waits returns to it.
+// the session's goroutine. It reads the children's published states and takes
+// their reports in one critical section, so every report it takes existed
+// while none of them was running. A free session has no input untaken, so
+// messages already waiting go first.
 func (sess *session) deliverReports() {
 	if !sess.free() {
 		return
 	}
-	s := sess.server
-	s.mu.Lock()
-	closed, archived, children := s.closed, sess.archived, s.children(sess)
-	running := slices.ContainsFunc(children, func(c *session) bool { return c.state == agent.StateRunning })
-	s.mu.Unlock()
-	if closed || archived || running {
-		return
-	}
-	slices.SortFunc(children, func(a, b *session) int { return a.createdAt.Compare(b.createdAt) })
-	var reports []agent.Report
-	for _, c := range children {
-		taken := ask(c, func() []agent.Report {
-			taken := c.toParent.reports
-			c.toParent.reports = nil
-			return taken
-		})
-		reports = append(reports, taken...)
-	}
+	reports := sess.takeReports()
 	if len(reports) == 0 {
 		return
 	}
 	if err := sess.acceptMessage(reportsInput(reports)); err != nil {
 		log.Printf("session %s: deliver reports: %v", sess.id, err)
 	}
+}
+
+// takeReports takes every untaken report of the session's children, children
+// oldest first, unless oxd is shutting down, the session is archived, or any
+// child is running.
+func (sess *session) takeReports() []agent.Report {
+	s := sess.server
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	children := s.children(sess)
+	if s.closed || sess.archived || slices.ContainsFunc(children, func(c *session) bool { return c.state == agent.StateRunning }) {
+		return nil
+	}
+	slices.SortFunc(children, func(a, b *session) int { return a.createdAt.Compare(b.createdAt) })
+	var reports []agent.Report
+	for _, c := range children {
+		reports = append(reports, c.toParent.reports...)
+		c.toParent.reports = nil
+	}
+	return reports
 }
 
 // ask runs f on the session's goroutine and returns its result, or the zero
