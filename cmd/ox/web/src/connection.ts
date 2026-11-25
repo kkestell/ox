@@ -106,15 +106,23 @@ export function connect(handlers: {
   // send returns an Rpc bound to one stream, which fails without a request
   // once that stream is no longer the connected one.
   function send(sentOn: string): Rpc {
+    const current = () => stream.kind === "connected" && stream.connection === sentOn;
     return (method, params) => {
-      if (stream.kind !== "connected" || stream.connection !== sentOn) {
-        return Promise.reject(new Disconnected("Not connected to ox"));
-      }
+      if (!current()) return Promise.reject(new Disconnected("Not connected to ox"));
       const id = nextId++;
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject });
         const fail = (error: Error) => {
           if (pending.delete(id)) reject(error);
+        };
+        // A 503 from the relay and a POST that cannot reach it both mean the
+        // stream cannot be used. End the stream, which the browser may still
+        // hold open, unless it already ended or the page has reconnected; then
+        // only this call fails.
+        const lost = () => {
+          const error = new Disconnected("Lost the connection to ox. Reconnecting.");
+          if (current()) drop(error);
+          else fail(error);
         };
         fetch(`/rpc?connection=${sentOn}`, {
           method: "POST",
@@ -122,19 +130,11 @@ export function connect(handlers: {
         })
           .then(async (response) => {
             if (response.ok) return;
+            if (response.status === 503) return lost();
             const message = (await response.text()).trim() || `${response.status} ${response.statusText}`.trim();
-            // The relay answers 503 when the page's oxd connection is gone.
-            fail(response.status === 503 ? new Disconnected(message) : new Error(message));
+            fail(new Error(message));
           })
-          .catch(() => {
-            // A POST that cannot reach the relay means the stream cannot either.
-            // Replace the stream, which the browser may still hold open, unless
-            // the stream already reported the drop or the page has reconnected.
-            if (stream.kind !== "connected" || stream.connection !== sentOn) {
-              return fail(new Disconnected("Lost the connection to ox. Reconnecting."));
-            }
-            drop(new Disconnected("Lost the connection to ox. Reconnecting."));
-          });
+          .catch(lost);
       });
     };
   }
