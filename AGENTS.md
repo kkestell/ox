@@ -217,10 +217,12 @@ agent, which carries it through child sessions. When Codex leads the workflow,
 use Codex child sessions on Sol 6.2. The Claude model choices below apply when
 Claude Code leads the workflow.
 
-The main checkout stays on `main` and only pulls. Each change starts with
-`make worktree NAME=<slug>` from a clean main checkout, and every step below
-runs in that worktree. A child session that finds uncommitted work outside its
-brief, other than its sibling children's, stops and reports it to the session that started it. Changes reach
+The main checkout stays on `main` and only pulls. Each change runs in an Ox
+worktree session started from the main checkout, and every step below runs in
+its worktree. Before its first commit, the top-level agent renames the
+worktree's branch for the change with `git branch -m <slug>`. A child session
+that finds uncommitted work outside its brief, other than its sibling
+children's, stops and reports it to the session that started it. Changes reach
 `main` only by pull request, which the user merges.
 
 Several changes run at once, each with its own top-level agent. Those agents
@@ -282,9 +284,9 @@ change is not small.
    request is ready without one. The top-level agent then tells the user the
    pull request is ready to merge.
 9. A pull request merges by squash, with its title as the commit subject.
-   After the user merges, the top-level agent runs `make prune` and pulls in
+   After the user merges, the top-level agent pulls and runs `make prune` in
    the main checkout. `make prune` removes each local branch whose pull
-   request has merged, and its worktree; `make worktree` runs it first.
+   request has merged, and its worktree.
 
 The user owns `docs/functional-requirements.md`. It changes only when a change
 adds, alters, or removes behavior the user can observe, and only with the text

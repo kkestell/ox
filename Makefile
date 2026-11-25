@@ -1,4 +1,4 @@
-.PHONY: dev build web test live lint e2e metrics docs hooks worktree prune
+.PHONY: dev build web test live lint e2e metrics docs hooks prune
 
 # A recipe that fails leaves no target behind, such as a partial download.
 .DELETE_ON_ERROR:
@@ -9,7 +9,8 @@ GOLANGCI_LINT_VERSION := 2.15.0
 GOLANGCI_LINT := bin/golangci-lint-$(GOLANGCI_LINT_VERSION)
 
 # .env holds OPENROUTER_API_KEY for Ur. Only that key reaches oxd and tests.
--include .env
+# It lives in the main checkout, which every worktree reads it from.
+-include $(dir $(shell git rev-parse --path-format=absolute --git-common-dir)).env
 export OPENROUTER_API_KEY
 
 dev: build
@@ -51,16 +52,6 @@ docs:
 
 hooks:
 	git config core.hooksPath .githooks
-
-# worktree makes $(WORKTREES)/$(NAME) on a new branch $(NAME) from
-# origin/main, with no upstream, so the first push names its own branch.
-WORKTREES ?= $(HOME)/.local/share/worktrees/ox
-worktree: prune
-	@test -n "$(NAME)" || { echo "usage: make worktree NAME=<slug>" >&2; exit 1; }
-	git fetch origin
-	mkdir -p $(WORKTREES)
-	git worktree add $(WORKTREES)/$(NAME) -b $(NAME) --no-track origin/main
-	if [ -e .env ]; then ln -s $(CURDIR)/.env $(WORKTREES)/$(NAME)/.env; fi
 
 # prune removes each local branch whose pull request has merged, and its
 # worktree.
