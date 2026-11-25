@@ -1,6 +1,6 @@
 ---
 name: ox-review
-description: Review Ox code in uncommitted changes, a commit, a branch, a pull request, named files, or the whole repository, against its plan, Ox's functional requirements, and `AGENTS.md`, and write the review in `agents/reviews/`, marking each confirmed finding to fix or to record, and each rejected one with its reason. Fixes nothing. Run again with an existing review to verify the fixes made for it. Do not use for plan critiques or standalone documentation reviews. Never use it unless the user, or an agent acting on the user's request, invokes it.
+description: Review Ox code in uncommitted changes, a commit, a branch, a pull request, or named files, against its plan, Ox's functional requirements, and `AGENTS.md`, and write the review in `agents/reviews/`, marking each confirmed finding to fix or to record, and each rejected one with its reason. Fixes nothing. Run again with an existing review to verify the fixes made for it. Do not use for plan critiques or standalone documentation reviews. Never use it unless the user, or an agent acting on the user's request, invokes it.
 argument-hint: "[review scope or pull request, and the plan it implements, or verify <review path>]"
 ---
 
@@ -18,15 +18,18 @@ Change no code, tests, or documentation, and stage or commit nothing. Edit only 
 
 ## Child sessions
 
-Most changes are small enough to review in one context. Start child sessions with Ox's `create_session` in two cases:
+Review a change through three concern reviewers, child sessions started concurrently with Ox's `create_session` on this session's model and effort. Each one gives a single concern its whole attention:
 
-- A review of the whole repository, or a change that spans the daemon, the relay, and the web client. Split it into separate areas, such as the session lifecycle, the Claude harness, the relay, and the web client's session view, and review them concurrently, one area per child.
-- A suspected finding whose confirmation needs a long reproduction, such as a stand-in `claude` script or a probe against built binaries on a temporary socket.
+- **Lifecycle:** `Requirements`, `Ownership`, `Settling`. It lists every asynchronous edge the change adds or alters: a request and its reply, an event, a stream opening or closing, a timer, a process exit, a child report. For each edge it checks every state the edge can arrive in: its request in flight, its reply lost, a reconnect, navigation away and back, a second page acting on the same session, the process exiting or parking, and `oxd` running independent requests in any order.
+- **Boundaries:** `Settings`, `Process I/O`, `Claude Code`, `Security`, `Correctness`. It checks every input the change reads from outside Ox's code, such as Claude's output, Git's output, files on disk, the environment, configuration, and a page's requests, against each form that input takes in normal use, such as a user's Git settings, a symlink, a file at a stated limit, and output that ends at EOF.
+- **Construction:** `Construction`, `Simplicity`, `Testing`, `Conventions`, `Documentation`.
+
+Start a further child for a suspected finding whose confirmation needs a long reproduction, such as a stand-in `claude` script or a probe against built binaries on a temporary socket.
 
 Brief each child as follows:
 
-- Give it its area or its suspected finding, the plan's path when there is one, and the categories from step 5 that apply.
-- Tell it to report each suspected finding with its location and the evidence that confirms it, and to propose no action.
+- Give it the base revision, the revision or working tree under review, the plan's path when there is one, and its concern or suspected finding with the categories from step 5 that apply. Give it nothing else, so it reads the code without the implementer's account or your suspicions.
+- Tell it to report each suspected finding with its location and the evidence that confirms it, and to propose no action. A concern reviewer also lists the edges or inputs it checked.
 - Tell it to change no files except temporary ones it removes, reply with `send_message`, and start no sessions of its own.
 - End your turn until every child has answered.
 
@@ -45,13 +48,13 @@ Correctness matters for what happens in normal use and for the requirements in `
 ## Choose what to review
 
 1. Read `<review_scope> $ARGUMENTS </review_scope>`. If it asks to verify an existing review, go to [Verify fixes](#verify-fixes). Ask the user only when the answer would change what you review.
-2. For uncommitted changes, a commit, or a branch, review the changes and the code that calls or depends on them. For a pull request that did not come through the workflow, such as another agent's or a contributor's, read it with `gh pr view` and `gh pr diff`, and review it in its worktree or in one made with `gh pr checkout <number> --worktree ~/.local/share/worktrees/ox/<branch>`. For named files or the whole repository, review that full scope; for the whole repository, check every requirement in `docs/functional-requirements.md`. The base revision is `git merge-base origin/main HEAD` for uncommitted changes, a branch, or a pull request, and the commit's parent for a commit. Record it and the state of the working tree you reviewed.
+2. For uncommitted changes, a commit, or a branch, review the changes and the code that calls or depends on them. For a pull request that did not come through the workflow, such as another agent's or a contributor's, read it with `gh pr view` and `gh pr diff`, and review it in its worktree or in one made with `gh pr checkout <number> --worktree ~/.local/share/worktrees/ox/<branch>`. For named files, review those files in full. The base revision is `git merge-base origin/main HEAD` for uncommitted changes, a branch, or a pull request, and the commit's parent for a commit. Record it and the state of the working tree you reviewed.
 3. Read `AGENTS.md`, `docs/functional-requirements.md`, and the open `bug` issues (`gh issue list --label bug`); for web client code, also `cmd/ox/web/AGENTS.md`. Read the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/harnesses/claude-code.md` that cover the code under review. If the scope names a plan in `agents/plans/`, read it: its Goal, its Decisions, its Requirement changes, and its settled Check your assumptions entries are the requirements.
 
 ## Review
 
 4. Trace behavior through callers, state owners, resource lifetimes, and tests. Judge implementation choices by their purpose and consequence. Do not treat a language feature or coding pattern as a defect on its own.
-5. Check the code for each of these categories the scope reaches:
+5. Check the code for each of these categories the scope reaches. Check `Intent` yourself, and the concern reviewers check the rest:
    - **Intent.** The change delivers the plan's Goal, keeps its Decisions and the user's answers, and stays within it. Behavior the user can observe changes only as the plan's Requirement changes say, and `docs/functional-requirements.md` carries exactly those changes, word for word. Observable behavior that changes without a requirement change, and a requirement edit the plan does not make, are findings.
    - **Requirements.** Each functional requirement the code touches, cited by title, holds through the whole lifecycle of a page's request: in flight, its reply lost, a reconnect, navigation away and back, a second page acting on the same session, the process exiting or parking, and `oxd` running a page's independent requests in any order. Text the user typed is never lost or sent twice. The page offers an action unless the state it has from `oxd` rules it out, and shows its result as soon as the user takes it, returning to `oxd`'s state with the error if `oxd` refuses it.
    - **Settings.** The Claude process runs with the model, effort, permission mode, and account the page shows, including after a partial failure, a restart, or with an inherited environment. A setting Claude would silently ignore or default is refused.
