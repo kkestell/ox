@@ -41,12 +41,12 @@ Change no code, tests, or documentation, and stage or commit nothing. Edit only 
    11. Requests from outside: listeners, the relay, page requests, and the MCP forwarder, including malformed, out-of-order, and cross-origin requests.
    12. Configuration, environment, store, and OpenRouter: configuration files, the inherited environment, the database across restarts, and OpenRouter's streams.
    13. Tests, docs, and dead code: the Go tests, the web client's unit and Playwright specs, `docs/`, `AGENTS.md`, `cmd/ox/web/AGENTS.md`, the skills, the `Makefile`, `scripts/`, and the comments throughout.
-6. Assign every requirement in `docs/functional-requirements.md` to exactly one workflow child. A requirement no workflow reaches is a gap to record.
+6. Assign every requirement in scope to exactly one workflow child: every requirement in `docs/functional-requirements.md` for a whole-repository sweep, and those the scope's workflows deliver for a narrower one. A requirement in scope that no workflow reaches is a gap to record.
 7. If the scope does not fit in 13 children, cover the workflows and inputs whose failures cost the user most, and record what is left uncovered. Never imply a partial sweep covered the whole repository.
 
 ## Child sessions
 
-8. Give each child its own detached worktree at the swept revision, made with `git worktree add --detach "$TMPDIR/ox-sweep/<child>" HEAD`, with `cmd/ox/web/node_modules` linked from this checkout, so the children's builds, tests, and probes cannot collide. Remove the worktrees once the children have answered.
+8. Give each child its own detached worktree at the swept revision, made with `git worktree add --detach "${TMPDIR:-/tmp}/ox-sweep/<child>" HEAD`, with `cmd/ox/web/node_modules` linked from this checkout, so the children's builds, tests, and probes cannot collide. Remove the worktrees once the children have answered.
 9. Start one child per workflow group and input source, and the tests and docs child, and run them concurrently: an Ox session started with `create_session` on this session's model and effort, or another agent the user names, such as a Codex task on Sol. Brief each one in full; a child does not inherit this skill or your conversation. Give it:
    - Its worktree's absolute path and revision, and two sentences on what Ox is.
    - The files to read first: `AGENTS.md`, `docs/functional-requirements.md`, the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/harnesses/claude-code.md` its scope touches, and `cmd/ox/web/AGENTS.md` for web client code.
@@ -92,7 +92,7 @@ For a test, document, or dead code, give its exact locations, the callers and te
 ## Confirm and weigh the findings
 
 11. Confirm every candidate yourself against the current source, its callers, and its tests, including the guards and recovery around it. Where two children stopped at the same interface, follow the handoff yourself or record the gap. Revert every edit a check needs before you finish. Leave out what you cannot confirm.
-12. Check that every requirement has a child's answer, and record each one without an answer as a gap.
+12. Check that every requirement in scope has a child's answer, and record each one without an answer as a gap.
 13. Group candidates that one change at one cause would correct into one finding, across files and children, and keep failures that need independent changes apart.
 14. Give each finding its severity, its origin, and its action:
     - **Severity**, as the template defines it.
