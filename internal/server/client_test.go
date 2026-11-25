@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"os"
 	"testing"
 	"time"
 
@@ -15,7 +16,8 @@ import (
 	"github.com/kkestell/ox/internal/store"
 )
 
-// newServer builds a server with New. A configuration that names no titling
+// newServer builds a server with New, with the system's temporary directory
+// for worktrees. A configuration that names no titling
 // harness titles sessions with a titler harness that echoes the prompt.
 func newServer(st *store.Store, cfg *config.Config, parkAfter time.Duration, harnesses map[string]agent.Harness, mcp MCP) (*Server, error) {
 	if cfg.Titling.Harness == "" {
@@ -28,7 +30,7 @@ func newServer(st *store.Store, cfg *config.Config, parkAfter time.Duration, har
 		}
 		harnesses["titler"] = agent.Harness{Ask: fake.Ask}
 	}
-	return New(st, cfg, parkAfter, harnesses, mcp)
+	return New(st, cfg, parkAfter, harnesses, mcp, os.TempDir())
 }
 
 type message struct {

@@ -23,6 +23,12 @@ func Ur() (string, error) {
 	return file("XDG_STATE_HOME", filepath.Join(".local", "state"), "ur")
 }
 
+// Worktrees is the directory of session worktrees, beneath $XDG_DATA_HOME or
+// ~/.local/share.
+func Worktrees() (string, error) {
+	return file("XDG_DATA_HOME", filepath.Join(".local", "share"), "worktrees")
+}
+
 // Socket is oxd's socket, beneath $XDG_RUNTIME_DIR, or beside the database
 // when that is unset, as it is on macOS.
 func Socket() (string, error) {

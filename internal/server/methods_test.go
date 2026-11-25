@@ -886,7 +886,7 @@ func TestSessionLabel(t *testing.T) {
 // New refuses a titling harness that cannot title sessions.
 func TestTitlingHarnessNeedsAsk(t *testing.T) {
 	cfg := &config.Config{Titling: config.Titling{Harness: "fake"}}
-	_, err := New(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+	_, err := New(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{}, os.TempDir())
 	if err == nil || err.Error() != `titling harness "fake" cannot title sessions` {
 		t.Fatalf("New returned %v", err)
 	}
@@ -1001,8 +1001,9 @@ func lost(t *testing.T, c *client, sent message) {
 }
 
 // One session starting or stopping Claude holds up no request to another: a
-// send replies before Claude has answered initialize, and a destroy replies
-// while Claude, ignoring SIGTERM, is still running.
+// send replies before Claude has answered initialize, and another session's
+// list_sessions answers while a destroy waits for Claude, ignoring SIGTERM, to
+// exit.
 func TestStartAndStopHoldUpNoOtherSession(t *testing.T) {
 	dir := t.TempDir()
 	gate, pidFile := filepath.Join(dir, "gate"), filepath.Join(dir, "pid")
@@ -1092,12 +1093,32 @@ func TestStartAndStopHoldUpNoOtherSession(t *testing.T) {
 		t.Fatalf("the prompt held while Claude started was not taken: %+v", taken)
 	}
 
-	c.call("session/destroy", map[string]string{"session_id": "session-b"})
-	if state := stateOfB(); state != "" {
-		t.Fatalf("the destroyed session is listed as %q", state)
+	// The destroy waits for Claude to exit, holding up no other session
+	// meanwhile, and the session takes no prompt while it waits.
+	destroy := c.send("session/destroy", map[string]string{"session_id": "session-b"})
+	c.update("session-b", "parked")
+	if state := stateOfB(); state != "parked" {
+		t.Fatalf("the session being destroyed is listed as %q", state)
+	}
+	if response := c.request("session/send", map[string]string{"session_id": "session-b", "text": "again"}); response.Error == nil ||
+		response.Error.Message != "session is being deleted" {
+		t.Fatalf("a send during the destroy returned %+v", response)
+	}
+	if response := c.request("session/destroy", map[string]string{"session_id": "session-b"}); response.Error == nil ||
+		response.Error.Message != "session is being deleted" {
+		t.Fatalf("a second destroy during the first returned %+v", response)
 	}
 	if err := syscall.Kill(pid(), 0); err != nil {
-		t.Fatalf("Claude exited before the destroy and list_sessions answered: %v", err)
+		t.Fatalf("Claude exited before list_sessions answered: %v", err)
+	}
+	if err := syscall.Kill(pid(), syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	if response := c.response(destroy); response.Error != nil {
+		t.Fatalf("session/destroy failed: %+v", response.Error)
+	}
+	if state := stateOfB(); state != "" {
+		t.Fatalf("the destroyed session is listed as %q", state)
 	}
 }
 
@@ -1742,6 +1763,55 @@ func TestWorkspaceFiles(t *testing.T) {
 	refused("workspace/read_file", -32602, "w", "../x", "path must be relative to the directory")
 	refused("workspace/read_file", -32602, "w", filepath.Join(outside, "secret"), "path must be relative to the directory")
 	refused("workspace/read_file", -32001, "missing", "notes", "workspace not found")
+}
+
+// gatedReap is an agent whose processes are reaped only once its gate is
+// closed.
+type gatedReap struct {
+	agent.Agent
+	gate <-chan struct{}
+}
+
+func (a gatedReap) Reaped() <-chan struct{} {
+	return a.gate
+}
+
+// A delete waits for the processes of an agent that parked earlier to exit.
+func TestDestroyWaitsForParkedProcesses(t *testing.T) {
+	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
+		Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "plan"}},
+	}}}
+	gate := make(chan struct{})
+	start := func(o agent.Options) (agent.Agent, error) {
+		a, err := fake.Start(o)
+		return gatedReap{a, gate}, err
+	}
+	s, err := newServer(openStore(t), cfg, 50*time.Millisecond, map[string]agent.Harness{"fake": {Start: start}}, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c := connect(t, s)
+	var workspace struct {
+		WorkspaceID string `json:"workspace_id"`
+	}
+	json.Unmarshal(c.call("workspace/create", map[string]string{"path": t.TempDir()}), &workspace)
+	var created struct {
+		SessionID string `json:"session_id"`
+	}
+	json.Unmarshal(c.call("session/create", map[string]string{
+		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "permission_mode": "plan",
+	}), &created)
+	c.call("session/send", map[string]string{"session_id": created.SessionID, "text": "hi"})
+	c.update(created.SessionID, "parked")
+
+	const held = 300 * time.Millisecond
+	time.AfterFunc(held, func() { close(gate) })
+	began := time.Now()
+	c.call("session/destroy", map[string]string{"session_id": created.SessionID})
+	if waited := time.Since(began); waited < held {
+		t.Fatalf("session/destroy replied after %v, before the parked agent's processes were reaped", waited)
+	}
 }
 
 // configuringAgent reports each configuration it starts on started.

@@ -44,6 +44,12 @@ title.
 - **New-session choices.** Before sending, the user can pick any offered
   harness, model, effort, and permission mode for a new session. The user finds
   a model by typing part of its name or its harness's.
+- **Worktrees.** Before sending, the user can choose to run a new session in the
+  workspace directory, the choice a draft starts with, or in its own git
+  worktree. Ox makes the worktree outside the repository, on a new branch from
+  the workspace's current commit, holding only committed files, and runs the
+  session in the worktree's copy of the workspace directory; if it cannot,
+  creation fails with the reason and leaves no worktree or branch behind.
 - **Creating a session.** Submitting a new session creates it and sends the
   prompt exactly once.
 - **Creation keeps the user's view.** A session whose creation finishes after
@@ -187,6 +193,10 @@ title.
   asks first. The child takes its parent's permission mode, and its parent's
   harness, model, effort, and directory unless Claude picks others Ox offers,
   and can start children of its own up to the configured depth.
+- **Who works in a worktree.** A worktree session's child sessions work in its
+  worktree unless Claude picks another directory. No other session is started
+  there: Ox refuses a child of another session in it and refuses to add a folder
+  inside it as a workspace, and says why.
 - **Message delivery.** A message from another session reaches Claude as a
   prompt sent while it works does: Claude takes it into the running turn after
   its current step, or runs it next, and an idle session starts a turn with it.
@@ -232,9 +242,14 @@ title.
 ## Archiving and deleting
 
 - **Deleting a session.** A session, archived or not, can be deleted only when
-  it has no child sessions. Deleting it asks first, then stops Claude, deletes
-  Ox's history of it, leaves Claude's transcript, Ur's saved conversation, and
-  the workspace on disk, and removes it from every page.
+  it has no child sessions. Deleting it asks first, then stops Claude and waits
+  for it to exit, deletes Ox's history of it, removes its worktree if it has
+  one, leaves Claude's transcript, Ur's saved conversation, the session's
+  branch, and the workspace on disk, and removes it from every page. A session
+  whose worktree has uncommitted changes or untracked files, or whose worktree
+  is on no branch, is not deleted, and the error says why; files Git ignores are
+  deleted with the worktree, and a worktree folder already removed does not stop
+  the deletion.
 - **Archiving a session.** While a session and every session beneath it are idle
   or parked, the user can archive it from its menu without confirmation, which
   archives the sessions beneath it too and stops their Claude processes,
@@ -341,8 +356,10 @@ title.
 - **Failed startup.** A failed Claude startup ends within a minute and shows
   why, in Claude's own words when it gives a reason. The prompt that started it
   is dropped, and its text returns to the composer of the page that sent it.
-- **Working directory.** Claude works in the session's workspace directory, or
-  in a child session, the directory it was created in.
+- **Working directory.** Claude works in the session's directory: the workspace
+  directory, its copy in the session's worktree, or for a child session, the
+  directory it was created in. A session whose directory no longer exists
+  refuses to start, and says so.
 - **Subscription billing.** Claude's work is billed to the user's Claude
   subscription, never to an API key or token in Ox's environment.
 - **Subscription usage.** Under the composer, a Claude session shows how much of
@@ -364,17 +381,16 @@ title.
   saved conversation can no longer be read, the send is refused with an error
   saying so, and the next send starts a new conversation without the earlier
   context.
-- **Ur's shell commands.** Ur can run shell commands in the session's workspace
-  directory, without `OPENROUTER_API_KEY` in their environment. In manual mode
-  each command asks for approval first, and a denied command tells Ur so and the
-  turn goes on; in auto mode every command runs without asking. A command ends
-  when it exits, at its timeout of two minutes or up to ten that Ur sets, or
-  when the turn is stopped, which also ends the processes it started; Ur gets
-  its exit status and its output, or the start and end of output too long to
-  keep whole.
-- **Ur's instructions.** Ur knows the session's workspace directory, its OS, and
-  today's date, follows Ox's style, and follows the workspace's `AGENTS.md` as
-  it stands when each request is sent.
+- **Ur's shell commands.** Ur can run shell commands in the session's directory,
+  without `OPENROUTER_API_KEY` in their environment. In manual mode each command
+  asks for approval first, and a denied command tells Ur so and the turn goes
+  on; in auto mode every command runs without asking. A command ends when it
+  exits, at its timeout of two minutes or up to ten that Ur sets, or when the
+  turn is stopped, which also ends the processes it started; Ur gets its exit
+  status and its output, or the start and end of output too long to keep whole.
+- **Ur's instructions.** Ur knows the session's directory, its OS, and today's
+  date, follows Ox's style, and follows the `AGENTS.md` in that directory as it
+  stands when each request is sent.
 
 ## Configuration
 
@@ -386,17 +402,20 @@ title.
 - **Configuration checks.** `oxd` refuses to start with a configuration that is
   malformed or that it cannot honor, and says why.
 - **File locations.** Ox reads its configuration and keeps its database, socket,
-  and Ur's saved conversations in the user's XDG directories, and the user can
-  choose other paths.
+  Ur's saved conversations, and session worktrees in the user's XDG directories,
+  and the user can choose other paths.
 
 ## oxd
 
 - **Independent sessions.** One session starting, changing settings, or running
   never holds up another session.
 - **Stopping oxd.** Stopping `oxd` stops every Claude process and Ur command it
-  runs; a second stop request ends it at once.
+  runs, and undoes a worktree it is still making; a second stop request ends it
+  at once, which can leave that worktree and its branch behind.
 - **Socket safety.** After `oxd` exits, even by crashing, it starts again.
   Starting a second `oxd` while one runs fails and leaves the running one alone,
   and `oxd` never overwrites another file at its socket's path.
 - **Ox's own files.** Ox's own bookkeeping writes only its database, its socket,
-  the configuration it writes on first start, and Ur's saved conversations.
+  the configuration it writes on first start, and Ur's saved conversations. In
+  the user's repositories, Ox writes only the worktrees and branches of worktree
+  sessions.

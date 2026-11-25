@@ -874,6 +874,93 @@ func TestLive(t *testing.T) {
 		l.c.call("session/destroy", map[string]string{"session_id": started.SessionID})
 	})
 
+	section("worktree session", func(l *live) {
+		// Claude runs in the worktree with its committed project settings,
+		// and a delete returns only once Claude has ended its tool processes.
+		repo := gitRepo(l.t)
+		if err := os.MkdirAll(filepath.Join(repo, ".claude"), 0o755); err != nil {
+			l.t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(repo, ".claude", "settings.json"), []byte(`{"env": {"OX_PROBE": "probe-7f3a"}}`), 0o644); err != nil {
+			l.t.Fatal(err)
+		}
+		runGit(l.t, "-C", repo, "add", ".")
+		runGit(l.t, "-C", repo, "commit", "-q", "-m", "settings")
+		var workspace struct {
+			WorkspaceID string `json:"workspace_id"`
+		}
+		json.Unmarshal(l.c.call("workspace/create", map[string]string{"path": repo}), &workspace)
+		var created struct {
+			SessionID string `json:"session_id"`
+		}
+		json.Unmarshal(l.c.call("session/create", map[string]any{
+			"workspace_id": workspace.WorkspaceID, "harness": "claude", "model": haiku, "effort": "low", "permission_mode": "manual", "worktree": true,
+		}), &created)
+		id := created.SessionID
+		sess := listed(l.t, l.c, id)
+		if sess.Worktree == "" || sess.Directory != sess.Worktree {
+			l.t.Fatalf("the session was created in %q with worktree %q", sess.Directory, sess.Worktree)
+		}
+		// The server makes worktrees in the system's temporary directory.
+		l.t.Cleanup(func() { os.RemoveAll(sess.Worktree) })
+		pidFile := filepath.Join(l.t.TempDir(), "bg.pid")
+		l.t.Cleanup(func() {
+			if data, err := os.ReadFile(pidFile); err == nil {
+				exec.Command("kill", "-9", strings.TrimSpace(string(data))).Run()
+			}
+		})
+		// The background command keeps the session in the background, so the
+		// turn ends at its result rather than at idle.
+		l.c.call("session/send", map[string]string{"session_id": id, "text": "Run the Bash command `pwd; printenv OX_PROBE`. " +
+			"Then run the Bash command `sh -c 'echo $$ > " + pidFile + "; exec sleep 300'` in the background, with run_in_background. " +
+			"Then reply with just ok."})
+		var results []string
+		for done := false; !done; {
+			var u agent.Update
+			l.c.next(func(m message) bool {
+				if m.Method != "session/update" || m.sessionID() != id {
+					return false
+				}
+				u = agent.Update{}
+				json.Unmarshal(m.Params, &u)
+				return u.Type == "tool_result" || u.Type == "approval" || u.Type == "result"
+			})
+			switch u.Type {
+			case "tool_result":
+				results = append(results, u.Result.Text)
+			case "approval":
+				var r liveRequest
+				json.Unmarshal(u.Request, &r)
+				l.c.call("session/approve", map[string]any{"session_id": id, "request_id": u.RequestID, "response": allow(r)})
+			default:
+				done = true
+			}
+		}
+		if joined := strings.Join(results, "\n"); !strings.Contains(joined, sess.Directory) || !strings.Contains(joined, "probe-7f3a") {
+			l.t.Fatalf("the tool results do not show the worktree %s and the committed setting: %q", sess.Directory, results)
+		}
+		var pid int
+		for deadline := time.Now().Add(10 * time.Second); pid == 0; {
+			if data, err := os.ReadFile(pidFile); err == nil {
+				pid, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+			}
+			if pid == 0 && time.Now().After(deadline) {
+				l.t.Fatalf("the background command never started: %s", describe(l.c.received(id)))
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		if err := syscall.Kill(pid, 0); err != nil {
+			l.t.Fatalf("the background command is not running: %v", err)
+		}
+		l.c.call("session/destroy", map[string]string{"session_id": id})
+		if err := syscall.Kill(pid, 0); err == nil {
+			l.t.Error("the background command outlived the delete")
+		}
+		if _, err := os.Stat(sess.Worktree); !os.IsNotExist(err) {
+			l.t.Errorf("the worktree remains after the delete: %v", err)
+		}
+	})
+
 	section("child reports", func(l *live) {
 		// A child's final reply reaches its parent as a report, unless the
 		// child's last step before it was a message to the parent. Each case

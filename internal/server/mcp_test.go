@@ -530,6 +530,75 @@ func TestCreateSession(t *testing.T) {
 	for _, listed := range slices.Backward(after) {
 		c.call("session/destroy", map[string]string{"session_id": listed.SessionID})
 	}
+
+	t.Log("a worktree session's children share its worktree, and no other session's are started there")
+	repo := gitRepo(t)
+	var owner listedWorktree
+	{
+		var created struct {
+			SessionID string `json:"session_id"`
+		}
+		params := createParams(addWorkspace(t, c, filepath.Join(repo, "sub")), "")
+		params["effort"] = "high"
+		json.Unmarshal(c.call("session/create", params), &created)
+		owner = listed(t, c, created.SessionID)
+	}
+	// The server makes worktrees in the system's temporary directory.
+	t.Cleanup(func() { os.RemoveAll(owner.Worktree) })
+	fromOwner := attach(t, s, owner.SessionID)
+	childOf := func(from *client, arguments map[string]string) (created, string, bool) {
+		t.Helper()
+		text, refused := from.tool("create_session", arguments)
+		var child created
+		if !refused {
+			if err := json.Unmarshal([]byte(text), &child); err != nil {
+				t.Fatalf("create_session returned %q", text)
+			}
+		}
+		return child, text, refused
+	}
+	kid, text, refused := childOf(fromOwner, map[string]string{"name": "kid", "title": "Kid", "message": "hi"})
+	if refused || kid.Directory != owner.Directory {
+		t.Fatalf("a child of the worktree session got %q, %v", text, refused)
+	}
+	if got := listed(t, c, kid.SessionID); got.Directory != owner.Directory || got.Worktree != "" {
+		t.Fatalf("the child of the worktree session was listed %+v", got)
+	}
+	c.call("session/destroy", map[string]string{"session_id": kid.SessionID})
+	if _, err := os.Stat(owner.Directory); err != nil {
+		t.Fatalf("deleting the child removed its parent's worktree: %v", err)
+	}
+	middle, text, refused := childOf(fromOwner, map[string]string{"name": "middle", "title": "Middle", "message": "hi", "dir": filepath.Dir(dir)})
+	if refused {
+		t.Fatalf("a child outside the worktree was refused: %q", text)
+	}
+	grandchild, text, refused := childOf(attach(t, s, middle.SessionID), map[string]string{"name": "grand", "title": "Grand", "message": "hi", "dir": owner.Directory})
+	if refused || grandchild.Directory != owner.Directory {
+		t.Fatalf("a grandchild of the worktree session in its worktree got %q, %v", text, refused)
+	}
+	var local struct {
+		SessionID string `json:"session_id"`
+	}
+	json.Unmarshal(c.call("session/create", map[string]string{
+		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "effort": "high", "permission_mode": "manual",
+	}), &local)
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(owner.Directory, link); err != nil {
+		t.Fatal(err)
+	}
+	fromLocal := attach(t, s, local.SessionID)
+	for i, into := range []string{owner.Directory, link} {
+		if _, text, refused := childOf(fromLocal, map[string]string{"name": fmt.Sprintf("intruder-%d", i), "title": "Intruder", "message": "hi", "dir": into}); !refused ||
+			text != "dir is in another session's worktree" {
+			t.Fatalf("a child of another session in %s got %q, %v", into, text, refused)
+		}
+	}
+	for _, id := range []string{grandchild.SessionID, middle.SessionID, owner.SessionID, local.SessionID} {
+		c.call("session/destroy", map[string]string{"session_id": id})
+	}
+	if _, err := os.Stat(owner.Worktree); !os.IsNotExist(err) {
+		t.Fatalf("deleting the worktree session left its worktree: %v", err)
+	}
 }
 
 // A create_session whose caller and the caller's parent are deleted before it

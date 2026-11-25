@@ -13,8 +13,16 @@ export function createDraft(workspaceId: string, ox: ReturnType<typeof useOx>) {
   const id = newID();
   const [chosen, setChoice] = createSignal<Defaults>();
   const choice = () => chosen() ?? ox.state.defaults;
-  return { workspaceId, id, control: ox.control(id), choice, setChoice };
+  const [worktree, setWorktree] = createSignal(false);
+  return { workspaceId, id, control: ox.control(id), choice, setChoice, worktree, setWorktree };
 }
+
+// locations are where a new session runs: the workspace directory, or a
+// worktree of its own.
+const locations = [
+  { id: "local", name: "Local" },
+  { id: "worktree", name: "Worktree" },
+];
 
 export type Draft = ReturnType<typeof createDraft>;
 
@@ -41,7 +49,7 @@ export function NewSessionView(props: { draft: Draft; onCreated(): void; toggles
     const choice = draft.choice();
     if (!choice) return;
     const { harness, ...settings } = choice;
-    draft.control.create(draft.workspaceId, harness, settings, props.onCreated);
+    draft.control.create(draft.workspaceId, harness, settings, draft.worktree(), props.onCreated);
   };
   const drop = createImageDrop(draft.control, () => true);
   return (
@@ -121,6 +129,14 @@ export function NewSessionView(props: { draft: Draft; onCreated(): void; toggles
                 value={choice().permission_mode}
                 disabled={!draft.control.canCreate()}
                 onChange={(mode) => draft.setChoice({ ...choice(), permission_mode: mode })}
+              />
+              <Select
+                name="worktree"
+                label="Location"
+                options={locations}
+                value={draft.worktree() ? "worktree" : "local"}
+                disabled={!draft.control.canCreate()}
+                onChange={(location) => draft.setWorktree(location === "worktree")}
               />
             </div>
           )}

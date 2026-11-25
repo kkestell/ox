@@ -318,3 +318,14 @@ func (a *Agent) Stop() {
 func (a *Agent) Exited() bool {
 	return a.exited
 }
+
+// reaped is closed: the fake agent starts no process.
+var reaped = func() chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
+}()
+
+func (a *Agent) Reaped() <-chan struct{} {
+	return reaped
+}

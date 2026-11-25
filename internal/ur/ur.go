@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kkestell/ox/internal/agent"
@@ -107,6 +108,10 @@ type Agent struct {
 	tracker  *agent.Tracker // inputs not taken and the reported state
 	turn     *turn          // the running turn; nil while idle
 	exited   bool
+	// shells counts the commands whose process groups have not been killed
+	// and reaped. Only the session goroutine adds to it, before the agent
+	// ends.
+	shells sync.WaitGroup
 }
 
 func (a *Agent) path() string {
@@ -399,7 +404,12 @@ func (a *Agent) execute(calls []toolCall, command shellCommand) {
 	}
 	s := &executing{calls: calls}
 	a.turn.step = s
-	go func() { a.deliver(ran{s, sh.wait()}) }()
+	a.shells.Add(1)
+	go func() {
+		o := sh.wait()
+		a.shells.Done()
+		a.deliver(ran{s, o})
+	}()
 }
 
 // answer publishes and saves calls[0]'s outcome and takes up the rest. An
@@ -565,4 +575,15 @@ func (a *Agent) Stop() {
 
 func (a *Agent) Exited() bool {
 	return a.exited
+}
+
+// Reaped is closed once every command's process group has been killed and
+// its command reaped.
+func (a *Agent) Reaped() <-chan struct{} {
+	reaped := make(chan struct{})
+	go func() {
+		a.shells.Wait()
+		close(reaped)
+	}()
+	return reaped
 }

@@ -1,6 +1,6 @@
 // The web client against the real relay and oxd, with the fake harness in
 // internal/fake, whose Send describes the prompts it answers.
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Page, Route } from "@playwright/test";
 import type { Services } from "./services";
@@ -14,8 +14,10 @@ import {
   cutReply,
   errors,
   expect,
+  gitRepo,
   heading,
   hold,
+  location,
   menuItem,
   model,
   newSession,
@@ -1302,6 +1304,50 @@ test("Delete closes its dialog and removes the row before oxd answers, and a ref
   held.fail("relay unavailable");
   await expect(sessions(page).getByRole("alert")).toHaveText("relay unavailable");
   await expect(sessionButton(page, "delete me")).toBeVisible();
+});
+
+test("a session created in a worktree runs in it, under Ox's worktree directory", async ({ ox: page, services }) => {
+  gitRepo(services.workspace);
+  await newSessionButton(page).click();
+  await expect(location(page)).toHaveValue("local");
+  await location(page).selectOption("worktree");
+  await prompt(page).fill("in a worktree");
+  await send(page).click();
+  await expect(heading(page)).toHaveText("in a worktree");
+  await expect(main(page).getByText(`${realpathSync(services.worktrees)}/`)).toBeVisible();
+});
+
+test("a failed worktree creation keeps the draft's text and its Worktree choice", async ({ ox: page }) => {
+  await newSession(page, "elsewhere");
+  await newSessionButton(page).click();
+  await location(page).selectOption("worktree");
+  await prompt(page).fill("not in a repository");
+  await sessionButton(page, "elsewhere").click();
+  await newSessionButton(page).click();
+  await expect(location(page)).toHaveValue("worktree");
+  await prompt(page).press("Enter");
+  await expect(main(page).getByRole("alert")).toContainText("not a git repository");
+  await expect(prompt(page)).toHaveValue("not in a repository");
+  await expect(location(page)).toHaveValue("worktree");
+});
+
+test("deleting a worktree session says it deletes the worktree and keeps the branch", async ({
+  ox: page,
+  services,
+}) => {
+  gitRepo(services.workspace);
+  await newSessionButton(page).click();
+  await location(page).selectOption("worktree");
+  await prompt(page).fill("delete my worktree");
+  await send(page).click();
+  await expect(replies(page)).toHaveText(["You said: delete my worktree"]);
+  await menuItem(await openMenu(sessionItem(page, "delete my worktree")), "Delete").click();
+  const dialog = page.getByRole("alertdialog", { name: "Delete session?" });
+  await expect(dialog).toHaveAccessibleDescription(
+    'This deletes "delete my worktree", its history, and its worktree. The branch and its commits are not deleted.',
+  );
+  await dialog.getByRole("button", { name: "Delete" }).click();
+  await expect(sessionButton(page, "delete my worktree")).toHaveCount(0);
 });
 
 test("on reconnect each session waits for its own settings", async ({ ox: page, services, context }) => {

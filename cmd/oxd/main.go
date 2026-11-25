@@ -31,15 +31,22 @@ func main() {
 	dbPath := flag.String("db", "", "override the database in the user state directory")
 	configPath := flag.String("config", "", "override the configuration in the user config directory")
 	urDir := flag.String("ur", "", "override Ur's directory in the user state directory")
+	worktreesDir := flag.String("worktrees", "", "override the session worktree directory in the user data directory")
 	parkAfter := flag.Duration("park-after", 5*time.Minute, "stop a session's harness process after it has been unused this long")
 	flag.Parse()
 	defaultPath(socketPath, paths.Socket)
 	defaultPath(dbPath, paths.Database)
 	defaultPath(configPath, paths.Config)
 	defaultPath(urDir, paths.Ur)
+	defaultPath(worktreesDir, paths.Worktrees)
 	// The forwarder runs in a session's workspace, so it needs an absolute
 	// socket path.
 	socket, err := absolute(*socketPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	// Git resolves a relative worktree path against the workspace.
+	worktrees, err := absolute(*worktreesDir)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -60,12 +67,12 @@ func main() {
 		log.Fatalf("ox-mcp not found beside oxd: %v", err)
 	}
 
-	if err := run(*dbPath, cfg, *parkAfter, harnesses, server.MCP{Forwarder: forwarder, Socket: socket}); err != nil {
+	if err := run(*dbPath, cfg, *parkAfter, harnesses, server.MCP{Forwarder: forwarder, Socket: socket}, worktrees); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(dbPath string, cfg *config.Config, parkAfter time.Duration, harnesses map[string]agent.Harness, mcp server.MCP) error {
+func run(dbPath string, cfg *config.Config, parkAfter time.Duration, harnesses map[string]agent.Harness, mcp server.MCP, worktrees string) error {
 	// Hold the socket until every session has stopped and every child
 	// process has exited. The store's lock on the database protects the
 	// history repair that loading the server does.
@@ -79,7 +86,7 @@ func run(dbPath string, cfg *config.Config, parkAfter time.Duration, harnesses m
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer st.Close()
-	s, err := server.New(st, cfg, parkAfter, harnesses, mcp)
+	s, err := server.New(st, cfg, parkAfter, harnesses, mcp, worktrees)
 	if err != nil {
 		return fmt.Errorf("load database: %w", err)
 	}

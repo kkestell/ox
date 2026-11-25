@@ -7,8 +7,10 @@ import {
   addWorkspace,
   clocked,
   expect,
+  gitRepo,
   hold,
   isRequest,
+  location,
   menuItem,
   model,
   newSession,
@@ -279,6 +281,19 @@ test("the file tree lists folders first and hides `.git`", async ({ ox: page, se
         - button "Makefile"
   `);
   await expect(entry(page, ".git")).toHaveCount(0);
+});
+
+test("a worktree session's file tree holds only committed files", async ({ ox: page, services }) => {
+  await showFiles(page);
+  gitRepo(services.workspace);
+  await newSessionButton(page).click();
+  await expect(entry(page, "untracked.txt")).toBeVisible();
+  await location(page).selectOption("worktree");
+  await prompt(page).fill("committed only");
+  await send(page).click();
+  await expect(replies(page)).toHaveText(["You said: committed only"]);
+  await expect(entry(page, "committed.txt")).toBeVisible();
+  await expect(entry(page, "untracked.txt")).toHaveCount(0);
 });
 
 clocked("each session keeps its own expanded folders", async ({ ox: page, services }) => {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -28,6 +29,7 @@ type session struct {
 	harness   string
 	workspace string       // the workspace's path
 	directory string       // where the harness runs
+	worktree  string       // the root of the session's worktree, or ""
 	child     *store.Child // nil for a top-level session
 	createdAt time.Time
 	ops       chan func()
@@ -59,6 +61,18 @@ type session struct {
 	parkTimer   *time.Timer // armed while the agent is parkable
 	ended       bool
 	toParent    *toParent // nil for a top-level session
+	// exiting holds the Reaped channels of dropped agents whose processes
+	// may still be running, so a delete waits for them.
+	exiting []<-chan struct{}
+	// deleting is the delete in progress, nil when none is.
+	deleting *deleting
+}
+
+// deleting is a delete waiting off the session's goroutine for the session's
+// processes to exit and its worktree to be removed, with the reply that
+// answers it.
+type deleting struct {
+	reply func(error)
 }
 
 // toParent is what a child keeps for its parent: the reports its parent has
@@ -151,7 +165,7 @@ func (sess *session) broadcastLabelLocked() {
 // or "".
 func (s *Server) newSession(record *store.Session, workspace, firstLine string) *session {
 	sess := &session{
-		server: s, id: record.ID, harness: record.Harness, workspace: workspace, directory: record.Directory, child: record.Child, createdAt: record.CreatedAt,
+		server: s, id: record.ID, harness: record.Harness, workspace: workspace, directory: record.Directory, worktree: record.Worktree, child: record.Child, createdAt: record.CreatedAt,
 		ops: make(chan func()), done: make(chan struct{}), archived: record.Archived, firstLine: firstLine, title: record.Title,
 		state:       agent.StateParked,
 		settings:    agent.Settings{Model: record.Model, Effort: record.Effort, PermissionMode: record.PermissionMode},
@@ -282,6 +296,8 @@ func (sess *session) armPark() {
 var (
 	errArchived        = errors.New("session is archived")
 	errSessionNotFound = errors.New("session not found")
+	errDeleting        = errors.New("session is being deleted")
+	errShuttingDown    = errors.New("daemon is shutting down")
 )
 
 // startForInput starts a parked session for an input, unless it is archived.
@@ -408,7 +424,7 @@ func (s *Server) setArchived(members []*session, archived bool) error {
 // every client. The caller holds s.mu.
 func (s *Server) setArchivedLocked(members []*session, archived bool) error {
 	if s.closed {
-		return errors.New("daemon is shutting down")
+		return errShuttingDown
 	}
 	ids := make([]string, len(members))
 	for i, m := range members {
@@ -434,6 +450,12 @@ func (sess *session) start() error {
 	start := sess.server.harnesses[sess.harness].Start
 	if start == nil {
 		return fmt.Errorf("unknown harness %q", sess.harness)
+	}
+	if sess.deleting != nil {
+		return errDeleting
+	}
+	if info, err := os.Stat(sess.directory); err != nil || !info.IsDir() {
+		return fmt.Errorf("session directory %s no longer exists", sess.directory)
 	}
 	a, err := start(agent.Options{
 		SessionID: sess.id,
@@ -463,30 +485,79 @@ func (sess *session) stop() {
 	sess.parked()
 }
 
-// parked drops the agent that has ended and tells every client.
+// parked drops the agent that has ended, keeping what tells when its
+// processes have exited, and tells every client.
 func (sess *session) parked() {
+	sess.exiting = slices.DeleteFunc(sess.exiting, func(reaped <-chan struct{}) bool {
+		select {
+		case <-reaped:
+			return true
+		default:
+			return false
+		}
+	})
+	sess.exiting = append(sess.exiting, sess.agent.Reaped())
 	sess.agent = nil
 	sess.update(agent.Update{Type: agent.UpdateParked, Time: time.Now()})
 }
 
-// destroy stops the agent, deletes the session, and removes it from every
-// client. It refuses while the session has children; a child is created only
-// on its parent's goroutine, so none appears while destroy runs.
-func (sess *session) destroy() error {
+// destroy stops the agent and puts the session into deleting, then waits off
+// the goroutine for every process the session started to exit and removes
+// its worktree, so the goroutine keeps answering meanwhile. finishDelete
+// takes the outcome back on the goroutine and replies. destroy refuses while
+// the session has children; a child is created only on its parent's
+// goroutine, which refuses while deleting, so none appears before the delete
+// finishes. Nothing starts the agent while it waits, since only the goroutine
+// starts it and it refuses while deleting.
+func (sess *session) destroy(reply func(error)) {
+	if sess.deleting != nil {
+		reply(errDeleting)
+		return
+	}
 	s := sess.server
 	s.mu.Lock()
 	children := s.children(sess)
 	s.mu.Unlock()
 	if len(children) > 0 {
-		return errors.New("session has child sessions")
+		reply(errors.New("session has child sessions"))
+		return
 	}
 	// The process stops first, so it records nothing after the events are gone.
 	if sess.agent != nil {
 		sess.stop()
 	}
-	if err := s.store.DeleteSession(sess.id); err != nil {
-		return err
+	exiting := sess.exiting
+	sess.exiting = nil
+	sess.deleting = &deleting{reply: reply}
+	id, workspace, worktree := sess.id, sess.workspace, sess.worktree
+	go func() {
+		for _, reaped := range exiting {
+			<-reaped
+		}
+		var err error
+		if worktree != "" {
+			err = removeWorktree(id, workspace, worktree)
+		}
+		if !sess.post(func() { sess.finishDelete(err) }) {
+			reply(errShuttingDown)
+		}
+	}()
+}
+
+// finishDelete ends the delete in progress: it deletes the session and
+// removes it from every client, or, when removing the worktree failed, leaves
+// the session parked and listed. Either way it replies.
+func (sess *session) finishDelete(err error) {
+	reply := sess.deleting.reply
+	sess.deleting = nil
+	if err == nil {
+		err = sess.server.store.DeleteSession(sess.id)
 	}
+	if err != nil {
+		reply(err)
+		return
+	}
+	s := sess.server
 	s.mu.Lock()
 	delete(s.sessions, sess.id)
 	for _, w := range s.workspaces {
@@ -497,7 +568,7 @@ func (sess *session) destroy() error {
 	}{sess.id})
 	s.mu.Unlock()
 	sess.ended = true
-	return nil
+	reply(nil)
 }
 
 func (sess *session) end() {
