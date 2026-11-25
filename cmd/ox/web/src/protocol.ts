@@ -83,6 +83,7 @@ export type Notification =
         harness: string;
         created_at: string;
         directory: string;
+        worktree?: string;
         child?: Child;
         state: SessionState;
       };
@@ -111,6 +112,7 @@ export type Methods = {
           harness: string;
           created_at: string;
           directory: string;
+          worktree?: string;
           child?: Child;
           archived?: boolean;
           state: SessionState;
@@ -122,7 +124,13 @@ export type Methods = {
   "workspace/list_folder": [FileRoot & { path: string }, { entries: FolderEntry[] }];
   "workspace/read_file": [FileRoot & { path: string }, { text: string }];
   "session/create": [
-    Omit<Settings, "effort"> & { effort?: string; session_id?: string; workspace_id: string; harness: string },
+    Omit<Settings, "effort"> & {
+      effort?: string;
+      session_id?: string;
+      workspace_id: string;
+      harness: string;
+      worktree?: boolean;
+    },
     { session_id: string; existing?: boolean },
   ];
   "session/get": [

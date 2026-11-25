@@ -1,5 +1,6 @@
 import { lstatSync } from "node:fs";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runStack } from "./stack.mjs";
 
@@ -20,7 +21,8 @@ function freePort() {
 // state, and socket under the checkout's .state and serves on a free port, so
 // it runs beside the main checkout's stack and the user's Ox. The paths go by
 // flag rather than XDG variables, so the Claude sessions oxd starts, and their
-// tools, keep the user's environment.
+// tools, keep the user's environment. Its session worktrees go outside every
+// checkout, since oxd refuses a worktree directory inside the repository.
 const checkout = join(import.meta.dirname, "../../..");
 const oxdArgs = [];
 const oxArgs = [];
@@ -29,7 +31,13 @@ if (lstatSync(join(checkout, ".git")).isFile()) {
   const state = join(checkout, ".state");
   const config = `-config=${join(state, "config.json")}`;
   const socket = `-socket=${join(state, "oxd.sock")}`;
-  oxdArgs.push(config, socket, `-db=${join(state, "ox.db")}`, `-ur=${join(state, "ur")}`);
+  oxdArgs.push(
+    config,
+    socket,
+    `-db=${join(state, "ox.db")}`,
+    `-ur=${join(state, "ur")}`,
+    `-worktrees=${join(tmpdir(), "ox-dev-worktrees")}`,
+  );
   oxArgs.push(config, socket);
   port = await freePort();
 }

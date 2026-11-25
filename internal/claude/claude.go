@@ -23,8 +23,9 @@ import (
 
 type process struct {
 	cmd    *exec.Cmd
-	output *os.File // the read end of Claude's stdout
-	stderr *os.File // the read end of Claude's stderr
+	output *os.File      // the read end of Claude's stdout
+	stderr *os.File      // the read end of Claude's stderr
+	reaped chan struct{} // closed once Claude has exited and been reaped
 }
 
 // systemPrompt is the instructions appended to Claude's system prompt: Ox's
@@ -154,7 +155,7 @@ func startProcess(workspace, oxSessionID, sessionID string, resume bool, setting
 	}
 	stderrTail := make(chan string, 1)
 	go logStderr(stderr, oxSessionID, stderrTail)
-	p := &process{cmd: cmd, output: stdout, stderr: stderr}
+	p := &process{cmd: cmd, output: stdout, stderr: stderr, reaped: make(chan struct{})}
 	captured := make(chan agent.Event)
 	go p.read(stderrTail, captured)
 	go deliverOutput(captured, events, done)
@@ -224,6 +225,7 @@ func (p *process) read(stderrTail <-chan string, captured chan<- agent.Event) {
 	go func() {
 		err := p.cmd.Wait()
 		children.Done(p.cmd)
+		close(p.reaped)
 		p.output.SetReadDeadline(time.Now().Add(time.Second))
 		p.stderr.SetReadDeadline(time.Now().Add(time.Second))
 		exited <- err

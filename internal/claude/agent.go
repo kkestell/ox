@@ -434,3 +434,9 @@ func (a *Agent) Exited() bool {
 	_, exited := a.phase.(exited)
 	return exited
 }
+
+// Reaped is closed once Claude has exited. Claude ends its Bash tool
+// processes when it exits on SIGTERM.
+func (a *Agent) Reaped() <-chan struct{} {
+	return a.proc.reaped
+}

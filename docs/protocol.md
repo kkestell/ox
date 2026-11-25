@@ -45,7 +45,10 @@ implementations. The daemon stores workspaces, sessions, and session history in
 unset; `-db /absolute/path/to/ox.db` chooses a different file. They outlive the
 daemon. Each workspace and session records when it was created, as `created_at`,
 an RFC 3339 timestamp. Each session has a `directory`, where its harness runs,
-fixed at creation: a top-level session's is its workspace's directory.
+fixed at creation: a top-level session's is its workspace's directory, or that
+directory's copy in its worktree. A top-level session created with
+[`worktree`](#sessioncreate) has a `worktree`, the physical path of the git
+worktree's root, fixed at creation; a session without one has no `worktree`.
 
 A child session is one a session's Claude started with
 [`create_session`](#tools). It has a `child` object, fixed at creation:
@@ -127,7 +130,8 @@ and `tailscale_ip` when it is set.
 
 Requires `path`, an absolute path to an existing directory. Registers the
 directory and returns its workspace ID. An already registered path returns the
-existing ID.
+existing ID. A path inside a session's worktree returns `-32602` `path is inside
+a session's worktree`.
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"workspace/create","params":{"path":"/Users/kyle/src/ox"}}
@@ -140,11 +144,12 @@ existing ID.
 ### `workspace/list`
 
 Returns every workspace with its sessions, each oldest first. Each session has
-its `label`, as [`list_sessions`](#tools) gives it, its `directory`, its
-`state`, as the [`state` and `parked` updates](#session-updates) last published
-it, a child session its `child` object, and an archived session `"archived":
-true`. The list follows every `state` and `parked` update it reflects and
-precedes every one it does not. A session's settings come from `session/get`.
+its `label`, as [`list_sessions`](#tools) gives it, its `directory`, a worktree
+session its `worktree`, its `state`, as the
+[`state` and `parked` updates](#session-updates) last published it, a child
+session its `child` object, and an archived session `"archived": true`. The list
+follows every `state` and `parked` update it reflects and precedes every one it
+does not. A session's settings come from `session/get`.
 
 ```json
 {"jsonrpc":"2.0","id":2,"method":"workspace/list","params":{}}
@@ -238,11 +243,33 @@ after it. A setting the [configuration](#configuration) does not offer returns
 | `model`           | Yes      | One of the harness's models; passed to Claude's `--model` flag.                                                                                                   |
 | `effort`          | Yes      | One of the model's effort levels; passed to Claude's `--effort` flag. A model without effort levels takes an empty or omitted value, which leaves the flag unset. |
 | `permission_mode` | Yes      | One of the harness's permission modes; passed to Claude's `--permission-mode` flag.                                                                               |
+| `worktree`        | No       | `true` runs the session in a git worktree of its own.                                                                                                             |
 
 A repeat using the same ID in the same workspace returns the existing ID and
 `"existing":true`. It leaves the session and its settings intact. An ID already
 used by another workspace is refused. Each process starts with the session's
 stored settings.
+
+With `worktree`, the daemon checks the request, then makes a worktree of the
+workspace's repository with git: under a fresh name, `<name>` in the worktree
+directory, on a new branch `ox/<name>` from the workspace's `HEAD`, with git's
+hooks off. The worktree directory is `ox/worktrees` beneath `$XDG_DATA_HOME`, or
+beneath `~/.local/share` when that is unset; `-worktrees /absolute/path` chooses
+another. The session's `directory` is the worktree's copy of the workspace's
+directory. Only then does the daemon decide whether the session can be created:
+a daemon shutting down, a workspace removed meanwhile, and a session created
+meanwhile with the same ID each answer as they do without `worktree`, including
+`"existing":true`. Every creation that does not record the session removes its
+worktree and branch before it replies. These return `-32000` with git's reason
+or the daemon's, and leave no worktree or branch:
+
+- a workspace outside any git repository, such as `create worktree: fatal: not a
+  git repository (or any of the parent directories): .git`, or a repository
+  without a commit;
+- a worktree directory inside one of the repository's worktrees: `worktree
+  directory <worktrees> is inside the repository at <path>`;
+- a workspace directory that is not in the worktree, as one holding only
+  untracked files: `<path in the repository> is not in the worktree`.
 
 ```json
 {"jsonrpc":"2.0","id":3,"method":"session/create","params":{"workspace_id":"workspace-id","harness":"claude","model":"claude-haiku-5-5","effort":"low","permission_mode":"manual"}}
@@ -265,15 +292,16 @@ total after decoding, returns `-32602`. The daemon stores each image with the
 session under an image ID, which the prompt's updates carry and
 [`session/image`](#sessionimage) serves; Claude receives the images before the
 text. A parked session first starts a process; a process that cannot be launched
-returns an operation error. Success means the prompt was written to Claude, or
-is held until Claude has started or a configuration has ended; its output and
-eventual result arrive through `session/update` notifications. A start that
-fails, within a one-minute initialization limit, drops the prompt with
-`prompt_cancelled` and reports why with `exited`. For Claude, a prompt whose
-first word is `/model` or `/effort` is refused with `-32602`, without starting a
-parked session. Use [`session/configure`](#sessionconfigure) to change those
-settings. An archived session refuses the prompt with `-32000` `session is
-archived`.
+returns an operation error, and a session whose directory no longer exists
+returns `-32000` `session directory <directory> no longer exists`. Success means
+the prompt was written to Claude, or is held until Claude has started or a
+configuration has ended; its output and eventual result arrive through
+`session/update` notifications. A start that fails, within a one-minute
+initialization limit, drops the prompt with `prompt_cancelled` and reports why
+with `exited`. For Claude, a prompt whose first word is `/model` or `/effort` is
+refused with `-32602`, without starting a parked session. Use
+[`session/configure`](#sessionconfigure) to change those settings. An archived
+session refuses the prompt with `-32000` `session is archived`.
 
 ```json
 {"jsonrpc":"2.0","id":4,"method":"session/send","params":{"session_id":"session-id","text":"Explain this repository."}}
@@ -432,10 +460,27 @@ When no turn is running, Claude's interrupt ends with the cancellations and
 
 Requires `session_id`. Removes the session from the daemon. A running process
 receives SIGTERM so Claude can clean up its tool processes, and is killed if it
-has not exited after ten seconds; the destroy does not wait for it. Pending
-approvals are withdrawn, and an active prompt receives an `exited` update before
-the destroy response. Claude's transcript stays on disk. A session with children
-returns `-32000` `session has child sessions`.
+has not exited after ten seconds; the destroy waits until every process the
+session started, including one an earlier park or archive stopped, has exited.
+Pending approvals are withdrawn, and an active prompt receives an `exited`
+update before the destroy response. Claude's transcript stays on disk. A session
+with children returns `-32000` `session has child sessions`. While a destroy
+waits, the session answers other requests, and refuses a prompt, a message, a
+child, and another destroy with `-32000` `session is being deleted`.
+
+A worktree session's worktree is then removed with git, without force; its
+branch stays. Files git ignores go with it. These return `-32000` and leave the
+session parked and listed:
+
+- untracked files or uncommitted changes: `worktree has uncommitted changes`;
+- a `HEAD` on no branch: `worktree HEAD is not on a branch`;
+- any refusal of git's own, such as a populated submodule, with git's reason.
+
+A worktree whose folder is gone has its registration cleared, and a folder git
+no longer registers is left in place. A worktree whose workspace folder is gone
+is still removed; when both are gone, its registration is left for git to prune.
+A destroy that fails after the removal leaves the session listed, and a repeated
+destroy finishes it.
 
 ```json
 {"jsonrpc":"2.0","id":9,"method":"session/destroy","params":{"session_id":"session-id"}}
@@ -579,16 +624,16 @@ notifications precede the corresponding `idle` or `exited` update:
 
 Every connection is told when workspaces and sessions come and go:
 
-| Method               | `params`                                                                                                                                                           | Meaning                                                                                                                                                                                                        |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `workspace/created`  | `workspace_id`, `path`, `created_at`                                                                                                                               | A workspace was registered.                                                                                                                                                                                    |
-| `workspace/removed`  | `workspace_id`                                                                                                                                                     | A workspace was removed.                                                                                                                                                                                       |
-| `session/created`    | `session_id`, `workspace_id`, `label` (a child's title, or the first 8 characters of its ID), `harness`, `created_at`, `directory`, `state`, and a child's `child` | A session was created: a top-level session `parked`, a child `idle` and started with its first message, whose updates follow.                                                                                  |
-| `session/labeled`    | `session_id`, `label`                                                                                                                                              | A top-level session took the first prompt the user sent it, and `label` is its first line, shortened to 48 characters; sent again with the title the titling model generated from that prompt once it arrives. |
-| `session/configured` | `session_id`, `model`, `effort`, `permission_mode`                                                                                                                 | A session's settings changed, by `session/configure` or by the harness itself, such as Claude leaving plan mode; the fields are the settings the session now uses.                                             |
-| `session/destroyed`  | `session_id`                                                                                                                                                       | A session was destroyed, after its last update.                                                                                                                                                                |
-| `session/archived`   | `session_id`                                                                                                                                                       | A session was archived, before the `parked` update that stops its process.                                                                                                                                     |
-| `session/unarchived` | `session_id`                                                                                                                                                       | A session was unarchived.                                                                                                                                                                                      |
+| Method               | `params`                                                                                                                                                                                            | Meaning                                                                                                                                                                                                        |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `workspace/created`  | `workspace_id`, `path`, `created_at`                                                                                                                                                                | A workspace was registered.                                                                                                                                                                                    |
+| `workspace/removed`  | `workspace_id`                                                                                                                                                                                      | A workspace was removed.                                                                                                                                                                                       |
+| `session/created`    | `session_id`, `workspace_id`, `label` (a child's title, or the first 8 characters of its ID), `harness`, `created_at`, `directory`, `state`, a worktree session's `worktree`, and a child's `child` | A session was created: a top-level session `parked`, a child `idle` and started with its first message, whose updates follow.                                                                                  |
+| `session/labeled`    | `session_id`, `label`                                                                                                                                                                               | A top-level session took the first prompt the user sent it, and `label` is its first line, shortened to 48 characters; sent again with the title the titling model generated from that prompt once it arrives. |
+| `session/configured` | `session_id`, `model`, `effort`, `permission_mode`                                                                                                                                                  | A session's settings changed, by `session/configure` or by the harness itself, such as Claude leaving plan mode; the fields are the settings the session now uses.                                             |
+| `session/destroyed`  | `session_id`                                                                                                                                                                                        | A session was destroyed, after its last update.                                                                                                                                                                |
+| `session/archived`   | `session_id`                                                                                                                                                                                        | A session was archived, before the `parked` update that stops its process.                                                                                                                                     |
+| `session/unarchived` | `session_id`                                                                                                                                                                                        | A session was unarchived.                                                                                                                                                                                      |
 
 ```json
 {"jsonrpc":"2.0","method":"session/created","params":{"session_id":"session-id","workspace_id":"workspace-id","label":"session-","harness":"claude","created_at":"2026-11-18T19:53:48.416Z","directory":"/Users/kyle/src/ox","state":"parked"}}
@@ -707,8 +752,12 @@ Refusals, in the order they are checked:
   exists`;
 - the caller gone first: `session not found`;
 - an archived caller: `session is archived`;
+- a caller being deleted: `session is being deleted`;
 - a caller already `max_child_depth` levels below a top-level session: `child
   sessions nest at most <max_child_depth> deep`;
+- `dir` inside the worktree of a session other than the caller's top-level
+  ancestor, whatever symlinks lead there: `dir is in another session's
+  worktree`;
 - a harness that cannot be launched: the launch error; no child is created;
 - the daemon shutting down: `daemon is shutting down`; no child is created.
 

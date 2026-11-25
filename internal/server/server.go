@@ -24,6 +24,7 @@ type Server struct {
 	harnesses map[string]agent.Harness
 	parkAfter time.Duration
 	mcp       MCP
+	worktrees string // the absolute directory new worktrees are made in
 	// ask is the titling harness's Ask.
 	ask func(ctx context.Context, model, effort, instructions, text string) (string, error)
 
@@ -36,6 +37,11 @@ type Server struct {
 	workspaces []*workspace
 	sessions   map[string]*session
 	closed     bool
+
+	// creations counts the worktree creations admitted under mu while not
+	// closed that have not replied, so Close waits for each to publish or
+	// discard its worktree.
+	creations sync.WaitGroup
 
 	connsMu sync.Mutex // guards conns; taken after mu
 	conns   map[*conn]struct{}
@@ -52,7 +58,7 @@ type workspace struct {
 // socket it reaches oxd on.
 type MCP struct{ Forwarder, Socket string }
 
-func New(st *store.Store, cfg *config.Config, parkAfter time.Duration, harnesses map[string]agent.Harness, mcp MCP) (*Server, error) {
+func New(st *store.Store, cfg *config.Config, parkAfter time.Duration, harnesses map[string]agent.Harness, mcp MCP, worktrees string) (*Server, error) {
 	titler := harnesses[cfg.Titling.Harness].Ask
 	if titler == nil {
 		return nil, fmt.Errorf("titling harness %q cannot title sessions", cfg.Titling.Harness)
@@ -62,7 +68,7 @@ func New(st *store.Store, cfg *config.Config, parkAfter time.Duration, harnesses
 		return nil, err
 	}
 	s := &Server{
-		store: st, config: cfg, harnesses: harnesses, parkAfter: parkAfter, mcp: mcp, ask: titler,
+		store: st, config: cfg, harnesses: harnesses, parkAfter: parkAfter, mcp: mcp, worktrees: worktrees, ask: titler,
 		sessions: make(map[string]*session), conns: make(map[*conn]struct{}),
 	}
 	for _, w := range stored {
@@ -166,6 +172,7 @@ func (s *Server) Close() {
 	for _, sess := range sessions {
 		<-sess.done
 	}
+	s.creations.Wait()
 }
 
 // workspace returns the workspace with id. The caller holds s.mu.
@@ -183,6 +190,17 @@ func (s *Server) workspaceOf(sess *session) *workspace {
 	for _, w := range s.workspaces {
 		if slices.Contains(w.sessions, sess) {
 			return w
+		}
+	}
+	return nil
+}
+
+// worktreeOwnerLocked returns the session whose worktree holds the physical
+// path dir, or nil. The caller holds s.mu.
+func (s *Server) worktreeOwnerLocked(dir string) *session {
+	for _, sess := range s.sessions {
+		if sess.worktree != "" && within(dir, sess.worktree) {
+			return sess
 		}
 	}
 	return nil
@@ -210,6 +228,15 @@ func (s *Server) depthLocked(sess *session) int {
 		depth++
 	}
 	return depth
+}
+
+// topLocked is sess's top-level ancestor, or sess itself when it is
+// top-level. sess must be a member, as for depthLocked. The caller holds s.mu.
+func (s *Server) topLocked(sess *session) *session {
+	for sess.child != nil {
+		sess = s.sessions[sess.child.ParentID]
+	}
+	return sess
 }
 
 func (s *Server) broadcast(method string, params any) {

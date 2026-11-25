@@ -146,6 +146,44 @@ func TestImagesDeletedWithSession(t *testing.T) {
 	}
 }
 
+// A session's worktree is read with it and goes with it; a child cannot have
+// one.
+func TestWorktrees(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "ox.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.AddWorkspace(&Workspace{ID: "w", Path: "/w", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSession("w", &Session{ID: "owner", Directory: "/t/x/sub", Worktree: "/t/x", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSession("w", &Session{ID: "plain", Directory: "/w", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	child := &Session{ID: "child", Directory: "/t/x/sub", Worktree: "/t/x", CreatedAt: time.Now(),
+		Child: &Child{ParentID: "owner", Name: "worker", Title: "Worker"}}
+	if err := st.AddSession("w", child); err == nil {
+		t.Fatal("a child with a worktree was stored")
+	}
+	workspaces, err := st.Workspaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessions := workspaces[0].Sessions; len(sessions) != 2 || sessions[0].Worktree != "/t/x" || sessions[1].Worktree != "" {
+		t.Fatalf("Workspaces read %+v, %+v", sessions[0], sessions[len(sessions)-1])
+	}
+	if err := st.DeleteSession("owner"); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	if err := st.db.QueryRow(`SELECT count(*) FROM worktrees`).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("%d worktrees outlived their session: %v", left, err)
+	}
+}
+
 // A session's generated title is read with it and goes with it.
 func TestTitles(t *testing.T) {
 	st, err := Open(filepath.Join(t.TempDir(), "ox.db"))
