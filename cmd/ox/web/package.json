@@ -6,7 +6,7 @@
     "build": "tsc && vite build",
     "lint": "biome check . && tsc -p e2e",
     "fix": "biome check --write .",
-    "e2e": "playwright test"
+    "e2e": "playwright install --only-shell chromium && playwright test"
   },
   "dependencies": {
     "@shikijs/langs": "^4.6.0",

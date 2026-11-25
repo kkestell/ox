@@ -7,5 +7,5 @@ export default defineConfig({
   fullyParallel: true,
   workers: "100%",
   timeout: 30_000,
-  use: { browserName: "chromium", channel: "chrome", headless: true, trace: "retain-on-failure" },
+  use: { browserName: "chromium", headless: true, trace: "retain-on-failure" },
 });

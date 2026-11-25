@@ -49,7 +49,7 @@ Use `make dev` to work on the [web client](../../../docs/architecture.md#web-ui)
   beside the user's agents, run the worktree's `bin/ox` against the user's
   `oxd` socket on a spare port of the tailnet address, with a copy of the
   configuration that omits `tailscale_ip`.
-- `make e2e` runs the Playwright specs in `e2e` in headless Chrome against
+- `make e2e` runs the Playwright specs in `e2e` in headless Chromium against
   `ox` and `oxd` with the fake harness. Each test runs its own `oxd` and relay
   on a temporary socket, database, and port, through the `services` fixture
   in `e2e/ui.ts`. `approval.spec.ts` uses Haiku and runs with `make live`.
