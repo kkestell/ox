@@ -27,7 +27,7 @@ func Ask(ctx context.Context, model, effort, instructions, text string) (string,
 	}
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Dir = os.TempDir()
-	cmd.Env = subscriptionEnv(cmd)
+	cmd.Env = launchEnv(cmd)
 	cmd.Stdin = strings.NewReader(text)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

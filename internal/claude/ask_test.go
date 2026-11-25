@@ -10,16 +10,19 @@ import (
 	"time"
 )
 
-// Ask runs Claude once without tools, MCP servers, or an API key, with the
-// text on stdin, and returns the result's text or the reason it failed.
+// Ask runs Claude once without tools, MCP servers, an API key, or an effort
+// override, with the text on stdin, and returns the result's text or the
+// reason it failed.
 func TestAsk(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+	t.Setenv("CLAUDE_CODE_EFFORT_LEVEL", "high")
 	dir := t.TempDir()
-	args, stdin, key := filepath.Join(dir, "args"), filepath.Join(dir, "stdin"), filepath.Join(dir, "key")
+	args, stdin, key, effort := filepath.Join(dir, "args"), filepath.Join(dir, "stdin"), filepath.Join(dir, "key"), filepath.Join(dir, "effort")
 	script(t, "#!/bin/sh\n"+
 		`for a in "$@"; do printf '%s\n' "$a"; done > `+args+"\n"+
 		"cat > "+stdin+"\n"+
 		`printf '%s' "${ANTHROPIC_API_KEY-unset}" > `+key+"\n"+
+		`printf '%s' "${CLAUDE_CODE_EFFORT_LEVEL-unset}" > `+effort+"\n"+
 		`echo '{"type":"result","subtype":"success","is_error":false,"result":"A title"}'`+"\n")
 	reply, err := Ask(t.Context(), "claude-haiku-5-5", "low", "Write a title.", "the prompt")
 	if err != nil || reply != "A title" {
@@ -50,6 +53,9 @@ func TestAsk(t *testing.T) {
 	}
 	if got := read(key); got != "unset" {
 		t.Errorf("ANTHROPIC_API_KEY = %q", got)
+	}
+	if got := read(effort); got != "unset" {
+		t.Errorf("CLAUDE_CODE_EFFORT_LEVEL = %q", got)
 	}
 
 	for _, c := range []struct{ name, script, want string }{
