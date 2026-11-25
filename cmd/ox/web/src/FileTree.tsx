@@ -1,6 +1,8 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, For, Match, Show, Switch, untrack } from "solid-js";
-import { directoryName, type SessionControl, useOx } from "./ox";
+import { Changes } from "./Changes";
+import { type SessionControl, useOx } from "./ox";
+import type { Tab } from "./Panels";
 import { createPoll } from "./poll";
 import type { FileRoot, FolderEntry } from "./protocol";
 
@@ -14,13 +16,15 @@ const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "bas
 const byFolderThenName = (a: FolderEntry, b: FolderEntry) =>
   Number(b.folder) - Number(a.folder) || collator.compare(a.name, b.name);
 
-// FileTree shows the directory beneath root. Each expanded folder lists itself
-// when it appears and on each tick of the page's clock, so the page asks only
-// for the folders it shows.
+// FileTree shows the directory beneath root, under the Files tab, or its
+// changes, under the Changes tab. Each expanded folder lists itself when it
+// appears and on each tick of the page's clock, so the page asks only for the
+// folders it shows.
 export function FileTree(props: {
   root: FileRoot;
-  directory: string;
   control: SessionControl;
+  tab: Tab;
+  onTab(tab: Tab): void;
   width?: number;
   toggles?: JSX.Element;
   onOpen(): void;
@@ -38,13 +42,36 @@ export function FileTree(props: {
       style={{ width: props.width === undefined ? undefined : `${props.width}px` }}
     >
       <header>
-        <h2>{directoryName(props.directory)}</h2>
+        <div role="tablist" aria-label="View">
+          <TabButton tab="files" label="Files" selected={props.tab} onTab={(tab) => props.onTab(tab)} />
+          <TabButton tab="changes" label="Changes" selected={props.tab} onTab={(tab) => props.onTab(tab)} />
+        </div>
         {props.toggles}
       </header>
-      <div class="tree">
-        <Folder tree={tree} path="" depth={0} />
-      </div>
+      <Show
+        when={props.tab === "changes"}
+        fallback={
+          <div role="tabpanel" aria-label="Files" class="tree">
+            <Folder tree={tree} path="" depth={0} />
+          </div>
+        }
+      >
+        <Changes root={tree.root} control={props.control} onOpen={() => props.onOpen()} />
+      </Show>
     </aside>
+  );
+}
+
+function TabButton(props: { tab: Tab; label: string; selected: Tab; onTab(tab: Tab): void }) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={props.selected === props.tab ? "true" : "false"}
+      onClick={() => props.onTab(props.tab)}
+    >
+      {props.label}
+    </button>
   );
 }
 

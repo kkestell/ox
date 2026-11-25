@@ -1722,7 +1722,7 @@ func TestWorkspaceFiles(t *testing.T) {
 			t.Errorf("%s %v: %.200s %+v, want error %d %q", method, params, response.Result, response.Error, code, message)
 		}
 	}
-	for _, method := range []string{"workspace/list_folder", "workspace/read_file"} {
+	for _, method := range []string{"workspace/list_folder", "workspace/read_file", "workspace/list_changes"} {
 		refusedParams(method, map[string]string{"workspace_id": "w", "session_id": "s", "path": "notes"}, -32602,
 			"exactly one of session_id and workspace_id is required")
 		refusedParams(method, map[string]string{"path": "notes"}, -32602, "exactly one of session_id and workspace_id is required")

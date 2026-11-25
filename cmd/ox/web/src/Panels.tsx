@@ -7,11 +7,15 @@ const narrowQuery = "(max-width: 767px)";
 
 type Drawer = "sessions" | "files";
 
+// Tab is what the file tree's panel shows: the tree or the changes.
+export type Tab = "files" | "changes";
+
 // createPanels holds which of the page's side panels show, for the life of the
 // page. The wide layout shows each panel at its own width while its flag is
 // set; the narrow layout shows at most one, as a drawer over the page, starting
 // with drawerAtLoad. Crossing the breakpoint closes the drawer, and leaves the
-// wide layout's panels as they were.
+// wide layout's panels as they were. The file tree's panel shows the same tab
+// for every session.
 export function createPanels(drawerAtLoad: Drawer | undefined) {
   const media = matchMedia(narrowQuery);
   const [narrow, setNarrow] = createSignal(media.matches);
@@ -20,6 +24,7 @@ export function createPanels(drawerAtLoad: Drawer | undefined) {
   const [right, setRight] = createSignal(false);
   const [leftWidth, setLeftWidth] = createSignal(288);
   const [rightWidth, setRightWidth] = createSignal(288);
+  const [tab, setTab] = createSignal<Tab>("files");
   onSettled(() => {
     const follow = () => {
       setNarrow(media.matches);
@@ -41,6 +46,8 @@ export function createPanels(drawerAtLoad: Drawer | undefined) {
     rightWidth,
     setLeftWidth,
     setRightWidth,
+    tab,
+    setTab,
   };
 }
 

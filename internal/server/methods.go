@@ -43,6 +43,8 @@ func (s *Server) handle(reply replyFunc, request jsonrpc.Request) {
 		s.listFolder(reply, id, params)
 	case "workspace/read_file":
 		s.readFile(reply, id, params)
+	case "workspace/list_changes":
+		s.listChanges(reply, id, params)
 	case "harness/list":
 		reply(jsonrpc.Success(id, s.config))
 	case "session/create":
@@ -240,27 +242,27 @@ type fileParams struct {
 	Path        string `json:"path"`
 }
 
-// fileRoot returns the directory a file request reads beneath: its session's
-// directory, or its workspace's path. On failure it returns the error
-// response instead.
-func (s *Server) fileRoot(id json.RawMessage, input fileParams) (string, *jsonrpc.Response) {
+// fileRoot returns the directory a file request reads beneath, its
+// session's directory or its workspace's path, and the workspace's path. On
+// failure it returns the error response instead.
+func (s *Server) fileRoot(id json.RawMessage, input fileParams) (dir, workspace string, failed *jsonrpc.Response) {
 	if (input.SessionID == "") == (input.WorkspaceID == "") {
-		return "", invalidParams(id, "exactly one of session_id and workspace_id is required")
+		return "", "", invalidParams(id, "exactly one of session_id and workspace_id is required")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if input.SessionID != "" {
 		sess := s.sessions[input.SessionID]
 		if sess == nil {
-			return "", sessionNotFound(id)
+			return "", "", sessionNotFound(id)
 		}
-		return sess.directory, nil
+		return sess.directory, sess.workspace, nil
 	}
 	w := s.workspace(input.WorkspaceID)
 	if w == nil {
-		return "", jsonrpc.Failure(id, notFound, "workspace not found")
+		return "", "", jsonrpc.Failure(id, notFound, "workspace not found")
 	}
-	return w.path, nil
+	return w.path, w.path, nil
 }
 
 // listFolder lists a folder in a session's or workspace's directory. The
@@ -275,7 +277,7 @@ func (s *Server) listFolder(reply replyFunc, id, params json.RawMessage) {
 		reply(invalidParams(id, "path must be relative to the directory"))
 		return
 	}
-	dir, failed := s.fileRoot(id, input)
+	dir, _, failed := s.fileRoot(id, input)
 	if failed != nil {
 		reply(failed)
 		return
@@ -303,7 +305,7 @@ func (s *Server) readFile(reply replyFunc, id, params json.RawMessage) {
 		reply(invalidParams(id, "path must be relative to the directory"))
 		return
 	}
-	dir, failed := s.fileRoot(id, input)
+	dir, _, failed := s.fileRoot(id, input)
 	if failed != nil {
 		reply(failed)
 		return
@@ -316,6 +318,28 @@ func (s *Server) readFile(reply replyFunc, id, params json.RawMessage) {
 	reply(jsonrpc.Success(id, struct {
 		Text string `json:"text"`
 	}{text}))
+}
+
+// listChanges lists the changed files in a session's or workspace's
+// directory. Git runs outside s.mu, so a large repository holds up no other
+// request.
+func (s *Server) listChanges(reply replyFunc, id, params json.RawMessage) {
+	var input fileParams
+	if err := json.Unmarshal(params, &input); err != nil {
+		reply(invalidParams(id, "exactly one of session_id and workspace_id is required"))
+		return
+	}
+	dir, workspace, failed := s.fileRoot(id, input)
+	if failed != nil {
+		reply(failed)
+		return
+	}
+	result, err := listChanges(workspace, dir)
+	if err != nil {
+		reply(failure(id, err))
+		return
+	}
+	reply(jsonrpc.Success(id, result))
 }
 
 // created is session/create's result.

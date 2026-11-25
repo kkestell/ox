@@ -227,6 +227,52 @@ directory.
 {"jsonrpc":"2.0","id":5,"result":{"text":"module github.com/kkestell/ox\n"}}
 ```
 
+### `workspace/list_changes`
+
+Requires exactly one of `session_id` or `workspace_id`, which names the
+directory, as for [`workspace/list_folder`](#workspacelist_folder). Returns the
+files in the directory that differ from its base, with their diffs.
+
+The base is where the directory's branch left the workspace's branch: the merge
+base of the directory's `HEAD` and the workspace's `HEAD`. For a worktree
+session it is the commit the worktree forked from; for a session in the
+workspace directory, and for a workspace, it is `HEAD` itself, so only
+uncommitted edits and untracked files show. In a repository with no commits, the
+base is the empty tree, so every file shows as added. The listing counts commits
+since the base, uncommitted edits, and untracked files Git does not ignore, and
+leaves out files outside the directory. A renamed file shows as its old path
+deleted and its new path added. Listing writes nothing in the repository.
+
+The result holds `branch`, the directory's current branch, omitted when `HEAD`
+is detached, and `files`, sorted by `path`. Each file has:
+
+| Field    | Meaning                                                                                                                                                                    |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `path`   | The file's slash-separated path relative to the directory, as `workspace/read_file` takes it.                                                                              |
+| `status` | `added`, `modified`, or `deleted`.                                                                                                                                         |
+| `hunks`  | The diff's hunks, three lines of context around each change; `null` exactly when `reason` is present.                                                                      |
+| `reason` | Why the diff is not shown: `file is binary`, `diff is larger than 1 MiB`, `file is not UTF-8 text`, or why an untracked file cannot be read, as for `workspace/read_file`. |
+
+Each hunk has `old_start` and `new_start`, the line numbers where it starts in
+the base and in the directory, and `lines`, each keeping Git's one-character
+prefix: a space for context, `-` for a removed line, `+` for an added one. An
+untracked file is one hunk of added lines starting at line 1, and an empty one
+has no hunks.
+
+The selector errors are those of `workspace/list_folder`. A directory outside a
+Git repository returns `-32000` `not a git repository`, and one whose branch
+shares no commit with the workspace's returns `-32000` `no commit in common with
+the workspace's branch`. Any other Git failure returns `-32000` with Git's
+reason.
+
+```json
+{"jsonrpc":"2.0","id":6,"method":"workspace/list_changes","params":{"session_id":"session-id"}}
+```
+
+```json
+{"jsonrpc":"2.0","id":6,"result":{"branch":"ox/abc","files":[{"path":"go.mod","status":"modified","hunks":[{"old_start":1,"new_start":1,"lines":[" module github.com/kkestell/ox","-go 1.26","+go 1.27"]}]},{"path":"logo.png","status":"added","hunks":null,"reason":"file is binary"}]}}
+```
+
 ## Session methods
 
 ### `session/create`

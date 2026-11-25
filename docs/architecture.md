@@ -474,3 +474,7 @@ under `.state`, serves on a free port, and prints the URL.
   [`workspace/read_file`](protocol.md#workspaceread_file) on the same 1-second
   clock, keyed by selection and path so rendered text always matches the open
   file.
+- **Changes:** The file tree's panel shows the tree or the changes by a tab held
+  in the page's layout. While the Changes tab shows, it polls
+  [`workspace/list_changes`](protocol.md#workspacelist_changes) on the same
+  1-second clock, keyed by selection.

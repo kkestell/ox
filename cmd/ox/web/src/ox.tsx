@@ -776,6 +776,7 @@ function createOx() {
     },
     listFolder: (root: FileRoot, path: string) => connection.rpc("workspace/list_folder", { ...root, path }),
     readFile: (root: FileRoot, path: string) => connection.rpc("workspace/read_file", { ...root, path }),
+    listChanges: (root: FileRoot) => connection.rpc("workspace/list_changes", root),
     control,
     release,
     destroy: (id: string) => requestFor(id, "destroy"),
