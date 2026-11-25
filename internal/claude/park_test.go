@@ -1,9 +1,12 @@
 package claude
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/kkestell/ox/internal/agent"
 )
 
 func TestParkableFollowsActivity(t *testing.T) {
@@ -84,5 +87,45 @@ func TestTurnWithoutStopHookKeepsSchedules(t *testing.T) {
 	failedTurn(deleted, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"CronDelete","input":{"id":"c1"}}]}}`)
 	if !deleted.Parkable() {
 		t.Fatal("a CronDelete call in a failed turn kept a fresh agent from parking")
+	}
+}
+
+// Claude restores only the jobs of main-thread CronCreate calls, so a resumed
+// agent waits for a Stop report only when the session's history has one.
+func TestResumeHoldsSchedulesOnlyAfterCronCreate(t *testing.T) {
+	resumed := func(toolNames ...string) *Agent {
+		a := newAgent(newWriter(new(bytes.Buffer)), make(chan agent.Event), make(chan struct{}), nil, agent.Options{
+			Resume: "conversation", ToolNames: toolNames,
+			OnUpdate: func(agent.Update) {}, OnConfigured: func(agent.Settings) {}, OnError: func(err error) { panic(err) },
+		})
+		a.Handle(initialized)
+		return a
+	}
+	failedTurn := func(a *Agent) {
+		state(t, a, "running")
+		output(t, a, `{"type":"result","subtype":"error_during_execution","is_error":true}`)
+		state(t, a, "idle")
+	}
+
+	unscheduled := resumed("Bash", "ScheduleWakeup")
+	if !unscheduled.Parkable() {
+		t.Fatal("a resumed agent whose history has no CronCreate call is not parkable")
+	}
+	failedTurn(unscheduled)
+	if !unscheduled.Parkable() {
+		t.Fatal("a failed turn kept a resumed agent without CronCreate calls from parking")
+	}
+
+	scheduled := resumed("Bash", "CronCreate")
+	if scheduled.Parkable() {
+		t.Fatal("a resumed agent whose history has a CronCreate call is parkable before a Stop report")
+	}
+	failedTurn(scheduled)
+	if scheduled.Parkable() {
+		t.Fatal("a failed turn settled the restored schedules")
+	}
+	output(t, scheduled, `{"type":"control_request","request_id":"hook","request":{"subtype":"hook_callback","callback_id":"stop","input":{"hook_event_name":"Stop","session_crons":[]}}}`)
+	if !scheduled.Parkable() {
+		t.Fatal("a Stop report with no schedules kept the resumed agent from parking")
 	}
 }

@@ -370,6 +370,26 @@ func (s *Store) Events(sessionID string) ([]Event, error) {
 	return events, rows.Err()
 }
 
+// ToolNames returns the distinct names of the tool calls the session's events
+// record.
+func (s *Store) ToolNames(sessionID string) ([]string, error) {
+	rows, err := s.db.Query(`SELECT DISTINCT json_extract(data, '$.tool_name') FROM events WHERE session_id = ?
+		AND json_extract(data, '$.type') = 'tool_use'`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
+}
+
 // LastEvent returns the data of the session's latest event, or nil when it
 // has none.
 func (s *Store) LastEvent(sessionID string) ([]byte, error) {

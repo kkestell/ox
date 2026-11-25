@@ -459,10 +459,15 @@ func (sess *session) start() error {
 	if info, err := os.Stat(sess.directory); err != nil || !info.IsDir() {
 		return fmt.Errorf("session directory %s no longer exists", sess.directory)
 	}
+	toolNames, err := sess.server.store.ToolNames(sess.id)
+	if err != nil {
+		log.Printf("session %s: read history: %v", sess.id, err)
+	}
 	a, err := start(agent.Options{
 		SessionID: sess.id,
 		Workspace: sess.directory,
 		Resume:    sess.resumeToken,
+		ToolNames: toolNames,
 		Settings:  sess.settings,
 		MCP: agent.MCPServer{
 			Command:  sess.server.mcp.Forwarder,

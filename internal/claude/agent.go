@@ -3,6 +3,7 @@ package claude
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -76,7 +77,7 @@ type Agent struct {
 	conversationID   string // most recently reported on stdout
 	resumable        string // token last passed to OnResumable, or supplied at startup
 	streamedText     bool   // the current turn published a text delta
-	mayHaveSchedules bool   // true until Stop reports an empty schedule list
+	mayHaveSchedules bool   // a scheduled or restored job may be pending; a Stop report settles it
 	plainText        string // Claude's last plain-text line on stdout after startup
 }
 
@@ -128,7 +129,9 @@ func newAgent(input *writer, events chan agent.Event, done chan struct{}, proc *
 		proc: proc, input: input, events: events, done: done,
 		phase:    &starting{},
 		settings: options.Settings, onUpdate: options.OnUpdate, onConfigured: options.OnConfigured, onError: options.OnError,
-		onResumable: options.OnResumable, resumable: options.Resume, mayHaveSchedules: options.Resume != "",
+		onResumable: options.OnResumable, resumable: options.Resume,
+		// --resume restores only the jobs of main-thread CronCreate calls.
+		mayHaveSchedules: options.Resume != "" && slices.Contains(options.ToolNames, "CronCreate"),
 	}
 	a.tracker = agent.NewTracker(a.publish)
 	return a
@@ -310,7 +313,10 @@ func (a *Agent) Snapshot() agent.Snapshot {
 // a missing conversation before answering initialize.
 func (a *Agent) startupOutput(s *starting, m message) bool {
 	switch {
-	case m.Type == "result" && m.failed():
+	// A failed result while Claude reports no turn is a startup failure, such
+	// as a conversation to resume that is gone. A startup turn's result is
+	// published like any turn's.
+	case m.Type == "result" && m.failed() && a.tracker.Reported() == agent.StateIdle:
 		s.reason = m.errorText()
 		s.noConversation = m.Subtype == "error_during_execution" && len(m.Errors) > 0 &&
 			strings.HasPrefix(m.Errors[0], "No conversation found with session ID")

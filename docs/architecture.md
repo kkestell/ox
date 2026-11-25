@@ -351,15 +351,15 @@ stateDiagram-v2
   otherwise it waits until `initialize` completes, a configuration ends, or
   Claude takes or drops the written input. Taking a `Configure` request requires
   both `available` and a published state of `idle` or `background`.
-- **Interrupts:** Drops every unwritten input. In `available` or `prompting`
-  when published state is neither `idle` nor `background`, it sends an interrupt
-  to Claude and drops the written untaken input. In `starting`, `configuring`,
+- **Interrupts:** Drops every unwritten input. In `starting`, `available`, or
+  `prompting` when published state is neither `idle` nor `background`, it sends
+  an interrupt to Claude and drops the written untaken input. In `configuring`
   and `timedOut`, it sends nothing.
 - **Parking:** `Parkable` is derived from phase, state, pending approvals, and
   [Claude's reports of background work](harnesses/claude-code.md#8-background-work-and-schedules).
-  On resume or after a scheduling tool call, only a Stop report with an empty
-  schedule list clears possible pending work. See the
-  [parking rule](protocol.md#workspaces-and-sessions).
+  On a resume whose history has a `CronCreate` call, or after a scheduling tool
+  call, only a Stop report with an empty schedule list clears possible pending
+  work. See the [parking rule](protocol.md#workspaces-and-sessions).
 
 ### The Ur agent
 

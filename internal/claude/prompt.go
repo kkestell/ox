@@ -89,8 +89,8 @@ func (a *Agent) ready() {
 // Interrupt drops every input not yet written to Claude, then asks Claude to
 // stop the running turn and to drop the written input it has not taken.
 // Claude ends the turn with an error result and an idle state, which end the
-// prompts as usual. Its control response carries nothing Ox uses. While
-// Claude starts or a configuration runs, Interrupt writes nothing.
+// prompts as usual. Its control response carries nothing Ox uses. While a
+// configuration runs, Interrupt writes nothing.
 func (a *Agent) Interrupt() error {
 	written := 0
 	if _, prompting := a.phase.(*prompting); prompting && a.tracker.Len() > 0 {
@@ -98,11 +98,11 @@ func (a *Agent) Interrupt() error {
 	}
 	a.tracker.DropFrom(written)
 	switch a.phase.(type) {
-	case available, *prompting:
+	case *starting, available, *prompting:
 		if a.tracker.Idle() {
 			return nil
 		}
-	case *starting, *configuring, timedOut, exited:
+	case *configuring, timedOut, exited:
 		return nil
 	}
 	request := map[string]any{"subtype": "interrupt"}

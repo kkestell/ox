@@ -2266,3 +2266,40 @@ func TestModelChangeKeepsCurrentEffort(t *testing.T) {
 		t.Fatalf("a model alone after another page's effort change left %s, not a/high", got)
 	}
 }
+
+// A start passes the harness the name of every tool call the session's
+// history records, each once.
+func TestStartPassesRecordedToolNames(t *testing.T) {
+	st := openStore(t)
+	dir := t.TempDir()
+	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: dir, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "fake", Directory: dir, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	for _, data := range []string{
+		`{"type":"prompt","message_id":"p","text":"schedule"}`,
+		`{"type":"tool_use","tool_use_id":"t1","tool_name":"CronCreate"}`,
+		`{"type":"tool_use","tool_use_id":"t2","tool_name":"Bash"}`,
+		`{"type":"tool_use","tool_use_id":"t3","tool_name":"CronCreate"}`,
+	} {
+		if err := st.AddEvent("s", store.Event{CreatedAt: time.Now(), Data: []byte(data)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	started := make(chan []string, 1)
+	start := func(o agent.Options) (agent.Agent, error) {
+		started <- o.ToolNames
+		return fake.Start(o)
+	}
+	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"fake": {Start: start}}, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	connect(t, s).call("session/send", map[string]string{"session_id": "s", "text": "hello"})
+	if names := <-started; !slices.Equal(slices.Sorted(slices.Values(names)), []string{"Bash", "CronCreate"}) {
+		t.Fatalf("the start received tool names %q", names)
+	}
+}
