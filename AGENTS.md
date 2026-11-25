@@ -15,7 +15,7 @@ We test with `make dev`. Ox's test state is disposable.
 .
 ├── AGENTS.md                  # agent instructions
 ├── agents                     # workflow records
-│   ├── audits                 # audits from /ox-audit and others
+│   ├── audits                 # audits from /ox-audit, /ox-sweep, and others
 │   ├── plans                  # plans from /ox-plan
 │   ├── reviews                # reviews from /ox-review
 │   └── scratch                # research notes
@@ -298,8 +298,8 @@ The user owns `docs/functional-requirements.md`. It changes only when a change
 adds, alters, or removes behavior the user can observe, and only with the text
 the user approved in the plan. A bug fix leaves it alone unless the fix shows
 a requirement was wrong. No agent rewords a requirement to match the code.
-Plans and reviews cite requirements by title. A periodic `/ox-review` of the
-whole repository checks the code against every requirement.
+Plans and reviews cite requirements by title. A periodic `/ox-sweep` checks
+the whole repository against every requirement.
 
 A periodic `/ox-audit` finds the structures that let classes of defects
 happen, drawing on past plans, reviews, and fixes as evidence. Each finding
