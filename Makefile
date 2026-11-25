@@ -35,7 +35,7 @@ live: cmd/ox/web/node_modules
 	OX_LIVE=1 go test -race -count=1 -run TestLive -v ./internal/server
 	OX_LIVE=1 npm --prefix cmd/ox/web run e2e -- approval
 
-# e2e drives the web client in Chrome against oxd and the fake harness.
+# e2e drives the web client in headless Chromium against oxd and the fake harness.
 e2e: cmd/ox/web/node_modules
 	npm --prefix cmd/ox/web run e2e
 
