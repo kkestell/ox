@@ -1,13 +1,4 @@
-import {
-  createContext,
-  createSignal,
-  createStore,
-  onSettled,
-  type ParentProps,
-  reconcile,
-  untrack,
-  useContext,
-} from "solid-js";
+import { createContext, createSignal, createStore, onSettled, type ParentProps, reconcile, useContext } from "solid-js";
 import { type Connection, connect, Disconnected, type Rpc, RpcError } from "./connection";
 import { languageFor } from "./highlight";
 import { newID } from "./id";
@@ -729,12 +720,12 @@ function createOx() {
     }
   }
 
-  // clock advances once a second while the page is visible and connected, and
-  // paces every request the page repeats.
-  const [clock, setClock] = createSignal(0);
+  // clock is the page's time in milliseconds. It advances once a second while
+  // the page is visible, and paces every request the page repeats.
+  const [clock, setClock] = createSignal(Date.now());
   onSettled(() => {
     const interval = setInterval(() => {
-      if (document.visibilityState === "visible" && untrack(ready)) setClock((n) => n + 1);
+      if (document.visibilityState === "visible") setClock(Date.now());
     }, 1000);
     return () => clearInterval(interval);
   });

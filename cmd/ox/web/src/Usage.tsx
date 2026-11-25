@@ -1,4 +1,4 @@
-import { createMemo, createUniqueId, For } from "solid-js";
+import { createUniqueId, For } from "solid-js";
 import { harnessName } from "./HarnessIcon";
 import { useOx } from "./ox";
 import type { UsageWindow } from "./protocol";
@@ -60,13 +60,9 @@ export function Usage(props: { harness: string; windows: UsageWindow[] }) {
 // that has reset dims until the harness reports a new reading.
 function WindowRow(props: { harness: string; window: UsageWindow }) {
   const ox = useOx();
-  const now = createMemo(() => {
-    ox.clock();
-    return Date.now();
-  });
   const label = () => windowLabel(props.window.interval_seconds);
   const used = () => Math.round(props.window.used_percent);
-  const left = () => Math.max(0, Math.ceil((Date.parse(props.window.resets_at) - now()) / 60000));
+  const left = () => Math.max(0, Math.ceil((Date.parse(props.window.resets_at) - ox.clock()) / 60000));
   const reset = () => left() === 0;
   const elapsed = () => Math.min(100, Math.max(0, 100 - ((left() * 60) / props.window.interval_seconds) * 100));
   const waiting = () =>
