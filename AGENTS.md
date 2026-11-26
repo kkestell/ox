@@ -267,8 +267,8 @@ steps below.
    `git rebase origin/main`, then re-runs the checks that observe the change
    when the rebase brought in new commits. It pushes with
    `git push -u origin <slug>` and opens the pull request with
-   `gh pr create`, written as [Pull requests](#pull-requests) says. The
-   top-level agent then tells the user the pull request is ready to merge.
+   `gh pr create`, written as [Pull requests](#pull-requests) says, and gives
+   the user its [handoff](#handoff).
 6. A pull request merges by squash, with its title as the commit subject.
    After the user merges, the top-level agent pulls and runs `make prune` in
    the main checkout. `make prune` removes each local branch whose pull
@@ -338,6 +338,32 @@ Fixes #N
 - The workflow's records stay in `agents/` and in the sessions: plans,
   reviews, verdicts, whether a change counted as small, and checks skipped
   because they cannot observe the change.
+
+### Handoff
+
+Once the pull request is open, the top-level agent replies to the user in the
+form below and nothing else. It leads with the main point, writes plainly, and
+leaves out the checks that passed and the steps it took.
+
+```markdown
+One or two sentences: what the change does for the user, and that its pull
+request is ready to merge.
+
+**Pull request:** https://github.com/kkestell/ox/pull/N · **Fixes:** #N
+
+**Files:**
+
+- `internal/server/changes.go` (modified)
+- `internal/server/changes_test.go` (modified)
+
+**Open choices:** each choice the user should check, in a sentence.
+
+**Blocked:** `make live`: what blocks it.
+```
+
+It lists every file the change creates or modifies, outside `agents/`. It
+omits Fixes when the change resolves no issue, Open choices when there are
+none, and Blocked when every check that can observe the change ran.
 
 ## Verification
 
