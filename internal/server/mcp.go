@@ -77,6 +77,9 @@ func (s *Server) handleMCP(reply replyFunc, sessionID string, request jsonrpc.Re
 		var input struct {
 			Name      string          `json:"name"`
 			Arguments json.RawMessage `json:"arguments"`
+			Meta      struct {
+				ToolUseID string `json:"claudecode/toolUseId"`
+			} `json:"_meta"`
 		}
 		if err := json.Unmarshal(request.Params, &input); err != nil {
 			reply(invalidParams(id, "invalid params"))
@@ -100,7 +103,7 @@ func (s *Server) handleMCP(reply replyFunc, sessionID string, request jsonrpc.Re
 			reply(sessionNotFound(id))
 			return
 		}
-		tools[i].call(s, sess, input.Arguments, func(text string, err error) {
+		tools[i].call(s, sess, input.Arguments, input.Meta.ToolUseID, func(text string, err error) {
 			isError := err != nil
 			if isError {
 				text = err.Error()
@@ -124,7 +127,9 @@ type tool struct {
 	// readOnly annotates the tool readOnlyHint. Claude's plan mode prompts
 	// for an MCP tool its --allowedTools names unless the tool is read-only.
 	readOnly bool
-	call     func(s *Server, caller *session, arguments json.RawMessage, respond func(text string, err error))
+	// call runs the tool. toolUseID is the ID of the call's tool_use, which
+	// Claude Code sends in the request's _meta, or "".
+	call func(s *Server, caller *session, arguments json.RawMessage, toolUseID string, respond func(text string, err error))
 }
 
 // tools is set in init: send_message can start a session, which gives
@@ -218,14 +223,14 @@ func approvedTools() []string {
 	return names
 }
 
-func listModels(s *Server, _ *session, _ json.RawMessage, respond func(string, error)) {
+func listModels(s *Server, _ *session, _ json.RawMessage, _ string, respond func(string, error)) {
 	text, err := json.Marshal(s.config)
 	respond(string(text), err)
 }
 
 // listSessions lists every session except the caller and archived ones, in workspace order and
 // oldest first. Each session fills its own entry from its goroutine.
-func listSessions(s *Server, caller *session, _ json.RawMessage, respond func(string, error)) {
+func listSessions(s *Server, caller *session, _ json.RawMessage, _ string, respond func(string, error)) {
 	type entry struct {
 		SessionID string `json:"session_id"`
 		Label     string `json:"label"`
@@ -275,7 +280,7 @@ func listSessions(s *Server, caller *session, _ json.RawMessage, respond func(st
 	respond(string(text), err)
 }
 
-func sendMessage(s *Server, caller *session, arguments json.RawMessage, respond func(string, error)) {
+func sendMessage(s *Server, caller *session, arguments json.RawMessage, toolUseID string, respond func(string, error)) {
 	var input struct {
 		To   string `json:"to"`
 		Text string `json:"text"`
@@ -297,20 +302,6 @@ func sendMessage(s *Server, caller *session, arguments json.RawMessage, respond 
 		return
 	}
 	message := messageInput(caller, label, recipient, input.Text)
-	// A child that tells its parent sends no report for the step that made
-	// the call. The call belongs to the turn in progress when it arrives, so
-	// the turn is taken before the wait; a turn that ends during the wait is
-	// replaced, and marking it changes nothing. A free child has no turn the
-	// call could belong to.
-	var current *turn
-	if caller.child != nil && caller.child.ParentID == recipient.id {
-		current = ask(caller, func() *turn {
-			if caller.free() {
-				return nil
-			}
-			return caller.toParent.turn
-		})
-	}
 	accepted := make(chan error, 1)
 	if !recipient.post(func() { accepted <- recipient.acceptMessage(message) }) {
 		respond("", errors.New("session not found"))
@@ -321,13 +312,15 @@ func sendMessage(s *Server, caller *session, arguments json.RawMessage, respond 
 		return
 	}
 	queued := fmt.Sprintf("Message queued for %s.", recipient.id)
-	if current == nil {
+	// A child that tells its parent sends no report for the step holding the
+	// call's tool_use. The answer waits for the mark, so the call's
+	// tool_result follows it.
+	if toolUseID == "" || caller.child == nil || caller.child.ParentID != recipient.id {
 		respond(queued, nil)
 		return
 	}
-	// The answer waits for told, so the call's tool_result follows it.
 	if !caller.post(func() {
-		current.told = toldSent
+		caller.told(toolUseID)
 		respond(queued, nil)
 	}) {
 		respond(queued, nil)
@@ -345,7 +338,7 @@ const titleRunes = 48
 // Server.mu unless the daemon is shutting down, then hands its agent the first
 // message and starts the child's goroutine, so no request reaches the child
 // before it holds the message.
-func createSession(s *Server, caller *session, arguments json.RawMessage, respond func(string, error)) {
+func createSession(s *Server, caller *session, arguments json.RawMessage, _ string, respond func(string, error)) {
 	var input struct {
 		Name    string `json:"name"`
 		Title   string `json:"title"`
@@ -528,7 +521,7 @@ func (s *Server) childRecord(parent *session, harnessName, model, effort string)
 // readSession renders a page of another session's history, newest last, on
 // the target's goroutine, so the page and its closing state agree. It starts
 // nothing: a parked target stays parked.
-func readSession(s *Server, caller *session, arguments json.RawMessage, respond func(string, error)) {
+func readSession(s *Server, caller *session, arguments json.RawMessage, _ string, respond func(string, error)) {
 	var input struct {
 		To     string `json:"to"`
 		Cursor *int   `json:"cursor"`

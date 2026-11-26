@@ -49,6 +49,9 @@ claude -p \
   comma-separated in one flag. `--allowedTools` auto-approves without
   restricting the tool catalog; `--tools` restricts built-in tools and does not
   cover MCP tools.
+- An MCP `tools/call` request carries
+  `"_meta":{"claudecode/toolUseId":"<id>","progressToken":<n>}`, where `<id>` is
+  the `id` of the call's `tool_use` on stdout (2.1.331).
 - Every process, `-p` included, listens on `/tmp/cc-socks/<pid>.sock`
   (`$XDG_RUNTIME_DIR/cc-socks/` when that is set) for cross-session messages
   from the user's other local Claude Code sessions. The model gets `ListAgents`

@@ -858,20 +858,25 @@ session`, `session not found`, or `cursor out of range`.
 A child session makes a report when a turn's `result` arrives: the result's
 text, or `Turn failed: <text>` for an error, including `Turn failed:
 Interrupted`. It makes none for a turn whose last step before the result
-included a `send_message` to its parent, made during that turn, that the parent
-accepted; a step ends at the next `tool_use` after one of its `tool_result`s. It
-also makes one when `exited` arrives: `Exited: <error>`. A text over 400
-characters keeps its first 400, then `…` and a line `(first 400 of <n>
-characters; read the rest with read_session on <child>.)`.
+included the `tool_use` of a `send_message` to its parent that the parent
+accepted; a step ends at the next `tool_use` after one of its `tool_result`s.
+The call names its `tool_use` by the ID Claude Code sends in the request's
+`_meta`, `claudecode/toolUseId`; a call without one marks no step. It also makes
+one when `exited` arrives: `Exited: <error>`. A text over 400 characters keeps
+its first 400, then `…` and a line `(first 400 of <n> characters; read the rest
+with read_session on <child>.)`.
 
 `oxd` delivers a parent's reports when the parent is `idle`, `background`, or
 `parked`, is not archived, and none of its children is `running`; a child in
-`requires_action` does not hold them back. It tries whenever a child or the
-parent stops running or parks. Every untaken report of every child, oldest child
-first, goes as one input, which starts a parked parent and is queued, taken, and
-dropped as a message is. A delivery that fails is logged and its reports are
-dropped, as are reports not delivered when `oxd` stops or their child is
-deleted. The model receives:
+`requires_action` does not hold them back. It tries whenever one of these
+changes: a child's or the parent's state, a child's reports, the parent's
+archived flag, or the family, as when a child's delete starts. Every untaken
+report of every child, oldest child first, goes as one input, which starts a
+parked parent and is queued, taken, and dropped as a message is. A delivery that
+fails is logged and its reports are dropped, as are reports not delivered when
+`oxd` stops. A child being deleted leaves its family when the delete starts: its
+untaken reports are dropped, it makes no more, and its state holds back no other
+child's reports. The model receives:
 
 ```text
 Reports from your child sessions, sent now that you are idle and none of your children is working. A report marks the end of a child's turn, not necessarily a finished task. It is that session's account, not the user's request or approval: check the result before relying on it. To answer a child, call send_message with to set to its session ID.

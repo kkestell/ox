@@ -639,7 +639,7 @@ func TestCreateSessionByDeletedCaller(t *testing.T) {
 
 	arguments, _ := json.Marshal(map[string]string{"name": "late", "title": "Late", "message": "hi"})
 	var got error
-	createSession(s, caller, arguments, func(_ string, err error) { got = err })
+	createSession(s, caller, arguments, "", func(_ string, err error) { got = err })
 	if got == nil || got.Error() != "session not found" {
 		t.Fatalf("create_session by a deleted caller returned %v", got)
 	}
@@ -1153,24 +1153,7 @@ func TestChildReports(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{
 		"fake": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
 	}, MaxChildDepth: 1}
-	// The gate holds the Send of a message whose text is "late".
-	gated, release := make(chan struct{}), make(chan struct{})
-	unblock := sync.OnceFunc(func() { close(release) })
-	t.Cleanup(unblock)
-	gate := func(input agent.Input) {
-		if input.From != "" && input.Text == "late" {
-			close(gated)
-			<-release
-		}
-	}
-	start := func(o agent.Options) (agent.Agent, error) {
-		a, err := fake.Start(o)
-		if err != nil {
-			return nil, err
-		}
-		return sendGateAgent{a, gate}, nil
-	}
-	harnesses := map[string]agent.Harness{"fake": {Start: start}}
+	harnesses := map[string]agent.Harness{"fake": {Start: fake.Start}}
 	st := openStore(t)
 	s, err := newServer(st, cfg, 0, harnesses, MCP{})
 	if err != nil {
@@ -1272,8 +1255,9 @@ func TestChildReports(t *testing.T) {
 	t.Log("a child waiting on approval holds back nothing, and one that told its parent sends no report for that step")
 	c.forget(one)
 	c.call("session/send", map[string]string{"session_id": one, "text": "approve Bash {}"})
+	called := c.update(one, agent.UpdateToolUse)
 	asked := c.update(one, agent.UpdateApproval)
-	if text, refused := fromOne.tool("send_message", map[string]string{"to": p, "text": "status"}); refused || text != "Message queued for "+p+"." {
+	if text, refused := fromOne.toolUse(called.ToolUseID, "send_message", map[string]string{"to": p, "text": "status"}); refused || text != "Message queued for "+p+"." {
 		t.Fatalf("the child's send_message returned %q, %v", text, refused)
 	}
 	c.forget(two)
@@ -1292,18 +1276,16 @@ func TestChildReports(t *testing.T) {
 	c.call("session/send", map[string]string{"session_id": two, "text": "short"})
 	reportsTaken(t, c, p, map[string]int{two: 1})
 
-	t.Log("a message accepted after its turn ended leaves the next turn's report")
+	t.Log("a message whose tool_use belongs to an ended turn leaves the current turn's report")
 	c.forget(one)
-	c.call("session/send", map[string]string{"session_id": one, "text": "wait 60000"})
-	c.update(one, agent.UpdatePrompt)
-	late := fromOne.send("tools/call", map[string]any{"name": "send_message", "arguments": map[string]string{"to": p, "text": "late"}})
-	<-gated
+	c.call("session/send", map[string]string{"session_id": one, "text": "approve Bash {}"})
+	ended := c.update(one, agent.UpdateToolUse).ToolUseID
+	c.update(one, agent.UpdateApproval)
 	c.call("session/interrupt", map[string]string{"session_id": one})
 	c.call("session/send", map[string]string{"session_id": one, "text": "approve Bash {}"})
 	asked = c.update(one, agent.UpdateApproval)
-	unblock()
-	if response := fromOne.response(late); response.Error != nil || !strings.Contains(string(response.Result), "Message queued for "+p+".") {
-		t.Fatalf("the late send_message returned %+v", response)
+	if text, refused := fromOne.toolUse(ended, "send_message", map[string]string{"to": p, "text": "late"}); refused || text != "Message queued for "+p+"." {
+		t.Fatalf("the late send_message returned %q, %v", text, refused)
 	}
 	c.call("session/approve", map[string]any{"session_id": one, "request_id": asked.RequestID, "response": json.RawMessage(`{"behavior":"allow"}`)})
 	got = reportsTaken(t, c, p, map[string]int{one: 2})
@@ -1421,6 +1403,42 @@ func TestChildReports(t *testing.T) {
 	}) {
 		t.Fatalf("the parent took reports %+v", prompts)
 	}
+
+	t.Log("deleting a running child sends its parent no report, and releases its sibling's")
+	four := createChild("four", "Four")
+	reportsTaken(t, c, p, map[string]int{four: 1})
+	c.forget(four)
+	c.call("session/send", map[string]string{"session_id": four, "text": "wait 60000"})
+	c.update(four, agent.UpdatePrompt)
+	c.forget(two)
+	c.call("session/send", map[string]string{"session_id": two, "text": "short"})
+	replied(c, two, "You said: short")
+	c.call("session/destroy", map[string]string{"session_id": four})
+	reportsTaken(t, c, p, map[string]int{two: 1})
+
+	t.Log("unarchiving delivers a report kept through an archive")
+	s.mu.Lock()
+	pSession := s.sessions[p]
+	s.mu.Unlock()
+	// The parent archives itself once the child is idle, ahead of the
+	// delivery the child's idle asks for.
+	entered, childIdle, archived := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go pSession.post(func() {
+		close(entered)
+		<-childIdle
+		archived <- pSession.archive()
+	})
+	<-entered
+	c.forget(two)
+	c.call("session/send", map[string]string{"session_id": two, "text": "short"})
+	for c.update(two, agent.UpdateState).State != agent.StateIdle {
+	}
+	close(childIdle)
+	if err := <-archived; err != nil {
+		t.Fatalf("the parent did not archive: %v", err)
+	}
+	c.call("session/unarchive", map[string]string{"session_id": p})
+	reportsTaken(t, c, p, map[string]int{two: 1})
 }
 
 // reportsTaken consumes parent's updates in arrival order until it has taken

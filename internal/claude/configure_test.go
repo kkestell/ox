@@ -165,7 +165,7 @@ func TestConfigureFailure(t *testing.T) {
 				}
 			case "exited":
 				a.Handle(processExit{})
-				if len(*updates) != 3 || !cancelledToIdle((*updates)[:2], []string{id}) || (*updates)[2].Type != "exited" || input.Len() != 0 {
+				if len(*updates) != 2 || !cancelled((*updates)[:1], []string{id}) || (*updates)[1].Type != "exited" || input.Len() != 0 {
 					t.Fatalf("the exit did not drop the held prompt and end alone: %+v, %q", *updates, input)
 				}
 			}
@@ -292,7 +292,7 @@ func TestConfigureTimeoutStopsProcess(t *testing.T) {
 	if err := <-result; !errors.Is(err, agent.ErrExited) {
 		t.Fatalf("process exit did not end configuration: %v", err)
 	}
-	if !a.Exited() || !cancelledToIdle(*updates, []string{id}) {
+	if !a.Exited() || !cancelled(*updates, []string{id}) {
 		t.Fatalf("the exit did not drop the held prompt alone, or the exit Ox asked for was reported: %+v", *updates)
 	}
 }

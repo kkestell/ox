@@ -559,7 +559,7 @@ func (a *Agent) Parkable() bool {
 }
 
 func (a *Agent) Stop() {
-	a.tracker.DropFrom(0)
+	a.tracker.End()
 	if a.turn != nil {
 		if s, ok := a.turn.step.(*asking); ok {
 			a.publish(agent.Update{Type: agent.UpdateApprovalCancelled, RequestID: s.requestID})

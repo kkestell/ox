@@ -80,6 +80,19 @@ func TestTrackerDropFrom(t *testing.T) {
 	expect(t, updates, "prompt_cancelled p4 ", "state p4 idle")
 }
 
+func TestTrackerEnd(t *testing.T) {
+	tr, updates := tracked()
+	for _, id := range []string{"p1", "p2"} {
+		tr.Accept(Input{MessageID: id})
+	}
+	*updates = nil
+	tr.End()
+	expect(t, updates, "prompt_cancelled p1 ", "prompt_cancelled p2 ")
+	if tr.Len() != 0 {
+		t.Fatalf("ending left %+v", tr.Queued())
+	}
+}
+
 func TestTrackerReportedState(t *testing.T) {
 	tr, updates := tracked()
 	tr.Report(StateRunning, "")
