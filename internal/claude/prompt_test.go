@@ -782,7 +782,7 @@ func TestInputWaitsForStartup(t *testing.T) {
 	}
 	*updates = nil
 	a.Handle(initialized)
-	if len(*updates) != 0 || input.Len() != 0 || !a.idle() {
+	if len(*updates) != 0 || input.Len() != 0 || !a.Idle() {
 		t.Fatalf("Claude's answer did not release the agent: %+v, %q", *updates, input)
 	}
 	if err := a.Send(prompt("next")); err != nil {
@@ -821,7 +821,7 @@ func TestInputWaitsForStartup(t *testing.T) {
 		t.Fatalf("the failed startup turn did not publish its error: %+v", *updates)
 	}
 	a.Handle(initialized)
-	if !a.idle() || a.Exited() {
+	if !a.Idle() || a.Exited() {
 		t.Fatalf("a failed startup turn ended the start: %+v", a.Snapshot())
 	}
 

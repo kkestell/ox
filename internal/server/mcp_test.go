@@ -974,9 +974,23 @@ func TestArchive(t *testing.T) {
 	idle(b)
 	fromB := attach(t, s, b)
 
-	t.Log("a session with a prompt held through a configuration is not archived")
+	t.Log("a session is not archived while its configuration runs")
 	c.forget(b)
 	configure := c.send("session/configure", map[string]string{"session_id": b, "effort": "high"})
+	<-configuring
+	refused(c.request("session/archive", map[string]string{"session_id": b}), sessionBusy, "session is busy")
+	if response := c.response(configure); response.Error != nil {
+		t.Fatalf("the configuration failed: %+v", response.Error)
+	}
+	for _, m := range c.received(b) {
+		if m.Method == "session/archived" {
+			t.Fatal("a refused archive told clients the session was archived")
+		}
+	}
+
+	t.Log("a session with a prompt held through a configuration is not archived")
+	c.forget(b)
+	configure = c.send("session/configure", map[string]string{"session_id": b, "effort": "high"})
 	<-configuring
 	var held struct {
 		MessageID string `json:"message_id"`

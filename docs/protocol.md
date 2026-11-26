@@ -548,12 +548,13 @@ Requires `session_id`. Archives the session and every session beneath it, and
 stops each one's process as parking does, with a `parked` update. Each archived
 session is announced with `session/archived`, and its process stopped with
 `parked`, before the response. A session in the family that is not `idle`,
-`background`, or `parked` returns `-32002` and archives none. Archiving an
-archived family succeeds. An archived session keeps its history; it refuses
-`session/send`, `session/configure`, and [`send_message`](#tools), and
-[`list_sessions`](#tools) leaves it out. `session/get`, `session/interrupt`,
-`session/destroy`, and [`read_session`](#tools) work on it as on any parked
-session. Archived sessions stay archived when the daemon restarts.
+`background`, or `parked`, or whose configuration is in progress, returns
+`-32002` and archives none. Archiving an archived family succeeds. An archived
+session keeps its history; it refuses `session/send`, `session/configure`, and
+[`send_message`](#tools), and [`list_sessions`](#tools) leaves it out.
+`session/get`, `session/interrupt`, `session/destroy`, and
+[`read_session`](#tools) work on it as on any parked session. Archived sessions
+stay archived when the daemon restarts.
 
 ```json
 {"jsonrpc":"2.0","id":10,"method":"session/archive","params":{"session_id":"session-id"}}

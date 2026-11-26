@@ -17,7 +17,7 @@ func (c *configuring) fail(err error) error {
 }
 
 func (a *Agent) Configure(patch agent.SettingsPatch, done func(error)) {
-	if !a.idle() {
+	if !a.Idle() {
 		done(agent.ErrBusy)
 		return
 	}

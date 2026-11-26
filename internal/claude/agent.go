@@ -299,7 +299,7 @@ func (a *Agent) configured(settings agent.Settings) {
 	}
 }
 
-func (a *Agent) idle() bool {
+func (a *Agent) Idle() bool {
 	_, available := a.phase.(available)
 	return available && a.tracker.Idle()
 }

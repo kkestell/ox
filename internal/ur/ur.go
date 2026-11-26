@@ -539,9 +539,14 @@ func (a *Agent) Interrupt(done func(error)) {
 	done(nil)
 }
 
+// Idle is the tracker's: a configuration applies at once.
+func (a *Agent) Idle() bool {
+	return a.tracker.Idle()
+}
+
 // Configure applies the patch at once; the next request reads the settings.
 func (a *Agent) Configure(patch agent.SettingsPatch, done func(error)) {
-	if !a.tracker.Idle() {
+	if !a.Idle() {
 		done(agent.ErrBusy)
 		return
 	}
@@ -555,7 +560,7 @@ func (a *Agent) Configure(patch agent.SettingsPatch, done func(error)) {
 // Parkable is true while idle: the file holds the whole conversation, and no
 // command outlives its turn.
 func (a *Agent) Parkable() bool {
-	return a.tracker.Idle()
+	return a.Idle()
 }
 
 func (a *Agent) Stop() {

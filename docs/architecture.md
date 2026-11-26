@@ -153,7 +153,8 @@ is archived.
    breadth-first.
 2. It posts a hold operation to each descendant (ancestor before children, so no
    new children can be created on a held parent). Each member reports whether it
-   is idle, in the background, or parked, then waits.
+   is parked or its agent is idle, which the harness answers from its own state,
+   counting a configuration in progress as busy, then waits.
 3. If every member is free, archive stores and sets the archived flags under
    `Server.mu`, stops its own agent, releases the descendants to stop theirs,
    and replies once every member has stopped. Otherwise it releases them
