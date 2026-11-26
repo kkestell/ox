@@ -73,7 +73,7 @@ Keep this work in this session:
 ## Write
 
 10. Read this skill's `assets/_template.md` and write the plan in `agents/plans/`, named `YYYY-MM-DD-<slug>.md`, where the slug is the branch name. Do not stage or commit it.
-11. Keep the plan to relevant code references, decisions that need explaining, tasks tied to files, names, and tests. Leave out repository rules, standard validation commands, conversation history, rejected options, and work for a later change.
+11. Make the plan proportional to the change: a contained change, one that touches no state owner in `oxd`, protocol, persistence, or harness driving, gets a short plan that covers only the concerns it touches. Keep the plan to relevant code references, decisions that need explaining, tasks tied to files, names, and tests. Leave out repository rules, standard validation commands, conversation history, rejected options, and work for a later change.
 12. Use the protocol's names in tasks, code, comments, and documentation. Do not give one concept several names or give an existing term a new meaning.
 13. Under Requirement changes, give the exact text of each requirement the change adds, changes, or removes in `docs/functional-requirements.md`, in that file's form: a short bold title, then one or two plain sentences about what the user sees or relies on. A change alters the requirements only when it adds, alters, or removes behavior the user can observe; a bug fix changes none unless it shows a requirement was wrong. Write `None.` when nothing changes.
 14. Under Documentation updates, name the document `AGENTS.md` assigns each other fact the change alters. Leave out documents whose facts do not change. The Goal links the issue the change resolves, if any.

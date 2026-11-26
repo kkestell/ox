@@ -271,6 +271,14 @@ checks that observe it, and opens and merges the pull request as steps 7 and
 Every other change takes the steps below. When in doubt, a change is not
 small.
 
+Plans and reviews are proportional to the change. A plan or review covers only
+the concerns the change touches, at the length they need. A contained change,
+one that touches no state owner in `oxd`, protocol, persistence, or harness
+driving, such as a change to the web client alone, gets a short plan and a
+review by one session with no children, on Sonnet at medium effort. A larger
+change takes the models below, and starts children only for work too large for
+one context.
+
 1. A child session on Opus 5.5 at high effort runs `/ox-plan`. The user
    approves the plan's requirement changes with its other product questions.
 2. The top-level agent sanity-checks the plan with a quick look at the code it
