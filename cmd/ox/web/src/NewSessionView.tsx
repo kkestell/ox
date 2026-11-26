@@ -13,7 +13,7 @@ export function createDraft(workspaceId: string, ox: ReturnType<typeof useOx>) {
   const id = newID();
   const [chosen, setChoice] = createSignal<Defaults>();
   const choice = () => chosen() ?? ox.state.defaults;
-  const [worktree, setWorktree] = createSignal(false);
+  const [worktree, setWorktree] = createSignal(true);
   return { workspaceId, id, control: ox.control(id), choice, setChoice, worktree, setWorktree };
 }
 

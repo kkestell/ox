@@ -154,10 +154,16 @@ export function gitRepo(dir: string) {
   writeFileSync(join(dir, "untracked.txt"), "");
 }
 
-// newSession sends text as the first prompt of a new session and waits for
-// its reply.
-export async function newSession(page: Page, text: string) {
+// newDraft opens a new-session draft that runs in the workspace directory.
+export async function newDraft(page: Page) {
   await newSessionButton(page).click();
+  await location(page).selectOption("local");
+}
+
+// newSession sends text as the first prompt of a new session in the
+// workspace directory and waits for its reply.
+export async function newSession(page: Page, text: string) {
+  await newDraft(page);
   await prompt(page).fill(text);
   await send(page).click();
   await expect(replies(page).last()).toHaveText(`You said: ${text}`);

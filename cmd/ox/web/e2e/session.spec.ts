@@ -20,6 +20,7 @@ import {
   location,
   menuItem,
   model,
+  newDraft,
   newSession,
   newSessionButton,
   openMenu,
@@ -51,7 +52,7 @@ import {
 const main = (page: Page) => page.getByRole("main");
 
 test("edits typed while a new session is created and sent stay in the composer", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   const create = await hold(page, "session/create");
   const firstSend = await hold(page, "session/send");
   await prompt(page).fill("first prompt");
@@ -84,7 +85,7 @@ test("text retyped equal to the sent prompt stays after the send", async ({ ox: 
 });
 
 test("text retyped equal to the prompt stays after the creation", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   const create = await hold(page, "session/create");
   const firstSend = await hold(page, "session/send");
   await prompt(page).fill("draft text");
@@ -101,7 +102,7 @@ test("text retyped equal to the prompt stays after the creation", async ({ ox: p
 // reply sends text as a new session's first prompt and returns its reply
 // once it has ended.
 async function reply(page: Page, text: string) {
-  await newSessionButton(page).click();
+  await newDraft(page);
   await prompt(page).fill(text);
   await send(page).click();
   await expect(stop(page)).toHaveCount(0);
@@ -156,7 +157,7 @@ test("a prompt shows as the plain text sent", async ({ ox: page }) => {
 });
 
 test("a failed first send is retried in the session with its settings", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   await permissionMode(page).selectOption("plan");
   const firstSend = await hold(page, "session/send");
   await prompt(page).fill("retry me");
@@ -175,7 +176,7 @@ test("a failed first send is retried in the session with its settings", async ({
 
 test("a session created after the user moves on leaves the selection alone", async ({ ox: page }) => {
   await newSession(page, "elsewhere");
-  await newSessionButton(page).click();
+  await newDraft(page);
   const create = await hold(page, "session/create");
   await prompt(page).fill("background start");
   await prompt(page).press("Enter");
@@ -189,7 +190,7 @@ test("a session created after the user moves on leaves the selection alone", asy
 });
 
 test("Enter in the new-session settings sends nothing", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   const creates = rpcCalls(page, "session/create");
   await prompt(page).fill("keep this draft");
   await openModelPicker(page);
@@ -204,7 +205,7 @@ test("Enter in the new-session settings sends nothing", async ({ ox: page }) => 
 
 test("a rejected creation keeps the draft and its settings after switching views", async ({ ox: page }) => {
   await newSession(page, "existing conversation");
-  await newSessionButton(page).click();
+  await newDraft(page);
   await permissionMode(page).selectOption("plan");
   const create = await hold(page, "session/create");
   await attachPixel(page);
@@ -281,7 +282,7 @@ test.describe("with two models", () => {
   });
 
   test("Enter while composing in the model search does not choose the match", async ({ ox: page }) => {
-    await newSessionButton(page).click();
+    await newDraft(page);
     await model(page).click();
     const search = page.getByRole("combobox", { name: "Search models" });
     await search.fill("other");
@@ -405,7 +406,7 @@ test("the page links a manifest that opens Ox standalone with its icon", async (
 });
 
 test("reasoning shows in the transcript, before and after a reload", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   await prompt(page).fill("think Count to **three**.");
   await prompt(page).press("Enter");
   await expect(replies(page).last()).toHaveText("You said: think Count to three.");
@@ -745,7 +746,7 @@ test("a refused send returns its text and images ahead of text typed since", asy
 });
 
 test("a session in the background shows its status and stays configurable and archivable", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   await prompt(page).fill("background 60000");
   await prompt(page).press("Enter");
   await expect(replies(page)).toHaveText(["You said: background 60000"]);
@@ -776,7 +777,7 @@ test("a send held in one session leaves another usable", async ({ ox: page }) =>
 });
 
 test("Allow sends the exact numbers displayed in the tool input", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   const input = '{"ids":[9007199254740993],"amount":1.00000000000000001}';
   const approval = await ask(page, "Example", input);
   await approval.getByRole("group").click();
@@ -793,7 +794,7 @@ test("Allow sends the exact numbers displayed in the tool input", async ({ ox: p
 test("an answer hides its approval before oxd answers, and a refusal brings it back with the choice", async ({
   ox: page,
 }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   const approval = await ask(page, "Bash", '{"command":"ls"}');
   const held = await hold(page, "session/approve");
   await allow(approval);
@@ -807,7 +808,7 @@ test("an answer hides its approval before oxd answers, and a refusal brings it b
 // leaveAndReturn switches to the new-session draft and back to the session
 // whose first prompt asked to approve tool.
 async function leaveAndReturn(page: Page, tool: string) {
-  await newSessionButton(page).click();
+  await newDraft(page);
   await expect(waiting(page)).toHaveCount(0);
   await sessions(page)
     .getByRole("button", { name: new RegExp(`^approve ${tool}`) })
@@ -815,7 +816,7 @@ async function leaveAndReturn(page: Page, tool: string) {
 }
 
 test("a permission card keeps its typed reply after switching away and back", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   const approval = await ask(page, "Bash", '{"command":"ls"}');
   await approval.getByRole("textbox", { name: "Other response" }).fill("use ls -la");
   await leaveAndReturn(page, "Bash");
@@ -824,7 +825,7 @@ test("a permission card keeps its typed reply after switching away and back", as
 });
 
 test("a refused answer sent before switching away returns with its reply", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   const approval = await ask(page, "Bash", '{"command":"ls"}');
   const held = await hold(page, "session/approve");
   await approval.getByRole("textbox", { name: "Other response" }).fill("use ls -la");
@@ -838,7 +839,7 @@ test("a refused answer sent before switching away returns with its reply", async
 });
 
 test("Ox's own tools show readable names and the message they send", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   const approval = await ask(page, "mcp__ox__send_message", '{"to":"some-session","text":"hello there"}');
   await expect(approval.getByText("Allow SendMessage?")).toBeVisible();
   await expect(approval.getByText("hello there", { exact: true })).toBeVisible();
@@ -859,7 +860,7 @@ test("Ox's own tools show readable names and the message they send", async ({ ox
 });
 
 test("a prompt sent while Claude works stays pending until Claude takes it", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   await ask(page, "Bash", "{}");
   await expect(stop(page)).toBeVisible();
   await prompt(page).fill("steer");
@@ -878,7 +879,7 @@ test("a prompt sent while Claude works stays pending until Claude takes it", asy
 });
 
 test("Stop drops a pending prompt and returns its text and image to the composer", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   await ask(page, "Bash", "{}");
   await attachPixel(page, "steer.png");
   await prompt(page).fill("steer");
@@ -898,7 +899,7 @@ test("Stop drops a pending prompt and returns its text and image to the composer
 });
 
 test("a dropped prompt returns only to the page that sent it", async ({ ox: page, context }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   await ask(page, "Bash", "{}");
   const other = await context.newPage();
   await other.goto(page.url());
@@ -999,7 +1000,7 @@ for (const outcome of ["taken", "dropped"] as const) {
     services,
     context,
   }) => {
-    await newSessionButton(page).click();
+    await newDraft(page);
     await ask(page, "Bash", "{}");
     await prompt(page).fill("steer");
     await prompt(page).press("Enter");
@@ -1051,7 +1052,7 @@ const questions =
 // askQuestions has the fake harness ask the two questions above, and returns
 // the form, its two questions, and its buttons.
 async function askQuestions(page: Page) {
-  await newSessionButton(page).click();
+  await newDraft(page);
   const form = await ask(page, "AskUserQuestion", questions);
   return {
     form,
@@ -1137,7 +1138,7 @@ test("a form keeps its question and answers after switching away and back", asyn
 });
 
 test("a single question has no Previous or Next", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   const form = await ask(
     page,
     "AskUserQuestion",
@@ -1211,7 +1212,7 @@ test("a question form shows no raw input", async ({ ox: page }) => {
 });
 
 test("a long question keeps its buttons in view", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   await page.setViewportSize({ width: 390, height: 700 });
   const options = Array.from({ length: 12 }, (_, i) => ({
     label: `Option ${i + 1}`,
@@ -1232,7 +1233,7 @@ test("a long question keeps its buttons in view", async ({ ox: page }) => {
 });
 
 test("a long permission card keeps Submit in view", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   await page.setViewportSize({ width: 390, height: 700 });
   const plan = Array.from({ length: 40 }, (_, i) => `${i + 1}. Step ${i + 1} of the plan`).join("\n");
   const approval = await ask(page, "ExitPlanMode", JSON.stringify({ plan }));
@@ -1240,7 +1241,7 @@ test("a long permission card keeps Submit in view", async ({ ox: page }) => {
 });
 
 test("a malformed question falls back to Allow and Deny", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   const approval = await ask(page, "AskUserQuestion", '{"questions":"x"}');
   await expect(approval.getByRole("radio", { name: "Allow" })).toBeVisible();
   await expect(approval.getByRole("radio", { name: "Deny" })).toBeVisible();
@@ -1252,7 +1253,7 @@ test("a tool whose process ended with oxd shows stopped on every page", async ({
   config,
   context,
 }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   await ask(page, "Bash", '{"command":"sleep 60"}');
   const marker = toolCall(page, "Bash").getByRole("img");
   await expect(marker).toHaveAccessibleName("running");
@@ -1280,7 +1281,7 @@ test("a tool its turn ended without a result shows stopped", async ({ ox: page }
     };
   });
   await page.goto(page.url());
-  await newSessionButton(page).click();
+  await newDraft(page);
   await ask(page, "Bash", '{"command":"sleep 60"}');
   const marker = toolCall(page, "Bash").getByRole("img");
   await expect(marker).toHaveAccessibleName("running");
@@ -1289,7 +1290,7 @@ test("a tool its turn ended without a result shows stopped", async ({ ox: page }
 });
 
 test("a reconnect keeps an expanded tool call open", async ({ ox: page, services }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   await allow(await ask(page, "Bash", '{"command":"ls"}'));
   await expect(stop(page)).toHaveCount(0);
   const tool = toolCall(page, "Bash");
@@ -1345,7 +1346,7 @@ test("a lost creation reply is recovered after leaving the draft", async ({ page
   await newSession(page, "another conversation");
   const listed = sessions(page).getByRole("listitem");
   await expect(listed).toHaveCount(1);
-  await newSessionButton(page).click();
+  await newDraft(page);
   await cutoff.arm();
   await prompt(page).fill("recover my prompt");
   await prompt(page).press("Enter");
@@ -1379,7 +1380,7 @@ test("a retried creation recovers the session without sending", async ({ page, s
   });
   await open(page, services);
   const sends = rpcCalls(page, "session/send");
-  await newSessionButton(page).click();
+  await newDraft(page);
   await cutoff.arm();
   await prompt(page).fill("retry my prompt");
   await prompt(page).press("Enter");
@@ -1401,7 +1402,7 @@ test("a retried creation recovers the session without sending", async ({ page, s
 test("session list membership and order don't wait for transcripts", async ({ ox: page, services }) => {
   const listed = sessions(page).getByRole("listitem");
   const firstSnapshot = await hold(page, "session/get");
-  await newSessionButton(page).click();
+  await newDraft(page);
   await prompt(page).fill("older session");
   await prompt(page).press("Enter");
   await firstSnapshot.arrived;
@@ -1454,8 +1455,7 @@ test("Delete closes its dialog and removes the row before oxd answers, and a ref
 test("a session created in a worktree runs in it, under Ox's worktree directory", async ({ ox: page, services }) => {
   gitRepo(services.workspace);
   await newSessionButton(page).click();
-  await expect(location(page)).toHaveValue("local");
-  await location(page).selectOption("worktree");
+  await expect(location(page)).toHaveValue("worktree");
   await prompt(page).fill("in a worktree");
   await send(page).click();
   await expect(heading(page)).toHaveText("in a worktree");
@@ -1465,7 +1465,6 @@ test("a session created in a worktree runs in it, under Ox's worktree directory"
 test("a failed worktree creation keeps the draft's text and its Worktree choice", async ({ ox: page }) => {
   await newSession(page, "elsewhere");
   await newSessionButton(page).click();
-  await location(page).selectOption("worktree");
   await prompt(page).fill("not in a repository");
   await sessionButton(page, "elsewhere").click();
   await newSessionButton(page).click();
@@ -1482,7 +1481,6 @@ test("deleting a worktree session says it deletes the worktree and keeps the bra
 }) => {
   gitRepo(services.workspace);
   await newSessionButton(page).click();
-  await location(page).selectOption("worktree");
   await prompt(page).fill("delete my worktree");
   await send(page).click();
   await expect(replies(page)).toHaveText(["You said: delete my worktree"]);
@@ -1529,7 +1527,7 @@ test("on reconnect each session waits for its own settings", async ({ ox: page, 
 
 test("a creation failed by an empty relay answer shows its error with Reopen draft", async ({ ox: page }) => {
   await newSession(page, "existing conversation");
-  await newSessionButton(page).click();
+  await newDraft(page);
   const create = await hold(page, "session/create");
   await prompt(page).fill("keep this draft");
   await prompt(page).press("Enter");
@@ -1849,6 +1847,7 @@ test.describe("on a touch screen", () => {
   test("tapping Send sends and keeps the keyboard on the prompt", async ({ ox: page }) => {
     await setSafeArea(page, { top: 47, bottom: 34 });
     await newSessionButton(page).tap();
+    await location(page).selectOption("local");
     await prompt(page).fill("first");
     await send(page).tap();
     await expect(replies(page).last()).toHaveText("You said: first");
@@ -2172,13 +2171,13 @@ const attachment = (page: Page) => prompts(page).getByRole("img", { name: "Attac
 const loaded = (image: ReturnType<typeof attachment>) => image.evaluate((img: HTMLImageElement) => img.naturalWidth);
 
 test("an image picked through Attach Image shows as a thumbnail", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   await attachPixel(page);
   await expect(thumbnail(page)).toBeVisible();
 });
 
 test("a pasted image shows as a thumbnail", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   const data = await transfer(page, "pasted.png", "image/png", pixel.toString("base64"));
   await prompt(page).evaluate(
     (field, clipboardData) => field.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true })),
@@ -2207,21 +2206,21 @@ test("an image dropped on an archived session's transcript is not attached", asy
 });
 
 test("Remove Image removes the attached image", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   await attachPixel(page);
   await main(page).getByRole("button", { name: "Remove Image" }).click();
   await expect(thumbnail(page)).toHaveCount(0);
 });
 
 test("a file that is not an image is refused with an error", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   await pickFiles(page, [{ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("notes") }]);
   await expect(main(page).getByRole("alert")).toHaveText("Attach PNG, JPEG, GIF, or WebP images.");
   await expect(thumbnail(page, "notes.txt")).toHaveCount(0);
 });
 
 test("images over 10 MiB in total are refused with an error", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   const half = Buffer.alloc(5 << 20);
   await pickFiles(page, [
     { name: "a.png", mimeType: "image/png", buffer: half },
@@ -2232,7 +2231,7 @@ test("images over 10 MiB in total are refused with an error", async ({ ox: page 
 });
 
 test("a prompt of an image alone sends, and its bubble shows only the image", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   await attachPixel(page);
   await prompt(page).press("Enter");
   await expect(replies(page)).toHaveText(["You said:  [images: 1]"]);

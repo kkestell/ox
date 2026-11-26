@@ -10,9 +10,9 @@ import {
   gitRepo,
   hold,
   isRequest,
-  location,
   menuItem,
   model,
+  newDraft,
   newSession,
   newSessionButton,
   openMenu,
@@ -161,7 +161,7 @@ test("a draft holds Send until the session list loads", async ({ page, services 
 
 test("a draft keeps its permission mode through a relay restart", async ({ ox: page, services }) => {
   const creates = rpcCalls(page, "session/create");
-  await newSessionButton(page).click();
+  await newDraft(page);
   await prompt(page).fill("draft through a restart");
   await expect(permissionMode(page)).toHaveValue("manual");
   await permissionMode(page).selectOption("plan");
@@ -191,7 +191,7 @@ test.describe(() => {
   });
 
   test("a model without efforts creates a session without effort", async ({ ox: page }) => {
-    await newSessionButton(page).click();
+    await newDraft(page);
     await prompt(page).fill("no effort");
     const create = page.waitForRequest(isRequest("session/create"));
     await send(page).click();
@@ -267,7 +267,7 @@ test("removing a workspace asks first, removes its section before oxd answers, a
 
 test("removing a workspace discards its draft", async ({ ox: page, services }) => {
   const workspace = workspaceSection(page, services.workspace);
-  await newSessionButton(page).click();
+  await newDraft(page);
   await prompt(page).fill("unsent");
   await menuItem(await openMenu(workspace), "Remove workspace").click();
   const dialog = page.getByRole("alertdialog", { name: "Remove workspace?" });
@@ -284,7 +284,7 @@ test("the file tree lists folders first and hides `.git`", async ({ ox: page, se
   writeFileSync(join(services.workspace, ".gitignore"), "");
   writeFileSync(join(services.workspace, "a.txt"), "");
   writeFileSync(join(services.workspace, "Makefile"), "");
-  await newSessionButton(page).click();
+  await newDraft(page);
   await showFiles(page);
   await expect(files(page)).toMatchAriaSnapshot(`
     - list:
@@ -308,7 +308,6 @@ test("a worktree session's file tree holds only committed files", async ({ ox: p
   await newSessionButton(page).click();
   await showFiles(page);
   await expect(entry(page, "untracked.txt")).toBeVisible();
-  await location(page).selectOption("worktree");
   await prompt(page).fill("committed only");
   await send(page).click();
   await expect(replies(page)).toHaveText(["You said: committed only"]);
@@ -360,7 +359,7 @@ clocked("each session keeps its own expanded folders", async ({ ox: page, servic
 clocked("the tree shows changes on disk", async ({ ox: page, services }) => {
   mkdirSync(join(services.workspace, "src"));
   writeFileSync(join(services.workspace, "src", "a.txt"), "");
-  await newSessionButton(page).click();
+  await newDraft(page);
   await showFiles(page);
   await entry(page, "src").click();
   await expect(entry(page, "a.txt")).toBeVisible();
@@ -384,7 +383,7 @@ clocked("the tree shows changes on disk", async ({ ox: page, services }) => {
 
 clocked("the tree lists nothing while the page is hidden", async ({ ox: page, services }) => {
   writeFileSync(join(services.workspace, "a.txt"), "");
-  await newSessionButton(page).click();
+  await newDraft(page);
   await showFiles(page);
   await expect(entry(page, "a.txt")).toBeVisible();
   await setVisibility(page, "hidden");
@@ -398,7 +397,7 @@ clocked("the tree lists nothing while the page is hidden", async ({ ox: page, se
 clocked("a relay error shows in place of a folder's listing until the next listing", async ({ ox: page, services }) => {
   mkdirSync(join(services.workspace, "src"));
   writeFileSync(join(services.workspace, "src", "a.txt"), "");
-  await newSessionButton(page).click();
+  await newDraft(page);
   await showFiles(page);
   const answers: [(route: Route) => Promise<void>, string | RegExp][] = [
     [(route) => route.fulfill({ status: 502, body: "relay unavailable" }), "relay unavailable"],
@@ -429,7 +428,7 @@ for (const [failure, fail] of [
   clocked(`a lost connection keeps the last listing after ${failure}`, async ({ ox: page, services }) => {
     mkdirSync(join(services.workspace, "src"));
     writeFileSync(join(services.workspace, "src", "a.txt"), "");
-    await newSessionButton(page).click();
+    await newDraft(page);
     await showFiles(page);
     await entry(page, "src").click();
     await expect(entry(page, "a.txt")).toBeVisible();
@@ -462,7 +461,7 @@ clocked(
   async ({ ox: page, services }) => {
     mkdirSync(join(services.workspace, "src"));
     writeFileSync(join(services.workspace, "src", "a.txt"), "");
-    await newSessionButton(page).click();
+    await newDraft(page);
     await showFiles(page);
     await entry(page, "src").click();
     await expect(entry(page, "a.txt")).toBeVisible();
@@ -489,7 +488,7 @@ clocked(
 clocked("a page shown while connected keeps a request in flight", async ({ ox: page, services }) => {
   mkdirSync(join(services.workspace, "src"));
   writeFileSync(join(services.workspace, "src", "a.txt"), "");
-  await newSessionButton(page).click();
+  await newDraft(page);
   await showFiles(page);
   const listing = await hold(page, "workspace/list_folder", { path: "src" });
   await entry(page, "src").click();
@@ -506,7 +505,7 @@ clocked(
     mkdirSync(join(services.workspace, "src"));
     mkdirSync(join(services.workspace, "lib"));
     writeFileSync(join(services.workspace, "src", "a.txt"), "");
-    await newSessionButton(page).click();
+    await newDraft(page);
     await showFiles(page);
     await prompt(page).fill("draft");
     await entry(page, "src").click();
@@ -561,7 +560,7 @@ test("an unreadable folder says why, and an empty folder says Empty", async ({ o
   mkdirSync(locked, { mode: 0o000 });
   mkdirSync(join(services.workspace, "empty"));
   try {
-    await newSessionButton(page).click();
+    await newDraft(page);
     await showFiles(page);
     await entry(page, "locked").click();
     await expect(folder(page, "locked").getByText("permission denied")).toBeVisible();
@@ -601,7 +600,7 @@ const change = (page: Page, path: string) => changes(page).getByRole("article", 
 async function showEdit(page: Page, workspace: string) {
   gitRepo(workspace);
   writeFileSync(join(workspace, "committed.txt"), "edited\nmore\n");
-  await newSessionButton(page).click();
+  await newDraft(page);
   await showChanges(page);
 }
 
@@ -634,7 +633,7 @@ test("the Changes tab shows the changes in place of the file tree", async ({ ox:
 test("the file tree's header shows the branch and the lines added and removed", async ({ ox: page, services }) => {
   gitRepo(services.workspace);
   writeFileSync(join(services.workspace, "committed.txt"), "edited\nmore\n");
-  await newSessionButton(page).click();
+  await newDraft(page);
   await showFiles(page);
   await expect(files(page)).toMatchAriaSnapshot(`
     - complementary "Files":
@@ -643,7 +642,7 @@ test("the file tree's header shows the branch and the lines added and removed", 
 });
 
 test("the file tree's header says why outside a Git repository", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   await showFiles(page);
   await expect(files(page)).toContainText("not a git repository");
 });
@@ -675,7 +674,7 @@ test("the Changes tab holds through switching sessions and resets on reload", as
   await newSession(page, "first");
   await expect(changesTab(page)).toHaveAttribute("aria-selected", "true");
   await expect(change(page, "committed.txt")).toBeVisible();
-  await newSessionButton(page).click();
+  await newDraft(page);
   await expect(changesTab(page)).toHaveAttribute("aria-selected", "true");
   await sessionButton(page, "first").click();
   await expect(changesTab(page)).toHaveAttribute("aria-selected", "true");
@@ -687,7 +686,7 @@ test("the Changes tab holds through switching sessions and resets on reload", as
 });
 
 test("a directory outside a Git repository says why in the Changes tab", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   await showChanges(page);
   await expect(changes(page).getByText("not a git repository")).toHaveCount(1);
 });
@@ -765,13 +764,13 @@ test.describe("on a wide screen", () => {
   test("with nothing selected, the header offers no Files or Changes tabs", async ({ ox: page }) => {
     await expect(filesTab(page)).toHaveCount(0);
     await expect(changesTab(page)).toHaveCount(0);
-    await newSessionButton(page).click();
+    await newDraft(page);
     await expect(filesTab(page)).toHaveAttribute("aria-selected", "false");
   });
 
   test("dragging a sash resizes its panel within bounds, and only while the button is down", async ({ ox: page }) => {
     const nav = sessions(page);
-    await newSessionButton(page).click();
+    await newDraft(page);
     await showFiles(page);
     const before = await width(nav);
     await drag(page, "Resize sessions", 100, "right");
@@ -802,7 +801,7 @@ test.describe("on a wide screen", () => {
 
   test("the file split leaves each side its minimum and comes back when the file reopens", async ({ ox: page }) => {
     const main = page.getByRole("main");
-    await newSessionButton(page).click();
+    await newDraft(page);
     await showFiles(page);
     await openFile(page, "src/a.txt");
     const [mainBefore, viewerBefore] = [await width(main), await width(viewer(page))];
@@ -842,7 +841,7 @@ test.describe("on a wide screen", () => {
     ox: page,
   }) => {
     await page.setViewportSize({ width: 960, height: 900 });
-    await newSessionButton(page).click();
+    await newDraft(page);
     await showFiles(page);
     await openFile(page, "src/a.txt");
     await near(page.getByRole("main"), await width(viewer(page)));
@@ -853,7 +852,7 @@ test.describe("on a wide screen", () => {
     ox: page,
   }) => {
     await page.setViewportSize({ width: 960, height: 900 });
-    await newSessionButton(page).click();
+    await newDraft(page);
     await showFiles(page);
     await drag(page, "Resize sessions", 2000);
     await near(page.getByRole("main"), 240);
@@ -895,7 +894,7 @@ test.describe("on a wide screen", () => {
 
   test("a draft's split carries to the session it creates", async ({ ox: page }) => {
     const main = page.getByRole("main");
-    await newSessionButton(page).click();
+    await newDraft(page);
     await showFiles(page);
     await openFile(page, "src/a.txt");
     await drag(page, "Resize file viewer", -100);
@@ -1115,7 +1114,7 @@ test("clicking a file opens it under its tab and marks its row, and another file
   mkdirSync(join(services.workspace, "src"));
   writeFileSync(join(services.workspace, "src", "a.txt"), "first\n");
   writeFileSync(join(services.workspace, "src", "b.txt"), "second\n");
-  await newSessionButton(page).click();
+  await newDraft(page);
   await showFiles(page);
   await entry(page, "src").click();
   const read = await hold(page, "workspace/read_file", { path: "src/a.txt" });
@@ -1142,7 +1141,7 @@ clocked(
   async ({ ox: page, services }) => {
     mkdirSync(join(services.workspace, "src"));
     writeFileSync(join(services.workspace, "src", "a.txt"), `first\n${`${"long line ".repeat(200)}\n`.repeat(400)}`);
-    await newSessionButton(page).click();
+    await newDraft(page);
     await showFiles(page);
     await openFile(page, "src/a.txt");
     await expect(pane(page)).toContainText("first");
@@ -1160,7 +1159,7 @@ clocked(
     await expect(pane(page)).toHaveJSProperty("scrollTop", 2000);
     await expect(pane(page)).toHaveJSProperty("scrollLeft", 300);
 
-    await newSessionButton(page).click();
+    await newDraft(page);
     await answered(page, "workspace/read_file", "src/a.txt");
     await expect(pane(page)).toHaveJSProperty("scrollTop", 2000);
     await expect(pane(page)).toHaveJSProperty("scrollLeft", 300);
@@ -1170,7 +1169,7 @@ clocked(
 clocked("a re-read of an unchanged file keeps the text selected in the pane", async ({ ox: page, services }) => {
   mkdirSync(join(services.workspace, "src"));
   writeFileSync(join(services.workspace, "src", "main.go"), "package main\n\n// note\nfunc main() {}\n");
-  await newSessionButton(page).click();
+  await newDraft(page);
   await showFiles(page);
   await openFile(page, "src/main.go");
   await expect(pane(page)).toContainText("func main() {}");
@@ -1187,7 +1186,7 @@ clocked("the pane shows changes on disk and why a deleted file cannot be read", 
   const a = join(services.workspace, "src", "a.txt");
   mkdirSync(join(services.workspace, "src"));
   writeFileSync(a, "first\n");
-  await newSessionButton(page).click();
+  await newDraft(page);
   await showFiles(page);
   await openFile(page, "src/a.txt");
   await expect(pane(page)).toHaveText("first");
@@ -1207,7 +1206,7 @@ test("the pane keeps a file's carriage returns", async ({ ox: page, services }) 
   const template = "let a = 1;\r\nlet b = 2;\rlet c = 3;\n\tindented\n";
   mkdirSync(join(services.workspace, "src"));
   writeFileSync(join(services.workspace, "src", "template.ts"), template);
-  await newSessionButton(page).click();
+  await newDraft(page);
   await showFiles(page);
   await openFile(page, "src/template.ts");
   await expect(tab(page)).toHaveText("template.ts");
@@ -1216,7 +1215,7 @@ test("the pane keeps a file's carriage returns", async ({ ox: page, services }) 
 
 test("the wrap button wraps long lines to the pane", async ({ ox: page, services }) => {
   writeFileSync(join(services.workspace, "a.txt"), `${"long line ".repeat(200)}\n`);
-  await newSessionButton(page).click();
+  await newDraft(page);
   await showFiles(page);
   await openFile(page, "a.txt");
   await expect(pane(page)).toContainText("long line");
@@ -1254,7 +1253,7 @@ test("the wrap choice holds for the next file and resets on reload", async ({ ox
 
 test("an unchanged Markdown file opens in Preview, and Source shows its text", async ({ ox: page, services }) => {
   writeFileSync(join(services.workspace, "notes.md"), "# Title\n\ntext\n");
-  await newSessionButton(page).click();
+  await newDraft(page);
   await showFiles(page);
   await openFile(page, "notes.md");
   await expect(pane(page).getByRole("heading", { name: "Title" })).toBeVisible();
@@ -1308,7 +1307,7 @@ test("a changed file opens in Diff, showing the whole file with its removed and 
   gitRepo(services.workspace);
   lines[9] = "changed 10";
   writeFileSync(path, `${lines.join("\n")}\n`);
-  await newSessionButton(page).click();
+  await newDraft(page);
   await showFiles(page);
   await openFile(page, "lines.txt");
   await expect(modeButton(page, "Diff")).toHaveAttribute("aria-pressed", "true");
@@ -1325,7 +1324,7 @@ test("a changed Markdown file offers Diff, Source, and Preview, and opens in Dif
   writeFileSync(join(services.workspace, "notes.md"), "# Title\n");
   gitRepo(services.workspace);
   writeFileSync(join(services.workspace, "notes.md"), "# Changed\n");
-  await newSessionButton(page).click();
+  await newDraft(page);
   await showFiles(page);
   await openFile(page, "notes.md");
   await expect(modes(page)).toMatchAriaSnapshot(`
@@ -1344,7 +1343,7 @@ test("a changed file waits for its changes to be listed before choosing Diff", a
   await showFiles(page);
   await openFile(page, "committed.txt");
   await expect(modeButton(page, "Diff")).toHaveAttribute("aria-pressed", "true");
-  await newSessionButton(page).click();
+  await newDraft(page);
   await expect(viewer(page)).toHaveCount(0);
   const listing = await hold(page, "workspace/list_changes", { session_id: first });
   await sessionButton(page, "first").click();
@@ -1360,7 +1359,7 @@ test("a changed file waits for its changes to be listed before choosing Diff", a
 clocked("the preview shows changes on disk", async ({ ox: page, services }) => {
   const notes = join(services.workspace, "notes.md");
   writeFileSync(notes, "# One\n");
-  await newSessionButton(page).click();
+  await newDraft(page);
   await showFiles(page);
   await openFile(page, "notes.md");
   await expect(pane(page).getByRole("heading")).toHaveText("One");
@@ -1373,7 +1372,7 @@ clocked(
   "a read error shows in the pane until the next read, and a binary file says so",
   async ({ ox: page, services }) => {
     writeFileSync(join(services.workspace, "bin.dat"), "a\0b");
-    await newSessionButton(page).click();
+    await newDraft(page);
     await showFiles(page);
     const read = await hold(page, "workspace/read_file", { path: "bin.dat" });
     await entry(page, "bin.dat").click();
@@ -1406,12 +1405,12 @@ test("each session and draft keeps its open file, and a draft's carries to its s
   await sessionButton(page, "second").click();
   await expect(tab(page)).toHaveText("b.txt");
 
-  await newSessionButton(page).click();
+  await newDraft(page);
   await expect(viewer(page)).toHaveCount(0);
   await openFile(page, "src/a.txt");
   await sessionButton(page, "second").click();
   await expect(tab(page)).toHaveText("b.txt");
-  await newSessionButton(page).click();
+  await newDraft(page);
   await expect(tab(page)).toHaveText("a.txt");
   await prompt(page).fill("third");
   await send(page).click();
