@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { For, Match, onCleanup, Show, Switch, untrack } from "solid-js";
+import { createSignal, For, Match, onCleanup, Show, Switch, untrack } from "solid-js";
 import { ApprovalRequest } from "./ApprovalRequest";
 import { AttachButton, createImageDrop, pasteImages, Thumbnails } from "./Attachments";
 import { Markdown } from "./Markdown";
@@ -55,9 +55,18 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
     const p = parent();
     return p !== undefined && ox.archived(p);
   };
+  let log!: HTMLDivElement;
+  // atBottom is whether the transcript is scrolled to its bottom, where it
+  // follows new output. Its scroll offset is zero there and negative above,
+  // and the tolerance absorbs fractional offsets.
+  const [atBottom, setAtBottom] = createSignal(true);
+  const toBottom = () => {
+    log.scrollTop = 0;
+  };
   const send = (event: SubmitEvent) => {
     event.preventDefault();
     control.send();
+    toBottom();
   };
   const drop = createImageDrop(control, () => !archived());
   // waiting is the pending approvals with no answer in flight. One being
@@ -75,18 +84,32 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
           <span class="directory">{props.session.directory}</span>
         </p>
       </header>
-      <div
-        class="log"
-        role="log"
-        aria-label="Transcript"
-        onClick={keepRowInPlace}
-        onDragOver={drop.handlers.onDragOver}
-        onDragLeave={drop.handlers.onDragLeave}
-        onDrop={drop.handlers.onDrop}
-      >
-        <div class="transcript">
-          <Transcript sessionId={props.session.id} snapshot={props.snapshot} outgoing={control.outgoing()} />
+      <div class="log-frame">
+        <div
+          ref={log}
+          class="log"
+          role="log"
+          aria-label="Transcript"
+          onClick={keepRowInPlace}
+          onScroll={(event) => setAtBottom(event.currentTarget.scrollTop > -1)}
+          onDragOver={drop.handlers.onDragOver}
+          onDragLeave={drop.handlers.onDragLeave}
+          onDrop={drop.handlers.onDrop}
+        >
+          <div class="transcript">
+            <Transcript sessionId={props.session.id} snapshot={props.snapshot} outgoing={control.outgoing()} />
+          </div>
         </div>
+        <Show when={!atBottom()}>
+          <button
+            type="button"
+            class="icon arrow-down jump"
+            aria-label="Jump to bottom"
+            title="Jump to bottom"
+            onClick={toBottom}
+            onPointerDown={keepPromptFocus}
+          />
+        </Show>
       </div>
       <Show when={control.error()}>{(error) => <p role="alert">{error()}</p>}</Show>
       <Show when={control.notice()}>{(notice) => <p role="status">{notice()}</p>}</Show>
@@ -114,7 +137,18 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
         >
           <Show when={waiting().length}>
             <section class="pending" aria-label="Waiting on you">
-              <For each={waiting()}>{(approval) => <ApprovalRequest approval={approval} control={control} />}</For>
+              <For each={waiting()}>
+                {(approval) => (
+                  <ApprovalRequest
+                    approval={approval}
+                    control={control}
+                    answer={(response) => {
+                      control.approve(approval.id, response);
+                      toBottom();
+                    }}
+                  />
+                )}
+              </For>
             </section>
           </Show>
           <form class={["box", { dragging: drop.dragging() }]} onSubmit={send} onPointerDown={keepPromptFocus}>

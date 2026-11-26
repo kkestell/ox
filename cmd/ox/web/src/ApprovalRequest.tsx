@@ -6,12 +6,12 @@ import { planOf, type Question, questionsOf, toolInputJSON, toolLabel, toolSubje
 
 type Choice = NonNullable<CardDraft["choice"]>;
 
-type Props = { approval: Approval; control: SessionControl };
+type Props = { approval: Approval; control: SessionControl; answer: (response: ApprovalResponse) => void };
 
-// ApprovalRequest answers one approval. An AskUserQuestion call shows its
-// questions as a form; any other approval shows a card. Its unsent answers
-// live in the session control, so they survive the view and return with an
-// approval whose answer oxd refuses.
+// ApprovalRequest answers one approval through answer. An AskUserQuestion
+// call shows its questions as a form; any other approval shows a card. Its
+// unsent answers live in the session control, so they survive the view and
+// return with an approval whose answer oxd refuses.
 export function ApprovalRequest(props: Props) {
   return (
     <Show
@@ -58,7 +58,7 @@ function PermissionCard(props: Props) {
       choice() === "allow"
         ? { behavior: "allow", updatedInput: snapshot(props.approval.request.input) }
         : { behavior: "deny", message: choice() === "other" ? reply().trim() : "Denied by user" };
-    props.control.approve(props.approval.id, response);
+    props.answer(response);
   };
 
   const radio = (value: Choice, label?: string) => (
@@ -146,14 +146,13 @@ function QuestionForm(props: Props & { questions: Question[] }) {
   const current = () => answerOf(questions[page()], answers[page()]) !== "";
   const answered = () => questions.every((q, i) => answerOf(q, answers[i]) !== "");
 
-  const send = (response: ApprovalResponse) => props.control.approve(props.approval.id, response);
   const submit = () => {
     if (!answered()) return;
     const result: Record<string, string> = {};
     questions.forEach((q, i) => {
       result[q.question] = answerOf(q, answers[i]);
     });
-    send({ behavior: "allow", updatedInput: { ...snapshot(props.approval.request.input), answers: result } });
+    props.answer({ behavior: "allow", updatedInput: { ...snapshot(props.approval.request.input), answers: result } });
   };
   // go shows another question and focuses its answer, or its first input, so
   // focus never rests on a hidden question or a newly disabled button.
@@ -245,7 +244,7 @@ function QuestionForm(props: Props & { questions: Question[] }) {
             {page() + 1} of {questions.length}
           </span>
         </Show>
-        <button type="button" onClick={() => send({ behavior: "deny", message: "User declined to answer" })}>
+        <button type="button" onClick={() => props.answer({ behavior: "deny", message: "User declined to answer" })}>
           Decline
         </button>
         <Show when={paged}>
