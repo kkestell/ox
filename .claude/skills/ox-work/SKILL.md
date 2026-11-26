@@ -12,7 +12,7 @@ Change Ox exactly as the plan or review says, and hand off changes whose tests a
 
 ## Child sessions
 
-When a plan splits into parts that edit disjoint files, and no part needs code another part writes, implement the parts concurrently in child sessions on Sonnet started with Ox's `create_session`, one part each. Examples are a server change and a web client change against a protocol the plan fixes, or independent fixes in separate packages. A split pays off only when each part is substantial.
+When a plan splits into parts that edit disjoint files, and no part needs code another part writes, implement the parts concurrently in child sessions started with Ox's `create_session`, one part each. Examples are a server change and a web client change against a protocol the plan fixes, or independent fixes in separate packages. A split pays off only when each part is substantial.
 
 Before you start the children:
 
@@ -35,7 +35,7 @@ Keep this work in this session:
 ## Establish the work
 
 1. Run `git status`. The change's worktree holds only this change: implementing a plan starts from one holding only that plan; fixing a review, from one holding only the reviewed change and its plan and review. If anything else is uncommitted, stop and report it to whoever started the work, as `AGENTS.md` ("Workflow") describes. Then read `<work> $ARGUMENTS </work>`. If it names neither a plan in `agents/plans/` nor a review in `agents/reviews/`, ask what to implement and stop. For a review, also read the plan it names.
-2. Read the open `bug` issues (`gh issue list --label bug`). For web client work, also read `cmd/ox/web/AGENTS.md`. Read the sections of `docs/functional-requirements.md`, `docs/architecture.md`, `docs/protocol.md`, and `docs/harnesses/claude-code.md` that cover the code the work touches. Skip what you already read while planning the change in this session.
+2. Read `AGENTS.md`, `docs/functional-requirements.md`, and the open `bug` issues (`gh issue list --label bug`). For web client work, also read `cmd/ox/web/AGENTS.md`. Read the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/harnesses/claude-code.md` that cover the code the work touches.
 
 ## Implement a plan
 

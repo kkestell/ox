@@ -16,12 +16,12 @@ Find the defects in Ox's behavior, and write a sweep that tells the user which t
 
 Correctness matters for what happens in normal use and for the requirements in `docs/functional-requirements.md`. Handling every case that could occur does not.
 
-Change no code, tests, or documentation. Edit and commit only the sweep file, open its pull request, and open, edit, and close `bug` issues for its findings. Start other agents only as [Child sessions](#child-sessions) describes.
+Change no code, tests, or documentation. Edit and commit only the sweep file, push it to `main`, and open, edit, and close `bug` issues for its findings. Start other agents only as [Child sessions](#child-sessions) describes.
 
 ## Gather the evidence
 
 1. Run `git status`. If the checkout has uncommitted changes, stop and report them to whoever asked for the sweep, as `AGENTS.md` ("Workflow") describes. Then read `<sweep_scope> $ARGUMENTS </sweep_scope>`. With no scope, sweep the whole repository. Record the revision and the state of the working tree you sweep.
-2. Read `docs/functional-requirements.md`, `docs/architecture.md`, `docs/protocol.md`, `docs/harnesses/claude-code.md`, and `cmd/ox/web/AGENTS.md`.
+2. Read `AGENTS.md`, `docs/functional-requirements.md`, `docs/architecture.md`, `docs/protocol.md`, `docs/harnesses/claude-code.md`, and `cmd/ox/web/AGENTS.md`.
 3. Read the earlier sweeps and audits in `agents/audits/` and the `bug` issues, open and closed (`gh issue list --label bug --state all`). Do not raise a finding an earlier sweep, audit, or review rejected unless the evidence its reason rests on has changed. Skip a defect that an open `bug` issue records, unless what the issue waits on has changed.
 4. Collect the defects fixed since the last sweep, or in all history if there is none: the closed `bug` issues, the `Fix` and `Record` findings in `agents/reviews/`, and the commits that fix behavior. Each one is a lead for the child whose workflow or input it touched, since the same failure often recurs on a neighboring path.
 
@@ -49,7 +49,7 @@ Change no code, tests, or documentation. Edit and commit only the sweep file, op
 8. Give each child its own detached worktree at the swept revision, made with `git worktree add --detach "${TMPDIR:-/tmp}/ox-sweep/<child>" HEAD`, with `cmd/ox/web/node_modules` linked from this checkout, so the children's builds, tests, and probes cannot collide. Remove the worktrees once the children have answered.
 9. Start one child per workflow group and input source, and the tests and docs child, and run them concurrently: an Ox session started with `create_session` on this session's model and effort, or another agent the user names, such as a Codex task on Sol. Brief each one in full; a child does not inherit this skill or your conversation. Give it:
    - Its worktree's absolute path and revision, and two sentences on what Ox is.
-   - The files to read first: `docs/functional-requirements.md`, the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/harnesses/claude-code.md` its scope touches, and `cmd/ox/web/AGENTS.md` for web client code.
+   - The files to read first: `AGENTS.md`, `docs/functional-requirements.md`, the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/harnesses/claude-code.md` its scope touches, and `cmd/ox/web/AGENTS.md` for web client code.
    - Its workflows and the requirements they deliver, by title, its input source and the code that reads it, or its tests and docs. Add the open `bug` issues and earlier rejections in its scope, and its leads from step 4. A lead is a suspicion, not a finding to prove.
    - The checks it can run. A child in a sandbox without network or sockets runs `go test -race ./<pkg>` and `node --test <file>` directly, since `make test` downloads golangci-lint, and reports browser, socket, and live checks as gaps.
    - Its concern from [Concerns](#concerns), the [child rules](#child-rules), and the [child report](#child-report), copied in full.
@@ -105,8 +105,8 @@ For a test, document, or dead code, give its exact locations, the callers and te
 16. Read this skill's `assets/_template.md` and write the sweep in `agents/audits/`, named `YYYY-MM-DD-<slug>.md`, where the slug is the branch name.
 17. Make each `Plan` finding complete enough to plan from: the defect, every place it appears, the evidence, the consequence, and the change at the cause. Record a candidate as a `Rejected` finding only when a later sweep or review would otherwise raise it again, and state the reason.
 18. Group the `Plan` findings into changes, each one pull request through the project workflow: findings whose fixes share an owner or the same files form one change, and small unrelated fixes share one change. A finding gets its own change only when its fix is large enough to earn a plan, work, and review cycle. List the changes in the sweep's Changes section, highest-severity first, with the one to take up first.
-19. Open one issue labeled `bug` for each change and each `Record` finding, with `gh issue create --label bug`: a title naming the defect, one sentence on what goes wrong, and a link to each finding's section, `https://github.com/kkestell/ox/blob/main/agents/audits/<file>#<section>`, which resolves once the sweep's pull request merges. A `Record` issue also states the defect's worst cost, how it was found, and what it waits on. Close the issue of an earlier finding that has landed or that this sweep shows does not exist, and edit one this sweep shows is stale.
-20. Rename the worktree's branch to the sweep's slug with `git branch -m <slug>`, if it has another name, and commit the sweep file alone, with the sweep's title as the subject. Run `git fetch` and `git rebase origin/main`, push with `git push -u origin <slug>`, and open the pull request with `gh pr create`. Its title is the sweep's title, and its body is one short paragraph on what the sweep found, then a list of the issues it opened, edited, or closed, with no other sections.
+19. Open one issue labeled `bug` for each change and each `Record` finding, with `gh issue create --label bug`: a title naming the defect, one sentence on what goes wrong, and a link to each finding's section, `https://github.com/kkestell/ox/blob/main/agents/audits/<file>#<section>`, which resolves once the sweep is pushed. A `Record` issue also states the defect's worst cost, how it was found, and what it waits on. Close the issue of an earlier finding that has landed or that this sweep shows does not exist, and edit one this sweep shows is stale.
+20. Commit the sweep file alone, with the sweep's title as the subject. Run `git fetch` and `git rebase origin/main`, and push straight to `main` with `git push origin HEAD:main`.
 21. Give the final response and stop.
 
 ## Final response
@@ -123,7 +123,7 @@ One or two sentences: what the sweep found, and the number of findings by severi
 
 **Sweep:** `agents/audits/YYYY-MM-DD-<slug>.md`
 
-**Pull request:** https://github.com/kkestell/ox/pull/N
+**Commit:** https://github.com/kkestell/ox/commit/<sha>
 
 **Changes:** each change, its findings, and its issue.
 

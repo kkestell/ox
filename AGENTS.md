@@ -219,21 +219,24 @@ need them cannot happen.
 ## Workflow
 
 The user settles the direction and rough scope of a change with a top-level
-agent, which plans and implements the change itself and starts a child session
-only to review it. It reads a child's final reply, which Ox delivers, and not
-the child's transcript. When Codex leads the workflow, use Codex child sessions on
-Sol 6.2. The Claude model choices below apply when Claude Code leads the
-workflow.
+agent, which carries it through child sessions. It reads a child's final reply,
+which Ox delivers, and not the child's transcript. When Codex leads the
+workflow, use Codex child sessions on Sol 6.2. The Claude model choices below
+apply when Claude Code leads the workflow.
 
 The main checkout stays on `main` and only pulls. Each change runs in an Ox
 worktree session started from the main checkout, and every step below runs in
 its worktree. A worktree session holds one change: everything the user asks for
 in it, related or not, is made in that worktree, on its one branch, and lands
-in its one pull request. Before its first commit, the top-level agent renames
+in its one pull request, except workflow and meta work. Before its first commit, the top-level agent renames
 the worktree's branch for the change with `git branch -m <slug>`. A child session
 that finds uncommitted work outside its brief, other than its sibling
-children's, stops and reports it to the session that started it. Changes reach
-`main` only by pull request, which the user merges.
+children's, stops and reports it to the session that started it. Features and
+bug fixes reach `main` only by pull request, which the user merges. Workflow
+and meta work goes straight to `main`: `AGENTS.md`, the skills in
+`.claude/skills`, and audits and sweeps in `agents/audits`. Its agent commits
+it alone, runs `git fetch` and `git rebase origin/main`, and pushes with
+`git push origin HEAD:main`.
 
 Several changes run at once, each with its own top-level agent. Those agents
 are peers: each decides for its own change, and they settle what their changes
@@ -245,33 +248,37 @@ alters there. A change to `AGENTS.md`, a skill, or a requirement reaches other
 worktrees only when they rebase, so its agent sends the new text to every
 other top-level agent with a change in flight.
 
-The steps scale with what the change can break. A small change adds no state,
-timer, retry, lock, stored field, protocol message, or requirement change: a
-style rule, copy, or a bug fix whose cause is known. The top-level agent makes
-a small change itself in its worktree, with the test that fails without it,
-runs the checks that observe it, and opens the pull request, with no plan or
-review session. Coral reviews every pull request. Every other change takes the
-steps below.
+The steps scale with what the change can break. A small change is one whose
+whole effect a single check observes, and that touches no state owner,
+protocol, persistence, harness driving, or requirement: a style rule, copy, or
+a contained bug fix with an obvious cause. The top-level agent makes a small
+change itself in its worktree, with the test that fails without it, runs the
+checks that observe it, and opens the pull request, with no plan or review
+session. Coral reviews every pull request. Every other change takes the steps
+below. When in doubt, a change is not small.
 
-1. The top-level agent runs `/ox-plan` itself. The user approves the plan's
-   requirement changes with its other product questions.
-2. The top-level agent runs `/ox-work` on the plan itself.
-3. A child session runs `/ox-review` on the uncommitted changes for the plan:
-   on Sonnet, or on Opus when the change alters a state owner, concurrency, or
-   how Ox drives Claude Code. The request passes on `/ox-work`'s final
-   response.
-4. The top-level agent runs `/ox-work fix` on the review. When the review has
-   a High or Medium `Fix` finding, the reviewing session runs
-   `/ox-review verify` on its review, and open findings or new regressions go
-   back to the top-level agent until the verdict is Ready to commit.
-5. The top-level agent checks the requirements diff and commits the change
-   with its plan and review in `agents/`. It runs `git fetch` and
-   `git rebase origin/main`, then re-runs the checks that observe the change
-   when the rebase brought in new commits. It pushes with
+1. A child session on Opus 5.5 at high effort runs `/ox-plan`. The user
+   approves the plan's requirement changes with its other product questions.
+2. The top-level agent sanity-checks the plan with a quick look at the code it
+   names, without redoing the planning.
+3. A child session on Sonnet or Opus, chosen by the change's complexity,
+   runs `/ox-work` on the plan.
+4. A child session on Opus or Sol runs `/ox-review` on the uncommitted
+   changes for the plan.
+5. The implementing session runs `/ox-work fix` on the review.
+6. The reviewing session runs `/ox-review verify` on its review. Open
+   findings or new regressions go back to the implementing session, until
+   the verdict is Ready to commit.
+7. The top-level agent sanity-checks the result, including the requirements
+   diff, and commits the change with its plan and review in `agents/`. It runs
+   `git fetch` and `git rebase origin/main`, then re-runs the checks that
+   observe the change when the rebase brought in new commits. When the rebase
+   resolved a conflict in code, the reviewing session runs `/ox-review verify`
+   on the rebased commit before the push. The top-level agent pushes with
    `git push -u origin <slug>` and opens the pull request with
    `gh pr create`, written as [Pull requests](#pull-requests) says, and gives
    the user its [handoff](#handoff).
-6. A pull request merges by squash, with its title as the commit subject.
+8. A pull request merges by squash, with its title as the commit subject.
    After the user merges, the top-level agent pulls and runs `make prune` in
    the main checkout. `make prune` removes each local branch whose pull
    request has merged, and its worktree.
@@ -290,8 +297,8 @@ as the request for `/ox-plan`.
 
 Every audit finding marked to plan, from `/ox-audit` or any other audit,
 becomes a GitHub issue labeled `bug` that links its section in the audit.
-The audit lands through its own pull request. The pull request that fixes a
-finding closes its issue. An audit or review that finds an issue stale
+The audit lands straight on `main`. The pull request that fixes a finding
+closes its issue. An audit or review that finds an issue stale
 corrects or closes it.
 
 ## Pull requests
