@@ -92,11 +92,11 @@ Session state is split strictly between `Server.mu` and per-session goroutines.
 Each connection handles incoming requests on separate goroutines, and each
 connection writes through its own queue.
 
-| Owner             | Owns                                                                                                                              | Access rule                                                                                                                                                                                                                                                                                                         |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Server.mu`       | Workspace and session membership, children's untaken reports, archived flags, shutdown flag, and admission to `Server.creations`. | Membership and archive changes and `workspace/list` queue messages under this lock so every connection sees one order. Never held while posting to a session, launching a harness, running git, or handing input to an agent.                                                                                       |
-| Session goroutine | Settings, resume token, history, active agent, park timer, a child's turn and its `told` state, `exiting`, and `deleting`.        | Every request reading or changing this state (including archive) posts an operation here. Responses are queued from here—at once, on the finishing event for Claude config changes, or after all members stop for archive—so each response lands strictly after updates it reflects and before updates it does not. |
-| Unarchive         | Archived flags only (under `Server.mu`).                                                                                          | Looks up the session, refuses a child with an archived parent, clears flags across its subtree, and queues its response in one critical section without posting to a goroutine.                                                                                                                                     |
+| Owner             | Owns                                                                                                                                             | Access rule                                                                                                                                                                                                                                                                                                         |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Server.mu`       | Workspace and session membership, children's untaken reports and `toParent`, archived flags, shutdown flag, and admission to `Server.creations`. | Membership and archive changes and `workspace/list` queue messages under this lock so every connection sees one order. Never held while posting to a session, launching a harness, running git, or handing input to an agent.                                                                                       |
+| Session goroutine | Settings, resume token, history, active agent, park timer, a child's step and accepted `send_message` IDs, `exiting`, and `deleting`.            | Every request reading or changing this state (including archive) posts an operation here. Responses are queued from here—at once, on the finishing event for Claude config changes, or after all members stop for archive—so each response lands strictly after updates it reflects and before updates it does not. |
+| Unarchive         | Archived flags only (under `Server.mu`).                                                                                                         | Looks up the session, refuses a child with an archived parent, clears flags across its subtree, and queues its response in one critical section without posting to a goroutine.                                                                                                                                     |
 
 Synchronous waits between session goroutines flow in one direction only, so
 cycles cannot happen:
@@ -185,34 +185,32 @@ A session belongs to its builder until its goroutine starts. Destroying a
 session refuses while it has any children; because children are created only on
 the parent's goroutine, none can appear during destroy.
 
-**Child turn reports (`told` state machine):**
+**Child turn reports:**
 
-Each child keeps its current turn's `told` state on its own goroutine and
-appends its reports under `Server.mu`. When a child calls `send_message` to its
-own parent, the call snapshots the child's current turn before waiting on the
-parent (or none if free). Once the parent accepts, it posts `toldSent` for that
-turn back to the child and answers the call from there, guaranteeing `toldSent`
-precedes the call's `tool_result`.
+A child is in its family while it has a `toParent`, which a delete clears before
+it stops the child. `toParent` holds the child's untaken reports, guarded by
+`Server.mu` beside its published state, and, owned by the child's goroutine, the
+`tool_use` IDs of the turn's latest step and of the `send_message` calls to the
+parent that the parent accepted. When the parent accepts such a call, the call
+posts its `tool_use` ID, from the request's `_meta`, to the child and answers
+from there, so the mark precedes the call's `tool_result`.
 
-```mermaid
-stateDiagram-v2
-  [*] --> untold
-  untold --> toldSent: parent accepts send_message for this turn
-  toldSent --> toldAnswered: next tool_result
-  toldAnswered --> untold: next tool_use
-```
-
-- On `result`: the child keeps a report unless `told` is set, then replaces the
-  turn (a message accepted after a turn ended marks only that ended turn).
-- On `exited`: the child always keeps a report and replaces the turn.
-- **Delivery:** Whenever a session leaves `running` or parks, a spawned
-  goroutine pings its parent (and itself if it has children). The delivery runs
-  on the parent's goroutine: if the parent is free, it reads its children's
-  published states and takes their reports in one critical section under
-  `Server.mu`, provided the parent is not archived, `oxd` is not shutting down,
-  and no child is `running`. After releasing the lock, it hands the reports to
-  the parent's agent as one message. Queued messages go first because a free
-  session has no untaken input.
+- On `result`: the child keeps a report unless an accepted call's ID is in the
+  step, then clears the step and the accepted IDs.
+- On `exited`: the child always keeps a report and clears them.
+- **Delivery:** `readyLocked` decides, from facts `Server.mu` guards, whether a
+  parent takes its reports: `oxd` is not shutting down, the parent is not
+  archived and is `idle`, `background`, or `parked`, no child in the family is
+  `running`, and some child holds a report. Every writer of those facts (a
+  published state, a report, an archived flag, a delete leaving the family)
+  calls `familyChangedLocked` in the same critical section, which posts a
+  delivery to the parent when `readyLocked` holds. The delivery runs on the
+  parent's goroutine, checks `readyLocked` again and takes the reports in one
+  critical section, and after releasing the lock hands them to the parent's
+  agent as one message. Queued messages go first because a ready session has no
+  untaken input.
+- An ending harness drops its untaken inputs without publishing a state, so a
+  child goes from its last state to `parked` with its exit report already kept.
 
 ### Worktrees
 

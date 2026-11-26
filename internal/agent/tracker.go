@@ -109,6 +109,16 @@ func (t *Tracker) DropFrom(i int) {
 	t.changed(was, last)
 }
 
+// End drops every untaken input with prompt_cancelled, for a harness that has
+// ended, and publishes no state: the session's parked update follows, so the
+// session never shows a state between its last one and parked.
+func (t *Tracker) End() {
+	for _, in := range t.queued {
+		t.publish(in.Update(UpdatePromptCancelled))
+	}
+	t.queued = nil
+}
+
 // Report records the harness's state. A change to the published state names
 // messageID, or is left for the harness's publisher to tag when it is empty.
 func (t *Tracker) Report(state, messageID string) {

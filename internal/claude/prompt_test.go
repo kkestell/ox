@@ -488,14 +488,14 @@ func TestStopDropsQueuedPrompt(t *testing.T) {
 	ids := sendHeld(t, a)
 	*updates = nil
 	a.Stop()
-	if len(*updates) != 4 || !cancelledToIdle((*updates)[:3], ids) || (*updates)[0].Text != "hello" ||
-		(*updates)[3].Type != "exited" || (*updates)[3].MessageID != ids[0] || (*updates)[3].Error != "Claude was stopped" {
+	if len(*updates) != 3 || !cancelled((*updates)[:2], ids) || (*updates)[0].Text != "hello" ||
+		(*updates)[2].Type != "exited" || (*updates)[2].MessageID != ids[0] || (*updates)[2].Error != "Claude was stopped" {
 		t.Fatalf("a stop did not drop the untaken inputs, oldest first, then end the written one: %+v", *updates)
 	}
 	if queued := a.Snapshot().Queued; len(queued) != 0 {
 		t.Fatalf("the snapshot reports an input after exit: %+v", queued)
 	}
-	if err := a.Send(prompt("late")); !errors.Is(err, agent.ErrExited) || len(*updates) != 4 {
+	if err := a.Send(prompt("late")); !errors.Is(err, agent.ErrExited) || len(*updates) != 3 {
 		t.Fatalf("an agent that has ended accepted an input: %v, %+v", err, *updates)
 	}
 }
@@ -843,7 +843,7 @@ func TestInputWaitsForStartup(t *testing.T) {
 	ids = sendHeld(t, a)
 	*updates = nil
 	a.Stop()
-	if !a.Exited() || !cancelledToIdle(*updates, ids) {
+	if !a.Exited() || !cancelled(*updates, ids) {
 		t.Fatalf("a stop while Claude starts did not drop the held inputs alone: %+v", *updates)
 	}
 
@@ -852,7 +852,7 @@ func TestInputWaitsForStartup(t *testing.T) {
 	ids = sendHeld(t, a)
 	*updates = nil
 	a.Handle(processExit{err: errors.New("exit status 1")})
-	if len(*updates) != 4 || !cancelledToIdle((*updates)[:3], ids) || (*updates)[3].Type != "exited" || (*updates)[3].MessageID != ids[1] {
+	if len(*updates) != 3 || !cancelled((*updates)[:2], ids) || (*updates)[2].Type != "exited" || (*updates)[2].MessageID != ids[1] {
 		t.Fatalf("a failed start did not drop the held inputs and name the latest: %+v", *updates)
 	}
 }

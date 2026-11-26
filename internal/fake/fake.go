@@ -322,7 +322,7 @@ func (a *Agent) Parkable() bool {
 
 func (a *Agent) Stop() {
 	a.withdraw()
-	a.tracker.DropFrom(0)
+	a.tracker.End()
 	a.steps, a.then = nil, nil
 	if a.prompt != "" {
 		a.publish(agent.Update{Type: agent.UpdateExited, Error: "stopped"})

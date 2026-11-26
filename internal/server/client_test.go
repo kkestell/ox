@@ -212,13 +212,24 @@ func attach(t *testing.T, s *Server, sessionID string) *client {
 // tool calls an MCP tool and returns its text and whether it is a refusal.
 func (c *client) tool(name string, arguments any) (string, bool) {
 	c.t.Helper()
+	return c.toolUse("", name, arguments)
+}
+
+// toolUse calls an MCP tool as Claude Code does for the tool_use with
+// toolUseID, and returns its text and whether it is a refusal.
+func (c *client) toolUse(toolUseID, name string, arguments any) (string, bool) {
+	c.t.Helper()
 	var result struct {
 		Content []struct {
 			Text string `json:"text"`
 		} `json:"content"`
 		IsError bool `json:"isError"`
 	}
-	raw := c.call("tools/call", map[string]any{"name": name, "arguments": arguments})
+	params := map[string]any{"name": name, "arguments": arguments}
+	if toolUseID != "" {
+		params["_meta"] = map[string]string{"claudecode/toolUseId": toolUseID}
+	}
+	raw := c.call("tools/call", params)
 	if err := json.Unmarshal(raw, &result); err != nil || len(result.Content) != 1 {
 		c.t.Fatalf("%s returned %s", name, raw)
 	}

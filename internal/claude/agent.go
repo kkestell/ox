@@ -418,7 +418,7 @@ func (a *Agent) end(reason string) {
 	case available, *configuring, timedOut, exited:
 		// No input names the end.
 	}
-	a.tracker.DropFrom(0)
+	a.tracker.End()
 	// Ending writes nothing, so a configuration ends here rather than
 	// through endConfiguration.
 	switch p := a.phase.(type) {
