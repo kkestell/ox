@@ -231,8 +231,8 @@ function Transcript(props: { sessionId: string; snapshot: SessionSnapshot; outgo
               {(reasoning) => (
                 <details class="reasoning" aria-label="Thinking">
                   <summary>
-                    <span class="marker brain" aria-hidden="true" />
                     <span class="name">Thinking</span>
+                    <span class="icon chevron-right" aria-hidden="true" />
                   </summary>
                   <Markdown text={reasoning().text} />
                 </details>
