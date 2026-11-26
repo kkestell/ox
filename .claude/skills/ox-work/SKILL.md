@@ -49,7 +49,7 @@ Keep this work in this session:
 
 ## Prove the tests
 
-7. Run each new or changed test without the change and confirm it fails: for a plan, against the base revision, `git merge-base origin/main HEAD`, checked out detached in a temporary worktree that you remove afterwards; for a review's fix, with that fix reverted. Failing at its first assertion is enough. Rewrite a test that passes without the change until it fails.
+7. Run each new or changed test without the change and confirm it fails at an assertion. Work in the change's tree and run only those tests, with `go test -run` or `playwright test -g`. Take out the change and keep the tests: save the change's non-test files as a patch (`git add -N .`, then `git diff <base> -- <files> > <patch>`), reverse it with `git apply -R <patch>`, run the tests, and restore it with `git apply <patch>`. For a plan, `<base>` is `git merge-base origin/main HEAD`; for a review's fix, reverse only that fix. When a test cannot build without the change, reverse only the part of the change its assertions check. A changed test that only drops assertions needs no run. Rewrite a test that passes without the change until it fails.
 8. Run the checks `AGENTS.md` ("Verification") requires for the change on the final tree, after your last edit, and fix each failure it causes. Report a check as blocked only when something you cannot change prevents it, and name the blocker.
 
 ## Final response
@@ -68,7 +68,7 @@ One or two sentences: what the change does, and whether it is ready for review.
 
 **Findings:** F1 fixed; F2 recorded as #123; F3 not fixed: its defect does not exist, because …
 
-**Tests proved:** `TestHeldPromptDropped` and `TestSendAfterEnd` fail on the base revision.
+**Tests proved:** `TestHeldPromptDropped` and `TestSendAfterEnd` fail without the change.
 
 **Open choices:** each choice the plan or review left open that a reviewer should check.
 
