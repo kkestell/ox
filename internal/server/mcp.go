@@ -142,7 +142,7 @@ func init() {
 		},
 		{
 			name: "list_sessions",
-			description: "List Ox's other sessions that are not archived, with each one's ID, label, workspace, harness, settings, and state. " +
+			description: "List Ox's other sessions that are not archived, with each one's ID, label, workspace, directory, worktree if it has one, harness, settings, and state. " +
 				"A parked session has no process running; a message to it starts it.",
 			inputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 			readOnly:    true,
@@ -230,6 +230,8 @@ func listSessions(s *Server, caller *session, _ json.RawMessage, respond func(st
 		SessionID string `json:"session_id"`
 		Label     string `json:"label"`
 		Workspace string `json:"workspace"`
+		Directory string `json:"directory"`
+		Worktree  string `json:"worktree,omitempty"`
 		Harness   string `json:"harness"`
 		agent.Settings
 		State string `json:"state"`
@@ -254,7 +256,8 @@ func listSessions(s *Server, caller *session, _ json.RawMessage, respond func(st
 			done := make(chan struct{})
 			if !sess.post(func() {
 				defer close(done)
-				entries[i] = &entry{SessionID: sess.id, Label: labels[i], Workspace: sess.workspace, Harness: sess.harness, Settings: sess.settings, State: sess.snapshot().State}
+				entries[i] = &entry{SessionID: sess.id, Label: labels[i], Workspace: sess.workspace,
+					Directory: sess.directory, Worktree: sess.worktree, Harness: sess.harness, Settings: sess.settings, State: sess.snapshot().State}
 			}) {
 				return // destroyed
 			}
@@ -704,7 +707,7 @@ func messageInput(sender *session, label string, recipient *session, text string
 	}
 	return agent.Input{
 		Text: text, From: sender.id, FromLabel: label,
-		Content: fmt.Sprintf("Message from Ox session %s (\"%s\") in %s:\n\n%s\n\n%s", sender.id, label, sender.workspace, text, closing),
+		Content: fmt.Sprintf("Message from Ox session %s (\"%s\") in %s:\n\n%s\n\n%s", sender.id, label, sender.directory, text, closing),
 	}
 }
 
