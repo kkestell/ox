@@ -13,12 +13,16 @@ GOLANGCI_LINT := bin/golangci-lint-$(GOLANGCI_LINT_VERSION)
 -include $(dir $(shell git rev-parse --path-format=absolute --git-common-dir)).env
 export OPENROUTER_API_KEY
 
+# dev runs dev.mjs by its absolute path, which restart matches to find this
+# checkout's stack.
+DEV := node $(CURDIR)/cmd/ox/web/dev.mjs
+
 dev: build
-	GORACE=halt_on_error=1 node cmd/ox/web/dev.mjs
+	GORACE=halt_on_error=1 $(DEV)
 
 # restart rebuilds and restarts what changed in this checkout's make dev.
 restart:
-	kill -USR1 "$$(cat .state/dev.pid)"
+	@pkill -USR2 -xf '$(DEV)' || { echo "make dev is not running in $(CURDIR)" >&2; exit 1; }
 
 build: web
 	go build -race -o bin/ ./cmd/ox ./cmd/ox-mcp ./cmd/oxd ./cmd/ur
