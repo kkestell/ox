@@ -76,7 +76,7 @@ const showFiles = (page: Page) => showPanel(page, "Files");
 async function showChanges(page: Page) {
   await showPanel(page, "Changes");
   await changesList(page)
-    .getByRole("button", { name: /\+\d+ −\d+|git repository/ })
+    .getByRole("button", { name: /^master |git repository/ })
     .click();
   await expect(changesTab(page)).toHaveAttribute("aria-selected", "true");
 }
@@ -634,8 +634,13 @@ test("the Changes tab lists each changed file with its counts and diff", async (
 });
 
 test("the Changes tab's label counts the lines added and removed", async ({ ox: page, services }) => {
-  await showEdit(page, services.workspace);
-  await expect(changesTab(page)).toHaveText(/^Changes\s*\+2\s*−1$/);
+  gitRepo(services.workspace);
+  writeFileSync(join(services.workspace, "committed.txt"), "edited\nmore\n");
+  // A file whose diff is over 1 MiB, too large to show, still counts.
+  writeFileSync(join(services.workspace, "large.txt"), `${"x".repeat(15)}\n`.repeat(70000));
+  await newDraft(page);
+  await showChanges(page);
+  await expect(changesTab(page)).toHaveText(/^Changes\s*\+70002\s*−1$/);
 });
 
 test("the panel's Changes list shows the branch, the totals, and each changed file", async ({ ox: page, services }) => {
@@ -648,9 +653,9 @@ test("the panel's Changes list shows the branch, the totals, and each changed fi
       - button "master +2 −1"
       - list:
         - listitem:
-          - button "committed.txt"
+          - button "committed.txt +2 −1"
         - listitem:
-          - button "untracked.txt"
+          - button "untracked.txt +0 −0"
   `);
   await expect(changesTab(page)).toHaveCount(0);
 });
@@ -693,7 +698,38 @@ test("a file in the Changes list opens the Changes tab at its card", async ({ ox
   await changesList(page).getByRole("button", { name: "file-19.txt" }).click();
   await expect(changesTab(page)).toHaveAttribute("aria-selected", "true");
   await expect(change(page, "file-19.txt")).toBeInViewport();
-  await expect(change(page, "committed.txt")).not.toBeInViewport();
+  await expect(change(page, "file-00.txt")).not.toBeInViewport();
+  // The session keeps the Changes tab at its card through switching sessions.
+  await fileTab(page, "New session").click();
+  await prompt(page).fill("first");
+  await send(page).click();
+  await expect(replies(page)).toHaveText(["You said: first"]);
+  await changesTab(page).click();
+  await newSession(page, "second");
+  await sessionButton(page, "first").click();
+  await expect(changesTab(page)).toHaveAttribute("aria-selected", "true");
+  await expect(change(page, "file-19.txt")).toBeInViewport();
+});
+
+clocked("a revealed file that leaves and returns keeps the Changes tab's scroll", async ({ ox: page, services }) => {
+  gitRepo(services.workspace);
+  for (let i = 0; i < 20; i++) {
+    writeFileSync(join(services.workspace, `file-${String(i).padStart(2, "0")}.txt`), "line\n".repeat(30));
+  }
+  await newDraft(page);
+  await showPanel(page, "Changes");
+  await changesList(page).getByRole("button", { name: "file-19.txt" }).click();
+  await expect(change(page, "file-19.txt")).toBeInViewport();
+  await change(page, "file-00.txt").scrollIntoViewIfNeeded();
+  await expect(change(page, "file-00.txt")).toBeInViewport();
+  const revealed = join(services.workspace, "file-19.txt");
+  rmSync(revealed);
+  await page.clock.runFor(1000);
+  await expect(change(page, "file-19.txt")).toHaveCount(0);
+  writeFileSync(revealed, "line\n".repeat(30));
+  await page.clock.runFor(1000);
+  await expect(change(page, "file-19.txt")).toHaveCount(1);
+  await expect(change(page, "file-00.txt")).toBeInViewport();
 });
 
 test("a draft's Changes tab carries to its session, which keeps it through switching sessions and loses it on reload", async ({
