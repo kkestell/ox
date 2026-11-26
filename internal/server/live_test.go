@@ -130,6 +130,29 @@ func (l *live) idle(id string) {
 	}
 }
 
+// stop interrupts session id and fails unless the reply follows the state
+// that ends the stopped turn.
+func (l *live) stop(id string) {
+	l.t.Helper()
+	l.c.call("session/interrupt", map[string]string{"session_id": id})
+	for _, m := range l.c.backlog {
+		var u agent.Update
+		json.Unmarshal(m.Params, &u)
+		if m.Method == "session/update" && m.sessionID() == id && u.Type == "state" && (u.State == "idle" || u.State == "background") {
+			return
+		}
+	}
+	var seen []string
+	for _, m := range l.c.backlog {
+		var u agent.Update
+		json.Unmarshal(m.Params, &u)
+		if m.sessionID() == id {
+			seen = append(seen, u.Type+" "+u.State)
+		}
+	}
+	l.t.Errorf("session/interrupt answered before the stopped turn ended, after %q", seen)
+}
+
 // parked reports whether session id has parked since the client last
 // forgot it.
 func (l *live) parked(id string) bool {
@@ -578,20 +601,18 @@ func TestLive(t *testing.T) {
 		if u := l.c.update(a, "text_delta"); u.MessageID != sent.MessageID {
 			l.t.Errorf("the prompt's reply was attributed to %q, not %q", u.MessageID, sent.MessageID)
 		}
-		l.c.call("session/interrupt", map[string]string{"session_id": a})
+		l.stop(a)
 		if u := l.c.update(a, "result"); !u.Result.IsError || u.Result.Text != "Interrupted" || u.MessageID != sent.MessageID {
 			l.t.Errorf("an interrupted turn ended with %+v", u)
 		}
-		l.idle(a)
 
 		// An interrupt right after a send stops the prompt.
 		l.c.forget(a)
 		l.c.call("session/send", map[string]string{"session_id": a, "text": "Write the numbers from 1 to 2000 in words, one per line."})
-		l.c.call("session/interrupt", map[string]string{"session_id": a})
+		l.stop(a)
 		if r := l.c.update(a, "result").Result; !r.IsError || r.Text != "Interrupted" {
 			l.t.Errorf("a prompt interrupted on arrival ended with %+v", r)
 		}
-		l.idle(a)
 	})
 
 	section("steering", func(l *live) {

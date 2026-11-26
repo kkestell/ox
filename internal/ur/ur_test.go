@@ -396,6 +396,22 @@ func TestStreamErrors(t *testing.T) {
 	}
 }
 
+// interrupt interrupts the agent and fails unless the answer came, without
+// error, before Interrupt returned and after every update it published.
+func interrupt(t *testing.T, r *run) {
+	t.Helper()
+	answered := -1
+	r.agent.Interrupt(func(err error) {
+		if err != nil {
+			t.Errorf("Interrupt answered %v", err)
+		}
+		answered = len(r.updates)
+	})
+	if answered != len(r.updates) {
+		t.Fatalf("Interrupt answered after %d of %d updates", answered, len(r.updates))
+	}
+}
+
 func TestInterrupt(t *testing.T) {
 	r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, req *http.Request, n int) {
 		if n > 0 {
@@ -412,9 +428,7 @@ func TestInterrupt(t *testing.T) {
 	r.until(func(u agent.Update) bool { return u.Type == agent.UpdateTextDelta })
 	r.send("p2", "next")
 	r.updates = nil
-	if err := r.agent.Interrupt(); err != nil {
-		t.Fatal(err)
-	}
+	interrupt(t, r)
 	var kinds []string
 	for _, u := range r.updates {
 		kinds = append(kinds, u.Type+" "+u.MessageID+" "+u.State)
@@ -447,8 +461,9 @@ func TestInterrupt(t *testing.T) {
 		t.Errorf("history after the interrupt %q", got)
 	}
 	r.updates = nil
-	if err := r.agent.Interrupt(); err != nil || len(r.updates) != 0 {
-		t.Errorf("Interrupt while idle: %v, published %+v", err, r.updates)
+	interrupt(t, r)
+	if len(r.updates) != 0 {
+		t.Errorf("Interrupt while idle published %+v", r.updates)
 	}
 }
 
@@ -1275,9 +1290,7 @@ func TestShellInterrupt(t *testing.T) {
 		approval := r.until(func(u agent.Update) bool { return u.Type == agent.UpdateApproval })
 		r.send("p2", "waiting")
 		r.updates = nil
-		if err := r.agent.Interrupt(); err != nil {
-			t.Fatal(err)
-		}
+		interrupt(t, r)
 		want := []string{"prompt_cancelled p2", "approval_cancelled p1", "result p1", "state p1 idle"}
 		if got := kinds(r.updates); !slices.Equal(got, want) {
 			t.Fatalf("interrupt published %q, not %q", got, want)
@@ -1321,9 +1334,7 @@ func TestShellInterrupt(t *testing.T) {
 		r.until(func(u agent.Update) bool { return u.Type == agent.UpdateToolUse })
 		waitFile(t, filepath.Join(r.workspace, "child"))
 		r.updates = nil
-		if err := r.agent.Interrupt(); err != nil {
-			t.Fatal(err)
-		}
+		interrupt(t, r)
 		if got := kinds(r.updates); !slices.Equal(got, []string{"result p1", "state p1 idle"}) {
 			t.Fatalf("interrupt published %q", got)
 		}
@@ -1446,9 +1457,7 @@ func TestShellReaped(t *testing.T) {
 	r.send("p1", "go")
 	r.until(func(u agent.Update) bool { return u.Type == agent.UpdateToolUse })
 	waitFile(t, escaped)
-	if err := r.agent.Interrupt(); err != nil {
-		t.Fatal(err)
-	}
+	interrupt(t, r)
 	r.agent.Stop()
 	reaped := r.agent.Reaped()
 	select {

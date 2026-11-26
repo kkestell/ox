@@ -40,8 +40,10 @@ type Agent interface {
 	Approve(requestID string, response json.RawMessage) error
 	// Interrupt stops the running turn and drops every input the harness has
 	// not taken, each with prompt_cancelled. The turn's end arrives as
-	// updates; an idle agent has no turn to stop.
-	Interrupt() error
+	// updates; an idle agent has no turn to stop. Interrupt calls done, now or
+	// from a later Handle, once the stopped turn has ended and its updates are
+	// published, or at once when there is nothing to stop.
+	Interrupt(done func(error))
 	// Configure applies the changed fields and calls done with the outcome,
 	// now or from a later Handle. Already applied changes are reported through
 	// OnConfigured even if a later change fails. Configure reports ErrBusy unless

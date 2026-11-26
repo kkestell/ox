@@ -26,6 +26,20 @@ func (r *recorder) record(update agent.Update) {
 	*r = append(*r, update)
 }
 
+// stopReply is an interrupt's answer: whether it came, its error, and how
+// many updates were recorded when it did.
+type stopReply struct {
+	answered bool
+	err      error
+	after    int
+}
+
+func interrupt(a *Agent, updates *recorder) *stopReply {
+	r := &stopReply{}
+	a.Interrupt(func(err error) { r.answered, r.err, r.after = true, err, len(*updates) })
+	return r
+}
+
 // startingAgent returns an agent that writes to input and runs proc, whose
 // exit arrives on events, before Claude has answered initialize.
 func startingAgent(input io.Writer, events chan agent.Event, proc *process) (*Agent, *recorder) {
@@ -196,16 +210,23 @@ func TestPromptReleasedAfterClaudeTakesIt(t *testing.T) {
 		t.Fatalf("idle before Claude took the prompt released it: %+v, %+v", a.Snapshot(), *updates)
 	}
 	input.Reset()
-	if err := a.Interrupt(); err != nil || !strings.Contains(input.String(), `"subtype":"interrupt"`) {
-		t.Fatalf("an interrupt before Claude took the prompt was not sent: %v, %q", err, input.String())
+	stop := interrupt(a, updates)
+	if stop.answered || !strings.Contains(input.String(), `"subtype":"interrupt"`) {
+		t.Fatalf("an interrupt before Claude took the prompt was not sent, or answered before its turn ended: %+v, %q", stop, input.String())
 	}
 
 	// A turn Claude starts itself while the prompt waits is not the prompt's.
 	output(t, a, `{"type":"command_lifecycle","command_uuid":"11111111-1111-4111-8111-111111111111","state":"started"}`)
 	output(t, a, `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"tick"}}}`)
+	if stop.answered {
+		t.Fatalf("the interrupt was answered before Claude reported idle: %+v", stop)
+	}
 	state(t, a, "idle")
 	if len(*updates) != 1 || (*updates)[0].MessageID != "" || a.Snapshot().State != "running" || !slices.Equal(queuedIDs(a), []string{id}) {
 		t.Fatalf("Claude's own turn took the waiting prompt's identity: %+v, %+v", a.Snapshot(), *updates)
+	}
+	if !stop.answered || stop.err != nil || stop.after != len(*updates) {
+		t.Fatalf("Claude's idle did not answer the interrupt after its updates: %+v, %+v", stop, *updates)
 	}
 	*updates = nil
 
@@ -376,8 +397,8 @@ func TestStopDropsQueuedPrompt(t *testing.T) {
 	}
 	input.Reset()
 	*updates = nil
-	if err := a.Interrupt(); err != nil || !strings.Contains(input.String(), `"cancel_queued":true`) {
-		t.Fatalf("an interrupt did not drop the written prompt: %v, %q", err, input.String())
+	if stop := interrupt(a, updates); stop.answered || !strings.Contains(input.String(), `"cancel_queued":true`) {
+		t.Fatalf("an interrupt did not drop the written prompt, or was answered at once: %+v, %q", stop, input.String())
 	}
 	if !cancelled(*updates, []string{held[0].MessageID, held[1].MessageID}) || !slices.Equal(queuedIDs(a), []string{id}) {
 		t.Fatalf("an interrupt did not drop the held inputs at once, oldest first: %+v, %v", *updates, queuedIDs(a))
@@ -411,9 +432,7 @@ func TestStopDropsQueuedPrompt(t *testing.T) {
 	if id, err = sendTestPrompt(a, "steer"); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.Interrupt(); err != nil {
-		t.Fatal(err)
-	}
+	stop := interrupt(a, updates)
 	input.Reset()
 	late, err := sendTestPrompt(a, "late")
 	if err != nil || input.Len() != 0 {
@@ -424,10 +443,20 @@ func TestStopDropsQueuedPrompt(t *testing.T) {
 	if ids := written(t, input); !cancelled(*updates, []string{id}) || !slices.Equal(ids, []string{late}) || !slices.Equal(queuedIDs(a), []string{late}) {
 		t.Fatalf("Claude's cancelled did not write the input sent after the interrupt: %v, %+v", ids, *updates)
 	}
+	// Claude can take that input before it reports idle, which ends the
+	// stopped turn.
+	output(t, a, `{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_tools"}`)
+	if stop.answered {
+		t.Fatalf("the interrupt was answered at the stopped turn's result: %+v", stop)
+	}
+	output(t, a, `{"type":"command_lifecycle","command_uuid":"`+late+`","state":"started"}`)
+	if !stop.answered || stop.err != nil || stop.after != len(*updates) {
+		t.Fatalf("taking the next input did not answer the interrupt: %+v, %+v", stop, *updates)
+	}
 
 	a, input, updates, first = promptingAgent(t)
-	if err := a.Interrupt(); err != nil || !strings.Contains(input.String(), `"subtype":"interrupt"`) || strings.Contains(input.String(), "cancel_queued") {
-		t.Fatalf("an interrupt with nothing queued changed: %v, %q", err, input.String())
+	if stop := interrupt(a, updates); stop.answered || !strings.Contains(input.String(), `"subtype":"interrupt"`) || strings.Contains(input.String(), "cancel_queued") {
+		t.Fatalf("an interrupt with nothing queued changed: %+v, %q", stop, input.String())
 	}
 	output(t, a, `{"type":"command_lifecycle","command_uuid":"`+first+`","state":"cancelled"}`)
 	if len(*updates) != 0 {
@@ -436,6 +465,23 @@ func TestStopDropsQueuedPrompt(t *testing.T) {
 	state(t, a, "idle")
 	if len(*updates) != 1 || (*updates)[0].Type != "state" || (*updates)[0].MessageID != first {
 		t.Fatalf("the release did not name the interrupted prompt %s: %+v", first, *updates)
+	}
+
+	// Claude can take the written prompt after the interrupt, only to stop
+	// it, which does not end the stopped turn.
+	a, _, updates = testAgent()
+	if id, err = sendTestPrompt(a, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	stop = interrupt(a, updates)
+	output(t, a, `{"type":"command_lifecycle","command_uuid":"`+id+`","state":"started"}`)
+	output(t, a, `{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_streaming"}`)
+	if stop.answered {
+		t.Fatalf("taking the interrupted prompt answered the interrupt: %+v", stop)
+	}
+	state(t, a, "idle")
+	if !stop.answered || stop.after != len(*updates) {
+		t.Fatalf("idle did not answer the interrupt after its update: %+v, %+v", stop, *updates)
 	}
 
 	a, _, updates = stoppableAgent(t)
@@ -605,6 +651,15 @@ func TestUnexpectedExitIsReported(t *testing.T) {
 	if !a.Exited() || len(*updates) != 0 {
 		t.Fatalf("a requested stop was reported as a failure: %+v", *updates)
 	}
+
+	// Claude's exit answers an interrupt waiting for its turn to end.
+	a, _, updates = testAgent()
+	state(t, a, "running")
+	stop := interrupt(a, updates)
+	a.Handle(processExit{err: errors.New("exit status 1")})
+	if !stop.answered || stop.err != nil || stop.after != len(*updates) {
+		t.Fatalf("an exit did not answer the waiting interrupt after its update: %+v, %+v", stop, *updates)
+	}
 }
 
 // Stop ends the agent at once, even when Claude ignores SIGTERM: Ox kills it
@@ -719,8 +774,8 @@ func TestInputWaitsForStartup(t *testing.T) {
 	a, updates = startingAgent(input, make(chan agent.Event), nil)
 	ids := sendHeld(t, a)
 	*updates = nil
-	if err := a.Interrupt(); err != nil {
-		t.Fatal(err)
+	if stop := interrupt(a, updates); !stop.answered || stop.err != nil {
+		t.Fatalf("an interrupt with nothing to stop was not answered at once: %+v", stop)
 	}
 	if !cancelledToIdle(*updates, ids) || input.Len() != 0 || a.Snapshot().State != "idle" || len(a.Snapshot().Queued) != 0 {
 		t.Fatalf("an interrupt while Claude starts did not drop the held inputs alone: %+v, %q, %+v", *updates, input, a.Snapshot())
@@ -741,9 +796,7 @@ func TestInputWaitsForStartup(t *testing.T) {
 	state(t, a, "running")
 	ids = sendHeld(t, a)
 	*updates = nil
-	if err := a.Interrupt(); err != nil {
-		t.Fatal(err)
-	}
+	stop := interrupt(a, updates)
 	if !cancelled(*updates, ids) || !strings.Contains(input.String(), `"subtype":"interrupt"`) || strings.Contains(input.String(), "cancel_queued") {
 		t.Fatalf("an interrupt during a startup turn did not drop the held inputs and stop the turn: %+v, %q", *updates, input)
 	}
@@ -752,6 +805,9 @@ func TestInputWaitsForStartup(t *testing.T) {
 	state(t, a, "idle")
 	if len(*updates) != 2 || (*updates)[0].Type != "result" || (*updates)[0].Result.Text != "Interrupted" || (*updates)[1].State != "idle" {
 		t.Fatalf("the stopped startup turn did not end as interrupted and idle: %+v", *updates)
+	}
+	if !stop.answered || stop.after != 2 {
+		t.Fatalf("the stopped startup turn's idle did not answer the interrupt: %+v", stop)
 	}
 
 	// A startup turn that fails publishes its error, and the start goes on.

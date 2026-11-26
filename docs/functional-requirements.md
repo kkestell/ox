@@ -95,11 +95,13 @@ title.
   the end of the transcript and Send is unavailable, as it is while a message
   from another session is pending or waiting; once taken, it becomes a normal
   prompt where Claude took it.
-- **Stop.** While Claude works, a Stop button shows. Stop ends the turn, the
-  transcript shows it was interrupted, and the session takes prompts again; a
-  pending prompt is dropped, and its text returns to the composer of the page
-  that sent it, ahead of anything typed since. Messages from other sessions that
-  Claude has not taken are dropped, and their senders are not told.
+- **Stop.** While Claude works and the composer is empty, the Send button
+  becomes Stop. Once pressed, Stop does not return until the turn it stopped has
+  ended. Stop ends the turn, the transcript shows it was interrupted, and the
+  session takes prompts again; a pending prompt is dropped, and its text returns
+  to the composer of the page that sent it, ahead of anything typed since.
+  Messages from other sessions that Claude has not taken are dropped, and their
+  senders are not told.
 
 ## Transcript
 
