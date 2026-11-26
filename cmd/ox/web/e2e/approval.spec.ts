@@ -3,7 +3,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { haikuConfig } from "./services";
-import { allow, expect, newSessionButton, permissionMode, prompt, stop, test, toolCall, waiting } from "./ui";
+import { allow, expect, newDraft, permissionMode, prompt, stop, test, toolCall, waiting } from "./ui";
 
 test.skip(!process.env.OX_LIVE, "set OX_LIVE=1 to run against real Claude with Haiku");
 test.setTimeout(180_000);
@@ -17,7 +17,7 @@ test.beforeEach(({ services }) => {
 });
 
 test("Allow runs the tool", async ({ ox: page, services }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   await expect(permissionMode(page)).toHaveValue("manual");
   const approval = waiting(page).getByRole("article", { name: "Allow Bash?" });
   await prompt(page).fill("Run the Bash command `touch allowed.txt`, then reply with just the word done.");
@@ -30,7 +30,7 @@ test("Allow runs the tool", async ({ ox: page, services }) => {
 });
 
 test("a typed reply denies with that message", async ({ ox: page, services }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   await expect(permissionMode(page)).toHaveValue("manual");
   const approval = waiting(page).getByRole("article", { name: "Allow Bash?" });
   await prompt(page).fill(
@@ -47,7 +47,7 @@ test("a typed reply denies with that message", async ({ ox: page, services }) =>
 });
 
 test("an ExitPlanMode plan renders as Markdown", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   await permissionMode(page).selectOption("plan");
   const approval = waiting(page).getByRole("article", { name: "Allow ExitPlanMode?" });
   await prompt(page).fill(
@@ -67,7 +67,7 @@ test("an ExitPlanMode plan renders as Markdown", async ({ ox: page }) => {
 });
 
 test("an AskUserQuestion is answered from its form", async ({ ox: page }) => {
-  await newSessionButton(page).click();
+  await newDraft(page);
   await expect(permissionMode(page)).toHaveValue("manual");
   const approval = waiting(page).getByRole("article", { name: "Claude asks" });
   await prompt(page).fill(

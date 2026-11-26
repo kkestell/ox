@@ -44,9 +44,9 @@ title.
 - **New-session choices.** Before sending, the user can pick any offered
   harness, model, effort, and permission mode for a new session. The user finds
   a model by typing part of its name or its harness's.
-- **Worktrees.** Before sending, the user can choose to run a new session in the
-  workspace directory, the choice a draft starts with, or in its own git
-  worktree. Ox makes the worktree outside the repository, on a new branch from
+- **Worktrees.** Before sending, the user can choose to run a new session in its
+  own git worktree, the choice a draft starts with, or in the workspace
+  directory. Ox makes the worktree outside the repository, on a new branch from
   the workspace's current commit, holding only committed files, and runs the
   session in the worktree's copy of the workspace directory; if it cannot,
   creation fails with the reason and leaves no worktree or branch behind.
