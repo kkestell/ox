@@ -264,12 +264,15 @@ worktrees only when they rebase, so its agent sends the new text to every
 other top-level agent with a change in flight.
 
 The steps scale with what the change can break. A small change is one whose
-whole effect a single check observes, and that touches no state owner,
-protocol, persistence, harness driving, or requirement: a style rule, copy, or
-a contained bug fix with an obvious cause. The top-level agent makes a small
-change itself in its worktree, with the test that fails without it, runs the
-checks that observe it, and opens and merges the pull request as steps 7 and
-8 say, with no plan or review session. Coral reviews every pull request.
+whole effect a single check observes, that leaves no design decision open, and
+that touches no state owner, protocol, persistence, or harness driving: a style
+rule, copy, a contained bug fix with an obvious cause, or a contained change in
+how the page shows something. A small change may alter a requirement; the
+top-level agent brings the user the new text and commits it once the user
+approves. The top-level agent makes a small change itself in its worktree,
+with the test that fails without it, runs the checks that observe it, and opens
+and merges the pull request as steps 7 and 8 say, with no plan or review
+session. Coral reviews every pull request.
 Every other change takes the steps below. When in doubt, a change is not
 small.
 

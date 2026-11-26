@@ -120,12 +120,18 @@ test("a reply renders Markdown", async ({ ox: page }) => {
   await expect(lists.last().getByRole("listitem")).toHaveText(["first", "second"]);
 });
 
-test("your own prompt stays plain text", async ({ ox: page }) => {
+test("a single line break shows in prompts and replies", async ({ ox: page }) => {
+  await reply(page, "one\ntwo");
+  await expect(prompts(page).locator("br")).toHaveCount(1);
+  await expect(replies(page).locator("br")).toHaveCount(1);
+});
+
+test("your own prompt renders Markdown", async ({ ox: page }) => {
   await reply(page, "**bold**\n\n- one");
   const sent = transcript(page).getByRole("article", { name: "Prompt" });
-  await expect(sent).toContainText("**bold**");
-  await expect(sent.getByRole("strong")).toHaveCount(0);
-  await expect(sent.getByRole("list")).toHaveCount(0);
+  await expect(sent.getByRole("strong")).toHaveText("bold");
+  await expect(sent.getByRole("list").getByRole("listitem")).toHaveText(["one"]);
+  await expect(sent).not.toContainText("**");
 });
 
 test("a reply shows raw HTML as text, loads no images, and opens safe links in a new tab", async ({ ox: page }) => {
@@ -149,11 +155,6 @@ test("a reply shows raw HTML as text, loads no images, and opens safe links in a
     "href",
     /^https:\/\/example\.org\/?$/,
   );
-});
-
-test("a prompt shows as the plain text sent", async ({ ox: page }) => {
-  await reply(page, "**bold** `code` <b>raw</b>");
-  await expect(prompts(page)).toHaveText(["**bold** `code` <b>raw</b>"]);
 });
 
 test("a failed first send is retried in the session with its settings", async ({ ox: page }) => {
@@ -630,7 +631,7 @@ test("resizing the composer keeps following", async ({ ox: page }) => {
 // scrollUp scrolls the transcript up from its bottom.
 async function scrollUp(page: Page) {
   await transcript(page).hover();
-  await page.mouse.wheel(0, -500);
+  await page.mouse.wheel(0, -5000);
   await expect(replies(page).last()).not.toBeInViewport();
 }
 

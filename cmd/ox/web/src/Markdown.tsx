@@ -2,7 +2,8 @@ import MarkdownIt from "markdown-it";
 
 // The text is model output: raw HTML is escaped and images are disabled, so
 // the rendered HTML holds only the tags markdown-it emits and loads nothing.
-const md = new MarkdownIt({ html: false, linkify: true }).disable("image");
+// A single line break shows as one, as it was typed.
+const md = new MarkdownIt({ html: false, linkify: true, breaks: true }).disable("image");
 
 // Links open in a new tab so following one leaves the page, and its unsent
 // text, in place.
