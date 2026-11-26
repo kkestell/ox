@@ -1220,7 +1220,11 @@ func TestLiveUr(t *testing.T) {
 	}
 	const deepseek = "deepseek/deepseek-v4.1-flash-1017"
 	cfg.Titling = config.Titling{Harness: "ur", Model: deepseek, Effort: "low"}
-	harnesses := map[string]agent.Harness{"ur": ur.Harness(ur.Endpoint, t.TempDir(), cfg.Harnesses["ur"].Providers())}
+	command := filepath.Join(t.TempDir(), "ur")
+	if out, err := exec.Command("go", "build", "-race", "-o", command, "../../cmd/ur").CombinedOutput(); err != nil {
+		t.Fatalf("build ur: %v\n%s", err, out)
+	}
+	harnesses := map[string]agent.Harness{"ur": ur.Harness(command, "", t.TempDir(), cfg.Harnesses["ur"].Providers())}
 	s, err := newServer(openStore(t), cfg, time.Second, harnesses, MCP{})
 	if err != nil {
 		t.Fatal(err)

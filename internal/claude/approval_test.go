@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/kkestell/ox/internal/agent"
+	"github.com/kkestell/ox/internal/process"
 )
 
 func TestApprovalRouting(t *testing.T) {
@@ -54,7 +55,7 @@ func TestApprovalCancellation(t *testing.T) {
 			case "idle":
 				state(t, a, "idle")
 			case "exit":
-				a.Handle(processExit{})
+				a.Handle(process.Exit{})
 			default:
 				output(t, a, `{"type":"control_cancel_request","request_id":"request"}`)
 			}
@@ -124,7 +125,7 @@ func TestFailedAnswerLeavesApprovalPending(t *testing.T) {
 		t.Fatalf("a failed answer removed the approval: %+v", a.Snapshot())
 	}
 	*updates = nil
-	a.Handle(processExit{err: errors.New("signal: broken pipe")})
+	a.Handle(process.Exit{Err: errors.New("signal: broken pipe")})
 	if len(*updates) == 0 || (*updates)[0].Type != "approval_cancelled" || (*updates)[0].RequestID != "request" {
 		t.Fatalf("exit did not withdraw the approval: %+v", *updates)
 	}

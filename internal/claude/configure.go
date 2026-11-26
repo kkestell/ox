@@ -89,7 +89,7 @@ func (a *Agent) controlTimedOut(requestID string) {
 	if !ok || requestID != c.requestID {
 		return
 	}
-	a.proc.Terminate()
+	a.proc.Terminate(killAfter)
 	a.phase = timedOut{c.done, c.fail(agent.ErrExited)}
 }
 

@@ -17,6 +17,7 @@ import (
 
 	"github.com/kkestell/ox/internal/agent"
 	"github.com/kkestell/ox/internal/children"
+	"github.com/kkestell/ox/internal/process"
 )
 
 // startLog records what a starting agent reports.
@@ -40,16 +41,14 @@ func (l *startLog) options() agent.Options {
 func failingStart(t *testing.T) (*Agent, string, *startLog) {
 	t.Helper()
 	cmd := exec.Command("sleep", "60")
-	if err := children.Start(cmd, func() { cmd.Process.Kill() }); err != nil {
+	events, done := make(chan agent.Event), make(chan struct{})
+	proc, _, err := process.Start(cmd, "claude", "ox-session", syscall.SIGKILL, parse, events, done)
+	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		cmd.Process.Kill()
-		cmd.Wait()
-		children.Done(cmd)
-	})
+	t.Cleanup(func() { cmd.Process.Kill() })
 	log := new(startLog)
-	a := newAgent(newWriter(io.Discard), make(chan agent.Event), make(chan struct{}), &process{cmd: cmd}, log.options())
+	a := newAgent(newWriter(io.Discard), events, done, proc, log.options())
 	id, err := sendTestPrompt(a, "hello")
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +90,7 @@ func handleUntilEnded(t *testing.T, a agent.Agent, within time.Duration) {
 func TestStartupFailureKeepsClaudesReason(t *testing.T) {
 	const missing = "No conversation found with session ID: 1111"
 	gone := message{Type: "result", Subtype: "error_during_execution", IsError: true, Errors: []string{missing}}
-	exit := processExit{err: errors.New("exit status 1")}
+	exit := process.Exit{Err: errors.New("exit status 1")}
 	for name, c := range map[string]struct {
 		output []agent.Event
 		reason string
@@ -106,7 +105,7 @@ func TestStartupFailureKeepsClaudesReason(t *testing.T) {
 		"startup timeout after plain text": {[]agent.Event{plainText("Not logged in · Please run /login"), startupTimeout{}},
 			"no startup response within one minute\nNot logged in · Please run /login"},
 		"startup timeout after lost conversation": {[]agent.Event{gone, startupTimeout{}}, lostConversation},
-		"stderr":    {[]agent.Event{processExit{err: exit.err, stderr: "error: bad option"}}, "error: bad option"},
+		"stderr":    {[]agent.Event{process.Exit{Err: exit.Err, Stderr: "error: bad option"}}, "error: bad option"},
 		"no reason": {[]agent.Event{exit}, "Claude exited: exit status 1"},
 		"refused initialize": {[]agent.Event{
 			message{Type: "control_response", Response: controlReply{Subtype: "error", RequestID: "initialize", Error: "bad flags"}},
@@ -212,12 +211,12 @@ func TestExitReportedWhileAChildHoldsStdout(t *testing.T) {
 			if m, ok := event.(message); ok && m.Type == "result" {
 				result = true
 			}
-			if exit, ok := event.(processExit); ok {
+			if exit, ok := event.(process.Exit); ok {
 				if !result {
 					t.Fatal("Claude's last line was dropped")
 				}
-				if exit.err == nil || !strings.Contains(exit.err.Error(), "exit status 3") {
-					t.Fatalf("unexpected exit: %v", exit.err)
+				if exit.Err == nil || !strings.Contains(exit.Err.Error(), "exit status 3") {
+					t.Fatalf("unexpected exit: %v", exit.Err)
 				}
 				return
 			}
@@ -250,10 +249,10 @@ exit 3
 	drained := false
 	t.Cleanup(func() {
 		if !drained {
-			p.cmd.Process.Kill()
+			p.Terminate(0)
 			go func() {
 				for e := range events {
-					if _, ok := e.(processExit); ok {
+					if _, ok := e.(process.Exit); ok {
 						return
 					}
 				}
@@ -270,11 +269,10 @@ exit 3
 	case <-time.After(5 * time.Second):
 		t.Fatal("prompt write stalled behind unread Claude stdout")
 	}
-	for deadline := time.Now().Add(5 * time.Second); !errors.Is(syscall.Kill(p.cmd.Process.Pid, 0), syscall.ESRCH); {
-		if time.Now().After(deadline) {
-			t.Fatal("Claude could not exit with unread output")
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case <-p.Reaped():
+	case <-time.After(5 * time.Second):
+		t.Fatal("Claude could not exit with unread output")
 	}
 	time.Sleep(1100 * time.Millisecond) // let the pipe deadline pass before accepting delivery
 	timeout := time.After(5 * time.Second)
@@ -284,7 +282,7 @@ exit 3
 	for i := range 258 {
 		select {
 		case e := <-events:
-			if _, ok := e.(processExit); ok {
+			if _, ok := e.(process.Exit); ok {
 				drained = true
 			}
 			switch {
@@ -297,7 +295,7 @@ exit 3
 					t.Fatalf("the final result did not arrive: %+v", e)
 				}
 			default:
-				if exit, ok := e.(processExit); !ok || exit.err == nil || exit.stderr != "Claude diagnostic" {
+				if exit, ok := e.(process.Exit); !ok || exit.Err == nil || exit.Stderr != "Claude diagnostic" {
 					t.Fatalf("the exit or its diagnostic did not arrive: %+v", e)
 				}
 			}
@@ -343,26 +341,6 @@ func TestStartupFailureOnStderr(t *testing.T) {
 	}
 }
 
-// Once the agent has ended, delivery discards Claude's output, so the reader
-// and delivery end with the process.
-func TestDeliveryEndsWithTheAgent(t *testing.T) {
-	captured, events, done := make(chan agent.Event), make(chan agent.Event), make(chan struct{})
-	returned := make(chan struct{})
-	go func() {
-		deliverOutput(captured, events, done)
-		close(returned)
-	}()
-	captured <- message{Type: "result"}
-	close(done)
-	captured <- processExit{}
-	close(captured)
-	select {
-	case <-returned:
-	case <-time.After(5 * time.Second):
-		t.Fatal("delivery waited for an agent that has ended")
-	}
-}
-
 // standIn puts a claude script on PATH that writes Claude's answer to
 // initialize, without waiting for the request, and then runs rest.
 func standIn(t *testing.T, rest string) {
@@ -404,7 +382,7 @@ func TestClaudeStartsWithOxsChoices(t *testing.T) {
 		t.Fatal(err)
 	}
 	for e := range events {
-		if _, exited := e.(processExit); exited {
+		if _, exited := e.(process.Exit); exited {
 			break
 		}
 	}
@@ -441,7 +419,7 @@ func TestClaudeRunsAsAnOxSession(t *testing.T) {
 			t.Fatal(err)
 		}
 		for e := range events {
-			if _, exited := e.(processExit); exited {
+			if _, exited := e.(process.Exit); exited {
 				break
 			}
 		}
@@ -517,7 +495,7 @@ func TestUnknownEffortFailsToStart(t *testing.T) {
 		p, input, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, agent.Settings{Effort: effort}, agent.MCPServer{}, make(chan agent.Event, 1), nil)
 		if p != nil {
 			input.w.(io.Closer).Close()
-			p.cmd.Process.Kill()
+			p.Terminate(0)
 		}
 		if (err == nil) != known {
 			t.Errorf("effort %q started: %v", effort, err)

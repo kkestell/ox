@@ -35,7 +35,7 @@ full behavior Ox guarantees.
 
 ## Architecture
 
-Ox builds three binaries into `bin/`:
+Ox builds four binaries into `bin/`:
 
 - **`oxd`** — daemon that owns workspaces, sessions, persistence, and harness
   processes, and serves a newline-delimited JSON-RPC 2.0 API over a Unix socket.
@@ -43,6 +43,8 @@ Ox builds three binaries into `bin/`:
   browser tab to `oxd` over SSE and `/rpc`.
 - **`ox-mcp`** — stdio MCP forwarder placed beside `oxd` so harnesses can reach
   Ox's inter-session tools.
+- **`ur`** — Ox's built-in OpenRouter harness, which `oxd` runs beside itself
+  for each running Ur session.
 
 See [docs/architecture.md](docs/architecture.md) and
 [docs/protocol.md](docs/protocol.md) for details.
@@ -77,7 +79,7 @@ bin/oxd   # in one terminal
 bin/ox    # in another terminal
 ```
 
-`oxd` requires `ox-mcp` in the same directory; export `OPENROUTER_API_KEY` before
+`oxd` requires `ox-mcp` and `ur` in the same directory; export `OPENROUTER_API_KEY` before
 starting `bin/oxd` directly if you use Ur (`.env` is loaded only by `make`). Run
 `bin/oxd -help` or `bin/ox -help` for path, address, and parking-timeout flags.
 

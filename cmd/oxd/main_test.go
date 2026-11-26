@@ -177,7 +177,7 @@ func TestConfigOffersOnlyWhatHarnessesTake(t *testing.T) {
 	refuse := func(string) error { return errors.New("refused") }
 	harnesses := map[string]agent.Harness{
 		"claude": claude.Harness,
-		"ur":     ur.Harness(ur.Endpoint, t.TempDir(), nil),
+		"ur":     ur.Harness("ur", "", t.TempDir(), nil),
 		"picky":  {Start: fake.Start, CheckEffort: refuse, CheckPermissionMode: refuse},
 		"plain":  {Start: fake.Start},
 	}
@@ -283,6 +283,42 @@ func TestRefusesToStartWithoutForwarder(t *testing.T) {
 	}
 }
 
+// Without ur beside it, no Ur session could start, so oxd refuses to start.
+func TestRefusesToStartWithoutUr(t *testing.T) {
+	// t.TempDir is too long for a socket path on macOS.
+	dir, err := os.MkdirTemp("", "oxd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	self, err := os.ReadFile(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"oxd", "ox-mcp"} {
+		if err := os.WriteFile(filepath.Join(dir, name), self, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	socket := filepath.Join(dir, "oxd.sock")
+	// The refusal comes before the database opens; an oxd still running at
+	// the deadline started without ur, and is killed.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	oxd := exec.CommandContext(ctx, filepath.Join(dir, "oxd"), "-socket="+socket, "-db="+filepath.Join(dir, "ox.db"), "-config="+filepath.Join(dir, "none.json"))
+	oxd.Env = append(os.Environ(), "OXD_TEST_MAIN=1")
+	out, err := oxd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("oxd started without ur:\n%s", out)
+	}
+	if err == nil || !strings.Contains(string(out), "ur not found beside oxd") {
+		t.Fatalf("oxd without ur: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(socket); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("oxd without ur left its socket: %v", err)
+	}
+}
+
 // The socket and the database each exclude a second daemon while oxd is
 // serving or still stopping. A second signal kills both running and
 // initializing children.
@@ -313,9 +349,12 @@ exec sleep 60
 	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(standIn), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// The stand-in Claude never starts the forwarder; oxd only needs it there.
-	if err := os.WriteFile(filepath.Join(bin, "ox-mcp"), nil, 0o755); err != nil {
-		t.Fatal(err)
+	// The stand-in Claude never starts the forwarder, and no session runs Ur;
+	// oxd only needs them there.
+	for _, name := range []string{"ox-mcp", "ur"} {
+		if err := os.WriteFile(filepath.Join(bin, name), nil, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	self, err := os.ReadFile(os.Args[0])
 	if err != nil {

@@ -1,16 +1,12 @@
 package claude
 
 import (
-	"bufio"
-	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log"
-	"os"
 	"os/exec"
 	"slices"
 	"strings"
@@ -18,15 +14,8 @@ import (
 	"time"
 
 	"github.com/kkestell/ox/internal/agent"
-	"github.com/kkestell/ox/internal/children"
+	"github.com/kkestell/ox/internal/process"
 )
-
-type process struct {
-	cmd    *exec.Cmd
-	output *os.File      // the read end of Claude's stdout
-	stderr *os.File      // the read end of Claude's stderr
-	reaped chan struct{} // closed once Claude has exited and been reaped
-}
 
 // systemPrompt is the instructions appended to Claude's system prompt: Ox's
 // style, then what Claude needs to know about running as Ox session
@@ -85,7 +74,7 @@ func checkPermissionMode(mode string) error {
 // server registered as ox, and delivers its output and exit on events until
 // done is closed. oxSessionID is the Ox session's ID: Claude's instructions
 // and the log of its stderr name it.
-func startProcess(workspace, oxSessionID, sessionID string, resume bool, settings agent.Settings, mcp agent.MCPServer, events chan<- agent.Event, done <-chan struct{}) (*process, *writer, error) {
+func startProcess(workspace, oxSessionID, sessionID string, resume bool, settings agent.Settings, mcp agent.MCPServer, events chan<- agent.Event, done <-chan struct{}) (*process.Process, *writer, error) {
 	if err := checkEffort(settings.Effort); err != nil {
 		return nil, nil, err
 	}
@@ -124,43 +113,21 @@ func startProcess(workspace, oxSessionID, sessionID string, resume bool, setting
 	cmd := exec.Command("claude", args...)
 	cmd.Dir = workspace
 	cmd.Env = append(launchEnv(cmd), "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1")
-	stdin, err := cmd.StdinPipe()
+	p, stdin, err := process.Start(cmd, "claude", oxSessionID, syscall.SIGKILL, parse, events, done)
 	if err != nil {
 		return nil, nil, err
 	}
-	// Ox owns the output pipes, unlike StdoutPipe's, so Wait neither waits for
-	// them nor closes them: reading stops once Claude has exited and its output
-	// has drained, even while a child that inherited a pipe holds it open.
-	stdout, childStdout, err := os.Pipe()
-	if err != nil {
-		stdin.Close()
-		return nil, nil, err
-	}
-	stderr, childStderr, err := os.Pipe()
-	if err != nil {
-		stdin.Close()
-		stdout.Close()
-		childStdout.Close()
-		return nil, nil, err
-	}
-	cmd.Stdout = childStdout
-	cmd.Stderr = childStderr
-	err = children.Start(cmd, func() { cmd.Process.Kill() })
-	childStdout.Close()
-	childStderr.Close()
-	if err != nil {
-		stdin.Close()
-		stdout.Close()
-		stderr.Close()
-		return nil, nil, err
-	}
-	stderrTail := make(chan string, 1)
-	go logStderr(stderr, oxSessionID, stderrTail)
-	p := &process{cmd: cmd, output: stdout, stderr: stderr, reaped: make(chan struct{})}
-	captured := make(chan agent.Event)
-	go p.read(stderrTail, captured)
-	go deliverOutput(captured, events, done)
 	return p, newWriter(stdin), nil
+}
+
+// parse reads a line of Claude's stdout: a message, or plain text, such as a
+// startup failure.
+func parse(line []byte) agent.Event {
+	var m message
+	if json.Unmarshal(line, &m) == nil {
+		return m
+	}
+	return plainText(strings.TrimSpace(string(line)))
 }
 
 // overrides are the variables, beyond the ANTHROPIC_ prefix, that run Claude
@@ -187,133 +154,15 @@ func launchEnv(cmd *exec.Cmd) []string {
 	})
 }
 
-// stderrKept is how much of Claude's stderr a failed start or exit reports.
-const stderrKept = 2048
-
-// logStderr logs each line of Claude's stderr under logID until the pipe
-// closes or its read deadline passes, then closes it and sends the last of it.
-func logStderr(stderr *os.File, logID string, tail chan<- string) {
-	var last, line []byte
-	cut := false
-	buf := make([]byte, 4096)
-	for {
-		n, err := stderr.Read(buf)
-		line = append(line, buf[:n]...)
-		for {
-			i := bytes.IndexByte(line, '\n')
-			if i < 0 {
-				break
-			}
-			log.Printf("session %s: claude: %s", logID, line[:i])
-			line = line[i+1:]
-		}
-		if err != nil && len(line) > 0 {
-			log.Printf("session %s: claude: %s", logID, line)
-		}
-		last = append(last, buf[:n]...)
-		if len(last) > stderrKept {
-			last, cut = last[len(last)-stderrKept:], true
-		}
-		if err != nil {
-			break
-		}
-	}
-	stderr.Close()
-	text := strings.TrimSpace(string(last))
-	// Drop the line whose start was cut, unless it is the only one.
-	if i := strings.IndexByte(text, '\n'); cut && i >= 0 {
-		text = text[i+1:]
-	}
-	tail <- text
-}
-
 // plainText is a line of Claude's stdout that is not JSON, such as a
 // startup failure.
 type plainText string
-
-// read drains Claude's output, from spawn to exit, into the delivery queue,
-// then records its exit. A second after Claude exits, the pipe reads stop
-// even if an inherited descriptor is open; delivery from the queue is
-// independent of that limit.
-func (p *process) read(stderrTail <-chan string, captured chan<- agent.Event) {
-	defer close(captured)
-	exited := make(chan error, 1)
-	go func() {
-		err := p.cmd.Wait()
-		children.Done(p.cmd)
-		close(p.reaped)
-		p.output.SetReadDeadline(time.Now().Add(time.Second))
-		p.stderr.SetReadDeadline(time.Now().Add(time.Second))
-		exited <- err
-	}()
-	output := bufio.NewReader(p.output)
-	for {
-		// A line that ends at EOF is still a line.
-		line, err := output.ReadBytes('\n')
-		var m message
-		switch text := strings.TrimSpace(string(line)); {
-		case text == "":
-		case json.Unmarshal(line, &m) == nil:
-			captured <- m
-		default:
-			captured <- plainText(text)
-		}
-		if err != nil {
-			break
-		}
-	}
-	p.output.Close()
-	captured <- processExit{err: <-exited, stderr: <-stderrTail}
-}
-
-// deliverOutput never makes the reader wait for the session, which may be
-// writing to Claude's stdin while Claude writes stdout. Once done is closed,
-// the agent has ended and its output is discarded.
-func deliverOutput(captured <-chan agent.Event, events chan<- agent.Event, done <-chan struct{}) {
-	var queue []agent.Event
-	for captured != nil || len(queue) != 0 {
-		var next agent.Event
-		var ready chan<- agent.Event
-		if len(queue) != 0 {
-			next, ready = queue[0], events
-		}
-		select {
-		case event, ok := <-captured:
-			if ok {
-				queue = append(queue, event)
-			} else {
-				captured = nil
-			}
-		case ready <- next:
-			queue[0] = nil
-			queue = queue[1:]
-		case <-done:
-			if captured != nil {
-				for range captured {
-				}
-			}
-			return
-		}
-	}
-}
 
 // killAfter is how long Claude has to exit once asked before it is killed.
 var killAfter = 10 * time.Second
 
 // startupLimit is how long Claude has to answer initialize.
 var startupLimit = time.Minute
-
-// Terminate asks Claude to exit so it can clean up its tool processes, and
-// kills it if it is still running after killAfter, or at once if it cannot
-// be asked.
-func (p *process) Terminate() {
-	switch err := p.cmd.Process.Signal(syscall.SIGTERM); {
-	case err == nil:
-		time.AfterFunc(killAfter, func() { p.cmd.Process.Kill() })
-	case !errors.Is(err, os.ErrProcessDone):
-		p.cmd.Process.Kill()
-	}
-}
 
 // writer writes messages to Claude's stdin. It is not safe for concurrent use.
 type writer struct {

@@ -1,18 +1,15 @@
-package ur
+package engine
 
 import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
-
-	"github.com/kkestell/ox/internal/children"
 )
 
 // runShell runs command in a temporary workspace, which it returns.
@@ -136,42 +133,6 @@ func TestShellLeftChild(t *testing.T) {
 		t.Errorf("outcome %+v", o)
 	}
 	gone(t, filepath.Join(workspace, "child"))
-}
-
-// KillAll ends a command's whole process group and refuses later commands. It
-// refuses them for the rest of the process, so the test runs in its own.
-func TestKillAllEndsCommands(t *testing.T) {
-	if os.Getenv("OX_KILLALL_INNER") == "" {
-		inner := exec.Command(os.Args[0], "-test.run=^TestKillAllEndsCommands$", "-test.v")
-		inner.Env = append(os.Environ(), "OX_KILLALL_INNER=1")
-		out, err := inner.CombinedOutput()
-		if err != nil {
-			t.Fatalf("inner run: %v\n%s", err, out)
-		}
-		return
-	}
-	c, err := parseShell(`{"command":"sleep 60 & echo $! > child; sleep 60"}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	workspace := t.TempDir()
-	sh, err := startShell(t.Context(), workspace, c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	waitFile(t, filepath.Join(workspace, "child"))
-	done := make(chan outcome)
-	go func() { done <- sh.wait() }()
-	children.KillAll()
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("KillAll left the command running")
-	}
-	gone(t, filepath.Join(workspace, "child"))
-	if _, err := startShell(t.Context(), workspace, c); err == nil {
-		t.Error("a command started after KillAll")
-	}
 }
 
 func TestShellArguments(t *testing.T) {

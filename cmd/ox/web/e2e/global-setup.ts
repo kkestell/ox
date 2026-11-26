@@ -11,10 +11,14 @@ export default function globalSetup() {
   const bin = mkdtempSync(join(tmpdir(), "ox-e2e-bin-"));
   execFileSync("npm", ["run", "build"], { cwd: join(root, "cmd/ox/web"), stdio: "inherit" });
   const tags = process.env.OX_SCREENSHOTS ? ["-tags=screenshots"] : [];
-  execFileSync("go", ["build", "-race", ...tags, "-o", `${bin}/`, "./cmd/ox", "./cmd/ox-mcp", "./cmd/oxd"], {
-    cwd: root,
-    stdio: "inherit",
-  });
+  execFileSync(
+    "go",
+    ["build", "-race", ...tags, "-o", `${bin}/`, "./cmd/ox", "./cmd/ox-mcp", "./cmd/oxd", "./cmd/ur"],
+    {
+      cwd: root,
+      stdio: "inherit",
+    },
+  );
   process.env.OX_E2E_BIN = bin;
   return () => rmSync(bin, { recursive: true, force: true });
 }

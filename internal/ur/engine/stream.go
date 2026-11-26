@@ -1,4 +1,4 @@
-package ur
+package engine
 
 import (
 	"bufio"
@@ -11,7 +11,6 @@ import (
 	"io"
 	"maps"
 	"net/http"
-	"os"
 	"slices"
 	"strings"
 )
@@ -175,20 +174,16 @@ type apiError struct {
 }
 
 // stream posts body for t and delivers its reply text and reasoning and its
-// end. It runs on its own goroutine and reads only the agent's fields set at
+// end. It runs on its own goroutine and reads only the engine's fields set at
 // start.
-func (a *Agent) stream(ctx context.Context, t *turn, body []byte) {
-	calls, err := post(ctx, a.endpoint, a.key, body, func(text string, reasoning []reasoningDetail) { a.deliver(delta{t, text, reasoning}) })
-	a.deliver(ended{t, calls, err})
+func (e *engine) stream(ctx context.Context, t *turn, body []byte) {
+	calls, err := post(ctx, e.endpoint, e.key, body, func(text string, reasoning []reasoningDetail) { e.deliver(delta{t, text, reasoning}) })
+	e.deliver(ended{t, calls, err})
 }
 
 // ask posts one request to endpoint with instructions as the system message
 // and text as the user's, without tools, and returns the whole reply.
-func ask(ctx context.Context, endpoint string, providers map[string][]string, model, effort, instructions, text string) (string, error) {
-	key := os.Getenv("OPENROUTER_API_KEY")
-	if key == "" {
-		return "", errors.New("OPENROUTER_API_KEY is not set")
-	}
+func ask(ctx context.Context, endpoint, key string, providers map[string][]string, model, effort, instructions, text string) (string, error) {
 	messages := []message{{Role: "system", Content: content{Text: instructions}}, {Role: "user", Content: content{Text: text}}}
 	body := request{Model: model, Messages: messages, Stream: true}
 	if effort != "" {

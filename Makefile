@@ -17,7 +17,7 @@ dev: build
 	GORACE=halt_on_error=1 node cmd/ox/web/dev.mjs
 
 build: web
-	go build -race -o bin/ ./cmd/ox ./cmd/ox-mcp ./cmd/oxd
+	go build -race -o bin/ ./cmd/ox ./cmd/ox-mcp ./cmd/oxd ./cmd/ur
 
 test: lint
 	go test -race ./...

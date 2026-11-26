@@ -1,7 +1,6 @@
 package claude
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/kkestell/ox/internal/agent"
 	"github.com/kkestell/ox/internal/children"
+	"github.com/kkestell/ox/internal/process"
 )
 
 type recorder []agent.Update
@@ -42,14 +42,14 @@ func interrupt(a *Agent, updates *recorder) *stopReply {
 
 // startingAgent returns an agent that writes to input and runs proc, whose
 // exit arrives on events, before Claude has answered initialize.
-func startingAgent(input io.Writer, events chan agent.Event, proc *process) (*Agent, *recorder) {
+func startingAgent(input io.Writer, events chan agent.Event, proc *process.Process) (*Agent, *recorder) {
 	updates := new(recorder)
 	options := agent.Options{OnUpdate: updates.record, OnConfigured: func(agent.Settings) {}, OnError: func(err error) { panic(err) }}
 	return newAgent(newWriter(input), events, make(chan struct{}), proc, options), updates
 }
 
 // agentWriting is a startingAgent that Claude has answered.
-func agentWriting(input io.Writer, events chan agent.Event, proc *process) (*Agent, *recorder) {
+func agentWriting(input io.Writer, events chan agent.Event, proc *process.Process) (*Agent, *recorder) {
 	a, updates := startingAgent(input, events, proc)
 	a.Handle(initialized)
 	return a, updates
@@ -77,26 +77,19 @@ func stoppableAgent(t *testing.T) (*Agent, *bytes.Buffer, *recorder) {
 // initialize.
 func stoppableStartingAgent(t *testing.T) (*Agent, *bytes.Buffer, *recorder) {
 	t.Helper()
-	cmd := exec.Command("sleep", "60")
-	if err := children.Start(cmd, func() { cmd.Process.Kill() }); err != nil {
-		t.Fatal(err)
-	}
-	return agentRunning(t, cmd)
+	return agentRunning(t, exec.Command("sleep", "60"))
 }
 
-// agentRunning is a starting testAgent whose process is the spawned cmd,
-// delivering its exit as Claude's does.
+// agentRunning is a starting testAgent whose process is cmd, started as
+// Claude's is.
 func agentRunning(t *testing.T, cmd *exec.Cmd) (*Agent, *bytes.Buffer, *recorder) {
 	t.Helper()
-	t.Cleanup(func() { cmd.Process.Kill() })
 	events := make(chan agent.Event, 1)
-	proc := &process{cmd: cmd, reaped: make(chan struct{})}
-	go func() {
-		err := cmd.Wait()
-		children.Done(cmd)
-		close(proc.reaped)
-		events <- processExit{err: err}
-	}()
+	proc, _, err := process.Start(cmd, "claude", "ox-session", syscall.SIGKILL, parse, events, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cmd.Process.Kill() })
 	input := new(bytes.Buffer)
 	a, updates := startingAgent(input, events, proc)
 	return a, input, updates
@@ -531,7 +524,7 @@ func TestTurnsClaudeStartsArePublished(t *testing.T) {
 		if starting {
 			a.Handle(initialized)
 		}
-		a.Handle(processExit{})
+		a.Handle(process.Exit{})
 		types := []string{}
 		for _, u := range *updates {
 			if u.MessageID != "" {
@@ -608,7 +601,7 @@ func TestUsageIsPublished(t *testing.T) {
 // prompt is active; an exit Ox asked for is plain parking.
 func TestUnexpectedExitIsReported(t *testing.T) {
 	a, _, updates := testAgent()
-	a.Handle(processExit{err: errors.New("exit status 1"), stderr: "an unexpected diagnostic"})
+	a.Handle(process.Exit{Err: errors.New("exit status 1"), Stderr: "an unexpected diagnostic"})
 	if !a.Exited() || len(*updates) != 1 || (*updates)[0].Type != "exited" || !strings.Contains((*updates)[0].Error, "exit status 1\nan unexpected diagnostic") {
 		t.Fatalf("an unexpected exit looked like parking: %+v", *updates)
 	}
@@ -618,7 +611,7 @@ func TestUnexpectedExitIsReported(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a.Handle(processExit{err: errors.New("exit status 1")})
+	a.Handle(process.Exit{Err: errors.New("exit status 1")})
 	var exits []agent.Update
 	for _, u := range *updates {
 		if u.Type == "exited" {
@@ -635,7 +628,7 @@ func TestUnexpectedExitIsReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.Handle(plainText("API Error: Connection refused"))
-	a.Handle(processExit{err: errors.New("exit status 1")})
+	a.Handle(process.Exit{Err: errors.New("exit status 1")})
 	exits = nil
 	for _, u := range *updates {
 		if u.Type == "exited" {
@@ -656,7 +649,7 @@ func TestUnexpectedExitIsReported(t *testing.T) {
 	a, _, updates = testAgent()
 	state(t, a, "running")
 	stop := interrupt(a, updates)
-	a.Handle(processExit{err: errors.New("exit status 1")})
+	a.Handle(process.Exit{Err: errors.New("exit status 1")})
 	if !stop.answered || stop.err != nil || stop.after != len(*updates) {
 		t.Fatalf("an exit did not answer the waiting interrupt after its update: %+v, %+v", stop, *updates)
 	}
@@ -669,17 +662,10 @@ func TestStopKillsClaudeIgnoringSIGTERM(t *testing.T) {
 	killAfter = 500 * time.Millisecond
 	t.Cleanup(func() { killAfter = saved })
 	cmd := exec.Command("sh", "-c", "trap '' TERM; echo ready; exec sleep 60")
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := children.Start(cmd, func() { cmd.Process.Kill() }); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := bufio.NewReader(stdout).ReadString('\n'); err != nil {
-		t.Fatal(err)
-	}
 	a, _, _ := agentRunning(t, cmd)
+	if e := <-a.Events(); e != plainText("ready") {
+		t.Fatalf("Claude's first line was %+v", e)
+	}
 	a.Handle(initialized)
 	a.Stop()
 	if !a.Exited() {
@@ -851,7 +837,7 @@ func TestInputWaitsForStartup(t *testing.T) {
 	a, updates = startingAgent(io.Discard, make(chan agent.Event), nil)
 	ids = sendHeld(t, a)
 	*updates = nil
-	a.Handle(processExit{err: errors.New("exit status 1")})
+	a.Handle(process.Exit{Err: errors.New("exit status 1")})
 	if len(*updates) != 3 || !cancelled((*updates)[:2], ids) || (*updates)[2].Type != "exited" || (*updates)[2].MessageID != ids[1] {
 		t.Fatalf("a failed start did not drop the held inputs and name the latest: %+v", *updates)
 	}

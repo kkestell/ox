@@ -13,7 +13,7 @@ flowchart LR
   db[("SQLite (ox.db)")]
   claude["Claude Code (claude -p)"]
   oxmcp["ox-mcp (stdio forwarder)"]
-  ur["Ur (OpenRouter + local shell)"]
+  ur["ur (OpenRouter + local shell)"]
   urfiles[("Ur JSONL files")]
   fake["Fake harness"]
 
@@ -23,7 +23,7 @@ flowchart LR
   oxd -- "stream-json" --> claude
   claude -- "MCP stdio" --> oxmcp
   oxmcp -- "Unix socket (mcp/attach)" --> oxd
-  oxd --> ur
+  oxd -- "JSON lines on stdio" --> ur
   ur --> urfiles
   oxd --> fake
 ```
@@ -33,12 +33,14 @@ flowchart LR
 Each package of `oxd` depends only on the packages beneath it. The server and
 each harness meet only at `internal/agent`; `cmd/oxd` gives the server each
 harness by name, with its `Start` function and its prompt and configuration
-checks.
+checks. `cmd/ur` is its own program: `oxd` links only Ur's harness and the wire
+protocol it shares with `ur`.
 
 ```mermaid
 flowchart TD
   oxmcp["cmd/ox-mcp"]
   oxd["cmd/oxd"]
+  urcmd["cmd/ur"]
   paths["internal/paths"]
   config["internal/config"]
   store["internal/store"]
@@ -46,6 +48,9 @@ flowchart TD
   children["internal/children"]
   fake["internal/fake"]
   ur["internal/ur"]
+  engine["internal/ur/engine"]
+  wire["internal/ur/wire"]
+  process["internal/process"]
   server["internal/server"]
   jsonrpc["internal/jsonrpc"]
   agent["internal/agent"]
@@ -59,10 +64,18 @@ flowchart TD
   oxd --> ur
   oxd --> server
   claude --> agent
-  claude --> children
+  claude --> process
   fake --> agent
   ur --> agent
+  ur --> process
   ur --> children
+  ur --> wire
+  process --> agent
+  process --> children
+  urcmd --> engine
+  engine --> wire
+  engine --> agent
+  wire --> agent
   server --> config
   server --> store
   server --> jsonrpc
@@ -72,6 +85,7 @@ flowchart TD
 | Package      | Owns                                                                                                                                                                                                                    |
 | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `cmd/ox-mcp` | Bridging a harness's stdio MCP client to `oxd`'s socket for one session: attaching, then copying lines in both directions.                                                                                              |
+| `cmd/ur`     | Running the `ur` program, which `oxd` starts for each running Ur session and for each one-shot Ur request.                                                                                                              |
 | `cmd/oxd`    | Resolving socket, database, and config paths, checking configured harnesses, and holding the socket until sessions stop and every process in `children` exits. A second stop signal kills `children` and exits at once. |
 | `paths`      | XDG locations of the configuration, database, socket, Ur conversation directory, and session worktrees (`cmd/oxd` flags can override them; `cmd/ox` uses `paths` for the socket and config).                            |
 | `config`     | Writing the built-in default to a missing config file, loading each harness's models, efforts, permission modes, defaults, and titling model, and validating settings against them.                                     |
@@ -80,8 +94,11 @@ flowchart TD
 | `jsonrpc`    | Request validation and the response and notification types.                                                                                                                                                             |
 | `agent`      | The `Agent` interface, `Start` and one-shot `Ask` functions, prompt and config checks, options, and shared updates, snapshots, settings, and errors.                                                                    |
 | `children`   | The set of child processes `oxd` waits for on shutdown and kills on a second stop signal. A process joins on start and leaves once reaped; none can start after the set is killed.                                      |
+| `process`    | A harness process on pipes `oxd` owns: each stdout line delivered as an event without blocking the reader, stderr logged with its tail kept, and the exit delivered after the last line.                                |
 | `claude`     | The Claude Code harness: launching and initializing `claude`, its stream-json wire format, and its `Agent` state machine.                                                                                               |
-| `ur`         | The OpenRouter harness: streaming chat completions, shell command execution, and JSONL conversation persistence.                                                                                                        |
+| `ur`         | Ur's harness in `oxd`: starting `ur` and adapting its reports to an `Agent`, and running `ur -ask`.                                                                                                                     |
+| `ur/wire`    | The line protocol between `oxd` and `ur`: commands on `ur`'s stdin and events on its stdout.                                                                                                                            |
+| `ur/engine`  | The `ur` program: streaming chat completions, shell command execution, and JSONL conversation persistence.                                                                                                              |
 | `fake`       | In-process echo harness used by tests, and scene player for the README's screenshots.                                                                                                                                   |
 
 ## Sessions
@@ -263,9 +280,10 @@ flowchart LR
 ```
 
 - `Agent.Reaped` closes once every process the agent started has exited (Claude
-  reaped by its reader; Ur process groups killed and reaped). Every dropped
-  agent passes through `session.parked`, which appends its `Reaped` channel to
-  `session.exiting` and prunes closed ones.
+  reaped by its reader; `ur` reaped by its reader once it has killed and reaped
+  its commands' process groups). Every dropped agent passes through
+  `session.parked`, which appends its `Reaped` channel to `session.exiting` and
+  prunes closed ones.
 - While `session.deleting` is set, the session keeps answering unrelated
   operations while refusing starts, child starts, and a second destroy. If
   shutdown ends the goroutine first, the delete goroutine replies that `oxd` is
@@ -364,16 +382,37 @@ stateDiagram-v2
 
 ### The Ur agent
 
+`oxd` starts one `ur` process per running Ur session, in the session's
+directory, with the session's settings as flags, and drives it with one JSON
+object per line each way ([`internal/ur/wire`](../internal/ur/wire/wire.go)):
+`oxd` writes inputs, approval answers, interrupts, and settings, and `ur`
+reports each input it takes or drops, its state, transcript updates, its resume
+token, each interrupt it has carried out, and each command's process group as it
+starts and once it is killed.
+
+The `ur` process:
+
 - Streams each turn from OpenRouter chat completions with an ephemeral system
   message built from the workspace, OS, date, and the workspace's `AGENTS.md`
   (never written to the conversation file).
 - Validates each shell call's arguments once, so the transcript, approval card,
   and executed command share one value.
-- Runs each shell call in the session's workspace inside its own process group
-  registered with `children`, ending with the call or its turn.
+- Runs each shell call in the session's workspace inside its own process group,
+  ending with the call or its turn.
 - Appends prompts, streamed reply deltas, tool calls, and finished outcomes to
   the JSONL file named by its resume token, reconstructing an interrupted call's
-  outcome when resuming. Reports `Parkable` when idle.
+  outcome when resuming.
+- Stops when its stdin ends or on `SIGTERM`, which `children.KillAll` also
+  sends: it ends the turn, kills its commands' process groups, and exits once
+  they are reaped. It ignores `SIGINT`.
+
+The adapter in `internal/ur` keeps the inputs written and not yet reported taken
+or dropped, the pending approvals, the running turn's input, the interrupts
+written and not yet carried out, and the process groups of `ur`'s running
+commands. It is the one place that tags and times Ur's updates. It reports
+`Parkable` when idle, and ends the agent when `ur` exits, reports the
+conversation lost, or breaks the protocol. When `ur` exits, it first kills the
+process groups `ur` left running.
 
 ### The Fake agent
 
