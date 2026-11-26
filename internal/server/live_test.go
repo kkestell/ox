@@ -341,7 +341,7 @@ func TestLive(t *testing.T) {
 	top := t
 	serve := func(t *testing.T, park time.Duration) (*Server, net.Listener) {
 		t.Helper()
-		s, err := newServer(st, cfg, park, map[string]agent.Harness{"claude": claude.Harness}, mcp)
+		s, err := newServer(st, cfg, park, map[string]agent.Harness{"claude": claude.Harness(true)}, mcp)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -445,7 +445,7 @@ func TestLive(t *testing.T) {
 				}
 			}
 		}
-		first, err := claude.Start(options)
+		first, err := claude.Start(options, false)
 		if err != nil {
 			l.t.Fatal(err)
 		}
@@ -456,7 +456,7 @@ func TestLive(t *testing.T) {
 		first.Stop()
 		exiting := exec.Command("pgrep", "-f", "session-id="+conversation).Run() == nil
 		options.Resume = conversation
-		second, err := claude.Start(options)
+		second, err := claude.Start(options, false)
 		if err != nil {
 			l.t.Fatal(err)
 		}

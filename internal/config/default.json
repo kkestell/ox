@@ -41,7 +41,8 @@
         { "id": "auto", "name": "Auto" },
         { "id": "acceptEdits", "name": "Accept edits" },
         { "id": "plan", "name": "Plan" }
-      ]
+      ],
+      "thinking_summaries": false
     },
     "ur": {
       "models": [
