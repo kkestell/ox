@@ -164,7 +164,8 @@ func TestStartupLimit(t *testing.T) {
 	saved := startupLimit
 	startupLimit = 200 * time.Millisecond
 	t.Cleanup(func() { startupLimit = saved })
-	script(t, "#!/bin/sh\necho 'stuck on login' >&2\nexec sleep 60\n")
+	written := filepath.Join(t.TempDir(), "written")
+	script(t, "#!/bin/sh\necho 'stuck on login' >&2\ntouch "+written+"\nexec sleep 60\n")
 	log := new(startLog)
 	options := log.options()
 	options.Workspace = t.TempDir()
@@ -177,6 +178,16 @@ func TestStartupLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	log.updates = nil
+	// The limit's event waits until it is handled, so handling begins only
+	// once Claude's stderr is written.
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if _, err := os.Stat(written); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the stand-in did not write stderr")
+		}
+	}
 	handleUntilEnded(t, a, 5*time.Second)
 	log.dropped(t, a, id, "no startup response within one minute\nstuck on login")
 }
