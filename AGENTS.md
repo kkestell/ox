@@ -311,7 +311,11 @@ alternative before any session builds it.
 8. The top-level agent waits for the pull request's checks with
    `gh pr checks <N> --watch`, fixes the cause of any that fails, and merges
    it by squash with `gh pr merge <N> --squash`, so its title is the commit
-   subject. It then pulls in the main checkout and gives the user its
+   subject. It then pulls in the main checkout, runs `git fetch` in its
+   worktree, and, when `git diff origin/main HEAD` is empty, resets the
+   worktree's branch with `git reset --hard origin/main`, so the Changes view
+   and the next change start from `main`. When the diff is not empty, it
+   reports what remains instead of resetting. It then gives the user its
    [handoff](#handoff).
 
 The user owns `docs/functional-requirements.md`. It changes only when a change
