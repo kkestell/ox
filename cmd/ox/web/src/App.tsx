@@ -192,7 +192,7 @@ function Layout() {
               <Match when={error() instanceof Disconnected}>
                 <p role="alert">
                   {error().message}{" "}
-                  <button type="button" onClick={() => location.reload()}>
+                  <button type="button" class="outline" onClick={() => location.reload()}>
                     Reload
                   </button>
                 </p>
@@ -204,7 +204,11 @@ function Layout() {
           {(failed) => (
             <p role="alert">
               {failed.control.error()}{" "}
-              <button type="button" onClick={() => select({ kind: "draft", workspaceId: failed.workspaceId })}>
+              <button
+                type="button"
+                class="outline"
+                onClick={() => select({ kind: "draft", workspaceId: failed.workspaceId })}
+              >
                 Reopen draft
               </button>
             </p>

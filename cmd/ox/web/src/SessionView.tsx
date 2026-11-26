@@ -116,6 +116,7 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
             <p>{parentArchived() ? "This session is archived with its parent." : "This session is archived."}</p>
             <button
               type="button"
+              class="outline"
               disabled={!ox.ready() || parent()?.archived === true || ox.busy(props.session.id)}
               onClick={() => control.unarchive()}
             >

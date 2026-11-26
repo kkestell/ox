@@ -29,7 +29,7 @@ build: web
 
 test: lint
 	go test -race ./...
-	node --test cmd/ox/web/stack.test.mjs cmd/ox/web/highlight.test.mjs cmd/ox/web/toolInput.test.mjs cmd/ox/web/id.test.mjs cmd/ox/web/diff.test.mjs cmd/ox/web/tabs.test.mjs
+	node --test cmd/ox/web/stack.test.mjs cmd/ox/web/highlight.test.mjs cmd/ox/web/toolInput.test.mjs cmd/ox/web/id.test.mjs cmd/ox/web/diff.test.mjs cmd/ox/web/tabs.test.mjs cmd/ox/web/style.test.mjs
 
 lint: web $(GOLANGCI_LINT)
 	gofmt -l . | (! grep .)
