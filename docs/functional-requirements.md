@@ -126,7 +126,7 @@ title.
 - **Main conversation only.** The transcript shows the main conversation only,
   not the inner messages of Claude's subagents.
 - **Failed turns.** A failed turn shows its error in the transcript.
-- **Unexpected exits.** A Claude process that exits without Ox stopping it
+- **Unexpected exits.** A Claude or Ur process that exits without Ox stopping it
   leaves the reason in the transcript.
 - **Following output.** The transcript follows new output while it is scrolled
   to its bottom.
@@ -420,9 +420,9 @@ title.
   `OPENROUTER_API_KEY`, streaming its replies; a send to an Ur session without
   the key is refused with an error. An Ur session parks and resumes its
   conversation like a Claude session, including a reply cut off partway. If its
-  saved conversation can no longer be read, the send is refused with an error
-  saying so, and the next send starts a new conversation without the earlier
-  context.
+  saved conversation can no longer be read, the prompt is dropped with a notice
+  in the transcript and its text returns to the composer, and the next send
+  starts a new conversation without the earlier context.
 - **Ur's shell commands.** Ur can run shell commands in the session's directory,
   without `OPENROUTER_API_KEY` in their environment. In manual mode each command
   asks for approval first, and a denied command tells Ur so and the turn goes

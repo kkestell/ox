@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -23,7 +24,23 @@ import (
 
 	"github.com/kkestell/ox/internal/agent"
 	"github.com/kkestell/ox/internal/children"
+	"github.com/kkestell/ox/internal/ur/engine"
 )
+
+// TestMain runs ur itself when a test starts this binary as ur.
+func TestMain(m *testing.M) {
+	if os.Getenv("OX_UR_MAIN") == "1" {
+		os.Exit(engine.Main(os.Args[1:]))
+	}
+	os.Exit(m.Run())
+}
+
+// urHarness is the harness with this test binary as ur.
+func urHarness(t *testing.T, endpoint, dir string, providers map[string][]string) agent.Harness {
+	t.Helper()
+	t.Setenv("OX_UR_MAIN", "1")
+	return Harness(os.Args[0], endpoint, dir, providers)
+}
 
 const model = "deepseek/test"
 
@@ -68,7 +85,6 @@ type run struct {
 	updates    []agent.Update
 	configured []agent.Settings
 	tokens     []string // every token OnResumable received
-	errors     []error  // every error OnError received
 	requests   chan recorded
 }
 
@@ -88,7 +104,7 @@ func start(t *testing.T, settings agent.Settings, providers map[string][]string,
 		handle(w, req, int(count.Add(1))-1)
 	}))
 	t.Cleanup(server.Close)
-	r.harness = Harness(server.URL, r.dir, providers)
+	r.harness = urHarness(t, server.URL, r.dir, providers)
 	if err := r.launch(""); err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +124,6 @@ func (r *run) launch(token string) error {
 			r.configured = append(r.configured, s)
 			r.settings = s
 		},
-		OnError: func(err error) { r.errors = append(r.errors, err) },
 	})
 	if err != nil {
 		return err
@@ -396,19 +411,25 @@ func TestStreamErrors(t *testing.T) {
 	}
 }
 
-// interrupt interrupts the agent and fails unless the answer came, without
-// error, before Interrupt returned and after every update it published.
+// interrupt interrupts the agent and handles events until the answer, which
+// must come without error. The updates published until then are in r.updates.
 func interrupt(t *testing.T, r *run) {
 	t.Helper()
-	answered := -1
+	answered := false
 	r.agent.Interrupt(func(err error) {
 		if err != nil {
 			t.Errorf("Interrupt answered %v", err)
 		}
-		answered = len(r.updates)
+		answered = true
 	})
-	if answered != len(r.updates) {
-		t.Fatalf("Interrupt answered after %d of %d updates", answered, len(r.updates))
+	timeout := time.After(5 * time.Second)
+	for !answered {
+		select {
+		case e := <-r.agent.Events():
+			r.agent.Handle(e)
+		case <-timeout:
+			t.Fatalf("Interrupt was not answered; got %+v", r.updates)
+		}
 	}
 }
 
@@ -418,16 +439,17 @@ func TestInterrupt(t *testing.T) {
 			sse(w, "ok")
 			return
 		}
-		// The second delta is read with the first, and is in flight when the
-		// turn is interrupted.
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" late\"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
 		w.(http.Flusher).Flush()
 		<-req.Context().Done()
 	})
 	r.send("p1", "hi")
 	r.until(func(u agent.Update) bool { return u.Type == agent.UpdateTextDelta })
 	r.send("p2", "next")
+	r.until(func(u agent.Update) bool { return u.Type == agent.UpdatePromptQueued })
 	r.updates = nil
+	// The answer comes only once the stopped turn's result and idle state
+	// are published.
 	interrupt(t, r)
 	var kinds []string
 	for _, u := range r.updates {
@@ -435,7 +457,7 @@ func TestInterrupt(t *testing.T) {
 	}
 	want := []string{"prompt_cancelled p2 ", "result p1 ", "state p1 idle"}
 	if !slices.Equal(kinds, want) {
-		t.Fatalf("interrupt published %q, not %q", kinds, want)
+		t.Fatalf("interrupt published %q before its answer, not %q", kinds, want)
 	}
 	if result := r.updates[1].Result; !result.IsError || result.Text != "Interrupted" {
 		t.Errorf("interrupted result %+v", result)
@@ -480,6 +502,16 @@ func TestInputDuringTurnRunsNext(t *testing.T) {
 	}
 	r.send("p1", "first")
 	r.request()
+	var kinds []string
+	describe := func(u agent.Update) {
+		if u.Type != agent.UpdateTextDelta {
+			kinds = append(kinds, u.Type+" "+u.MessageID+" "+u.State)
+		}
+	}
+	r.until(func(u agent.Update) bool {
+		describe(u)
+		return u.Type == agent.UpdatePrompt
+	})
 	if r.agent.Parkable() {
 		t.Error("parkable while a turn runs")
 	}
@@ -491,17 +523,10 @@ func TestInputDuringTurnRunsNext(t *testing.T) {
 		t.Errorf("snapshot during the turn: %+v", snapshot)
 	}
 	close(release)
-	var kinds []string
-	for {
-		u := r.until(func(agent.Update) bool { return true })
-		if u.Type == agent.UpdateTextDelta {
-			continue
-		}
-		kinds = append(kinds, u.Type+" "+u.MessageID+" "+u.State)
-		if u.Type == agent.UpdateState && u.State == agent.StateIdle && u.MessageID == "p2" {
-			break
-		}
-	}
+	r.until(func(u agent.Update) bool {
+		describe(u)
+		return u.Type == agent.UpdateState && u.State == agent.StateIdle && u.MessageID == "p2"
+	})
 	want := []string{"prompt_queued p1 ", "state p1 running", "prompt p1 ", "prompt_queued p2 ", "result p1 ", "prompt p2 ", "result p2 ", "state p2 idle"}
 	if !slices.Equal(kinds, want) {
 		t.Errorf("updates %q, not %q", kinds, want)
@@ -575,7 +600,7 @@ func TestAsk(t *testing.T) {
 		sse(w, "A ", "title")
 	}))
 	t.Cleanup(server.Close)
-	h := Harness(server.URL, t.TempDir(), map[string][]string{model: {"a/x", "b/y"}})
+	h := urHarness(t, server.URL, t.TempDir(), map[string][]string{model: {"a/x", "b/y"}})
 
 	reply, err := h.Ask(t.Context(), model, "low", "Write a title.", "the prompt")
 	if err != nil || reply != "A title" {
@@ -615,7 +640,7 @@ func TestAsk(t *testing.T) {
 
 func TestStartWithoutKey(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "")
-	_, err := Harness("http://unused", t.TempDir(), nil).Start(agent.Options{})
+	_, err := urHarness(t, "http://unused", t.TempDir(), nil).Start(agent.Options{})
 	if err == nil || !strings.Contains(err.Error(), "OPENROUTER_API_KEY") {
 		t.Fatalf("Start without a key: %v", err)
 	}
@@ -660,6 +685,36 @@ func TestStopDuringTurn(t *testing.T) {
 	}
 }
 
+// Stop after ur reports a turn idle, and before it reports taking the queued
+// input that starts the next, still ends a running turn.
+func TestStopBetweenTurns(t *testing.T) {
+	release := make(chan struct{})
+	r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, req *http.Request, n int) {
+		if n > 0 {
+			<-req.Context().Done()
+			return
+		}
+		<-release
+		sse(w, "one")
+	})
+	r.send("p1", "hi")
+	r.request()
+	r.send("p2", "next")
+	close(release)
+	r.result()
+	r.agent.Handle(<-r.agent.Events())
+	r.updates = nil
+	r.agent.Stop()
+	var got []string
+	for _, u := range r.updates {
+		got = append(got, u.Type+" "+u.MessageID+" "+u.Error)
+	}
+	want := []string{"prompt_cancelled p2 ", "exited p2 stopped"}
+	if !slices.Equal(got, want) {
+		t.Errorf("Stop published %q, not %q", got, want)
+	}
+}
+
 // A second agent sees the streamed reply while the first request is still open.
 func TestResumeDuringTurn(t *testing.T) {
 	r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, req *http.Request, n int) {
@@ -696,10 +751,10 @@ func TestResume(t *testing.T) {
 		sse(w, [][]string{{"o", "ne"}, {"two"}, {"three"}}[n]...)
 	})
 	r.send("p1", "hi")
-	if len(r.tokens) != 1 || r.tokens[0] == "" {
-		t.Fatalf("OnResumable got %q before the first request", r.tokens)
-	}
 	r.idle()
+	if len(r.tokens) != 1 || r.tokens[0] == "" {
+		t.Fatalf("OnResumable got %q in the first turn", r.tokens)
+	}
 	r.request()
 	r.send("p2", "again")
 	r.idle()
@@ -851,34 +906,44 @@ func TestInstructions(t *testing.T) {
 	})
 }
 
-// A conversation whose file is gone or damaged refuses the start and clears
-// the token.
+// A conversation whose file is gone or damaged drops the prompt that would
+// resume it with the lost conversation notice, and clears the token.
 func TestResumeLost(t *testing.T) {
-	for name, c := range map[string]struct {
-		content *string
-		cause   error
-	}{
-		"missing file":        {nil, fs.ErrNotExist},
-		"truncated last line": {new("{\"role\":\"user\",\"content\":\"hi\"}\n{\"role\":\"assis"), io.ErrUnexpectedEOF},
+	for name, content := range map[string]*string{
+		"missing file":        nil,
+		"truncated last line": new("{\"role\":\"user\",\"content\":\"hi\"}\n{\"role\":\"assis"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
 				sse(w, "ok")
 			})
-			if c.content != nil {
+			if content != nil {
 				os.MkdirAll(r.dir, 0o700)
-				if err := os.WriteFile(filepath.Join(r.dir, "lost.jsonl"), []byte(*c.content), 0o600); err != nil {
+				if err := os.WriteFile(filepath.Join(r.dir, "lost.jsonl"), []byte(*content), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if err := r.launch("lost"); !errors.Is(err, errLost) {
-				t.Errorf("Start with a lost conversation: %v", err)
+			if err := r.launch("lost"); err != nil {
+				t.Fatal(err)
+			}
+			r.send("p1", "hi")
+			var seen []agent.Update
+			exited := r.until(func(u agent.Update) bool {
+				seen = append(seen, u)
+				return u.Type == agent.UpdateExited
+			})
+			want := []string{"prompt_queued p1", "state p1 running", "prompt_cancelled p1", "exited p1"}
+			if got := kinds(seen); !slices.Equal(got, want) {
+				t.Errorf("updates %q, not %q", got, want)
+			}
+			if exited.Error != lostConversation {
+				t.Errorf("exited with %q, not the lost conversation", exited.Error)
+			}
+			if !r.agent.Exited() {
+				t.Error("the agent has not ended")
 			}
 			if !slices.Equal(r.tokens, []string{""}) {
 				t.Errorf("OnResumable got %q, not the empty token", r.tokens)
-			}
-			if len(r.errors) != 1 || !strings.HasPrefix(r.errors[0].Error(), "resume conversation: ") || !errors.Is(r.errors[0], c.cause) {
-				t.Errorf("OnError got %v, not the resume failing with %v", r.errors, c.cause)
 			}
 		})
 	}
@@ -1112,7 +1177,7 @@ func TestShellApproved(t *testing.T) {
 	if err := r.agent.Approve(approval.RequestID, json.RawMessage(`{"behavior":"allow","updatedInput":{"command":"echo hi"}}`)); err != nil {
 		t.Fatal(err)
 	}
-	if got := kinds(r.updates); !slices.Equal(got, []string{"approval_answered p1", "state p1 running"}) {
+	if got := kinds(r.updates); !slices.Equal(got, []string{"approval_answered p1"}) {
 		t.Errorf("Approve published %q", got)
 	}
 	if err := r.agent.Approve(approval.RequestID, json.RawMessage(`{"behavior":"allow"}`)); !errors.Is(err, agent.ErrApprovalNotFound) {
@@ -1223,6 +1288,23 @@ func TestShellAuto(t *testing.T) {
 	}
 }
 
+// A command starts with the default signal handling: a writer into a closed
+// pipe dies of SIGPIPE, and SIGINT stops a child.
+func TestShellSignals(t *testing.T) {
+	r := start(t, agent.Settings{Model: model, PermissionMode: "auto"}, nil, func(w http.ResponseWriter, _ *http.Request, n int) {
+		if n == 0 {
+			sseCalls(w, "", call{"call_1", "shell", `{"command":"yes | head -1 >/dev/null; echo \"pipe=${PIPESTATUS[0]}\"; sleep 2 & kill -INT $!; wait $!; echo \"int=$?\""}`})
+			return
+		}
+		sse(w, "ok")
+	})
+	r.send("p1", "go")
+	result := r.until(func(u agent.Update) bool { return u.Type == agent.UpdateToolResult }).Result
+	if result.Text != "Exit code: 0\n\npipe=141\nint=130\n" {
+		t.Errorf("the command ran with signals ignored: %q", result.Text)
+	}
+}
+
 // Calls with bad arguments or to an unknown tool are answered at once, without
 // asking, and the turn goes on.
 func TestShellInvalidCall(t *testing.T) {
@@ -1289,6 +1371,7 @@ func TestShellInterrupt(t *testing.T) {
 		r.send("p1", "go")
 		approval := r.until(func(u agent.Update) bool { return u.Type == agent.UpdateApproval })
 		r.send("p2", "waiting")
+		r.until(func(u agent.Update) bool { return u.Type == agent.UpdatePromptQueued })
 		r.updates = nil
 		interrupt(t, r)
 		want := []string{"prompt_cancelled p2", "approval_cancelled p1", "result p1", "state p1 idle"}
@@ -1340,19 +1423,9 @@ func TestShellInterrupt(t *testing.T) {
 		}
 		gone(t, filepath.Join(r.workspace, "child"))
 		r.request()
-		// The next turn starts, and its request waits, while the killed
-		// command's outcome arrives during it and is dropped.
+		// The killed command's outcome is dropped.
 		r.send("p2", "next")
 		r.updates = nil
-		select {
-		case e := <-r.agent.Events():
-			r.agent.Handle(e)
-		case <-time.After(3 * time.Second):
-			t.Fatal("the killed command delivered nothing")
-		}
-		if len(r.updates) != 0 {
-			t.Errorf("the killed command published %+v during the next turn", r.updates)
-		}
 		close(release)
 		for _, u := range r.turn() {
 			if u.Type == agent.UpdateToolResult {
@@ -1441,7 +1514,7 @@ func TestShellStop(t *testing.T) {
 func TestShellReaped(t *testing.T) {
 	r := start(t, agent.Settings{Model: model, PermissionMode: "auto"}, nil, func(w http.ResponseWriter, _ *http.Request, n int) {
 		if n == 0 {
-			sseCalls(w, "", call{"call_1", "shell", `{"command":"set -m; sleep 30 & echo $! > escaped; sleep 60"}`})
+			sseCalls(w, "", call{"call_1", "shell", `{"command":"set -m; sleep 30 & echo $! > escaped; set +m; sleep 60"}`})
 			return
 		}
 		sse(w, "ok")
@@ -1517,7 +1590,7 @@ func TestShellInputBetweenSteps(t *testing.T) {
 }
 
 func TestPermissionModes(t *testing.T) {
-	check := Harness("http://unused", t.TempDir(), nil).CheckPermissionMode
+	check := urHarness(t, "http://unused", t.TempDir(), nil).CheckPermissionMode
 	for _, mode := range []string{"manual", "auto"} {
 		if err := check(mode); err != nil {
 			t.Errorf("%s refused: %v", mode, err)
@@ -1527,5 +1600,179 @@ func TestPermissionModes(t *testing.T) {
 		if err := check(mode); err == nil {
 			t.Errorf("%s accepted", mode)
 		}
+	}
+}
+
+// stopped is ur's answer to a call whose command did not finish.
+const stopped = "The user stopped this command before it finished."
+
+// gone reports whether the process whose PID the file holds has ended.
+func gone(t *testing.T, file string) {
+	t.Helper()
+	data, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A killed child is reaped by init once its parent shell is gone; give it
+	// a moment.
+	deadline := time.Now().Add(2 * time.Second)
+	for !errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+		if time.Now().After(deadline) {
+			syscall.Kill(pid, syscall.SIGKILL)
+			t.Fatalf("background child %d still runs", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// KillAll, which oxd runs on a second stop signal, ends ur, which first ends
+// its command's whole process group. KillAll refuses later processes for the
+// rest of the process, so the test runs in its own.
+func TestKillAllEndsCommands(t *testing.T) {
+	if os.Getenv("OX_KILLALL_INNER") == "" {
+		inner := exec.Command(os.Args[0], "-test.run=^TestKillAllEndsCommands$", "-test.v")
+		inner.Env = append(os.Environ(), "OX_KILLALL_INNER=1")
+		out, err := inner.CombinedOutput()
+		if err != nil {
+			t.Fatalf("inner run: %v\n%s", err, out)
+		}
+		return
+	}
+	r := start(t, agent.Settings{Model: model, PermissionMode: "auto"}, nil, func(w http.ResponseWriter, _ *http.Request, n int) {
+		sseCalls(w, "", call{"call_1", "shell", background})
+	})
+	r.send("p1", "go")
+	r.until(func(u agent.Update) bool { return u.Type == agent.UpdateToolUse })
+	child := filepath.Join(r.workspace, "child")
+	waitFile(t, child)
+	children.KillAll()
+	select {
+	case <-r.agent.Reaped():
+	case <-time.After(3 * time.Second):
+		t.Fatal("KillAll left ur running")
+	}
+	gone(t, child)
+}
+
+// A ur that exits on its own, or breaks the protocol, ends the agent with the
+// reason, dropping the prompt it had not taken.
+func TestUnexpectedExit(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
+	for name, c := range map[string]struct{ script, want string }{
+		"exit": {
+			"read line\necho 'ur: something broke' >&2\nexit 3\n",
+			"Ur exited: exit status 3\nur: something broke",
+		},
+		"broken protocol": {
+			"read line\necho '{\"type\":\"taken\",\"message_id\":\"other\"}'\nexec sleep 60\n",
+			`Ur broke its protocol: taken "other" is not the oldest untaken input`,
+		},
+		"command without a group": {
+			"read line\necho '{\"type\":\"command_started\"}'\nexec sleep 60\n",
+			"Ur broke its protocol: command_started for group 0",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			command := filepath.Join(t.TempDir(), "ur")
+			if err := os.WriteFile(command, []byte("#!/bin/sh\n"+c.script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			r := &run{t: t, harness: Harness(command, "", t.TempDir(), nil), workspace: t.TempDir(), settings: agent.Settings{Model: model}}
+			if err := r.launch(""); err != nil {
+				t.Fatal(err)
+			}
+			r.send("p1", "hi")
+			var seen []agent.Update
+			exited := r.until(func(u agent.Update) bool {
+				seen = append(seen, u)
+				return u.Type == agent.UpdateExited
+			})
+			want := []string{"prompt_queued p1", "state p1 running", "prompt_cancelled p1", "exited p1"}
+			if got := kinds(seen); !slices.Equal(got, want) {
+				t.Errorf("updates %q, not %q", got, want)
+			}
+			if exited.Error != c.want {
+				t.Errorf("exited with %q, not %q", exited.Error, c.want)
+			}
+			if !r.agent.Exited() {
+				t.Error("the agent has not ended")
+			}
+		})
+	}
+}
+
+// A ur that dies without ending its command, as on SIGKILL, leaves no command
+// running once the agent has ended.
+func TestCrashEndsCommands(t *testing.T) {
+	r := start(t, agent.Settings{Model: model, PermissionMode: "auto"}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
+		sseCalls(w, "", call{"call_1", "shell", `{"command":"echo $PPID > ur.pid; echo $$ > pid; sleep 60"}`})
+	})
+	r.send("p1", "go")
+	r.until(func(u agent.Update) bool { return u.Type == agent.UpdateToolUse })
+	waitFile(t, filepath.Join(r.workspace, "pid"))
+	data, err := os.ReadFile(filepath.Join(r.workspace, "ur.pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	r.until(func(u agent.Update) bool { return u.Type == agent.UpdateExited })
+	gone(t, filepath.Join(r.workspace, "pid"))
+}
+
+// A relative conversation directory is oxd's, not the session's workspace.
+func TestRelativeConversationDirectory(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { sse(w, "ok") }))
+	t.Cleanup(server.Close)
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	r := &run{t: t, harness: urHarness(t, server.URL, "urdata", nil), workspace: t.TempDir(), settings: agent.Settings{Model: model}}
+	if err := r.launch(""); err != nil {
+		t.Fatal(err)
+	}
+	r.send("p1", "hi")
+	r.idle()
+	if _, err := os.Stat(filepath.Join(cwd, "urdata", r.tokens[0]+".jsonl")); err != nil {
+		t.Errorf("the conversation is not under oxd's directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(r.workspace, "urdata")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the conversation went to the workspace: %v", err)
+	}
+}
+
+// An approval answered while an interrupt is on its way to ur stays answered:
+// ur's cancellation of it is not published.
+func TestAnswerCrossesInterrupt(t *testing.T) {
+	r := start(t, agent.Settings{Model: model, PermissionMode: "manual"}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
+		sseCalls(w, "", call{"call_1", "shell", `{"command":"true"}`})
+	})
+	r.send("p1", "go")
+	approval := r.until(func(u agent.Update) bool { return u.Type == agent.UpdateApproval })
+	r.updates = nil
+	answered := false
+	r.agent.Interrupt(func(error) { answered = true })
+	if err := r.agent.Approve(approval.RequestID, json.RawMessage(`{"behavior":"allow"}`)); err != nil {
+		t.Fatal(err)
+	}
+	for timeout := time.After(5 * time.Second); !answered; {
+		select {
+		case e := <-r.agent.Events():
+			r.agent.Handle(e)
+		case <-timeout:
+			t.Fatalf("Interrupt was not answered; got %+v", r.updates)
+		}
+	}
+	if got := kinds(r.updates); !slices.Equal(got, []string{"approval_answered p1", "result p1", "state p1 idle"}) {
+		t.Errorf("updates %q, not the answer and the interrupted turn's end", got)
 	}
 }

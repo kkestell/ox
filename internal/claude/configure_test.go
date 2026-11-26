@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/kkestell/ox/internal/agent"
+	"github.com/kkestell/ox/internal/process"
 )
 
 func replyTo(result chan error) func(error) { return func(err error) { result <- err } }
@@ -164,7 +165,7 @@ func TestConfigureFailure(t *testing.T) {
 					t.Fatalf("a failed configuration did not write the prompt held during it: %v", ids)
 				}
 			case "exited":
-				a.Handle(processExit{})
+				a.Handle(process.Exit{})
 				if len(*updates) != 2 || !cancelled((*updates)[:1], []string{id}) || (*updates)[1].Type != "exited" || input.Len() != 0 {
 					t.Fatalf("the exit did not drop the held prompt and end alone: %+v, %q", *updates, input)
 				}

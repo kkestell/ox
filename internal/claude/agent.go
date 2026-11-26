@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kkestell/ox/internal/agent"
+	"github.com/kkestell/ox/internal/process"
 )
 
 // phase is what Ox is doing with the process, tracked separately from
@@ -58,7 +59,7 @@ func (*configuring) isPhase() {}
 func (timedOut) isPhase()     {}
 
 type Agent struct {
-	proc   *process
+	proc   *process.Process
 	input  *writer
 	events chan agent.Event
 	done   chan struct{} // closed when the agent ends, so late timers and output deliver nothing
@@ -80,11 +81,6 @@ type Agent struct {
 	streamedText     bool   // the current turn published a text delta
 	mayHaveSchedules bool   // a scheduled or restored job may be pending; a Stop report settles it
 	plainText        string // Claude's last plain-text line on stdout after startup
-}
-
-type processExit struct {
-	err    error
-	stderr string
 }
 
 type controlTimeout struct{ requestID string }
@@ -125,7 +121,7 @@ func Start(options agent.Options) (agent.Agent, error) {
 
 // newAgent runs the process proc, starting, whose output arrives on events
 // until done is closed and whose input is input.
-func newAgent(input *writer, events chan agent.Event, done chan struct{}, proc *process, options agent.Options) *Agent {
+func newAgent(input *writer, events chan agent.Event, done chan struct{}, proc *process.Process, options agent.Options) *Agent {
 	a := &Agent{
 		proc: proc, input: input, events: events, done: done,
 		phase:    &starting{},
@@ -152,7 +148,7 @@ func (a *Agent) Handle(event agent.Event) {
 		} else {
 			a.plainText = string(e)
 		}
-	case processExit:
+	case process.Exit:
 		a.exit(e)
 	case controlTimeout:
 		a.controlTimedOut(e.requestID)
@@ -338,7 +334,7 @@ func (a *Agent) startupOutput(s *starting, m message) bool {
 
 // giveUp asks the process to exit and ends a start that failed with reason.
 func (a *Agent) giveUp(s *starting, reason string) {
-	a.proc.Terminate()
+	a.proc.Terminate(killAfter)
 	a.startFailed(s, reason)
 }
 
@@ -355,12 +351,12 @@ func (a *Agent) startFailed(s *starting, reason string) {
 	a.end(reason)
 }
 
-func (a *Agent) exit(exit processExit) {
+func (a *Agent) exit(exit process.Exit) {
 	switch p := a.phase.(type) {
 	case *starting:
 		reason := p.reason
 		if reason == "" {
-			reason = exit.stderr
+			reason = exit.Stderr
 		}
 		if reason == "" {
 			reason = exitReason(exit)
@@ -376,16 +372,16 @@ func (a *Agent) exit(exit processExit) {
 		if a.plainText != "" {
 			reason += "\n" + a.plainText
 		}
-		if exit.stderr != "" {
-			reason += "\n" + exit.stderr
+		if exit.Stderr != "" {
+			reason += "\n" + exit.Stderr
 		}
 		a.end(reason)
 	}
 }
 
-func exitReason(exit processExit) string {
-	if exit.err != nil {
-		return "Claude exited: " + exit.err.Error()
+func exitReason(exit process.Exit) string {
+	if exit.Err != nil {
+		return "Claude exited: " + exit.Err.Error()
 	}
 	return "Claude exited"
 }
@@ -393,7 +389,7 @@ func exitReason(exit processExit) string {
 // Stop asks Claude to exit and ends the agent at once. The process exits,
 // or is killed, in the background.
 func (a *Agent) Stop() {
-	a.proc.Terminate()
+	a.proc.Terminate(killAfter)
 	reason := ""
 	if _, prompting := a.phase.(*prompting); prompting {
 		reason = "Claude was stopped"
@@ -446,5 +442,5 @@ func (a *Agent) Exited() bool {
 // Reaped is closed once Claude has exited. Claude ends its Bash tool
 // processes when it exits on SIGTERM.
 func (a *Agent) Reaped() <-chan struct{} {
-	return a.proc.reaped
+	return a.proc.Reaped()
 }

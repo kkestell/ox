@@ -1,4 +1,4 @@
-package ur
+package engine
 
 import (
 	"bytes"
@@ -12,8 +12,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"github.com/kkestell/ox/internal/children"
 )
 
 // shellTool is the shell tool's definition, which every request offers.
@@ -91,8 +89,8 @@ type shell struct {
 	output  *capture
 }
 
-// startShell starts c in workspace and registers it with children. It runs
-// until it exits, its timeout passes, or ctx is done.
+// startShell starts c in workspace. It runs until it exits, its timeout
+// passes, or ctx is done.
 func startShell(ctx context.Context, workspace string, c shellCommand) (*shell, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout())
 	cmd := exec.CommandContext(ctx, "bash", "-c", c.Command)
@@ -104,7 +102,7 @@ func startShell(ctx context.Context, workspace string, c shellCommand) (*shell, 
 	cmd.WaitDelay = time.Second
 	output := &capture{}
 	cmd.Stdout, cmd.Stderr = output, output
-	if err := children.Start(cmd, func() { killGroup(cmd.Process.Pid) }); err != nil {
+	if err := cmd.Start(); err != nil {
 		cancel()
 		return nil, err
 	}
@@ -117,7 +115,6 @@ func (s *shell) wait() outcome {
 	defer s.cancel()
 	s.cmd.Wait()
 	killGroup(s.cmd.Process.Pid)
-	children.Done(s.cmd)
 	status := s.cmd.ProcessState.Sys().(syscall.WaitStatus)
 	var line string
 	switch {
@@ -131,7 +128,7 @@ func (s *shell) wait() outcome {
 	return outcome{line + "\n\n" + s.output.text(), line != "Exit code: 0"}
 }
 
-// environment is oxd's environment without the OpenRouter key.
+// environment is ur's environment without the OpenRouter key.
 func environment() []string {
 	var env []string
 	for _, variable := range os.Environ() {

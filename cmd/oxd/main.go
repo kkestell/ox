@@ -54,18 +54,23 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// Without ox-mcp, Claude would run with its ox server failed.
+	forwarder, err := findBeside("ox-mcp")
+	if err != nil {
+		log.Fatalf("ox-mcp not found beside oxd: %v", err)
+	}
+	urPath, err := findBeside("ur")
+	if err != nil {
+		log.Fatalf("ur not found beside oxd: %v", err)
+	}
 	harnesses := map[string]agent.Harness{
 		"claude": claude.Harness,
 		"fake":   {Start: fake.Start, Ask: fake.Ask},
-		"ur":     ur.Harness(ur.Endpoint, *urDir, cfg.Harnesses["ur"].Providers()),
+		"ur":     ur.Harness(urPath, "", *urDir, cfg.Harnesses["ur"].Providers()),
 	}
 	playScene(harnesses)
 	if err := checkConfig(cfg, harnesses); err != nil {
 		log.Fatalf("%s: %v", *configPath, err)
-	}
-	forwarder, err := findForwarder()
-	if err != nil {
-		log.Fatalf("ox-mcp not found beside oxd: %v", err)
 	}
 
 	if err := run(*dbPath, cfg, *parkAfter, harnesses, server.MCP{Forwarder: forwarder, Socket: socket}, worktrees); err != nil {
@@ -116,9 +121,8 @@ func run(dbPath string, cfg *config.Config, parkAfter time.Duration, harnesses m
 	return err
 }
 
-// findForwarder returns the ox-mcp executable beside oxd's own. Without it,
-// Claude would run with its ox server failed.
-func findForwarder() (string, error) {
+// findBeside returns the executable name beside oxd's own.
+func findBeside(name string) (string, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return "", err
@@ -126,7 +130,7 @@ func findForwarder() (string, error) {
 	if self, err = filepath.EvalSymlinks(self); err != nil {
 		return "", err
 	}
-	return exec.LookPath(filepath.Join(filepath.Dir(self), "ox-mcp"))
+	return exec.LookPath(filepath.Join(filepath.Dir(self), name))
 }
 
 // checkConfig refuses a configuration that offers a harness oxd does not
