@@ -272,12 +272,12 @@ Every other change takes the steps below. When in doubt, a change is not
 small.
 
 Plans and reviews are proportional to the change. A plan or review covers only
-the concerns the change touches, at the length they need. A contained change,
-one that touches no state owner in `oxd`, protocol, persistence, or harness
-driving, such as a change to the web client alone, gets a short plan and a
-review by one session with no children, on Sonnet at medium effort. A larger
-change takes the models below, and starts children only for work too large for
-one context.
+the concerns the change touches, at the length they need. Every change that is
+not small still takes each step below in its own child session. A contained
+change, one that touches no state owner in `oxd`, protocol, persistence, or
+harness driving, such as a change to the web client alone, runs those child
+sessions on Sonnet at medium effort, and its planning and reviewing sessions
+start no children of their own.
 
 1. A child session on Opus 5.5 at high effort runs `/ox-plan`. The user
    approves the plan's requirement changes with its other product questions.
