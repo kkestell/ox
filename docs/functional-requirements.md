@@ -107,15 +107,15 @@ title.
 
 - **Session header.** A session's view shows its label and the directory it
   works in.
-- **Prompts as sent.** Prompts show in the transcript as the plain text the user
-  sent, followed by the images attached to them.
+- **Prompts as sent.** Prompts show in the transcript rendered as Markdown under
+  the same rules as replies, followed by the images attached to them.
 - **Messages in the transcript.** A message shows in the recipient's transcript
   rendered as Markdown under the same rules as replies, headed with the label of
   the session that sent it, pending at the end of the transcript until Claude
   takes it, on every page and after a reload.
-- **Replies as Markdown.** Claude's replies stream in as Markdown. Raw HTML
-  shows as text, images are not loaded, unsafe links are not links, and links
-  open in a new tab.
+- **Replies as Markdown.** Claude's replies stream in as Markdown, with each
+  line break shown as a line break. Raw HTML shows as text, images are not
+  loaded, unsafe links are not links, and links open in a new tab.
 - **Tool calls.** Each tool call shows its name, a summary of its input, and
   whether it is running, done, failed, or stopped; expanding it shows the full
   input and the result's text, and a plan renders as Markdown. Expanding or

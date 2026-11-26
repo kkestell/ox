@@ -312,10 +312,10 @@ function MessageBubble(props: { sessionId: string; input: Prompt; files?: File[]
       class={["prompt", { queued: props.queued, message: props.input.from !== undefined }]}
       aria-label={props.input.from === undefined ? "Prompt" : `Message from ${props.input.from_label}`}
     >
-      <Show when={props.input.from !== undefined} fallback={props.input.text}>
+      <Show when={props.input.from !== undefined}>
         <div class="from">{props.input.from_label}</div>
-        <Markdown text={props.input.text ?? ""} />
       </Show>
+      <Show when={props.input.text}>{(text) => <Markdown text={text()} />}</Show>
       <Show when={props.input.images?.length || props.files?.length}>
         <div class="images">
           <For each={props.input.images}>
