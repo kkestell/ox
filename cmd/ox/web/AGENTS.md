@@ -17,6 +17,15 @@ Use `make dev` to work on the [web client](../../../docs/architecture.md#web-ui)
 - The browser places the page around the on-screen keyboard, scrolls it, and
   zooms it. The layout is sized by CSS alone, and the page's script reads no
   viewport measurements.
+- `src/style.css` takes every design value from the tokens in its `:root`:
+  colors, lengths, font sizes and weights, line heights, radii, border and
+  ring widths, shadows, opacity, durations, and z-indexes. Other rules use
+  those tokens and keywords only, plus the few geometric literals
+  `style.test.mjs` allows. A new value joins the scale in `:root`, and a
+  value close to an existing token takes that token. The file keeps its
+  order (reset, tokens, base elements, layout, then one section per
+  component in `src/`, then the touch-screen block), and each element's
+  rules live in its component's section.
 - The user judges how UI changes look; the report on a UI change names the
   views it touches. Check how a change behaves in headless Chrome with
   Playwright, through `make e2e` specs or against a stack started on spare
@@ -56,7 +65,8 @@ Use `make dev` to work on the [web client](../../../docs/architecture.md#web-ui)
   `hero.spec.ts` plays `docs/screenshots/hero.json` and captures the README's
   screenshots in `docs/images`; it runs with `make screenshots`.
   `make test` runs the Node suites `highlight.test.mjs`, `stack.test.mjs`,
-  `toolInput.test.mjs`, `diff.test.mjs`, and `tabs.test.mjs` with `node:test`.
+  `toolInput.test.mjs`, `id.test.mjs`, `diff.test.mjs`, `tabs.test.mjs`, and
+  `style.test.mjs` with `node:test`.
 
 ## Solid 2.0
 
