@@ -67,8 +67,9 @@ make dev
 ```
 
 This builds the web UI and Go binaries into `bin/` and serves the UI at
-`http://localhost:8080`. Press Enter in the `make dev` terminal to rebuild and
-restart whichever binary changed. In a linked git worktree, `make dev` keeps its
+`http://localhost:8080`. Press Enter in the `make dev` terminal, or run
+`make restart` from anywhere in the checkout, to rebuild and restart whichever
+binary changed. In a linked git worktree, `make dev` keeps its
 state under `.state/` and serves on a free port.
 
 To build and run the binaries directly:

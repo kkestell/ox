@@ -1,4 +1,4 @@
-.PHONY: dev build web test live lint e2e screenshots metrics docs hooks
+.PHONY: dev restart build web test live lint e2e screenshots metrics docs hooks
 
 # A recipe that fails leaves no target behind, such as a partial download.
 .DELETE_ON_ERROR:
@@ -15,6 +15,10 @@ export OPENROUTER_API_KEY
 
 dev: build
 	GORACE=halt_on_error=1 node cmd/ox/web/dev.mjs
+
+# restart rebuilds and restarts what changed in this checkout's make dev.
+restart:
+	kill -USR1 "$$(cat .state/dev.pid)"
 
 build: web
 	go build -race -o bin/ ./cmd/ox ./cmd/ox-mcp ./cmd/oxd ./cmd/ur

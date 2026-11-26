@@ -1,4 +1,4 @@
-import { lstatSync } from "node:fs";
+import { lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -55,6 +55,13 @@ const stack = runStack({
   signals: process,
 });
 
+// make restart signals the stack through this file.
+const state = join(checkout, ".state");
+const pidFile = join(state, "dev.pid");
+mkdirSync(state, { recursive: true });
+writeFileSync(pidFile, `${process.pid}\n`);
+
 console.log(`Ox is at http://localhost:${port}/`);
-console.log("Press Enter to rebuild and restart what changed.");
+console.log("Press Enter, or run make restart, to rebuild and restart what changed.");
 process.exitCode = await stack;
+rmSync(pidFile, { force: true });

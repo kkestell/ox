@@ -226,6 +226,15 @@ test("a second Enter during a rebuild does not start another", async () => {
   assert.ok(lines.includes("a rebuild is in progress"));
 });
 
+test("SIGUSR1 rebuilds and restarts what changed", async () => {
+  const signals = new EventEmitter();
+  const paths = await start({ changed: ["ox"], signals });
+  const before = snapshot(paths);
+  signals.emit("SIGUSR1");
+  await until(() => lines.includes("restarted ox") && pid(paths.ox) !== before.ox);
+  assert.equal(pid(paths.oxd), before.oxd);
+});
+
 test("stopping during a restart starts no new process", async () => {
   const paths = await start({
     changed: ["ox"],
