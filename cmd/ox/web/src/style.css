@@ -105,7 +105,6 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: 
 .loader::before { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .marker.failed { --icon: url(lucide-static/icons/circle-alert.svg); color: var(--destructive); }
-.marker.brain { --icon: url(lucide-static/icons/brain.svg); }
 .marker.stopped { --icon: url(lucide-static/icons/circle-stop.svg); color: var(--muted-foreground); }
 
 button {
@@ -303,13 +302,15 @@ main > .loading { flex: 1; display: flex; align-items: center; justify-content: 
 .markdown a { color: inherit; text-decoration: underline; }
 .log .error { padding: 0.75rem 1rem; border-radius: var(--radius); background: var(--card); }
 
-.log .reasoning > .markdown { margin-left: 1.5rem; color: var(--muted-foreground); }
+.log .reasoning > .markdown { color: var(--muted-foreground); }
+.reasoning .chevron-right { margin-left: 0.25rem; color: var(--muted-foreground); }
+.reasoning[open] .chevron-right::before { transform: rotate(90deg); }
 /* A row's summary padding widens its hit area into the transcript's gap, so
-   text keeps the gap's distance from the items around it. A row after a closed
-   one sits 0.25rem below it. */
+   text keeps the gap's distance from the items around it. A tool row after a
+   closed one sits 0.25rem below it. */
 details:is(.tool, .reasoning) { margin-top: -0.25rem; }
 details:is(.tool, .reasoning):not([open]) { margin-bottom: -0.25rem; }
-details:is(.tool, .reasoning):not([open]) + details:is(.tool, .reasoning) { margin-top: -0.75rem; }
+details.tool:not([open]) + details.tool { margin-top: -0.75rem; }
 details:is(.tool, .reasoning) summary { display: flex; align-items: center; padding: 0.25rem 0; list-style: none; cursor: default; }
 details:is(.tool, .reasoning) summary::-webkit-details-marker { display: none; }
 .marker { flex: none; width: 1.5rem; height: 1.25rem; display: flex; align-items: center; }
