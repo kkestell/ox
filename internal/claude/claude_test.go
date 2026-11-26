@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/kkestell/ox/internal/agent"
-	"github.com/kkestell/ox/internal/children"
 	"github.com/kkestell/ox/internal/process"
 )
 
@@ -91,6 +90,8 @@ func TestStartupFailureKeepsClaudesReason(t *testing.T) {
 	const missing = "No conversation found with session ID: 1111"
 	gone := message{Type: "result", Subtype: "error_during_execution", IsError: true, Errors: []string{missing}}
 	exit := process.Exit{Err: errors.New("exit status 1")}
+	// The process exits on the SIGTERM a startup timeout sends.
+	terminated := process.Exit{Err: errors.New("exit status 143"), Stderr: "stuck"}
 	for name, c := range map[string]struct {
 		output []agent.Event
 		reason string
@@ -102,9 +103,11 @@ func TestStartupFailureKeepsClaudesReason(t *testing.T) {
 		}, "API Error: Connection refused"},
 		"plain text":                    {[]agent.Event{plainText(missing), exit}, missing},
 		"plain text after error result": {[]agent.Event{gone, plainText("Not logged in"), exit}, "Not logged in"},
-		"startup timeout after plain text": {[]agent.Event{plainText("Not logged in · Please run /login"), startupTimeout{}},
-			"no startup response within one minute\nNot logged in · Please run /login"},
-		"startup timeout after lost conversation": {[]agent.Event{gone, startupTimeout{}}, lostConversation},
+		"startup timeout after plain text": {[]agent.Event{plainText("Not logged in · Please run /login"), startupTimeout{}, terminated},
+			"no startup response within one minute\nNot logged in · Please run /login\nstuck"},
+		"startup timeout after lost conversation": {[]agent.Event{gone, startupTimeout{}, terminated}, lostConversation},
+		"initialize response after startup timeout": {[]agent.Event{startupTimeout{}, initialized, terminated},
+			"no startup response within one minute\nstuck"},
 		"stderr":    {[]agent.Event{process.Exit{Err: exit.Err, Stderr: "error: bad option"}}, "error: bad option"},
 		"no reason": {[]agent.Event{exit}, "Claude exited: exit status 1"},
 		"refused initialize": {[]agent.Event{
@@ -156,12 +159,12 @@ func TestStartupFailureKeepsClaudesReason(t *testing.T) {
 }
 
 // A start that Claude neither answers nor fails ends after the startup
-// limit, and its process is asked to exit.
+// limit, once its process has exited, with Claude's stderr in the reason.
 func TestStartupLimit(t *testing.T) {
 	saved := startupLimit
 	startupLimit = 200 * time.Millisecond
 	t.Cleanup(func() { startupLimit = saved })
-	script(t, "#!/bin/sh\nexec sleep 60\n")
+	script(t, "#!/bin/sh\necho 'stuck on login' >&2\nexec sleep 60\n")
 	log := new(startLog)
 	options := log.options()
 	options.Workspace = t.TempDir()
@@ -175,18 +178,7 @@ func TestStartupLimit(t *testing.T) {
 	}
 	log.updates = nil
 	handleUntilEnded(t, a, 5*time.Second)
-	log.dropped(t, a, id, "no startup response within one minute")
-	waited := make(chan struct{})
-	go func() {
-		children.WaitAll()
-		close(waited)
-	}()
-	select {
-	case <-waited:
-	case <-time.After(5 * time.Second):
-		children.KillAll()
-		t.Fatal("Claude was not asked to exit after the startup limit")
-	}
+	log.dropped(t, a, id, "no startup response within one minute\nstuck on login")
 }
 
 // A child that inherits Claude's stdout keeps the pipe open after Claude

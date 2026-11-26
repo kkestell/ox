@@ -334,21 +334,24 @@ stateDiagram-v2
   prompting --> available: idle with no untaken input
   configuring --> available: last ack / refusal / write error
   configuring --> timedOut: control request timeout
-  starting --> exited: refusal / startup limit / exit / Stop
+  starting --> startTimedOut: startup limit
+  starting --> exited: refusal / exit / Stop
+  startTimedOut --> exited: process exits / Stop
   available --> exited: exit / Stop
   prompting --> exited: exit / Stop
   configuring --> exited: exit / Stop
   timedOut --> exited: process exits
 ```
 
-| Phase         | Meaning                                                                                                                               | Leaves on                                                               |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `starting`    | Claude has not answered `initialize`. Holds Claude's last failure output; inputs sent meanwhile wait unwritten.                       | `initialize` response, refusal, startup limit, process exit, or `Stop`. |
-| `available`   | Ready for a prompt or configuration, with no input untaken.                                                                           | Prompt or configuration starts.                                         |
-| `prompting`   | Client prompts hold the agent. The first untaken input, if any, has been written; `command_lifecycle started` or `cancelled` ends it. | Claude reports `idle` with no input untaken.                            |
-| `configuring` | Control requests are in flight, one at a time; inputs sent meanwhile wait unwritten.                                                  | Last acknowledgement, refusal, write failure, or timeout.               |
-| `timedOut`    | A control request went unanswered and Ox asked the process to exit.                                                                   | Process exits.                                                          |
-| `exited`      | The agent has ended (any transition here drops all untaken inputs).                                                                   | —                                                                       |
+| Phase           | Meaning                                                                                                                               | Leaves on                                                               |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `starting`      | Claude has not answered `initialize`. Holds Claude's last failure output; inputs sent meanwhile wait unwritten.                       | `initialize` response, refusal, startup limit, process exit, or `Stop`. |
+| `startTimedOut` | Claude did not answer `initialize` in time and Ox asked the process to exit; the exit ends the start with its stderr tail.            | Process exits or `Stop`.                                                |
+| `available`     | Ready for a prompt or configuration, with no input untaken.                                                                           | Prompt or configuration starts.                                         |
+| `prompting`     | Client prompts hold the agent. The first untaken input, if any, has been written; `command_lifecycle started` or `cancelled` ends it. | Claude reports `idle` with no input untaken.                            |
+| `configuring`   | Control requests are in flight, one at a time; inputs sent meanwhile wait unwritten.                                                  | Last acknowledgement, refusal, write failure, or timeout.               |
+| `timedOut`      | A control request went unanswered and Ox asked the process to exit.                                                                   | Process exits.                                                          |
+| `exited`        | The agent has ended (any transition here drops all untaken inputs).                                                                   | —                                                                       |
 
 - **Launch and resume:** Ox assigns a fresh UUID for a new Claude conversation,
   tracks the conversation ID Claude reports, and calls `OnResumable` once a
@@ -371,9 +374,9 @@ stateDiagram-v2
 - **Interrupts:** Drops every unwritten input. In `starting`, `available`,
   `prompting`, or `configuring` when published state is neither `idle` nor
   `background`, it sends an interrupt to Claude and drops the written untaken
-  input. In `timedOut`, it sends nothing. The interrupt's reply waits until
-  Claude reports `idle`, Claude takes an input other than the one written when
-  the interrupt was sent, or the agent ends.
+  input. In `startTimedOut` or `timedOut`, it sends nothing. The interrupt's
+  reply waits until Claude reports `idle`, Claude takes an input other than the
+  one written when the interrupt was sent, or the agent ends.
 - **Parking:** `Parkable` is derived from phase, state, pending approvals, and
   [Claude's reports of background work](harnesses/claude-code.md#8-background-work-and-schedules).
   On a resume whose history has a `CronCreate` call, or after a scheduling tool

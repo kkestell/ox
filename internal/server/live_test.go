@@ -613,6 +613,41 @@ func TestLive(t *testing.T) {
 		if r := l.c.update(a, "result").Result; !r.IsError || r.Text != "Interrupted" {
 			l.t.Errorf("a prompt interrupted on arrival ended with %+v", r)
 		}
+
+		// A tool call an interrupt stopped gets no tool_result, so the page
+		// shows it stopped.
+		b := l.create("manual")
+		l.c.forget(b)
+		l.c.call("session/send", map[string]string{"session_id": b, "text": "Run the Bash command `ping -c 30 127.0.0.1`, then reply with just the word done."})
+		use := l.c.update(b, "tool_use")
+		if use.ToolName != "Bash" {
+			l.t.Fatalf("Haiku called %s, not Bash; run again", use.ToolName)
+		}
+		// Approve the call, and let the command start.
+		approval := l.c.update(b, "approval")
+		var r liveRequest
+		json.Unmarshal(approval.Request, &r)
+		l.c.call("session/approve", map[string]any{"session_id": b, "request_id": approval.RequestID, "response": allow(r)})
+		time.Sleep(2 * time.Second)
+		for _, m := range l.c.received(b) {
+			var u agent.Update
+			json.Unmarshal(m.Params, &u)
+			if u.Type == "tool_result" && u.ToolUseID == use.ToolUseID {
+				l.t.Fatalf("the Bash call ended before Stop: %+v", u.Result)
+			}
+		}
+		l.c.forget(b)
+		l.stop(b)
+		if r := l.c.update(b, "result").Result; !r.IsError || r.Text != "Interrupted" {
+			l.t.Errorf("a turn stopped in Bash ended with %+v", r)
+		}
+		for _, m := range l.c.received(b) {
+			var u agent.Update
+			json.Unmarshal(m.Params, &u)
+			if u.Type == "tool_result" && u.ToolUseID == use.ToolUseID {
+				l.t.Errorf("the stopped Bash call got a tool_result: %+v", u.Result)
+			}
+		}
 	})
 
 	section("steering", func(l *live) {

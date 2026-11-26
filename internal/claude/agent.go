@@ -51,12 +51,18 @@ type timedOut struct {
 	err  error
 }
 
-func (available) isPhase()    {}
-func (exited) isPhase()       {}
-func (*starting) isPhase()    {}
-func (*prompting) isPhase()   {}
-func (*configuring) isPhase() {}
-func (timedOut) isPhase()     {}
+// startTimedOut holds the agent after Claude did not answer initialize in
+// time: Ox gave up on the start and asked the process to exit, and the exit
+// ends the start.
+type startTimedOut struct{ start *starting }
+
+func (available) isPhase()     {}
+func (exited) isPhase()        {}
+func (*starting) isPhase()     {}
+func (startTimedOut) isPhase() {}
+func (*prompting) isPhase()    {}
+func (*configuring) isPhase()  {}
+func (timedOut) isPhase()      {}
 
 type Agent struct {
 	proc   *process.Process
@@ -153,12 +159,10 @@ func (a *Agent) Handle(event agent.Event) {
 	case controlTimeout:
 		a.controlTimedOut(e.requestID)
 	case startupTimeout:
+		// The exit ends the start, with Claude's stderr tail in its reason.
 		if s, ok := a.phase.(*starting); ok {
-			reason := "no startup response within one minute"
-			if s.reason != "" {
-				reason += "\n" + s.reason
-			}
-			a.giveUp(s, reason)
+			a.proc.Terminate(killAfter)
+			a.phase = startTimedOut{s}
 		}
 	}
 }
@@ -231,6 +235,12 @@ func (a *Agent) handleOutput(m message) {
 	case "user":
 		if m.ParentToolUseID == "" {
 			for _, r := range m.toolResults() {
+				// An interrupt answers each running tool with an error
+				// result. A call an interrupt stopped has no result, as for
+				// Ur, and the page shows it stopped.
+				if r.IsError && len(a.stops) > 0 {
+					continue
+				}
 				a.publish(agent.Update{Type: agent.UpdateToolResult, ToolUseID: r.ToolUseID, Result: &agent.Result{Text: r.Text, IsError: r.IsError}})
 			}
 		}
@@ -362,6 +372,15 @@ func (a *Agent) exit(exit process.Exit) {
 			reason = exitReason(exit)
 		}
 		a.startFailed(p, reason)
+	case startTimedOut:
+		reason := "no startup response within one minute"
+		if p.start.reason != "" {
+			reason += "\n" + p.start.reason
+		}
+		if exit.Stderr != "" {
+			reason += "\n" + exit.Stderr
+		}
+		a.startFailed(p.start, reason)
 	case timedOut:
 		// Ox asked the process to exit.
 		a.end("")
@@ -405,7 +424,7 @@ func (a *Agent) Stop() {
 func (a *Agent) end(reason string) {
 	final := agent.Update{Type: agent.UpdateExited, Error: reason}
 	switch p := a.phase.(type) {
-	case *starting:
+	case *starting, startTimedOut:
 		if queued := a.tracker.Queued(); len(queued) > 0 {
 			final.MessageID = queued[len(queued)-1].MessageID
 		}
@@ -422,7 +441,7 @@ func (a *Agent) end(reason string) {
 		p.done(p.fail(agent.ErrExited))
 	case timedOut:
 		p.done(p.err)
-	case available, *starting, *prompting, exited:
+	case available, *starting, startTimedOut, *prompting, exited:
 		// No configuration waits.
 	}
 	a.withdrawApprovals()

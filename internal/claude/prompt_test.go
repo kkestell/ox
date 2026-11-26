@@ -554,6 +554,39 @@ func TestTopLevelToolCallsArePublished(t *testing.T) {
 	if result.Type != "tool_result" || result.ToolUseID != "t1" || result.Result.Text != "a\nb" || !result.Result.IsError {
 		t.Fatalf("unexpected tool_result: %+v", result)
 	}
+
+	// A call an interrupt stopped has no tool_result, so it shows stopped.
+	output(t, a, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t3","name":"Bash","input":{"command":"sleep 30"}}]}}`)
+	stop := interrupt(a, updates)
+	*updates = nil
+	output(t, a, `{"type":"control_response","response":{"subtype":"success","request_id":"interrupt"}}`)
+	output(t, a, `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t3","is_error":true,"content":"The user doesn't want to proceed with this tool use. The tool use was rejected."}]}}`)
+	output(t, a, `{"type":"user","message":{"content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}}`)
+	output(t, a, `{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_tools"}`)
+	state(t, a, "idle")
+	if !stop.answered || stop.err != nil {
+		t.Fatalf("the interrupt was not answered at idle: %+v", stop)
+	}
+	for _, u := range *updates {
+		if u.Type == "tool_result" {
+			t.Fatalf("the stopped call got a tool_result: %+v", *updates)
+		}
+	}
+	if u := (*updates)[0]; u.Type != "result" || u.Result.Text != "Interrupted" {
+		t.Fatalf("the stopped turn did not end with Interrupted: %+v", *updates)
+	}
+
+	// The next turn's error results are published again.
+	next, err := sendTestPrompt(a, "again")
+	if err != nil {
+		t.Fatal(err)
+	}
+	output(t, a, `{"type":"command_lifecycle","command_uuid":"`+next+`","state":"started"}`)
+	*updates = nil
+	output(t, a, `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t4","is_error":true,"content":"failed"}]}}`)
+	if len(*updates) != 1 || (*updates)[0].Type != "tool_result" || (*updates)[0].ToolUseID != "t4" || !(*updates)[0].Result.IsError {
+		t.Fatalf("an error result after the stopped turn was not published: %+v", *updates)
+	}
 }
 
 func TestThinkingIsPublished(t *testing.T) {
