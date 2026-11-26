@@ -405,18 +405,26 @@ test("the page links a manifest that opens Ox standalone with its icon", async (
   expect(icon.headers()["content-type"]).toBe("image/png");
 });
 
-test("reasoning shows in the transcript, before and after a reload", async ({ ox: page }) => {
+test("reasoning shows collapsed in the transcript, before and after a reload", async ({ ox: page }) => {
   await newDraft(page);
   await prompt(page).fill("think Count to **three**.");
   await prompt(page).press("Enter");
   await expect(replies(page).last()).toHaveText("You said: think Count to three.");
-  const thinking = transcript(page).getByRole("article", { name: "Thinking" });
-  await expect(thinking).toHaveText("Count to three.");
+  const thinking = transcript(page).getByRole("group", { name: "Thinking" });
+  const summary = thinking.getByText("Thinking", { exact: true });
+  await expect(thinking).toBeVisible();
+  await expect(thinking.getByText("Count to three.")).toBeHidden();
+  const top = async () => (await summary.boundingBox())?.y;
+  const before = await top();
+  await summary.click();
+  await expect(thinking.getByText("Count to three.")).toBeVisible();
   await expect(thinking.getByRole("strong")).toHaveText("three");
+  await expect.poll(top).toBe(before);
 
   await page.reload();
   await expect(replies(page).last()).toHaveText("You said: think Count to three.");
-  await expect(thinking).toHaveText("Count to three.");
+  await expect(thinking).toBeVisible();
+  await expect(thinking.getByText("Count to three.")).toBeHidden();
 });
 
 const usage = (page: Page) => main(page).getByRole("button", { name: "Subscription usage" });
