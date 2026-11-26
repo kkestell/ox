@@ -114,9 +114,19 @@ claude -p \
   trigger begins. With the default, a background subagent keeps the state at
   `running` until it finishes, and the follow-up turn gets no fresh `running`.
   Background Bash and Monitor report `idle` either way.
-- Remove `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the child
-  environment to keep subscription auth; in `-p` mode an inherited API key is
-  always used.
+- Claude reads inherited variables that override Ox's choices; the child
+  environment omits them:
+  - In `-p` mode an inherited `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` is
+    always used instead of the subscription.
+    `CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR` and `ANTHROPIC_UNIX_SOCKET` are other
+    credential sources.
+  - `CLAUDE_CODE_EFFORT_LEVEL` overrides `--effort` and the
+    `apply_flag_settings` effort (2.1.331: with `CLAUDE_CODE_EFFORT_LEVEL=low`
+    and `--effort=high`, Bash's `CLAUDE_EFFORT` read `low`).
+  - `CLAUDE_CODE_USE_BEDROCK`, `_VERTEX`, `_FOUNDRY` and their siblings, and the
+    `ANTHROPIC_*` endpoint and model variables, route Claude to another provider
+    or model (from the 2.1.331 binary's strings, not observed live).
+  - `CLAUDE_CODE_OAUTH_TOKEN` is a subscription login, so the child keeps it.
 - `CLAUDE_CONFIG_DIR` (default `~/.claude`) isolates settings, history, plugins
   and most auth. `~/.claude.json` still holds global trust, account and MCP
   state.

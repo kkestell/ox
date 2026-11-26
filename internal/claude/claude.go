@@ -123,7 +123,7 @@ func startProcess(workspace, oxSessionID, sessionID string, resume bool, setting
 
 	cmd := exec.Command("claude", args...)
 	cmd.Dir = workspace
-	cmd.Env = append(subscriptionEnv(cmd), "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1")
+	cmd.Env = append(launchEnv(cmd), "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, nil, err
@@ -163,12 +163,27 @@ func startProcess(workspace, oxSessionID, sessionID string, resume bool, setting
 	return p, newWriter(stdin), nil
 }
 
-// subscriptionEnv is cmd's environment without Anthropic credentials: in -p
-// mode Claude bills an API key it inherits instead of the user's
-// subscription.
-func subscriptionEnv(cmd *exec.Cmd) []string {
+// overrides are the variables, beyond the ANTHROPIC_ prefix, that run Claude
+// with another effort, provider, or account than Ox chooses.
+var overrides = []string{
+	// effort: beats --effort and the apply_flag_settings effort change
+	"CLAUDE_CODE_EFFORT_LEVEL",
+	// provider: sends Claude to another provider's billing
+	"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+	"CLAUDE_CODE_USE_MANTLE", "CLAUDE_CODE_USE_ANTHROPIC_AWS", "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+	"CLAUDE_CODE_USE_GATEWAY", "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", "CLAUDE_CODE_API_BASE_URL",
+	// account: an API key, billed instead of the subscription
+	"CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
+}
+
+// launchEnv is cmd's environment without anything that would run Claude with
+// another effort, model, provider, or account than Ox chooses: every
+// ANTHROPIC_ variable and each of overrides. The user's subscription login
+// (CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN) stays.
+func launchEnv(cmd *exec.Cmd) []string {
 	return slices.DeleteFunc(cmd.Environ(), func(v string) bool {
-		return strings.HasPrefix(v, "ANTHROPIC_API_KEY=") || strings.HasPrefix(v, "ANTHROPIC_AUTH_TOKEN=")
+		name, _, _ := strings.Cut(v, "=")
+		return strings.HasPrefix(name, "ANTHROPIC_") || slices.Contains(overrides, name)
 	})
 }
 

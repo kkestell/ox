@@ -381,12 +381,22 @@ func script(t *testing.T, script string) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
-// Claude bills an API key it inherits instead of the user's subscription,
-// so it starts without one.
-func TestClaudeStartsWithoutAnAPIKey(t *testing.T) {
-	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
-	t.Setenv("ANTHROPIC_AUTH_TOKEN", "token-test")
-	t.Setenv("OX_TEST_KEPT", "kept")
+// Claude starts without a variable that runs it with another effort, model,
+// provider, or account than Ox chooses, and keeps the user's subscription
+// login.
+func TestClaudeStartsWithOxsChoices(t *testing.T) {
+	dropped := []string{
+		"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
+		"CLAUDE_CODE_EFFORT_LEVEL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+		"CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR", "ANTHROPIC_OX_TEST",
+	}
+	for _, name := range dropped {
+		t.Setenv(name, "set")
+	}
+	kept := []string{"CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "OX_TEST_KEPT", "CLAUDE_CODE_EFFORT_LEVEL_X"}
+	for _, name := range kept {
+		t.Setenv(name, "kept")
+	}
 	env := filepath.Join(t.TempDir(), "env")
 	standIn(t, "env > "+env+"\n")
 	events := make(chan agent.Event, 1)
@@ -402,8 +412,16 @@ func TestClaudeStartsWithoutAnAPIKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(data), "ANTHROPIC_") || !strings.Contains(string(data), "OX_TEST_KEPT=kept") {
-		t.Fatalf("Claude's environment:\n%s", data)
+	lines := strings.Split(string(data), "\n")
+	for _, name := range dropped {
+		if slices.ContainsFunc(lines, func(l string) bool { return strings.HasPrefix(l, name+"=") }) {
+			t.Errorf("Claude's environment holds %s:\n%s", name, data)
+		}
+	}
+	for _, name := range kept {
+		if !slices.Contains(lines, name+"=kept") {
+			t.Errorf("Claude's environment lacks %s=kept:\n%s", name, data)
+		}
 	}
 }
 
