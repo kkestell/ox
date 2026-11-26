@@ -15,7 +15,8 @@ const modes: { mode: FileMode; label: string; icon: string }[] = [
 
 // FileView shows one file beneath a root, read when it appears and on each tick
 // of the page's clock, under a header that starts with start and ends with
-// end, under a tab with its name that closes it. It is keyed by its selection
+// end, and a bar below it with a tab with the file's name that closes it and
+// the file's modes and wrap toggle. It is keyed by its selection
 // and path, so its text is always that file's. A changed file can show its
 // changes in place, and a Markdown file rendered; without a chosen mode, a
 // changed file shows its changes, a Markdown file shows rendered, and any other
@@ -76,6 +77,9 @@ export function FileView(props: {
     <section class="viewer" aria-label="File">
       <header>
         {props.start}
+        <div class="editor-actions">{props.end}</div>
+      </header>
+      <div class="file-bar">
         <div role="tablist" aria-label="Open files" class="file-tabs">
           <div class="tab">
             <button type="button" role="tab" aria-selected="true" title={path}>
@@ -93,7 +97,7 @@ export function FileView(props: {
         </div>
         <div class="editor-actions">
           <Show when={mode() !== undefined && shown().length > 1}>
-            <fieldset aria-label="Show as" class="segmented">
+            <fieldset aria-label="Show as" class="toggle-group">
               <For each={shown()}>
                 {(each) => (
                   <button
@@ -118,9 +122,8 @@ export function FileView(props: {
               onClick={() => props.onWrap(!props.wrap)}
             />
           </Show>
-          {props.end}
         </div>
-      </header>
+      </div>
       <Switch>
         <Match when={error()}>
           {(message) => (
