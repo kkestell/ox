@@ -627,24 +627,106 @@ test("resizing the composer keeps following", async ({ ox: page }) => {
   await expect(replies(page).last()).toBeInViewport();
 });
 
-test("output does not follow while scrolled up", async ({ ox: page }) => {
-  await overflowing(page);
+// scrollUp scrolls the transcript up from its bottom.
+async function scrollUp(page: Page) {
   await transcript(page).hover();
   await page.mouse.wheel(0, -500);
   await expect(replies(page).last()).not.toBeInViewport();
-  await sendAndWait(page, "do not follow this output");
+}
+
+const jumpToBottom = (page: Page) => main(page).getByRole("button", { name: "Jump to bottom" });
+
+test("output does not follow while scrolled up", async ({ ox: page }) => {
+  await overflowing(page);
+  await prompt(page).fill("wait 3000");
+  await prompt(page).press("Enter");
+  await scrollUp(page);
+  await expect(replies(page).last()).toHaveText("You said: wait 3000");
   await expect(replies(page).last()).not.toBeInViewport();
 });
 
 test("scrolling back to the bottom resumes following", async ({ ox: page }) => {
   await overflowing(page);
-  await transcript(page).hover();
-  await page.mouse.wheel(0, -500);
-  await expect(replies(page).last()).not.toBeInViewport();
+  await prompt(page).fill("wait 3000");
+  await prompt(page).press("Enter");
+  await scrollUp(page);
   await page.mouse.wheel(0, 5000);
+  await expect(replies(page).last()).toHaveText("You said: wait 3000");
   await expect(replies(page).last()).toBeInViewport();
-  await sendAndWait(page, "follow again");
+});
+
+test("Jump to bottom shows only while scrolled up", async ({ ox: page }) => {
+  await overflowing(page);
+  await expect(jumpToBottom(page)).toHaveCount(0);
+  await scrollUp(page);
+  await expect(jumpToBottom(page)).toBeVisible();
+  await page.mouse.wheel(0, 5000);
+  await expect(jumpToBottom(page)).toHaveCount(0);
+});
+
+test("Jump to bottom returns to the bottom and output follows again", async ({ ox: page }) => {
+  await overflowing(page);
+  await prompt(page).fill("wait 3000");
+  await prompt(page).press("Enter");
+  await scrollUp(page);
+  await jumpToBottom(page).click();
+  await expect(prompts(page).last()).toBeInViewport();
+  await expect(jumpToBottom(page)).toHaveCount(0);
+  await expect(replies(page).last()).toHaveText("You said: wait 3000");
   await expect(replies(page).last()).toBeInViewport();
+});
+
+test("sending while scrolled up returns to the bottom", async ({ ox: page }) => {
+  await overflowing(page);
+  await scrollUp(page);
+  await sendAndWait(page, "back to the bottom");
+  await expect(replies(page).last()).toBeInViewport();
+});
+
+test("Jump to bottom keeps focus in the prompt", async ({ ox: page }) => {
+  await overflowing(page);
+  await prompt(page).focus();
+  await scrollUp(page);
+  await jumpToBottom(page).click();
+  await expect(jumpToBottom(page)).toHaveCount(0);
+  await expect(prompt(page)).toBeFocused();
+});
+
+test("answering an approval while scrolled up returns to the bottom", async ({ ox: page }) => {
+  await overflowing(page);
+  const approval = await ask(page, "Bash", '{"command":"ls"}');
+  await scrollUp(page);
+  await allow(approval);
+  await expect(replies(page).last()).toHaveText(/^You said: approve Bash/);
+  await expect(replies(page).last()).toBeInViewport();
+});
+
+test("answering a question while scrolled up returns to the bottom", async ({ ox: page }) => {
+  await overflowing(page);
+  const form = await ask(page, "AskUserQuestion", questions);
+  await scrollUp(page);
+  await form
+    .getByRole("group", { name: /Which color\?/ })
+    .getByRole("radio", { name: "Red" })
+    .check();
+  await form.getByRole("button", { name: "Next" }).click();
+  await form
+    .getByRole("group", { name: /Which sections\?/ })
+    .getByRole("checkbox", { name: "Appendix" })
+    .check();
+  await form.getByRole("button", { name: "Submit" }).click();
+  await expect(replies(page).last()).toHaveText(/^You said: approve AskUserQuestion/);
+  await expect(replies(page).last()).toBeInViewport();
+});
+
+test("declining a question while scrolled up returns to the bottom", async ({ ox: page }) => {
+  await overflowing(page);
+  const form = await ask(page, "AskUserQuestion", questions);
+  await scrollUp(page);
+  await form.getByRole("button", { name: "Decline" }).click();
+  await expect(form).toHaveCount(0);
+  await expect(jumpToBottom(page)).toHaveCount(0);
+  await expect(toolCall(page, "AskUserQuestion")).toBeInViewport();
 });
 
 test("an oversized prompt fails visibly and stays in the box", async ({ ox: page }) => {

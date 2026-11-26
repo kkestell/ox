@@ -78,6 +78,7 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: 
 .archive { --icon: url(lucide-static/icons/archive.svg); }
 .send { --icon: url(lucide-static/icons/send.svg); }
 .stop { --icon: url(lucide-static/icons/square.svg); }
+.arrow-down { --icon: url(lucide-static/icons/arrow-down.svg); }
 .context .path { --icon: url(lucide-static/icons/folder.svg); }
 .chevron-down { --icon: url(lucide-static/icons/chevron-down.svg); }
 .chevron-right { --icon: url(lucide-static/icons/chevron-right.svg); }
@@ -264,9 +265,15 @@ main > .loading { flex: 1; display: flex; align-items: center; justify-content: 
 .context .directory { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 /* Zero scroll offset follows the bottom through content and viewport changes.
    After scrolling up, native scroll anchoring keeps the visible content in view. */
+.log-frame { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
 .log { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column-reverse; }
+.log-frame > button.jump {
+  position: absolute; bottom: 1rem; left: 50%; translate: -50% 0; width: 2rem; height: 2rem; border-radius: 50%;
+  border: 1px solid var(--border); background: var(--card); box-shadow: var(--shadow-sm);
+}
+.log-frame > button.jump:hover { background: var(--accent); }
 .transcript { flex: none; min-height: 100%; display: flex; flex-direction: column; gap: 0.75rem; padding: 1rem var(--inset); }
-.log ~ [role="alert"], .log ~ [role="status"] { padding: 0 var(--inset); font-size: 0.75rem; text-align: right; }
+:is(.log, .log-frame) ~ :is([role="alert"], [role="status"]) { padding: 0 var(--inset); font-size: 0.75rem; text-align: right; }
 .prompt, .error { white-space: pre-wrap; overflow-wrap: break-word; }
 .log .prompt { align-self: flex-end; max-width: 75%; padding: 0.75rem 1rem; border-radius: calc(var(--radius) + 4px); background: var(--secondary); color: var(--secondary-foreground); box-shadow: var(--shadow-sm); }
 .log .prompt.queued { opacity: 0.6; }

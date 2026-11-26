@@ -130,7 +130,10 @@ title.
 - **Unexpected exits.** A Claude or Ur process that exits without Ox stopping it
   leaves the reason in the transcript.
 - **Following output.** The transcript follows new output while it is scrolled
-  to its bottom.
+  to its bottom. Sending a prompt, or answering an approval or a question,
+  returns it to its bottom.
+- **Jump to bottom.** While the transcript is scrolled up from its bottom, a
+  button over it returns it to its bottom, where it follows new output again.
 - **Claude's own turns.** Turns Claude starts itself, from a schedule or a
   finished background task, run and appear in the transcript like any other
   turn.
