@@ -15,12 +15,12 @@ Find the structures in Ox that let defects happen, and write an audit that tells
 
 The audit recommends which finding to take up first. The user chooses which findings go through the [project workflow](../../../AGENTS.md#workflow).
 
-Change no code, tests, or documentation. Edit and commit only the audit file, open its pull request, and open, edit, and close `bug` issues for its findings. Do not start other agents.
+Change no code, tests, or documentation. Edit and commit only the audit file, push it to `main`, and open, edit, and close `bug` issues for its findings. Do not start other agents.
 
 ## Gather the evidence
 
 1. Run `git status`. If the checkout has uncommitted changes, stop and report them to whoever asked for the audit, as `AGENTS.md` ("Workflow") describes. Then read `<audit_scope> $ARGUMENTS </audit_scope>`. With no scope, audit the whole repository since the last audit in `agents/audits/`, or all history if there is none. Record the revision and the state of the working tree you audit.
-2. Read `docs/functional-requirements.md` and `docs/architecture.md`; for web client code, also `cmd/ox/web/AGENTS.md`. Read the sections of `docs/protocol.md` and `docs/harnesses/claude-code.md` that cover the code in scope.
+2. Read `AGENTS.md`, `docs/functional-requirements.md`, and `docs/architecture.md`; for web client code, also `cmd/ox/web/AGENTS.md`. Read the sections of `docs/protocol.md` and `docs/harnesses/claude-code.md` that cover the code in scope.
 3. Read the earlier audits in `agents/audits/` and the `bug` issues, open and closed (`gh issue list --label bug --state all`), and note which earlier findings have landed and which are still open. Do not raise a finding an earlier audit or review rejected unless the evidence its reason rests on has changed.
 4. Collect the defects in scope, starting with the `Fix` and `Record` findings in `agents/reviews/`, the `bug` issues, and the merged pull requests in scope (`gh pr list --state merged`). Then read the messages of the commits in scope, and read the diff of a commit that fixes behavior only when no review explains it. For each defect, note what went wrong, where, and what the fix changed: the structure that allowed it, or a guard, special case, or retry at the symptom.
 
@@ -40,8 +40,8 @@ Change no code, tests, or documentation. Edit and commit only the audit file, op
 
 10. Read this skill's `assets/_template.md` and write the audit in `agents/audits/`, named `YYYY-MM-DD-<slug>.md`, where the slug is the branch name.
 11. Make each `Plan` finding complete enough to plan from: the structure, every place it appears, the defects it caused, the wrong states it still permits, the owner or representation that replaces it, and what the replacement removes. Leave the design of the change to the plan. Record a candidate as a `Rejected` finding only when a later audit or review would otherwise raise it again: an earlier review raised it, or it has the shape of a structure this audit looks for. State the reason.
-12. Open one issue labeled `bug` for each `Plan` finding, with `gh issue create --label bug`: a title naming the defect, one sentence on what goes wrong, and a link to the finding's section, `https://github.com/kkestell/ox/blob/main/agents/audits/<file>#<section>`, which resolves once the audit's pull request merges. Close the issue of an earlier finding that has landed, and edit one this audit shows is stale.
-13. Rename the worktree's branch to the audit's slug with `git branch -m <slug>`, if it has another name, and commit the audit file alone, with the audit's title as the subject. Run `git fetch` and `git rebase origin/main`, push with `git push -u origin <slug>`, and open the pull request with `gh pr create`. Its title is the audit's title, and its body is one short paragraph on what the audit found, then a list of the issues it opened, edited, or closed, with no other sections.
+12. Open one issue labeled `bug` for each `Plan` finding, with `gh issue create --label bug`: a title naming the defect, one sentence on what goes wrong, and a link to the finding's section, `https://github.com/kkestell/ox/blob/main/agents/audits/<file>#<section>`, which resolves once the audit is pushed. Close the issue of an earlier finding that has landed, and edit one this audit shows is stale.
+13. Commit the audit file alone, with the audit's title as the subject. Run `git fetch` and `git rebase origin/main`, and push straight to `main` with `git push origin HEAD:main`.
 14. Give the final response and stop.
 
 ## Final response
@@ -58,7 +58,7 @@ One or two sentences: what the audit found, and the number of findings by action
 
 **Audit:** `agents/audits/YYYY-MM-DD-<slug>.md`
 
-**Pull request:** https://github.com/kkestell/ox/pull/N
+**Commit:** https://github.com/kkestell/ox/commit/<sha>
 
 **Still open:** 4 `bug` issues, the highest-cost Archive acts on a stale session.
 

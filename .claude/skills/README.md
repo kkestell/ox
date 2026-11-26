@@ -19,7 +19,7 @@ flowchart LR
     You --> FR[("functional-requirements.md<br/>the text the<br/>developer approved")]
 
     T -- no --> EQ["Engineering decision<br/>design · ownership · protocol shapes<br/>tests · how rare cases behave"]
-    EQ --> Agents["Builder or reviewer<br/>settles it"]
+    EQ --> Agents["Planner or reviewer<br/>settles it"]
     Agents --> Rec["Recorded under Decisions<br/>in the plan or review"]
 
     RC["Any change to a requirement"] -. always .-> PQ
@@ -30,25 +30,34 @@ flowchart LR
     class FR doc
 ```
 
-## One builder, one reviewer
+## Separate roles, separate contexts
 
-The top-level agent plans and implements a change in its own session, keeping
-the context it built while settling the request. A change that needs review
-goes to a reviewer in a fresh session, so every such change is judged by a
-session that did not write it. The reviewer never fixes what it finds; the
-builder fixes it, and the reviewer verifies the fixes when a finding was High
-or Medium. A small change skips the plan and review, and Coral reviews every
-pull request.
+Each role runs in its own session with fresh context. The implementer never
+reviews its own work, and the reviewer never fixes what it finds, so every
+change is judged by a session that did not write it. The orchestrator carries
+the change between them and checks each handoff. A role may start child
+sessions for parts of its own work, such as research, a disjoint part of the
+implementation, or one area of a large review. The children report to the
+role, which keeps every decision.
 
 ```mermaid
 flowchart TB
-    You(("Thinking<br/>meat")) <--> Build["Builder (top-level agent)<br/>plans, implements, proves its tests<br/>fixes findings, opens the PR"]
+    You(("Thinking<br/>meat")) <--> Orch["Orchestrator<br/>holds direction and scope<br/>sanity-checks each handoff, opens the PR"]
 
-    Build -- "changes" --> Review["Reviewer<br/>fresh session<br/>judges against the plan<br/>and the requirements<br/><i>fixes nothing</i>"]
-    Review -- "findings: Fix · Record · Rejected" --> Build
-    Build -. product questions .-> You
+    subgraph roles [" "]
+        direction LR
+        Plan["Planner<br/>decides how<br/><i>writes no code</i>"]
+        Work["Implementer<br/>builds it, proves its tests<br/><i>judges nothing</i>"]
+        Review["Reviewer<br/>judges it against the plan<br/>and the requirements<br/><i>fixes nothing</i>"]
+        Plan -- plan --> Work
+        Work -- changes --> Review
+        Review -- "findings: Fix · Record · Rejected" --> Work
+    end
 
-    Audit["Auditor<br/>finds structures that keep<br/>producing defects<br/><i>fixes nothing</i>"] -- "a finding becomes<br/>a builder's request" --> Build
+    Orch -- "starts each role<br/>in a fresh session" --> roles
+    Plan -. product questions .-> You
+
+    Audit["Auditor<br/>finds structures that keep<br/>producing defects<br/><i>fixes nothing</i>"] -- "a finding becomes<br/>the planner's request" --> Plan
 
     classDef you fill:#fde68a,stroke:#92400e,color:#000
     class You you
@@ -70,10 +79,10 @@ approved.
 
 ```mermaid
 flowchart LR
-    Plan["Builder's plan proposes<br/>exact new text"] --> You(("Thinking meat<br/>approves"))
-    You --> Work["Builder applies it<br/>word for word"]
+    Plan["Planner proposes<br/>exact new text"] --> You(("Thinking meat<br/>approves"))
+    You --> Work["Implementer applies it<br/>word for word"]
     Work --> Review["Reviewer checks the diff<br/>word for word"]
-    Review --> Orch["Builder checks<br/>the requirements diff<br/>before opening the PR"]
+    Review --> Orch["Orchestrator checks<br/>the requirements diff<br/>before opening the PR"]
     Orch --> FR[("functional-requirements.md")]
     FR -. "cited by title in every plan and review;<br/>a whole-repository sweep checks them all" .-> Plan
 
@@ -92,7 +101,7 @@ lost nor rediscovered by every review.
 ```mermaid
 flowchart LR
     Review["Reviewer confirms a defect"] --> Q{"Can it be<br/>fixed now?"}
-    Q -- yes --> Fix["Fix<br/>builder fixes it"]
+    Q -- yes --> Fix["Fix<br/>implementer fixes it"]
     Q -- "no: needs reproducing,<br/>or waits on a dependency" --> Rec["Record"]
     Rec --> KI[("bug issue<br/>worst cost · how it was found<br/>what it waits on")]
     KI -- "skipped by later reviews<br/>until what it waits on changes" --> Review
@@ -108,7 +117,7 @@ flowchart LR
 ```mermaid
 flowchart LR
     PL["plans"] & RV["reviews"] & KI[("bug issues")] & Git["fix commits"] --> Audit["Auditor<br/>groups defects by<br/>the structure behind them"]
-    Audit -- "a structure worth changing" --> Plan["Builder"]
+    Audit -- "a structure worth changing" --> Plan["Planner"]
     Audit -- "rejected, with the reason" --> Kept["not raised again until<br/>its evidence changes"]
 
     classDef doc fill:#dbeafe,stroke:#1e3a8a,color:#000
