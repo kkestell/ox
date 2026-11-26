@@ -35,8 +35,8 @@ export function stopProcess(proc, signal = "SIGTERM") {
 // code, with a stop(code) method. An exit the stack did not cause stops every
 // service. The code resolves once every process the stack stopped, on a
 // restart or a shutdown, has exited, and is 1 when any of them failed. Each
-// line of input rebuilds with the build command line and restarts the services
-// whose binary changed. A service's current process and hash belong to its
+// line of input, and each SIGUSR2, rebuilds with the build command line and
+// restarts the services whose binary changed. A service's current process and hash belong to its
 // record here, and only a restart replaces them.
 //
 // signals, such as process, delivers the stack's own SIGINT, SIGTERM, and
@@ -139,7 +139,7 @@ export function runStack({ services, build, input, signals, log = console.log })
     if (!changed) log("nothing changed");
   }
 
-  lines.on("line", async () => {
+  async function requestRebuild() {
     if (stopping) return;
     if (busy) {
       log("a rebuild is in progress");
@@ -151,7 +151,10 @@ export function runStack({ services, build, input, signals, log = console.log })
     } finally {
       busy = false;
     }
-  });
+  }
+
+  lines.on("line", requestRebuild);
+  signals?.on("SIGUSR2", requestRebuild);
 
   signals?.on("SIGINT", () => {
     if (!stopping) {

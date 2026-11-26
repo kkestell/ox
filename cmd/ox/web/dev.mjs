@@ -56,5 +56,5 @@ const stack = runStack({
 });
 
 console.log(`Ox is at http://localhost:${port}/`);
-console.log("Press Enter to rebuild and restart what changed.");
+console.log("Press Enter, or run make restart, to rebuild and restart what changed.");
 process.exitCode = await stack;

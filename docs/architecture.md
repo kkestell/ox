@@ -440,9 +440,9 @@ The web UI in `cmd/ox/web` is a Solid 2.0 TypeScript app built with Vite into
 `cmd/ox/web/dist` (`make web`) and embedded in `ox` (`make build`).
 
 `make dev` runs `oxd` and `ox` together at `http://localhost:8080`; pressing
-Enter rebuilds the web client and binaries and restarts whichever binary
-changed. In a linked worktree, `make dev` keeps its config, state, and socket
-under `.state`, serves on a free port, and prints the URL.
+Enter, or `make restart`, rebuilds the web client and binaries and restarts
+whichever binary changed. In a linked worktree, `make dev` keeps its config,
+state, and socket under `.state`, serves on a free port, and prints the URL.
 
 ### Relay endpoints and security
 
