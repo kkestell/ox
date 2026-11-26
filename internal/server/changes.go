@@ -62,10 +62,10 @@ func changed(path, status string, hunks []hunk, err error) changedFile {
 func listChanges(workspace, dir string) (changes, error) {
 	run := func(dir string, args ...string) (string, error) { return listGit(dir, nil, "", args...) }
 	branch, err := run(dir, "branch", "--show-current")
+	if failed, ok := errors.AsType[*gitError](err); ok && strings.HasPrefix(failed.stderr, "fatal: not a git repository") {
+		return changes{}, errNotRepository
+	}
 	if err != nil {
-		if _, ok := errors.AsType[*gitError](err); ok {
-			return changes{}, errNotRepository
-		}
 		return changes{}, err
 	}
 	base, err := forkPoint(run, workspace, dir)
@@ -107,11 +107,12 @@ func listChanges(workspace, dir string) (changes, error) {
 	// changed but whose content did not, optional locks or not; with
 	// diff.autoRefreshIndex off it still compares and skips such files but
 	// writes nothing. Blank context lines keep their space, and a submodule
-	// shows as its commit, so every section reads the same whatever the
-	// repository's configuration.
+	// shows as its commit whenever the commit changed, so every section reads
+	// the same and every change is listed whatever the repository's
+	// configuration.
 	diff, err := listGit(dir, env, "", "-c", "diff.autoRefreshIndex=false", "-c", "diff.suppressBlankEmpty=false",
 		"diff", "--numstat", "-z", "-p", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short",
-		"--unified=3", "--relative", "--src-prefix=a/", "--dst-prefix=b/", base, "--")
+		"--ignore-submodules=none", "--unified=3", "--relative", "--src-prefix=a/", "--dst-prefix=b/", base, "--")
 	if err != nil {
 		return changes{}, err
 	}
@@ -184,7 +185,8 @@ func restoredIndex(dir, base string, paths []string) (string, error) {
 
 // forkPoint returns where dir's branch left workspace's branch: the merge
 // base of their HEADs. A workspace whose HEAD is unborn has no commits, so
-// every file in it is new, and the base is the empty tree.
+// every file in it is new, and the base is the empty tree. A directory in
+// another repository, which lacks the workspace's HEAD, has no common base.
 func forkPoint(run func(dir string, args ...string) (string, error), workspace, dir string) (string, error) {
 	head, err := run(workspace, "rev-parse", "--verify", "-q", "HEAD")
 	if quietFailure(err) {
@@ -194,7 +196,15 @@ func forkPoint(run func(dir string, args ...string) (string, error), workspace, 
 	if err != nil {
 		return "", err
 	}
-	base, err := run(dir, "merge-base", "HEAD", strings.TrimSpace(head))
+	head = strings.TrimSpace(head)
+	_, err = run(dir, "rev-parse", "--verify", "-q", head+"^{commit}")
+	if quietFailure(err) {
+		return "", errNoCommonBase
+	}
+	if err != nil {
+		return "", err
+	}
+	base, err := run(dir, "merge-base", "HEAD", head)
 	if quietFailure(err) {
 		return "", errNoCommonBase
 	}
@@ -290,18 +300,27 @@ func parseDiff(out string) ([]changedFile, error) {
 }
 
 // splitSections splits a patch into its files' sections. No content line can
-// begin "diff --git ", since each begins with a space, +, -, or \.
+// begin "diff --git ", since each begins with a space, +, -, or \. A file
+// whose type changed, such as a regular file that became a symlink, has two
+// parts under the same "diff --git " line, its old type's deletion and its
+// new type's addition, which together are its section.
 func splitSections(patch string) []string {
 	var sections []string
 	start := -1
+	header := ""
 	for i := 0; i < len(patch); {
-		if strings.HasPrefix(patch[i:], "diff --git ") {
+		next := strings.IndexByte(patch[i:], '\n')
+		line := patch[i:]
+		if next >= 0 {
+			line = patch[i : i+next]
+		}
+		if strings.HasPrefix(line, "diff --git ") && line != header {
 			if start >= 0 {
 				sections = append(sections, patch[start:i])
 			}
 			start = i
+			header = line
 		}
-		next := strings.IndexByte(patch[i:], '\n')
 		if next < 0 {
 			break
 		}
@@ -313,31 +332,41 @@ func splitSections(patch string) []string {
 	return sections
 }
 
-// parseSection reads one file's patch section into its entry.
+// parseSection reads one file's patch section into its entry. A file whose
+// type changed was both deleted and added, so it is modified.
 func parseSection(path, section string) changedFile {
-	status := "modified"
+	var deleted, created, header bool
 	var hunks []hunk
 	var reason error
 	for line := range strings.Lines(section) {
 		line = strings.TrimSuffix(line, "\n")
-		if hunks == nil {
+		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			header = true
+		case strings.HasPrefix(line, "@@ "):
+			header = false
+			hunks = append(hunks, parseHunkHeader(line))
+		case header:
 			switch {
 			case strings.HasPrefix(line, "new file mode "):
-				status = "added"
+				created = true
 			case strings.HasPrefix(line, "deleted file mode "):
-				status = "deleted"
+				deleted = true
 			case strings.HasPrefix(line, "Binary files "):
 				reason = errBinary
 			}
-		}
-		switch {
-		case strings.HasPrefix(line, "@@ "):
-			hunks = append(hunks, parseHunkHeader(line))
-		case hunks == nil, line == "", line[0] == '\\':
+		case line == "", line[0] == '\\':
 		default:
 			last := &hunks[len(hunks)-1]
 			last.Lines = append(last.Lines, line)
 		}
+	}
+	status := "modified"
+	switch {
+	case created && !deleted:
+		status = "added"
+	case deleted && !created:
+		status = "deleted"
 	}
 	switch {
 	case reason != nil:

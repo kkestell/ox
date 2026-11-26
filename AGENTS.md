@@ -227,8 +227,10 @@ workflow.
 
 The main checkout stays on `main` and only pulls. Each change runs in an Ox
 worktree session started from the main checkout, and every step below runs in
-its worktree. Before its first commit, the top-level agent renames the
-worktree's branch for the change with `git branch -m <slug>`. A child session
+its worktree. A worktree session holds one change: everything the user asks for
+in it, related or not, is made in that worktree, on its one branch, and lands
+in its one pull request. Before its first commit, the top-level agent renames
+the worktree's branch for the change with `git branch -m <slug>`. A child session
 that finds uncommitted work outside its brief, other than its sibling
 children's, stops and reports it to the session that started it. Changes reach
 `main` only by pull request, which the user merges.
@@ -267,16 +269,8 @@ steps below.
    `git rebase origin/main`, then re-runs the checks that observe the change
    when the rebase brought in new commits. It pushes with
    `git push -u origin <slug>` and opens the pull request with
-   `gh pr create`. Its title is the commit subject. Its body links the plan and
-   review when there are any, states the verdict, lists the checks run, with
-   `make live` run or not run, and adds `Fixes #N` for each issue the change
-   resolves. When the change alters the UI, the body ends with a
-   `## Screenshots` table of each view it changes, taken in headless Chrome:
-   before and after from the base and the change for a view that exists on
-   the base, and after alone for a view the change adds. The images are
-   committed under `pr-<N>/` on the orphan `pr-assets` branch and linked
-   through `raw.githubusercontent.com` at that commit. The top-level agent
-   then tells the user the pull request is ready to merge.
+   `gh pr create`, written as [Pull requests](#pull-requests) says, and gives
+   the user its [handoff](#handoff).
 6. A pull request merges by squash, with its title as the commit subject.
    After the user merges, the top-level agent pulls and runs `make prune` in
    the main checkout. `make prune` removes each local branch whose pull
@@ -300,6 +294,79 @@ The audit lands through its own pull request. The pull request that fixes a
 finding closes its issue. An audit or review that finds an issue stale
 corrects or closes it.
 
+## Pull requests
+
+A pull request explains its change to someone who uses Ox but has not read the
+code, the issue, or the plan. It reads like a short note from one engineer to
+another, in plain words.
+
+The title is the commit subject: what the change does, as a user would say it,
+such as "Show a file that became a symlink in the Changes tab".
+
+The body takes this form and no other sections:
+
+```markdown
+One short paragraph with the big idea: what was wrong or missing, and what the
+user sees now.
+
+## Changes
+
+- One bullet for each change in behavior.
+
+## Testing
+
+One or two sentences on what the tests cover and what was checked by hand.
+
+## Screenshots
+
+| View | Before | After |
+| ---- | ------ | ----- |
+
+Fixes #N
+```
+
+- Explain each concept the reader needs in a few plain words the first time it
+  appears, as for someone new to it. Describe behavior rather than functions,
+  flags, or error text, unless the reader needs one to recognize the change.
+- Testing names a check that could observe the change only when it did not
+  run, with what blocked it.
+- `## Screenshots` appears when the change alters the UI: a table of each view
+  it changes, taken in headless Chrome, before and after from the base and the
+  change for a view that exists on the base, and after alone for a view the
+  change adds. The images are committed under `pr-<N>/` on the orphan
+  `pr-assets` branch and linked through `raw.githubusercontent.com` at that
+  commit.
+- `Fixes #N` closes each issue the change resolves.
+- The workflow's records stay in `agents/` and in the sessions: plans,
+  reviews, verdicts, whether a change counted as small, and checks skipped
+  because they cannot observe the change.
+
+### Handoff
+
+Once the pull request is open, the top-level agent replies to the user in the
+form below and nothing else. It leads with the main point, writes plainly, and
+leaves out the checks that passed and the steps it took.
+
+```markdown
+One or two sentences: what the change does for the user, and that its pull
+request is ready to merge.
+
+**Pull request:** https://github.com/kkestell/ox/pull/N · **Fixes:** #N
+
+**Files:**
+
+- `internal/server/changes.go` (modified)
+- `internal/server/changes_test.go` (modified)
+
+**Open choices:** each choice the user should check, in a sentence.
+
+**Blocked:** `make live`: what blocks it.
+```
+
+It lists every file the change creates or modifies, outside `agents/`. It
+omits Fixes when the change resolves no issue, Open choices when there are
+none, and Blocked when every check that can observe the change ran.
+
 ## Verification
 
 - Each behavior a change adds or fixes keeps a test that fails without it, at
@@ -319,9 +386,9 @@ corrects or closes it.
   `make live` when it changes how Ox drives Claude Code; a check in headless
   Chrome through `make dev` in the change's worktree when it changes how the
   page reaches `oxd`; and the user's phone for behavior only a phone shows. A
-  check that cannot observe the change is skipped, and the pull request says
-  so. A check that can observe it is reported as not run only when something
-  the agent cannot change blocks it, named in the report.
+  check that cannot observe the change is skipped. A check that can observe it
+  is reported as not run only when something the agent cannot change blocks
+  it, named in the report.
 
 ## Documentation
 
