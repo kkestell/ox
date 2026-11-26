@@ -140,7 +140,7 @@ func TestStartupFailureKeepsClaudesReason(t *testing.T) {
 			log := new(startLog)
 			options := log.options()
 			options.Workspace = t.TempDir()
-			a, err := Start(options)
+			a, err := Start(options, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -168,7 +168,7 @@ func TestStartupLimit(t *testing.T) {
 	log := new(startLog)
 	options := log.options()
 	options.Workspace = t.TempDir()
-	a, err := Start(options)
+	a, err := Start(options, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestExitReportedWhileAChildHoldsStdout(t *testing.T) {
 		}
 	})
 	events := make(chan agent.Event)
-	if _, _, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, agent.Settings{}, agent.MCPServer{}, events, nil); err != nil {
+	if _, _, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, false, agent.Settings{}, agent.MCPServer{}, events, nil); err != nil {
 		t.Fatal(err)
 	}
 	timeout := time.After(5 * time.Second)
@@ -234,7 +234,7 @@ printf '%s\n' 'Claude diagnostic' >&2
 exit 3
 `)
 	events := make(chan agent.Event)
-	p, in, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, agent.Settings{}, agent.MCPServer{}, events, nil)
+	p, in, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, false, agent.Settings{}, agent.MCPServer{}, events, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +318,7 @@ func TestStartupFailureOnStderr(t *testing.T) {
 			log := new(startLog)
 			options := log.options()
 			options.Workspace = workspace
-			a, err := Start(options)
+			a, err := Start(options, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -370,7 +370,7 @@ func TestClaudeStartsWithOxsChoices(t *testing.T) {
 	env := filepath.Join(t.TempDir(), "env")
 	standIn(t, "env > "+env+"\n")
 	events := make(chan agent.Event, 1)
-	if _, _, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, agent.Settings{}, agent.MCPServer{}, events, nil); err != nil {
+	if _, _, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, false, agent.Settings{}, agent.MCPServer{}, events, nil); err != nil {
 		t.Fatal(err)
 	}
 	for e := range events {
@@ -407,7 +407,7 @@ func TestClaudeRunsAsAnOxSession(t *testing.T) {
 		standIn(t, "pwd -P > "+cwd+"\nfor a in \"$@\"; do printf '%s\\0' \"$a\"; done > "+argv+"\n")
 		events := make(chan agent.Event, 1)
 		workspace := t.TempDir()
-		if _, _, err := startProcess(workspace, "ox-session", newUUID(), resume, agent.Settings{}, mcp, events, nil); err != nil {
+		if _, _, err := startProcess(workspace, "ox-session", newUUID(), resume, false, agent.Settings{}, mcp, events, nil); err != nil {
 			t.Fatal(err)
 		}
 		for e := range events {
@@ -451,9 +451,6 @@ func TestClaudeRunsAsAnOxSession(t *testing.T) {
 		if !slices.Contains(args, "--allowedTools=mcp__ox__list_models") {
 			t.Errorf("resume %v: list_models is not pre-approved in %q", resume, args)
 		}
-		if !slices.Contains(args, "--thinking-display=summarized") {
-			t.Errorf("resume %v: thinking is not displayed in %q", resume, args)
-		}
 		if !slices.Contains(args, "--disallowedTools=SendMessage,ListAgents,Agent,EnterWorktree,ExitWorktree") {
 			t.Errorf("resume %v: built-in messaging, subagents, and worktrees are not disallowed in %q", resume, args)
 		}
@@ -479,12 +476,38 @@ func TestClaudeRunsAsAnOxSession(t *testing.T) {
 	}
 }
 
+// Claude streams a summary of its thinking only when thinking summaries are
+// on.
+func TestThinkingSummaries(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		argv := filepath.Join(t.TempDir(), "argv")
+		standIn(t, "for a in \"$@\"; do printf '%s\\0' \"$a\"; done > "+argv+"\n")
+		events := make(chan agent.Event, 1)
+		if _, _, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, on, agent.Settings{}, agent.MCPServer{}, events, nil); err != nil {
+			t.Fatal(err)
+		}
+		for e := range events {
+			if _, exited := e.(process.Exit); exited {
+				break
+			}
+		}
+		data, err := os.ReadFile(argv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		args := strings.Split(string(data), "\x00")
+		if got := slices.Contains(args, "--thinking-display=summarized"); got != on {
+			t.Errorf("thinking summaries %v: --thinking-display=summarized present %v in %q", on, got, args)
+		}
+	}
+}
+
 // Claude runs at its default effort, with only a warning, when given an
 // effort it does not know.
 func TestUnknownEffortFailsToStart(t *testing.T) {
 	standIn(t, "exec sleep 15\n")
 	for effort, known := range map[string]bool{"": true, "high": true, "hgih": false} {
-		p, input, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, agent.Settings{Effort: effort}, agent.MCPServer{}, make(chan agent.Event, 1), nil)
+		p, input, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, false, agent.Settings{Effort: effort}, agent.MCPServer{}, make(chan agent.Event, 1), nil)
 		if p != nil {
 			input.w.(io.Closer).Close()
 			p.Terminate(0)

@@ -9,12 +9,19 @@ import (
 	"github.com/kkestell/ox/internal/agent"
 )
 
-var Harness = agent.Harness{
-	Start:               Start,
-	CheckPrompt:         checkPrompt,
-	CheckEffort:         checkEffort,
-	CheckPermissionMode: checkPermissionMode,
-	Ask:                 Ask,
+// Harness starts Claude agents, which stream a summary of Claude's thinking
+// when thinkingSummaries is set.
+func Harness(thinkingSummaries bool) agent.Harness {
+	return agent.Harness{
+		Start: func(options agent.Options) (agent.Agent, error) {
+			return Start(options, thinkingSummaries)
+		},
+		CheckPrompt:            checkPrompt,
+		CheckEffort:            checkEffort,
+		CheckPermissionMode:    checkPermissionMode,
+		TakesThinkingSummaries: true,
+		Ask:                    Ask,
+	}
 }
 
 func checkPrompt(text string) error {

@@ -176,7 +176,7 @@ func TestConfigOffersOnlyWhatHarnessesTake(t *testing.T) {
 	}
 	refuse := func(string) error { return errors.New("refused") }
 	harnesses := map[string]agent.Harness{
-		"claude": claude.Harness,
+		"claude": claude.Harness(false),
 		"ur":     ur.Harness("ur", "", t.TempDir(), nil),
 		"picky":  {Start: fake.Start, CheckEffort: refuse, CheckPermissionMode: refuse},
 		"plain":  {Start: fake.Start},
@@ -213,6 +213,11 @@ func TestConfigOffersOnlyWhatHarnessesTake(t *testing.T) {
 		"a harness oxd does not have": {Harnesses: map[string]config.Harness{"nope": {
 			Models: []config.Model{{ID: "m"}},
 		}}},
+		"thinking summaries on Ur": {Harnesses: map[string]config.Harness{"ur": {
+			Models:            []config.Model{{ID: "m"}},
+			PermissionModes:   []config.Option{{ID: "manual"}},
+			ThinkingSummaries: true,
+		}}},
 		"a provider order on a Claude model": {Harnesses: map[string]config.Harness{"claude": {
 			Models:          []config.Model{{ID: "claude-haiku-5-5", Providers: []string{"anthropic"}}},
 			PermissionModes: []config.Option{{ID: "manual"}},
@@ -224,8 +229,36 @@ func TestConfigOffersOnlyWhatHarnessesTake(t *testing.T) {
 	}
 }
 
+// Claude streams its thinking summaries when the configuration turns them on.
+func TestConfiguredThinkingSummariesReachClaude(t *testing.T) {
+	bin, argv := t.TempDir(), filepath.Join(t.TempDir(), "argv")
+	stand := "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > " + argv + ".tmp && mv " + argv + ".tmp " + argv + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(stand), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cfg := &config.Config{Harnesses: map[string]config.Harness{"claude": {ThinkingSummaries: true}}}
+	a, err := newHarnesses(cfg, "ur", t.TempDir())["claude"].Start(agent.Options{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { a.Stop(); <-a.Reaped() }()
+	var data []byte
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if data, err = os.ReadFile(argv); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Claude did not start: %v", err)
+		}
+	}
+	if !slices.Contains(strings.Split(string(data), "\n"), "--thinking-display=summarized") {
+		t.Errorf("Claude started without thinking summaries: %q", data)
+	}
+}
+
 func TestConfigRefusesPermissionModesClaudeRefuses(t *testing.T) {
-	harnesses := map[string]agent.Harness{"claude": claude.Harness}
+	harnesses := map[string]agent.Harness{"claude": claude.Harness(false)}
 	for mode, want := range map[string]string{"default": "manual", "acceptEdit": "acceptEdit"} {
 		cfg := &config.Config{Harnesses: map[string]config.Harness{"claude": {
 			PermissionModes: []config.Option{{ID: mode}},
@@ -242,6 +275,22 @@ func TestConfigRefusesPermissionModesClaudeRefuses(t *testing.T) {
 	harnesses["ur"] = agent.Harness{Start: fake.Start, TakesProviders: true}
 	if err := checkConfig(cfg, harnesses); err != nil {
 		t.Fatalf("the built-in configuration was refused: %v", err)
+	}
+}
+
+// The screenshots build, which plays a scene in place of every harness, takes
+// a configuration with thinking summaries on.
+func TestSceneTakesThinkingSummaries(t *testing.T) {
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claudeCfg := cfg.Harnesses["claude"]
+	claudeCfg.ThinkingSummaries = true
+	cfg.Harnesses["claude"] = claudeCfg
+	scripted := fake.Scripted(&fake.Scene{})
+	if err := checkConfig(cfg, map[string]agent.Harness{"claude": scripted, "ur": scripted}); err != nil {
+		t.Fatalf("thinking summaries were refused: %v", err)
 	}
 }
 

@@ -80,6 +80,9 @@ type Harness struct {
 	CheckEffort         func(string) error // nil means the harness takes every effort level
 	CheckPermissionMode func(string) error // nil means the harness takes every permission mode
 	TakesProviders      bool               // whether a model may set a provider order
+	// TakesThinkingSummaries is whether the configuration may turn on
+	// summaries of the model's thinking.
+	TakesThinkingSummaries bool
 	// Ask sends one stateless request to model at effort, with instructions
 	// as the system prompt and text as the user's message, and returns the
 	// reply's text. nil means the harness takes no one-shot requests.

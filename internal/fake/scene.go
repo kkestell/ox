@@ -144,8 +144,9 @@ func Scripted(scene *Scene) agent.Harness {
 			a.script = &script{scene: scene}
 			return a, nil
 		},
-		Ask:            scene.ask,
-		TakesProviders: true,
+		Ask:                    scene.ask,
+		TakesProviders:         true,
+		TakesThinkingSummaries: true,
 	}
 }
 

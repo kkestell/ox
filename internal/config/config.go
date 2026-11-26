@@ -48,6 +48,9 @@ type Titling struct {
 type Harness struct {
 	Models          []Model  `json:"models"`
 	PermissionModes []Option `json:"permission_modes"`
+	// ThinkingSummaries is whether Claude streams a summary of its thinking
+	// to show in the transcript.
+	ThinkingSummaries bool `json:"thinking_summaries,omitempty"`
 }
 
 type Model struct {

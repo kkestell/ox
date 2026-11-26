@@ -168,7 +168,7 @@ func TestClaudeRefusesSettingCommandsBeforeStarting(t *testing.T) {
 		t.Fatal(err)
 	}
 	starts := make(chan struct{}, 1)
-	h := claude.Harness
+	h := claude.Harness(false)
 	h.Start = func(o agent.Options) (agent.Agent, error) {
 		starts <- struct{}{}
 		return fake.Start(o)
@@ -921,7 +921,7 @@ while [ ! -e '` + exit + `' ]; do sleep .02; done
 		Models:          []config.Model{{ID: "m", Efforts: efforts}, {ID: "new", Efforts: efforts}},
 		PermissionModes: []config.Option{{ID: "plan"}, {ID: "manual"}},
 	}}}
-	s, err := newServer(openStore(t), cfg, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
+	s, err := newServer(openStore(t), cfg, 0, map[string]agent.Harness{"claude": claude.Harness(false)}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1027,7 +1027,7 @@ func TestStartAndStopHoldUpNoOtherSession(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
+	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness(false)}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1154,7 +1154,7 @@ func TestDestroyWhileStartingOrConfiguring(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s, err := newServer(st, cfg, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
+	s, err := newServer(st, cfg, 0, map[string]agent.Harness{"claude": claude.Harness(false)}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1310,7 +1310,7 @@ func unresumableSession(t *testing.T) (*store.Store, *Server, *client, string) {
 	if err := st.AddSession("w", &store.Session{ID: "sender-session", Harness: "claude", Directory: dir, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
+	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness(false)}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1341,7 +1341,7 @@ func TestResumeTokenKeptWhenNotStored(t *testing.T) {
 	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Model: "m", PermissionMode: "plan", Directory: dir, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
+	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness(false)}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1386,7 +1386,7 @@ func TestClaudeModeChangeIsAdopted(t *testing.T) {
 	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Model: "m", Effort: "low", PermissionMode: "plan", Directory: dir, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
+	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness(false)}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2181,7 +2181,7 @@ func TestExitDropsWaitingMessages(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness}, MCP{})
+	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness(false)}, MCP{})
 	if err != nil {
 		t.Fatal(err)
 	}

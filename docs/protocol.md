@@ -91,7 +91,9 @@ where each shell command asks for approval first, and `auto`, where every
 command runs without asking, and the effort levels `max`, `xhigh`, `high`,
 `medium`, `low`, `minimal`, and `none`, which it sends to OpenRouter as the
 reasoning effort. An Ur model may list `providers`, the OpenRouter providers
-that serve it, in order; its requests go to those alone. A model with no effort
+that serve it, in order; its requests go to those alone. Claude's optional
+`thinking_summaries`, off unless set to `true`, has Claude stream a summary of
+its thinking as [`reasoning_delta`](#session-updates). A model with no effort
 levels omits `efforts` or lists none, and takes an empty `effort`. The required
 `defaults` name the harness, model, effort, and permission mode a new session
 starts with, each one of the configured choices; the daemon refuses to start

@@ -73,8 +73,9 @@ func checkPermissionMode(mode string) error {
 // startProcess starts Claude for the conversation sessionID, with Ox's MCP
 // server registered as ox, and delivers its output and exit on events until
 // done is closed. oxSessionID is the Ox session's ID: Claude's instructions
-// and the log of its stderr name it.
-func startProcess(workspace, oxSessionID, sessionID string, resume bool, settings agent.Settings, mcp agent.MCPServer, events chan<- agent.Event, done <-chan struct{}) (*process.Process, *writer, error) {
+// and the log of its stderr name it. With thinkingSummaries, Claude streams a
+// summary of its thinking; without it, thinking deltas arrive empty.
+func startProcess(workspace, oxSessionID, sessionID string, resume, thinkingSummaries bool, settings agent.Settings, mcp agent.MCPServer, events chan<- agent.Event, done <-chan struct{}) (*process.Process, *writer, error) {
 	if err := checkEffort(settings.Effort); err != nil {
 		return nil, nil, err
 	}
@@ -88,8 +89,11 @@ func startProcess(workspace, oxSessionID, sessionID string, resume bool, setting
 	}
 	args := []string{
 		"-p", "--input-format=stream-json", "--output-format=stream-json", "--verbose",
-		"--include-partial-messages", "--thinking-display=summarized", "--permission-prompt-tool=stdio",
+		"--include-partial-messages", "--permission-prompt-tool=stdio",
 		"--append-system-prompt", systemPrompt(oxSessionID, workspace), "--system-prompt-snapshot=off",
+	}
+	if thinkingSummaries {
+		args = append(args, "--thinking-display=summarized")
 	}
 	if resume {
 		args = append(args, "--resume="+sessionID)

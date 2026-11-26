@@ -13,7 +13,7 @@ turns:
 claude -p \
   --input-format stream-json --output-format stream-json --verbose \
   --include-partial-messages \
-  --thinking-display summarized \
+  [--thinking-display summarized] \
   --replay-user-messages \
   --permission-mode <mode> --permission-prompt-tool stdio \
   --system-prompt-snapshot off \
@@ -30,7 +30,10 @@ claude -p \
 - `--include-partial-messages` adds `stream_event` lines carrying raw Anthropic
   SSE events (text and thinking deltas).
 - `--thinking-display summarized` streams Claude's summary of its thinking in
-  `thinking_delta`. It is accepted though absent from `--help` (2.1.330).
+  `thinking_delta`. It is accepted though absent from `--help` (2.1.330). Opus
+  5.5 with it ends more of its turns after thinking with no text: 5.6% of 549
+  top-level Ox turns, against 1.8% of 437 without it. Haiku 5.5 showed no
+  difference across 32 runs (2.1.332).
 - `--replay-user-messages` echoes each prompt back as a `user` line with
   `isReplay: true` and the prompt's `uuid` once Claude takes it into a turn.
 - `--permission-prompt-tool stdio` routes permission prompts to the host as

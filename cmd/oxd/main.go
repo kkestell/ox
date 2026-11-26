@@ -63,11 +63,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("ur not found beside oxd: %v", err)
 	}
-	harnesses := map[string]agent.Harness{
-		"claude": claude.Harness,
-		"fake":   {Start: fake.Start, Ask: fake.Ask},
-		"ur":     ur.Harness(urPath, "", *urDir, cfg.Harnesses["ur"].Providers()),
-	}
+	harnesses := newHarnesses(cfg, urPath, *urDir)
 	playScene(harnesses)
 	if err := checkConfig(cfg, harnesses); err != nil {
 		log.Fatalf("%s: %v", *configPath, err)
@@ -133,6 +129,16 @@ func findBeside(name string) (string, error) {
 	return exec.LookPath(filepath.Join(filepath.Dir(self), name))
 }
 
+// newHarnesses is every harness oxd has, set up as cfg configures them, with
+// Ur run from urPath keeping its conversations in urDir.
+func newHarnesses(cfg *config.Config, urPath, urDir string) map[string]agent.Harness {
+	return map[string]agent.Harness{
+		"claude": claude.Harness(cfg.Harnesses["claude"].ThinkingSummaries),
+		"fake":   {Start: fake.Start, Ask: fake.Ask},
+		"ur":     ur.Harness(urPath, "", urDir, cfg.Harnesses["ur"].Providers()),
+	}
+}
+
 // checkConfig refuses a configuration that offers a harness oxd does not
 // have, or a choice its harness does not take.
 func checkConfig(cfg *config.Config, harnesses map[string]agent.Harness) error {
@@ -140,6 +146,9 @@ func checkConfig(cfg *config.Config, harnesses map[string]agent.Harness) error {
 		harness := harnesses[name]
 		if harness.Start == nil {
 			return fmt.Errorf("unknown harness %q", name)
+		}
+		if offered.ThinkingSummaries && !harness.TakesThinkingSummaries {
+			return fmt.Errorf("harness %q takes no thinking_summaries", name)
 		}
 		if harness.CheckPermissionMode != nil {
 			for _, mode := range offered.PermissionModes {

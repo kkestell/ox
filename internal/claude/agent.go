@@ -104,14 +104,15 @@ const initializeRequest = `{"subtype":"initialize","hooks":{"Stop":[{"hookCallba
 const lostConversation = "Claude could not resume the earlier conversation; the next prompt starts a new one without its context"
 
 // Start launches Claude and returns the agent starting, before Claude has
-// answered initialize.
-func Start(options agent.Options) (agent.Agent, error) {
+// answered initialize. With thinkingSummaries, Claude streams a summary of
+// its thinking.
+func Start(options agent.Options, thinkingSummaries bool) (agent.Agent, error) {
 	sessionID, resume := options.Resume, options.Resume != ""
 	if !resume {
 		sessionID = newUUID()
 	}
 	events, done := make(chan agent.Event), make(chan struct{})
-	proc, input, err := startProcess(options.Workspace, options.SessionID, sessionID, resume, options.Settings, options.MCP, events, done)
+	proc, input, err := startProcess(options.Workspace, options.SessionID, sessionID, resume, thinkingSummaries, options.Settings, options.MCP, events, done)
 	if err != nil {
 		return nil, err
 	}
