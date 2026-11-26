@@ -252,25 +252,18 @@ declare global {
   interface Window {
     cutNextReply(): void;
     replyWithheld(): void;
-    replyExisting(): void;
   }
 }
 
 // cutReply withholds, once armed, the next accepted reply whose result has
 // field, at the page's EventSource, leaving its call pending. cut resolves
-// once a reply is withheld, and existing once a reply reports an existing
-// session, withheld or not. Call it before the page loads.
+// once a reply is withheld. Call it before the page loads.
 export async function cutReply(page: Page, field: "session_id" | "message_id") {
   let withheld!: () => void;
   const cut = new Promise<void>((resolve) => {
     withheld = resolve;
   });
-  let foundExisting!: () => void;
-  const existing = new Promise<void>((resolve) => {
-    foundExisting = resolve;
-  });
   await page.exposeBinding("replyWithheld", () => withheld());
-  await page.exposeBinding("replyExisting", () => foundExisting());
   await page.addInitScript((field) => {
     let armed = false;
     window.cutNextReply = () => {
@@ -283,7 +276,6 @@ export async function cutReply(page: Page, field: "session_id" | "message_id") {
         this.addEventListener("message", (event) => {
           const result = JSON.parse(event.data).result;
           if (result === undefined) return;
-          if (result?.existing) void window.replyExisting();
           if (armed && result?.[field]) {
             armed = false;
             event.stopImmediatePropagation();
@@ -296,6 +288,5 @@ export async function cutReply(page: Page, field: "session_id" | "message_id") {
   return {
     arm: () => page.evaluate(() => window.cutNextReply()),
     cut,
-    existing,
   };
 }

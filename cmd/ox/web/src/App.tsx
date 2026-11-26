@@ -63,6 +63,10 @@ function Layout() {
     if (s?.kind !== "session") return;
     return ox.session(s.id);
   };
+  createEffect(
+    () => session()?.id,
+    (id) => ox.show(id),
+  );
   // A removed workspace's draft is hidden until the effect below drops it.
   const liveDrafts = () => drafts().filter((d) => ox.workspaces().some((w) => w.id === d.workspaceId));
   createEffect(

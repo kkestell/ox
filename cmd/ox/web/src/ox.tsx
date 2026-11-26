@@ -66,9 +66,13 @@ export type Session = {
   label: string;
   archived: boolean;
   // state is the state oxd last published for the session, which the page
-  // follows whether or not the session is loaded.
+  // follows whether or not the session is loaded. Only the session the page
+  // shows has a snapshot.
   state: SessionState;
-  load: { kind: "reloading"; snapshot?: SessionSnapshot } | { kind: "live"; snapshot: SessionSnapshot };
+  load:
+    | { kind: "unloaded"; snapshot?: undefined }
+    | { kind: "loading"; snapshot?: SessionSnapshot }
+    | { kind: "live"; snapshot: SessionSnapshot };
 };
 
 export type SessionSnapshot = {
@@ -411,7 +415,7 @@ function createSessionControl(
     canCreate: free,
     // recoverable is whether the session exists although its creation was
     // unconfirmed, so the draft returns to it instead of sending.
-    recoverable: () => unconfirmed() && live() !== undefined,
+    recoverable: () => unconfirmed() && session() !== undefined,
     canSend,
     canConfigure,
     // requested is the settings a configuration in flight asks for.
@@ -612,19 +616,49 @@ function createOx() {
   // failure as the page error meanwhile. It returns undefined once the stream
   // its request is sent on ends, which the page reports itself.
   async function retry<T>(request: () => Promise<T>): Promise<T | undefined> {
-    let shown: Error | undefined;
+    let failure: Error | undefined;
     for (;;) {
       try {
         const answer = await request();
-        if (shown !== undefined && error() === shown) setError(undefined);
+        if (failure !== undefined && error() === failure) setError(undefined);
         return answer;
       } catch (e) {
         if (e instanceof Disconnected) return undefined;
-        shown = e as Error;
-        setError(shown);
+        failure = e as Error;
+        setError(failure);
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     }
+  }
+
+  // shown is the session the page shows, which is the only one it loads.
+  let shown: string | undefined;
+
+  // show records the session the page shows and loads it. The session shown
+  // before drops its snapshot.
+  function show(id: string | undefined) {
+    if (id === shown) return;
+    const previous = shown;
+    shown = id;
+    setStore((s) => {
+      const old = previous === undefined ? undefined : sessionIn(s.workspaces, previous);
+      if (old) old.load = { kind: "unloaded" };
+    });
+    const current = live();
+    if (id !== undefined && current) begin(id, current.rpc);
+  }
+
+  // begin loads a listed session that has no snapshot yet.
+  function begin(id: string, rpc: Rpc) {
+    const session = stored(id);
+    if (!session) return;
+    if (session.load.kind === "unloaded") {
+      setStore((s) => {
+        const loaded = sessionIn(s.workspaces, id);
+        if (loaded) loaded.load = { kind: "loading" };
+      });
+    }
+    void load(id, rpc);
   }
 
   // Install the snapshot without replacing the session's view or its open
@@ -632,13 +666,14 @@ function createOx() {
   async function load(id: string, rpc: Rpc) {
     const result = await retry(async () => {
       try {
+        if (id !== shown) return undefined;
         return await rpc("session/get", { session_id: id });
       } catch (e) {
         if (e instanceof RpcError && e.code === notFound) return undefined;
         throw e;
       }
     });
-    if (!result) return;
+    if (!result || id !== shown) return;
     const snapshot: SessionSnapshot = {
       settings: settingsOf(result),
       entries: [],
@@ -651,7 +686,7 @@ function createOx() {
     setStore((s) => {
       const loaded = sessionIn(s.workspaces, id);
       if (!loaded) return;
-      const previous = loaded.load.snapshot;
+      const previous = loaded.load.kind === "unloaded" ? undefined : loaded.load.snapshot;
       if (previous) {
         previous.settings = snapshot.settings;
         previous.queued = snapshot.queued;
@@ -666,9 +701,9 @@ function createOx() {
   }
 
   // A new oxd connection has missed every notification sent while the page
-  // was disconnected, so it reloads everything. A reload belongs to the stream
-  // that started it: it sends only through that stream's rpc, and ends when
-  // that stream does.
+  // was disconnected, so it reloads the lists and the shown session. A reload
+  // belongs to the stream that started it: it sends only through that
+  // stream's rpc, and ends when that stream does.
   async function reload(rpc: Rpc) {
     setError(undefined);
     const harnessList = await retry(() => rpc("harness/list", {}));
@@ -695,7 +730,7 @@ function createOx() {
           ({ session_id: id, label, harness, directory, worktree, child, archived = false, state }) => {
             const session = previous.get(id);
             if (!session)
-              return { id, harness, directory, worktree, child, label, archived, state, load: { kind: "reloading" } };
+              return { id, harness, directory, worktree, child, label, archived, state, load: { kind: "unloaded" } };
             session.label = label;
             session.archived = archived;
             return session;
@@ -705,7 +740,7 @@ function createOx() {
     });
     for (const { session_id, state } of listed) setState(session_id, state);
     setLive({ rpc });
-    await Promise.all([...ids].map((id) => load(id, rpc)));
+    if (shown !== undefined && ids.has(shown)) begin(shown, rpc);
   }
 
   function receive({ method, params }: Notification) {
@@ -745,11 +780,9 @@ function createOx() {
             label: params.label,
             archived: false,
             state: params.state,
-            load: { kind: "reloading" },
+            load: { kind: "unloaded" },
           });
         });
-        const current = live();
-        if (current) void load(params.session_id, current.rpc);
         return;
       }
       case "session/configured":
@@ -798,7 +831,7 @@ function createOx() {
         setStore((s) => {
           for (const workspace of s.workspaces) {
             for (const session of workspace.sessions) {
-              session.load = { kind: "reloading", snapshot: session.load.snapshot };
+              if (session.load.kind !== "unloaded") session.load = { kind: "loading", snapshot: session.load.snapshot };
             }
           }
         });
@@ -834,6 +867,7 @@ function createOx() {
     listFolder: (root: FileRoot, path: string) => connection.rpc("workspace/list_folder", { ...root, path }),
     readFile: (root: FileRoot, path: string) => connection.rpc("workspace/read_file", { ...root, path }),
     listChanges: (root: FileRoot) => connection.rpc("workspace/list_changes", root),
+    show,
     control,
     release,
     destroy: (id: string) => requestFor(id, "destroy"),

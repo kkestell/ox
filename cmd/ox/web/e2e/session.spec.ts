@@ -867,6 +867,50 @@ test("a send held in one session leaves another usable", async ({ ox: page }) =>
   await expect(replies(page).last()).toHaveText("You said: held prompt");
 });
 
+test("reloading loads only the selected session", async ({ ox: page }) => {
+  await newSession(page, "first session");
+  await newSession(page, "second session");
+  const shown = sessionId(page);
+  const gets = rpcCalls(page, "session/get");
+  await page.reload();
+  await expect(prompts(page)).toHaveText(["second session"]);
+  await expect(sessionButton(page, "first session")).toBeVisible();
+  await expect(sessionButton(page, "first session")).toHaveAccessibleDescription("idle");
+  await expect(sessionButton(page, "second session")).toHaveAccessibleDescription("idle");
+  expect(gets.map((g) => g.session_id)).toEqual([shown]);
+  await sessionButton(page, "first session").click();
+  await expect(prompts(page)).toHaveText(["first session"]);
+  expect(gets).toHaveLength(2);
+  expect(gets[1].session_id).toBe(sessionId(page));
+});
+
+test("a reconnect reloads only the shown session", async ({ ox: page, services }) => {
+  await newSession(page, "first session");
+  await newSession(page, "second session");
+  const shown = sessionId(page);
+  const gets = rpcCalls(page, "session/get");
+  await services.restartRelay();
+  await expect(main(page).getByRole("alert")).toHaveCount(0, { timeout: 10_000 });
+  await expect(prompts(page)).toHaveText(["second session"]);
+  await expect.poll(() => gets.length).toBeGreaterThan(0);
+  expect(gets.map((g) => g.session_id)).toEqual([shown]);
+});
+
+test("a prompt sent before switching away resolves when its session is shown again", async ({ ox: page }) => {
+  await newSession(page, "first session");
+  await newSession(page, "second session");
+  await sessionButton(page, "first session").click();
+  const held = await hold(page, "session/send");
+  await prompt(page).fill("held prompt");
+  await prompt(page).press("Enter");
+  await held.arrived;
+  await sessionButton(page, "second session").click();
+  held.release();
+  await sessionButton(page, "first session").click();
+  await expect(prompts(page)).toHaveText(["first session", "held prompt"]);
+  await expect(prompt(page)).toHaveValue("");
+});
+
 test("Allow sends the exact numbers displayed in the tool input", async ({ ox: page }) => {
   await newDraft(page);
   const input = '{"ids":[9007199254740993],"amount":1.00000000000000001}';
@@ -1455,20 +1499,8 @@ test("a lost creation reply is recovered after leaving the draft", async ({ page
   await expect(listed).toHaveCount(2);
 });
 
-test("a retried creation recovers the session without sending", async ({ page, services }) => {
+test("a lost creation reply recovers the shown draft's session without sending", async ({ page, services }) => {
   const cutoff = await cutReply(page, "session_id");
-  // Hold every snapshot of the new session, so it loads only after the retry.
-  let id: string | undefined;
-  let release!: () => void;
-  const released = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  await page.route("**/rpc*", async (route) => {
-    const body = route.request().postDataJSON();
-    if (body?.method === "session/create") id ??= body.params.session_id;
-    if (body?.method === "session/get" && id !== undefined && body.params.session_id === id) await released;
-    return route.fallback();
-  });
   await open(page, services);
   const sends = rpcCalls(page, "session/send");
   await newDraft(page);
@@ -1477,13 +1509,6 @@ test("a retried creation recovers the session without sending", async ({ page, s
   await prompt(page).press("Enter");
   await cutoff.cut;
   await services.restartRelay();
-  // Once reconnected, the creation's error is the one left.
-  await expect(send(page)).toBeEnabled();
-  await expect(main(page).getByRole("alert")).toHaveText(["Lost the connection to ox. Reconnecting."]);
-  // The retry's reply finds the session already created.
-  await send(page).click();
-  await cutoff.existing;
-  release();
   await expect(main(page).getByRole("status")).toContainText("Session recovered");
   await expect(prompt(page)).toHaveValue("retry my prompt");
   await expect(prompts(page)).toHaveCount(0);
@@ -1501,20 +1526,20 @@ test("session list membership and order don't wait for transcripts", async ({ ox
   await expect(menuItem(await openMenu(workspaceSection(page, services.workspace)), "Remove workspace")).toBeDisabled();
   await page.keyboard.press("Escape");
   await expect(main(page).getByRole("status")).toHaveText("Loading session…");
-  const id = sessionId(page);
   await newSession(page, "younger session");
   await expect(listed).toHaveText(["younger session", "older session"]);
   firstSnapshot.release();
   await expect(listed).toHaveText(["younger session", "older session"]);
 
-  const reloadSnapshot = await hold(page, "session/get", { session_id: id });
+  const reloadSnapshot = await hold(page, "session/get", { session_id: sessionId(page) });
   await page.reload();
   await reloadSnapshot.arrived;
-  await expect(replies(page)).toHaveText(["You said: younger session"]);
+  await expect(main(page).getByRole("status")).toHaveText("Loading session…");
   await expect(listed).toHaveText(["younger session", "older session"]);
   for (const title of ["younger session", "older session"])
     await expect(sessionItem(page, title).getByRole("img", { name: "idle" })).toBeVisible();
   reloadSnapshot.release();
+  await expect(replies(page)).toHaveText(["You said: younger session"]);
   await expect(listed).toHaveText(["younger session", "older session"]);
 });
 
@@ -1686,10 +1711,12 @@ clocked("a retry from a dropped stream does not use the next stream", async ({ o
 
 clocked("a session's load from a dropped stream does not use the next stream", async ({ ox: page, services }) => {
   await newSession(page, "parent");
-  // The load that the child's session/created starts sleeps on the paused
-  // clock after a failure.
+  // The load that the first reconnect starts sleeps on the paused clock after
+  // a failure.
   const snapshot = await hold(page, "session/get");
-  const child = await createChild(services, sessionId(page), "Child");
+  await services.restartRelay();
+  await expect(page.getByRole("status").filter({ hasText: "Reconnecting…" })).toBeVisible();
+  await showPage(page);
   await snapshot.arrived;
   snapshot.fail("snapshot unavailable");
   await expect(page.getByRole("alert").filter({ hasText: "snapshot unavailable" })).toBeVisible();
@@ -1697,8 +1724,7 @@ clocked("a session's load from a dropped stream does not use the next stream", a
   const posted: string[] = [];
   page.on("request", (request) => {
     if (request.method() !== "POST" || !request.url().includes("/rpc")) return;
-    const { method, params } = request.postDataJSON();
-    if (method === "session/get" && params.session_id !== child.session_id) return;
+    const { method } = request.postDataJSON();
     if (["harness/list", "workspace/list", "session/get"].includes(method)) posted.push(method);
   });
   const catalog = await hold(page, "harness/list");
