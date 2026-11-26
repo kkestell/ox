@@ -5,9 +5,13 @@ import type { Locator, Page, Request, Route } from "@playwright/test";
 import { fakeConfig } from "./services";
 import {
   addWorkspace,
+  allow,
+  ask,
   clocked,
+  cutReply,
   expect,
   gitRepo,
+  heading,
   hold,
   isRequest,
   menuItem,
@@ -15,6 +19,7 @@ import {
   newDraft,
   newSession,
   newSessionButton,
+  open,
   openMenu,
   permissionMode,
   prompt,
@@ -27,6 +32,7 @@ import {
   showPage,
   test,
   transcript,
+  waiting,
   workspaceSection,
 } from "./ui";
 
@@ -726,6 +732,106 @@ clocked("the Changes tab shows a new edit on the next tick", async ({ ox: page, 
   await expect(change(page, "later.txt")).toBeVisible();
 });
 
+test.describe("chat status behind a file tab", () => {
+  test.beforeEach(({ services }) => {
+    writeFileSync(join(services.workspace, "a.txt"), "a\n");
+  });
+
+  const chatAlert = (page: Page) => page.getByRole("main").getByRole("alert");
+  // showFile opens a.txt, which hides the chat.
+  async function showFile(page: Page) {
+    await showFiles(page);
+    await openFile(page, "a.txt");
+  }
+
+  test("a creation refused while a file tab shows marks the chat tab", async ({ ox: page }) => {
+    await newDraft(page);
+    const create = await hold(page, "session/create");
+    await prompt(page).fill("keep this draft");
+    await prompt(page).press("Enter");
+    await create.arrived;
+    await showFile(page);
+    create.release({ model: "not-offered" });
+    await expect(heading(page).getByRole("img", { name: /not-offered/ })).toBeVisible();
+    await heading(page).click();
+    await expect(chatAlert(page)).toContainText("not-offered");
+    await expect(prompt(page)).toHaveValue("keep this draft");
+  });
+
+  test("Reopen draft shows the draft's chat", async ({ ox: page }) => {
+    await newSession(page, "existing conversation");
+    await newDraft(page);
+    const create = await hold(page, "session/create");
+    await prompt(page).fill("keep this draft");
+    await prompt(page).press("Enter");
+    await create.arrived;
+    await showFile(page);
+    await sessionButton(page, "existing conversation").click();
+    create.release({ model: "not-offered" });
+    await page.getByRole("alert").getByRole("button", { name: "Reopen draft" }).click();
+    await expect(heading(page)).toHaveAttribute("aria-selected", "true");
+    await expect(prompt(page)).toHaveValue("keep this draft");
+  });
+
+  test("a refused setting change while a file tab shows marks the chat tab", async ({ ox: page }) => {
+    await newSession(page, "configure me");
+    const failed = await hold(page, "session/configure");
+    await permissionMode(page).selectOption("plan");
+    await failed.arrived;
+    await showFile(page);
+    failed.fail("configuration refused");
+    await expect(heading(page).getByRole("img", { name: "configuration refused" })).toBeVisible();
+    await heading(page).click();
+    await expect(chatAlert(page)).toHaveText("configuration refused");
+  });
+
+  test("a refused approval answer while a file tab shows marks the chat tab", async ({ ox: page }) => {
+    await newSession(page, "earlier prompt");
+    const approval = await ask(page, "Bash", "{}");
+    const answer = await hold(page, "session/approve");
+    await allow(approval);
+    await answer.arrived;
+    await showFile(page);
+    answer.fail("relay unavailable");
+    await expect(heading(page).getByRole("img", { name: "relay unavailable" })).toBeVisible();
+    await heading(page).click();
+    await expect(chatAlert(page)).toHaveText("relay unavailable");
+    await expect(waiting(page).getByRole("article")).toHaveCount(1);
+  });
+
+  test("an approval that arrives while a file tab shows marks the chat tab", async ({ ox: page }) => {
+    await newSession(page, "earlier prompt");
+    const sent = await hold(page, "session/send");
+    await prompt(page).fill("approve Bash {}");
+    await prompt(page).press("Enter");
+    await sent.arrived;
+    await showFile(page);
+    sent.release();
+    await expect(heading(page).getByRole("img", { name: "Waiting on you" })).toBeVisible();
+    await heading(page).click();
+    await expect(waiting(page).getByRole("article")).toHaveCount(1);
+  });
+
+  test("a recovered creation behind a file tab marks the chat tab with its notice", async ({ page, services }) => {
+    const cutoff = await cutReply(page, "session_id");
+    await open(page, services);
+    await newDraft(page);
+    await cutoff.arm();
+    await prompt(page).fill("recover my prompt");
+    await prompt(page).press("Enter");
+    await cutoff.cut;
+    await expect(prompt(page)).toHaveValue("");
+    await showFile(page);
+    const sends = rpcCalls(page, "session/send");
+    await services.restartRelay();
+    await expect(heading(page).getByRole("img")).toBeVisible();
+    await heading(page).click();
+    await expect(page.getByRole("main").getByRole("status")).toContainText("Session recovered");
+    await expect(prompt(page)).toHaveValue("recover my prompt");
+    expect(sends).toHaveLength(0);
+  });
+});
+
 test.describe("on a wide screen", () => {
   test.use({ viewport: { width: 1600, height: 900 } });
 
@@ -744,6 +850,20 @@ test.describe("on a wide screen", () => {
   }
   const right = { x: 0.9, y: 0.5 };
   const middle = { x: 0.5, y: 0.5 };
+
+  test("a chat shown beside a file has no mark", async ({ ox: page }) => {
+    await newSession(page, "configure me");
+    await showFiles(page);
+    await openFile(page, "src/a.txt");
+    await dropOn(fileTab(page, "a.txt"), groups(page).first(), right);
+    await expect(groups(page)).toHaveCount(2);
+    const failed = await hold(page, "session/configure");
+    await permissionMode(page).selectOption("plan");
+    await failed.arrived;
+    failed.fail("configuration refused");
+    await expect(page.getByRole("main").getByRole("alert")).toHaveText("configuration refused");
+    await expect(heading(page).getByRole("img")).toHaveCount(0);
+  });
 
   test("the sessions toggle sits in the session list's header while it shows, and in the first tab strip while it is hidden", async ({
     ox: page,
@@ -1107,6 +1227,21 @@ test.describe("on a phone", () => {
     await expect(viewer(page)).toBeVisible();
   }
 
+  test("an approval behind a file marks the tab picker", async ({ ox: page }) => {
+    await newSession(page, "earlier prompt");
+    const sent = await hold(page, "session/send");
+    await prompt(page).fill("approve Bash {}");
+    await send(page).tap();
+    await sent.arrived;
+    await showFile(page);
+    sent.release();
+    await expect(bar(page).getByRole("img", { name: "Waiting on you" })).toBeVisible();
+    await bar(page)
+      .getByRole("button", { name: /^a\.txt/ })
+      .tap();
+    await expect(tabMenu(page).getByRole("img", { name: "Waiting on you" })).toBeVisible();
+  });
+
   test("a lost connection shows above an open file", async ({ ox: page, services }) => {
     await newSession(page, "hello");
     await showFile(page);
@@ -1164,7 +1299,9 @@ test.describe("on a phone", () => {
     await showFile(page);
     await expect(picker(page, "a.txt")).toBeVisible();
     await expect(page.getByRole("tab")).toHaveCount(0);
-    await picker(page, "a.txt").tap();
+    await bar(page)
+      .getByRole("button", { name: /^a\.txt/ })
+      .tap();
     await expect(tabMenu(page)).toMatchAriaSnapshot(`
       - menu "Tabs":
         - menuitemradio "first"
@@ -1181,7 +1318,9 @@ test.describe("on a phone", () => {
   test("the menu's close button closes a tab, and the chat tab has none", async ({ ox: page }) => {
     await newSession(page, "first");
     await showFile(page);
-    await picker(page, "a.txt").tap();
+    await bar(page)
+      .getByRole("button", { name: /^a\.txt/ })
+      .tap();
     await expect(closeButton(page, "first")).toHaveCount(0);
     await closeButton(page, "a.txt").tap();
     await expect(viewer(page)).toHaveCount(0);

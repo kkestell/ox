@@ -41,6 +41,13 @@ export const clocked = test.extend({
   },
 });
 
+// open loads the page with the services' workspace added, for a test that
+// prepares the page before it loads.
+export async function open(page: Page, services: Services) {
+  await page.goto(services.url);
+  await addWorkspace(page, services.workspace);
+}
+
 // addWorkspace adds the directory at path through the Add workspace dialog.
 export async function addWorkspace(page: Page, path: string) {
   await page.getByRole("button", { name: "Add workspace" }).click();

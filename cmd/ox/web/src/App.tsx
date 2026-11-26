@@ -7,6 +7,7 @@ import type { FileRoot } from "./protocol";
 import { SessionView } from "./SessionView";
 import { Sidebar } from "./Sidebar";
 import type { Chat } from "./TabArea";
+import { activate } from "./tabs";
 import { Workspace } from "./Workspace";
 
 export type Selection = { kind: "session"; id: string } | { kind: "draft"; workspaceId: string };
@@ -106,6 +107,7 @@ function Layout() {
   const chat: Chat = {
     label: () => session()?.label ?? (draft() ? "New session" : ""),
     title: () => session()?.directory ?? ox.workspaces().find((w) => w.id === draft()?.workspaceId)?.path,
+    attention: () => files()?.control.attention(),
     view: () => (
       // Keyed, so each session and draft gets its own view and view state.
       <Switch>
@@ -207,7 +209,10 @@ function Layout() {
               <button
                 type="button"
                 class="outline"
-                onClick={() => select({ kind: "draft", workspaceId: failed.workspaceId })}
+                onClick={() => {
+                  select({ kind: "draft", workspaceId: failed.workspaceId });
+                  failed.control.edit((l) => activate(l, "chat"));
+                }}
               >
                 Reopen draft
               </button>

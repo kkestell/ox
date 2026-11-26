@@ -503,9 +503,11 @@ state, and socket under `.state`, serves on a free port, and prints the URL.
     composer and shows pending under the page's ID; Stop hides; an approval
     being answered disappears and returns with its answers if refused. A refusal
     reverts to `oxd`'s state with the error.
-  - Sends and settings changes are mutually exclusive. Settings changes send a
-    patch to [`session/configure`](protocol.md#sessionconfigure), show requested
-    values with spinners on changed fields, and disable Send until settled.
+  - A creation, send, settings change, and Stop exclude one another: the control
+    holds one in flight, so `oxd` receives them in the order the user made them.
+    Settings changes send a patch to
+    [`session/configure`](protocol.md#sessionconfigure), show requested values
+    with spinners on changed fields, and disable Send until settled.
   - Remembers the last prompt sent so a prompt refused or dropped before Claude
     took it returns (with its images) to the sending page's composer ahead of
     anything typed since.
@@ -528,9 +530,10 @@ state, and socket under `.state`, serves on a free port, and prints the URL.
   HTML5 drag and drop onto a group's strip, middle, or edge; the drop zone under
   the pointer is the tab area's own signal, cleared when the drag ends.
 - **Chat tab:** Its view stays mounted while another tab of its group shows, so
-  the transcript keeps its scroll position. File and Changes tabs mount while
-  active. The narrow layout shows the focused group's active tab under a bar
-  with a tab picker, and no splits.
+  the transcript keeps its scroll position. The tab is marked while hidden and
+  its chat holds an error, a notice, or a waiting approval. File and Changes
+  tabs mount while active. The narrow layout shows the focused group's active
+  tab under a bar with a tab picker, and no splits.
 - **Workspace:** Keyed by selection, it creates the selection's listing and
   shows the tab area with the right panel, which lists the file tree or the
   changes.

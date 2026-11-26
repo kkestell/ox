@@ -55,8 +55,8 @@ title.
 - **Creation keeps the user's view.** A session whose creation finishes after
   the user has moved to another view does not take them away from it.
 - **Failed creation.** If creating a session fails, its text and images return
-  to the draft with its settings and the error, with a way back to the draft
-  from any other view, and the user can submit again.
+  to the draft with its settings and the error, with a way back to the draft's
+  chat from any other view, and the user can submit again.
 - **Lost creation reply.** If the page loses the reply to a creation but the
   session exists, the page opens the session with the prompt unsent and asks the
   user to review its settings and send.
@@ -95,13 +95,14 @@ title.
   the end of the transcript and Send is unavailable, as it is while a message
   from another session is pending or waiting; once taken, it becomes a normal
   prompt where Claude took it.
-- **Stop.** While Claude works and the composer is empty, the Send button
-  becomes Stop. Once pressed, Stop does not return until the turn it stopped has
-  ended. Stop ends the turn, the transcript shows it was interrupted, and the
-  session takes prompts again; a pending prompt is dropped, and its text returns
-  to the composer of the page that sent it, ahead of anything typed since.
-  Messages from other sessions that Claude has not taken are dropped, and their
-  senders are not told.
+- **Stop.** While Claude works, the composer is empty, and Ox has accepted any
+  prompt this page sent, the Send button becomes Stop. Once pressed, Stop does
+  not return, and Send stays unavailable, until the turn it stopped has ended.
+  Stop ends the turn, the transcript shows it was interrupted, and the session
+  takes prompts again; a pending prompt is dropped, and its text returns to the
+  composer of the page that sent it, ahead of anything typed since. Messages
+  from other sessions that Claude has not taken are dropped, and their senders
+  are not told.
 
 ## Transcript
 
@@ -319,6 +320,10 @@ title.
   middle of a group or its tab strip moves the tab into it; onto a tab places it
   there. A group whose last tab leaves or closes disappears. On a wide screen
   the boundaries between groups resize by dragging.
+- **Chat status behind other tabs.** While another tab hides a session's or
+  draft's chat, its chat tab is marked when the chat shows an error, a notice,
+  or an approval waiting on the user, and selecting it shows them. On a narrow
+  screen the tab picker carries the mark.
 - **Tab actions.** The active tab's view actions sit at the right end of its
   group's tab strip: Source and Preview for a Markdown file, and a word wrap
   button for a file's source and for the Changes view.

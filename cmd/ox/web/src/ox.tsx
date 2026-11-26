@@ -166,9 +166,21 @@ export function createAttempt() {
 }
 
 // Outgoing is the composer's prompt the page has taken for a session/create
-// or session/send. It is "creating" or "sending" while that request is in
-// flight, and "sent" once oxd accepted it, until Claude takes it or it drops.
-export type Outgoing = { id: string; text: string; images: File[]; phase: "creating" | "sending" | "sent" };
+// or session/send, from the moment it is taken until Claude takes it, it
+// drops, or oxd refuses it.
+export type Outgoing = { id: string; text: string; images: File[] };
+
+// Request is the chat request the page has in flight for the session. The page
+// sends one at a time, so oxd takes them in the order the user made them.
+type Request =
+  | { kind: "create" }
+  | { kind: "send" }
+  | { kind: "configure"; patch: SettingsPatch }
+  | { kind: "interrupt" };
+
+// Attention is what the chat shows that needs the user: an error, an approval
+// waiting on them, or a notice.
+export type Attention = { kind: "error" | "notice"; text: string } | { kind: "waiting" };
 
 // imageTypes are the image types a prompt takes.
 export const imageTypes = ["image/png", "image/jpeg", "image/gif", "image/webp"];
@@ -205,10 +217,11 @@ type Draft<T> = [Store<T>, StoreSetter<T>];
 // file tree has expanded, its tabs, and the requests the page has in
 // flight for it, with their errors. It outlives the session's view, so leaving
 // the view, or reconnecting, keeps the text, images, answers, expanded
-// folders, and tabs and repeats no request. A send and a
-// configuration exclude each other, so a prompt runs with the settings the
-// page shows. A new session's control starts as its draft's composer, and its
-// first send starts before its session/get returns. Submitting takes the
+// folders, and tabs and repeats no request. A creation, send, configuration,
+// and Stop exclude one another, so oxd receives them in the order the user
+// made them and a prompt runs with the settings the page shows. A new
+// session's control starts as its draft's composer, and its first send starts
+// before its session/get returns. Submitting takes the
 // prompt out of the composer at once; a prompt oxd refuses, or one dropped
 // before Claude took it, returns to this page's composer. busy is whether the
 // session or an ancestor has a session list request in flight, and unarchive
@@ -224,9 +237,9 @@ function createSessionControl(
   const [text, setText] = createSignal("");
   const [images, setImages] = createSignal<File[]>([]);
   const [outgoing, setOutgoing] = createSignal<Outgoing>();
-  // stopping is whether the page's session/interrupt is in flight. oxd
-  // answers it once the stopped turn has ended.
-  const [stopping, setStopping] = createSignal(false);
+  // request is the creation, send, configuration, or Stop in flight. oxd
+  // answers a Stop once the stopped turn has ended.
+  const [request, setRequest] = createSignal<Request>();
   // answering holds the approvals whose answers are in flight.
   const [answering, setAnswering] = createSignal<ReadonlySet<string>>(new Set());
   // cardDrafts and formDrafts hold the unsent answers of approvals pending on
@@ -234,7 +247,6 @@ function createSessionControl(
   // is answered or cancelled.
   const cardDrafts = new Map<string, Draft<CardDraft>>();
   const formDrafts = new Map<string, Draft<FormDraft>>();
-  const [requested, setRequested] = createSignal<SettingsPatch>();
   const [error, attempt, clearError] = createAttempt();
   const [notice, setNotice] = createSignal<string>();
   // unconfirmed means a create was sent and oxd did not confirm it as new:
@@ -250,13 +262,40 @@ function createSessionControl(
     const load = session()?.load;
     return load?.kind === "live" ? load.snapshot : undefined;
   };
-  // submitting is whether the composer's prompt is in a request.
-  const submitting = () => {
-    const phase = outgoing()?.phase;
-    return phase === "creating" || phase === "sending";
+  // begin puts a request in the slot, and settle clears the slot when the
+  // request is still the one in it.
+  const begin = (next: Request) => {
+    setRequest(next);
+    return next;
   };
-  const free = () => connected() && !submitting() && requested() === undefined && !busy();
+  const settle = (mine: Request) => {
+    if (request() === mine) setRequest(undefined);
+  };
+  // submitting is whether the outgoing prompt is in a create or send.
+  const submitting = () => {
+    const kind = request()?.kind;
+    return outgoing() !== undefined && (kind === "create" || kind === "send");
+  };
+  const requested = () => {
+    const current = request();
+    return current?.kind === "configure" ? current.patch : undefined;
+  };
+  const free = () => connected() && request() === undefined && !busy();
   const canSend = () => free() && live()?.queued.length === 0;
+  const canStop = () => {
+    const state = session()?.state;
+    return free() && (state === "running" || state === "requires_action");
+  };
+  // waiting is the pending approvals with no answer in flight. One being
+  // answered disappears, and returns with its answers if oxd refuses them.
+  const waiting = () => live()?.approvals.filter((a) => !answering().has(a.id)) ?? [];
+  const attention = (): Attention | undefined => {
+    const message = error();
+    if (message) return { kind: "error", text: message };
+    if (waiting().length) return { kind: "waiting" };
+    const text = notice();
+    return text ? { kind: "notice", text } : undefined;
+  };
   const canConfigure = () => {
     const state = session()?.state;
     return free() && live() !== undefined && state !== undefined && settled(state);
@@ -287,7 +326,7 @@ function createSessionControl(
     if (!prompt || snapshot.queued.some((p) => p.message_id === prompt.id)) return;
     if (snapshot.entries.some((e) => e.kind === "prompt" && e.input.message_id === prompt.id))
       finishPrompt(prompt.id, false);
-    else if (prompt.phase === "sent") finishPrompt(prompt.id, true);
+    else if (!submitting()) finishPrompt(prompt.id, true);
   }
   // endApproval drops an approval's unsent answers once it is no longer
   // pending.
@@ -309,8 +348,8 @@ function createSessionControl(
     return attempt(request);
   };
   // take moves the composer's text and images into a new outgoing prompt.
-  function take(phase: Outgoing["phase"]): Outgoing {
-    const prompt: Outgoing = { id: newID(), text: text(), images: images(), phase };
+  function take(): Outgoing {
+    const prompt: Outgoing = { id: newID(), text: text(), images: images() };
     setOutgoing(prompt);
     setText("");
     setImages([]);
@@ -318,32 +357,31 @@ function createSessionControl(
   }
   // post sends a prompt and its images under the prompt's ID.
   function post(prompt: Outgoing) {
-    const sending: Outgoing = { ...prompt, phase: "sending" };
-    setOutgoing(sending);
-    const request = Promise.all(sending.images.map(base64))
+    const mine = begin({ kind: "send" });
+    const sent = Promise.all(prompt.images.map(base64))
       .then((encoded) =>
         rpc("session/send", {
           session_id: id,
-          message_id: sending.id,
-          text: sending.text,
+          message_id: prompt.id,
+          text: prompt.text,
           ...(encoded.length ? { images: encoded } : {}),
         }),
       )
       .then(
         () => {
-          if (outgoing()?.id !== sending.id) return;
-          setOutgoing({ ...sending, phase: "sent" });
+          settle(mine);
           // The daemon publishes the input before replying, so a live snapshot
           // already knows whether it was queued, taken, or dropped.
           const snapshot = live();
           if (snapshot) reconcilePrompt(snapshot);
         },
         (e: Error) => {
-          restore(sending);
+          restore(prompt);
           throw e;
         },
-      );
-    start(request);
+      )
+      .finally(() => settle(mine));
+    start(sent);
   }
   // recover returns to a session whose creation was unconfirmed, with its
   // current settings, and waits for the user to send the returned text.
@@ -378,8 +416,10 @@ function createSessionControl(
     // notice is information about the session that is not an error.
     notice,
     outgoing,
-    stopping,
+    submitting,
     answering,
+    waiting,
+    attention,
     // cardDraft is a permission card's unsent answer, created empty on first
     // request.
     cardDraft(requestId: string): Draft<CardDraft> {
@@ -409,9 +449,12 @@ function createSessionControl(
     // unconfirmed, so the draft returns to it instead of sending.
     recoverable: () => unconfirmed() && session() !== undefined,
     canSend,
+    canStop,
     canConfigure,
     // requested is the settings a configuration in flight asks for.
     requested,
+    // creating is whether the page's session/create is in flight.
+    creating: () => request()?.kind === "create",
     isExpanded: (path: string) => expanded[path] === true,
     setExpanded(path: string, open: boolean) {
       setExpandedStore((folders) => {
@@ -434,36 +477,39 @@ function createSessionControl(
     create(workspaceId: string, harness: string, settings: Settings, worktree: boolean, onCreated: () => void) {
       if (!free() || !sendable()) return;
       setUnconfirmed(false);
-      const prompt = take("creating");
+      const prompt = take();
+      const mine = begin({ kind: "create" });
       const { effort, ...required } = settings;
-      const request = rpc("session/create", {
+      const created = rpc("session/create", {
         session_id: id,
         workspace_id: workspaceId,
         harness,
         ...required,
         ...(effort ? { effort } : {}),
         ...(worktree ? { worktree } : {}),
-      }).then(
-        (result) => {
-          if (result.existing) {
+      })
+        .then(
+          (result) => {
+            if (result.existing) {
+              setUnconfirmed(true);
+              restore(prompt);
+              return;
+            }
+            post(prompt);
+            onCreated();
+          },
+          (e: Error) => {
             setUnconfirmed(true);
             restore(prompt);
-            return;
-          }
-          post(prompt);
-          onCreated();
-        },
-        (e: Error) => {
-          setUnconfirmed(true);
-          restore(prompt);
-          throw e;
-        },
-      );
-      start(request);
+            throw e;
+          },
+        )
+        .finally(() => settle(mine));
+      start(created);
     },
     recover,
     send() {
-      if (canSend() && sendable()) post(take("sending"));
+      if (canSend() && sendable()) post(take());
     },
     finishPrompt,
     reconcilePrompt,
@@ -475,13 +521,13 @@ function createSessionControl(
       );
       if (!changed.length) return;
       const patch = Object.fromEntries(changed) as SettingsPatch;
-      setRequested(patch);
-      const request = rpc("session/configure", { session_id: id, ...patch });
-      start(request).finally(() => setRequested(undefined));
+      const mine = begin({ kind: "configure", patch });
+      start(rpc("session/configure", { session_id: id, ...patch }).finally(() => settle(mine)));
     },
     interrupt() {
-      setStopping(true);
-      start(rpc("session/interrupt", { session_id: id }).finally(() => setStopping(false)));
+      if (!canStop()) return;
+      const mine = begin({ kind: "interrupt" });
+      start(rpc("session/interrupt", { session_id: id }).finally(() => settle(mine)));
     },
     approve(requestId: string, response: ApprovalResponse) {
       setAnswering((ids) => new Set(ids).add(requestId));
