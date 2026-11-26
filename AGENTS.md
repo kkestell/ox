@@ -227,8 +227,10 @@ workflow.
 
 The main checkout stays on `main` and only pulls. Each change runs in an Ox
 worktree session started from the main checkout, and every step below runs in
-its worktree. Before its first commit, the top-level agent renames the
-worktree's branch for the change with `git branch -m <slug>`. A child session
+its worktree. A worktree session holds one change: everything the user asks for
+in it, related or not, is made in that worktree, on its one branch, and lands
+in its one pull request. Before its first commit, the top-level agent renames
+the worktree's branch for the change with `git branch -m <slug>`. A child session
 that finds uncommitted work outside its brief, other than its sibling
 children's, stops and reports it to the session that started it. Changes reach
 `main` only by pull request, which the user merges.
