@@ -15,7 +15,7 @@ Find the structures in Ox that let defects happen, and write an audit that tells
 
 The audit recommends which finding to take up first. The user chooses which findings go through the [project workflow](../../../AGENTS.md#workflow).
 
-Change no code, tests, or documentation, and stage or commit nothing. Edit only the audit file, and open, edit, and close `bug` issues for its findings. Do not start other agents.
+Change no code, tests, or documentation. Edit and commit only the audit file, open its pull request, and open, edit, and close `bug` issues for its findings. Do not start other agents.
 
 ## Gather the evidence
 
@@ -41,7 +41,8 @@ Change no code, tests, or documentation, and stage or commit nothing. Edit only 
 10. Read this skill's `assets/_template.md` and write the audit in `agents/audits/`, named `YYYY-MM-DD-<slug>.md`, where the slug is the branch name.
 11. Make each `Plan` finding complete enough to plan from: the structure, every place it appears, the defects it caused, the wrong states it still permits, the owner or representation that replaces it, and what the replacement removes. Leave the design of the change to the plan. Record a candidate as a `Rejected` finding only when a later audit or review would otherwise raise it again: an earlier review raised it, or it has the shape of a structure this audit looks for. State the reason.
 12. Open one issue labeled `bug` for each `Plan` finding, with `gh issue create --label bug`: a title naming the defect, one sentence on what goes wrong, and a link to the finding's section, `https://github.com/kkestell/ox/blob/main/agents/audits/<file>#<section>`, which resolves once the audit's pull request merges. Close the issue of an earlier finding that has landed, and edit one this audit shows is stale.
-13. Give the final response and stop.
+13. Rename the worktree's branch to the audit's slug with `git branch -m <slug>`, if it has another name, and commit the audit file alone, with the audit's title as the subject. Run `git fetch` and `git rebase origin/main`, push with `git push -u origin <slug>`, and open the pull request with `gh pr create`. Its title is the audit's title, and its body is one short paragraph on what the audit found, then a list of the issues it opened, edited, or closed, with no other sections.
+14. Give the final response and stop.
 
 ## Final response
 
@@ -56,6 +57,8 @@ One or two sentences: what the audit found, and the number of findings by action
 | F2 | Low    | Rejected | Two similar argument parsers               | 2      |
 
 **Audit:** `agents/audits/YYYY-MM-DD-<slug>.md`
+
+**Pull request:** https://github.com/kkestell/ox/pull/N
 
 **Still open:** 4 `bug` issues, the highest-cost Archive acts on a stale session.
 
