@@ -28,7 +28,7 @@ export function keepPromptFocus(event: PointerEvent) {
   if (!(event.target instanceof HTMLTextAreaElement)) event.preventDefault();
 }
 
-// keepRowInPlace opens or closes the tool call whose summary was clicked
+// keepRowInPlace opens or closes the row whose summary was clicked
 // and scrolls the transcript so the summary stays where it was on screen. The
 // transcript is anchored at its bottom, so without this a row opened at the
 // bottom unfolds upward and pushes its summary out of view.
@@ -195,9 +195,13 @@ function Transcript(props: { sessionId: string; snapshot: SessionSnapshot; outgo
             </Match>
             <Match when={entry.kind === "reasoning" && entry}>
               {(reasoning) => (
-                <article class="reasoning" aria-label="Thinking">
+                <details class="reasoning" aria-label="Thinking">
+                  <summary>
+                    <span class="marker brain" aria-hidden="true" />
+                    <span class="name">Thinking</span>
+                  </summary>
                   <Markdown text={reasoning().text} />
-                </article>
+                </details>
               )}
             </Match>
             <Match when={entry.kind === "tool" && entry}>{(tool) => <ToolCall tool={tool()} />}</Match>

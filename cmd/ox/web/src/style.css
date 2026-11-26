@@ -104,6 +104,7 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: 
 .loader::before { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .marker.failed { --icon: url(lucide-static/icons/circle-alert.svg); color: var(--destructive); }
+.marker.brain { --icon: url(lucide-static/icons/brain.svg); }
 .marker.stopped { --icon: url(lucide-static/icons/circle-stop.svg); color: var(--muted-foreground); }
 
 button {
@@ -295,18 +296,18 @@ main > .loading { flex: 1; display: flex; align-items: center; justify-content: 
 .markdown a { color: inherit; text-decoration: underline; }
 .log .error { padding: 0.75rem 1rem; border-radius: var(--radius); background: var(--card); }
 
-.log .reasoning { color: var(--muted-foreground); }
-/* A tool call's summary padding widens its hit area into the transcript's gap,
-   so text keeps the gap's distance from the items around it. A tool call after
-   a closed one sits 0.25rem below it. */
-details.tool { margin-top: -0.25rem; }
-details.tool:not([open]) { margin-bottom: -0.25rem; }
-details.tool:not([open]) + details.tool { margin-top: -0.75rem; }
-details.tool summary { display: flex; align-items: center; padding: 0.25rem 0; list-style: none; cursor: default; }
-details.tool summary::-webkit-details-marker { display: none; }
+.log .reasoning > .markdown { margin-left: 1.5rem; color: var(--muted-foreground); }
+/* A row's summary padding widens its hit area into the transcript's gap, so
+   text keeps the gap's distance from the items around it. A row after a closed
+   one sits 0.25rem below it. */
+details:is(.tool, .reasoning) { margin-top: -0.25rem; }
+details:is(.tool, .reasoning):not([open]) { margin-bottom: -0.25rem; }
+details:is(.tool, .reasoning):not([open]) + details:is(.tool, .reasoning) { margin-top: -0.75rem; }
+details:is(.tool, .reasoning) summary { display: flex; align-items: center; padding: 0.25rem 0; list-style: none; cursor: default; }
+details:is(.tool, .reasoning) summary::-webkit-details-marker { display: none; }
 .marker { flex: none; width: 1.5rem; height: 1.25rem; display: flex; align-items: center; }
 .marker.running::before, .marker.done::before { width: 0.5rem; height: 0.5rem; margin-left: 0.25rem; border-radius: 50%; mask: none; }
-details.tool .name { flex: none; }
+details:is(.tool, .reasoning) .name { flex: none; }
 details.tool .detail { min-width: 0; margin-left: 0.25rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted-foreground); }
 details.tool .card { margin: 0.5rem 0 0 1.5rem; border-radius: calc(var(--radius) + 4px); overflow: hidden; background: var(--card); box-shadow: var(--shadow-sm); }
 details.tool pre { padding: 0.5rem 0.75rem; overflow-x: auto; white-space: pre-wrap; overflow-wrap: break-word; font-family: var(--font-mono); font-size: 0.75rem; }

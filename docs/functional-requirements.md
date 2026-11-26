@@ -120,9 +120,10 @@ title.
   whether it is running, done, failed, or stopped; expanding it shows the full
   input and the result's text, and a plan renders as Markdown. Expanding or
   collapsing a tool call keeps its summary where it was on screen.
-- **Reasoning.** When Claude or Ur reasons, the transcript shows the reasoning
-  in full where it happened, streaming in as Markdown under the same rules as
-  replies. Claude's reasoning is its own summary of its thinking.
+- **Reasoning.** When Claude or Ur reasons, the transcript shows a collapsed
+  Thinking row where it happened; expanding it shows the reasoning in full,
+  streaming in as Markdown under the same rules as replies, and keeps its
+  summary where it was on screen.
 - **Main conversation only.** The transcript shows the main conversation only,
   not the inner messages of Claude's subagents.
 - **Failed turns.** A failed turn shows its error in the transcript.
