@@ -219,9 +219,11 @@ need them cannot happen.
 ## Workflow
 
 The user settles the direction and rough scope of a change with a top-level
-agent, which carries it through child sessions. When Codex leads the workflow,
-use Codex child sessions on Sol 6.2. The Claude model choices below apply when
-Claude Code leads the workflow.
+agent, which plans and implements the change itself and starts a child session
+only to review it. It reads a child's final reply, which Ox delivers, and not
+the child's transcript. When Codex leads the workflow, use Codex child sessions on
+Sol 6.2. The Claude model choices below apply when Claude Code leads the
+workflow.
 
 The main checkout stays on `main` and only pulls. Each change runs in an Ox
 worktree session started from the main checkout, and every step below runs in
@@ -241,34 +243,32 @@ alters there. A change to `AGENTS.md`, a skill, or a requirement reaches other
 worktrees only when they rebase, so its agent sends the new text to every
 other top-level agent with a change in flight.
 
-The steps scale with what the change can break. A small change is one whose
-whole effect a single check observes, and that touches no state owner,
-protocol, persistence, harness driving, or requirement: a style rule, copy, or
-a contained bug fix with an obvious cause. The top-level agent makes a small
-change itself in its worktree, runs the checks that observe it, and opens the
-pull request, with no plan or review session. Every other change takes the
-steps below. When in doubt, a change is not small.
+The steps scale with what the change can break. A small change adds no state,
+timer, retry, lock, stored field, protocol message, or requirement change: a
+style rule, copy, or a bug fix whose cause is known. The top-level agent makes
+a small change itself in its worktree, with the test that fails without it,
+runs the checks that observe it, and opens the pull request, with no plan or
+review session. Coral reviews every pull request. Every other change takes the
+steps below.
 
-1. A child session on Opus 5.5 at high effort runs `/ox-plan`. The user
-   approves the plan's requirement changes with its other product questions.
-2. The top-level agent sanity-checks the plan with a quick look at the code it
-   names, without redoing the planning.
-3. A child session on Sonnet or Opus, chosen by the change's complexity,
-   runs `/ox-work` on the plan.
-4. A child session on Opus or Sol runs `/ox-review` on the uncommitted
-   changes for the plan.
-5. The implementing session runs `/ox-work fix` on the review.
-6. The reviewing session runs `/ox-review verify` on its review. Open
-   findings or new regressions go back to the implementing session, until
-   the verdict is Ready to commit.
-7. The top-level agent sanity-checks the result, including the requirements
-   diff, and commits the change with its plan and review in `agents/`. It runs
-   `git fetch` and `git rebase origin/main`, then re-runs the checks that
-   observe the change when the rebase brought in new commits. When the rebase resolved a conflict in code, the reviewing
-   session runs `/ox-review verify` on the rebased commit before the push. The
-   top-level agent pushes with `git push -u origin <slug>` and opens the pull
-   request with `gh pr create`. Its title is the commit subject. Its body links
-   the plan and review, states the verdict, lists the checks run, with
+1. The top-level agent runs `/ox-plan` itself. The user approves the plan's
+   requirement changes with its other product questions.
+2. The top-level agent runs `/ox-work` on the plan itself.
+3. A child session runs `/ox-review` on the uncommitted changes for the plan:
+   on Sonnet, or on Opus when the change alters a state owner, concurrency, or
+   how Ox drives Claude Code. The request passes on `/ox-work`'s final
+   response.
+4. The top-level agent runs `/ox-work fix` on the review. When the review has
+   a High or Medium `Fix` finding, the reviewing session runs
+   `/ox-review verify` on its review, and open findings or new regressions go
+   back to the top-level agent until the verdict is Ready to commit.
+5. The top-level agent checks the requirements diff and commits the change
+   with its plan and review in `agents/`. It runs `git fetch` and
+   `git rebase origin/main`, then re-runs the checks that observe the change
+   when the rebase brought in new commits. It pushes with
+   `git push -u origin <slug>` and opens the pull request with
+   `gh pr create`. Its title is the commit subject. Its body links the plan and
+   review when there are any, states the verdict, lists the checks run, with
    `make live` run or not run, and adds `Fixes #N` for each issue the change
    resolves. When the change alters the UI, the body ends with a
    `## Screenshots` table of each view it changes, taken in headless Chrome:
@@ -277,7 +277,7 @@ steps below. When in doubt, a change is not small.
    committed under `pr-<N>/` on the orphan `pr-assets` branch and linked
    through `raw.githubusercontent.com` at that commit. The top-level agent
    then tells the user the pull request is ready to merge.
-8. A pull request merges by squash, with its title as the commit subject.
+6. A pull request merges by squash, with its title as the commit subject.
    After the user merges, the top-level agent pulls and runs `make prune` in
    the main checkout. `make prune` removes each local branch whose pull
    request has merged, and its worktree.
