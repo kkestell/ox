@@ -20,7 +20,7 @@ Change no code, tests, or documentation, and stage or commit nothing. Edit only 
 ## Gather the evidence
 
 1. Run `git status`. If the checkout has uncommitted changes, stop and report them to whoever asked for the audit, as `AGENTS.md` ("Workflow") describes. Then read `<audit_scope> $ARGUMENTS </audit_scope>`. With no scope, audit the whole repository since the last audit in `agents/audits/`, or all history if there is none. Record the revision and the state of the working tree you audit.
-2. Read `AGENTS.md`, `docs/functional-requirements.md`, and `docs/architecture.md`; for web client code, also `cmd/ox/web/AGENTS.md`. Read the sections of `docs/protocol.md` and `docs/harnesses/claude-code.md` that cover the code in scope.
+2. Read `docs/functional-requirements.md` and `docs/architecture.md`; for web client code, also `cmd/ox/web/AGENTS.md`. Read the sections of `docs/protocol.md` and `docs/harnesses/claude-code.md` that cover the code in scope.
 3. Read the earlier audits in `agents/audits/` and the `bug` issues, open and closed (`gh issue list --label bug --state all`), and note which earlier findings have landed and which are still open. Do not raise a finding an earlier audit or review rejected unless the evidence its reason rests on has changed.
 4. Collect the defects in scope, starting with the `Fix` and `Record` findings in `agents/reviews/`, the `bug` issues, and the merged pull requests in scope (`gh pr list --state merged`). Then read the messages of the commits in scope, and read the diff of a commit that fixes behavior only when no review explains it. For each defect, note what went wrong, where, and what the fix changed: the structure that allowed it, or a guard, special case, or retry at the symptom.
 

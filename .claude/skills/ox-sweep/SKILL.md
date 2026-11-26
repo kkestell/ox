@@ -21,7 +21,7 @@ Change no code, tests, or documentation, and stage or commit nothing. Edit only 
 ## Gather the evidence
 
 1. Run `git status`. If the checkout has uncommitted changes, stop and report them to whoever asked for the sweep, as `AGENTS.md` ("Workflow") describes. Then read `<sweep_scope> $ARGUMENTS </sweep_scope>`. With no scope, sweep the whole repository. Record the revision and the state of the working tree you sweep.
-2. Read `AGENTS.md`, `docs/functional-requirements.md`, `docs/architecture.md`, `docs/protocol.md`, `docs/harnesses/claude-code.md`, and `cmd/ox/web/AGENTS.md`.
+2. Read `docs/functional-requirements.md`, `docs/architecture.md`, `docs/protocol.md`, `docs/harnesses/claude-code.md`, and `cmd/ox/web/AGENTS.md`.
 3. Read the earlier sweeps and audits in `agents/audits/` and the `bug` issues, open and closed (`gh issue list --label bug --state all`). Do not raise a finding an earlier sweep, audit, or review rejected unless the evidence its reason rests on has changed. Skip a defect that an open `bug` issue records, unless what the issue waits on has changed.
 4. Collect the defects fixed since the last sweep, or in all history if there is none: the closed `bug` issues, the `Fix` and `Record` findings in `agents/reviews/`, and the commits that fix behavior. Each one is a lead for the child whose workflow or input it touched, since the same failure often recurs on a neighboring path.
 
@@ -49,7 +49,7 @@ Change no code, tests, or documentation, and stage or commit nothing. Edit only 
 8. Give each child its own detached worktree at the swept revision, made with `git worktree add --detach "${TMPDIR:-/tmp}/ox-sweep/<child>" HEAD`, with `cmd/ox/web/node_modules` linked from this checkout, so the children's builds, tests, and probes cannot collide. Remove the worktrees once the children have answered.
 9. Start one child per workflow group and input source, and the tests and docs child, and run them concurrently: an Ox session started with `create_session` on this session's model and effort, or another agent the user names, such as a Codex task on Sol. Brief each one in full; a child does not inherit this skill or your conversation. Give it:
    - Its worktree's absolute path and revision, and two sentences on what Ox is.
-   - The files to read first: `AGENTS.md`, `docs/functional-requirements.md`, the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/harnesses/claude-code.md` its scope touches, and `cmd/ox/web/AGENTS.md` for web client code.
+   - The files to read first: `docs/functional-requirements.md`, the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/harnesses/claude-code.md` its scope touches, and `cmd/ox/web/AGENTS.md` for web client code.
    - Its workflows and the requirements they deliver, by title, its input source and the code that reads it, or its tests and docs. Add the open `bug` issues and earlier rejections in its scope, and its leads from step 4. A lead is a suspicion, not a finding to prove.
    - The checks it can run. A child in a sandbox without network or sockets runs `go test -race ./<pkg>` and `node --test <file>` directly, since `make test` downloads golangci-lint, and reports browser, socket, and live checks as gaps.
    - Its concern from [Concerns](#concerns), the [child rules](#child-rules), and the [child report](#child-report), copied in full.

@@ -12,7 +12,7 @@ Write a plan for one change to Ox without changing the code. Whoever implements 
 
 ## Child sessions
 
-Start child sessions with Ox's `create_session` for research that is independent of your other reading and large enough to earn a fresh context. Start independent ones together. Good uses:
+Start child sessions on Sonnet with Ox's `create_session` for research that is independent of your other reading and large enough to earn a fresh context. Start independent ones together. Good uses:
 
 - Tracing a flow through code the plan touches but you will not otherwise read, such as how a request reaches the harness through every layer.
 - Surveying every caller of a function, or every place a pattern or rule occurs, when the plan must account for all of them.
@@ -37,7 +37,7 @@ Keep this work in this session:
 ## Establish the work
 
 1. Run `git status`. If the checkout has uncommitted changes, stop and report them to whoever asked for the plan, as `AGENTS.md` ("Workflow") describes. Then read `<request> $ARGUMENTS </request>`. If it is empty, ask the user what to plan and stop. If it names a GitHub issue, read it with `gh issue view`. If it names a finding in an audit in `agents/audits/`, read the finding; the change replaces its structure at every place the finding names.
-2. Read `AGENTS.md`, `docs/functional-requirements.md`, and the open `bug` issues (`gh issue list --label bug`). For web client work, also read `cmd/ox/web/AGENTS.md`. Read the sections of `docs/architecture.md`, `docs/protocol.md`, and `docs/harnesses/claude-code.md` that cover the code the change touches.
+2. Read the open `bug` issues (`gh issue list --label bug`). For web client work, also read `cmd/ox/web/AGENTS.md`. Read the sections of `docs/functional-requirements.md`, `docs/architecture.md`, `docs/protocol.md`, and `docs/harnesses/claude-code.md` that cover the code the change touches.
 
 ## Explore the code
 
