@@ -1,4 +1,3 @@
-import type { JSX } from "@solidjs/web";
 import { createSignal, Show } from "solid-js";
 import { AttachButton, createImageDrop, pasteImages, Thumbnails } from "./Attachments";
 import { newID } from "./id";
@@ -26,10 +25,9 @@ const locations = [
 
 export type Draft = ReturnType<typeof createDraft>;
 
-export function NewSessionView(props: { draft: Draft; onCreated(): void; toggles?: JSX.Element }) {
+export function NewSessionView(props: { draft: Draft; onCreated(): void }) {
   const ox = useOx();
   const draft = props.draft;
-  const workspace = () => ox.workspaces().find((w) => w.id === draft.workspaceId)?.path;
   // The prompt being created shows pending until the view moves to its session.
   const creating = () => {
     const prompt = draft.control.outgoing();
@@ -54,15 +52,6 @@ export function NewSessionView(props: { draft: Draft; onCreated(): void; toggles
   const drop = createImageDrop(draft.control, () => true);
   return (
     <>
-      <header class="context">
-        <div class="title">
-          <h1>New session</h1>
-          {props.toggles}
-        </div>
-        <p class="path">
-          <span class="directory">{workspace()}</span>
-        </p>
-      </header>
       <div
         class="log"
         role="log"

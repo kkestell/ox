@@ -2,11 +2,12 @@ import { createEffect, createSignal, For, Match, onSettled, Show, Switch } from 
 import { Disconnected } from "./connection";
 import { createDraft, type Draft, NewSessionView } from "./NewSessionView";
 import { OxProvider, type SessionControl, useOx } from "./ox";
-import { createPanels, PanelToggles, Sash, SessionsToggle } from "./Panels";
+import { createPanels, PanelToggle, Sash, SessionsToggle } from "./Panels";
 import type { FileRoot } from "./protocol";
 import { SessionView } from "./SessionView";
 import { Sidebar } from "./Sidebar";
-import { Workbench } from "./Workbench";
+import type { Chat } from "./TabArea";
+import { Workspace } from "./Workspace";
 
 export type Selection = { kind: "session"; id: string } | { kind: "draft"; workspaceId: string };
 
@@ -82,8 +83,9 @@ function Layout() {
     return s?.kind === "draft" ? liveDrafts().find((d) => d.workspaceId === s.workspaceId) : undefined;
   };
 
-  // The workbench shows the selected session's directory, or a draft's
-  // workspace, with that session's or draft's open file and expanded folders.
+  // The tab area and the panel at the right show the selected session's
+  // directory, or a draft's workspace, with that session's or draft's tabs and
+  // expanded folders.
   const files = (): { root: FileRoot; control: SessionControl } | undefined => {
     const current = session();
     if (current) return { root: { session_id: current.id }, control: ox.control(current.id) };
@@ -97,19 +99,48 @@ function Layout() {
   const panels = createPanels(selectionFromHash() ? undefined : "sessions");
   // Whether the file view wraps long lines, for every file until reload.
   const [wrap, setWrap] = createSignal(false);
-  // The workbench, when it shows.
-  const workbench = () => (panels.mode() ? files() : undefined);
-  // Panel widths and the split apply only to the wide layout's side-by-side
-  // panels.
+  // Panel widths apply only to the wide layout's side-by-side panels.
   const width = (pixels: number) => (panels.narrow() ? undefined : pixels);
-  const Toggles = () => <PanelToggles panels={panels} workbench={files() !== undefined} />;
-  // The title row of a view that has no header of its own.
-  const BareHeader = () => (
-    <header class="context">
-      <div class="title">
-        <Toggles />
+  // The chat tab: the selected session's transcript and composer, or the
+  // draft's.
+  const chat: Chat = {
+    label: () => session()?.label ?? (draft() ? "New session" : ""),
+    title: () => session()?.directory ?? ox.workspaces().find((w) => w.id === draft()?.workspaceId)?.path,
+    view: () => (
+      // Keyed, so each session and draft gets its own view and view state.
+      <Switch>
+        <Match when={session()} keyed>
+          {(session) => (
+            <Show
+              when={session.load.snapshot}
+              fallback={
+                <p role="status" class="loading">
+                  Loading session…
+                </p>
+              }
+            >
+              {(snapshot) => <SessionView session={session} snapshot={snapshot()} />}
+            </Show>
+          )}
+        </Match>
+        <Match when={draft()} keyed>
+          {(current) => <NewSessionView draft={current} onCreated={() => finish(current)} />}
+        </Match>
+      </Switch>
+    ),
+  };
+  // With nothing selected, one bare strip carries both toggles.
+  const BareStrip = () => (
+    <section class="group">
+      <div class="strip bare">
+        <Show when={!panels.sessions()}>
+          <SessionsToggle panels={panels} />
+        </Show>
+        <div class="editor-actions">
+          <PanelToggle panels={panels} />
+        </div>
       </div>
-    </header>
+    </section>
   );
 
   const finish = (created: Draft) => {
@@ -142,7 +173,7 @@ function Layout() {
         hidden={!panels.sessions()}
         toggle={<SessionsToggle panels={panels} />}
       />
-      <Show when={panels.narrow() && (panels.sessions() || panels.treeDrawer())}>
+      <Show when={panels.narrow() && (panels.sessions() || panels.right())}>
         {/* biome-ignore lint/a11y/noStaticElementInteractions: a tap outside the drawer closes it; the header's toggles close it from the keyboard. */}
         <div class="scrim" onClick={() => panels.dismiss()} />
       </Show>
@@ -179,45 +210,19 @@ function Layout() {
             </p>
           )}
         </For>
-        <div class="panes" style={{ "--split": files()?.control.split() }}>
-          <main>
-            {/* Keyed, so each session and draft gets its own view and view state. */}
-            <Switch fallback={<BareHeader />}>
-              <Match when={session()} keyed>
-                {(session) => (
-                  <Show
-                    when={session.load.snapshot}
-                    fallback={
-                      <>
-                        <BareHeader />
-                        <p role="status" class="loading">
-                          Loading session…
-                        </p>
-                      </>
-                    }
-                  >
-                    {(snapshot) => <SessionView session={session} snapshot={snapshot()} toggles={<Toggles />} />}
-                  </Show>
-                )}
-              </Match>
-              <Match when={draft()} keyed>
-                {(current) => (
-                  <NewSessionView draft={current} onCreated={() => finish(current)} toggles={<Toggles />} />
-                )}
-              </Match>
-            </Switch>
-          </main>
-          {/* Keyed by selection, so the workbench reads beneath that
+        <div class="panes">
+          {/* Keyed by selection, so the tab area and panel read beneath that
               selection's root. */}
-          <Show when={selected()} keyed>
-            <Show when={workbench()}>
+          <Show when={selected()} keyed fallback={<BareStrip />}>
+            <Show when={files()} fallback={<BareStrip />}>
               {(current) => (
-                <Workbench
+                <Workspace
                   root={current().root}
                   control={current().control}
                   panels={panels}
                   wrap={wrap()}
                   onWrap={setWrap}
+                  chat={chat}
                 />
               )}
             </Show>

@@ -1575,7 +1575,7 @@ test("a session created in a worktree runs in it, under Ox's worktree directory"
   await prompt(page).fill("in a worktree");
   await send(page).click();
   await expect(heading(page)).toHaveText("in a worktree");
-  await expect(main(page).getByText(`${realpathSync(services.worktrees)}/`)).toBeVisible();
+  await expect(heading(page)).toHaveAccessibleDescription(new RegExp(`^${realpathSync(services.worktrees)}/`));
 });
 
 test("a failed worktree creation keeps the draft's text and its Worktree choice", async ({ ox: page }) => {
@@ -1801,12 +1801,12 @@ test("a child session shows its title, its directory, its files, and its parent'
     await sessionButton(page, "Helper child").click();
     await expect(heading(page)).toHaveText("Helper child");
     expect(sessionId(page)).toBe(child.session_id);
-    await expect(main(page).getByText(directory, { exact: true })).toBeVisible();
+    await expect(heading(page)).toHaveAccessibleDescription(directory);
     const message = transcript(page).getByRole("article", { name: "Message from child parent" });
     await expect(message).toHaveText("child parenthello child");
     await expect(message.getByRole("strong")).toHaveText("hello");
 
-    await page.getByRole("tab", { name: "Files", exact: true }).click();
+    await page.getByRole("button", { name: "Toggle panel" }).click();
     await expect(files.getByRole("button", { name: "child.txt", exact: true })).toBeVisible();
     await expect(files.getByRole("button", { name: "workspace.txt", exact: true })).toHaveCount(0);
     await files.getByRole("button", { name: "child.txt", exact: true }).click();

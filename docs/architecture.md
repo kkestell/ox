@@ -465,16 +465,17 @@ state, and socket under `.state`, serves on a free port, and prints the URL.
 
 ### Client modules
 
-| File                                                                                                                                                                                                                                               | Owns                                                                                                                                                                                                                                                                                          |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `protocol.ts`                                                                                                                                                                                                                                      | Types for `oxd` methods, updates, and notifications.                                                                                                                                                                                                                                          |
-| `connection.ts`                                                                                                                                                                                                                                    | Opening and reopening `/events`, sending `/rpc` requests, matching replies, and reporting stream errors.                                                                                                                                                                                      |
-| `ox.tsx`                                                                                                                                                                                                                                           | Provider that reloads catalog, workspaces, and sessions on each connection (updating loaded sessions in place), applies notifications, exposes RPC calls, tracks list actions in flight, owns per-session controls, and provides `createAttempt`.                                             |
-| `poll.ts`                                                                                                                                                                                                                                          | Repeating a request on each tick of the provider's clock while the page is connected, at most one in flight at a time.                                                                                                                                                                        |
-| `highlight.ts`                                                                                                                                                                                                                                     | Syntax highlighting: registered languages and file-name matching, and diff rows with line numbers.                                                                                                                                                                                            |
-| `diff.ts`                                                                                                                                                                                                                                          | Diff line counts, the whole-file diff, and changed files' and folders' statuses.                                                                                                                                                                                                              |
-| `toolInput.ts`                                                                                                                                                                                                                                     | Readers of Claude tool calls: label, subject, `ExitPlanMode` plan, `AskUserQuestion` questions, and JSON input.                                                                                                                                                                               |
-| `App.tsx`, `Panels.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `NewSessionView.tsx`, `Attachments.tsx`, `Workbench.tsx`, `FileTree.tsx`, `FileView.tsx`, `Changes.tsx`, `ApprovalRequest.tsx`, `SettingsFields.tsx`, `HarnessIcon.tsx`, `Markdown.tsx` | UI components. `Layout` in `App.tsx`, through `createPanels`, owns the session list's visibility, the workbench's mode (one each for the wide layout and the narrow layout, `< 768 px`), the panel widths, the open drawer (narrow layout), and file view word wrap for the life of the page. |
+| File                                                                                                                                                                                                                                                                               | Owns                                                                                                                                                                                                                                                                                        |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `protocol.ts`                                                                                                                                                                                                                                                                      | Types for `oxd` methods, updates, and notifications.                                                                                                                                                                                                                                        |
+| `connection.ts`                                                                                                                                                                                                                                                                    | Opening and reopening `/events`, sending `/rpc` requests, matching replies, and reporting stream errors.                                                                                                                                                                                    |
+| `ox.tsx`                                                                                                                                                                                                                                                                           | Provider that reloads catalog, workspaces, and sessions on each connection (updating loaded sessions in place), applies notifications, exposes RPC calls, tracks list actions in flight, owns per-session controls, and provides `createAttempt`.                                           |
+| `poll.ts`                                                                                                                                                                                                                                                                          | Repeating a request on each tick of the provider's clock while the page is connected, at most one in flight at a time.                                                                                                                                                                      |
+| `highlight.ts`                                                                                                                                                                                                                                                                     | Syntax highlighting: registered languages and file-name matching, and diff rows with line numbers.                                                                                                                                                                                          |
+| `diff.ts`                                                                                                                                                                                                                                                                          | Diff line counts, and changed files' and folders' statuses.                                                                                                                                                                                                                                 |
+| `tabs.ts`, `drag.ts`                                                                                                                                                                                                                                                               | The tab layout as one value: tabs, groups, splits, and the operations on them (open, close, move, split by edge drop, sizes), and the drop zone of a pointer; the data types a drag carries.                                                                                                |
+| `toolInput.ts`                                                                                                                                                                                                                                                                     | Readers of Claude tool calls: label, subject, `ExitPlanMode` plan, `AskUserQuestion` questions, and JSON input.                                                                                                                                                                             |
+| `App.tsx`, `Panels.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `NewSessionView.tsx`, `Attachments.tsx`, `Workspace.tsx`, `TabArea.tsx`, `TabPicker.tsx`, `FileTree.tsx`, `FileView.tsx`, `Changes.tsx`, `ApprovalRequest.tsx`, `SettingsFields.tsx`, `HarnessIcon.tsx`, `Markdown.tsx` | UI components. `Layout` in `App.tsx`, through `createPanels`, owns the session list's and the right panel's visibility (wide layout), the panel's mode (files or changes), the panel widths, the open drawer (narrow layout, `< 768 px`), and file view word wrap for the life of the page. |
 
 ### Connection and reload
 
@@ -495,9 +496,9 @@ state, and socket under `.state`, serves on a free port, and prints the URL.
 
 - **Session control:** Outlives the session's view and reconnects. Owns composer
   text and attached images, each pending approval's unsent answers, expanded
-  folders, open file and its chosen mode, transcript/workbench split, and
-  in-flight requests (creation, sends, configuration, interrupts, approvals, and
-  their errors).
+  folders, the tab layout (tabs, groups, splits, and their sizes), and in-flight
+  requests (creation, sends, configuration, interrupts, approvals, and their
+  errors).
   - Applies actions optimistically until `oxd` answers: a sent prompt clears the
     composer and shows pending under the page's ID; Stop hides; an approval
     being answered disappears and returns with its answers if refused. A refusal
@@ -518,18 +519,30 @@ state, and socket under `.state`, serves on a free port, and prints the URL.
   and lets the user decide when to send. A failed creation in another view links
   back to the draft.
 
-### Workbench
+### Tab area and right panel
 
+- **Tab layout:** `SessionControl` owns one `Layout` value (`tabs.ts`): groups
+  of tabs in splits, the focused group, and each split's sizes. The chat tab is
+  in every layout and is never closed; a tab is in one group; an emptied group
+  is removed. The tab area reads it; operations return a new layout. Dragging is
+  HTML5 drag and drop onto a group's strip, middle, or edge; the drop zone under
+  the pointer is the tab area's own signal, cleared when the drag ends.
+- **Chat tab:** Its view stays mounted while another tab of its group shows, so
+  the transcript keeps its scroll position. File and Changes tabs mount while
+  active. The narrow layout shows the focused group's active tab under a bar
+  with a tab picker, and no splits.
+- **Workspace:** Keyed by selection, it creates the selection's listing and
+  shows the tab area with the right panel, which lists the file tree or the
+  changes.
 - **File tree:** Lists the selected session's directory (or draft's workspace)
   and each expanded folder present in its parent's latest listing via
-  [`workspace/list_folder`](protocol.md#workspacelist_folder). Keyed by the
-  selection so each session or draft mounts its own tree. Polls on mount and
-  once per second while visible and connected, one request in flight per folder.
-- **File viewer:** Reads the open file via
+  [`workspace/list_folder`](protocol.md#workspacelist_folder). Polls on mount
+  and once per second while visible and connected, one request in flight per
+  folder. A file row can be dragged into the tab area.
+- **File viewer:** Reads a file tab's file via
   [`workspace/read_file`](protocol.md#workspaceread_file) on the same 1-second
-  clock, keyed by selection and path so rendered text always matches the open
-  file. Its diff reads the listing's hunks for its file.
-- **Changes:** While the workbench shows, in either mode, it polls
+  clock, keyed by selection and path so rendered text always matches the file.
+- **Changes:** While the selection shows, it polls
   [`workspace/list_changes`](protocol.md#workspacelist_changes) once per
-  selection on the same 1-second clock, for the tree's statuses, the branch
-  summary, the open file's diff, and the changes view.
+  selection on the same 1-second clock, for the tree's statuses, the Changes
+  tab's counts, the Changes list, and the Changes view.

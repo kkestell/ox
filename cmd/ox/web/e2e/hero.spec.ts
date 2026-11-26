@@ -166,7 +166,7 @@ test("hero", async ({ browser, services }) => {
     const desktop = await browser.newContext({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 2 });
     const page = await desktop.newPage();
     await page.goto(`${services.url}/#${ids.get(scene.desktop.session)}`);
-    await page.getByRole("tab", { name: "Files", exact: true }).click();
+    await page.getByRole("button", { name: "Toggle panel" }).click();
     const files = page.getByRole("complementary", { name: "Files" });
     for (const workspace of workspaces.filter((w) => w.sessions.some((s) => s.archived))) {
       await menuItem(await openMenu(workspaceSection(page, workspace.path)), "Show archived").click();

@@ -46,7 +46,7 @@ p { overflow-wrap: break-word; }
   --shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 10%), 0 1px 2px -1px rgb(0 0 0 / 10%);
   --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 10%), 0 2px 4px -2px rgb(0 0 0 / 10%);
   --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 10%), 0 4px 6px -4px rgb(0 0 0 / 10%);
-  /* The session header's title row, which the file tree and viewer headers match. */
+  /* The height of the tab strips and of the headers beside them. */
   --context-title: 2.75rem;
 }
 
@@ -69,7 +69,7 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: 
 *:hover { scrollbar-color: color-mix(in oklab, var(--muted-foreground) 50%, transparent) transparent; }
 :focus-visible { outline: 3px solid color-mix(in oklab, var(--ring) 50%, transparent); outline-offset: 0; }
 
-.icon::before, .marker::before, .context .path::before {
+.icon::before, .marker::before {
   content: ""; display: block; flex: none; width: 1rem; height: 1rem;
   background: currentColor; mask: var(--icon) center / contain no-repeat;
 }
@@ -80,12 +80,13 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: 
 .send { --icon: url(lucide-static/icons/send.svg); }
 .stop { --icon: url(lucide-static/icons/square.svg); }
 .arrow-down { --icon: url(lucide-static/icons/arrow-down.svg); }
-.context .path { --icon: url(lucide-static/icons/folder.svg); }
 .chevron-down { --icon: url(lucide-static/icons/chevron-down.svg); }
 .chevron-right { --icon: url(lucide-static/icons/chevron-right.svg); }
 .folder { --icon: url(lucide-static/icons/folder.svg); }
 .folder-open { --icon: url(lucide-static/icons/folder-open.svg); }
 .file { --icon: url(lucide-static/icons/file.svg); }
+.message-square { --icon: url(lucide-static/icons/message-square.svg); }
+.chevrons-up-down { --icon: url(lucide-static/icons/chevrons-up-down.svg); }
 .x { --icon: url(lucide-static/icons/x.svg); }
 .paperclip { --icon: url(lucide-static/icons/paperclip.svg); }
 .wrap-text { --icon: url(lucide-static/icons/wrap-text.svg); }
@@ -93,10 +94,7 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: 
 .panel-left { --icon: url(lucide-static/icons/panel-left.svg); }
 .panel-right { --icon: url(lucide-static/icons/panel-right.svg); }
 .git-branch { --icon: url(lucide-static/icons/git-branch.svg); }
-.git-compare { --icon: url(lucide-static/icons/git-compare.svg); }
 .code { --icon: url(lucide-static/icons/code.svg); }
-.folder-tree { --icon: url(lucide-static/icons/folder-tree.svg); }
-.icon.files { --icon: url(lucide-static/icons/files.svg); }
 .file-diff { --icon: url(lucide-static/icons/file-diff.svg); }
 .square-arrow-out-up-right { --icon: url(lucide-static/icons/square-arrow-out-up-right.svg); }
 .search-icon { --icon: url(lucide-static/icons/search.svg); }
@@ -160,14 +158,12 @@ dialog .description { width: 100%; margin-bottom: 0.5rem; color: var(--muted-for
 dialog [role="alert"] { margin-top: 0.75rem; }
 
 /* Sidebar */
-/* The session list: workspaces scroll between a header and a footer as tall as
-   the session header's title row. */
+/* The session list: workspaces scroll under a header as tall as a tab strip. */
 nav { --row: 2rem; flex: none; min-width: 160px; max-width: 640px; height: 100%; display: flex; flex-direction: column; background: var(--sidebar); border-right: 1px solid var(--border); }
-nav > .bar { flex: none; display: flex; align-items: center; height: var(--context-title); padding: 0 var(--inset); color: var(--text); }
-nav > div.bar { justify-content: flex-end; border-bottom: 1px solid var(--border); }
-nav > div.bar > button { margin-right: -0.375rem; }
-nav > footer.bar { height: calc(var(--context-title) + var(--bottom-inset)); padding-bottom: var(--bottom-inset); border-top: 1px solid var(--border); }
-nav > footer.bar > button { margin-left: -0.375rem; }
+nav > .bar { flex: none; display: flex; align-items: center; justify-content: space-between; height: var(--context-title); padding: 0 var(--inset); border-bottom: 1px solid var(--border); color: var(--text); }
+nav > .bar > :first-child { margin-left: -0.375rem; }
+nav > .bar > :last-child { margin-right: -0.375rem; }
+nav > .bar > button[aria-pressed="false"] { color: var(--muted-foreground); }
 nav .workspaces { flex: 1; min-height: 0; overflow-y: auto; padding: 0.5rem; }
 nav .workspaces > section { flex: none; }
 nav header { position: relative; display: flex; align-items: center; height: var(--row); padding: 0 0 0 0.5rem; border-radius: var(--radius-md); font-size: 11px; text-transform: uppercase; color: var(--muted-foreground); --row-background: var(--sidebar); background: var(--row-background); }
@@ -246,23 +242,74 @@ nav[hidden] { display: none; }
 .status.running, .marker.running { animation: breathe 1s ease-in-out infinite alternate; }
 @keyframes breathe { from { color: #16a34a; } to { color: #4ade80; } }
 
-/* The space the transcript, the workbench, and the file tree share. The
-   session list leaves it the transcript's minimum width beside the tree.
-   --tree is the file tree's width, and --beside the width the tree takes. */
+/* The space the tab area and the panel at the right share. The session list
+   leaves it the minimum width of a group beside the panel. --tree is the
+   panel's width, and --beside the width the panel takes. */
 .center { --beside: 0px; flex: 1 1 0; min-width: calc(240px + var(--beside)); height: 100%; display: flex; flex-direction: column; container-type: size; }
 .layout:not(.narrow) > .center:has(> .panes > aside.files) { --beside: clamp(160px, var(--tree), 640px); }
 .panes { flex: 1 1 0; min-height: 0; display: flex; }
+.center > :is([role="alert"], [role="status"]) { flex: none; padding: 0.5rem var(--inset); font-size: 0.75rem; background: var(--pane); }
+
+/* Tab area: groups of tabs in splits, after VS Code's editor groups. A group's
+   strip is as tall as the session list's header and the panel's. */
+.tab-area, .split { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; }
+.split.column { flex-direction: column; }
+.cell { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; }
+.cell > :is(.group, .split) { flex: 1 1 0; }
+.split.row > .cell { min-width: 240px; }
+.split.column > .cell { min-height: 8rem; }
+.split.row > .sash + .cell { border-left: 1px solid var(--border); }
+.split.column > .sash + .cell { border-top: 1px solid var(--border); }
+.group { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--pane); }
+.group-body { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.strip { flex: none; display: flex; align-items: center; gap: 0.25rem; height: var(--context-title); padding: 0 0.5rem; border-bottom: 1px solid var(--border); color: var(--text); }
+.strip.dropping { background: var(--accent); }
+.strip > button.icon { margin-right: 0.25rem; }
+.tabs { flex: 0 1 auto; min-width: 0; height: 100%; display: flex; align-items: stretch; overflow-x: auto; scrollbar-width: none; }
+.tab { flex: none; max-width: 16rem; display: flex; align-items: center; gap: 0.125rem; padding: 0 0.25rem 0 0.5rem; }
+.tab.active { box-shadow: inset 0 -2px 0 var(--border); }
+.group.focused .tab.active { box-shadow: inset 0 -2px 0 var(--foreground); }
+.tab [role="tab"] {
+  min-width: 0; height: 100%; padding: 0; gap: 0.5rem; border: 0; background: transparent; box-shadow: none;
+  font-size: 0.8125rem; font-weight: 400; color: var(--muted-foreground); cursor: default;
+}
+.tab [role="tab"]:hover { background: transparent; }
+.tab.active [role="tab"] { color: var(--foreground); }
+.tab .label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tab button.x { width: 1.25rem; height: 1.25rem; color: var(--muted-foreground); }
+.tab button.x::before { width: 0.75rem; height: 0.75rem; }
+.tab .counts { margin-left: 0.125rem; }
+.strip .editor-actions { flex: none; display: flex; align-items: center; gap: 0.25rem; margin-left: auto; margin-right: -0.125rem; color: var(--text); }
+.strip.bare .editor-actions { margin-left: auto; }
+/* A drag over a group shades the half or the whole of it that the drop takes. */
+.drop-preview { position: absolute; z-index: 2; pointer-events: none; border: 1px solid var(--ring); background: color-mix(in oklab, var(--ring) 25%, transparent); }
+.drop-preview.center { inset: 0; }
+.drop-preview.left { inset: 0 50% 0 0; }
+.drop-preview.right { inset: 0 0 0 50%; }
+.drop-preview.top { inset: 0 0 50% 0; }
+.drop-preview.bottom { inset: 50% 0 0 0; }
+
+/* The narrow layout's strip: the picker shows the active tab and opens the menu of all of them. */
+.strip.phone { padding: 0 0.5rem; }
+.tab-picker { flex: 1; min-width: 0; gap: 0.5rem; border: 0; background: transparent; box-shadow: none; font-weight: 500; color: var(--foreground); }
+.tab-picker:hover { background: var(--accent); }
+.tab-picker .label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tab-picker .chevrons-up-down { color: var(--muted-foreground); }
+.tab-menu { position-area: bottom; position-try-fallbacks: flip-block; margin: 4px 0 0; width: min(20rem, calc(100vw - 2rem)); }
+.tab-menu .item { display: flex; align-items: center; gap: 0.25rem; }
+.tab-menu [role="menuitemradio"] {
+  flex: 1; min-width: 0; height: 2.5rem; padding: 0 0.5rem; justify-content: flex-start; gap: 0.5rem;
+  border: 0; background: transparent; box-shadow: none; font-weight: 400;
+}
+.tab-menu [role="menuitemradio"]:hover { background: var(--accent); }
+.tab-menu [role="menuitemradio"] .label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tab-menu [aria-checked="true"]::after { content: ""; width: 1rem; height: 1rem; margin-left: auto; background: currentColor; mask: url(lucide-static/icons/check.svg) center / contain no-repeat; }
+.tab-menu button.x { color: var(--muted-foreground); }
 
 /* Session */
-main { flex: 1 1 0; min-width: 240px; display: flex; flex-direction: column; background: var(--pane); }
-.center > :is([role="alert"], [role="status"]) { flex: none; padding: 0.5rem var(--inset); font-size: 0.75rem; background: var(--pane); }
-.context { flex: none; }
+main { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+main[hidden] { display: none; }
 main > .loading { flex: 1; display: flex; align-items: center; justify-content: center; }
-.context > * { display: flex; align-items: center; padding: 0 var(--inset); border-bottom: 1px solid var(--border); }
-.context .title { height: var(--context-title); }
-.context h1 { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 1em; font-weight: 600; color: var(--foreground); }
-.context .path { gap: 0.5rem; height: 2.25rem; font-size: 0.8125rem; color: var(--muted-foreground); }
-.context .directory { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 /* Zero scroll offset follows the bottom through content and viewport changes.
    After scrolling up, native scroll anchoring keeps the visible content in view. */
 .log-frame { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
@@ -469,8 +516,10 @@ details.tool pre + pre { border-top: 1px solid var(--border); }
    file's or folder's name takes its Git status's color, as in VS Code's
    explorer. */
 aside.files { flex: none; width: clamp(160px, var(--tree), 640px); min-width: 160px; max-width: 640px; height: 100%; display: flex; flex-direction: column; background: var(--pane); border-left: 1px solid var(--border); }
-/* Matches the session header's title row. */
-.files > header { flex: none; display: flex; align-items: center; gap: 0.5rem; height: var(--context-title); padding: 0 var(--inset); border-bottom: 1px solid var(--border); }
+.files > header { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; height: var(--context-title); padding: 0 0.5rem 0 var(--inset); border-bottom: 1px solid var(--border); }
+.files > header > button.panel-right { margin-right: 0.125rem; color: var(--text); }
+.files > header > button.panel-right[aria-pressed="false"] { color: var(--muted-foreground); }
+.files > header .toggle-group button { height: 1.5rem; padding: 0 0.625rem; border: 0; background: transparent; box-shadow: none; font-size: 0.75rem; }
 aside.files .tree { flex: 1; min-height: 0; overflow-y: auto; padding: 0.5rem 0.5rem calc(0.5rem + var(--bottom-inset)); }
 aside.files ul { list-style: none; }
 aside.files .row {
@@ -490,6 +539,11 @@ aside.files .row[data-status="added"] .name { color: var(--added); }
 aside.files .row[data-status="deleted"] .name { color: var(--destructive); }
 aside.files .chevron-right.open::before, .hunk .chevron-right.open::before { transform: rotate(90deg); }
 
+/* The Changes list: a summary row, then a row per changed file. */
+aside.files .row.summary { height: 2rem; margin-bottom: 0.25rem; padding-left: 0.5rem; }
+aside.files .change-row { gap: 0.5rem; padding-left: 0.5rem; }
+aside.files .change-row .folder { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 0.75rem; color: var(--muted-foreground); }
+
 /* The branch and the lines the changes add and remove, as the file tree's title. */
 .branch-summary { flex: 1; min-width: 0; display: flex; align-items: center; gap: 0.375rem; color: var(--muted-foreground); }
 .branch-summary .branch { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 0.75rem; font-family: var(--font-mono); color: var(--text); }
@@ -501,54 +555,21 @@ aside.files .chevron-right.open::before, .hunk .chevron-right.open::before { tra
 
 /* Panel toggles, after VS Code's layout controls: a shown panel's toggle is in
    full color, a hidden one's dimmed. */
-.panel-toggles { display: contents; color: var(--text); }
-.panel-toggles .panel-left { order: -1; margin: 0 0.5rem 0 -0.375rem; }
-.panel-toggles .mode-tabs { margin-left: auto; }
-.panel-toggles button[aria-pressed="false"] { color: var(--muted-foreground); }
+button.panel-left[aria-pressed="false"], button.panel-right[aria-pressed="false"] { color: var(--muted-foreground); }
 
-/* Sash: a zero-width column between two others, after VS Code's, with a 4px
+/* Sash: a zero-width bar between two panels, after VS Code's, with a 4px
    hit area on the boundary that shows after a short hover and while dragging. */
 .sash { flex: none; position: relative; z-index: 1; width: 0; overflow: visible; border: 0; }
 .sash::before { content: ""; position: absolute; inset: 0 -2px; cursor: col-resize; transition: background-color 0.1s ease-out; }
 .sash:hover::before { background: var(--ring); transition-delay: 0.3s; }
 .sash.resizing::before { background: var(--ring); transition-delay: 0s; }
+.sash.horizontal { width: auto; height: 0; }
+.sash.horizontal::before { inset: -2px 0; cursor: row-resize; }
 :root:has(.sash.resizing), :root:has(.sash.resizing) * { cursor: col-resize; user-select: none; }
+:root:has(.sash.horizontal.resizing), :root:has(.sash.horizontal.resizing) * { cursor: row-resize; }
 
-/* Workbench: beside the transcript, a file beside the file tree, or the
-   changes, under a header as tall as the session header's title row. */
-.viewer { flex: 1 1 0; display: flex; flex-direction: column; background: var(--pane); border-left: 1px solid var(--border); }
-.viewer > header {
-  flex: none; display: flex; align-items: center; gap: 0.5rem; height: var(--context-title);
-  padding: 0 var(--inset); border-bottom: 1px solid var(--border);
-}
-/* The transcript and the open file or the changes split the width beside the
-   file tree by --split, the transcript's share, each getting at least 240px,
-   or half that width when it has less than 480px. */
-main:has(~ .viewer), .viewer { min-width: min(240px, calc((100cqi - var(--beside)) / 2)); }
-main:has(~ .viewer) { flex-grow: var(--split); }
-.viewer { flex-grow: calc(1 - var(--split)); }
-/* The open file's bar under the header, as tall as the session header's path
-   row, with the file's tab and its modes, as VS Code's single editor tab. */
-.viewer > .file-bar {
-  flex: none; display: flex; align-items: center; gap: 0.5rem; height: 2.25rem;
-  padding: 0 var(--inset); border-bottom: 1px solid var(--border);
-}
-.file-tabs { display: flex; align-items: center; min-width: 0; }
-.file-tabs .tab { display: flex; align-items: center; min-width: 0; gap: 0.125rem; }
-.file-tabs [role="tab"] {
-  min-width: 0; height: 1.5rem; padding: 0; gap: 0.5rem;
-  border: 0; background: transparent; box-shadow: none;
-  font-size: 0.8125rem; font-weight: 400; color: var(--muted-foreground); cursor: default;
-}
-.file-tabs [role="tab"] > :last-child { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.file-tabs button.x { width: 1.5rem; height: 1.5rem; color: var(--muted-foreground); }
-.file-tabs button.x::before { width: 0.75rem; height: 0.75rem; }
-/* The workbench's toggle starts its header, its glyph on the header's inset,
-   as the session list's ends the list's header. */
-:is(.viewer, .files) > header > button.panel-right { flex: none; margin-left: -0.375rem; color: var(--text); }
-/* The editor actions sit at the right end of the header and the file's bar, as
-   in VS Code. */
-.viewer .editor-actions { flex: none; display: flex; align-items: center; gap: 0.25rem; margin-left: auto; margin-right: -0.375rem; color: var(--text); }
+/* A file or the changes fill their tab's body. */
+.viewer { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; background: var(--pane); }
 /* Toggles, as shadcn/ui's Toggle and Toggle Group: borderless icon buttons, dimmed
    while off and on a filled background while on. */
 .toggle-group { display: inline-flex; gap: 0.125rem; min-inline-size: auto; margin: 0; padding: 0; border: 0; }
@@ -572,8 +593,9 @@ main:has(~ .viewer) { flex-grow: var(--split); }
   padding: 0 1rem 0 0.75rem; text-indent: 0; text-align: right; color: var(--muted-foreground); background: var(--pane);
   box-shadow: -1px 0 var(--pane);
 }
-.viewer pre.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+.viewer pre.wrap, .hunk pre.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
 .viewer pre.wrap code { width: auto; }
+.hunk pre.wrap code { width: auto; }
 .viewer .preview { flex: 1; min-height: 0; overflow: auto; padding: 0.75rem 1rem calc(0.75rem + var(--bottom-inset)); font-size: 0.875rem; color: var(--foreground); }
 
 /* Shiki gives font styles of dual themes only as these variables; both GitHub themes share them. */
@@ -581,8 +603,7 @@ main:has(~ .viewer) { flex-grow: var(--split); }
 
 /* Changes: a card per file, after GitHub's pull request files, each hunk under
    a header that collapses it. Added lines and counts are green, removed red.
-   Line numbers are generated content in a sticky gutter, as the viewer's. A
-   file's changes in place in the file view take the same lines. */
+   Line numbers are generated content in a sticky gutter, as the viewer's. */
 .viewer .changes { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 0.75rem; padding: 0.75rem 0.75rem calc(0.75rem + var(--bottom-inset)); }
 .changes .message { padding: 0 0.25rem; font-size: 0.75rem; color: var(--muted-foreground); overflow-wrap: anywhere; }
 .change { flex: none; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--pane); overflow: hidden; }
@@ -600,20 +621,18 @@ main:has(~ .viewer) { flex-grow: var(--split); }
 }
 .hunk > button:hover { background: var(--accent); }
 .hunk pre { overflow-x: auto; font-size: 0.75rem; color: var(--foreground); white-space: pre; }
-:is(.hunk, .viewer pre.diff) code { --gutter: calc(0.75rem + var(--digits) * 1ch + 0.75rem); display: block; width: max-content; min-width: 100%; }
-.viewer pre.wrap.diff code { width: auto; }
-:is(.hunk, .viewer pre.diff) .line { display: block; min-height: 1lh; padding-left: var(--gutter); text-indent: calc(-1 * var(--gutter)); text-decoration: none; }
-:is(.hunk, .viewer pre.diff) .line::before {
+.hunk code { --gutter: calc(0.75rem + var(--digits) * 1ch + 0.75rem); display: block; width: max-content; min-width: 100%; }
+.hunk .line { display: block; min-height: 1lh; padding-left: var(--gutter); text-indent: calc(-1 * var(--gutter)); text-decoration: none; }
+.hunk .line::before {
   content: attr(data-line); position: sticky; left: 0; display: inline-block; width: var(--gutter);
   padding: 0 0.75rem 0 0.75rem; text-indent: 0; text-align: right; color: var(--muted-foreground); background: var(--line-background, var(--pane));
 }
-:is(.hunk, .viewer pre.diff) ins.line { --line-background: color-mix(in oklab, var(--added) 15%, var(--pane)); background: var(--line-background); }
-:is(.hunk, .viewer pre.diff) del.line { --line-background: color-mix(in oklab, var(--destructive) 15%, var(--pane)); background: var(--line-background); }
+.hunk ins.line { --line-background: color-mix(in oklab, var(--added) 15%, var(--pane)); background: var(--line-background); }
+.hunk del.line { --line-background: color-mix(in oklab, var(--destructive) 15%, var(--pane)); background: var(--line-background); }
 
-/* Narrow screens show one pane at a time, as the ChatGPT and Claude mobile web
-   apps do: the session list and the file tree are drawers over a dimmed page,
-   opened from the header's ends, and the workbench takes the transcript's
-   place. */
+/* Narrow screens show one tab at a time, as the ChatGPT and Claude mobile web
+   apps do: the session list and the right panel are drawers over a dimmed
+   page, opened from the strip's ends. */
 .narrow nav, .narrow aside.files.drawer {
   position: absolute; top: 0; bottom: 0; z-index: 3; width: min(18rem, 85vw); height: auto;
   padding-top: env(safe-area-inset-top); box-shadow: var(--shadow-lg); transition: translate 0.2s, visibility 0.2s;
@@ -622,12 +641,8 @@ main:has(~ .viewer) { flex-grow: var(--split); }
 .narrow nav[hidden] { display: flex; visibility: hidden; translate: -100% 0; }
 .narrow aside.files.drawer { right: 0; padding-right: env(safe-area-inset-right); }
 @starting-style { .narrow aside.files.drawer { translate: 100% 0; } }
-.narrow aside.files:not(.drawer) { flex: 1; max-width: none; border-left: 0; }
 .scrim { position: absolute; inset: 0; z-index: 2; background: rgb(0 0 0 / 50%); transition: opacity 0.2s; }
 @starting-style { .scrim { opacity: 0; } }
-.narrow main:has(~ :is(.viewer, aside.files:not(.drawer))) { display: none; }
-.narrow .viewer { flex-grow: 1; border-left: 0; }
-.narrow .viewer > header { padding-left: var(--inset); }
 .narrow .sash { display: none; }
 
 /* Touch screens: rows tall enough to tap, row buttons that show without hover,
@@ -646,6 +661,6 @@ main:has(~ .viewer) { flex-grow: var(--split); }
   textarea, select, input:not([type="radio"], [type="checkbox"], [type="range"]) { font-size: 17px; }
   .composer .settings > :is(button.picker, button.usage), .composer .select { height: 2rem; font-size: 15px; }
   .composer .select select { font-size: inherit; }
-  .context .path, .file-tabs [role="tab"], .markdown code { font-size: 15px; }
+  .tab [role="tab"], .markdown code { font-size: 15px; }
   .markdown pre, details.tool :is(.detail, pre) { font-size: 14px; }
 }

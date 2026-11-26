@@ -63,7 +63,8 @@ export async function openModelPicker(page: Page) {
   await expect(page.getByRole("combobox", { name: "Search models" })).toBeFocused();
 }
 export const permissionMode = (page: Page) => page.getByRole("combobox", { name: "Permission mode" });
-export const heading = (page: Page) => page.getByRole("main").getByRole("heading", { level: 1 });
+// heading is the chat tab, which is labeled with the session's title.
+export const heading = (page: Page) => page.getByRole("tab").first();
 
 export const transcript = (page: Page) => page.getByRole("log", { name: "Transcript" });
 // prompts holds the transcript's prompts, pending ones included.

@@ -56,7 +56,7 @@ Use `make dev` to work on the [web client](../../../docs/architecture.md#web-ui)
   `hero.spec.ts` plays `docs/screenshots/hero.json` and captures the README's
   screenshots in `docs/images`; it runs with `make screenshots`.
   `make test` runs the Node suites `highlight.test.mjs`, `stack.test.mjs`,
-  `toolInput.test.mjs`, and `diff.test.mjs` with `node:test`.
+  `toolInput.test.mjs`, `diff.test.mjs`, and `tabs.test.mjs` with `node:test`.
 
 ## Solid 2.0
 

@@ -1,5 +1,4 @@
-import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, For, Match, Show, Switch, untrack } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Match, Show, Switch, untrack } from "solid-js";
 import { counts, fileCounts, statuses } from "./diff";
 import { rowsHtml } from "./highlight";
 import { useOx } from "./ox";
@@ -78,33 +77,77 @@ export function BranchSummary(props: { listing: Listing }) {
   );
 }
 
+// ChangesList lists each changed file under a summary row with the branch and
+// totals, or why the changes cannot be listed. The summary row opens the
+// Changes tab, and a file's row opens it at that file.
+export function ChangesList(props: { listing: Listing; onOpen(path?: string): void }) {
+  return (
+    <div class="tree">
+      <button type="button" class="row summary" onClick={() => props.onOpen()}>
+        <BranchSummary listing={props.listing} />
+      </button>
+      <Show when={props.listing.changes()}>
+        {(current) => (
+          <ul>
+            <For each={current().files} keyed={(file) => file.path}>
+              {(file) => {
+                const path = () => file().path;
+                const name = () => path().slice(path().lastIndexOf("/") + 1);
+                const folder = () => path().slice(0, Math.max(0, path().lastIndexOf("/")));
+                return (
+                  <li>
+                    <button
+                      type="button"
+                      class="row change-row"
+                      title={path()}
+                      data-status={file().status}
+                      onClick={() => props.onOpen(path())}
+                    >
+                      <span class="name">{name()}</span>
+                      <Show when={folder()}>
+                        <span class="folder">{folder()}</span>
+                      </Show>
+                    </button>
+                  </li>
+                );
+              }}
+            </For>
+          </ul>
+        )}
+      </Show>
+    </div>
+  );
+}
+
 // ChangesView shows each changed file as a card after GitHub's pull request
-// files, under a header with the branch summary between start and end, or
-// why the changes cannot be listed.
+// files, or why the changes cannot be listed. It scrolls to the card of
+// reveal's path when reveal changes, and when it appears.
 export function ChangesView(props: {
   listing: Listing;
-  start: JSX.Element;
-  end?: JSX.Element;
+  wrap: boolean;
+  reveal?: { path: string };
   onOpen(path: string): void;
 }) {
+  let body!: HTMLDivElement;
+  createEffect(
+    () => props.reveal,
+    (reveal) => {
+      if (!reveal) return;
+      for (const card of body.querySelectorAll("article")) {
+        if (card.getAttribute("aria-label") === reveal.path) card.scrollIntoView({ block: "start" });
+      }
+    },
+  );
   return (
     <section class="viewer" aria-label="Changes">
-      <header>
-        {props.start}
-        {/* The body says why the changes cannot be listed. */}
-        <Show when={props.listing.changes()}>
-          <BranchSummary listing={props.listing} />
-        </Show>
-        <div class="editor-actions">{props.end}</div>
-      </header>
-      <div class="changes">
+      <div ref={body} class="changes">
         <Switch>
           <Match when={props.listing.error()}>{(message) => <p class="message">{message()}</p>}</Match>
           <Match when={props.listing.changes()}>
             {(current) => (
               <Show when={current().files.length > 0} fallback={<p class="message">No changes</p>}>
                 <For each={current().files} keyed={(file) => file.path}>
-                  {(file) => <FileCard file={file()} onOpen={(path) => props.onOpen(path)} />}
+                  {(file) => <FileCard file={file()} wrap={props.wrap} onOpen={(path) => props.onOpen(path)} />}
                 </For>
               </Show>
             )}
@@ -127,7 +170,7 @@ export function Counts(props: { added: number; removed: number }) {
 // FileCard shows one changed file: its name and folder, its counts, a button
 // that opens it in the file view unless it was deleted, and its hunks, or why
 // they cannot be shown.
-function FileCard(props: { file: ChangedFile; onOpen(path: string): void }) {
+function FileCard(props: { file: ChangedFile; wrap: boolean; onOpen(path: string): void }) {
   const name = () => props.file.path.slice(props.file.path.lastIndexOf("/") + 1);
   const folder = () => props.file.path.slice(0, Math.max(0, props.file.path.lastIndexOf("/")));
   const each = createMemo(() => fileCounts(props.file));
@@ -156,7 +199,7 @@ function FileCard(props: { file: ChangedFile; onOpen(path: string): void }) {
       <Show when={props.file.hunks} fallback={<p class="message">{props.file.reason}</p>}>
         {(hunks) => (
           <For each={hunks()} keyed={(hunk) => `${hunk.old_start},${hunk.new_start}`}>
-            {(hunk) => <HunkView path={props.file.path} hunk={hunk()} />}
+            {(hunk) => <HunkView path={props.file.path} hunk={hunk()} wrap={props.wrap} />}
           </For>
         )}
       </Show>
@@ -167,7 +210,7 @@ function FileCard(props: { file: ChangedFile; onOpen(path: string): void }) {
 // HunkView shows one hunk under a header that collapses it, starting
 // expanded. It is keyed by where the hunk starts, so it keeps its state across
 // polls until its position changes.
-function HunkView(props: { path: string; hunk: Hunk }) {
+function HunkView(props: { path: string; hunk: Hunk; wrap: boolean }) {
   const [open, setOpen] = createSignal(true);
   // A memo, so a poll that returns the same lines highlights nothing again.
   const joined = createMemo(() => props.hunk.lines.join("\n"));
@@ -196,7 +239,7 @@ function HunkView(props: { path: string; hunk: Hunk }) {
         <Counts added={each().added} removed={each().removed} />
       </button>
       <Show when={open()}>
-        <pre style={{ "--digits": rows().digits }}>
+        <pre class={{ wrap: props.wrap }} style={{ "--digits": rows().digits }}>
           <code innerHTML={rows().html} />
         </pre>
       </Show>

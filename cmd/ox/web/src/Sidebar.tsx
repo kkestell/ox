@@ -408,7 +408,16 @@ export function Sidebar(props: {
       hidden={props.hidden}
       style={{ width: props.width === undefined ? undefined : `${props.width}px` }}
     >
-      <div class="bar">{props.toggle}</div>
+      <div class="bar">
+        {props.toggle}
+        <button
+          type="button"
+          class="icon folder-plus"
+          aria-label="Add workspace"
+          title="Add workspace"
+          onClick={() => setRequest({ kind: "add" })}
+        />
+      </div>
       <Show when={request()} keyed>
         {(current) => <WorkspaceDialog request={current} onClose={() => setRequest(undefined)} onRequest={attempt} />}
       </Show>
@@ -481,15 +490,6 @@ export function Sidebar(props: {
           }}
         </For>
       </div>
-      <footer class="bar">
-        <button
-          type="button"
-          class="icon folder-plus"
-          aria-label="Add workspace"
-          title="Add workspace"
-          onClick={() => setRequest({ kind: "add" })}
-        />
-      </footer>
     </nav>
   );
 }

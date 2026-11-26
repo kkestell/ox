@@ -22,15 +22,16 @@ import {
   rpcCalls,
   send,
   sessionButton,
-  sessionId,
   sessionItem,
   sessions,
   showPage,
   test,
+  transcript,
   workspaceSection,
 } from "./ui";
 
 const files = (page: Page) => page.getByRole("complementary", { name: "Files" });
+const changesList = (page: Page) => page.getByRole("complementary", { name: "Changes" });
 // entry is the file tree's button for the file or folder called name.
 const entry = (page: Page, name: string) => files(page).getByRole("button", { name, exact: true });
 // folder is the file tree's item for the folder called name, holding its listing.
@@ -39,35 +40,39 @@ const folder = (page: Page, name: string) =>
     .getByRole("listitem")
     .filter({ has: page.getByRole("button", { name, exact: true }) });
 const viewer = (page: Page) => page.getByRole("region", { name: "File" });
-const tab = (page: Page) => viewer(page).getByRole("tablist", { name: "Open files" }).getByRole("tab");
+// fileTab is the tab of the file called name.
+const fileTab = (page: Page, name: string) => page.getByRole("tab", { name, exact: true });
+const changesTab = (page: Page) => page.getByRole("tab", { name: /^Changes/ });
 const pane = (page: Page) => viewer(page).getByRole("tabpanel");
-const wrapButton = (page: Page) => viewer(page).getByRole("button", { name: "Toggle word wrap" });
-const modes = (page: Page) => viewer(page).getByRole("group", { name: "Show as" });
-// modeButton is the file view's button that shows the file as label.
-const modeButton = (page: Page, label: "Diff" | "Source" | "Preview") =>
+const wrapButton = (page: Page) => page.getByRole("button", { name: "Toggle word wrap" });
+const modes = (page: Page) => page.getByRole("group", { name: "Show as" });
+// modeButton is the tab strip's button that shows the file as label.
+const modeButton = (page: Page, label: "Source" | "Preview") =>
   modes(page).getByRole("button", { name: label, exact: true });
-const filesTab = (page: Page) => page.getByRole("tab", { name: "Files", exact: true });
-const changesTab = (page: Page) => page.getByRole("tab", { name: "Changes", exact: true });
-const toggleWorkbench = (page: Page) => page.getByRole("button", { name: "Toggle workbench" });
+const togglePanel = (page: Page) => page.getByRole("button", { name: "Toggle panel" });
+// panelMode is the panel's button that lists its files or its changes.
+const panelMode = (page: Page, label: "Files" | "Changes") => page.getByRole("button", { name: label, exact: true });
+const closeButton = (page: Page, name: string) => page.getByRole("button", { name: `Close ${name}` });
 
-// showFiles opens the workbench on the file tree, which the page closes at
-// load.
-async function showFiles(page: Page) {
-  await filesTab(page).click();
-  await expect(filesTab(page)).toHaveAttribute("aria-selected", "true");
+// showPanel opens the panel at the right, which the page closes at load, on
+// its files or its changes.
+async function showPanel(page: Page, mode: "Files" | "Changes") {
+  if ((await togglePanel(page).getAttribute("aria-pressed")) === "false") await togglePanel(page).click();
+  await panelMode(page, mode).click();
+  await expect(panelMode(page, mode)).toHaveAttribute("aria-pressed", "true");
 }
 
-// showChanges opens the workbench on the changes.
+// showFiles opens the panel on the file tree.
+const showFiles = (page: Page) => showPanel(page, "Files");
+
+// showChanges opens the panel on the changes, and the Changes tab from its
+// summary row.
 async function showChanges(page: Page) {
-  await changesTab(page).click();
+  await showPanel(page, "Changes");
+  await changesList(page)
+    .getByRole("button", { name: /\+\d+ −\d+|git repository/ })
+    .click();
   await expect(changesTab(page)).toHaveAttribute("aria-selected", "true");
-}
-
-// closeWorkbench closes the workbench from its own header.
-async function closeWorkbench(page: Page) {
-  await toggleWorkbench(page).click();
-  await expect(filesTab(page)).toHaveAttribute("aria-selected", "false");
-  await expect(changesTab(page)).toHaveAttribute("aria-selected", "false");
 }
 
 // openFile opens the file at path from the tree, expanding the folders on the
@@ -76,7 +81,7 @@ async function openFile(page: Page, path: string) {
   const names = path.split("/");
   for (const name of names.slice(0, -1)) await entry(page, name).click();
   await entry(page, names.at(-1) ?? path).click();
-  await expect(tab(page)).toHaveText(names.at(-1) ?? path);
+  await expect(fileTab(page, names.at(-1) ?? path)).toHaveAttribute("aria-selected", "true");
 }
 
 // requests collects each request for method the page posts from now on.
@@ -342,7 +347,7 @@ clocked("each session keeps its own expanded folders", async ({ ox: page, servic
 
   // A tree shown for the first session lists through the second once the
   // second is selected, so deleting the first leaves it listing.
-  await closeWorkbench(page);
+  await togglePanel(page).click();
   await expect(files(page)).toHaveCount(0);
   await showFiles(page);
   await expect(entry(page, "a.txt")).toBeVisible();
@@ -608,8 +613,6 @@ test("the Changes tab lists each changed file with its counts and diff", async (
   await showEdit(page, services.workspace);
   await expect(changes(page)).toMatchAriaSnapshot(`
     - region "Changes":
-      - button "Toggle workbench"
-      - text: master +2 −1
       - article "committed.txt":
         - text: committed.txt +2 −1
         - button "Open committed.txt"
@@ -624,27 +627,32 @@ test("the Changes tab lists each changed file with its counts and diff", async (
   `);
 });
 
-test("the Changes tab shows the changes in place of the file tree", async ({ ox: page, services }) => {
+test("the Changes tab's label counts the lines added and removed", async ({ ox: page, services }) => {
   await showEdit(page, services.workspace);
-  await expect(changes(page)).toBeVisible();
-  await expect(files(page)).toHaveCount(0);
+  await expect(changesTab(page)).toHaveText(/^Changes\s*\+2\s*−1$/);
 });
 
-test("the file tree's header shows the branch and the lines added and removed", async ({ ox: page, services }) => {
+test("the panel's Changes list shows the branch, the totals, and each changed file", async ({ ox: page, services }) => {
   gitRepo(services.workspace);
   writeFileSync(join(services.workspace, "committed.txt"), "edited\nmore\n");
   await newDraft(page);
-  await showFiles(page);
-  await expect(files(page)).toMatchAriaSnapshot(`
-    - complementary "Files":
-      - text: master +2 −1
+  await showPanel(page, "Changes");
+  await expect(changesList(page)).toMatchAriaSnapshot(`
+    - complementary "Changes":
+      - button "master +2 −1"
+      - list:
+        - listitem:
+          - button "committed.txt"
+        - listitem:
+          - button "untracked.txt"
   `);
+  await expect(changesTab(page)).toHaveCount(0);
 });
 
-test("the file tree's header says why outside a Git repository", async ({ ox: page }) => {
+test("the Changes list says why outside a Git repository", async ({ ox: page }) => {
   await newDraft(page);
-  await showFiles(page);
-  await expect(files(page)).toContainText("not a git repository");
+  await showPanel(page, "Changes");
+  await expect(changesList(page)).toContainText("not a git repository");
 });
 
 test("a section's header collapses and expands its lines", async ({ ox: page, services }) => {
@@ -661,28 +669,47 @@ test("a section's header collapses and expands its lines", async ({ ox: page, se
   await expect(insertions).toHaveCount(2);
 });
 
-test("a changed file's Open button opens it under the Files tab", async ({ ox: page, services }) => {
+test("a changed file's Open button opens its file tab beside the Changes tab", async ({ ox: page, services }) => {
   await showEdit(page, services.workspace);
   await change(page, "committed.txt").getByRole("button", { name: "Open committed.txt" }).click();
-  await expect(filesTab(page)).toHaveAttribute("aria-selected", "true");
-  await expect(tab(page)).toHaveText("committed.txt");
-  await expect(modeButton(page, "Diff")).toHaveAttribute("aria-pressed", "true");
+  await expect(fileTab(page, "committed.txt")).toHaveAttribute("aria-selected", "true");
+  await expect(pane(page)).toContainText("edited");
+  await expect(changesTab(page)).toHaveAttribute("aria-selected", "false");
 });
 
-test("the Changes tab holds through switching sessions and resets on reload", async ({ ox: page, services }) => {
-  await showEdit(page, services.workspace);
-  await newSession(page, "first");
-  await expect(changesTab(page)).toHaveAttribute("aria-selected", "true");
-  await expect(change(page, "committed.txt")).toBeVisible();
+test("a file in the Changes list opens the Changes tab at its card", async ({ ox: page, services }) => {
+  gitRepo(services.workspace);
+  for (let i = 0; i < 20; i++) {
+    writeFileSync(join(services.workspace, `file-${String(i).padStart(2, "0")}.txt`), "line\n".repeat(30));
+  }
   await newDraft(page);
+  await showPanel(page, "Changes");
+  await changesList(page).getByRole("button", { name: "file-19.txt" }).click();
   await expect(changesTab(page)).toHaveAttribute("aria-selected", "true");
+  await expect(change(page, "file-19.txt")).toBeInViewport();
+  await expect(change(page, "committed.txt")).not.toBeInViewport();
+});
+
+test("a draft's Changes tab carries to its session, which keeps it through switching sessions and loses it on reload", async ({
+  ox: page,
+  services,
+}) => {
+  await showEdit(page, services.workspace);
+  await fileTab(page, "New session").click();
+  await prompt(page).fill("first");
+  await send(page).click();
+  await expect(replies(page)).toHaveText(["You said: first"]);
+  await expect(changesTab(page)).toHaveAttribute("aria-selected", "false");
+  await changesTab(page).click();
+  await expect(change(page, "committed.txt")).toBeVisible();
+  await newSession(page, "second");
+  await expect(changesTab(page)).toHaveCount(0);
   await sessionButton(page, "first").click();
   await expect(changesTab(page)).toHaveAttribute("aria-selected", "true");
+  await expect(change(page, "committed.txt")).toBeVisible();
   await page.reload();
-  await expect(replies(page)).toHaveText(["You said: first"]);
-  await expect(filesTab(page)).toHaveAttribute("aria-selected", "false");
-  await expect(changesTab(page)).toHaveAttribute("aria-selected", "false");
-  await expect(changes(page)).toHaveCount(0);
+  await expect(sessionButton(page, "first")).toHaveAttribute("aria-current", "page");
+  await expect(changesTab(page)).toHaveCount(0);
 });
 
 test("a directory outside a Git repository says why in the Changes tab", async ({ ox: page }) => {
@@ -705,67 +732,201 @@ test.describe("on a wide screen", () => {
   test.beforeEach(({ services }) => {
     mkdirSync(join(services.workspace, "src"));
     writeFileSync(join(services.workspace, "src", "a.txt"), "a\n");
+    writeFileSync(join(services.workspace, "src", "b.txt"), "b\n");
   });
 
-  test("the sessions toggle sits in the session list's header while it shows, and in the session's header while it is hidden", async ({
+  const groups = (page: Page) => page.getByRole("region", { name: "Tab group" });
+  // dropOn drops the tab or file row from onto the group at the fraction of its box.
+  async function dropOn(source: Locator, group: Locator, at: { x: number; y: number }) {
+    const box = await group.boundingBox();
+    if (!box) throw new Error("no group");
+    await source.dragTo(group, { targetPosition: { x: box.width * at.x, y: box.height * at.y } });
+  }
+  const right = { x: 0.9, y: 0.5 };
+  const middle = { x: 0.5, y: 0.5 };
+
+  test("the sessions toggle sits in the session list's header while it shows, and in the first tab strip while it is hidden", async ({
     ox: page,
   }) => {
-    const main = page.getByRole("main");
     const toggleSessions = page.getByRole("button", { name: "Toggle sessions" });
     await newSession(page, "first");
     await expect(sessions(page).getByRole("button", { name: "Toggle sessions" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
-    await expect(main.getByRole("button", { name: "Toggle sessions" })).toHaveCount(0);
+    await expect(groups(page).getByRole("button", { name: "Toggle sessions" })).toHaveCount(0);
     await toggleSessions.click();
     await expect(sessions(page)).toBeHidden();
-    await expect(main.getByRole("button", { name: "Toggle sessions" })).toHaveAttribute("aria-pressed", "false");
+    await expect(groups(page).first().getByRole("button", { name: "Toggle sessions" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
     await expect(page.getByRole("separator", { name: "Resize sessions" })).toHaveCount(0);
     await toggleSessions.click();
     await expect(sessions(page)).toBeVisible();
   });
 
-  test("a tab opens the workbench in its mode, and the workbench's toggle closes it with neither tab selected", async ({
+  test("the panel toggle sits in the panel's header while it shows, and in the last tab strip while it is hidden", async ({
     ox: page,
   }) => {
     await newSession(page, "first");
-    await expect(filesTab(page)).toHaveAttribute("aria-selected", "false");
-    await expect(changesTab(page)).toHaveAttribute("aria-selected", "false");
-    await showFiles(page);
-    await expect(files(page)).toBeVisible();
-    await closeWorkbench(page);
     await expect(files(page)).toHaveCount(0);
-    await showChanges(page);
-    await expect(changes(page)).toBeVisible();
-    await closeWorkbench(page);
-    await expect(changes(page)).toHaveCount(0);
+    await expect(groups(page).first().getByRole("button", { name: "Toggle panel" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    await togglePanel(page).click();
+    await expect(files(page).getByRole("button", { name: "Toggle panel" })).toHaveAttribute("aria-pressed", "true");
+    await expect(groups(page).getByRole("button", { name: "Toggle panel" })).toHaveCount(0);
+    await togglePanel(page).click();
+    await expect(files(page)).toHaveCount(0);
   });
 
-  test("Files shows the tree alone; a file opens between the transcript and the tree, and closing its tab leaves the tree", async ({
-    ox: page,
-  }) => {
-    const resizeViewer = page.getByRole("separator", { name: "Resize file viewer" });
+  test("the panel lists the files or the changes, and the choice holds for every session", async ({ ox: page }) => {
     await newSession(page, "first");
     await showFiles(page);
     await expect(files(page)).toBeVisible();
+    await expect(panelMode(page, "Changes")).toHaveAttribute("aria-pressed", "false");
+    await panelMode(page, "Changes").click();
+    await expect(changesList(page)).toBeVisible();
+    await expect(files(page)).toHaveCount(0);
+    await newSession(page, "second");
+    await expect(changesList(page)).toBeVisible();
+    await expect(panelMode(page, "Changes")).toHaveAttribute("aria-pressed", "true");
+  });
+
+  test("a file opens as a tab in the focused group, opening it again shows its tab, and closing it removes the tab", async ({
+    ox: page,
+  }) => {
+    await newSession(page, "first");
+    await showFiles(page);
     await expect(viewer(page)).toHaveCount(0);
-    await expect(resizeViewer).toHaveCount(0);
     await openFile(page, "src/a.txt");
     await expect(viewer(page)).toBeVisible();
-    await expect(resizeViewer).toHaveCount(1);
-    await expect(files(page)).toBeVisible();
-    await viewer(page).getByRole("button", { name: "Close a.txt" }).click();
+    await expect(pane(page)).toHaveText("a");
+    await expect(closeButton(page, "first")).toHaveCount(0);
+    await fileTab(page, "first").click();
     await expect(viewer(page)).toHaveCount(0);
-    await expect(resizeViewer).toHaveCount(0);
-    await expect(files(page)).toBeVisible();
+    await expect(replies(page)).toHaveText(["You said: first"]);
+    await entry(page, "a.txt").click();
+    await expect(viewer(page)).toBeVisible();
+    await expect(fileTab(page, "a.txt")).toHaveCount(1);
+    await closeButton(page, "a.txt").click();
+    await expect(fileTab(page, "a.txt")).toHaveCount(0);
+    await expect(viewer(page)).toHaveCount(0);
+    await expect(replies(page)).toHaveText(["You said: first"]);
   });
 
-  test("with nothing selected, the header offers no Files or Changes tabs", async ({ ox: page }) => {
-    await expect(filesTab(page)).toHaveCount(0);
-    await expect(changesTab(page)).toHaveCount(0);
+  test("the chat tab's tooltip is the session's directory, and a draft's chat tab says New session", async ({
+    ox: page,
+    services,
+  }) => {
     await newDraft(page);
-    await expect(filesTab(page)).toHaveAttribute("aria-selected", "false");
+    await expect(fileTab(page, "New session")).toBeVisible();
+    await expect(fileTab(page, "New session")).toHaveAccessibleDescription(services.workspace);
+    await prompt(page).fill("first");
+    await send(page).click();
+    await expect(fileTab(page, "first")).toHaveAccessibleDescription(services.workspace);
+  });
+
+  test("dragging a file's tab to the right edge of its group splits the group", async ({ ox: page }) => {
+    await newSession(page, "first");
+    await showFiles(page);
+    await openFile(page, "src/a.txt");
+    await expect(groups(page)).toHaveCount(1);
+    await dropOn(fileTab(page, "a.txt"), groups(page).first(), right);
+    await expect(groups(page)).toHaveCount(2);
+    await expect(groups(page).first().getByRole("tab")).toHaveText(["first"]);
+    await expect(groups(page).nth(1).getByRole("tab")).toHaveText(["a.txt"]);
+    await expect(groups(page).nth(1).getByRole("tabpanel")).toHaveText("a");
+  });
+
+  test("the transcript keeps its scroll position when its group splits and when the split closes", async ({
+    ox: page,
+  }) => {
+    await newSession(page, Array.from({ length: 90 }, (_, i) => `line${i}`).join("\n"));
+    await showFiles(page);
+    await openFile(page, "src/a.txt");
+    await page.getByRole("tab").first().click();
+    await transcript(page).hover();
+    await page.mouse.wheel(0, -5000);
+    await expect(replies(page).last()).not.toBeInViewport();
+    const offset = await transcript(page).evaluate((log) => log.scrollTop);
+    expect(offset).toBeLessThan(-100);
+    await dropOn(fileTab(page, "a.txt"), groups(page).first(), right);
+    await expect(groups(page)).toHaveCount(2);
+    await page.getByRole("tab").first().click();
+    await expect(transcript(page)).toHaveJSProperty("scrollTop", offset);
+    await closeButton(page, "a.txt").click();
+    await expect(groups(page)).toHaveCount(1);
+    await expect(transcript(page)).toHaveJSProperty("scrollTop", offset);
+  });
+
+  test("dragging a tab to the middle of another group moves it there, and the emptied group disappears", async ({
+    ox: page,
+  }) => {
+    await newSession(page, "first");
+    await showFiles(page);
+    await openFile(page, "src/a.txt");
+    await dropOn(fileTab(page, "a.txt"), groups(page).first(), right);
+    await expect(groups(page)).toHaveCount(2);
+    await dropOn(fileTab(page, "a.txt"), groups(page).first(), middle);
+    await expect(groups(page)).toHaveCount(1);
+    await expect(groups(page).first().getByRole("tab")).toHaveText(["first", "a.txt"]);
+    await expect(fileTab(page, "a.txt")).toHaveAttribute("aria-selected", "true");
+  });
+
+  test("a group's only tab dropped on its own edge stays", async ({ ox: page }) => {
+    await newSession(page, "first");
+    await showFiles(page);
+    await openFile(page, "src/a.txt");
+    await dropOn(fileTab(page, "a.txt"), groups(page).first(), right);
+    await expect(groups(page)).toHaveCount(2);
+    await dropOn(fileTab(page, "a.txt"), groups(page).nth(1), { x: 0.95, y: 0.5 });
+    await expect(groups(page)).toHaveCount(2);
+    await expect(groups(page).nth(1).getByRole("tab")).toHaveText(["a.txt"]);
+  });
+
+  test("dragging a file from the tree onto an edge opens it in a new group", async ({ ox: page }) => {
+    await newSession(page, "first");
+    await showFiles(page);
+    await entry(page, "src").click();
+    await dropOn(entry(page, "a.txt"), groups(page).first(), right);
+    await expect(groups(page)).toHaveCount(2);
+    await expect(groups(page).nth(1).getByRole("tab")).toHaveText(["a.txt"]);
+    await dropOn(entry(page, "b.txt"), groups(page).first(), { x: 0.5, y: 0.95 });
+    await expect(groups(page)).toHaveCount(3);
+    await expect(groups(page).nth(1).getByRole("tab")).toHaveText(["b.txt"]);
+  });
+
+  test("the toggles move to the outer strips when groups split", async ({ ox: page }) => {
+    await newSession(page, "first");
+    await showFiles(page);
+    await openFile(page, "src/a.txt");
+    await dropOn(fileTab(page, "a.txt"), groups(page).first(), right);
+    await expect(groups(page)).toHaveCount(2);
+    await sessions(page).getByRole("button", { name: "Toggle sessions" }).click();
+    await expect(groups(page).first().getByRole("button", { name: "Toggle sessions" })).toBeVisible();
+    await expect(groups(page).nth(1).getByRole("button", { name: "Toggle sessions" })).toHaveCount(0);
+    await togglePanel(page).click();
+    await expect(groups(page).nth(1).getByRole("button", { name: "Toggle panel" })).toBeVisible();
+    await expect(groups(page).first().getByRole("button", { name: "Toggle panel" })).toHaveCount(0);
+  });
+
+  test("dragging a sash between groups resizes them within bounds", async ({ ox: page }) => {
+    await newSession(page, "first");
+    await showFiles(page);
+    await openFile(page, "src/a.txt");
+    await dropOn(fileTab(page, "a.txt"), groups(page).first(), right);
+    await expect(groups(page)).toHaveCount(2);
+    const [before, after] = [await width(groups(page).first()), await width(groups(page).nth(1))];
+    await drag(page, "Resize groups", 100);
+    await near(groups(page).first(), before + 100);
+    await near(groups(page).nth(1), after - 100);
+    await drag(page, "Resize groups", -2000);
+    await near(groups(page).first(), 240);
+    await drag(page, "Resize groups", 4000);
+    await near(groups(page).nth(1), 240);
   });
 
   test("dragging a sash resizes its panel within bounds, and only while the button is down", async ({ ox: page }) => {
@@ -788,67 +949,18 @@ test.describe("on a wide screen", () => {
 
     const tree = files(page);
     const treeStart = await width(tree);
-    await drag(page, "Resize files", -100);
+    await drag(page, "Resize panel", -100);
     await near(tree, treeStart + 100);
 
     // At a narrow window both side panels together leave the transcript its
     // minimum.
     await page.setViewportSize({ width: 960, height: 900 });
     await drag(page, "Resize sessions", 1000);
-    await drag(page, "Resize files", -1000);
+    await drag(page, "Resize panel", -1000);
     expect(await width(page.getByRole("main"))).toBeGreaterThanOrEqual(240);
   });
 
-  test("the file split leaves each side its minimum and comes back when the file reopens", async ({ ox: page }) => {
-    const main = page.getByRole("main");
-    await newDraft(page);
-    await showFiles(page);
-    await openFile(page, "src/a.txt");
-    const [mainBefore, viewerBefore] = [await width(main), await width(viewer(page))];
-    await drag(page, "Resize file viewer", -100);
-    await near(main, mainBefore - 100);
-    await near(viewer(page), viewerBefore + 100);
-    await drag(page, "Resize file viewer", -1000);
-    await near(main, 240);
-    await drag(page, "Resize file viewer", 2000);
-    await near(viewer(page), 240);
-    await drag(page, "Resize file viewer", -200);
-    const split = await width(main);
-    await viewer(page).getByRole("button", { name: "Close a.txt" }).click();
-    await expect(viewer(page)).toHaveCount(0);
-    await entry(page, "a.txt").click();
-    await expect(viewer(page)).toBeVisible();
-    await near(main, split);
-
-    // A window too tight for both minimums splits the center evenly, ignores
-    // the split's sash, and keeps the saved split for when it widens. A
-    // fractional sessions width leaves the tight center a fractional width.
-    await drag(page, "Resize sessions", 0.3);
-    await page.setViewportSize({ width: 820, height: 900 });
-    const even = await width(viewer(page));
-    await near(main, even);
-    await drag(page, "Resize file viewer", -35);
-    await near(main, even);
-    await near(viewer(page), even);
-    await drag(page, "Resize file viewer", 35);
-    await near(main, even);
-    await near(viewer(page), even);
-    await page.setViewportSize({ width: 1600, height: 900 });
-    await near(main, split);
-  });
-
-  test("at a 960 px window the transcript and the file split the width beside the tree evenly", async ({
-    ox: page,
-  }) => {
-    await page.setViewportSize({ width: 960, height: 900 });
-    await newDraft(page);
-    await showFiles(page);
-    await openFile(page, "src/a.txt");
-    await near(page.getByRole("main"), await width(viewer(page)));
-    await expect(files(page)).toBeInViewport({ ratio: 1 });
-  });
-
-  test("at a 960 px window the session list's sash leaves the transcript 240 px beside the tree", async ({
+  test("at a 960 px window the session list's sash leaves the tab area 240 px beside the panel", async ({
     ox: page,
   }) => {
     await page.setViewportSize({ width: 960, height: 900 });
@@ -859,73 +971,80 @@ test.describe("on a wide screen", () => {
     await expect(files(page)).toBeInViewport({ ratio: 1 });
   });
 
-  test("panel widths are page-wide and each session keeps its own split", async ({ ox: page }) => {
-    const main = page.getByRole("main");
+  test("panel widths are page-wide, and whether the panel shows is too", async ({ ox: page }) => {
     const nav = sessions(page);
     await newSession(page, "first");
     await showFiles(page);
     await newSession(page, "second");
     await sessionButton(page, "first").click();
-    await openFile(page, "src/a.txt");
-    const evenSplit = await width(main);
     await drag(page, "Resize sessions", 100);
-    await drag(page, "Resize files", -100);
-    await drag(page, "Resize file viewer", -100);
-    const [navWidth, treeWidth, firstSplit] = [await width(nav), await width(files(page)), await width(main)];
+    await drag(page, "Resize panel", -100);
+    const [navWidth, treeWidth] = [await width(nav), await width(files(page))];
 
     await sessionButton(page, "second").click();
-    await openFile(page, "src/a.txt");
     await near(nav, navWidth);
     await near(files(page), treeWidth);
-    await expect.poll(async () => Math.abs((await width(main)) - firstSplit)).toBeGreaterThan(1);
-    expect(firstSplit).not.toBe(evenSplit);
     await sessionButton(page, "first").click();
-    await near(main, firstSplit);
     await near(nav, navWidth);
     await near(files(page), treeWidth);
 
-    // Whether the workbench shows is page-wide too.
-    await closeWorkbench(page);
+    await togglePanel(page).click();
     await sessionButton(page, "second").click();
-    await expect(filesTab(page)).toHaveAttribute("aria-selected", "false");
-    await expect(changesTab(page)).toHaveAttribute("aria-selected", "false");
     await expect(files(page)).toHaveCount(0);
   });
 
-  test("a draft's split carries to the session it creates", async ({ ox: page }) => {
-    const main = page.getByRole("main");
-    await newDraft(page);
+  test("each session and draft keeps its tabs and groups, and a draft's carry to its session", async ({ ox: page }) => {
+    await newSession(page, "first");
     await showFiles(page);
+    await newSession(page, "second");
+    await sessionButton(page, "first").click();
     await openFile(page, "src/a.txt");
-    await drag(page, "Resize file viewer", -100);
-    const split = await width(main);
+    await dropOn(fileTab(page, "a.txt"), groups(page).first(), right);
+    await sessionButton(page, "second").click();
+    await expect(groups(page)).toHaveCount(1);
+    await expect(viewer(page)).toHaveCount(0);
+    await openFile(page, "src/b.txt");
+    await sessionButton(page, "first").click();
+    await expect(groups(page)).toHaveCount(2);
+    await expect(fileTab(page, "a.txt")).toBeVisible();
+    await expect(fileTab(page, "b.txt")).toHaveCount(0);
+    await sessionButton(page, "second").click();
+    await expect(groups(page)).toHaveCount(1);
+    await expect(fileTab(page, "b.txt")).toBeVisible();
+
+    await newDraft(page);
+    await expect(fileTab(page, "b.txt")).toHaveCount(0);
+    await openFile(page, "src/a.txt");
+    await dropOn(fileTab(page, "a.txt"), groups(page).first(), right);
+    await expect(groups(page)).toHaveCount(2);
+    await sessionButton(page, "second").click();
+    await newDraft(page);
+    await expect(groups(page)).toHaveCount(2);
+    await fileTab(page, "New session").click();
     await prompt(page).fill("third");
     await send(page).click();
     await expect(replies(page)).toHaveText(["You said: third"]);
-    await expect(viewer(page)).toBeVisible();
-    await near(main, split);
+    await expect(sessionButton(page, "third")).toHaveAttribute("aria-current", "page");
+    await expect(groups(page)).toHaveCount(2);
+    await expect(fileTab(page, "a.txt")).toBeVisible();
+    await expect(pane(page)).toHaveText("a");
   });
 
-  test("a reload closes the workbench and restores the default widths", async ({ ox: page }) => {
-    const main = page.getByRole("main");
+  test("a reload closes the panel and the tabs, and restores the default widths", async ({ ox: page }) => {
     const nav = sessions(page);
     await newSession(page, "first");
     await showFiles(page);
     await openFile(page, "src/a.txt");
-    const first = [await width(nav), await width(files(page)), await width(main), await width(viewer(page))];
+    const first = [await width(nav), await width(files(page))];
     await drag(page, "Resize sessions", 100);
-    await drag(page, "Resize files", -100);
-    await drag(page, "Resize file viewer", -100);
+    await drag(page, "Resize panel", -100);
     await page.reload();
     await expect(replies(page)).toHaveText(["You said: first"]);
-    await expect(filesTab(page)).toHaveAttribute("aria-selected", "false");
     await expect(files(page)).toHaveCount(0);
+    await expect(fileTab(page, "a.txt")).toHaveCount(0);
     await showFiles(page);
-    await openFile(page, "src/a.txt");
     await near(nav, first[0]);
     await near(files(page), first[1]);
-    await near(main, first[2]);
-    await near(viewer(page), first[3]);
   });
 });
 
@@ -938,7 +1057,9 @@ test.describe("on a phone", () => {
   });
 
   const toggleSessions = (page: Page) => page.getByRole("button", { name: "Toggle sessions" });
-  const toggleTree = (page: Page) => page.getByRole("button", { name: "Toggle file tree" });
+  const bar = (page: Page) => page.getByRole("toolbar", { name: "Tabs" });
+  const picker = (page: Page, name: string) => bar(page).getByRole("button", { name, exact: true });
+  const tabMenu = (page: Page) => page.getByRole("menu", { name: "Tabs" });
   // tapBeside taps the page just past the drawer's edge on the side given.
   async function tapBeside(page: Page, drawer: Locator, side: "left" | "right") {
     // A trial tap waits for the drawer to finish sliding in.
@@ -948,13 +1069,17 @@ test.describe("on a phone", () => {
     const x = side === "right" ? box.x + box.width + 10 : box.x - 10;
     await page.touchscreen.tap(x, box.y + box.height / 2);
   }
-
-  test("a lost connection shows above an open file", async ({ ox: page, services }) => {
-    await newSession(page, "hello");
-    await filesTab(page).tap();
+  // showFile opens src/a.txt from the panel's drawer, which closes.
+  async function showFile(page: Page) {
+    await bar(page).getByRole("button", { name: "Toggle panel" }).tap();
     await entry(page, "src").tap();
     await entry(page, "a.txt").tap();
     await expect(viewer(page)).toBeVisible();
+  }
+
+  test("a lost connection shows above an open file", async ({ ox: page, services }) => {
+    await newSession(page, "hello");
+    await showFile(page);
     await page.route("**/events", (route) => route.abort());
     await services.restartRelay();
     await expect(viewer(page)).toBeVisible();
@@ -963,7 +1088,7 @@ test.describe("on a phone", () => {
 
   test("the session list opens at load only when the URL names no session", async ({ ox: page }) => {
     await expect(sessions(page)).toBeVisible();
-    await expect(toggleSessions(page)).toHaveAttribute("aria-pressed", "true");
+    await expect(toggleSessions(page).last()).toHaveAttribute("aria-pressed", "true");
     await newSession(page, "first");
     await page.reload();
     await expect(replies(page)).toHaveText(["You said: first"]);
@@ -983,105 +1108,88 @@ test.describe("on a phone", () => {
     await expect(sessions(page)).toBeHidden();
   });
 
-  test("the file tree drawer closes on tapping outside, from its toggle by keyboard, or on opening a file", async ({
+  test("the panel drawer closes on tapping outside, from its toggle by keyboard, or on opening a file", async ({
     ox: page,
   }) => {
     await newSession(page, "first");
-    await filesTab(page).tap();
-    await entry(page, "src").tap();
-    await entry(page, "a.txt").tap();
-    await expect(viewer(page)).toBeVisible();
-    await expect(files(page)).toHaveCount(0);
-    await toggleTree(page).tap();
+    await bar(page).getByRole("button", { name: "Toggle panel" }).tap();
     await expect(files(page)).toBeVisible();
-    await expect(toggleTree(page)).toHaveAttribute("aria-pressed", "true");
     await tapBeside(page, files(page), "left");
     await expect(files(page)).toHaveCount(0);
-    await toggleTree(page).tap();
+    await bar(page).getByRole("button", { name: "Toggle panel" }).tap();
     await expect(files(page)).toBeVisible();
-    // The drawer covers its toggle, which closes it from the keyboard.
-    await toggleTree(page).press("Enter");
+    await files(page).getByRole("button", { name: "Toggle panel" }).press("Enter");
     await expect(files(page)).toHaveCount(0);
-    await toggleTree(page).tap();
-    await entry(page, "a.txt").tap();
-    await expect(files(page)).toHaveCount(0);
-    await expect(viewer(page)).toBeVisible();
-  });
-
-  test("the Files tab replaces the transcript with the tree, and the workbench's toggle brings it back", async ({
-    ox: page,
-  }) => {
-    await newSession(page, "first");
-    await filesTab(page).tap();
-    await expect(files(page)).toBeVisible();
-    await expect(page.getByRole("main")).toBeHidden();
-    await toggleWorkbench(page).tap();
-    await expect(files(page)).toHaveCount(0);
-    await expect(page.getByRole("main")).toBeVisible();
-    await expect(replies(page)).toHaveText(["You said: first"]);
-  });
-
-  test("closing the file's tab leaves the tree filling the workbench", async ({ ox: page }) => {
-    await newSession(page, "first");
-    await filesTab(page).tap();
+    await bar(page).getByRole("button", { name: "Toggle panel" }).tap();
     await entry(page, "src").tap();
     await entry(page, "a.txt").tap();
+    await expect(files(page)).toHaveCount(0);
     await expect(viewer(page)).toBeVisible();
-    await viewer(page).getByRole("button", { name: "Close a.txt" }).tap();
-    await expect(viewer(page)).toHaveCount(0);
-    await expect(files(page)).toBeVisible();
     await expect(page.getByRole("main")).toBeHidden();
   });
 
-  test("a changed file's Open button shows the file in place of the changes", async ({ ox: page, services }) => {
-    gitRepo(services.workspace);
-    writeFileSync(join(services.workspace, "committed.txt"), "edited\n");
+  test("the picker shows the active tab, its menu lists every tab, and choosing one shows it", async ({ ox: page }) => {
     await newSession(page, "first");
-    await changesTab(page).tap();
-    await change(page, "committed.txt").getByRole("button", { name: "Open committed.txt" }).tap();
-    await expect(tab(page)).toHaveText("committed.txt");
-    await expect(changes(page)).toHaveCount(0);
-    await expect(page.getByRole("main")).toBeHidden();
+    await expect(picker(page, "first")).toBeVisible();
+    await showFile(page);
+    await expect(picker(page, "a.txt")).toBeVisible();
+    await expect(page.getByRole("tab")).toHaveCount(0);
+    await picker(page, "a.txt").tap();
+    await expect(tabMenu(page)).toMatchAriaSnapshot(`
+      - menu "Tabs":
+        - menuitemradio "first"
+        - menuitemradio "a.txt" [checked]
+    `);
+    await tabMenu(page).getByRole("menuitemradio", { name: "first" }).tap();
+    await expect(tabMenu(page)).toBeHidden();
+    await expect(page.getByRole("main")).toBeVisible();
+    await expect(viewer(page)).toHaveCount(0);
+    await expect(replies(page)).toHaveText(["You said: first"]);
+    await expect(picker(page, "first")).toBeVisible();
   });
 
-  test("panels cannot be resized on a narrow screen", async ({ ox: page }) => {
+  test("the menu's close button closes a tab, and the chat tab has none", async ({ ox: page }) => {
+    await newSession(page, "first");
+    await showFile(page);
+    await picker(page, "a.txt").tap();
+    await expect(closeButton(page, "first")).toHaveCount(0);
+    await closeButton(page, "a.txt").tap();
+    await expect(viewer(page)).toHaveCount(0);
+    await expect(picker(page, "first")).toBeVisible();
+    await expect(page.getByRole("main")).toBeVisible();
+  });
+
+  test("tabs cannot be dragged and panels cannot be resized", async ({ ox: page }) => {
     // A hidden separator is found only with includeHidden.
     const separator = (name: string) => page.getByRole("separator", { name, includeHidden: true });
     await expect(separator("Resize sessions")).toHaveCount(1);
     await expect(separator("Resize sessions")).toBeHidden();
     await newSession(page, "first");
-    await filesTab(page).tap();
+    await bar(page).getByRole("button", { name: "Toggle panel" }).tap();
     await expect(files(page)).toBeVisible();
-    await expect(separator("Resize files")).toHaveCount(0);
+    await expect(separator("Resize panel")).toHaveCount(0);
     await entry(page, "src").tap();
-    await entry(page, "a.txt").tap();
-    await expect(viewer(page)).toBeVisible();
-    await expect(separator("Resize file viewer")).toHaveCount(0);
-    await expect(separator("Resize files")).toHaveCount(0);
+    await expect(entry(page, "a.txt")).not.toHaveAttribute("draggable", "true");
+    await expect(separator("Resize groups")).toHaveCount(0);
   });
 
-  test("crossing the breakpoint closes the phone's workbench and leaves the wide one as it was", async ({
+  test("crossing the breakpoint keeps the tabs, closes the drawer, and leaves the wide panel as it was", async ({
     ox: page,
   }) => {
     await newSession(page, "first");
+    await showFile(page);
     await page.setViewportSize({ width: 1600, height: 844 });
-    await changesTab(page).tap();
-    await expect(changes(page)).toBeVisible();
-    await page.setViewportSize({ width: 390, height: 844 });
-    await expect(page.getByRole("main")).toBeVisible();
-    await expect(changes(page)).toHaveCount(0);
-    await filesTab(page).tap();
-    await expect(files(page)).toBeVisible();
-    await page.setViewportSize({ width: 1600, height: 844 });
-    await expect(changesTab(page)).toHaveAttribute("aria-selected", "true");
-    await expect(changes(page)).toBeVisible();
-    // The wide screen's Changes tab clears only once the page is narrow, so
-    // the checks after it see the narrow layout.
-    await page.setViewportSize({ width: 390, height: 844 });
-    await expect(changesTab(page)).toHaveAttribute("aria-selected", "false");
-    await expect(filesTab(page)).toHaveAttribute("aria-selected", "false");
+    await expect(fileTab(page, "a.txt")).toHaveAttribute("aria-selected", "true");
     await expect(files(page)).toHaveCount(0);
-    await expect(page.getByRole("main")).toBeVisible();
+    await togglePanel(page).click();
+    await expect(files(page)).toBeVisible();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(files(page)).toHaveCount(0);
+    await expect(picker(page, "a.txt")).toBeVisible();
+    await expect(viewer(page)).toBeVisible();
+    await page.setViewportSize({ width: 1600, height: 844 });
+    await expect(files(page)).toBeVisible();
+    await expect(fileTab(page, "a.txt")).toHaveAttribute("aria-selected", "true");
   });
 
   test("crossing the breakpoint closes the drawer, and a wide drag leaves the drawer's width", async ({ ox: page }) => {
@@ -1107,7 +1215,7 @@ test.describe("on a phone", () => {
   });
 });
 
-test("clicking a file opens it under its tab and marks its row, and another file replaces it", async ({
+test("clicking a file opens its tab and marks its row, and another file opens beside it", async ({
   ox: page,
   services,
 }) => {
@@ -1119,8 +1227,8 @@ test("clicking a file opens it under its tab and marks its row, and another file
   await entry(page, "src").click();
   const read = await hold(page, "workspace/read_file", { path: "src/a.txt" });
   await entry(page, "a.txt").click();
-  await expect(tab(page)).toHaveText("a.txt");
-  await expect(tab(page)).toHaveAccessibleDescription("src/a.txt");
+  await expect(fileTab(page, "a.txt")).toHaveAttribute("aria-selected", "true");
+  await expect(fileTab(page, "a.txt")).toHaveAccessibleDescription("src/a.txt");
   await read.arrived;
   await expect(pane(page)).toHaveText("");
   read.release();
@@ -1130,7 +1238,8 @@ test("clicking a file opens it under its tab and marks its row, and another file
   await expect(modes(page)).toHaveCount(0);
 
   await entry(page, "b.txt").click();
-  await expect(tab(page)).toHaveText("b.txt");
+  await expect(fileTab(page, "b.txt")).toHaveAttribute("aria-selected", "true");
+  await expect(fileTab(page, "a.txt")).toHaveAttribute("aria-selected", "false");
   await expect(pane(page)).toHaveText("second");
   await expect(entry(page, "b.txt")).toHaveAttribute("aria-current", "true");
   await expect(entry(page, "a.txt")).not.toHaveAttribute("aria-current");
@@ -1159,7 +1268,7 @@ clocked(
     await expect(pane(page)).toHaveJSProperty("scrollTop", 2000);
     await expect(pane(page)).toHaveJSProperty("scrollLeft", 300);
 
-    await newDraft(page);
+    await newSessionButton(page).click();
     await answered(page, "workspace/read_file", "src/a.txt");
     await expect(pane(page)).toHaveJSProperty("scrollTop", 2000);
     await expect(pane(page)).toHaveJSProperty("scrollLeft", 300);
@@ -1196,7 +1305,7 @@ clocked("the pane shows changes on disk and why a deleted file cannot be read", 
   rmSync(a);
   await page.clock.runFor(1000);
   await expect(pane(page)).toContainText("no such file or directory");
-  await expect(tab(page)).toHaveText("a.txt");
+  await expect(fileTab(page, "a.txt")).toHaveAttribute("aria-selected", "true");
   writeFileSync(a, "back\n");
   await page.clock.runFor(1000);
   await expect(pane(page)).toHaveText("back");
@@ -1209,7 +1318,7 @@ test("the pane keeps a file's carriage returns", async ({ ox: page, services }) 
   await newDraft(page);
   await showFiles(page);
   await openFile(page, "src/template.ts");
-  await expect(tab(page)).toHaveText("template.ts");
+  await expect(fileTab(page, "template.ts")).toHaveAttribute("aria-selected", "true");
   await expect(pane(page)).toHaveJSProperty("textContent", template);
 });
 
@@ -1258,7 +1367,6 @@ test("an unchanged Markdown file opens in Preview, and Source shows its text", a
   await openFile(page, "notes.md");
   await expect(pane(page).getByRole("heading", { name: "Title" })).toBeVisible();
   await expect(modeButton(page, "Preview")).toHaveAttribute("aria-pressed", "true");
-  await expect(modeButton(page, "Diff")).toHaveCount(0);
   await expect(wrapButton(page)).toHaveCount(0);
 
   await modeButton(page, "Source").click();
@@ -1284,7 +1392,7 @@ test("a Markdown file's source view holds through switching sessions, and the ne
   await sessionButton(page, "second").click();
   await expect(viewer(page)).toHaveCount(0);
   await sessionButton(page, "first").click();
-  await expect(tab(page)).toHaveText("a.md");
+  await expect(fileTab(page, "a.md")).toHaveAttribute("aria-selected", "true");
   await expect(modeButton(page, "Source")).toHaveAttribute("aria-pressed", "true");
   await expect(pane(page)).toHaveText("# A");
 
@@ -1297,30 +1405,7 @@ test("a Markdown file's source view holds through switching sessions, and the ne
   await expect(pane(page).getByRole("heading", { name: "B" })).toBeVisible();
 });
 
-test("a changed file opens in Diff, showing the whole file with its removed and added lines in place", async ({
-  ox: page,
-  services,
-}) => {
-  const path = join(services.workspace, "lines.txt");
-  const lines = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`);
-  writeFileSync(path, `${lines.join("\n")}\n`);
-  gitRepo(services.workspace);
-  lines[9] = "changed 10";
-  writeFileSync(path, `${lines.join("\n")}\n`);
-  await newDraft(page);
-  await showFiles(page);
-  await openFile(page, "lines.txt");
-  await expect(modeButton(page, "Diff")).toHaveAttribute("aria-pressed", "true");
-  await expect(pane(page)).toMatchAriaSnapshot(`
-    - code:
-      - text: 1 line 1 2 line 2 3 line 3 4 line 4 5 line 5 6 line 6 7 line 7 8 line 8 9 line 9
-      - deletion: 10 line 10
-      - insertion: 10 changed 10
-      - text: 11 line 11 12 line 12
-  `);
-});
-
-test("a changed Markdown file offers Diff, Source, and Preview, and opens in Diff", async ({ ox: page, services }) => {
+test("a changed Markdown file offers Source and Preview and opens rendered", async ({ ox: page, services }) => {
   writeFileSync(join(services.workspace, "notes.md"), "# Title\n");
   gitRepo(services.workspace);
   writeFileSync(join(services.workspace, "notes.md"), "# Changed\n");
@@ -1329,31 +1414,9 @@ test("a changed Markdown file offers Diff, Source, and Preview, and opens in Dif
   await openFile(page, "notes.md");
   await expect(modes(page)).toMatchAriaSnapshot(`
     - group "Show as":
-      - button "Diff" [pressed]
       - button "Source"
-      - button "Preview"
+      - button "Preview" [pressed]
   `);
-});
-
-test("a changed file waits for its changes to be listed before choosing Diff", async ({ ox: page, services }) => {
-  gitRepo(services.workspace);
-  writeFileSync(join(services.workspace, "committed.txt"), "edited\n");
-  await newSession(page, "first");
-  const first = sessionId(page);
-  await showFiles(page);
-  await openFile(page, "committed.txt");
-  await expect(modeButton(page, "Diff")).toHaveAttribute("aria-pressed", "true");
-  await newDraft(page);
-  await expect(viewer(page)).toHaveCount(0);
-  const listing = await hold(page, "workspace/list_changes", { session_id: first });
-  await sessionButton(page, "first").click();
-  await listing.arrived;
-  await expect(tab(page)).toHaveText("committed.txt");
-  await expect(pane(page)).toHaveCount(0);
-  await expect(modes(page)).toHaveCount(0);
-  await expect(viewer(page).getByRole("deletion")).toHaveCount(0);
-  listing.release();
-  await expect(modeButton(page, "Diff")).toHaveAttribute("aria-pressed", "true");
 });
 
 clocked("the preview shows changes on disk", async ({ ox: page, services }) => {
@@ -1376,7 +1439,7 @@ clocked(
     await showFiles(page);
     const read = await hold(page, "workspace/read_file", { path: "bin.dat" });
     await entry(page, "bin.dat").click();
-    await expect(tab(page)).toHaveText("bin.dat");
+    await expect(fileTab(page, "bin.dat")).toHaveAttribute("aria-selected", "true");
     await read.arrived;
     read.fail("relay unavailable");
     await expect(pane(page)).toHaveText("relay unavailable");
@@ -1384,41 +1447,6 @@ clocked(
     await expect(pane(page)).toHaveText("file is binary");
   },
 );
-
-test("each session and draft keeps its open file, and a draft's carries to its session", async ({
-  ox: page,
-  services,
-}) => {
-  mkdirSync(join(services.workspace, "src"));
-  writeFileSync(join(services.workspace, "src", "a.txt"), "a\n");
-  writeFileSync(join(services.workspace, "src", "b.txt"), "b\n");
-  await newSession(page, "first");
-  await showFiles(page);
-  await newSession(page, "second");
-  await sessionButton(page, "first").click();
-  await openFile(page, "src/a.txt");
-  await sessionButton(page, "second").click();
-  await expect(viewer(page)).toHaveCount(0);
-  await openFile(page, "src/b.txt");
-  await sessionButton(page, "first").click();
-  await expect(tab(page)).toHaveText("a.txt");
-  await sessionButton(page, "second").click();
-  await expect(tab(page)).toHaveText("b.txt");
-
-  await newDraft(page);
-  await expect(viewer(page)).toHaveCount(0);
-  await openFile(page, "src/a.txt");
-  await sessionButton(page, "second").click();
-  await expect(tab(page)).toHaveText("b.txt");
-  await newDraft(page);
-  await expect(tab(page)).toHaveText("a.txt");
-  await prompt(page).fill("third");
-  await send(page).click();
-  await expect(replies(page)).toHaveText(["You said: third"]);
-  await expect(sessionButton(page, "third")).toHaveAttribute("aria-current", "page");
-  await expect(tab(page)).toHaveText("a.txt");
-  await expect(pane(page)).toHaveText("a");
-});
 
 test("a reload closes the open file", async ({ ox: page, services }) => {
   mkdirSync(join(services.workspace, "src"));
@@ -1430,5 +1458,6 @@ test("a reload closes the open file", async ({ ox: page, services }) => {
   await expect(replies(page)).toHaveText(["You said: first"]);
   await showFiles(page);
   await expect(entry(page, "src")).toBeVisible();
+  await expect(fileTab(page, "a.txt")).toHaveCount(0);
   await expect(viewer(page)).toHaveCount(0);
 });

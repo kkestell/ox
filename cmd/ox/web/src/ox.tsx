@@ -29,6 +29,7 @@ import {
   type Update,
   type UsageWindow,
 } from "./protocol";
+import { initial as initialLayout, type Layout } from "./tabs";
 
 export type Workspace = { id: string; path: string; sessions: Session[] };
 
@@ -45,14 +46,6 @@ export type Entry =
   | { kind: "exited"; error: string };
 
 export type Approval = { id: string; request: ApprovalRequest };
-
-// FileMode is how the file view shows a file: its changes, its source, or, for
-// a Markdown file, rendered.
-export type FileMode = "diff" | "source" | "preview";
-
-// OpenFile is the file chosen in the file tree, with the mode chosen for it.
-// Without a chosen mode, the file view picks one from the file.
-export type OpenFile = { path: string; mode?: FileMode };
 
 export type Session = {
   id: string;
@@ -209,10 +202,10 @@ type Draft<T> = [Store<T>, StoreSetter<T>];
 
 // SessionControl is the page's side of one session: its composer text and
 // attached images, each pending approval's unsent answers, the folders its
-// file tree has expanded, its open file, and the requests the page has in
+// file tree has expanded, its tabs, and the requests the page has in
 // flight for it, with their errors. It outlives the session's view, so leaving
 // the view, or reconnecting, keeps the text, images, answers, expanded
-// folders, and open file and repeats no request. A send and a
+// folders, and tabs and repeats no request. A send and a
 // configuration exclude each other, so a prompt runs with the settings the
 // page shows. A new session's control starts as its draft's composer, and its
 // first send starts before its session/get returns. Submitting takes the
@@ -249,11 +242,10 @@ function createSessionControl(
   const [unconfirmed, setUnconfirmed] = createSignal(false);
   // expanded holds the paths of the expanded folders in the file tree.
   const [expanded, setExpandedStore] = createStore<Record<string, true>>({});
-  // file is the file chosen in the file tree, and split the transcript's share
-  // of the width it shares with the workbench. The layout renders the share
-  // within each side's minimum width without changing it.
-  const [file, setFile] = createSignal<OpenFile>();
-  const [split, writeSplit] = createSignal(0.5);
+  // layout is the session's tabs, their groups, and the groups' sizes.
+  const [layout, setLayout] = createSignal<Layout>(initialLayout());
+  // scroll is the transcript's scroll offset, which a rebuilt view restores.
+  let scroll = 0;
   const live = () => {
     const load = session()?.load;
     return load?.kind === "live" ? load.snapshot : undefined;
@@ -427,18 +419,13 @@ function createSessionControl(
         else delete folders[path];
       });
     },
-    file,
-    // openFile opens the file at path. Opening the open file keeps its mode.
-    openFile(path: string) {
-      if (file()?.path !== path) setFile({ path });
+    scroll: () => scroll,
+    setScroll: (offset: number) => {
+      scroll = offset;
     },
-    // setMode shows the file at path in mode, opening it if another is open.
-    setMode: (path: string, mode: FileMode) => setFile({ path, mode }),
-    closeFile: () => setFile(undefined),
-    split,
-    // setSplit sets the transcript's share of the width it shares with the
-    // viewer.
-    setSplit: (share: number) => writeSplit(share),
+    layout,
+    // edit replaces the layout with the result of an operation on it.
+    edit: (change: (current: Layout) => Layout) => setLayout((current) => change(current)),
     // create creates the session with the composer's prompt as its first, in
     // a worktree of its own when worktree is set, sends it, and calls
     // onCreated once oxd confirms the session as new.

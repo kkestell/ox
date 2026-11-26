@@ -1,5 +1,4 @@
-import type { JSX } from "@solidjs/web";
-import { createSignal, For, Match, onCleanup, Show, Switch, untrack } from "solid-js";
+import { createSignal, For, Match, onCleanup, onSettled, Show, Switch, untrack } from "solid-js";
 import { ApprovalRequest } from "./ApprovalRequest";
 import { AttachButton, createImageDrop, pasteImages, Thumbnails } from "./Attachments";
 import { Markdown } from "./Markdown";
@@ -42,7 +41,7 @@ function keepRowInPlace(event: MouseEvent & { currentTarget: HTMLElement }) {
   event.currentTarget.scrollTop += summary.getBoundingClientRect().top - top;
 }
 
-export function SessionView(props: { session: Session; snapshot: SessionSnapshot; toggles?: JSX.Element }) {
+export function SessionView(props: { session: Session; snapshot: SessionSnapshot }) {
   const ox = useOx();
   // Layout keys this view by session, so the control is stable for its lifetime.
   const control = ox.control(untrack(() => props.session.id));
@@ -60,6 +59,9 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
   // follows new output. Its scroll offset is zero there and negative above,
   // and the tolerance absorbs fractional offsets.
   const [atBottom, setAtBottom] = createSignal(true);
+  onSettled(() => {
+    log.scrollTop = control.scroll();
+  });
   const toBottom = () => {
     log.scrollTop = 0;
   };
@@ -75,15 +77,6 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
 
   return (
     <>
-      <header class="context">
-        <div class="title">
-          <h1>{props.session.label}</h1>
-          {props.toggles}
-        </div>
-        <p class="path">
-          <span class="directory">{props.session.directory}</span>
-        </p>
-      </header>
       <div class="log-frame">
         <div
           ref={log}
@@ -91,7 +84,10 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
           role="log"
           aria-label="Transcript"
           onClick={keepRowInPlace}
-          onScroll={(event) => setAtBottom(event.currentTarget.scrollTop > -1)}
+          onScroll={(event) => {
+            control.setScroll(event.currentTarget.scrollTop);
+            setAtBottom(event.currentTarget.scrollTop > -1);
+          }}
           onDragOver={drop.handlers.onDragOver}
           onDragLeave={drop.handlers.onDragLeave}
           onDrop={drop.handlers.onDrop}
