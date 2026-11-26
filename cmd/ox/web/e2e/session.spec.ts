@@ -768,6 +768,39 @@ test("an answer hides its approval before oxd answers, and a refusal brings it b
   await expect(waiting(page).getByRole("radio", { name: "Allow" })).toBeChecked();
 });
 
+// leaveAndReturn switches to the new-session draft and back to the session
+// whose first prompt asked to approve tool.
+async function leaveAndReturn(page: Page, tool: string) {
+  await newSessionButton(page).click();
+  await expect(waiting(page)).toHaveCount(0);
+  await sessions(page)
+    .getByRole("button", { name: new RegExp(`^approve ${tool}`) })
+    .click();
+}
+
+test("a permission card keeps its typed reply after switching away and back", async ({ ox: page }) => {
+  await newSessionButton(page).click();
+  const approval = await ask(page, "Bash", '{"command":"ls"}');
+  await approval.getByRole("textbox", { name: "Other response" }).fill("use ls -la");
+  await leaveAndReturn(page, "Bash");
+  await expect(approval.getByRole("textbox", { name: "Other response" })).toHaveValue("use ls -la");
+  await expect(approval.getByRole("radio", { name: "Other" })).toBeChecked();
+});
+
+test("a refused answer sent before switching away returns with its reply", async ({ ox: page }) => {
+  await newSessionButton(page).click();
+  const approval = await ask(page, "Bash", '{"command":"ls"}');
+  const held = await hold(page, "session/approve");
+  await approval.getByRole("textbox", { name: "Other response" }).fill("use ls -la");
+  await approval.getByRole("button", { name: "Submit" }).click();
+  await held.arrived;
+  await leaveAndReturn(page, "Bash");
+  await expect(waiting(page)).toHaveCount(0);
+  held.fail("relay unavailable");
+  await expect(main(page).getByRole("alert")).toHaveText("relay unavailable");
+  await expect(approval.getByRole("textbox", { name: "Other response" })).toHaveValue("use ls -la");
+});
+
 test("Ox's own tools show readable names and the message they send", async ({ ox: page }) => {
   await newSessionButton(page).click();
   const approval = await ask(page, "mcp__ox__send_message", '{"to":"some-session","text":"hello there"}');
@@ -1044,6 +1077,18 @@ test("a form keeps its question and answers across a reconnect", async ({ ox: pa
   await expect(send(page)).toBeEnabled({ timeout: 10_000 });
   await expect(form.getByText("2 of 2")).toBeVisible();
   await expect(sections.getByRole("checkbox", { name: "Appendix" })).toBeChecked();
+});
+
+test("a form keeps its question and answers after switching away and back", async ({ ox: page }) => {
+  const { form, color, sections, next, previous } = await askQuestions(page);
+  await color.getByRole("radio", { name: "Red" }).check();
+  await next.click();
+  await sections.getByRole("checkbox", { name: "Appendix" }).check();
+  await leaveAndReturn(page, "AskUserQuestion");
+  await expect(form.getByText("2 of 2")).toBeVisible();
+  await expect(sections.getByRole("checkbox", { name: "Appendix" })).toBeChecked();
+  await previous.click();
+  await expect(color.getByRole("radio", { name: "Red" })).toBeChecked();
 });
 
 test("a single question has no Previous or Next", async ({ ox: page }) => {

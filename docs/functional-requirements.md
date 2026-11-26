@@ -70,8 +70,9 @@ title.
 - **Send cut off.** A send cut off by a lost connection shows an error even if
   Claude received the prompt; the transcript shows whether it did.
 - **Unsent text.** Unsent text, in a session or in a workspace's new-session
-  draft, survives switching views and reconnecting. Reloading the page discards
-  it, and removing a workspace discards its draft.
+  draft, and an approval's unsent answers survive switching views and
+  reconnecting; a question form stays on the question the user left it on.
+  Reloading the page discards them, and removing a workspace discards its draft.
 - **Composer after a send.** Sending clears the composer at once. If the send
   fails, its text and images return to the composer ahead of anything typed
   since.

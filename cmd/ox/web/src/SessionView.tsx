@@ -60,7 +60,9 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
     control.send();
   };
   const drop = createImageDrop(control, () => !archived());
-  const answering = (approvalId: string) => control.answering().has(approvalId);
+  // waiting is the pending approvals with no answer in flight. One being
+  // answered disappears, and returns with its answers if oxd refuses them.
+  const waiting = () => props.snapshot.approvals.filter((a) => !control.answering().has(a.id));
 
   return (
     <>
@@ -110,23 +112,9 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
           onDragLeave={drop.handlers.onDragLeave}
           onDrop={drop.handlers.onDrop}
         >
-          {/* An approval being answered stays mounted, hidden, so a refused
-              answer brings it back as the user left it. */}
-          <Show when={props.snapshot.approvals.length}>
-            <section
-              class="pending"
-              aria-label="Waiting on you"
-              hidden={props.snapshot.approvals.every((a) => answering(a.id))}
-            >
-              <For each={props.snapshot.approvals}>
-                {(approval) => (
-                  <ApprovalRequest
-                    approval={approval}
-                    hidden={answering(approval.id)}
-                    onAnswer={(response) => control.approve(approval.id, response)}
-                  />
-                )}
-              </For>
+          <Show when={waiting().length}>
+            <section class="pending" aria-label="Waiting on you">
+              <For each={waiting()}>{(approval) => <ApprovalRequest approval={approval} control={control} />}</For>
             </section>
           </Show>
           <form class={["box", { dragging: drop.dragging() }]} onSubmit={send} onPointerDown={keepPromptFocus}>
