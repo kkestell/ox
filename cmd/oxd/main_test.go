@@ -278,6 +278,22 @@ func TestConfigRefusesPermissionModesClaudeRefuses(t *testing.T) {
 	}
 }
 
+// The screenshots build, which plays a scene in place of every harness, takes
+// a configuration with thinking summaries on.
+func TestSceneTakesThinkingSummaries(t *testing.T) {
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claudeCfg := cfg.Harnesses["claude"]
+	claudeCfg.ThinkingSummaries = true
+	cfg.Harnesses["claude"] = claudeCfg
+	scripted := fake.Scripted(&fake.Scene{})
+	if err := checkConfig(cfg, map[string]agent.Harness{"claude": scripted, "ur": scripted}); err != nil {
+		t.Fatalf("thinking summaries were refused: %v", err)
+	}
+}
+
 // TestMain runs oxd itself when a test starts this binary as oxd.
 func TestMain(m *testing.M) {
 	if os.Getenv("OXD_TEST_MAIN") == "1" {
