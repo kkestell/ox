@@ -242,9 +242,10 @@ base is the empty tree, so every file shows as added. The listing counts commits
 since the base, uncommitted edits, and untracked files Git does not ignore, and
 leaves out files outside the directory. Each path shows once, with its change
 from the base, including a file removed from the index but kept on disk. A
-renamed file shows as its old path deleted and its new path added. A submodule
-shows as a change to the commit it records. Listing writes nothing in the
-repository.
+renamed file shows as its old path deleted and its new path added. A file whose
+type changed, such as a regular file that became a symlink, shows as modified,
+its old content removed and its new content added. A submodule shows as a change
+to the commit it records. Listing writes nothing in the repository.
 
 The result holds `branch`, the directory's current branch, omitted when `HEAD`
 is detached, and `files`, sorted by `path`. Each file has:

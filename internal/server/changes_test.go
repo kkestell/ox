@@ -174,11 +174,13 @@ func TestListChanges(t *testing.T) {
 	// uncommitted and untracked files, including a deletion, a diff too large
 	// to show, and one that is not UTF-8. A file removed from the index but
 	// kept on disk shows once, as its change from the base; an untracked
-	// symlink shows its target; and an untracked file whose added lines make
-	// a diff over 1 MiB says so. The repository's diff configuration changes
-	// none of the hunks.
+	// symlink shows its target; a file that became a symlink shows its text
+	// removed and its target added; and an untracked file whose added lines
+	// make a diff over 1 MiB says so. The repository's diff configuration
+	// changes none of the hunks and hides no submodule.
 	runGit(t, "-C", repo, "config", "diff.suppressBlankEmpty", "true")
 	runGit(t, "-C", repo, "config", "diff.submodule", "log")
+	runGit(t, "-C", repo, "config", "diff.ignoreSubmodules", "all")
 	runGit(t, "-C", sub, "rm", "-q", "still.txt")
 	runGit(t, "-C", sub, "rm", "-q", "--cached", "file.txt")
 	writeFiles(t, sub, map[string]string{
@@ -190,6 +192,12 @@ func TestListChanges(t *testing.T) {
 		"many.txt":   strings.Repeat("a\n", 400000),
 	})
 	if err := os.Symlink("file.txt", filepath.Join(sub, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(sub, "tail.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("file.txt", filepath.Join(sub, "tail.txt")); err != nil {
 		t.Fatal(err)
 	}
 	inner := filepath.Join(sub, "inner")
@@ -215,6 +223,10 @@ func TestListChanges(t *testing.T) {
 		{Path: "link", Status: "added", Hunks: []hunk{{OldStart: 0, NewStart: 1, Lines: []string{"+file.txt"}}}},
 		{Path: "many.txt", Status: "added", Reason: "diff is larger than 1 MiB"},
 		{Path: "still.txt", Status: "deleted", Hunks: []hunk{{OldStart: 1, NewStart: 0, Lines: []string{"-still"}}}},
+		{Path: "tail.txt", Status: "modified", Hunks: []hunk{
+			{OldStart: 1, NewStart: 0, Lines: []string{"-first", "-old"}},
+			{OldStart: 0, NewStart: 1, Lines: []string{"+file.txt"}},
+		}},
 	}
 	if !reflect.DeepEqual(result.Files, want) {
 		t.Errorf("the workspace listed %+v, want %+v", result.Files, want)
@@ -227,6 +239,28 @@ func TestListChanges(t *testing.T) {
 	response := c.request("workspace/list_changes", map[string]string{"session_id": orphan.SessionID})
 	if response.Error == nil || response.Error.Code != -32000 || response.Error.Message != "no commit in common with the workspace's branch" {
 		t.Errorf("an orphan branch returned %.200s %+v", response.Result, response.Error)
+	}
+
+	// A directory that became another repository lacks the workspace's
+	// commits, so it too has no base.
+	other := worktreeSession(t, c, workspaceID)
+	if err := os.RemoveAll(other.Directory); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, "init", "-q", other.Directory)
+	runGit(t, "-C", other.Directory, "commit", "-q", "--allow-empty", "-m", "other")
+	response = c.request("workspace/list_changes", map[string]string{"session_id": other.SessionID})
+	if response.Error == nil || response.Error.Code != -32000 || response.Error.Message != "no commit in common with the workspace's branch" {
+		t.Errorf("another repository returned %.200s %+v", response.Result, response.Error)
+	}
+
+	// A directory that no longer exists returns Git's reason.
+	if err := os.RemoveAll(other.Directory); err != nil {
+		t.Fatal(err)
+	}
+	response = c.request("workspace/list_changes", map[string]string{"session_id": other.SessionID})
+	if response.Error == nil || response.Error.Code != -32000 || !strings.Contains(response.Error.Message, "No such file or directory") {
+		t.Errorf("a removed directory returned %.200s %+v", response.Result, response.Error)
 	}
 
 	// A repository with no commits yet lists every file as added.
