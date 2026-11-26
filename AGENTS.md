@@ -213,6 +213,9 @@ need them cannot happen.
   by changing who owns the state, not by handling the interleaving. A race
   between independent requests in which every outcome is valid is not a
   defect.
+- A reviewer confirms a finding with one reproduction. A failure it cannot
+  reproduce goes in the review as unconfirmed, and the reviewer does not chase
+  it.
 - A review gives each finding one of three outcomes:
   - **Fix:** a confirmed defect, or a design, test, or documentation problem
     whose fix costs less than keeping it.
@@ -278,6 +281,10 @@ change, one that touches no state owner in `oxd`, protocol, persistence, or
 harness driving, such as a change to the web client alone, runs those child
 sessions on Sonnet at medium effort, and its planning and reviewing sessions
 start no children of their own.
+
+When a decision the user approved turns out to need machinery the plan did not
+include, the top-level agent brings the user its cost and the simpler
+alternative before any session builds it.
 
 1. A child session on Opus 5.5 at high effort runs `/ox-plan`. The user
    approves the plan's requirement changes with its other product questions.
@@ -409,6 +416,7 @@ none, and Blocked when every check that can observe the change ran.
   `make live`. Ur's live test, `TestLiveUr`, uses the built-in DeepSeek model
   through OpenRouter with `OPENROUTER_API_KEY` from `.env`.
 - Keep test setup simple; avoid elaborate mocks and fake runtimes.
+- One session at a time runs `make e2e` or Playwright in a worktree.
 - `make test`, `make e2e`, and `make dev` build with the race detector. A data race fails
   the test, or stops `oxd` with the race's report.
 - A change is done once the checks that can observe it have run: `make test`
