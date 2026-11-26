@@ -745,9 +745,10 @@ JSON array of every session except the caller and archived sessions, in
 workspace order and oldest first. Each entry has `session_id`, `label` (a
 child's title, or else the title the titling model generated from the first
 prompt the user sent it, or else that prompt's first line shortened to 48
-characters, or the first 8 characters of its ID), `workspace` (the path),
-`harness`, `model`, `effort`, `permission_mode`, and `state` (`parked`, or the
-execution state, including `background`).
+characters, or the first 8 characters of its ID), `workspace` (the path), its
+[`directory` and `worktree`](#workspaces-and-sessions), `harness`, `model`,
+`effort`, `permission_mode`, and `state` (`parked`, or the execution state,
+including `background`).
 
 `send_message` takes `to`, a session ID, and `text`. It queues the text behind
 every input that session has not taken, starting the session first when parked,
@@ -761,7 +762,7 @@ archived`, and a session whose harness cannot be launched with the launch error.
 The model receives the text wrapped with its sender:
 
 ```text
-Message from Ox session <from> ("<label>") in <workspace>:
+Message from Ox session <from> ("<label>") in <directory>:
 
 <text>
 
