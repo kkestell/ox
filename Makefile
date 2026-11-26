@@ -1,4 +1,4 @@
-.PHONY: dev build web test live lint e2e screenshots metrics docs hooks prune
+.PHONY: dev build web test live lint e2e screenshots metrics docs hooks
 
 # A recipe that fails leaves no target behind, such as a partial download.
 .DELETE_ON_ERROR:
@@ -59,11 +59,6 @@ docs:
 
 hooks:
 	git config core.hooksPath .githooks
-
-# prune removes each local branch whose pull request has merged, and its
-# worktree.
-prune:
-	scripts/prune.sh
 
 $(GOLANGCI_LINT):
 	mkdir -p bin

@@ -127,8 +127,7 @@ We test with `make dev`. Ox's test state is disposable.
 │           └── wire.go        # stdio protocol between oxd and ur
 ├── Makefile                   # build, test, run, and format docs
 └── scripts
-    ├── metrics.py             # prints size and complexity
-    └── prune.sh               # removes merged branches and their worktrees
+    └── metrics.py             # prints size and complexity
 ```
 
 ## Implementation
@@ -309,9 +308,8 @@ alternative before any session builds it.
 8. The top-level agent waits for the pull request's checks with
    `gh pr checks <N> --watch`, fixes the cause of any that fails, and merges
    it by squash with `gh pr merge <N> --squash`, so its title is the commit
-   subject. It then pulls and runs `make prune` in the main checkout, and
-   gives the user its [handoff](#handoff). `make prune` removes each local
-   branch whose pull request has merged, and its worktree.
+   subject. It then pulls in the main checkout and gives the user its
+   [handoff](#handoff).
 
 The user owns `docs/functional-requirements.md`. It changes only when a change
 adds, alters, or removes behavior the user can observe, and only with the text
