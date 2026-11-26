@@ -1878,6 +1878,8 @@ func TestSendMessage(t *testing.T) {
 		SessionID string `json:"session_id"`
 		Label     string `json:"label"`
 		Workspace string `json:"workspace"`
+		Directory string `json:"directory"`
+		Worktree  string `json:"worktree"`
 		Harness   string `json:"harness"`
 		agent.Settings
 		State string `json:"state"`
@@ -1900,7 +1902,7 @@ func TestSendMessage(t *testing.T) {
 		}
 		return byID
 	}
-	if got := list()[b]; got != (listed{SessionID: b, Label: b[:8], Workspace: dir, Harness: "fake",
+	if got := list()[b]; got != (listed{SessionID: b, Label: b[:8], Workspace: dir, Directory: dir, Harness: "fake",
 		Model: "m", PermissionMode: "manual", State: "parked"}) {
 		t.Fatalf("list_sessions listed %+v", got)
 	}

@@ -263,6 +263,26 @@ func TestWorktreeSession(t *testing.T) {
 		!strings.Contains(response.Error.Message, "inside a session's worktree") {
 		t.Fatalf("workspace/create in the worktree returned %+v", response)
 	}
+
+	t.Log("other sessions see where the worktree session works")
+	params := createParams(addWorkspace(t, c, filepath.Join(repo, "sub")), "")
+	delete(params, "worktree")
+	var plain struct {
+		SessionID string `json:"session_id"`
+	}
+	json.Unmarshal(c.call("session/create", params), &plain)
+	text, refused := attach(t, s, plain.SessionID).tool("list_sessions", map[string]any{})
+	var others []listedWorktree
+	if err := json.Unmarshal([]byte(text), &others); refused || err != nil || len(others) != 1 || others[0] != sess {
+		t.Fatalf("list_sessions listed %q, not %+v", text, sess)
+	}
+	c.forget(plain.SessionID)
+	if text, refused := attach(t, s, sess.SessionID).tool("send_message", map[string]string{"to": plain.SessionID, "text": "hello"}); refused {
+		t.Fatalf("send_message returned %q", text)
+	}
+	if reply := c.update(plain.SessionID, "result").Result.Text; !strings.Contains(reply, " in "+sess.Directory+":\n") {
+		t.Fatalf("the message reached the model as %q, without its sender's directory %s", reply, sess.Directory)
+	}
 }
 
 // A creation that cannot make its worktree fails with the reason and leaves

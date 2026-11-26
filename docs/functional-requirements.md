@@ -182,9 +182,10 @@ title.
   effort levels, and permission modes Ox offers, in any permission mode, without
   asking for approval.
 - **Claude can message other sessions.** Claude can list the other sessions that
-  are not archived, with each one's label, workspace, settings, and status, and
-  send any of them a message. It does so without asking for approval, except in
-  plan mode, where each message asks first.
+  are not archived, with each one's label, workspace, the folder it works in,
+  its worktree if it has one, settings, and status, and send any of them a
+  message. It does so without asking for approval, except in plan mode, where
+  each message asks first.
 - **Claude can read other sessions.** Claude can read any other session's
   transcript and current status, in any permission mode, without asking for
   approval.
