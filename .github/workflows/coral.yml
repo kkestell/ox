@@ -22,7 +22,7 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
-    uses: kkestell/coral/.github/workflows/coral.yml@v0.4.0
+    uses: kkestell/coral/.github/workflows/coral.yml@main
     with:
       model: deepseek/deepseek-v4.1-flash-1017
       reasoning_effort: high
