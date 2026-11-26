@@ -42,6 +42,8 @@ p { overflow-wrap: break-word; }
   --drop-target: color-mix(in oklab, var(--ring) 25%, transparent);
   --overlay: rgb(0 0 0 / 50%);
   --scrollbar-thumb: color-mix(in oklab, var(--muted-foreground) 50%, transparent);
+  --tab-active: light-dark(var(--background), var(--input-background));
+  --tab-active-border: light-dark(transparent, var(--input));
   --sidebar: light-dark(oklch(0.985 0 0), oklch(0.205 0 0));
   --sidebar-accent: light-dark(oklch(0.97 0 0), color-mix(in srgb, oklch(0.269 0 0) 50%, var(--sidebar)));
   --sidebar-selected: light-dark(oklch(0.94 0 0), var(--secondary));
@@ -481,12 +483,13 @@ main > .loading { flex: 1; display: flex; align-items: center; justify-content: 
   padding: 0 var(--space-2); border-bottom: var(--border-width) solid var(--border); color: var(--text);
 }
 .strip.dropping { background: var(--accent); }
-.strip > button.icon { margin-right: var(--space-1); }
+.strip > button.icon { margin: 0 var(--space-1) 0 var(--space-0-5); }
 .tabs { flex: 0 1 auto; min-width: 0; height: 100%; display: flex; align-items: stretch; overflow-x: auto; scrollbar-width: none; }
 .tab { flex: none; max-width: var(--tab-max-width); display: flex; align-items: center; gap: var(--space-0-5); padding: 0 var(--space-1) 0 var(--space-2); }
+.tab:not(:has(> button.x)) { padding-right: var(--space-2); }
 .tab.active { box-shadow: inset 0 calc(-1 * var(--border-width-lg)) 0 var(--border); }
 .group.focused .tab.active { box-shadow: inset 0 calc(-1 * var(--border-width-lg)) 0 var(--foreground); }
-.tab [role="tab"] { min-width: 0; height: 100%; gap: var(--space-2); font-size: var(--text-sm); color: var(--muted-foreground); cursor: default; }
+.tab [role="tab"] { flex: 0 1 auto; min-width: 0; height: 100%; gap: var(--space-2); font-size: var(--text-sm); color: var(--muted-foreground); cursor: default; }
 .tab.active [role="tab"] { color: var(--foreground); }
 :is(.tab, .tab-picker, .tab-menu) .label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .tab button.x { width: var(--icon-button-size-sm); height: var(--icon-button-size-sm); color: var(--muted-foreground); }
@@ -494,7 +497,7 @@ main > .loading { flex: 1; display: flex; align-items: center; justify-content: 
 .tab .counts { margin-left: var(--space-0-5); }
 .strip .editor-actions {
   flex: none; display: flex; align-items: center; gap: var(--space-1); margin-left: auto;
-  margin-right: calc(-1 * var(--space-0-5)); color: var(--text);
+  margin-right: var(--space-0-5); color: var(--text);
 }
 /* A drag over a group shades the half or the whole of it that the drop takes. */
 .drop-preview {
@@ -787,7 +790,12 @@ aside.files {
   flex: none; display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); height: var(--header-height);
   padding: 0 var(--space-2) 0 var(--inset); border-bottom: var(--border-width) solid var(--border);
 }
-.files > header .toggle-group button { height: var(--control-height-sm); padding: 0 var(--space-2-5); font-size: var(--text-xs); font-weight: var(--font-medium); }
+.files > header .toggle-group { padding: var(--space-0-5); border-radius: var(--radius-lg); background: var(--muted); }
+.files > header .toggle-group button {
+  height: var(--control-height-sm); padding: 0 var(--space-2-5); border: var(--border-width) solid transparent;
+  font-size: var(--text-xs); font-weight: var(--font-medium);
+}
+.files > header .toggle-group button[aria-pressed="true"] { border-color: var(--tab-active-border); background: var(--tab-active); box-shadow: var(--shadow-sm); }
 .files > header > button.panel-right { margin-right: var(--space-0-5); color: var(--text); }
 
 /* FileTree.tsx */
@@ -798,10 +806,10 @@ aside.files .tree { flex: 1; min-height: 0; overflow-y: auto; padding: var(--spa
 aside.files ul { list-style: none; }
 aside.files .row {
   display: flex; align-items: center; justify-content: flex-start; gap: var(--space-1); width: 100%; height: var(--row-height-sm);
-  padding: 0 var(--space-2) 0 calc(var(--space-2) + var(--depth) * var(--tree-indent));
+  padding: 0 var(--space-2) 0 calc(var(--space-2) + var(--depth, 0) * var(--tree-indent));
   border-radius: var(--radius-md); color: var(--muted-foreground); cursor: default;
 }
-aside.files :is(.file-row, .note) { padding-left: calc(var(--space-2) + var(--icon-size) + var(--space-1) + var(--depth) * var(--tree-indent)); }
+aside.files :is(.file-row, .note) { padding-left: calc(var(--space-2) + var(--icon-size) + var(--space-1) + var(--depth, 0) * var(--tree-indent)); }
 aside.files button.row { text-align: left; }
 aside.files button.row:hover { background: var(--accent); }
 aside.files button.row[aria-current="true"] { background: var(--secondary); }
@@ -815,8 +823,8 @@ aside.files .chevron-right.open::before, .hunk .chevron-right.open::before { tra
 
 /* Changes.tsx */
 /* The Changes list: a summary row, then a row per changed file. */
-aside.files .row.summary { height: var(--row-height); margin-bottom: var(--space-1); padding-left: var(--space-2); }
-aside.files .change-row { gap: var(--space-2); padding-left: var(--space-2); }
+aside.files .row.summary { height: var(--row-height); margin-bottom: var(--space-1); }
+aside.files .change-row { gap: var(--space-2); }
 aside.files .change-row .folder { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--text-xs); color: var(--muted-foreground); }
 
 /* The branch and the lines the changes add and remove, as the list's title. */
@@ -902,7 +910,7 @@ aside.files .change-row .folder { min-width: 0; overflow: hidden; white-space: n
 @media (pointer: coarse) {
   body { font-size: var(--text-2xl); }
   textarea, select, input:not([type="radio"], [type="checkbox"], [type="range"]) { font-size: var(--text-2xl); }
-  :is(.editor-actions, .toggle-group) button.icon { width: var(--touch-control-width); }
+  :is(.editor-actions, .toggle-group) button.icon, button:is(.panel-left, .panel-right) { width: var(--touch-control-width); }
   nav { --row: var(--touch-height); }
   nav li.child { font-size: var(--text-xl); }
   nav :is(header, li) .actions { opacity: 1; }

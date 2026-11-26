@@ -782,6 +782,36 @@ test.describe("on a wide screen", () => {
     await expect(files(page)).toHaveCount(0);
   });
 
+  test("each panel toggle stays in place as it moves between its panel's header and a tab strip", async ({
+    ox: page,
+  }) => {
+    const toggleSessions = page.getByRole("button", { name: "Toggle sessions" });
+    const at = async (button: Locator) => (await button.boundingBox())?.x;
+    await newSession(page, "first");
+    const sessionsShown = await at(toggleSessions);
+    await toggleSessions.click();
+    await expect(groups(page).getByRole("button", { name: "Toggle sessions" })).toBeVisible();
+    expect(await at(toggleSessions)).toBe(sessionsShown);
+
+    const panelHidden = await at(togglePanel(page));
+    await togglePanel(page).click();
+    await expect(files(page).getByRole("button", { name: "Toggle panel" })).toBeVisible();
+    expect(await at(togglePanel(page))).toBe(panelHidden);
+  });
+
+  test("a long file name shortens its tab, which ends before the next tab starts", async ({ ox: page, services }) => {
+    const long = `${"a-long-file-name-".repeat(4)}first.txt`;
+    writeFileSync(join(services.workspace, "src", long), "first\n");
+    await newSession(page, "first");
+    await showFiles(page);
+    await openFile(page, `src/${long}`);
+    await entry(page, "b.txt").click();
+    await expect(fileTab(page, "b.txt")).toHaveAttribute("aria-selected", "true");
+    const close = await closeButton(page, long).boundingBox();
+    const next = await fileTab(page, "b.txt").boundingBox();
+    expect((close?.x ?? 0) + (close?.width ?? 0)).toBeLessThanOrEqual(next?.x ?? 0);
+  });
+
   test("the panel lists the files or the changes, and the choice holds for every session", async ({ ox: page }) => {
     await newSession(page, "first");
     await showFiles(page);
