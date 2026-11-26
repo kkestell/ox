@@ -97,8 +97,8 @@ export function SessionsToggle(props: { panels: Panels }) {
 }
 
 // ModeTabs opens the workbench on the files or the changes, with neither
-// selected while it is closed: icon buttons joined in one control, as the file
-// view's modes are.
+// selected while it is closed: a group of icon toggles, as the file view's
+// modes are.
 export function ModeTabs(props: { panels: Panels }) {
   const tab = (mode: Mode, label: string, icon: string) => (
     <button
@@ -112,7 +112,7 @@ export function ModeTabs(props: { panels: Panels }) {
     />
   );
   return (
-    <div role="tablist" aria-label="Workbench" class="segmented mode-tabs">
+    <div role="tablist" aria-label="Workbench" class="toggle-group mode-tabs">
       {tab("files", "Files", "files")}
       {tab("changes", "Changes", "file-diff")}
     </div>

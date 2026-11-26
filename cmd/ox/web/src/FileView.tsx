@@ -97,7 +97,7 @@ export function FileView(props: {
         </div>
         <div class="editor-actions">
           <Show when={mode() !== undefined && shown().length > 1}>
-            <fieldset aria-label="Show as" class="segmented">
+            <fieldset aria-label="Show as" class="toggle-group">
               <For each={shown()}>
                 {(each) => (
                   <button

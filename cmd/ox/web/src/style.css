@@ -8,6 +8,7 @@ html { overscroll-behavior: none; }
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body { -webkit-font-smoothing: antialiased; }
 input, button, textarea, select { font: inherit; color: inherit; }
+pre, code { font-family: var(--font-mono); }
 p { overflow-wrap: break-word; }
 
 /* The neutral palette of shadcn/ui. */
@@ -291,8 +292,8 @@ main > .loading { flex: 1; display: flex; align-items: center; justify-content: 
 .markdown h1 { font-size: calc(1em + 4px); }
 .markdown h2 { font-size: calc(1em + 2px); }
 .markdown ul, .markdown ol { padding-left: 1.5rem; }
-.markdown code { padding: 0.125rem 0.25rem; border-radius: 0.25rem; background: var(--secondary); font-family: var(--font-mono); font-size: 0.8125rem; }
-.markdown pre { padding: 0.5rem 0.75rem; overflow-x: auto; border-radius: var(--radius); background: var(--secondary); font-family: var(--font-mono); font-size: 0.75rem; white-space: pre; }
+.markdown code { padding: 0.125rem 0.25rem; border-radius: 0.25rem; background: var(--secondary); font-size: 0.8125rem; }
+.markdown pre { padding: 0.5rem 0.75rem; overflow-x: auto; border-radius: var(--radius); background: var(--secondary); font-size: 0.75rem; white-space: pre; }
 .markdown pre code { padding: 0; background: none; font-size: inherit; }
 .prompt .markdown code, .prompt .markdown pre { background: var(--background); }
 .prompt .markdown pre code { background: none; }
@@ -319,7 +320,7 @@ details:is(.tool, .reasoning) summary::-webkit-details-marker { display: none; }
 details:is(.tool, .reasoning) .name { flex: none; }
 details.tool .detail { min-width: 0; margin-left: 0.25rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted-foreground); }
 details.tool .card { margin: 0.5rem 0 0 1.5rem; border-radius: calc(var(--radius) + 4px); overflow: hidden; background: var(--card); box-shadow: var(--shadow-sm); }
-details.tool pre { padding: 0.5rem 0.75rem; overflow-x: auto; white-space: pre-wrap; overflow-wrap: break-word; font-family: var(--font-mono); font-size: 0.75rem; }
+details.tool pre { padding: 0.5rem 0.75rem; overflow-x: auto; white-space: pre-wrap; overflow-wrap: break-word; font-size: 0.75rem; }
 .card > .plan { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); }
 details.tool pre + pre { border-top: 1px solid var(--border); }
 
@@ -546,17 +547,15 @@ main:has(~ .viewer) { flex-grow: var(--split); }
    as the session list's ends the list's header. */
 :is(.viewer, .files) > header > button.panel-right { flex: none; margin-left: -0.375rem; color: var(--text); }
 /* The editor actions sit at the right end of the header and the file's bar, as
-   in VS Code; a toggle that is off is dimmed, as the panel toggles are. */
+   in VS Code. */
 .viewer .editor-actions { flex: none; display: flex; align-items: center; gap: 0.25rem; margin-left: auto; margin-right: -0.375rem; color: var(--text); }
-.viewer .editor-actions button[aria-pressed="false"] { color: var(--muted-foreground); }
-/* The file's modes: one control of joined buttons, as shadcn/ui's outline Toggle Group. */
-.segmented { display: inline-flex; min-inline-size: auto; margin: 0; padding: 0; border: 1px solid var(--input); border-radius: var(--radius-md); overflow: hidden; }
-.segmented > button.icon { width: 1.75rem; height: 1.5rem; border-radius: 0; }
-.segmented > button + button { border-left: 1px solid var(--input); }
-.segmented > button:is([aria-pressed="true"], [aria-selected="true"]) { background: var(--muted); color: var(--foreground); }
-.segmented > button[aria-selected="false"] { color: var(--muted-foreground); }
+/* Toggles, as shadcn/ui's Toggle and Toggle Group: borderless icon buttons, dimmed
+   while off and on a filled background while on. */
+.toggle-group { display: inline-flex; gap: 0.125rem; min-inline-size: auto; margin: 0; padding: 0; border: 0; }
+:is(.editor-actions, .toggle-group) button:is([aria-pressed="false"], [aria-selected="false"]) { color: var(--muted-foreground); }
+:is(.editor-actions, .toggle-group) button:is([aria-pressed="true"], [aria-selected="true"]) { background: var(--muted); color: var(--foreground); }
 .viewer > .message { padding: 0.5rem 0.75rem calc(0.5rem + var(--bottom-inset)); font-size: 0.75rem; color: var(--muted-foreground); }
-.viewer > pre { flex: 1; min-height: 0; overflow: auto; padding: 0.5rem 0 calc(0.5rem + var(--bottom-inset)); font-size: 0.75rem; white-space: pre; font-family: var(--font-mono); color: var(--foreground); }
+.viewer > pre { flex: 1; min-height: 0; overflow: auto; padding: 0.5rem 0 calc(0.5rem + var(--bottom-inset)); font-size: 0.75rem; white-space: pre; color: var(--foreground); }
 /* Line numbers, as in GitHub and VS Code: each line's number is generated
    content, so selecting and copying take only the text, in a gutter that
    sticks to the pane's left edge while the text scrolls under it. The gutter
@@ -600,7 +599,7 @@ main:has(~ .viewer) { flex-grow: var(--split); }
   border: 0; border-radius: 0; background: var(--muted); box-shadow: none; font-size: 0.75rem; font-weight: 400; color: var(--muted-foreground);
 }
 .hunk > button:hover { background: var(--accent); }
-.hunk pre { overflow-x: auto; font-size: 0.75rem; font-family: var(--font-mono); color: var(--foreground); white-space: pre; }
+.hunk pre { overflow-x: auto; font-size: 0.75rem; color: var(--foreground); white-space: pre; }
 :is(.hunk, .viewer pre.diff) code { --gutter: calc(0.75rem + var(--digits) * 1ch + 0.75rem); display: block; width: max-content; min-width: 100%; }
 .viewer pre.wrap.diff code { width: auto; }
 :is(.hunk, .viewer pre.diff) .line { display: block; min-height: 1lh; padding-left: var(--gutter); text-indent: calc(-1 * var(--gutter)); text-decoration: none; }
@@ -640,7 +639,7 @@ main:has(~ .viewer) { flex-grow: var(--split); }
   nav { --row: 2.5rem; }
   nav li.child { font-size: 16px; }
   aside.files .row, .hunk > button { height: 2.5rem; }
-  .segmented > button.icon { width: 2.25rem; height: 2rem; }
+  :is(.editor-actions, .toggle-group) button.icon { width: 2.25rem; }
   .change > header button.icon { width: 2.5rem; height: 2.5rem; }
   nav :is(header, li) .actions { opacity: 1; }
   nav li button.chevron-right { opacity: 1; }
