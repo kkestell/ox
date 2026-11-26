@@ -28,7 +28,8 @@ We test with `make dev`. Ox's test state is disposable.
 ├── bin                        # build output
 │   ├── ox
 │   ├── ox-mcp
-│   └── oxd
+│   ├── oxd
+│   └── ur
 ├── cmd
 │   ├── ox                     # web UI server
 │   │   ├── main_test.go       # relay tests
@@ -37,11 +38,13 @@ We test with `make dev`. Ox's test state is disposable.
 │   ├── ox-mcp                 # MCP forwarder
 │   │   ├── main_test.go       # forwarder tests
 │   │   └── main.go            # stdio forwarder to oxd
-│   └── oxd                    # daemon
-│       ├── main_test.go       # startup tests
-│       ├── main.go            # daemon startup
-│       ├── noscene.go         # no scene player in normal builds
-│       └── scene.go           # -scene flag in screenshots builds
+│   ├── oxd                    # daemon
+│   │   ├── main_test.go       # startup tests
+│   │   ├── main.go            # daemon startup
+│   │   ├── noscene.go         # no scene player in normal builds
+│   │   └── scene.go           # -scene flag in screenshots builds
+│   └── ur                     # Ur program
+│       └── main.go            # runs the engine
 ├── docs
 │   ├── architecture.md        # how oxd and ox are built
 │   ├── functional-requirements.md # what users see and rely on
@@ -85,6 +88,9 @@ We test with `make dev`. Ox's test state is disposable.
 │   │   └── jsonrpc.go         # JSON-RPC messages
 │   ├── paths
 │   │   └── paths.go           # XDG file locations
+│   ├── process
+│   │   ├── process_test.go    # delivery tests
+│   │   └── process.go         # harness process I/O
 │   ├── server
 │   │   ├── client_test.go     # test client
 │   │   ├── conn.go            # client connections
@@ -105,13 +111,20 @@ We test with `make dev`. Ox's test state is disposable.
 │   ├── store
 │   │   ├── store_test.go      # store tests
 │   │   └── store.go           # SQLite persistence
-│   └── ur
-│       ├── instructions.go    # system message
-│       ├── shell_test.go      # shell tool tests
-│       ├── shell.go           # shell tool
-│       ├── stream.go          # OpenRouter requests and streams
+│   └── ur                     # Ur harness
+│       ├── agent.go           # adapter from ur's reports to an Agent
+│       ├── ask.go             # ur -ask
+│       ├── engine             # the ur program
+│       │   ├── engine_test.go # end-of-input test
+│       │   ├── engine.go      # turn loop and conversation file
+│       │   ├── instructions.go # system message
+│       │   ├── shell_test.go  # shell tool tests
+│       │   ├── shell.go       # shell tool
+│       │   └── stream.go      # OpenRouter requests and streams
+│       ├── harness.go         # harness and checks
 │       ├── ur_test.go         # Ur tests
-│       └── ur.go              # Ur agent
+│       └── wire
+│           └── wire.go        # stdio protocol between oxd and ur
 ├── Makefile                   # build, test, run, and format docs
 └── scripts
     ├── metrics.py             # prints size and complexity
@@ -135,8 +148,8 @@ We test with `make dev`. Ox's test state is disposable.
   Keep unresolved protocol choices open until they need a decision.
 - A session's state is owned by its goroutine, and other code reaches it only
   by posting an operation to it. A harness's own goroutines only read its
-  process, fire timers, and do the I/O its turn needs, such as Ur's HTTP
-  requests and shell commands, and deliver what they produce through `Events`.
+  process, fire timers, and do the I/O its turn needs, and deliver what they
+  produce through `Events`.
 - A response is queued by the owner of the state it reports, when it reads
   that state.
 - A request carries only what the user changed, and `oxd` applies it to the
