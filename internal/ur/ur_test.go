@@ -685,6 +685,36 @@ func TestStopDuringTurn(t *testing.T) {
 	}
 }
 
+// Stop after ur reports a turn idle, and before it reports taking the queued
+// input that starts the next, still ends a running turn.
+func TestStopBetweenTurns(t *testing.T) {
+	release := make(chan struct{})
+	r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, req *http.Request, n int) {
+		if n > 0 {
+			<-req.Context().Done()
+			return
+		}
+		<-release
+		sse(w, "one")
+	})
+	r.send("p1", "hi")
+	r.request()
+	r.send("p2", "next")
+	close(release)
+	r.result()
+	r.agent.Handle(<-r.agent.Events())
+	r.updates = nil
+	r.agent.Stop()
+	var got []string
+	for _, u := range r.updates {
+		got = append(got, u.Type+" "+u.MessageID+" "+u.Error)
+	}
+	want := []string{"prompt_cancelled p2 ", "exited p2 stopped"}
+	if !slices.Equal(got, want) {
+		t.Errorf("Stop published %q, not %q", got, want)
+	}
+}
+
 // A second agent sees the streamed reply while the first request is still open.
 func TestResumeDuringTurn(t *testing.T) {
 	r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, req *http.Request, n int) {

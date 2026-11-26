@@ -328,7 +328,7 @@ func (a *Agent) Parkable() bool {
 func (a *Agent) Stop() {
 	a.proc.Terminate(killAfter)
 	reason := ""
-	if a.tracker.Reported() != agent.StateIdle {
+	if a.tracker.State() != agent.StateIdle {
 		reason = "stopped"
 	}
 	a.end(reason)
