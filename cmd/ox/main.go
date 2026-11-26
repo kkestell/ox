@@ -109,7 +109,8 @@ type relay struct {
 }
 
 // newRelay returns a relay to the oxd socket that accepts requests addressed
-// to the hosts of addrs.
+// to the hosts of addrs. Host names are case-insensitive, and the relay keeps
+// and compares them in lowercase.
 func newRelay(socket string, addrs []string) (*relay, error) {
 	r := &relay{socket: socket, conns: make(map[string]net.Conn)}
 	for _, a := range addrs {
@@ -117,7 +118,7 @@ func newRelay(socket string, addrs []string) (*relay, error) {
 		if err != nil {
 			return nil, err
 		}
-		r.hosts = append(r.hosts, host)
+		r.hosts = append(r.hosts, strings.ToLower(host))
 	}
 	return r, nil
 }
@@ -141,7 +142,7 @@ func (r *relay) checkHost(next http.Handler) http.Handler {
 		if err != nil {
 			host = req.Host
 		}
-		host = strings.Trim(host, "[]")
+		host = strings.ToLower(strings.Trim(host, "[]"))
 		if !slices.Contains([]string{"localhost", "127.0.0.1", "::1"}, host) && !slices.Contains(r.hosts, host) {
 			http.Error(w, "unknown host", http.StatusForbidden)
 			return
