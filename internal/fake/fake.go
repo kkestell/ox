@@ -149,7 +149,7 @@ func (a *Agent) Snapshot() agent.Snapshot {
 	return snapshot
 }
 
-func (a *Agent) idle() bool {
+func (a *Agent) Idle() bool {
 	return a.tracker.Idle() && a.config == nil
 }
 
@@ -163,7 +163,7 @@ func (a *Agent) idle() bool {
 // the reply, and an input "usage reset" reports them with the 5-hour window
 // already reset.
 func (a *Agent) Send(input agent.Input) error {
-	idle := a.idle()
+	idle := a.Idle()
 	a.tracker.Accept(input)
 	if idle {
 		a.begin()
@@ -308,7 +308,7 @@ func (a *Agent) Interrupt(done func(error)) {
 }
 
 func (a *Agent) Configure(patch agent.SettingsPatch, done func(error)) {
-	if !a.idle() {
+	if !a.Idle() {
 		done(agent.ErrBusy)
 		return
 	}
@@ -317,7 +317,7 @@ func (a *Agent) Configure(patch agent.SettingsPatch, done func(error)) {
 }
 
 func (a *Agent) Parkable() bool {
-	return a.idle() && a.tracker.Tasks() == 0
+	return a.Idle() && a.tracker.Tasks() == 0
 }
 
 func (a *Agent) Stop() {

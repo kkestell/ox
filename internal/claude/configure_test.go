@@ -195,7 +195,7 @@ func TestInterruptDuringConfiguration(t *testing.T) {
 	}
 	*updates = nil
 	acknowledge(t, a, requestID, "success")
-	if err := <-result; err != nil || input.Len() != 0 || len(*updates) != 0 || !a.idle() {
+	if err := <-result; err != nil || input.Len() != 0 || len(*updates) != 0 || !a.Idle() {
 		t.Fatalf("the configuration's end after an interrupt wrote %q, published, or did not release the agent: %v, %+v", input, err, *updates)
 	}
 }

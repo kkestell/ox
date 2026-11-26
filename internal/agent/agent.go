@@ -44,6 +44,10 @@ type Agent interface {
 	// from a later Handle, once the stopped turn has ended and its updates are
 	// published, or at once when there is nothing to stop.
 	Interrupt(done func(error))
+	// Idle reports that the agent has no turn, untaken input, approval, or
+	// configuration in progress, though background tasks may run. The session
+	// is free to be archived only while its agent is idle.
+	Idle() bool
 	// Configure applies the changed fields and calls done with the outcome,
 	// now or from a later Handle. Already applied changes are reported through
 	// OnConfigured even if a later change fails. Configure reports ErrBusy unless

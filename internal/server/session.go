@@ -317,10 +317,9 @@ func (sess *session) isArchived() bool {
 	return sess.archived
 }
 
-// free reports whether the session is idle, in the background, or parked.
+// free reports whether the session is parked or its agent is idle.
 func (sess *session) free() bool {
-	state := sess.snapshot().State
-	return state == agent.StateIdle || state == agent.StateBackground || state == agent.StateParked
+	return sess.agent == nil || sess.agent.Idle()
 }
 
 // held is a session whose goroutine waits in hold until it is released.
