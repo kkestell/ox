@@ -97,7 +97,7 @@ function FolderRow(props: { tree: Tree; path: string; name: string; depth: numbe
         class="row"
         style={{ "--depth": props.depth }}
         title={props.path}
-        data-status={props.tree.listing.status(props.path)}
+        data-status={props.tree.listing.folderStatus(props.path)}
         aria-expanded={open() ? "true" : "false"}
         onClick={() => props.tree.control().setExpanded(props.path, !open())}
       >
@@ -121,7 +121,7 @@ function FileRow(props: { tree: Tree; path: string; name: string; depth: number 
         class="row file-row"
         style={{ "--depth": props.depth }}
         title={props.path}
-        data-status={props.tree.listing.status(props.path)}
+        data-status={props.tree.listing.fileStatus(props.path)}
         aria-current={open() ? "true" : undefined}
         draggable={props.tree.draggable() ? "true" : "false"}
         onDragStart={(event) => {

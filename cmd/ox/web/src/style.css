@@ -833,7 +833,7 @@ aside.files .change-row .folder { min-width: 0; overflow: hidden; white-space: n
 .branch-summary { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-1-5); color: var(--muted-foreground); }
 .branch-summary .branch { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--text-xs); font-family: var(--font-mono); color: var(--text); }
 .branch-summary.message { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--text-xs); }
-.branch-summary .counts { margin-left: auto; }
+.branch-summary .counts, .change-row .counts { margin-left: auto; }
 .counts { flex: none; display: flex; gap: var(--space-1-5); font-size: var(--text-xs); font-family: var(--font-mono); }
 .counts .added { color: var(--added); }
 .counts .removed { color: var(--destructive); }

@@ -1,8 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
 	"os"
 	"os/exec"
@@ -20,13 +22,21 @@ type changes struct {
 	Files  []changedFile `json:"files"`
 }
 
-// changedFile is one changed file: its hunks, or, when they cannot be shown,
-// the reason instead.
+// changedFile is one changed file: the lines it adds and removes, when Git
+// counts them, and its hunks, or, when they cannot be shown, the reason
+// instead.
 type changedFile struct {
-	Path   string `json:"path"`
-	Status string `json:"status"`
-	Hunks  []hunk `json:"hunks"`
-	Reason string `json:"reason,omitempty"`
+	Path   string      `json:"path"`
+	Status string      `json:"status"`
+	Counts *lineCounts `json:"counts,omitempty"`
+	Hunks  []hunk      `json:"hunks"`
+	Reason string      `json:"reason,omitempty"`
+}
+
+// lineCounts is how many lines a file's change adds and removes.
+type lineCounts struct {
+	Added   int `json:"added"`
+	Removed int `json:"removed"`
 }
 
 // hunk is one section of a file's diff. Each line keeps git's one-character
@@ -43,22 +53,23 @@ var (
 	errDiffTooLarge  = errors.New("diff is larger than 1 MiB")
 )
 
-// changed builds a file's entry from its hunks, or from the error that kept
-// them from being read, so a file has hunks exactly when it has no reason.
-func changed(path, status string, hunks []hunk, err error) changedFile {
+// changed builds a file's entry from its counts and its hunks, or from the
+// error that kept them from being read, so a file has hunks exactly when it
+// has no reason.
+func changed(path, status string, counts *lineCounts, hunks []hunk, err error) changedFile {
 	if err != nil {
-		return changedFile{Path: path, Status: status, Reason: err.Error()}
+		return changedFile{Path: path, Status: status, Counts: counts, Reason: err.Error()}
 	}
 	if hunks == nil {
 		hunks = []hunk{}
 	}
-	return changedFile{Path: path, Status: status, Hunks: hunks}
+	return changedFile{Path: path, Status: status, Counts: counts, Hunks: hunks}
 }
 
 // listChanges lists the files in dir that differ from where its branch left
 // workspace's branch: commits since then, uncommitted edits, and untracked
-// files Git does not ignore, with paths relative to dir. Listing writes
-// nothing in the repository.
+// files Git does not ignore, with paths relative to dir, each listed once.
+// Listing writes nothing in the repository.
 func listChanges(workspace, dir string) (changes, error) {
 	run := func(dir string, args ...string) (string, error) { return listGit(dir, nil, "", args...) }
 	branch, err := run(dir, "branch", "--show-current")
@@ -120,8 +131,14 @@ func listChanges(workspace, dir string) (changes, error) {
 	if err != nil {
 		return changes{}, err
 	}
+	// A file staged after the untracked scan is in both lists. The diff ran
+	// later, so its entry is the current one.
+	listed := map[string]bool{}
+	for _, file := range files {
+		listed[file.Path] = true
+	}
 	for path := range nulSeparated(untracked) {
-		if !restore[path] {
+		if !restore[path] && !listed[localName(path)] {
 			files = append(files, untrackedFile(dir, path))
 		}
 	}
@@ -220,31 +237,78 @@ func quietFailure(err error) bool {
 
 // untrackedFile builds an untracked file's entry from what Git would record
 // for it: a symlink's target, or a regular file's text, as one hunk of added
-// lines from line 1.
+// lines from line 1, with every line counted as added.
 func untrackedFile(dir, path string) changedFile {
-	text, err := untrackedText(dir, path)
+	text, counts, err := untrackedText(dir, path)
 	if err != nil {
-		return changed(path, "added", nil, err)
+		return changed(localName(path), "added", counts, nil, err)
 	}
 	hunks, err := added(text)
-	return changed(path, "added", hunks, err)
+	return changed(localName(path), "added", counts, hunks, err)
 }
 
-// untrackedText returns a symlink's target or a regular file's text.
-func untrackedText(dir, path string) (string, error) {
+// untrackedText returns a symlink's target or a regular file's text, and its
+// line count as Git's numstat gives it, or none for a binary file. A regular
+// file too large or not text enough to show still has its lines counted to
+// its end.
+func untrackedText(dir, path string) (string, *lineCounts, error) {
 	root, err := os.OpenRoot(dir)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer root.Close()
 	info, err := root.Lstat(path)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return root.Readlink(path)
+		target, err := root.Readlink(path)
+		if err != nil {
+			return "", nil, err
+		}
+		return target, &lineCounts{Added: 1}, nil
 	}
-	return readFile(dir, path)
+	f, err := openRegular(root, path)
+	if err != nil {
+		return "", nil, err
+	}
+	defer f.Close()
+	head, err := io.ReadAll(io.LimitReader(f, maxFileSize+1))
+	if err != nil {
+		return "", nil, err
+	}
+	if isBinary(head) {
+		return "", nil, errBinary
+	}
+	lines := lineCounter{}
+	lines.Write(head)
+	if _, err := io.Copy(&lines, f); err != nil {
+		return "", nil, err
+	}
+	shown, err := text(head)
+	return shown, &lineCounts{Added: lines.count()}, err
+}
+
+// lineCounter counts the lines written to it, including a last line without
+// a newline.
+type lineCounter struct {
+	newlines int
+	open     bool
+}
+
+func (c *lineCounter) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		c.newlines += bytes.Count(p, []byte{'\n'})
+		c.open = p[len(p)-1] != '\n'
+	}
+	return len(p), nil
+}
+
+func (c *lineCounter) count() int {
+	if c.open {
+		return c.newlines + 1
+	}
+	return c.newlines
 }
 
 // added is the one hunk of a new file's text, every line added from line 1,
@@ -273,6 +337,7 @@ func added(text string) ([]hunk, error) {
 // starting with a line beginning "diff --git ".
 func parseDiff(out string) ([]changedFile, error) {
 	var paths []string
+	var counts []*lineCounts
 	for out != "" {
 		record, rest, found := strings.Cut(out, "\x00")
 		if !found {
@@ -286,7 +351,8 @@ func parseDiff(out string) ([]changedFile, error) {
 		if len(fields) != 3 {
 			return nil, fmt.Errorf("list changes: unexpected numstat record %q", record)
 		}
-		paths = append(paths, fields[2])
+		paths = append(paths, localName(fields[2]))
+		counts = append(counts, numstatCounts(fields[0], fields[1]))
 	}
 	sections := splitSections(out)
 	if len(sections) != len(paths) {
@@ -294,9 +360,20 @@ func parseDiff(out string) ([]changedFile, error) {
 	}
 	files := []changedFile{}
 	for i, section := range sections {
-		files = append(files, parseSection(paths[i], section))
+		files = append(files, parseSection(paths[i], counts[i], section))
 	}
 	return files, nil
+}
+
+// numstatCounts reads a numstat record's added and removed lines, which Git
+// gives as - for a binary file.
+func numstatCounts(added, removed string) *lineCounts {
+	a, errA := strconv.Atoi(added)
+	r, errR := strconv.Atoi(removed)
+	if errA != nil || errR != nil {
+		return nil
+	}
+	return &lineCounts{Added: a, Removed: r}
 }
 
 // splitSections splits a patch into its files' sections. No content line can
@@ -334,7 +411,7 @@ func splitSections(patch string) []string {
 
 // parseSection reads one file's patch section into its entry. A file whose
 // type changed was both deleted and added, so it is modified.
-func parseSection(path, section string) changedFile {
+func parseSection(path string, counts *lineCounts, section string) changedFile {
 	var deleted, created, header bool
 	var hunks []hunk
 	var reason error
@@ -375,7 +452,7 @@ func parseSection(path, section string) changedFile {
 	case !utf8.ValidString(section):
 		reason = errNotText
 	}
-	return changed(path, status, hunks, reason)
+	return changed(path, status, counts, hunks, reason)
 }
 
 // parseHunkHeader reads a hunk header, "@@ -a[,b] +c[,d] @@", into an empty

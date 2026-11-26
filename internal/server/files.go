@@ -5,7 +5,10 @@ import (
 	"errors"
 	"io"
 	"os"
+	"runtime"
 	"unicode/utf8"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // hidden names version-control and OS files the file tree leaves out at any
@@ -54,9 +57,22 @@ func listFolder(dir, folder string) ([]folderEntry, error) {
 			info, err := root.Stat(folder + "/" + e.Name())
 			isFolder = err == nil && info.IsDir()
 		}
-		list = append(list, folderEntry{e.Name(), isFolder})
+		list = append(list, folderEntry{localName(e.Name()), isFolder})
 	}
 	return list, nil
+}
+
+// localName is a name or path as oxd reports it. macOS filesystems treat the
+// composed and decomposed Unicode spellings of a name as one name, and Git
+// there reports the composed spelling (core.precomposeUnicode), while ReadDir
+// returns the spelling on disk. On macOS every name is reported composed, so
+// the file tree and the changes spell each file the same way. Elsewhere the
+// two spellings are different names and are reported as they are.
+func localName(name string) string {
+	if runtime.GOOS == "darwin" {
+		return norm.NFC.String(name)
+	}
+	return name
 }
 
 // maxFileSize is the largest file readFile returns.
@@ -70,23 +86,14 @@ var (
 )
 
 // readFile returns the text of the regular file at the slash-separated local
-// path within dir. It checks the file's type before opening it, so a FIFO or
-// device cannot block the read. A NUL byte in the first 8000 bytes marks a
-// file as binary, as Git decides.
+// path within dir.
 func readFile(dir, file string) (string, error) {
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return "", err
 	}
 	defer root.Close()
-	info, err := root.Stat(file)
-	if err != nil {
-		return "", err
-	}
-	if !info.Mode().IsRegular() {
-		return "", errNotRegular
-	}
-	f, err := root.Open(file)
+	f, err := openRegular(root, file)
 	if err != nil {
 		return "", err
 	}
@@ -95,13 +102,39 @@ func readFile(dir, file string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return text(data)
+}
+
+// openRegular opens the regular file at the slash-separated local path within
+// root. It checks the file's type before opening it, so a FIFO or device
+// cannot block the open.
+func openRegular(root *os.Root, file string) (*os.File, error) {
+	info, err := root.Stat(file)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errNotRegular
+	}
+	return root.Open(file)
+}
+
+// text returns data, the first maxFileSize+1 bytes of a file, as text, or why
+// it cannot be shown as text.
+func text(data []byte) (string, error) {
 	switch {
 	case len(data) > maxFileSize:
 		return "", errTooLarge
-	case bytes.IndexByte(data[:min(len(data), 8000)], 0) >= 0:
+	case isBinary(data):
 		return "", errBinary
 	case !utf8.Valid(data):
 		return "", errNotText
 	}
 	return string(data), nil
+}
+
+// isBinary reports whether a file starting with data is binary: a NUL byte in
+// its first 8000 bytes, as Git decides.
+func isBinary(data []byte) bool {
+	return bytes.IndexByte(data[:min(len(data), 8000)], 0) >= 0
 }

@@ -188,7 +188,7 @@ directory itself. Returns the folder's entries in directory order, each with its
 `.DS_Store`, and `Thumbs.db` are left out. A symlink is a folder when its
 relative target leads to a folder inside the directory; one with an absolute
 target, one that leads outside the directory, and one that leads nowhere are
-not.
+not. On macOS, names are reported in composed Unicode form, as Git reports them.
 
 Both `session_id` and `workspace_id`, or neither, returns `-32602` `exactly one
 of session_id and workspace_id is required`. A `path` that is absolute or leaves
@@ -244,28 +244,31 @@ uncommitted edits and untracked files show. In a repository with no commits, the
 base is the empty tree, so every file shows as added. The listing counts commits
 since the base, uncommitted edits, and untracked files Git does not ignore, and
 leaves out files outside the directory. Each path shows once, with its change
-from the base, including a file removed from the index but kept on disk. A
-renamed file shows as its old path deleted and its new path added. A file whose
-type changed, such as a regular file that became a symlink, shows as modified,
-its old content removed and its new content added. A submodule shows as a change
-to the commit it records. Listing writes nothing in the repository.
+from the base, including a file removed from the index but kept on disk and a
+file staged while the listing runs. A renamed file shows as its old path deleted
+and its new path added. A file whose type changed, such as a regular file that
+became a symlink, shows as modified, its old content removed and its new content
+added. A submodule shows as a change to the commit it records. Listing writes
+nothing in the repository.
 
 The result holds `branch`, the directory's current branch, omitted when `HEAD`
 is detached, and `files`, sorted by `path`. Each file has:
 
-| Field    | Meaning                                                                                                                                                                    |
-| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `path`   | The file's slash-separated path relative to the directory, as `workspace/read_file` takes it.                                                                              |
-| `status` | `added`, `modified`, or `deleted`.                                                                                                                                         |
-| `hunks`  | The diff's hunks, three lines of context around each change; `null` exactly when `reason` is present.                                                                      |
-| `reason` | Why the diff is not shown: `file is binary`, `diff is larger than 1 MiB`, `file is not UTF-8 text`, or why an untracked file cannot be read, as for `workspace/read_file`. |
+| Field    | Meaning                                                                                                                                                                                                                                          |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `path`   | The file's slash-separated path relative to the directory, as `workspace/read_file` takes it.                                                                                                                                                    |
+| `status` | `added`, `modified`, or `deleted`.                                                                                                                                                                                                               |
+| `counts` | The lines the change adds and removes, as `added` and `removed`, counted over the whole file even when `reason` is present, an untracked file's lines all counted as added; omitted for a binary file and an untracked file that cannot be read. |
+| `hunks`  | The diff's hunks, three lines of context around each change; `null` exactly when `reason` is present.                                                                                                                                            |
+| `reason` | Why the diff is not shown: `file is binary`, `diff is larger than 1 MiB`, `file is not UTF-8 text`, or why an untracked file cannot be read, as for `workspace/read_file`.                                                                       |
 
 Each hunk has `old_start` and `new_start`, the line numbers where it starts in
 the base and in the directory, and `lines`, each keeping Git's one-character
 prefix: a space for context, `-` for a removed line, `+` for an added one. An
 untracked file is one hunk of added lines starting at line 1, and an empty one
 has no hunks; an untracked symlink's one line is its target. The repository's
-diff configuration does not change the hunks.
+diff configuration does not change the hunks. On macOS, paths are reported in
+composed Unicode form, as Git reports them.
 
 The selector errors are those of `workspace/list_folder`. A directory outside a
 Git repository returns `-32000` `not a git repository`, and one whose branch
@@ -278,7 +281,7 @@ reason.
 ```
 
 ```json
-{"jsonrpc":"2.0","id":6,"result":{"branch":"ox/abc","files":[{"path":"go.mod","status":"modified","hunks":[{"old_start":1,"new_start":1,"lines":[" module github.com/kkestell/ox","-go 1.26","+go 1.27"]}]},{"path":"logo.png","status":"added","hunks":null,"reason":"file is binary"}]}}
+{"jsonrpc":"2.0","id":6,"result":{"branch":"ox/abc","files":[{"path":"go.mod","status":"modified","counts":{"added":1,"removed":1},"hunks":[{"old_start":1,"new_start":1,"lines":[" module github.com/kkestell/ox","-go 1.26","+go 1.27"]}]},{"path":"logo.png","status":"added","hunks":null,"reason":"file is binary"}]}}
 ```
 
 ## Session methods

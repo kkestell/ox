@@ -11,20 +11,22 @@ export function counts(lines: string[]) {
   return { added, removed };
 }
 
-export const fileCounts = (file: ChangedFile) => counts(file.hunks?.flatMap((hunk) => hunk.lines) ?? []);
+type Status = ChangedFile["status"];
 
-// statuses gives the status of each changed file and of each folder above one:
-// a folder's status is its changed files' when they share one, and modified
-// otherwise.
-export function statuses(files: ChangedFile[]): Map<string, ChangedFile["status"]> {
-  const all = new Map<string, ChangedFile["status"]>();
-  for (const file of files) {
-    all.set(file.path, file.status);
+// statuses gives the status of each changed file, and of each folder above
+// one: a folder's status is its changed files' when they share one, and
+// modified otherwise. A file can share its path with a folder that held
+// another changed file, so the two are kept apart.
+export function statuses(changed: ChangedFile[]): { files: Map<string, Status>; folders: Map<string, Status> } {
+  const files = new Map<string, Status>();
+  const folders = new Map<string, Status>();
+  for (const file of changed) {
+    files.set(file.path, file.status);
     for (let end = file.path.lastIndexOf("/"); end > 0; end = file.path.lastIndexOf("/", end - 1)) {
       const folder = file.path.slice(0, end);
-      const current = all.get(folder);
-      all.set(folder, current === undefined || current === file.status ? file.status : "modified");
+      const current = folders.get(folder);
+      folders.set(folder, current === undefined || current === file.status ? file.status : "modified");
     }
   }
-  return all;
+  return { files, folders };
 }

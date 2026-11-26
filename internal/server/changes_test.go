@@ -5,11 +5,16 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // writeFiles writes each file's text beneath dir.
@@ -65,6 +70,20 @@ func find(t *testing.T, files []changedFile, path string) changedFile {
 	}
 	t.Fatalf("%s is not among %v", path, paths(files))
 	return changedFile{}
+}
+
+// asJSON is v as the page reads it, so a failure shows each file's counts.
+func asJSON(v any) string {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprint(v)
+	}
+	return string(data)
+}
+
+// counted is a file's line counts.
+func counted(added, removed int) *lineCounts {
+	return &lineCounts{Added: added, Removed: removed}
 }
 
 // gitState records the modification time of each file beneath gitDir.
@@ -147,26 +166,26 @@ func TestListChanges(t *testing.T) {
 	if got, want := paths(result.Files), []string{"bin.dat", "file.txt", "new.txt", "tail.txt", "untracked.bin"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("listed %v, want %v", got, want)
 	}
-	wantFile := changedFile{Path: "file.txt", Status: "modified", Hunks: []hunk{
+	wantFile := changedFile{Path: "file.txt", Status: "modified", Counts: counted(2, 2), Hunks: []hunk{
 		{OldStart: 1, NewStart: 1, Lines: []string{" l01", "-l02", "+two", " l03", " l04", " l05"}},
 		{OldStart: 15, NewStart: 15, Lines: []string{" l15", " l16", " l17", "-l18", "+eighteen", " l19", " l20"}},
 	}}
 	if got := find(t, result.Files, "file.txt"); !reflect.DeepEqual(got, wantFile) {
-		t.Errorf("file.txt is %+v, want %+v", got, wantFile)
+		t.Errorf("file.txt is %s, want %s", asJSON(got), asJSON(wantFile))
 	}
-	wantNew := changedFile{Path: "new.txt", Status: "added", Hunks: []hunk{{OldStart: 0, NewStart: 1, Lines: []string{"+hello", "+world"}}}}
+	wantNew := changedFile{Path: "new.txt", Status: "added", Counts: counted(2, 0), Hunks: []hunk{{OldStart: 0, NewStart: 1, Lines: []string{"+hello", "+world"}}}}
 	if got := find(t, result.Files, "new.txt"); !reflect.DeepEqual(got, wantNew) {
-		t.Errorf("new.txt is %+v, want %+v", got, wantNew)
+		t.Errorf("new.txt is %s, want %s", asJSON(got), asJSON(wantNew))
 	}
 	// Git's "\ No newline at end of file" lines are not the file's.
-	wantTail := changedFile{Path: "tail.txt", Status: "modified", Hunks: []hunk{{OldStart: 1, NewStart: 1, Lines: []string{" first", "-old", "+new"}}}}
+	wantTail := changedFile{Path: "tail.txt", Status: "modified", Counts: counted(1, 1), Hunks: []hunk{{OldStart: 1, NewStart: 1, Lines: []string{" first", "-old", "+new"}}}}
 	if got := find(t, result.Files, "tail.txt"); !reflect.DeepEqual(got, wantTail) {
-		t.Errorf("tail.txt is %+v, want %+v", got, wantTail)
+		t.Errorf("tail.txt is %s, want %s", asJSON(got), asJSON(wantTail))
 	}
 	for _, path := range []string{"bin.dat", "untracked.bin"} {
 		want := changedFile{Path: path, Status: "added", Reason: "file is binary"}
 		if got := find(t, result.Files, path); !reflect.DeepEqual(got, want) {
-			t.Errorf("%s is %+v, want %+v", path, got, want)
+			t.Errorf("%s is %s, want %s", path, asJSON(got), asJSON(want))
 		}
 	}
 
@@ -176,7 +195,9 @@ func TestListChanges(t *testing.T) {
 	// kept on disk shows once, as its change from the base; an untracked
 	// symlink shows its target; a file that became a symlink shows its text
 	// removed and its target added; and an untracked file whose added lines
-	// make a diff over 1 MiB says so. The repository's diff configuration
+	// make a diff over 1 MiB, or that is itself over 1 MiB, says so. Every
+	// file but a binary one has Git's line counts, over the whole file even
+	// when its diff is too large to show. The repository's diff configuration
 	// changes none of the hunks and hides no submodule.
 	runGit(t, "-C", repo, "config", "diff.suppressBlankEmpty", "true")
 	runGit(t, "-C", repo, "config", "diff.submodule", "log")
@@ -190,6 +211,8 @@ func TestListChanges(t *testing.T) {
 		"file.txt":   numbered(map[int]string{5: "five"}),
 		"blank.txt":  "a\n\nB\n",
 		"many.txt":   strings.Repeat("a\n", 400000),
+		"huge.txt":   strings.Repeat("x\n", 600000),
+		"latin.txt":  "caf\xe9\nna\xefve",
 	})
 	if err := os.Symlink("file.txt", filepath.Join(sub, "link")); err != nil {
 		t.Fatal(err)
@@ -214,22 +237,24 @@ func TestListChanges(t *testing.T) {
 		t.Errorf("the workspace's branch is %q", result.Branch)
 	}
 	want := []changedFile{
-		{Path: "big.txt", Status: "added", Reason: "diff is larger than 1 MiB"},
-		{Path: "blank.txt", Status: "modified", Hunks: []hunk{{OldStart: 1, NewStart: 1, Lines: []string{" a", " ", "-b", "+B"}}}},
-		{Path: "file.txt", Status: "modified", Hunks: []hunk{{OldStart: 2, NewStart: 2, Lines: []string{" l02", " l03", " l04", "-l05", "+five", " l06", " l07", " l08"}}}},
-		{Path: "fresh.txt", Status: "added", Hunks: []hunk{}},
-		{Path: "inner", Status: "added", Hunks: []hunk{{OldStart: 0, NewStart: 1, Lines: []string{"+Subproject commit " + runGit(t, "-C", inner, "rev-parse", "HEAD")}}}},
-		{Path: "latin1.txt", Status: "added", Reason: "file is not UTF-8 text"},
-		{Path: "link", Status: "added", Hunks: []hunk{{OldStart: 0, NewStart: 1, Lines: []string{"+file.txt"}}}},
-		{Path: "many.txt", Status: "added", Reason: "diff is larger than 1 MiB"},
-		{Path: "still.txt", Status: "deleted", Hunks: []hunk{{OldStart: 1, NewStart: 0, Lines: []string{"-still"}}}},
-		{Path: "tail.txt", Status: "modified", Hunks: []hunk{
+		{Path: "big.txt", Status: "added", Counts: counted(80000, 0), Reason: "diff is larger than 1 MiB"},
+		{Path: "blank.txt", Status: "modified", Counts: counted(1, 1), Hunks: []hunk{{OldStart: 1, NewStart: 1, Lines: []string{" a", " ", "-b", "+B"}}}},
+		{Path: "file.txt", Status: "modified", Counts: counted(1, 1), Hunks: []hunk{{OldStart: 2, NewStart: 2, Lines: []string{" l02", " l03", " l04", "-l05", "+five", " l06", " l07", " l08"}}}},
+		{Path: "fresh.txt", Status: "added", Counts: counted(0, 0), Hunks: []hunk{}},
+		{Path: "huge.txt", Status: "added", Counts: counted(600000, 0), Reason: "file is larger than 1 MiB"},
+		{Path: "inner", Status: "added", Counts: counted(1, 0), Hunks: []hunk{{OldStart: 0, NewStart: 1, Lines: []string{"+Subproject commit " + runGit(t, "-C", inner, "rev-parse", "HEAD")}}}},
+		{Path: "latin.txt", Status: "added", Counts: counted(2, 0), Reason: "file is not UTF-8 text"},
+		{Path: "latin1.txt", Status: "added", Counts: counted(1, 0), Reason: "file is not UTF-8 text"},
+		{Path: "link", Status: "added", Counts: counted(1, 0), Hunks: []hunk{{OldStart: 0, NewStart: 1, Lines: []string{"+file.txt"}}}},
+		{Path: "many.txt", Status: "added", Counts: counted(400000, 0), Reason: "diff is larger than 1 MiB"},
+		{Path: "still.txt", Status: "deleted", Counts: counted(0, 1), Hunks: []hunk{{OldStart: 1, NewStart: 0, Lines: []string{"-still"}}}},
+		{Path: "tail.txt", Status: "modified", Counts: counted(1, 2), Hunks: []hunk{
 			{OldStart: 1, NewStart: 0, Lines: []string{"-first", "-old"}},
 			{OldStart: 0, NewStart: 1, Lines: []string{"+file.txt"}},
 		}},
 	}
 	if !reflect.DeepEqual(result.Files, want) {
-		t.Errorf("the workspace listed %+v, want %+v", result.Files, want)
+		t.Errorf("the workspace listed %s, want %s", asJSON(result.Files), asJSON(want))
 	}
 
 	// A branch with no history in common with the workspace's has no base.
@@ -270,16 +295,102 @@ func TestListChanges(t *testing.T) {
 	runGit(t, "-C", fresh, "add", "staged.txt")
 	result = listedChanges(t, c, map[string]string{"workspace_id": addWorkspace(t, c, fresh)})
 	want = []changedFile{
-		{Path: "staged.txt", Status: "added", Hunks: []hunk{{OldStart: 0, NewStart: 1, Lines: []string{"+staged"}}}},
-		{Path: "untracked.txt", Status: "added", Hunks: []hunk{{OldStart: 0, NewStart: 1, Lines: []string{"+new"}}}},
+		{Path: "staged.txt", Status: "added", Counts: counted(1, 0), Hunks: []hunk{{OldStart: 0, NewStart: 1, Lines: []string{"+staged"}}}},
+		{Path: "untracked.txt", Status: "added", Counts: counted(1, 0), Hunks: []hunk{{OldStart: 0, NewStart: 1, Lines: []string{"+new"}}}},
 	}
 	if result.Branch != "main" || !reflect.DeepEqual(result.Files, want) {
-		t.Errorf("a repository with no commits listed %q %+v, want main %+v", result.Branch, result.Files, want)
+		t.Errorf("a repository with no commits listed %q %s, want main %s", result.Branch, asJSON(result.Files), asJSON(want))
 	}
 
 	plain := addWorkspace(t, c, t.TempDir())
 	response = c.request("workspace/list_changes", map[string]string{"workspace_id": plain})
 	if response.Error == nil || response.Error.Code != -32000 || response.Error.Message != "not a git repository" {
 		t.Errorf("a directory outside a repository returned %.200s %+v", response.Result, response.Error)
+	}
+}
+
+// A file staged between the listing's scan for untracked files and its diff
+// is listed once, as the diff found it.
+func TestListChangesStagedDuringListing(t *testing.T) {
+	repo := gitRepo(t)
+	writeFiles(t, repo, map[string]string{"staged.txt": "staged\n"})
+	s := worktreeServer(t, openStore(t), t.TempDir())
+	c := connect(t, s)
+	workspaceID := addWorkspace(t, c, repo)
+
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"case \" $* \" in *\" --numstat \"*)\n" +
+		"  \"" + real + "\" -C \"" + repo + "\" add staged.txt;;\n" +
+		"esac\n" +
+		"exec \"" + real + "\" \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	result := listedChanges(t, c, map[string]string{"workspace_id": workspaceID})
+	want := []changedFile{{Path: "staged.txt", Status: "added", Counts: counted(1, 0), Hunks: []hunk{{OldStart: 0, NewStart: 1, Lines: []string{"+staged"}}}}}
+	if !reflect.DeepEqual(result.Files, want) {
+		t.Errorf("listed %s, want %s", asJSON(result.Files), asJSON(want))
+	}
+}
+
+// The file tree and the changes spell each changed file's name the same way,
+// so the page can match them. On macOS, where both Unicode spellings of a name
+// are one file, both report the composed spelling; elsewhere each spelling is
+// its own file, listed as it is. On macOS a tracked file that Git also reports
+// untracked in its decomposed spelling, as it does with
+// core.precomposeUnicode off, is listed once.
+func TestChangedPathsMatchFolderNames(t *testing.T) {
+	gitRepo(t)
+	dir := t.TempDir()
+	runGit(t, "-C", dir, "init", "-q", "-b", "main")
+	edited, untracked := norm.NFD.String("café.txt"), norm.NFD.String("naïve.txt")
+	writeFiles(t, dir, map[string]string{edited: "old\n"})
+	runGit(t, "-C", dir, "add", ".")
+	runGit(t, "-C", dir, "commit", "-q", "-m", "café")
+	writeFiles(t, dir, map[string]string{edited: "new\n", untracked: "new\n"})
+	if runtime.GOOS == "darwin" {
+		runGit(t, "-C", dir, "config", "core.precomposeUnicode", "false")
+	} else {
+		writeFiles(t, dir, map[string]string{norm.NFC.String(untracked): "twin\n"})
+	}
+	s := worktreeServer(t, openStore(t), t.TempDir())
+	c := connect(t, s)
+	workspaceID := addWorkspace(t, c, dir)
+
+	var folder struct {
+		Entries []folderEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(c.call("workspace/list_folder", map[string]string{"workspace_id": workspaceID, "path": ""}), &folder); err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range folder.Entries {
+		names = append(names, e.Name)
+	}
+	slices.Sort(names)
+	files := listedChanges(t, c, map[string]string{"workspace_id": workspaceID}).Files
+	changed := paths(files)
+	if !slices.Equal(names, changed) {
+		t.Errorf("the folder lists %+q but the changes list %+q", names, changed)
+	}
+	want := []string{norm.NFC.String(edited), norm.NFC.String(untracked)}
+	if runtime.GOOS != "darwin" {
+		want = []string{edited, norm.NFC.String(untracked), untracked}
+	}
+	slices.Sort(want)
+	if !slices.Equal(changed, want) {
+		t.Errorf("the changes list %+q, want %+q", changed, want)
+	}
+	if runtime.GOOS == "darwin" {
+		if got := find(t, files, norm.NFC.String(edited)); got.Status != "modified" {
+			t.Errorf("the edited file is %s, want it modified", asJSON(got))
+		}
 	}
 }

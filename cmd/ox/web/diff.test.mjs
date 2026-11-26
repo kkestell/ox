@@ -11,19 +11,30 @@ test("statuses gives each changed file and each folder above one a status", () =
     { path: "gone/deep/c.txt", status: "deleted", hunks: [] },
     { path: "top/mid/low/d.txt", status: "modified", hunks: [] },
   ]);
-  assert.deepEqual(Object.fromEntries(all), {
+  assert.deepEqual(Object.fromEntries(all.files), {
     "new/a.txt": "added",
     "new/b.txt": "added",
-    new: "added",
     "mixed/a.txt": "added",
     "mixed/b.txt": "deleted",
-    mixed: "modified",
     "gone/deep/c.txt": "deleted",
+    "top/mid/low/d.txt": "modified",
+  });
+  assert.deepEqual(Object.fromEntries(all.folders), {
+    new: "added",
+    mixed: "modified",
     "gone/deep": "deleted",
     gone: "deleted",
-    "top/mid/low/d.txt": "modified",
     "top/mid/low": "modified",
     "top/mid": "modified",
     top: "modified",
   });
+});
+
+test("statuses keeps a file apart from the folder it replaced", () => {
+  const all = statuses([
+    { path: "sub", status: "added", hunks: [] },
+    { path: "sub/file.txt", status: "deleted", hunks: [] },
+  ]);
+  assert.equal(all.files.get("sub"), "added");
+  assert.equal(all.folders.get("sub"), "deleted");
 });

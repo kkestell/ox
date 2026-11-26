@@ -75,11 +75,13 @@ export type FileRoot = { session_id: string; workspace_id?: never } | { workspac
 export type Hunk = { old_start: number; new_start: number; lines: string[] };
 
 // ChangedFile is a file that differs from where its session's branch left the
-// workspace's branch: its hunks, or the reason they cannot be shown.
-export type ChangedFile = { path: string; status: "added" | "modified" | "deleted" } & (
-  | { hunks: Hunk[]; reason?: never }
-  | { hunks: null; reason: string }
-);
+// workspace's branch: the lines it adds and removes, when Git counts them, and
+// its hunks, or the reason they cannot be shown.
+export type ChangedFile = {
+  path: string;
+  status: "added" | "modified" | "deleted";
+  counts?: { added: number; removed: number };
+} & ({ hunks: Hunk[]; reason?: never } | { hunks: null; reason: string });
 
 export type Changes = { branch?: string; files: ChangedFile[] };
 

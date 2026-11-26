@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, For, Match, Show, Switch, untrack } from "solid-js";
-import { counts, fileCounts, statuses } from "./diff";
+import { counts, statuses } from "./diff";
 import { rowsHtml } from "./highlight";
 import { useOx } from "./ox";
 import { createPoll } from "./poll";
@@ -7,8 +7,8 @@ import type { ChangedFile, FileRoot, Hunk } from "./protocol";
 
 // createListing polls the files beneath root that differ from where its branch
 // left the workspace's branch, read when it appears and on each tick of the
-// page's clock. It gives their total counts, each path's change, and the
-// status of each changed file and folder.
+// page's clock. It gives their total counts and the status of each changed
+// file and of each folder above one.
 export function createListing(root: FileRoot) {
   const ox = useOx();
   const listing = createPoll(() => ox.listChanges(root));
@@ -24,23 +24,18 @@ export function createListing(root: FileRoot) {
     let added = 0;
     let removed = 0;
     for (const file of changes()?.files ?? []) {
-      const each = fileCounts(file);
-      added += each.added;
-      removed += each.removed;
+      added += file.counts?.added ?? 0;
+      removed += file.counts?.removed ?? 0;
     }
     return { added, removed };
   });
-  const files = createMemo(() => new Map((changes()?.files ?? []).map((file) => [file.path, file])));
   const byPath = createMemo(() => statuses(changes()?.files ?? []));
   return {
     changes,
     error,
     total,
-    // change is the file at path's change, with no file when it is unchanged,
-    // or undefined until the changes are first listed or fail to be.
-    change: (path: string): { file?: ChangedFile } | undefined =>
-      listing() === undefined ? undefined : { file: files().get(path) },
-    status: (path: string) => byPath().get(path),
+    fileStatus: (path: string) => byPath().files.get(path),
+    folderStatus: (path: string) => byPath().folders.get(path),
   };
 }
 
@@ -48,7 +43,7 @@ export type Listing = ReturnType<typeof createListing>;
 
 // BranchSummary shows the branch and the lines the changes add and remove, or
 // why they cannot be listed.
-export function BranchSummary(props: { listing: Listing }) {
+function BranchSummary(props: { listing: Listing }) {
   return (
     <Switch>
       <Match when={props.listing.error()}>
@@ -107,6 +102,9 @@ export function ChangesList(props: { listing: Listing; onOpen(path?: string): vo
                       <Show when={folder()}>
                         <span class="folder">{folder()}</span>
                       </Show>
+                      <Show when={file().counts}>
+                        {(each) => <Counts added={each().added} removed={each().removed} />}
+                      </Show>
                     </button>
                   </li>
                 );
@@ -121,7 +119,8 @@ export function ChangesList(props: { listing: Listing; onOpen(path?: string): vo
 
 // ChangesView shows each changed file as a card after GitHub's pull request
 // files, or why the changes cannot be listed. It scrolls to the card of
-// reveal's path when reveal changes, and when it appears.
+// reveal's path once for each reveal, as soon as the listing holds that file,
+// so a poll that lists the file again leaves the user's scroll alone.
 export function ChangesView(props: {
   listing: Listing;
   wrap: boolean;
@@ -129,13 +128,19 @@ export function ChangesView(props: {
   onOpen(path: string): void;
 }) {
   let body!: HTMLDivElement;
+  let applied: { path: string } | undefined;
   createEffect(
-    () => props.reveal,
+    () => {
+      const reveal = props.reveal;
+      if (!reveal || reveal === applied) return undefined;
+      return props.listing.changes()?.files.some((file) => file.path === reveal.path) ? reveal : undefined;
+    },
     (reveal) => {
       if (!reveal) return;
       for (const card of body.querySelectorAll("article")) {
         if (card.getAttribute("aria-label") === reveal.path) card.scrollIntoView({ block: "start" });
       }
+      applied = reveal;
     },
   );
   return (
@@ -173,7 +178,6 @@ export function Counts(props: { added: number; removed: number }) {
 function FileCard(props: { file: ChangedFile; wrap: boolean; onOpen(path: string): void }) {
   const name = () => props.file.path.slice(props.file.path.lastIndexOf("/") + 1);
   const folder = () => props.file.path.slice(0, Math.max(0, props.file.path.lastIndexOf("/")));
-  const each = createMemo(() => fileCounts(props.file));
   return (
     <article class="change" aria-label={props.file.path}>
       <header>
@@ -183,9 +187,7 @@ function FileCard(props: { file: ChangedFile; wrap: boolean; onOpen(path: string
             <span class="folder">{folder()}</span>
           </Show>
         </div>
-        <Show when={props.file.hunks}>
-          <Counts added={each().added} removed={each().removed} />
-        </Show>
+        <Show when={props.file.counts}>{(each) => <Counts added={each().added} removed={each().removed} />}</Show>
         <Show when={props.file.status !== "deleted"}>
           <button
             type="button"
