@@ -1,4 +1,4 @@
-.PHONY: dev restart build web test live lint e2e screenshots metrics docs hooks skills
+.PHONY: dev restart build web test live lint e2e screenshots metrics docs hooks
 
 # A recipe that fails leaves no target behind, such as a partial download.
 .DELETE_ON_ERROR:
@@ -67,11 +67,6 @@ docs:
 
 hooks:
 	git config core.hooksPath .githooks
-
-# skills installs the Ox skills for the user's coding agents.
-skills:
-	npx -y skills add ./.claude/skills --global --yes --skill '*' \
-		-a claude-code -a codex -a opencode -a antigravity
 
 $(GOLANGCI_LINT):
 	mkdir -p bin
