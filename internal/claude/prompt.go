@@ -41,7 +41,7 @@ func (a *Agent) Send(input agent.Input) error {
 				return err
 			}
 		}
-	case *starting, *configuring, timedOut:
+	case *starting, startTimedOut, *configuring, timedOut:
 		// Held until ready, or dropped by the end.
 	case exited:
 		return agent.ErrExited
@@ -105,7 +105,7 @@ func (a *Agent) Interrupt(done func(error)) {
 			done(nil)
 			return
 		}
-	case timedOut, exited:
+	case startTimedOut, timedOut, exited:
 		done(nil)
 		return
 	}
