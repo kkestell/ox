@@ -76,7 +76,7 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: 
 .plus { --icon: url(lucide-static/icons/plus.svg); }
 .ellipsis { --icon: url(lucide-static/icons/ellipsis.svg); }
 .archive { --icon: url(lucide-static/icons/archive.svg); }
-.send { --icon: url(lucide-static/icons/send.svg); }
+.send { --icon: url(lucide-static/icons/arrow-up.svg); }
 .stop { --icon: url(lucide-static/icons/square.svg); }
 .context .path { --icon: url(lucide-static/icons/folder.svg); }
 .chevron-down { --icon: url(lucide-static/icons/chevron-down.svg); }
@@ -328,7 +328,9 @@ details.tool pre + pre { border-top: 1px solid var(--border); }
 .composer .thumbnail button.icon { position: absolute; top: 0.125rem; right: 0.125rem; display: grid; place-items: center; width: 1.25rem; height: 1.25rem; border-radius: 50%; background: var(--secondary); color: var(--secondary-foreground); }
 .composer .thumbnail button.icon::before { width: 0.75rem; height: 0.75rem; }
 .composer .thumbnail button.icon:hover { background: color-mix(in oklab, var(--secondary) 80%, transparent); }
-.composer .box .send::before { translate: 0 1px; }
+.composer .box button.icon:is(.send, .stop) { display: grid; place-items: center; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); }
+.composer .box button.icon:is(.send, .stop):hover { background: color-mix(in oklab, var(--primary) 90%, transparent); }
+.composer .box button.stop::before { width: 0.875rem; height: 0.875rem; }
 .composer .settings { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; margin: 0.5rem -0.5rem 0; }
 .composer .settings > button.picker, .composer .select {
   height: 1.5rem; border-radius: var(--radius-md); background: transparent; font-size: 0.75rem; color: var(--muted-foreground);

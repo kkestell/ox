@@ -131,7 +131,20 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
                 onKeyDown={sendOnEnter}
                 onPaste={pasteImages(control)}
               />
-              <Show when={running() && !control.stopping()}>
+              {/* Send becomes Stop while Claude works and the composer is empty,
+                  until a Stop is in flight. */}
+              <Show
+                when={running() && !control.sendable() && !control.stopping()}
+                fallback={
+                  <button
+                    type="submit"
+                    class="icon send"
+                    aria-label="Send"
+                    title="Send"
+                    disabled={!control.canSend() || !control.sendable()}
+                  />
+                }
+              >
                 <button
                   type="button"
                   class="icon stop"
@@ -140,7 +153,6 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
                   onClick={() => control.interrupt()}
                 />
               </Show>
-              <button type="submit" class="icon send" aria-label="Send" title="Send" disabled={!control.canSend()} />
             </div>
           </form>
           <div class="settings">

@@ -353,6 +353,7 @@ test("a send cut off after acceptance shows an error without resending", async (
   await cutoff.cut;
   await services.restartRelay();
   // Once reconnected, the send's error is the one left.
+  await prompt(page).fill("next");
   await expect(send(page)).toBeEnabled();
   await expect(main(page).getByRole("alert")).toHaveText(["Lost the connection to ox. Reconnecting."]);
   await expect(prompts(page)).toHaveText(["before disconnection", "accepted once"]);
@@ -370,6 +371,7 @@ test("a 503 on a catch-up request reconnects the page", async ({ ox: page, servi
   });
   await services.restartRelay();
   await expect.poll(() => refused).toBe(true);
+  await prompt(page).fill("next");
   await expect(send(page)).toBeEnabled({ timeout: 10_000 });
   await expect(page.getByRole("alert")).toHaveCount(0);
 });
@@ -528,6 +530,7 @@ test("a reconnecting stream shows as a status, not an error", async ({ ox: page,
   await expect(page.getByRole("alert")).toHaveCount(0);
   await page.unroute("**/events", drop);
   await expect(page.getByRole("status").filter({ hasText: "Reconnecting…" })).toHaveCount(0, { timeout: 10_000 });
+  await prompt(page).fill("next");
   await expect(send(page)).toBeEnabled();
 });
 
@@ -542,6 +545,7 @@ test("a closed stream offers a Reload button that reconnects", async ({ ox: page
   await page.unroute("**/events", refuse);
   await alert.getByRole("button", { name: "Reload" }).click();
   await expect(alert).toHaveCount(0);
+  await prompt(page).fill("next");
   await expect(send(page)).toBeEnabled();
 });
 
@@ -561,6 +565,7 @@ test("a stalled reconnect resumes when the page is shown", async ({ ox: page, se
   stalled = false;
   await showPage(page);
   await expect(page.getByRole("status").filter({ hasText: "Reconnecting…" })).toHaveCount(0);
+  await prompt(page).fill("next");
   await expect(send(page)).toBeEnabled();
 });
 
@@ -644,7 +649,7 @@ test("an oversized prompt fails visibly and stays in the box", async ({ ox: page
   await expect(prompt(page)).toHaveValue(large);
 });
 
-test("Stop appears once the page's send is accepted, and stops it", async ({ ox: page }) => {
+test("Send becomes Stop once the page's send is accepted, and stops it", async ({ ox: page }) => {
   await newSession(page, "earlier prompt");
   const held = await hold(page, "session/send");
   await prompt(page).fill("wait 60000");
@@ -654,9 +659,12 @@ test("Stop appears once the page's send is accepted, and stops it", async ({ ox:
   await expect(stop(page)).toHaveCount(0);
   const interrupt = await hold(page, "session/interrupt");
   held.release();
+  await expect(stop(page)).toBeVisible();
+  await expect(send(page)).toHaveCount(0);
   await stop(page).click();
   await interrupt.arrived;
   await expect(stop(page)).toHaveCount(0);
+  await expect(send(page)).toBeDisabled();
   interrupt.release();
   await expect(errors(page)).toHaveText(["Interrupted"]);
   await expect(stop(page)).toHaveCount(0);
@@ -675,6 +683,34 @@ test("a refused Stop shows Stop again with the error", async ({ ox: page }) => {
   await expect(stop(page)).toHaveCount(0);
   interrupt.fail("relay unavailable");
   await expect(main(page).getByRole("alert")).toHaveText("relay unavailable");
+  await expect(stop(page)).toBeVisible();
+});
+
+test("typing while Claude works turns Stop into Send", async ({ ox: page }) => {
+  await newSession(page, "earlier prompt");
+  await prompt(page).fill("wait 60000");
+  await prompt(page).press("Enter");
+  await expect(stop(page)).toBeVisible();
+  await expect(send(page)).toHaveCount(0);
+  await prompt(page).fill("steer");
+  await expect(send(page)).toBeEnabled();
+  await expect(stop(page)).toHaveCount(0);
+  await prompt(page).fill("");
+  await expect(stop(page)).toBeVisible();
+});
+
+test("Stop returns once oxd answers the Stop while the session still runs", async ({ ox: page }) => {
+  await newSession(page, "idle prompt");
+  const idle = sessionId(page);
+  await newSession(page, "earlier prompt");
+  await prompt(page).fill("wait 60000");
+  await prompt(page).press("Enter");
+  // oxd answers the Stop for the idle session, so this one keeps running.
+  const interrupt = await hold(page, "session/interrupt");
+  await stop(page).click();
+  await interrupt.arrived;
+  await expect(stop(page)).toHaveCount(0);
+  interrupt.release({ session_id: idle });
   await expect(stop(page)).toBeVisible();
 });
 
@@ -826,12 +862,13 @@ test("a prompt sent while Claude works stays pending until Claude takes it", asy
   await newSessionButton(page).click();
   await ask(page, "Bash", "{}");
   await expect(stop(page)).toBeVisible();
-  await expect(send(page)).toBeVisible();
   await prompt(page).fill("steer");
   await prompt(page).press("Enter");
   await expect(prompt(page)).toHaveValue("");
   await expect(pending(page).getByRole("article")).toHaveText(["steer"]);
+  await prompt(page).fill("more");
   await expect(send(page)).toBeDisabled();
+  await prompt(page).fill("");
 
   await page.reload();
   await expect(pending(page).getByRole("article")).toHaveText(["steer"]);
@@ -849,8 +886,11 @@ test("Stop drops a pending prompt and returns its text and image to the composer
   await expect(pending(page).getByRole("article")).toHaveText(["steer"]);
   await expect(prompt(page)).toHaveValue("");
   await expect(thumbnail(page, "steer.png")).toHaveCount(0);
-  await prompt(page).fill("more");
+  const interrupt = await hold(page, "session/interrupt");
   await stop(page).click();
+  await interrupt.arrived;
+  await prompt(page).fill("more");
+  interrupt.release();
   await expect(pending(page)).toHaveCount(0);
   await expect(prompt(page)).toHaveValue("steer\nmore");
   await expect(thumbnail(page, "steer.png")).toBeVisible();
@@ -905,6 +945,7 @@ test("pending inputs show in order at the transcript's end and hold Send", async
     "approve Bash {}",
     ...queued,
   ]);
+  await prompt(page).fill("more");
   await expect(send(page)).toBeDisabled();
 });
 
@@ -938,11 +979,14 @@ test("taken messages keep their labels after a reload", async ({ ox: page, servi
 
 test("Stop drops a pending message without touching the composer", async ({ ox: page, services }) => {
   const { a, b } = await messaging(page);
-  await prompt(page).fill("draft");
   await services.callTool(a, "send_message", { to: b, text: "hello from A" });
   await services.callTool(a, "send_message", { to: b, text: "another from A" });
   await expect(pending(page).getByRole("article", { name: "Message from first from A" })).toHaveCount(2);
+  const interrupt = await hold(page, "session/interrupt");
   await stop(page).click();
+  await interrupt.arrived;
+  await prompt(page).fill("draft");
+  interrupt.release();
   await expect(pending(page)).toHaveCount(0);
   await expect(fromA(page)).toHaveCount(0);
   await expect(prompt(page)).toHaveValue("draft");
@@ -1074,6 +1118,7 @@ test("a form keeps its question and answers across a reconnect", async ({ ox: pa
   await sections.getByRole("checkbox", { name: "Appendix" }).check();
   await services.restartRelay();
   await expect(main(page).getByRole("alert")).toHaveCount(0, { timeout: 10_000 });
+  await prompt(page).fill("caught up");
   await expect(send(page)).toBeEnabled({ timeout: 10_000 });
   await expect(form.getByText("2 of 2")).toBeVisible();
   await expect(sections.getByRole("checkbox", { name: "Appendix" })).toBeChecked();
@@ -1470,6 +1515,7 @@ test("on reconnect each session waits for its own settings", async ({ ox: page, 
   await prompt(page).fill("after reload");
   await expect(send(page)).toBeDisabled();
   await sessionButton(page, "available independently").click();
+  await prompt(page).fill("next");
   await expect(send(page)).toBeEnabled();
   await sessionButton(page, "refresh my settings").click();
   snapshot.release();
@@ -1518,6 +1564,7 @@ test("a reconnect repeats a failed request until the page catches up", async ({ 
   await prompt(other).press("Enter");
   await expect(replies(other).last()).toHaveText("You said: while failing");
   await expect(prompts(page)).toHaveText(["second", "while failing"]);
+  await prompt(page).fill("next");
   await expect(send(page)).toBeEnabled();
   await expect(page.getByRole("alert")).toHaveCount(0);
 });
@@ -1543,6 +1590,7 @@ clocked("a retry from a dropped stream does not use the next stream", async ({ o
   // Wakes the first stream's retry while the second stream's reload waits.
   await page.clock.runFor(1000);
   catalog.release();
+  await prompt(page).fill("next");
   await expect(send(page)).toBeEnabled();
   expect(lists).toHaveLength(1);
 });
