@@ -30,8 +30,7 @@ export function NewSessionView(props: { draft: Draft; onCreated(): void }) {
   const draft = props.draft;
   // The prompt being created shows pending until the view moves to its session.
   const creating = () => {
-    const prompt = draft.control.outgoing();
-    return prompt?.phase === "creating" ? prompt : undefined;
+    return draft.control.creating() ? draft.control.outgoing() : undefined;
   };
   const pick = (value: ModelChoice) => {
     const catalog = ox.state.harnesses[value.harness];

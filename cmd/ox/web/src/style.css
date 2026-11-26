@@ -495,6 +495,8 @@ main > .loading { flex: 1; display: flex; align-items: center; justify-content: 
 .tab button.x { width: var(--icon-button-size-sm); height: var(--icon-button-size-sm); color: var(--muted-foreground); }
 .tab button.x::before { width: var(--icon-size-sm); height: var(--icon-size-sm); }
 .tab .counts { margin-left: var(--space-0-5); }
+.attention.error { color: var(--critical); }
+.attention.notice, .attention.waiting { color: var(--warning); }
 .strip .editor-actions {
   flex: none; display: flex; align-items: center; gap: var(--space-1); margin-left: auto;
   margin-right: var(--space-0-5); color: var(--text);

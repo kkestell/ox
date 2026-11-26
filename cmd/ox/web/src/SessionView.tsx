@@ -45,8 +45,6 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
   const ox = useOx();
   // Layout keys this view by session, so the control is stable for its lifetime.
   const control = ox.control(untrack(() => props.session.id));
-  // A stop sent before oxd reports a prompt running can overtake the send.
-  const running = () => props.session.state === "running" || props.session.state === "requires_action";
   const archived = () => ox.archived(props.session);
   // A child of an archived session is unarchived with its parent.
   const parent = () => props.session.child && ox.session(props.session.child.parent_id);
@@ -71,9 +69,6 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
     toBottom();
   };
   const drop = createImageDrop(control, () => !archived());
-  // waiting is the pending approvals with no answer in flight. One being
-  // answered disappears, and returns with its answers if oxd refuses them.
-  const waiting = () => props.snapshot.approvals.filter((a) => !control.answering().has(a.id));
 
   return (
     <>
@@ -93,7 +88,11 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
           onDrop={drop.handlers.onDrop}
         >
           <div class="transcript">
-            <Transcript sessionId={props.session.id} snapshot={props.snapshot} outgoing={control.outgoing()} />
+            <Transcript
+              sessionId={props.session.id}
+              snapshot={props.snapshot}
+              outgoing={control.submitting() ? control.outgoing() : undefined}
+            />
           </div>
         </div>
         <Show when={!atBottom()}>
@@ -132,9 +131,9 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
           onDragLeave={drop.handlers.onDragLeave}
           onDrop={drop.handlers.onDrop}
         >
-          <Show when={waiting().length}>
+          <Show when={control.waiting().length}>
             <section class="pending" aria-label="Waiting on you">
-              <For each={waiting()}>
+              <For each={control.waiting()}>
                 {(approval) => (
                   <ApprovalRequest
                     approval={approval}
@@ -163,9 +162,9 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
                 onPaste={pasteImages(control)}
               />
               {/* Send becomes Stop while Claude works and the composer is empty,
-                  until a Stop is in flight. */}
+                  once Ox has accepted the page's prompt, until a Stop is in flight. */}
               <Show
-                when={running() && !control.sendable() && !control.stopping()}
+                when={control.canStop() && !control.sendable()}
                 fallback={
                   <button
                     type="submit"
@@ -203,7 +202,7 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
 function Transcript(props: { sessionId: string; snapshot: SessionSnapshot; outgoing?: Outgoing }) {
   const submitted = () => {
     const prompt = props.outgoing;
-    if (!prompt || prompt.phase === "sent") return;
+    if (!prompt) return;
     const reported =
       props.snapshot.queued.some((p) => p.message_id === prompt.id) ||
       props.snapshot.entries.some((e) => e.kind === "prompt" && e.input.message_id === prompt.id);

@@ -4,10 +4,10 @@ import { ChangesView, Counts, type Listing } from "./Changes";
 import { fileDrag, tabDrag } from "./drag";
 import { FileView } from "./FileView";
 import { languageFor } from "./highlight";
-import type { SessionControl } from "./ox";
+import type { Attention, SessionControl } from "./ox";
 import { type Panels, PanelToggle, Sash, SessionsToggle } from "./Panels";
 import type { FileRoot } from "./protocol";
-import { type PickerTab, TabPicker } from "./TabPicker";
+import { AttentionMark, type PickerTab, TabPicker } from "./TabPicker";
 import {
   activate,
   type Branch,
@@ -32,8 +32,13 @@ import {
 } from "./tabs";
 
 // What the chat tab shows: its label, the directory as its tooltip, and the
-// session's or draft's view.
-export type Chat = { label: () => string; title: () => string | undefined; view: () => JSX.Element };
+// session's or draft's view, and what the chat holds that needs the user.
+export type Chat = {
+  label: () => string;
+  title: () => string | undefined;
+  attention: () => Attention | undefined;
+  view: () => JSX.Element;
+};
 
 const baseName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 
@@ -326,6 +331,11 @@ function Strip(props: { area: Area; group: Group; ref: (el: HTMLDivElement) => v
                 >
                   <span class={["icon", icons[tab().kind]]} />
                   <span class="label">{label()}</span>
+                  <Show
+                    when={tab().kind === "chat" && props.group.active !== i() ? area.props.chat.attention() : undefined}
+                  >
+                    {(attention) => <AttentionMark attention={attention()} />}
+                  </Show>
                   <Show when={tab().kind === "changes"}>
                     <Counts added={area.props.listing.total().added} removed={area.props.listing.total().removed} />
                   </Show>
@@ -370,6 +380,7 @@ function PhoneBar(props: { area: Area }) {
         counts: tab.kind === "changes" ? area.props.listing.total() : undefined,
         active: group.id === shown && group.active === i,
         closable: tab.kind !== "chat",
+        attention: tab.kind === "chat" ? area.props.chat.attention() : undefined,
       })),
     );
   });

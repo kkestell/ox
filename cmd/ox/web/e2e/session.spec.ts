@@ -6,7 +6,6 @@ import type { Page, Route } from "@playwright/test";
 import type { Services } from "./services";
 import { fakeConfig, haikuConfig } from "./services";
 import {
-  addWorkspace,
   allow,
   ask,
   attachPixel,
@@ -23,6 +22,7 @@ import {
   newDraft,
   newSession,
   newSessionButton,
+  open,
   openMenu,
   openModelPicker,
   pending,
@@ -336,13 +336,6 @@ test("a reconnect keeps typed text and sends nothing again", async ({ ox: page, 
   await page.reload();
   await expect(prompts(page)).toHaveText(["sent once"]);
 });
-
-// open loads the page with the services' workspace added, for a test that
-// prepares the page before it loads.
-async function open(page: Page, services: Services) {
-  await page.goto(services.url);
-  await addWorkspace(page, services.workspace);
-}
 
 test("a send cut off after acceptance shows an error without resending", async ({ page, services }) => {
   const cutoff = await cutReply(page, "message_id");
@@ -763,6 +756,47 @@ test("Send becomes Stop once the page's send is accepted, and stops it", async (
   await prompt(page).fill("wait 60000");
   await prompt(page).press("Enter");
   await expect(stop(page)).toBeVisible();
+});
+
+test("Stop waits for a steering send to be accepted, then drops its prompt", async ({ ox: page }) => {
+  await newSession(page, "earlier prompt");
+  await prompt(page).fill("wait 60000");
+  await prompt(page).press("Enter");
+  await expect(stop(page)).toBeVisible();
+  const steering = await hold(page, "session/send");
+  await prompt(page).fill("steer");
+  await prompt(page).press("Enter");
+  await steering.arrived;
+  await expect(stop(page)).toHaveCount(0);
+  await expect(send(page)).toBeDisabled();
+  steering.release();
+  await expect(stop(page)).toBeVisible();
+  await stop(page).click();
+  await expect(prompt(page)).toHaveValue("steer");
+  await expect(errors(page)).toHaveText(["Interrupted"]);
+  await expect(replies(page)).toHaveText(["You said: earlier prompt"]);
+});
+
+test("Send stays unavailable while Stop is held, and a prompt typed meanwhile starts the next turn", async ({
+  ox: page,
+}) => {
+  await newSession(page, "earlier prompt");
+  await prompt(page).fill("wait 60000");
+  await prompt(page).press("Enter");
+  const interrupt = await hold(page, "session/interrupt");
+  await stop(page).click();
+  await interrupt.arrived;
+  const sends = rpcCalls(page, "session/send");
+  await prompt(page).fill("next");
+  await expect(send(page)).toBeDisabled();
+  await prompt(page).press("Enter");
+  expect(sends).toHaveLength(0);
+  interrupt.release();
+  await expect(errors(page)).toHaveText(["Interrupted"]);
+  await expect(send(page)).toBeEnabled();
+  await send(page).click();
+  await expect(replies(page).last()).toHaveText("You said: next");
+  expect(sends.map((params) => params.text)).toEqual(["next"]);
 });
 
 test("a refused Stop shows Stop again with the error", async ({ ox: page }) => {

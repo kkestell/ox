@@ -1,5 +1,21 @@
 import { createUniqueId, For, Show } from "solid-js";
 import { Counts } from "./Changes";
+import type { Attention } from "./ox";
+
+// attentionLabel is the text of the mark a hidden chat tab carries.
+const attentionLabel = (attention: Attention) => (attention.kind === "waiting" ? "Waiting on you" : attention.text);
+
+// AttentionMark is the dot on a chat tab whose hidden chat needs the user.
+export function AttentionMark(props: { attention: Attention }) {
+  return (
+    <span
+      class={["status", "attention", props.attention.kind]}
+      role="img"
+      title={attentionLabel(props.attention)}
+      aria-label={attentionLabel(props.attention)}
+    />
+  );
+}
 
 export type PickerTab = {
   key: string;
@@ -8,6 +24,7 @@ export type PickerTab = {
   counts?: { added: number; removed: number };
   active: boolean;
   closable: boolean;
+  attention?: Attention;
 };
 
 // TabPicker shows the active tab's label and opens a menu of every tab, the
@@ -17,6 +34,8 @@ export function TabPicker(props: { tabs: PickerTab[]; onPick(key: string): void;
   const id = createUniqueId();
   let menu!: HTMLDivElement;
   const current = () => props.tabs.find((tab) => tab.active);
+  // The button carries the mark of a tab that needs the user and is not shown.
+  const hidden = () => props.tabs.find((tab) => tab.attention && !tab.active)?.attention;
   return (
     <>
       <button type="button" class="tab-picker" popovertarget={id} aria-haspopup="menu">
@@ -28,6 +47,7 @@ export function TabPicker(props: { tabs: PickerTab[]; onPick(key: string): void;
             </>
           )}
         </Show>
+        <Show when={hidden()}>{(attention) => <AttentionMark attention={attention()} />}</Show>
         <span class="icon chevrons-up-down" />
       </button>
       <div id={id} ref={menu} popover="auto" role="menu" aria-label="Tabs" class="menu tab-menu">
@@ -45,6 +65,7 @@ export function TabPicker(props: { tabs: PickerTab[]; onPick(key: string): void;
               >
                 <span class={["icon", tab().icon]} />
                 <span class="label">{tab().label}</span>
+                <Show when={tab().attention}>{(attention) => <AttentionMark attention={attention()} />}</Show>
                 <Show when={tab().counts}>{(each) => <Counts added={each().added} removed={each().removed} />}</Show>
               </button>
               <Show when={tab().closable}>
