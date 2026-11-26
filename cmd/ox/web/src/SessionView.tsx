@@ -315,7 +315,7 @@ function MessageBubble(props: { sessionId: string; input: Prompt; files?: File[]
       <Show when={props.input.from !== undefined}>
         <div class="from">{props.input.from_label}</div>
       </Show>
-      <Markdown text={props.input.text ?? ""} />
+      <Show when={props.input.text}>{(text) => <Markdown text={text()} />}</Show>
       <Show when={props.input.images?.length || props.files?.length}>
         <div class="images">
           <For each={props.input.images}>

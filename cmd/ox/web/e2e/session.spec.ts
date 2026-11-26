@@ -2327,6 +2327,7 @@ test("a prompt of an image alone sends, and its bubble shows only the image", as
   await prompt(page).press("Enter");
   await expect(replies(page)).toHaveText(["You said:  [images: 1]"]);
   await expect(prompts(page)).toHaveText([""]);
+  await expect(prompts(page).locator(":scope > *")).toHaveCount(1);
   await expect(attachment(page)).toBeVisible();
 });
 
