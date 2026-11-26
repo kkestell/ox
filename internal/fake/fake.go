@@ -298,13 +298,13 @@ func (a *Agent) withdraw() {
 	}
 }
 
-func (a *Agent) Interrupt() error {
+func (a *Agent) Interrupt(done func(error)) {
 	a.withdraw()
 	a.tracker.DropFrom(0)
 	if !a.tracker.Idle() {
 		a.finish(agent.Result{Text: "Interrupted", IsError: true})
 	}
-	return nil
+	done(nil)
 }
 
 func (a *Agent) Configure(patch agent.SettingsPatch, done func(error)) {

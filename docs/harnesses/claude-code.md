@@ -479,7 +479,10 @@ A prompt Claude has received but not taken (2.1.328):
   cancelled`, and `idle`.
 - `interrupt` with `cancel_queued: true` answers
   `{"still_queued":[],"cancelled":["<uuid>"]}` after `command_lifecycle
-  cancelled`, then `idle`, with no turn and no `result`.
+  cancelled`, then `idle`, with no turn and no `result`. Written right after the
+  prompt, it can find Claude already taking it, and Claude stops it at once as
+  without `cancel_queued`: `command_lifecycle started`, an error `result`, and
+  `idle`.
 
 A prompt written during a turn and not yet taken, with `cancel_queued: true`
 (2.1.328): `command_lifecycle cancelled` for the queued prompt, then the

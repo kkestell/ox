@@ -526,18 +526,17 @@ func (a *Agent) Approve(requestID string, raw json.RawMessage) error {
 	return nil
 }
 
-// Interrupt ends the turn. A call it leaves without a result is answered with
-// stopped in the next request, and the page shows it stopped.
-func (a *Agent) Interrupt() error {
+// Interrupt ends the turn at once. A call it leaves without a result is
+// answered with stopped in the next request, and the page shows it stopped.
+func (a *Agent) Interrupt(done func(error)) {
 	a.tracker.DropFrom(0)
-	if a.turn == nil {
-		return nil
+	if a.turn != nil {
+		if s, ok := a.turn.step.(*asking); ok {
+			a.publish(agent.Update{Type: agent.UpdateApprovalCancelled, RequestID: s.requestID})
+		}
+		a.finish(agent.Result{Text: "Interrupted", IsError: true})
 	}
-	if s, ok := a.turn.step.(*asking); ok {
-		a.publish(agent.Update{Type: agent.UpdateApprovalCancelled, RequestID: s.requestID})
-	}
-	a.finish(agent.Result{Text: "Interrupted", IsError: true})
-	return nil
+	done(nil)
 }
 
 // Configure applies the patch at once; the next request reads the settings.

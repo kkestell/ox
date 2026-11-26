@@ -89,30 +89,61 @@ func (a *Agent) ready() {
 // Interrupt drops every input not yet written to Claude, then asks Claude to
 // stop the running turn and to drop the written input it has not taken.
 // Claude ends the turn with an error result and an idle state, which end the
-// prompts as usual. Its control response carries nothing Ox uses. While a
-// configuration runs, Interrupt writes nothing.
-func (a *Agent) Interrupt() error {
-	written := 0
+// prompts as usual. Its control response carries nothing Ox uses. done waits
+// in stops until Claude reports idle, takes an input other than the written
+// one, or the agent ends.
+func (a *Agent) Interrupt(done func(error)) {
+	written, target := 0, ""
 	if _, prompting := a.phase.(*prompting); prompting && a.tracker.Len() > 0 {
-		written = 1
+		first, _ := a.tracker.First()
+		written, target = 1, first.MessageID
 	}
 	a.tracker.DropFrom(written)
 	switch a.phase.(type) {
-	case *starting, available, *prompting:
+	case *starting, available, *prompting, *configuring:
 		if a.tracker.Idle() {
-			return nil
+			done(nil)
+			return
 		}
-	case *configuring, timedOut, exited:
-		return nil
+	case timedOut, exited:
+		done(nil)
+		return
 	}
 	request := map[string]any{"subtype": "interrupt"}
 	if written > 0 {
 		request["cancel_queued"] = true
 	}
 	if err := a.input.Control(newUUID(), request); err != nil {
-		return fmt.Errorf("interrupt Claude: %w", err)
+		done(fmt.Errorf("interrupt Claude: %w", err))
+		return
 	}
-	return nil
+	a.stops = append(a.stops, stop{done, target})
+}
+
+// stop is an interrupt waiting for the turn it stopped to end. target is the
+// input written and untaken when it was sent: Claude can take that input
+// after the interrupt only to stop it, which ends nothing.
+type stop struct {
+	done   func(error)
+	target string
+}
+
+// settleStops answers every interrupt waiting for its turn to end, except one
+// whose target Claude has just taken.
+func (a *Agent) settleStops(taken string) {
+	var waiting []stop
+	var settled []stop
+	for _, s := range a.stops {
+		if taken != "" && s.target == taken {
+			waiting = append(waiting, s)
+		} else {
+			settled = append(settled, s)
+		}
+	}
+	a.stops = waiting
+	for _, s := range settled {
+		s.done(nil)
+	}
 }
 
 // waiting returns the prompting phase whose written input is id, or nil.
@@ -131,6 +162,7 @@ func (a *Agent) commandStarted(id string) {
 	}
 	p.turn = id
 	a.tracker.Take()
+	a.settleStops(id)
 	a.writeNext()
 }
 
@@ -145,17 +177,20 @@ func (a *Agent) commandCancelled(id string) {
 }
 
 // sessionState records Claude's state. Idle with nothing untaken releases a
-// prompt, naming the latest input written.
+// prompt, naming the latest input written. Idle ends any stopped turn.
 func (a *Agent) sessionState(state string) {
-	if state == agent.StateIdle {
-		a.withdrawApprovals()
-		if p, ok := a.phase.(*prompting); ok && a.tracker.Len() == 0 {
-			a.tracker.Report(state, p.messageID)
-			a.ready()
-			return
-		}
+	if state != agent.StateIdle {
+		a.tracker.Report(state, "")
+		return
 	}
-	a.tracker.Report(state, "")
+	a.withdrawApprovals()
+	if p, ok := a.phase.(*prompting); ok && a.tracker.Len() == 0 {
+		a.tracker.Report(state, p.messageID)
+		a.ready()
+	} else {
+		a.tracker.Report(state, "")
+	}
+	a.settleStops("")
 }
 
 // publish reports an update, tagged with the client prompt whose turn

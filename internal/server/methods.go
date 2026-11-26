@@ -662,13 +662,17 @@ func (s *Server) interruptSession(reply replyFunc, id, params json.RawMessage) {
 		return
 	}
 	s.onSession(reply, id, input.SessionID, func(sess *session) {
-		if sess.agent != nil {
-			if err := sess.agent.Interrupt(); err != nil {
+		if sess.agent == nil {
+			reply(jsonrpc.Success(id, struct{}{}))
+			return
+		}
+		sess.agent.Interrupt(func(err error) {
+			if err != nil {
 				reply(failure(id, err))
 				return
 			}
-		}
-		reply(jsonrpc.Success(id, struct{}{}))
+			reply(jsonrpc.Success(id, struct{}{}))
+		})
 	})
 }
 

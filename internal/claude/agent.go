@@ -69,6 +69,7 @@ type Agent struct {
 	// in prompting.
 	tracker          *agent.Tracker
 	approvals        []agent.Approval // pending, in arrival order
+	stops            []stop           // interrupts written whose turn has not ended
 	settings         agent.Settings   // the settings the process is using
 	onUpdate         func(agent.Update)
 	onResumable      func(string)
@@ -433,6 +434,7 @@ func (a *Agent) end(reason string) {
 		a.publish(final)
 	}
 	a.phase = exited{}
+	a.settleStops("")
 	close(a.done)
 }
 

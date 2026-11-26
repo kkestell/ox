@@ -227,8 +227,8 @@ function createSessionControl(
   const [text, setText] = createSignal("");
   const [images, setImages] = createSignal<File[]>([]);
   const [outgoing, setOutgoing] = createSignal<Outgoing>();
-  // stopping is set by a Stop and lasts until the session leaves running or
-  // oxd refuses the Stop.
+  // stopping is whether the page's session/interrupt is in flight. oxd
+  // answers it once the stopped turn has ended.
   const [stopping, setStopping] = createSignal(false);
   // answering holds the approvals whose answers are in flight.
   const [answering, setAnswering] = createSignal<ReadonlySet<string>>(new Set());
@@ -377,6 +377,7 @@ function createSessionControl(
       setImages((draft) => [...draft, ...files]);
     },
     removeImage: (file: File) => setImages((draft) => draft.filter((f) => f !== file)),
+    sendable,
     error,
     // notice is information about the session that is not an error.
     notice,
@@ -489,15 +490,8 @@ function createSessionControl(
     },
     interrupt() {
       setStopping(true);
-      start(
-        rpc("session/interrupt", { session_id: id }).catch((e: Error) => {
-          setStopping(false);
-          throw e;
-        }),
-      );
+      start(rpc("session/interrupt", { session_id: id }).finally(() => setStopping(false)));
     },
-    // stopped ends a Stop once the session has left running.
-    stopped: () => setStopping(false),
     approve(requestId: string, response: ApprovalResponse) {
       setAnswering((ids) => new Set(ids).add(requestId));
       start(rpc("session/approve", { session_id: id, request_id: requestId, response })).finally(() =>
@@ -606,14 +600,12 @@ function createOx() {
   const release = (id: string) => controls.delete(id);
 
   // setState writes the state oxd published for a session, from the session
-  // list, a session/created, or a state or parked update. A session that
-  // leaves running ends the page's Stop.
+  // list, a session/created, or a state or parked update.
   function setState(id: string, sessionState: SessionState) {
     setStore((s) => {
       const session = sessionIn(s.workspaces, id);
       if (session) session.state = sessionState;
     });
-    if (sessionState !== "running" && sessionState !== "requires_action") controls.get(id)?.stopped();
   }
 
   // retry repeats a request each second until it is answered, showing each

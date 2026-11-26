@@ -190,8 +190,8 @@ func TestInterruptDuringConfiguration(t *testing.T) {
 	input.Reset()
 	ids := sendHeld(t, a)
 	*updates = nil
-	if err := a.Interrupt(); err != nil || input.Len() != 0 || !cancelledToIdle(*updates, ids) {
-		t.Fatalf("an interrupt during configuration wrote %q or did not drop the held inputs: %v, %+v", input, err, *updates)
+	if stop := interrupt(a, updates); !stop.answered || input.Len() != 0 || !cancelledToIdle(*updates, ids) {
+		t.Fatalf("an interrupt during configuration wrote %q or did not drop the held inputs: %+v, %+v", input, stop, *updates)
 	}
 	*updates = nil
 	acknowledge(t, a, requestID, "success")
@@ -209,23 +209,32 @@ func TestConfigurationKeepsReportedState(t *testing.T) {
 	requestID := controlRequestID(t, input)
 	state(t, a, "running")
 	*updates = nil
+	// Stop during the configuration stops the turn Claude started.
+	stop := interrupt(a, updates)
+	if stop.answered || !strings.Contains(input.String(), `"subtype":"interrupt"`) {
+		t.Fatalf("an interrupt of Claude's turn during a configuration wrote %q: %+v", input, stop)
+	}
+	input.Reset()
 	acknowledge(t, a, requestID, "success")
-	if err := <-result; err != nil || len(*updates) != 0 || a.Snapshot().State != "running" || a.Parkable() {
-		t.Fatalf("the acknowledgement did not keep Claude's running state: %v, %+v, %+v", err, *updates, a.Snapshot())
+	if err := <-result; err != nil || len(*updates) != 0 || a.Snapshot().State != "running" || a.Parkable() || stop.answered {
+		t.Fatalf("the acknowledgement did not keep Claude's running state: %v, %+v, %+v, %+v", err, *updates, a.Snapshot(), stop)
 	}
 	if a.Configure(agent.SettingsPatch{Model: new("sonnet")}, replyTo(result)); !errors.Is(<-result, agent.ErrBusy) {
 		t.Fatal("a running agent accepted a configuration")
 	}
-	if err := a.Interrupt(); err != nil || !strings.Contains(input.String(), `"subtype":"interrupt"`) {
-		t.Fatalf("an interrupt of the running agent wrote %q: %v", input, err)
+	if again := interrupt(a, updates); again.answered || !strings.Contains(input.String(), `"subtype":"interrupt"`) {
+		t.Fatalf("an interrupt of the running agent wrote %q: %+v", input, again)
 	}
 	input.Reset()
 	state(t, a, "idle")
 	if len(*updates) != 1 || (*updates)[0].State != "idle" || !a.Parkable() {
 		t.Fatalf("Claude's idle did not release the agent: %+v", *updates)
 	}
-	if err := a.Interrupt(); err != nil || input.Len() != 0 {
-		t.Fatalf("an interrupt of the idle agent wrote %q: %v", input, err)
+	if !stop.answered || stop.err != nil || stop.after != 1 {
+		t.Fatalf("Claude's idle did not answer the interrupt after its update: %+v", stop)
+	}
+	if idle := interrupt(a, updates); !idle.answered || input.Len() != 0 {
+		t.Fatalf("an interrupt of the idle agent wrote %q or waited: %+v", input, idle)
 	}
 }
 
