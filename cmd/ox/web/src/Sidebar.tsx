@@ -51,6 +51,7 @@ function WorkspaceDialog(props: {
       <form onSubmit={submit}>
         {request.kind === "add" ? (
           <input
+            type="text"
             name="path"
             aria-label="Directory"
             placeholder="/absolute/path/to/directory"
@@ -75,10 +76,10 @@ function WorkspaceDialog(props: {
             </p>
           </>
         )}
-        <button type="button" onClick={() => dialog.close()}>
+        <button type="button" class="outline" onClick={() => dialog.close()}>
           Cancel
         </button>
-        <button type="submit" class={{ destructive: request.kind === "delete" }} disabled={busy()}>
+        <button type="submit" class={request.kind === "delete" ? "destructive" : "primary"} disabled={busy()}>
           {request.kind === "add" ? "Add" : request.kind === "delete" ? "Delete" : "Remove"}
         </button>
       </form>
@@ -408,7 +409,16 @@ export function Sidebar(props: {
       hidden={props.hidden}
       style={{ width: props.width === undefined ? undefined : `${props.width}px` }}
     >
-      <div class="bar">{props.toggle}</div>
+      <div class="bar">
+        {props.toggle}
+        <button
+          type="button"
+          class="icon folder-plus"
+          aria-label="Add workspace"
+          title="Add workspace"
+          onClick={() => setRequest({ kind: "add" })}
+        />
+      </div>
       <Show when={request()} keyed>
         {(current) => <WorkspaceDialog request={current} onClose={() => setRequest(undefined)} onRequest={attempt} />}
       </Show>
@@ -481,15 +491,6 @@ export function Sidebar(props: {
           }}
         </For>
       </div>
-      <footer class="bar">
-        <button
-          type="button"
-          class="icon folder-plus"
-          aria-label="Add workspace"
-          title="Add workspace"
-          onClick={() => setRequest({ kind: "add" })}
-        />
-      </footer>
     </nav>
   );
 }

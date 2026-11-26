@@ -244,11 +244,15 @@ function QuestionForm(props: Props & { questions: Question[] }) {
             {page() + 1} of {questions.length}
           </span>
         </Show>
-        <button type="button" onClick={() => props.answer({ behavior: "deny", message: "User declined to answer" })}>
+        <button
+          type="button"
+          class="outline"
+          onClick={() => props.answer({ behavior: "deny", message: "User declined to answer" })}
+        >
           Decline
         </button>
         <Show when={paged}>
-          <button type="button" disabled={page() === 0} onClick={() => go(page() - 1)}>
+          <button type="button" class="outline" disabled={page() === 0} onClick={() => go(page() - 1)}>
             Previous
           </button>
         </Show>

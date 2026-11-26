@@ -1,76 +1,195 @@
 /* Reset */
 *, *::before, *::after { box-sizing: border-box; }
-* { margin: 0; padding: 0; }
+* { margin: 0; padding: 0; scrollbar-width: thin; scrollbar-color: transparent transparent; }
 html, body { height: 100%; }
-/* The page is fixed to the window; a drag past a scroller's end leaves it in place. */
-html { overscroll-behavior: none; }
-/* iOS Safari enlarges text in wide blocks, such as a file's unwrapped lines. */
-html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
-body { -webkit-font-smoothing: antialiased; }
+/* The page is fixed to the window; a drag past a scroller's end leaves it in
+   place. iOS Safari enlarges text in wide blocks, such as a file's unwrapped
+   lines. */
+html { overscroll-behavior: none; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 input, button, textarea, select { font: inherit; color: inherit; }
 pre, code { font-family: var(--font-mono); }
 p { overflow-wrap: break-word; }
 
-/* The neutral palette of shadcn/ui. */
+/* Tokens: every design value. The palette is shadcn/ui's neutral palette. */
 :root {
   color-scheme: light dark;
-  --font-sans: ui-sans-serif, system-ui, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Palette */
   --background: light-dark(oklch(1 0 0), oklch(0.145 0 0));
   --foreground: light-dark(oklch(0.145 0 0), oklch(0.985 0 0));
   --text: light-dark(#404040, #d4d4d4);
   --card: light-dark(oklch(1 0 0), oklch(0.205 0 0));
   --popover: light-dark(oklch(1 0 0), oklch(0.205 0 0));
   --muted: light-dark(oklch(0.97 0 0), oklch(0.269 0 0));
+  --muted-foreground: light-dark(oklch(0.556 0 0), oklch(0.708 0 0));
   --primary: light-dark(oklch(0.205 0 0), oklch(0.922 0 0));
   --primary-foreground: light-dark(oklch(0.985 0 0), oklch(0.205 0 0));
+  --primary-hover: color-mix(in oklab, var(--primary) 90%, transparent);
   --secondary: light-dark(oklch(0.97 0 0), oklch(0.269 0 0));
   --secondary-foreground: light-dark(oklch(0.205 0 0), oklch(0.985 0 0));
-  --muted-foreground: light-dark(oklch(0.556 0 0), oklch(0.708 0 0));
+  --secondary-hover: color-mix(in oklab, var(--secondary) 80%, transparent);
   --accent: light-dark(oklch(0.97 0 0), oklch(0.269 0 0 / 50%));
   --destructive: light-dark(oklch(0.577 0.245 27.325), oklch(0.704 0.191 22.216));
+  --destructive-foreground: white;
+  --destructive-hover: color-mix(in oklab, var(--destructive) 90%, transparent);
   --added: light-dark(oklch(0.527 0.154 150.069), oklch(0.723 0.219 149.579));
   --modified: light-dark(oklch(0.555 0.163 48.998), oklch(0.828 0.189 84.429));
   --border: light-dark(oklch(0.922 0 0), oklch(1 0 0 / 10%));
   --input: light-dark(oklch(0.922 0 0), oklch(1 0 0 / 15%));
   --input-background: light-dark(transparent, oklch(1 0 0 / 4.5%));
   --ring: light-dark(oklch(0.708 0 0), oklch(0.556 0 0));
+  --focus-ring: color-mix(in oklab, var(--ring) 50%, transparent);
+  --drop-target: color-mix(in oklab, var(--ring) 25%, transparent);
+  --overlay: rgb(0 0 0 / 50%);
+  --scrollbar-thumb: color-mix(in oklab, var(--muted-foreground) 50%, transparent);
   --sidebar: light-dark(oklch(0.985 0 0), oklch(0.205 0 0));
   --sidebar-accent: light-dark(oklch(0.97 0 0), color-mix(in srgb, oklch(0.269 0 0) 50%, var(--sidebar)));
   --sidebar-selected: light-dark(oklch(0.94 0 0), var(--secondary));
   --pane: color-mix(in oklab, var(--background), var(--card));
   --composer: light-dark(var(--card), color-mix(in oklab, oklch(0.205 0 0), white 4%));
+  --line-added: color-mix(in oklab, var(--added) 15%, var(--pane));
+  --line-removed: color-mix(in oklab, var(--destructive) 15%, var(--pane));
+  --usage-track: color-mix(in oklab, var(--muted-foreground) 20%, transparent);
+  --warning: oklch(0.769 0.188 70.08);
+  --critical: oklch(0.637 0.237 25.331);
+  --status-idle: #525252;
+  --status-running: #16a34a;
+  --status-running-bright: #4ade80;
+  --slider-thumb: white;
+  --radio-checked: radial-gradient(circle, var(--primary) 0 3.5px, transparent 4px);
+
+  /* Type */
+  --font-sans: ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --text-2xs: 0.6875rem;
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-md: 0.875rem;
+  --text-lg: 0.9375rem;
+  --text-xl: 1rem;
+  --text-2xl: 1.0625rem;
+  --text-3xl: 1.125rem;
+  --text-h1: calc(1em + 0.25rem);
+  --text-h2: calc(1em + 0.125rem);
+  --font-normal: 400;
+  --font-medium: 500;
+  --font-semibold: 600;
+  --leading: 1.5;
+  --leading-sm: 1.25rem;
+  --leading-lg: 1.5rem;
+  --one-line: 1lh;
+  --digit-width: 1ch;
+
+  /* Spacing. --inset is the composer's edge, which the header rows, the
+     transcript, and the alerts align to. */
+  --space-px: 1px;
+  --space-0-5: 0.125rem;
+  --space-1: 0.25rem;
+  --space-1-5: 0.375rem;
+  --space-2: 0.5rem;
+  --space-2-5: 0.625rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --inset: var(--space-4);
+
+  /* Radii */
   --radius: 0.625rem;
+  --radius-xs: 0.25rem;
+  --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: 1rem;
+  --radius-full: 9999px;
+
+  /* Borders and rings */
+  --border-width: 1px;
+  --border-width-md: 1.5px;
+  --border-width-lg: 2px;
+  --ring-width: 3px;
+  --ring-width-lg: 4px;
+  --focus-outline: var(--ring-width) solid var(--focus-ring);
+
+  /* Shadows */
   --shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 5%);
   --shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 10%), 0 1px 2px -1px rgb(0 0 0 / 10%);
   --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 10%), 0 2px 4px -2px rgb(0 0 0 / 10%);
   --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 10%), 0 4px 6px -4px rgb(0 0 0 / 10%);
-  /* The session header's title row, which the file tree and viewer headers match. */
-  --context-title: 2.75rem;
+  --drop-shadow-lg: drop-shadow(0 10px 8px rgb(0 0 0 / 4%)) drop-shadow(0 4px 3px rgb(0 0 0 / 10%));
+
+  /* Sizes. --header-height is the height of the tab strips and of the
+     headers beside them. */
+  --icon-size: 1rem;
+  --icon-size-sm: 0.75rem;
+  --header-height: 2.75rem;
+  --row-height: 2rem;
+  --row-height-sm: 1.75rem;
+  --touch-height: 2.5rem;
+  --control-height: 2rem;
+  --control-height-sm: 1.5rem;
+  --control-height-lg: 2.25rem;
+  --touch-control-width: 2.25rem;
+  --icon-button-size: 1.75rem;
+  --icon-button-size-sm: 1.25rem;
+  --status-dot: 0.5rem;
+  --marker-width: 1.5rem;
+  --session-indent: 1.25rem;
+  --tree-indent: 1rem;
+  --panel-min-width: 10rem;
+  --panel-max-width: 40rem;
+  --group-min-width: 15rem;
+  --group-min-height: 8rem;
+  --drawer-width: min(18rem, 85vw);
+  --dialog-width: 32rem;
+  --menu-min-width: 11rem;
+  --menu-max-width: 18rem;
+  --popover-width: 20rem;
+  --popover-max-width: calc(100vw - 2rem);
+  --tab-max-width: 16rem;
+  --prompt-max-width: 75%;
+  --image-max-height: 16rem;
+  --list-max-height: 16rem;
+  --scroll-max-height: 20rem;
+  --pending-max-height: 50cqh;
+  --composer-max-height: calc(8lh + 0.5rem);
+  --thumbnail-size: 4rem;
+  --usage-bar-width: 4rem;
+  --usage-bar-width-narrow: 3rem;
+  --usage-bar-height: 0.5rem;
+  --slider-track-height: 0.375rem;
+  --slider-thumb-size: 1rem;
+  --tick-length: 0.375rem;
+  --ticks-height: 2.25rem;
+
+  /* Layers */
+  --z-raised: 1;
+  --z-overlay: 2;
+  --z-drawer: 3;
+
+  /* Motion */
+  --duration-fast: 0.1s;
+  --duration: 0.2s;
+  --delay-hover: 0.3s;
+  --duration-loop: 1s;
+
+  /* Opacity */
+  --opacity-faint: 0.5;
+  --opacity-dim: 0.6;
 }
 
-body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: var(--text); background: var(--background); }
-/* The page's row of panels fills the window, clear of the notch and rounded
-   corners. What sits at the bottom takes --bottom-inset, the home indicator's
-   inset while no text field has focus; a focused field raises the keyboard
-   over the indicator. Content scrolls beneath the toolbar. The session
-   header's rows, the transcript, the composer's box, its settings row, and the
-   page's alerts start and end at --inset, the composer box's outer edge. An
-   icon at the end of a row puts its glyph on that edge. */
-.layout {
-  --composer-margin: 1rem; --inset: var(--composer-margin);
-  --bottom-inset: env(safe-area-inset-bottom);
-  position: fixed; inset: 0;
-  display: flex; padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+/* Base elements */
+body {
+  font-family: var(--font-sans); font-size: var(--text-md); font-weight: var(--font-normal); line-height: var(--leading);
+  color: var(--text); background: var(--background); -webkit-font-smoothing: antialiased;
 }
-.layout:has(textarea:focus, input:not([type="radio"], [type="checkbox"]):focus) { --bottom-inset: 0px; }
-* { scrollbar-width: thin; scrollbar-color: transparent transparent; }
-*:hover { scrollbar-color: color-mix(in oklab, var(--muted-foreground) 50%, transparent) transparent; }
-:focus-visible { outline: 3px solid color-mix(in oklab, var(--ring) 50%, transparent); outline-offset: 0; }
+*:hover { scrollbar-color: var(--scrollbar-thumb) transparent; }
+:focus-visible { outline: var(--focus-outline); outline-offset: 0; }
 
-.icon::before, .marker::before, .context .path::before {
-  content: ""; display: block; flex: none; width: 1rem; height: 1rem;
+.icon::before, .marker::before {
+  content: ""; display: block; flex: none; width: var(--icon-size); height: var(--icon-size);
   background: currentColor; mask: var(--icon) center / contain no-repeat;
 }
 .folder-plus { --icon: url(lucide-static/icons/folder-plus.svg); }
@@ -80,12 +199,13 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: 
 .send { --icon: url(lucide-static/icons/send.svg); }
 .stop { --icon: url(lucide-static/icons/square.svg); }
 .arrow-down { --icon: url(lucide-static/icons/arrow-down.svg); }
-.context .path { --icon: url(lucide-static/icons/folder.svg); }
 .chevron-down { --icon: url(lucide-static/icons/chevron-down.svg); }
 .chevron-right { --icon: url(lucide-static/icons/chevron-right.svg); }
 .folder { --icon: url(lucide-static/icons/folder.svg); }
 .folder-open { --icon: url(lucide-static/icons/folder-open.svg); }
 .file { --icon: url(lucide-static/icons/file.svg); }
+.message-square { --icon: url(lucide-static/icons/message-square.svg); }
+.chevrons-up-down { --icon: url(lucide-static/icons/chevrons-up-down.svg); }
 .x { --icon: url(lucide-static/icons/x.svg); }
 .paperclip { --icon: url(lucide-static/icons/paperclip.svg); }
 .wrap-text { --icon: url(lucide-static/icons/wrap-text.svg); }
@@ -93,469 +213,661 @@ body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; color: 
 .panel-left { --icon: url(lucide-static/icons/panel-left.svg); }
 .panel-right { --icon: url(lucide-static/icons/panel-right.svg); }
 .git-branch { --icon: url(lucide-static/icons/git-branch.svg); }
-.git-compare { --icon: url(lucide-static/icons/git-compare.svg); }
 .code { --icon: url(lucide-static/icons/code.svg); }
-.folder-tree { --icon: url(lucide-static/icons/folder-tree.svg); }
-.icon.files { --icon: url(lucide-static/icons/files.svg); }
 .file-diff { --icon: url(lucide-static/icons/file-diff.svg); }
 .square-arrow-out-up-right { --icon: url(lucide-static/icons/square-arrow-out-up-right.svg); }
 .search-icon { --icon: url(lucide-static/icons/search.svg); }
 .check { --icon: url(lucide-static/icons/check.svg); }
 .bot { --icon: url(lucide-static/icons/bot.svg); }
 .loader { --icon: url(lucide-static/icons/loader-circle.svg); }
-.loader::before { animation: spin 1s linear infinite; }
+.loader::before { animation: spin var(--duration-loop) linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.marker.failed { --icon: url(lucide-static/icons/circle-alert.svg); color: var(--destructive); }
-.marker.stopped { --icon: url(lucide-static/icons/circle-stop.svg); color: var(--muted-foreground); }
 
+/* Buttons, after shadcn/ui's Button: a bare button has no look of its own,
+   and its variants are classes. button.icon is the ghost icon button. */
 button {
-  display: inline-flex; align-items: center; justify-content: center; gap: 0.375rem; flex: none;
-  height: 2rem; padding: 0 0.75rem; border-radius: var(--radius-md); font-weight: 500; white-space: nowrap;
-  border: 1px solid var(--input); background: var(--input-background); box-shadow: var(--shadow-xs); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; flex: none; white-space: nowrap;
+  border: 0; border-radius: var(--radius-md); background: transparent; box-shadow: none; cursor: pointer;
 }
-button:hover { background: var(--accent); }
-button[type="submit"], button.primary { border-color: transparent; background: var(--primary); color: var(--primary-foreground); box-shadow: none; }
-button[type="submit"]:hover, button.primary:hover { background: color-mix(in oklab, var(--primary) 90%, transparent); }
-button.icon { width: 1.75rem; height: 1.75rem; padding: 0; border: 0; background: transparent; box-shadow: none; color: inherit; }
+button:disabled { opacity: var(--opacity-faint); pointer-events: none; }
+button:is(.outline, .primary, .destructive) {
+  gap: var(--space-1-5); height: var(--control-height); padding: 0 var(--space-3);
+  border: var(--border-width) solid transparent; font-weight: var(--font-medium);
+}
+button.outline { border-color: var(--input); background: var(--input-background); box-shadow: var(--shadow-xs); }
+button.outline:hover { background: var(--accent); }
+button.primary { background: var(--primary); color: var(--primary-foreground); }
+button.primary:hover { background: var(--primary-hover); }
+button.destructive { background: var(--destructive); color: var(--destructive-foreground); }
+button.destructive:hover { background: var(--destructive-hover); }
+button.icon { width: var(--icon-button-size); height: var(--icon-button-size); }
 button.icon:hover { background: var(--accent); }
-button.destructive { border-color: transparent; background: var(--destructive); color: white; box-shadow: none; }
-button.destructive:hover { background: color-mix(in oklab, var(--destructive) 90%, transparent); }
-button:disabled { opacity: 0.5; pointer-events: none; }
 
-input {
-  height: 2.25rem; padding: 0 0.75rem; border: 1px solid var(--input); border-radius: var(--radius-md);
-  background: var(--input-background); box-shadow: var(--shadow-xs);
+input[type="text"] {
+  height: var(--control-height-lg); padding: 0 var(--space-3); border: var(--border-width) solid var(--input);
+  border-radius: var(--radius-md); background: var(--input-background); box-shadow: var(--shadow-xs);
 }
-input:focus-visible { border-color: var(--ring); }
+input:is([type="text"], [type="radio"], [type="checkbox"]):focus-visible { border-color: var(--ring); }
+input:disabled { opacity: var(--opacity-faint); }
 input::placeholder, textarea::placeholder { color: var(--muted-foreground); }
-input[type="radio"] {
-  appearance: none; flex: none; width: 1rem; height: 1rem; padding: 0; border: 1px solid var(--input); border-radius: 50%;
-  background: light-dark(transparent, oklch(1 0 0 / 4.5%)); box-shadow: var(--shadow-xs);
+input:is([type="radio"], [type="checkbox"]) {
+  appearance: none; flex: none; width: var(--icon-size); height: var(--icon-size);
+  border: var(--border-width) solid var(--input); background: var(--input-background); box-shadow: var(--shadow-xs);
 }
-input[type="radio"]:checked { background: radial-gradient(circle, var(--primary) 0 3.5px, transparent 4px), light-dark(transparent, oklch(1 0 0 / 4.5%)); }
-input[type="radio"]:focus-visible { border-color: var(--ring); }
-input[type="checkbox"] {
-  appearance: none; flex: none; width: 1rem; height: 1rem; padding: 0; border: 1px solid var(--input); border-radius: 4px;
-  background: light-dark(transparent, oklch(1 0 0 / 4.5%)); box-shadow: var(--shadow-xs);
-}
+input[type="radio"] { border-radius: var(--radius-full); }
+input[type="radio"]:checked { background: var(--radio-checked), var(--input-background); }
+input[type="checkbox"] { border-radius: var(--radius-xs); }
 input[type="checkbox"]:checked::before {
   content: ""; display: block; width: 100%; height: 100%; background: var(--primary);
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5l3 3 6-7'/%3E%3C/svg%3E") center / 100% no-repeat;
 }
-input[type="checkbox"]:focus-visible { border-color: var(--ring); }
-input:disabled { opacity: 0.5; }
 
-[role="alert"], .error { color: var(--destructive); }
+/* Toggles, as shadcn/ui's Toggle and Toggle Group: dimmed while off. An icon
+   toggle among the editor actions sits on a filled background while on. */
+.toggle-group { display: inline-flex; gap: var(--space-0-5); min-inline-size: auto; border: 0; }
+:is(.editor-actions, .toggle-group) button[aria-pressed="false"] { color: var(--muted-foreground); }
+:is(.editor-actions, .toggle-group) button[aria-pressed="true"] { color: var(--foreground); }
+.editor-actions button[aria-pressed="true"] { background: var(--muted); }
+
+[role="alert"] { color: var(--destructive); }
 [role="status"] { color: var(--muted-foreground); }
 
 dialog {
-  margin: auto; width: calc(100% - 2rem); max-width: 32rem; padding: 1.5rem;
-  border: 1px solid var(--border); border-radius: var(--radius); background: var(--background); color: var(--text); box-shadow: var(--shadow-lg);
+  margin: auto; width: calc(100% - var(--space-8)); max-width: var(--dialog-width); padding: var(--space-6);
+  border: var(--border-width) solid var(--border); border-radius: var(--radius-lg); background: var(--background);
+  color: var(--text); box-shadow: var(--shadow-lg);
 }
-dialog::backdrop { background: rgb(0 0 0 / 50%); }
-dialog form { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.5rem; }
-dialog input { width: 100%; margin-bottom: 0.5rem; }
-dialog h2 { width: 100%; font-size: 1.125rem; font-weight: 600; color: var(--foreground); }
-dialog .description { width: 100%; margin-bottom: 0.5rem; color: var(--muted-foreground); }
-dialog [role="alert"] { margin-top: 0.75rem; }
+dialog::backdrop { background: var(--overlay); }
+dialog form { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); }
+dialog input { width: 100%; margin-bottom: var(--space-2); }
+dialog h2 { width: 100%; font-size: var(--text-3xl); font-weight: var(--font-semibold); color: var(--foreground); }
+dialog .description { width: 100%; margin-bottom: var(--space-2); color: var(--muted-foreground); }
+dialog [role="alert"] { margin-top: var(--space-3); }
 
-/* Sidebar */
-/* The session list: workspaces scroll between a header and a footer as tall as
-   the session header's title row. */
-nav { --row: 2rem; flex: none; min-width: 160px; max-width: 640px; height: 100%; display: flex; flex-direction: column; background: var(--sidebar); border-right: 1px solid var(--border); }
-nav > .bar { flex: none; display: flex; align-items: center; height: var(--context-title); padding: 0 var(--inset); color: var(--text); }
-nav > div.bar { justify-content: flex-end; border-bottom: 1px solid var(--border); }
-nav > div.bar > button { margin-right: -0.375rem; }
-nav > footer.bar { height: calc(var(--context-title) + var(--bottom-inset)); padding-bottom: var(--bottom-inset); border-top: 1px solid var(--border); }
-nav > footer.bar > button { margin-left: -0.375rem; }
-nav .workspaces { flex: 1; min-height: 0; overflow-y: auto; padding: 0.5rem; }
-nav .workspaces > section { flex: none; }
-nav header { position: relative; display: flex; align-items: center; height: var(--row); padding: 0 0 0 0.5rem; border-radius: var(--radius-md); font-size: 11px; text-transform: uppercase; color: var(--muted-foreground); --row-background: var(--sidebar); background: var(--row-background); }
+/* Layout (App.tsx, Panels.tsx) */
+/* The page's row of panels fills the window, clear of the notch and rounded
+   corners. What sits at the bottom takes --bottom-inset, the home indicator's
+   inset while no text field has focus; a focused field raises the keyboard
+   over the indicator. Content scrolls beneath the toolbar. The session
+   header's rows, the transcript, the composer's box, its settings row, and the
+   page's alerts start and end at --inset, the composer box's outer edge. An
+   icon at the end of a row puts its glyph on that edge. */
+.layout {
+  --bottom-inset: env(safe-area-inset-bottom);
+  position: fixed; inset: 0;
+  display: flex; padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+}
+.layout:has(textarea:focus, input:not([type="radio"], [type="checkbox"]):focus) { --bottom-inset: 0px; }
+/* The space the tab area and the panel at the right share. The session list
+   leaves it the minimum width of a group beside the panel. --tree is the
+   panel's width, and --beside the width the panel takes. */
+.center {
+  --beside: 0px;
+  flex: 1 1 0; min-width: calc(var(--group-min-width) + var(--beside)); height: 100%;
+  display: flex; flex-direction: column; container-type: size;
+}
+.layout:not(.narrow) > .center:has(> .panes > aside.files) { --beside: clamp(var(--panel-min-width), var(--tree), var(--panel-max-width)); }
+.panes { flex: 1 1 0; min-height: 0; display: flex; }
+.center > :is([role="alert"], [role="status"]) { flex: none; padding: var(--space-2) var(--inset); font-size: var(--text-xs); background: var(--pane); }
+
+/* Sash: a zero-width bar between two panels, after VS Code's, with a hit area
+   on the boundary that shows after a short hover and while dragging. */
+.sash { flex: none; position: relative; z-index: var(--z-raised); width: 0; overflow: visible; border: 0; }
+.sash::before {
+  content: ""; position: absolute; inset: 0 calc(-1 * var(--space-0-5)); cursor: col-resize;
+  transition: background-color var(--duration-fast) ease-out;
+}
+.sash:hover::before { background: var(--ring); transition-delay: var(--delay-hover); }
+.sash.resizing::before { background: var(--ring); transition-delay: 0s; }
+.sash.horizontal { width: auto; height: 0; }
+.sash.horizontal::before { inset: calc(-1 * var(--space-0-5)) 0; cursor: row-resize; }
+:root:has(.sash.resizing), :root:has(.sash.resizing) * { cursor: col-resize; user-select: none; }
+:root:has(.sash.horizontal.resizing), :root:has(.sash.horizontal.resizing) * { cursor: row-resize; }
+
+/* Panel toggles, after VS Code's layout controls: a shown panel's toggle is in
+   full color, a hidden one's dimmed. */
+button:is(.panel-left, .panel-right)[aria-pressed="false"] { color: var(--muted-foreground); }
+
+/* Narrow screens show one tab at a time, as the ChatGPT and Claude mobile web
+   apps do: the session list and the right panel are drawers over a dimmed
+   page, opened from the strip's ends. */
+.narrow nav, .narrow aside.files.drawer {
+  position: absolute; top: 0; bottom: 0; z-index: var(--z-drawer); width: var(--drawer-width); height: auto;
+  padding-top: env(safe-area-inset-top); box-shadow: var(--shadow-lg);
+  transition: translate var(--duration), visibility var(--duration);
+}
+.narrow nav { left: 0; padding-left: env(safe-area-inset-left); }
+.narrow nav[hidden] { display: flex; visibility: hidden; translate: -100% 0; }
+.narrow aside.files.drawer { right: 0; padding-right: env(safe-area-inset-right); }
+@starting-style { .narrow aside.files.drawer { translate: 100% 0; } }
+.scrim { position: absolute; inset: 0; z-index: var(--z-overlay); background: var(--overlay); transition: opacity var(--duration); }
+@starting-style { .scrim { opacity: 0; } }
+.narrow .sash { display: none; }
+
+/* Sidebar.tsx */
+/* The session list: workspaces scroll under a header as tall as a tab strip. */
+nav {
+  --row: var(--row-height);
+  flex: none; min-width: var(--panel-min-width); max-width: var(--panel-max-width); height: 100%;
+  display: flex; flex-direction: column; background: var(--sidebar); border-right: var(--border-width) solid var(--border);
+}
+nav[hidden] { display: none; }
+nav > .bar {
+  flex: none; display: flex; align-items: center; justify-content: space-between; height: var(--header-height);
+  padding: 0 var(--inset); border-bottom: var(--border-width) solid var(--border); color: var(--text);
+}
+nav > .bar > :first-child { margin-left: calc(-1 * var(--space-1-5)); }
+nav > .bar > :last-child { margin-right: calc(-1 * var(--space-1-5)); }
+nav .workspaces { flex: 1; min-height: 0; overflow-y: auto; padding: var(--space-2); }
+nav header {
+  --row-background: var(--sidebar);
+  position: relative; display: flex; align-items: center; height: var(--row); padding: 0 0 0 var(--space-2);
+  border-radius: var(--radius-md); font-size: var(--text-2xs); text-transform: uppercase;
+  color: var(--muted-foreground); background: var(--row-background);
+}
 nav header:hover { --row-background: var(--sidebar-accent); }
 nav header .name { min-width: 0; overflow: hidden; white-space: nowrap; font: inherit; }
-nav header button.icon { width: 1.5rem; height: 1.5rem; color: var(--text); }
-nav ul { margin-bottom: 0.5rem; list-style: none; }
-nav li { position: relative; display: flex; align-items: center; gap: 0.375rem; height: var(--row); padding: 0 0 0 calc(0.5rem + var(--depth) * 1.25rem); border-radius: var(--radius-md); cursor: default; --actions: 1.75rem; --row-background: var(--sidebar); background: var(--row-background); }
+nav header button.icon { width: var(--control-height-sm); height: var(--control-height-sm); color: var(--text); }
+nav ul { margin-bottom: var(--space-2); list-style: none; }
+nav li {
+  --actions: calc(var(--control-height-sm) + var(--space-1)); --row-background: var(--sidebar);
+  position: relative; display: flex; align-items: center; gap: var(--space-1-5); height: var(--row);
+  padding: 0 0 0 calc(var(--space-2) + var(--depth) * var(--session-indent)); border-radius: var(--radius-md);
+  cursor: default; background: var(--row-background);
+}
 nav li:hover { --row-background: var(--sidebar-accent); }
 nav li.selected { --row-background: var(--sidebar-selected); color: var(--secondary-foreground); }
-nav li.selected button.open { font-weight: 500; }
-/* Each level indents 1.25rem. A child's guide runs down from its parent's
-   status dot, or from where its previous sibling branches, --rise rows up,
-   and branches into its own dot, curving only into the last child. Rows are
-   --row tall and dots sit 1rem in, so a row's dot is half a row below its top. */
-nav li.child { font-size: 13px; }
+nav li.selected button.open { font-weight: var(--font-medium); }
+/* Each level indents --session-indent. A child's guide runs down from its
+   parent's status dot, or from where its previous sibling branches, --rise
+   rows up, and branches into its own dot, curving only into the last child.
+   Rows are --row tall and each dot is centered in its status box past the
+   row's padding, so a row's dot is half a row below its top. */
+nav li.child { font-size: var(--text-sm); }
 nav li.child::before {
-  content: ""; position: absolute; left: calc(1rem - 0.5px + (var(--depth) - 1) * 1.25rem); top: calc(var(--row) / 2 - var(--rise) * var(--row)); bottom: calc(50% - 0.5px); width: calc(1rem + 0.5px);
-  border: solid var(--border); border-width: 0 0 1px 1px; pointer-events: none;
+  content: ""; position: absolute;
+  left: calc(
+    var(--space-2) + var(--icon-size) / 2 - var(--border-width) / 2 + var(--depth) * var(--session-indent) - var(--session-indent)
+  );
+  top: calc(var(--row) / 2 - var(--rise) * var(--row)); bottom: calc(50% - var(--border-width) / 2);
+  width: calc(var(--session-indent) - var(--status-dot) / 2 + var(--border-width) / 2);
+  border: solid var(--border); border-width: 0 0 var(--border-width) var(--border-width); pointer-events: none;
 }
-nav li.child.first::before { top: calc(var(--row) / 2 + 4px - var(--rise) * var(--row)); }
-nav li.child.last::before { border-bottom-left-radius: 6px; }
+nav li.child.first::before { top: calc(var(--row) / 2 + var(--status-dot) / 2 - var(--rise) * var(--row)); }
+nav li.child.last::before { border-bottom-left-radius: var(--radius-sm); }
 /* The title and a parent's chevron. The title runs to the row's edge, where
    the clip cuts it. The chevron follows a title that fits and sticks over the
-   end of one that does not, so showing it never moves the title. The 3px
-   padding keeps focus rings inside the clip. */
-nav li .head { flex: 1; min-width: 0; align-self: stretch; display: flex; align-items: center; overflow: hidden; margin: -3px; padding: 3px; }
-nav li button.open { flex: none; max-width: 100%; height: 100%; display: flex; justify-content: flex-start; align-items: center; gap: 0.375rem; cursor: default; padding: 0; border: 0; background: transparent; box-shadow: none; color: inherit; font: inherit; text-align: left; }
-nav li button.open:hover { background: transparent; }
+   end of one that does not, so showing it never moves the title. The padding
+   keeps focus rings inside the clip. */
+nav li .head {
+  flex: 1; min-width: 0; align-self: stretch; display: flex; align-items: center; overflow: hidden;
+  margin: calc(-1 * var(--ring-width)); padding: var(--ring-width);
+}
+nav li button.open { max-width: 100%; height: 100%; justify-content: flex-start; gap: var(--space-1-5); cursor: default; text-align: left; }
 nav li .title { min-width: 0; overflow: hidden; white-space: nowrap; }
-nav li button.icon { width: 1.5rem; height: 1.5rem; color: var(--muted-foreground); }
+nav li button.icon { width: var(--control-height-sm); height: var(--control-height-sm); color: var(--muted-foreground); }
 nav li button.icon:hover { color: inherit; }
+nav li.archived button.open, nav li:has(.status.parked) button.open { opacity: var(--opacity-dim); }
+nav li .archive { flex: none; width: var(--icon-size); height: var(--icon-size); display: flex; align-items: center; justify-content: center; color: var(--muted-foreground); }
+nav li .archive::before { width: var(--icon-size-sm); height: var(--icon-size-sm); }
 /* A row's or header's buttons, at its right end on the row's color, after a
-   0.25rem fade from the text beneath them. A row's actions are --actions wide.
-   A parent's reach left beneath its chevron's icon, which stands above them,
-   so the fade lies before the icon. */
-nav :is(header, li) .actions { position: absolute; top: 0; bottom: 0; right: 0; display: flex; align-items: center; padding-right: 0.25rem; border-top-right-radius: inherit; border-bottom-right-radius: inherit; background: var(--row-background); }
-nav :is(header, li) .actions::before { content: ""; position: absolute; top: 0; bottom: 0; right: 100%; width: 0.25rem; background: linear-gradient(to right, transparent, var(--row-background)); }
-nav header .actions { padding-right: 0.125rem; }
-/* The chevron's icon stands 0.25rem after the title, and sticks 0.25rem
-   before the ⋯ button over the end of a title that does not fit. */
-nav li button.chevron-right { display: inline-flex; opacity: 0; position: sticky; z-index: 1; right: calc(var(--actions) + 0.25rem); width: 1.25rem; height: 1.25rem; margin: 0; justify-content: flex-end; }
+   fade from the text beneath them. A row's actions are --actions wide. A
+   parent's reach left beneath its chevron's icon, which stands above them, so
+   the fade lies before the icon. */
+nav :is(header, li) .actions {
+  position: absolute; top: 0; bottom: 0; right: 0; display: flex; align-items: center; padding-right: var(--space-1);
+  border-top-right-radius: inherit; border-bottom-right-radius: inherit; background: var(--row-background); opacity: 0;
+}
+nav :is(header, li) .actions::before {
+  content: ""; position: absolute; top: 0; bottom: 0; right: 100%; width: var(--space-1);
+  background: linear-gradient(to right, transparent, var(--row-background));
+}
+nav header .actions { padding-right: var(--space-0-5); }
+nav :is(header, li):is(:hover, :has(:focus-visible)) .actions { opacity: 1; }
+nav li:has(button.chevron-right) .actions { padding-left: var(--space-5); }
+/* The chevron's icon stands a space after the title, and sticks a space
+   before the ⋯ button over the end of a title that does not fit. Its box is
+   only the hit area, so hovering it leaves the row's color. */
+nav li button.chevron-right {
+  opacity: 0; position: sticky; z-index: var(--z-raised); right: calc(var(--actions) + var(--space-1));
+  width: var(--icon-button-size-sm); height: var(--icon-button-size-sm); justify-content: flex-end;
+}
 nav li button.chevron-right:hover { background: transparent; }
 nav li .chevron-right[aria-expanded="true"]::before { transform: rotate(90deg); }
-nav :is(header, li) .actions { opacity: 0; }
-nav :is(header, li):is(:hover, :has(:focus-visible)) .actions { opacity: 1; }
-nav li:has(button.chevron-right) .actions { padding-left: 1.25rem; }
 nav li:is(:hover, :has(:focus-visible)) button.chevron-right { opacity: 1; }
-nav li.archived button.open { opacity: 0.6; }
-nav li:has(.status.parked) button.open { opacity: 0.6; }
-nav li .archive { flex: none; width: 1rem; height: 1rem; display: flex; align-items: center; justify-content: center; color: var(--muted-foreground); }
-nav li .archive::before { width: 0.75rem; height: 0.75rem; }
-nav > [role="alert"] { padding: 0 0.5rem 0.5rem; font-size: 0.75rem; }
-nav[hidden] { display: none; }
 
-/* Sidebar menu, placed at its request's coordinates. */
+.status { flex: none; width: var(--icon-size); height: var(--icon-size); display: flex; align-items: center; justify-content: center; }
+.status::before { content: ""; width: var(--status-dot); height: var(--status-dot); border-radius: var(--radius-full); background: currentColor; }
+.status.idle, .status.parked, .marker.done { color: var(--status-idle); }
+.status.requires_action { color: var(--warning); }
+.status.background { color: var(--status-running); }
+.status.background::before { background: transparent; border: var(--border-width-md) solid currentColor; }
+.status.running, .marker.running { animation: breathe var(--duration-loop) ease-in-out infinite alternate; }
+@keyframes breathe { from { color: var(--status-running); } to { color: var(--status-running-bright); } }
+
+/* The context menu, placed at its request's coordinates. */
 .menu {
-  position: fixed; inset: auto; margin: 0; min-width: 11rem; max-width: 18rem; padding: 0.25rem;
-  border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--popover); color: var(--foreground); box-shadow: var(--shadow-md);
+  position: fixed; inset: auto; margin: 0; min-width: var(--menu-min-width); max-width: var(--menu-max-width); padding: var(--space-1);
+  border: var(--border-width) solid var(--border); border-radius: var(--radius-md); background: var(--popover);
+  color: var(--foreground); box-shadow: var(--shadow-md);
 }
 .menu:popover-open { display: flex; flex-direction: column; }
 .menu [role="menuitem"] {
-  height: auto; min-height: 2rem; padding: 0.375rem 0.5rem; flex-direction: column; align-items: flex-start; justify-content: center; gap: 0;
-  border: 0; background: transparent; box-shadow: none; font-weight: 400; text-align: left; white-space: normal;
+  min-height: var(--row-height); padding: var(--space-1-5) var(--space-2); flex-direction: column; align-items: flex-start;
+  justify-content: center; text-align: left; white-space: normal;
 }
 .menu [role="menuitem"]:hover, .menu [role="menuitem"]:focus-visible { background: var(--accent); outline: none; }
 .menu [role="menuitem"]:disabled { opacity: 1; color: var(--muted-foreground); }
-.menu .reason { font-size: 0.75rem; }
+.menu .reason { font-size: var(--text-xs); }
 
-.status { flex: none; width: 1rem; height: 1rem; display: flex; align-items: center; justify-content: center; }
-.status::before { content: ""; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: currentColor; }
-.status.idle, .status.parked, .marker.done { color: #525252; }
-.status.requires_action { color: #f59e0b; }
-.status.background { color: #16a34a; }
-.status.background::before { box-sizing: border-box; background: transparent; border: 1.5px solid currentColor; }
-.status.running, .marker.running { animation: breathe 1s ease-in-out infinite alternate; }
-@keyframes breathe { from { color: #16a34a; } to { color: #4ade80; } }
-
-/* The space the transcript, the workbench, and the file tree share. The
-   session list leaves it the transcript's minimum width beside the tree.
-   --tree is the file tree's width, and --beside the width the tree takes. */
-.center { --beside: 0px; flex: 1 1 0; min-width: calc(240px + var(--beside)); height: 100%; display: flex; flex-direction: column; container-type: size; }
-.layout:not(.narrow) > .center:has(> .panes > aside.files) { --beside: clamp(160px, var(--tree), 640px); }
-.panes { flex: 1 1 0; min-height: 0; display: flex; }
-
-/* Session */
-main { flex: 1 1 0; min-width: 240px; display: flex; flex-direction: column; background: var(--pane); }
-.center > :is([role="alert"], [role="status"]) { flex: none; padding: 0.5rem var(--inset); font-size: 0.75rem; background: var(--pane); }
-.context { flex: none; }
+/* TabArea.tsx */
+/* Groups of tabs in splits, after VS Code's editor groups. A group's strip is
+   as tall as the session list's header and the panel's. */
+.tab-area, .split { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; }
+.split.column { flex-direction: column; }
+.cell { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; }
+.cell > :is(.group, .split) { flex: 1 1 0; }
+.split.row > .cell { min-width: var(--group-min-width); }
+.split.column > .cell { min-height: var(--group-min-height); }
+.split.row > .sash + .cell { border-left: var(--border-width) solid var(--border); }
+.split.column > .sash + .cell { border-top: var(--border-width) solid var(--border); }
+.group { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--pane); }
+.group-body { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+main { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+main[hidden] { display: none; }
 main > .loading { flex: 1; display: flex; align-items: center; justify-content: center; }
-.context > * { display: flex; align-items: center; padding: 0 var(--inset); border-bottom: 1px solid var(--border); }
-.context .title { height: var(--context-title); }
-.context h1 { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 1em; font-weight: 600; color: var(--foreground); }
-.context .path { gap: 0.5rem; height: 2.25rem; font-size: 0.8125rem; color: var(--muted-foreground); }
-.context .directory { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.strip {
+  flex: none; display: flex; align-items: center; gap: var(--space-1); height: var(--header-height);
+  padding: 0 var(--space-2); border-bottom: var(--border-width) solid var(--border); color: var(--text);
+}
+.strip.dropping { background: var(--accent); }
+.strip > button.icon { margin-right: var(--space-1); }
+.tabs { flex: 0 1 auto; min-width: 0; height: 100%; display: flex; align-items: stretch; overflow-x: auto; scrollbar-width: none; }
+.tab { flex: none; max-width: var(--tab-max-width); display: flex; align-items: center; gap: var(--space-0-5); padding: 0 var(--space-1) 0 var(--space-2); }
+.tab.active { box-shadow: inset 0 calc(-1 * var(--border-width-lg)) 0 var(--border); }
+.group.focused .tab.active { box-shadow: inset 0 calc(-1 * var(--border-width-lg)) 0 var(--foreground); }
+.tab [role="tab"] { min-width: 0; height: 100%; gap: var(--space-2); font-size: var(--text-sm); color: var(--muted-foreground); cursor: default; }
+.tab.active [role="tab"] { color: var(--foreground); }
+:is(.tab, .tab-picker, .tab-menu) .label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tab button.x { width: var(--icon-button-size-sm); height: var(--icon-button-size-sm); color: var(--muted-foreground); }
+.tab button.x::before { width: var(--icon-size-sm); height: var(--icon-size-sm); }
+.tab .counts { margin-left: var(--space-0-5); }
+.strip .editor-actions {
+  flex: none; display: flex; align-items: center; gap: var(--space-1); margin-left: auto;
+  margin-right: calc(-1 * var(--space-0-5)); color: var(--text);
+}
+/* A drag over a group shades the half or the whole of it that the drop takes. */
+.drop-preview {
+  position: absolute; z-index: var(--z-overlay); pointer-events: none;
+  border: var(--border-width) solid var(--ring); background: var(--drop-target);
+}
+.drop-preview.center { inset: 0; }
+.drop-preview.left { inset: 0 50% 0 0; }
+.drop-preview.right { inset: 0 0 0 50%; }
+.drop-preview.top { inset: 0 0 50% 0; }
+.drop-preview.bottom { inset: 50% 0 0 0; }
+
+/* TabPicker.tsx */
+/* The narrow layout's strip: the picker shows the active tab and opens the menu of all of them. */
+.tab-picker {
+  flex: 1; min-width: 0; gap: var(--space-2); height: var(--control-height); padding: 0 var(--space-3);
+  font-weight: var(--font-medium); color: var(--foreground);
+}
+.tab-picker:hover { background: var(--accent); }
+.tab-picker .chevrons-up-down { color: var(--muted-foreground); }
+.tab-menu { position-area: bottom; position-try-fallbacks: flip-block; margin: var(--space-1) 0 0; width: min(var(--popover-width), var(--popover-max-width)); }
+.tab-menu .item { display: flex; align-items: center; gap: var(--space-1); }
+.tab-menu [role="menuitemradio"] { flex: 1; min-width: 0; height: var(--touch-height); padding: 0 var(--space-2); justify-content: flex-start; gap: var(--space-2); }
+.tab-menu [role="menuitemradio"]:hover { background: var(--accent); }
+.tab-menu [aria-checked="true"]::after {
+  content: ""; width: var(--icon-size); height: var(--icon-size); margin-left: auto;
+  background: currentColor; mask: url(lucide-static/icons/check.svg) center / contain no-repeat;
+}
+.tab-menu button.x { color: var(--muted-foreground); }
+
+/* SessionView.tsx */
 /* Zero scroll offset follows the bottom through content and viewport changes.
    After scrolling up, native scroll anchoring keeps the visible content in view. */
 .log-frame { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
 .log { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column-reverse; }
 .log-frame > button.jump {
-  position: absolute; bottom: 1rem; left: 50%; translate: -50% 0; width: 2rem; height: 2rem; border-radius: 50%;
-  border: 1px solid var(--border); background: var(--card); box-shadow: var(--shadow-sm);
+  position: absolute; bottom: var(--space-4); left: 50%; translate: -50% 0; width: var(--control-height); height: var(--control-height);
+  border: var(--border-width) solid var(--border); border-radius: var(--radius-full); background: var(--card); box-shadow: var(--shadow-sm);
 }
 .log-frame > button.jump:hover { background: var(--accent); }
-.transcript { flex: none; min-height: 100%; display: flex; flex-direction: column; gap: 0.75rem; padding: 1rem var(--inset); }
-:is(.log, .log-frame) ~ :is([role="alert"], [role="status"]) { padding: 0 var(--inset); font-size: 0.75rem; text-align: right; }
+.transcript { flex: none; min-height: 100%; display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4) var(--inset); }
+:is(.log, .log-frame) ~ :is([role="alert"], [role="status"]) { padding: 0 var(--inset); font-size: var(--text-xs); text-align: right; }
 .prompt { overflow-wrap: break-word; }
-.error { white-space: pre-wrap; overflow-wrap: break-word; }
-.log .prompt { align-self: flex-end; max-width: 75%; padding: 0.75rem 1rem; border-radius: calc(var(--radius) + 4px); background: var(--secondary); color: var(--secondary-foreground); box-shadow: var(--shadow-sm); }
-.log .prompt.queued { opacity: 0.6; }
-.log .queue { display: flex; flex-direction: column; gap: 0.75rem; }
-.log .message .from { font-size: 0.75rem; color: var(--muted-foreground); }
-.log .reports { display: flex; flex-direction: column; gap: 0.75rem; }
-.prompt:has(> .images) { display: flex; flex-direction: column; gap: 0.5rem; }
-.prompt .images { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-.prompt .images > img { max-width: 100%; max-height: 16rem; object-fit: contain; }
-.markdown { overflow-wrap: break-word; white-space: normal; }
-.markdown > :first-child { margin-top: 0; }
-.markdown > :last-child { margin-bottom: 0; }
-.markdown p, .markdown ul, .markdown ol, .markdown pre, .markdown blockquote, .markdown table { margin: 0.5rem 0; }
-.markdown h1, .markdown h2, .markdown h3, .markdown h4, .markdown h5, .markdown h6 { margin: 0.75rem 0 0.5rem; font-weight: 600; font-size: 1em; }
-.markdown h1 { font-size: calc(1em + 4px); }
-.markdown h2 { font-size: calc(1em + 2px); }
-.markdown ul, .markdown ol { padding-left: 1.5rem; }
-.markdown code { padding: 0.125rem 0.25rem; border-radius: 0.25rem; background: var(--secondary); font-size: 0.8125rem; }
-.markdown pre { padding: 0.5rem 0.75rem; overflow-x: auto; border-radius: var(--radius); background: var(--secondary); font-size: 0.75rem; white-space: pre; }
-.markdown pre code { padding: 0; background: none; font-size: inherit; }
-.prompt .markdown code, .prompt .markdown pre { background: var(--background); }
-.prompt .markdown pre code { background: none; }
-.markdown blockquote { padding-left: 0.75rem; border-left: 2px solid var(--border); color: var(--muted-foreground); }
-.markdown table { display: block; overflow-x: auto; border-collapse: collapse; }
-.markdown th, .markdown td { padding: 0.25rem 0.5rem; border: 1px solid var(--border); }
-.markdown hr { border: 0; border-top: 1px solid var(--border); }
-.markdown a { color: inherit; text-decoration: underline; }
-.log .error { padding: 0.75rem 1rem; border-radius: var(--radius); background: var(--card); }
+.error { color: var(--destructive); white-space: pre-wrap; overflow-wrap: break-word; }
+.log .prompt {
+  align-self: flex-end; max-width: var(--prompt-max-width); padding: var(--space-3) var(--space-4); border-radius: var(--radius-xl);
+  background: var(--secondary); color: var(--secondary-foreground); box-shadow: var(--shadow-sm);
+}
+.log .prompt.queued { opacity: var(--opacity-dim); }
+.log .queue { display: flex; flex-direction: column; gap: var(--space-3); }
+.log .message .from { font-size: var(--text-xs); color: var(--muted-foreground); }
+.log .reports { display: flex; flex-direction: column; gap: var(--space-3); }
+.prompt:has(> .images) { display: flex; flex-direction: column; gap: var(--space-2); }
+.prompt .images { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.prompt .images > img { max-width: 100%; max-height: var(--image-max-height); object-fit: contain; }
+.log .error { padding: var(--space-3) var(--space-4); border-radius: var(--radius-lg); background: var(--card); }
 
 .log .reasoning > .markdown { color: var(--muted-foreground); }
-.reasoning .chevron-right { margin-left: 0.25rem; color: var(--muted-foreground); }
+.reasoning .chevron-right { margin-left: var(--space-1); color: var(--muted-foreground); }
 .reasoning[open] .chevron-right::before { transform: rotate(90deg); }
 /* A row's summary padding widens its hit area into the transcript's gap, so
    text keeps the gap's distance from the items around it. A tool row after a
-   closed one sits 0.25rem below it. */
-details:is(.tool, .reasoning) { margin-top: -0.25rem; }
-details:is(.tool, .reasoning):not([open]) { margin-bottom: -0.25rem; }
-details.tool:not([open]) + details.tool { margin-top: -0.75rem; }
-details:is(.tool, .reasoning) summary { display: flex; align-items: center; padding: 0.25rem 0; list-style: none; cursor: default; }
+   closed one sits a space below it. */
+details:is(.tool, .reasoning) { margin-top: calc(-1 * var(--space-1)); }
+details:is(.tool, .reasoning):not([open]) { margin-bottom: calc(-1 * var(--space-1)); }
+details.tool:not([open]) + details.tool { margin-top: calc(-1 * var(--space-3)); }
+details:is(.tool, .reasoning) summary { display: flex; align-items: center; padding: var(--space-1) 0; list-style: none; cursor: default; }
 details:is(.tool, .reasoning) summary::-webkit-details-marker { display: none; }
-.marker { flex: none; width: 1.5rem; height: 1.25rem; display: flex; align-items: center; }
-.marker.running::before, .marker.done::before { width: 0.5rem; height: 0.5rem; margin-left: 0.25rem; border-radius: 50%; mask: none; }
 details:is(.tool, .reasoning) .name { flex: none; }
-details.tool .detail { min-width: 0; margin-left: 0.25rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted-foreground); }
-details.tool .card { margin: 0.5rem 0 0 1.5rem; border-radius: calc(var(--radius) + 4px); overflow: hidden; background: var(--card); box-shadow: var(--shadow-sm); }
-details.tool pre { padding: 0.5rem 0.75rem; overflow-x: auto; white-space: pre-wrap; overflow-wrap: break-word; font-size: 0.75rem; }
-.card > .plan { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); }
-details.tool pre + pre { border-top: 1px solid var(--border); }
+.marker { flex: none; width: var(--marker-width); height: var(--space-5); display: flex; align-items: center; }
+.marker.running::before, .marker.done::before {
+  width: var(--status-dot); height: var(--status-dot); margin-left: var(--space-1); border-radius: var(--radius-full); mask: none;
+}
+.marker.failed { --icon: url(lucide-static/icons/circle-alert.svg); color: var(--destructive); }
+.marker.stopped { --icon: url(lucide-static/icons/circle-stop.svg); color: var(--muted-foreground); }
+details.tool .detail {
+  min-width: 0; margin-left: var(--space-1); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted-foreground);
+}
+/* The card lines up under the tool's name. */
+details.tool .card {
+  margin: var(--space-2) 0 0 var(--marker-width); border-radius: var(--radius-xl); overflow: hidden;
+  background: var(--card); box-shadow: var(--shadow-sm);
+}
+details.tool pre { padding: var(--space-2) var(--space-3); overflow-x: auto; white-space: pre-wrap; overflow-wrap: break-word; font-size: var(--text-xs); }
+details.tool pre + pre { border-top: var(--border-width) solid var(--border); }
+.card > .plan { padding: var(--space-2) var(--space-3); border-bottom: var(--border-width) solid var(--border); }
 
-.composer { flex: none; margin: var(--composer-margin); margin-bottom: max(var(--composer-margin), var(--bottom-inset)); }
-.composer.archived { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.75rem 1rem; border: 1px solid var(--border); border-radius: 16px; background: var(--composer); color: var(--muted-foreground); }
-.composer .box { position: relative; display: flex; flex-direction: column; gap: 0.25rem; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: 16px; background: var(--composer); }
+.composer { flex: none; margin: var(--inset); margin-bottom: max(var(--inset), var(--bottom-inset)); }
+.composer.archived {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-3) var(--space-4);
+  border: var(--border-width) solid var(--border); border-radius: var(--radius-2xl); background: var(--composer); color: var(--muted-foreground);
+}
+.composer .box {
+  position: relative; display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--border); border-radius: var(--radius-2xl); background: var(--composer);
+}
 .composer .box.dragging { border-style: dashed; border-color: var(--ring); }
-.composer .box .field { display: flex; align-items: flex-end; gap: 0.25rem; }
-.composer .box .paperclip { color: var(--muted-foreground); }
-.composer .thumbnails { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-.composer .thumbnail { position: relative; }
-.composer .thumbnail > img { display: block; width: 4rem; height: 4rem; object-fit: cover; }
-.composer:has(.pending:not([hidden])) .box { filter: drop-shadow(0 10px 8px rgb(0 0 0 / 4%)) drop-shadow(0 4px 3px rgb(0 0 0 / 10%)); }
-.composer textarea { flex: 1; min-height: 0; max-height: calc(8lh + 0.5rem); padding: 0.25rem; border: 0; outline: none; resize: none; field-sizing: content; background: transparent; line-height: 1.5rem; }
-.composer .box button.icon { width: 2rem; height: 2rem; }
-.composer .thumbnail button.icon { position: absolute; top: 0.125rem; right: 0.125rem; display: grid; place-items: center; width: 1.25rem; height: 1.25rem; border-radius: 50%; background: var(--secondary); color: var(--secondary-foreground); }
-.composer .thumbnail button.icon::before { width: 0.75rem; height: 0.75rem; }
-.composer .thumbnail button.icon:hover { background: color-mix(in oklab, var(--secondary) 80%, transparent); }
-.composer .box .send::before { translate: 0 1px; }
-.composer .settings { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; margin: 0.5rem -0.5rem 0; }
-.composer .settings > button.picker, .composer .select {
-  height: 1.5rem; border-radius: var(--radius-md); background: transparent; font-size: 0.75rem; color: var(--muted-foreground);
+.composer:has(.pending:not([hidden])) .box { filter: var(--drop-shadow-lg); }
+.composer .box .field { display: flex; align-items: flex-end; gap: var(--space-1); }
+.composer textarea {
+  flex: 1; min-height: 0; max-height: var(--composer-max-height); padding: var(--space-1); border: 0; outline: none;
+  resize: none; field-sizing: content; background: transparent; line-height: var(--leading-lg);
 }
-.composer .settings > button.picker:hover, .composer .select:hover { background: var(--accent); }
-/* The chevron sits where the picker's does: 0.375rem after the text, 0.5rem from the edge. */
-.composer .select { position: relative; display: inline-flex; align-items: center; }
-.composer .select select {
-  appearance: none; height: 100%; padding: 0 1.875rem 0 0.5rem; border: 0; border-radius: inherit;
-  background: transparent; outline: none; cursor: pointer; field-sizing: content;
-}
-.composer .select .icon { position: absolute; right: 0.5rem; pointer-events: none; }
-.composer .select:not(.pointer):has(select:focus-visible) { outline: 3px solid color-mix(in oklab, var(--ring) 50%, transparent); }
-.composer .select:has(select:disabled) { opacity: 0.5; }
-.composer .select select:disabled { cursor: default; }
-
-.harness-icon { flex: none; width: 1rem; height: 1rem; }
-.harness-icon.icon { display: block; }
+.composer .box button.icon { width: var(--control-height); height: var(--control-height); }
+.composer .box .send::before { translate: 0 var(--space-px); }
+.composer .settings { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); margin: var(--space-2) calc(-1 * var(--space-2)) 0; }
 
 /* Pending approvals sit on the composer, their card tucked beneath it. */
 .pending {
-  max-height: 50cqh; overflow-y: auto; display: flex; flex-direction: column; gap: 1rem;
-  margin: 0 0.75rem -1rem; padding: 1rem 1rem 2rem; border: 1px solid var(--border); border-bottom: 0;
-  border-radius: 16px 16px 0 0; background: var(--card);
+  max-height: var(--pending-max-height); overflow-y: auto; display: flex; flex-direction: column; gap: var(--space-4);
+  margin: 0 var(--space-3) calc(-1 * var(--space-4)); padding: var(--space-4) var(--space-4) var(--space-8);
+  border: var(--border-width) solid var(--border); border-bottom: 0;
+  border-radius: var(--radius-2xl) var(--radius-2xl) 0 0; background: var(--card);
 }
-.approval { display: flex; flex-direction: column; gap: 0.75rem; }
-.pending[hidden], .approval[hidden] { display: none; }
+.pending[hidden] { display: none; }
+
+/* Markdown.tsx */
+.markdown { --code-background: var(--secondary); overflow-wrap: break-word; white-space: normal; }
+.prompt .markdown { --code-background: var(--background); }
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+.markdown :is(p, ul, ol, pre, blockquote, table) { margin: var(--space-2) 0; }
+.markdown :is(h1, h2, h3, h4, h5, h6) { margin: var(--space-3) 0 var(--space-2); font-weight: var(--font-semibold); font-size: inherit; }
+.markdown h1 { font-size: var(--text-h1); }
+.markdown h2 { font-size: var(--text-h2); }
+.markdown :is(ul, ol) { padding-left: var(--space-6); }
+.markdown code { padding: var(--space-0-5) var(--space-1); border-radius: var(--radius-xs); background: var(--code-background); font-size: var(--text-sm); }
+.markdown pre {
+  padding: var(--space-2) var(--space-3); overflow-x: auto; border-radius: var(--radius-lg); background: var(--code-background);
+  font-size: var(--text-xs); white-space: pre;
+}
+.markdown pre code { padding: 0; background: none; font-size: inherit; }
+.markdown blockquote { padding-left: var(--space-3); border-left: var(--border-width-lg) solid var(--border); color: var(--muted-foreground); }
+.markdown table { display: block; overflow-x: auto; border-collapse: collapse; }
+.markdown :is(th, td) { padding: var(--space-1) var(--space-2); border: var(--border-width) solid var(--border); }
+.markdown hr { border: 0; border-top: var(--border-width) solid var(--border); }
+.markdown a { color: inherit; text-decoration: underline; }
+
+/* Attachments.tsx */
+.composer .box .paperclip { color: var(--muted-foreground); }
+.composer .thumbnails { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.composer .thumbnail { position: relative; }
+.composer .thumbnail > img { display: block; width: var(--thumbnail-size); height: var(--thumbnail-size); object-fit: cover; }
+.composer .thumbnail button.icon {
+  position: absolute; top: var(--space-0-5); right: var(--space-0-5); display: grid; place-items: center;
+  width: var(--icon-button-size-sm); height: var(--icon-button-size-sm); border-radius: var(--radius-full);
+  background: var(--secondary); color: var(--secondary-foreground);
+}
+.composer .thumbnail button.icon::before { width: var(--icon-size-sm); height: var(--icon-size-sm); }
+.composer .thumbnail button.icon:hover { background: var(--secondary-hover); }
+
+/* ApprovalRequest.tsx */
+.approval { display: flex; flex-direction: column; gap: var(--space-3); }
+.approval[hidden] { display: none; }
 .approval > p { color: var(--foreground); }
-.approval .input { border-radius: var(--radius-md); background: var(--secondary); font-family: var(--font-mono); font-size: 0.75rem; }
-.approval .input summary { display: flex; align-items: flex-start; gap: 0.5rem; padding: 0.5rem 0.75rem; list-style: none; cursor: default; }
+.approval .input { border-radius: var(--radius-md); background: var(--secondary); font-family: var(--font-mono); font-size: var(--text-xs); }
+.approval .input summary { display: flex; align-items: flex-start; gap: var(--space-2); padding: var(--space-2) var(--space-3); list-style: none; cursor: default; }
 .approval .input summary::-webkit-details-marker { display: none; }
 .approval .input .subject { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .approval .input .icon { flex: none; color: var(--muted-foreground); }
 .approval .input[open] .icon { transform: rotate(180deg); }
-.approval .input pre { max-height: 20rem; overflow-y: auto; padding: 0.5rem 0.75rem; border-top: 1px solid var(--border); white-space: pre-wrap; overflow-wrap: anywhere; }
-.approval .plan { max-height: 20rem; overflow-y: auto; padding: 0.5rem 0.75rem; border-radius: var(--radius-md); background: var(--secondary); }
-.approval .choice { display: grid; grid-template-columns: auto 1fr; align-items: start; column-gap: 0.75rem; padding: 0.375rem 0; }
-.approval .choice label { line-height: 1.25rem; color: var(--foreground); }
-.approval .choice input[type="radio"], .approval .choice input[type="checkbox"] { margin-top: 0.125rem; }
-.approval .choice:last-child input[type="radio"], .approval .choice:last-child input[type="checkbox"] { margin-top: 0.5rem; }
+.approval .input pre {
+  max-height: var(--scroll-max-height); overflow-y: auto; padding: var(--space-2) var(--space-3);
+  border-top: var(--border-width) solid var(--border); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.approval .plan { max-height: var(--scroll-max-height); overflow-y: auto; padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--secondary); }
+.approval .choice { display: grid; grid-template-columns: auto 1fr; align-items: start; column-gap: var(--space-3); padding: var(--space-1-5) 0; }
+.approval .choice label { line-height: var(--leading-sm); color: var(--foreground); }
+.approval .choice input:is([type="radio"], [type="checkbox"]) { margin-top: var(--space-0-5); }
+.approval .choice:last-child input:is([type="radio"], [type="checkbox"]) { margin-top: var(--space-2); }
 .approval .question { display: flex; flex-direction: column; min-width: 0; border: 0; }
 .approval .question[hidden] { display: none; }
-.approval .question legend { padding: 0; margin-bottom: 0.25rem; color: var(--foreground); }
-.approval .question .header, .approval .choice .description { display: block; color: var(--muted-foreground); font-size: 0.875rem; }
-.approval input[type="text"] { height: 2rem; }
+.approval .question legend { padding: 0; margin-bottom: var(--space-1); color: var(--foreground); }
+.approval .question .header, .approval .choice .description { display: block; color: var(--muted-foreground); font-size: var(--text-md); }
+.approval input[type="text"] { height: var(--control-height); }
 /* The buttons stay at the foot of the visible region while the card scrolls beneath them. The row's
    padding, pulled back by its negative margin, fills the strip the composer's box overlaps, so nothing
    shows between the buttons and the box and the row never reaches into the next card. */
 .approval .actions {
-  position: sticky; bottom: -1rem; display: flex; justify-content: flex-end; align-items: center; gap: 0.5rem;
-  margin-bottom: -1rem; padding-bottom: 1rem; background: var(--card);
+  position: sticky; bottom: calc(-1 * var(--space-4)); display: flex; justify-content: flex-end; align-items: center; gap: var(--space-2);
+  margin-bottom: calc(-1 * var(--space-4)); padding-bottom: var(--space-4); background: var(--card);
 }
-.approval .actions .position { margin-right: auto; font-size: 0.875rem; color: var(--muted-foreground); }
+.approval .actions .position { margin-right: auto; font-size: var(--text-md); color: var(--muted-foreground); }
 
-/* Model picker */
-.composer .settings > button.picker {
-  display: inline-flex; gap: 0.375rem; min-width: 0; padding: 0 0.5rem; border: 0; border-radius: var(--radius-md); box-shadow: none; font-weight: 400;
-}
+/* SettingsFields.tsx */
+.composer .settings > button.picker, .composer .select { height: var(--control-height-sm); border-radius: var(--radius-md); font-size: var(--text-xs); color: var(--muted-foreground); }
+.composer .settings > button.picker:hover, .composer .select:hover { background: var(--accent); }
+.composer .settings > button.picker { gap: var(--space-1-5); min-width: 0; padding: 0 var(--space-2); }
 .picker .model { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.picker .effort-name { opacity: 0.6; }
+.picker .effort-name { opacity: var(--opacity-dim); }
 .model-picker {
-  position-area: top span-right; position-try-fallbacks: flip-block; inset: auto; margin: 0 0 4px;
-  width: 20rem; max-width: calc(100vw - 2rem); padding: 0.5rem; flex-direction: column; gap: 0.5rem;
-  border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--popover); color: var(--foreground); box-shadow: var(--shadow-md);
+  position-area: top span-right; position-try-fallbacks: flip-block; inset: auto; margin: 0 0 var(--space-1);
+  width: var(--popover-width); max-width: var(--popover-max-width); padding: var(--space-2); flex-direction: column; gap: var(--space-2);
+  border: var(--border-width) solid var(--border); border-radius: var(--radius-md); background: var(--popover);
+  color: var(--foreground); box-shadow: var(--shadow-md);
 }
 .model-picker:popover-open { display: flex; }
-.model-picker .search { display: flex; align-items: center; gap: 0.5rem; height: 2.25rem; padding: 0 0.75rem; }
-.model-picker .search .icon::before { opacity: 0.5; }
-.model-picker .search input { flex: 1; min-width: 0; height: 2.25rem; padding: 0; border: 0; background: transparent; box-shadow: none; outline: none; }
-.model-picker .options { max-height: 16rem; overflow-y: auto; }
-.model-picker .option { display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0.5rem; border-radius: calc(var(--radius) - 4px); cursor: default; user-select: none; }
+.model-picker .search { display: flex; align-items: center; gap: var(--space-2); height: var(--control-height-lg); padding: 0 var(--space-3); }
+.model-picker .search .icon::before { opacity: var(--opacity-faint); }
+.model-picker .search input { flex: 1; min-width: 0; height: var(--control-height-lg); border: 0; background: transparent; outline: none; }
+.model-picker .options { max-height: var(--list-max-height); overflow-y: auto; }
+.model-picker .option {
+  display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1-5) var(--space-2);
+  border-radius: var(--radius-sm); cursor: default; user-select: none;
+}
 .model-picker .option[aria-selected="true"] { background: var(--accent); }
 .model-picker .option .model { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .model-picker .option .check { color: var(--muted-foreground); }
-.model-picker .empty { padding: 1.5rem 0; text-align: center; }
+.model-picker .empty { padding: var(--space-6) 0; text-align: center; }
 .invisible { visibility: hidden; }
 
-/* Subscription usage */
+/* The slider's thumb stays inside the track, so a step at fraction --p sits
+   half a thumb plus p of the width less a thumb from the start. */
+.effort { display: grid; gap: var(--space-3); padding: var(--space-2); }
+:is(.effort input[type="range"], .ticks span) { --at: calc(var(--slider-thumb-size) / 2 + var(--p) * (100% - var(--slider-thumb-size))); }
+.effort input[type="range"] { appearance: none; width: 100%; height: var(--slider-thumb-size); border: 0; background: transparent; }
+.effort input[type="range"]::-webkit-slider-runnable-track {
+  height: var(--slider-track-height); border-radius: var(--radius-full);
+  background: linear-gradient(to right, var(--primary) var(--at), var(--muted) var(--at));
+}
+.effort input[type="range"]::-moz-range-track { height: var(--slider-track-height); border-radius: var(--radius-full); background: var(--muted); }
+.effort input[type="range"]::-moz-range-progress { height: var(--slider-track-height); border-radius: var(--radius-full); background: var(--primary); }
+.effort input[type="range"]::-webkit-slider-thumb {
+  appearance: none; width: var(--slider-thumb-size); height: var(--slider-thumb-size);
+  margin-top: calc((var(--slider-track-height) - var(--slider-thumb-size)) / 2);
+  border: var(--border-width) solid var(--primary); border-radius: var(--radius-full); background: var(--slider-thumb); box-shadow: var(--shadow-sm);
+}
+.effort input[type="range"]::-moz-range-thumb {
+  width: var(--slider-thumb-size); height: var(--slider-thumb-size); border: var(--border-width) solid var(--primary);
+  border-radius: var(--radius-full); background: var(--slider-thumb); box-shadow: var(--shadow-sm);
+}
+.effort input[type="range"]:focus-visible { outline: none; }
+.effort input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 var(--ring-width-lg) var(--focus-ring); }
+.ticks { position: relative; height: var(--ticks-height); margin-top: calc(-1 * var(--space-1)); font-size: var(--text-2xs); color: var(--muted-foreground); }
+.ticks span {
+  position: absolute; top: 0; left: var(--at); translate: -50% 0;
+  display: flex; flex-direction: column; align-items: center; gap: var(--space-1);
+}
+.ticks span::before { content: ""; width: var(--border-width); height: var(--tick-length); background: var(--muted-foreground); }
+
+/* The chevron sits where the picker's does: a space after the text, half a
+   row's padding from the edge. */
+.composer .select { position: relative; display: inline-flex; align-items: center; }
+.composer .select select {
+  appearance: none; height: 100%; padding: 0 calc(var(--space-2) + var(--icon-size) + var(--space-1-5)) 0 var(--space-2);
+  border: 0; border-radius: inherit; background: transparent; outline: none; cursor: pointer; field-sizing: content;
+}
+.composer .select .icon { position: absolute; right: var(--space-2); pointer-events: none; }
+.composer .select:not(.pointer):has(select:focus-visible) { outline: var(--focus-outline); }
+.composer .select:has(select:disabled) { opacity: var(--opacity-faint); }
+.composer .select select:disabled { cursor: default; }
+
+/* Usage.tsx */
 .composer .settings > button.usage {
-  display: grid; grid-template-columns: auto 4rem auto auto; align-items: center; column-gap: 0.375rem;
-  height: 1.5rem; margin-left: auto; padding: 0 0.5rem; border: 0; border-radius: var(--radius-md); box-shadow: none;
-  background: transparent; font-size: 0.75rem; font-weight: 400; color: var(--muted-foreground); white-space: nowrap;
+  display: grid; grid-template-columns: auto var(--usage-bar-width) auto auto; column-gap: var(--space-1-5);
+  height: var(--control-height-sm); margin-left: auto; padding: 0 var(--space-2); font-size: var(--text-xs); color: var(--muted-foreground);
 }
 .composer .settings > button.usage:hover { background: var(--accent); }
-.narrow .composer .settings > button.usage { grid-template-columns: auto 3rem auto; }
+.narrow .composer .settings > button.usage { grid-template-columns: auto var(--usage-bar-width-narrow) auto; }
 .narrow button.usage .left { display: none; }
 /* The popover is a flex box holding the grid; iOS Safari stretches an anchored grid popover to the viewport's height. */
 .usage-windows {
-  position-area: top span-left; position-try-fallbacks: flip-block; inset: auto; margin: 0 0 4px; padding: 0.5rem 0.75rem;
-  border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--popover); color: var(--muted-foreground);
-  box-shadow: var(--shadow-md); font-size: 0.75rem; white-space: nowrap;
+  position-area: top span-left; position-try-fallbacks: flip-block; inset: auto; margin: 0 0 var(--space-1); padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--border); border-radius: var(--radius-md); background: var(--popover); color: var(--muted-foreground);
+  box-shadow: var(--shadow-md); font-size: var(--text-xs); white-space: nowrap;
 }
 .usage-windows:popover-open { display: flex; }
-.usage-windows .rows { display: grid; grid-template-columns: auto 4rem auto auto; align-items: center; gap: 0.5rem 0.375rem; }
+.usage-windows .rows { display: grid; grid-template-columns: auto var(--usage-bar-width) auto auto; align-items: center; gap: var(--space-2) var(--space-1-5); }
 :is(.usage, .usage-windows) :is(.percent, .left) { justify-self: end; font-variant-numeric: tabular-nums; }
-:is(.usage, .usage-windows) .bar { position: relative; height: 0.5rem; overflow: hidden; border-radius: 9999px; background: color-mix(in oklab, var(--muted-foreground) 20%, transparent); }
+:is(.usage, .usage-windows) .bar { position: relative; height: var(--usage-bar-height); overflow: hidden; border-radius: var(--radius-full); background: var(--usage-track); }
 :is(.usage, .usage-windows) .fill { position: absolute; inset: 0 auto 0 0; background: var(--muted-foreground); }
-:is(.usage, .usage-windows) .fill.warn { background: oklch(0.769 0.188 70.08); }
-:is(.usage, .usage-windows) .fill.high { background: oklch(0.637 0.237 25.331); }
-:is(.usage, .usage-windows) .elapsed { position: absolute; inset-block: 0; width: 2px; background: var(--foreground); }
-:is(.usage, .usage-windows) .reset { opacity: 0.5; }
+:is(.usage, .usage-windows) .fill.warn { background: var(--warning); }
+:is(.usage, .usage-windows) .fill.high { background: var(--critical); }
+:is(.usage, .usage-windows) .elapsed { position: absolute; inset-block: 0; width: var(--border-width-lg); background: var(--foreground); }
+:is(.usage, .usage-windows) .reset { opacity: var(--opacity-faint); }
 
-/* The slider's thumb stays inside the track, so a step at fraction --p sits at 8px + p × (width − 16px). */
-.effort { display: grid; gap: 0.75rem; padding: 0.5rem; }
-.effort input[type="range"] {
-  --at: calc(8px + var(--p) * (100% - 16px));
-  appearance: none; width: 100%; height: 1rem; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none;
-}
-.effort input[type="range"]::-webkit-slider-runnable-track {
-  height: 6px; border-radius: 9999px; background: linear-gradient(to right, var(--primary) var(--at), var(--muted) var(--at));
-}
-.effort input[type="range"]::-moz-range-track { height: 6px; border-radius: 9999px; background: var(--muted); }
-.effort input[type="range"]::-moz-range-progress { height: 6px; border-radius: 9999px; background: var(--primary); }
-.effort input[type="range"]::-webkit-slider-thumb {
-  appearance: none; width: 1rem; height: 1rem; margin-top: -5px; border: 1px solid var(--primary); border-radius: 50%; background: white; box-shadow: var(--shadow-sm);
-}
-.effort input[type="range"]::-moz-range-thumb { width: 1rem; height: 1rem; border: 1px solid var(--primary); border-radius: 50%; background: white; box-shadow: var(--shadow-sm); }
-.effort input[type="range"]:focus-visible { outline: none; }
-.effort input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px color-mix(in oklab, var(--ring) 50%, transparent); }
-.effort input[type="range"]:disabled { opacity: 0.5; }
-.ticks { position: relative; height: 2.25rem; margin-top: -0.25rem; font-size: 10px; color: var(--muted-foreground); }
-.ticks span { position: absolute; top: 0; left: calc(8px + var(--p) * (100% - 16px)); translate: -50% 0; display: flex; flex-direction: column; align-items: center; gap: 0.25rem; }
-.ticks span::before { content: ""; width: 1px; height: 6px; background: var(--muted-foreground); }
+/* HarnessIcon.tsx */
+.harness-icon { flex: none; width: var(--icon-size); height: var(--icon-size); }
 
-/* File tree: the sidebar's mirror. Rows indent by --depth; a file's icon sits
-   under a folder's, past the chevron. Icons and notes are muted. A changed
-   file's or folder's name takes its Git status's color, as in VS Code's
-   explorer. */
-aside.files { flex: none; width: clamp(160px, var(--tree), 640px); min-width: 160px; max-width: 640px; height: 100%; display: flex; flex-direction: column; background: var(--pane); border-left: 1px solid var(--border); }
-/* Matches the session header's title row. */
-.files > header { flex: none; display: flex; align-items: center; gap: 0.5rem; height: var(--context-title); padding: 0 var(--inset); border-bottom: 1px solid var(--border); }
-aside.files .tree { flex: 1; min-height: 0; overflow-y: auto; padding: 0.5rem 0.5rem calc(0.5rem + var(--bottom-inset)); }
+/* Workspace.tsx */
+/* The panel at the right: the file tree or the Changes list, under a header
+   as tall as a tab strip. */
+aside.files {
+  flex: none; width: clamp(var(--panel-min-width), var(--tree), var(--panel-max-width));
+  min-width: var(--panel-min-width); max-width: var(--panel-max-width); height: 100%;
+  display: flex; flex-direction: column; background: var(--pane); border-left: var(--border-width) solid var(--border);
+}
+.files > header {
+  flex: none; display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); height: var(--header-height);
+  padding: 0 var(--space-2) 0 var(--inset); border-bottom: var(--border-width) solid var(--border);
+}
+.files > header .toggle-group button { height: var(--control-height-sm); padding: 0 var(--space-2-5); font-size: var(--text-xs); font-weight: var(--font-medium); }
+.files > header > button.panel-right { margin-right: var(--space-0-5); color: var(--text); }
+
+/* FileTree.tsx */
+/* The session list's mirror. Rows indent by --depth; a file's icon sits under
+   a folder's, past the chevron. Icons and notes are muted. A changed file's or
+   folder's name takes its Git status's color, as in VS Code's explorer. */
+aside.files .tree { flex: 1; min-height: 0; overflow-y: auto; padding: var(--space-2) var(--space-2) calc(var(--space-2) + var(--bottom-inset)); }
 aside.files ul { list-style: none; }
 aside.files .row {
-  display: flex; align-items: center; justify-content: flex-start; gap: 0.25rem; width: 100%; height: 1.75rem;
-  padding: 0 0.5rem 0 calc(0.5rem + var(--depth) * 1rem); border-radius: var(--radius-md); color: var(--muted-foreground); cursor: default;
+  display: flex; align-items: center; justify-content: flex-start; gap: var(--space-1); width: 100%; height: var(--row-height-sm);
+  padding: 0 var(--space-2) 0 calc(var(--space-2) + var(--depth) * var(--tree-indent));
+  border-radius: var(--radius-md); color: var(--muted-foreground); cursor: default;
 }
-aside.files .file-row, aside.files .note { padding-left: calc(1.75rem + var(--depth) * 1rem); }
-aside.files button.row { border: 0; background: transparent; box-shadow: none; font-weight: 400; text-align: left; }
-aside.files .row:hover { background: var(--accent); }
-aside.files .note { height: auto; min-height: 1.75rem; overflow-wrap: anywhere; }
-aside.files .note:hover { background: transparent; }
+aside.files :is(.file-row, .note) { padding-left: calc(var(--space-2) + var(--icon-size) + var(--space-1) + var(--depth) * var(--tree-indent)); }
+aside.files button.row { text-align: left; }
+aside.files button.row:hover { background: var(--accent); }
+aside.files button.row[aria-current="true"] { background: var(--secondary); }
+aside.files .note { height: auto; min-height: var(--row-height-sm); overflow-wrap: anywhere; }
 aside.files .row .name { min-width: 0; color: var(--text); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-aside.files .row[aria-current="true"] { background: var(--secondary); }
 aside.files .row[aria-current="true"] .name { color: var(--secondary-foreground); }
 aside.files .row[data-status="modified"] .name { color: var(--modified); }
 aside.files .row[data-status="added"] .name { color: var(--added); }
 aside.files .row[data-status="deleted"] .name { color: var(--destructive); }
 aside.files .chevron-right.open::before, .hunk .chevron-right.open::before { transform: rotate(90deg); }
 
-/* The branch and the lines the changes add and remove, as the file tree's title. */
-.branch-summary { flex: 1; min-width: 0; display: flex; align-items: center; gap: 0.375rem; color: var(--muted-foreground); }
-.branch-summary .branch { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 0.75rem; font-family: var(--font-mono); color: var(--text); }
-.branch-summary.message { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 0.75rem; }
+/* Changes.tsx */
+/* The Changes list: a summary row, then a row per changed file. */
+aside.files .row.summary { height: var(--row-height); margin-bottom: var(--space-1); padding-left: var(--space-2); }
+aside.files .change-row { gap: var(--space-2); padding-left: var(--space-2); }
+aside.files .change-row .folder { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--text-xs); color: var(--muted-foreground); }
+
+/* The branch and the lines the changes add and remove, as the list's title. */
+.branch-summary { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-1-5); color: var(--muted-foreground); }
+.branch-summary .branch { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--text-xs); font-family: var(--font-mono); color: var(--text); }
+.branch-summary.message { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--text-xs); }
 .branch-summary .counts { margin-left: auto; }
-.counts { flex: none; display: flex; gap: 0.375rem; font-size: 0.75rem; font-family: var(--font-mono); }
+.counts { flex: none; display: flex; gap: var(--space-1-5); font-size: var(--text-xs); font-family: var(--font-mono); }
 .counts .added { color: var(--added); }
 .counts .removed { color: var(--destructive); }
 
-/* Panel toggles, after VS Code's layout controls: a shown panel's toggle is in
-   full color, a hidden one's dimmed. */
-.panel-toggles { display: contents; color: var(--text); }
-.panel-toggles .panel-left { order: -1; margin: 0 0.5rem 0 -0.375rem; }
-.panel-toggles .mode-tabs { margin-left: auto; }
-.panel-toggles button[aria-pressed="false"] { color: var(--muted-foreground); }
+/* A card per file, after GitHub's pull request files, each hunk under a header
+   that collapses it. Added lines and counts are green, removed red. Line
+   numbers are generated content in a sticky gutter, as the viewer's. */
+.viewer .changes {
+  flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: var(--space-3);
+  padding: var(--space-3) var(--space-3) calc(var(--space-3) + var(--bottom-inset));
+}
+.changes .message { padding: 0 var(--space-1); font-size: var(--text-xs); color: var(--muted-foreground); overflow-wrap: anywhere; }
+.change { flex: none; border: var(--border-width) solid var(--border); border-radius: var(--radius-md); background: var(--pane); overflow: hidden; }
+.change > header { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1-5) var(--space-1) var(--space-1-5) var(--space-2); }
+.change .title { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.change .title > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.change .name { font-size: var(--text-sm); color: var(--foreground); }
+.change .folder { font-size: var(--text-xs); color: var(--muted-foreground); }
+.change > header button.icon { color: var(--muted-foreground); }
+.change > header button.icon:hover { color: var(--foreground); }
+.hunk { border-top: var(--border-width) solid var(--border); }
+.hunk > button {
+  display: flex; justify-content: flex-start; gap: var(--space-1); width: 100%; height: var(--row-height-sm); padding: 0 var(--space-2) 0 var(--space-1);
+  border-radius: 0; background: var(--muted); font-size: var(--text-xs); color: var(--muted-foreground);
+}
+.hunk > button:hover { background: var(--accent); }
+.hunk pre { overflow-x: auto; font-size: var(--text-xs); color: var(--foreground); white-space: pre; }
+.hunk code { --gutter: calc(var(--space-3) + var(--digits) * var(--digit-width) + var(--space-3)); display: block; width: max-content; min-width: 100%; }
+.hunk .line { display: block; min-height: var(--one-line); padding-left: var(--gutter); text-indent: calc(-1 * var(--gutter)); text-decoration: none; }
+.hunk .line::before {
+  content: attr(data-line); position: sticky; left: 0; display: inline-block; width: var(--gutter);
+  padding: 0 var(--space-3); text-indent: 0; text-align: right; color: var(--muted-foreground); background: var(--line-background, var(--pane));
+}
+.hunk ins.line { --line-background: var(--line-added); background: var(--line-background); }
+.hunk del.line { --line-background: var(--line-removed); background: var(--line-background); }
 
-/* Sash: a zero-width column between two others, after VS Code's, with a 4px
-   hit area on the boundary that shows after a short hover and while dragging. */
-.sash { flex: none; position: relative; z-index: 1; width: 0; overflow: visible; border: 0; }
-.sash::before { content: ""; position: absolute; inset: 0 -2px; cursor: col-resize; transition: background-color 0.1s ease-out; }
-.sash:hover::before { background: var(--ring); transition-delay: 0.3s; }
-.sash.resizing::before { background: var(--ring); transition-delay: 0s; }
-:root:has(.sash.resizing), :root:has(.sash.resizing) * { cursor: col-resize; user-select: none; }
-
-/* Workbench: beside the transcript, a file beside the file tree, or the
-   changes, under a header as tall as the session header's title row. */
-.viewer { flex: 1 1 0; display: flex; flex-direction: column; background: var(--pane); border-left: 1px solid var(--border); }
-.viewer > header {
-  flex: none; display: flex; align-items: center; gap: 0.5rem; height: var(--context-title);
-  padding: 0 var(--inset); border-bottom: 1px solid var(--border);
+/* FileView.tsx */
+/* A file or the changes fill their tab's body. */
+.viewer { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; background: var(--pane); }
+.viewer > .message { padding: var(--space-2) var(--space-3) calc(var(--space-2) + var(--bottom-inset)); font-size: var(--text-xs); color: var(--muted-foreground); }
+.viewer > pre {
+  flex: 1; min-height: 0; overflow: auto; padding: var(--space-2) 0 calc(var(--space-2) + var(--bottom-inset));
+  font-size: var(--text-xs); white-space: pre; color: var(--foreground);
 }
-/* The transcript and the open file or the changes split the width beside the
-   file tree by --split, the transcript's share, each getting at least 240px,
-   or half that width when it has less than 480px. */
-main:has(~ .viewer), .viewer { min-width: min(240px, calc((100cqi - var(--beside)) / 2)); }
-main:has(~ .viewer) { flex-grow: var(--split); }
-.viewer { flex-grow: calc(1 - var(--split)); }
-/* The open file's bar under the header, as tall as the session header's path
-   row, with the file's tab and its modes, as VS Code's single editor tab. */
-.viewer > .file-bar {
-  flex: none; display: flex; align-items: center; gap: 0.5rem; height: 2.25rem;
-  padding: 0 var(--inset); border-bottom: 1px solid var(--border);
-}
-.file-tabs { display: flex; align-items: center; min-width: 0; }
-.file-tabs .tab { display: flex; align-items: center; min-width: 0; gap: 0.125rem; }
-.file-tabs [role="tab"] {
-  min-width: 0; height: 1.5rem; padding: 0; gap: 0.5rem;
-  border: 0; background: transparent; box-shadow: none;
-  font-size: 0.8125rem; font-weight: 400; color: var(--muted-foreground); cursor: default;
-}
-.file-tabs [role="tab"] > :last-child { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.file-tabs button.x { width: 1.5rem; height: 1.5rem; color: var(--muted-foreground); }
-.file-tabs button.x::before { width: 0.75rem; height: 0.75rem; }
-/* The workbench's toggle starts its header, its glyph on the header's inset,
-   as the session list's ends the list's header. */
-:is(.viewer, .files) > header > button.panel-right { flex: none; margin-left: -0.375rem; color: var(--text); }
-/* The editor actions sit at the right end of the header and the file's bar, as
-   in VS Code. */
-.viewer .editor-actions { flex: none; display: flex; align-items: center; gap: 0.25rem; margin-left: auto; margin-right: -0.375rem; color: var(--text); }
-/* Toggles, as shadcn/ui's Toggle and Toggle Group: borderless icon buttons, dimmed
-   while off and on a filled background while on. */
-.toggle-group { display: inline-flex; gap: 0.125rem; min-inline-size: auto; margin: 0; padding: 0; border: 0; }
-:is(.editor-actions, .toggle-group) button:is([aria-pressed="false"], [aria-selected="false"]) { color: var(--muted-foreground); }
-:is(.editor-actions, .toggle-group) button:is([aria-pressed="true"], [aria-selected="true"]) { background: var(--muted); color: var(--foreground); }
-.viewer > .message { padding: 0.5rem 0.75rem calc(0.5rem + var(--bottom-inset)); font-size: 0.75rem; color: var(--muted-foreground); }
-.viewer > pre { flex: 1; min-height: 0; overflow: auto; padding: 0.5rem 0 calc(0.5rem + var(--bottom-inset)); font-size: 0.75rem; white-space: pre; color: var(--foreground); }
 /* Line numbers, as in GitHub and VS Code: each line's number is generated
    content, so selecting and copying take only the text, in a gutter that
    sticks to the pane's left edge while the text scrolls under it. The gutter
@@ -563,89 +875,42 @@ main:has(~ .viewer) { flex-grow: var(--split); }
    wrapped rows past it. The number's shadow covers the text a pane edge on a
    fractional pixel leaves half-clipped beside it. */
 .viewer pre.source code {
-  --gutter: calc(0.75rem + var(--digits) * 1ch + 1rem);
+  --gutter: calc(var(--space-3) + var(--digits) * var(--digit-width) + var(--space-4));
   display: block; width: max-content; min-width: 100%; counter-reset: line;
 }
-.viewer pre.source .line { display: block; min-height: 1lh; padding-left: var(--gutter); text-indent: calc(-1 * var(--gutter)); counter-increment: line; }
+.viewer pre.source .line {
+  display: block; min-height: var(--one-line); padding-left: var(--gutter); text-indent: calc(-1 * var(--gutter)); counter-increment: line;
+}
 .viewer pre.source .line::before {
   content: counter(line); position: sticky; left: 0; display: inline-block; width: var(--gutter);
-  padding: 0 1rem 0 0.75rem; text-indent: 0; text-align: right; color: var(--muted-foreground); background: var(--pane);
-  box-shadow: -1px 0 var(--pane);
+  padding: 0 var(--space-4) 0 var(--space-3); text-indent: 0; text-align: right; color: var(--muted-foreground); background: var(--pane);
+  box-shadow: calc(-1 * var(--border-width)) 0 var(--pane);
 }
-.viewer pre.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
-.viewer pre.wrap code { width: auto; }
-.viewer .preview { flex: 1; min-height: 0; overflow: auto; padding: 0.75rem 1rem calc(0.75rem + var(--bottom-inset)); font-size: 0.875rem; color: var(--foreground); }
-
+:is(.viewer, .hunk) pre.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+:is(.viewer, .hunk) pre.wrap code { width: auto; }
+.viewer .preview {
+  flex: 1; min-height: 0; overflow: auto; padding: var(--space-3) var(--space-4) calc(var(--space-3) + var(--bottom-inset));
+  font-size: var(--text-md); color: var(--foreground);
+}
 /* Shiki gives font styles of dual themes only as these variables; both GitHub themes share them. */
 .viewer pre span[style], .hunk span[style] { font-style: var(--shiki-light-font-style); font-weight: var(--shiki-light-font-weight); }
 
-/* Changes: a card per file, after GitHub's pull request files, each hunk under
-   a header that collapses it. Added lines and counts are green, removed red.
-   Line numbers are generated content in a sticky gutter, as the viewer's. A
-   file's changes in place in the file view take the same lines. */
-.viewer .changes { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 0.75rem; padding: 0.75rem 0.75rem calc(0.75rem + var(--bottom-inset)); }
-.changes .message { padding: 0 0.25rem; font-size: 0.75rem; color: var(--muted-foreground); overflow-wrap: anywhere; }
-.change { flex: none; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--pane); overflow: hidden; }
-.change > header { display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0.25rem 0.375rem 0.5rem; }
-.change .title { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.change .title > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.change .name { font-size: 0.8125rem; color: var(--foreground); }
-.change .folder { font-size: 0.75rem; color: var(--muted-foreground); }
-.change > header button.icon { color: var(--muted-foreground); }
-.change > header button.icon:hover { color: var(--foreground); }
-.hunk { border-top: 1px solid var(--border); }
-.hunk > button {
-  display: flex; justify-content: flex-start; gap: 0.25rem; width: 100%; height: 1.75rem; padding: 0 0.5rem 0 0.25rem;
-  border: 0; border-radius: 0; background: var(--muted); box-shadow: none; font-size: 0.75rem; font-weight: 400; color: var(--muted-foreground);
-}
-.hunk > button:hover { background: var(--accent); }
-.hunk pre { overflow-x: auto; font-size: 0.75rem; color: var(--foreground); white-space: pre; }
-:is(.hunk, .viewer pre.diff) code { --gutter: calc(0.75rem + var(--digits) * 1ch + 0.75rem); display: block; width: max-content; min-width: 100%; }
-.viewer pre.wrap.diff code { width: auto; }
-:is(.hunk, .viewer pre.diff) .line { display: block; min-height: 1lh; padding-left: var(--gutter); text-indent: calc(-1 * var(--gutter)); text-decoration: none; }
-:is(.hunk, .viewer pre.diff) .line::before {
-  content: attr(data-line); position: sticky; left: 0; display: inline-block; width: var(--gutter);
-  padding: 0 0.75rem 0 0.75rem; text-indent: 0; text-align: right; color: var(--muted-foreground); background: var(--line-background, var(--pane));
-}
-:is(.hunk, .viewer pre.diff) ins.line { --line-background: color-mix(in oklab, var(--added) 15%, var(--pane)); background: var(--line-background); }
-:is(.hunk, .viewer pre.diff) del.line { --line-background: color-mix(in oklab, var(--destructive) 15%, var(--pane)); background: var(--line-background); }
-
-/* Narrow screens show one pane at a time, as the ChatGPT and Claude mobile web
-   apps do: the session list and the file tree are drawers over a dimmed page,
-   opened from the header's ends, and the workbench takes the transcript's
-   place. */
-.narrow nav, .narrow aside.files.drawer {
-  position: absolute; top: 0; bottom: 0; z-index: 3; width: min(18rem, 85vw); height: auto;
-  padding-top: env(safe-area-inset-top); box-shadow: var(--shadow-lg); transition: translate 0.2s, visibility 0.2s;
-}
-.narrow nav { left: 0; padding-left: env(safe-area-inset-left); }
-.narrow nav[hidden] { display: flex; visibility: hidden; translate: -100% 0; }
-.narrow aside.files.drawer { right: 0; padding-right: env(safe-area-inset-right); }
-@starting-style { .narrow aside.files.drawer { translate: 100% 0; } }
-.narrow aside.files:not(.drawer) { flex: 1; max-width: none; border-left: 0; }
-.scrim { position: absolute; inset: 0; z-index: 2; background: rgb(0 0 0 / 50%); transition: opacity 0.2s; }
-@starting-style { .scrim { opacity: 0; } }
-.narrow main:has(~ :is(.viewer, aside.files:not(.drawer))) { display: none; }
-.narrow .viewer { flex-grow: 1; border-left: 0; }
-.narrow .viewer > header { padding-left: var(--inset); }
-.narrow .sash { display: none; }
-
 /* Touch screens: rows tall enough to tap, row buttons that show without hover,
-   text at 17px, iOS's body size, the text fields included, and the composer's
-   pickers, code, and session path at 15px. The viewport's maximum-scale keeps
-   Safari from zooming in on a field under 16px on focus. */
+   text at iOS's body size, the text fields included, and the composer's
+   pickers, code, and session path a step smaller. The viewport's
+   maximum-scale keeps Safari from zooming in on a field under 16px on focus. */
 @media (pointer: coarse) {
-  body { font-size: 17px; }
-  nav { --row: 2.5rem; }
-  nav li.child { font-size: 16px; }
-  aside.files .row, .hunk > button { height: 2.5rem; }
-  :is(.editor-actions, .toggle-group) button.icon { width: 2.25rem; }
-  .change > header button.icon { width: 2.5rem; height: 2.5rem; }
+  body { font-size: var(--text-2xl); }
+  textarea, select, input:not([type="radio"], [type="checkbox"], [type="range"]) { font-size: var(--text-2xl); }
+  :is(.editor-actions, .toggle-group) button.icon { width: var(--touch-control-width); }
+  nav { --row: var(--touch-height); }
+  nav li.child { font-size: var(--text-xl); }
   nav :is(header, li) .actions { opacity: 1; }
   nav li button.chevron-right { opacity: 1; }
-  textarea, select, input:not([type="radio"], [type="checkbox"], [type="range"]) { font-size: 17px; }
-  .composer .settings > :is(button.picker, button.usage), .composer .select { height: 2rem; font-size: 15px; }
+  .tab [role="tab"], .markdown code { font-size: var(--text-lg); }
+  .markdown pre, details.tool :is(.detail, pre) { font-size: var(--text-md); }
+  .composer .settings > :is(button.picker, button.usage), .composer .select { height: var(--control-height); font-size: var(--text-lg); }
   .composer .select select { font-size: inherit; }
-  .context .path, .file-tabs [role="tab"], .markdown code { font-size: 15px; }
-  .markdown pre, details.tool :is(.detail, pre) { font-size: 14px; }
+  aside.files .row, .hunk > button { height: var(--touch-height); }
+  .change > header button.icon { width: var(--touch-height); height: var(--touch-height); }
 }

@@ -1,6 +1,6 @@
-import type { JSX } from "@solidjs/web";
 import { createMemo, For, Match, Show, Switch, untrack } from "solid-js";
-import { BranchSummary, type Listing } from "./Changes";
+import type { Listing } from "./Changes";
+import { fileDrag } from "./drag";
 import { type SessionControl, useOx } from "./ox";
 import { createPoll } from "./poll";
 import type { FileRoot, FolderEntry } from "./protocol";
@@ -10,6 +10,7 @@ type Tree = {
   control: () => SessionControl;
   listing: Listing;
   current: () => string | undefined;
+  draggable: () => boolean;
   onOpen(path: string): void;
 };
 
@@ -17,19 +18,17 @@ const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "bas
 const byFolderThenName = (a: FolderEntry, b: FolderEntry) =>
   Number(b.folder) - Number(a.folder) || collator.compare(a.name, b.name);
 
-// FileTree shows the directory beneath root under its branch and changes,
-// between start and end, each changed file and folder colored by its status,
-// and marks current, the file the file view shows. Each expanded folder lists
-// itself when it appears and on each tick of the page's clock, so the page asks
-// only for the folders it shows.
+// FileTree shows the directory beneath root, each changed file and folder
+// colored by its status, and marks current, the file the focused tab shows. A
+// file's row can be dragged into the tab area unless draggable is off. Each
+// expanded folder lists itself when it appears and on each tick of the page's
+// clock, so the page asks only for the folders it shows.
 export function FileTree(props: {
   root: FileRoot;
   control: SessionControl;
   listing: Listing;
   current?: string;
-  drawer: boolean;
-  start?: JSX.Element;
-  end?: JSX.Element;
+  draggable: boolean;
   onOpen(path: string): void;
 }) {
   // The tree is keyed by its selection, so its root never changes.
@@ -38,19 +37,13 @@ export function FileTree(props: {
     control: () => props.control,
     listing: untrack(() => props.listing),
     current: () => props.current,
+    draggable: () => props.draggable,
     onOpen: (path) => props.onOpen(path),
   };
   return (
-    <aside class={["files", { drawer: props.drawer }]} aria-label="Files">
-      <header>
-        {props.start}
-        <BranchSummary listing={props.listing} />
-        {props.end}
-      </header>
-      <div class="tree">
-        <Folder tree={tree} path="" depth={0} />
-      </div>
-    </aside>
+    <div class="tree">
+      <Folder tree={tree} path="" depth={0} />
+    </div>
   );
 }
 
@@ -130,6 +123,11 @@ function FileRow(props: { tree: Tree; path: string; name: string; depth: number 
         title={props.path}
         data-status={props.tree.listing.status(props.path)}
         aria-current={open() ? "true" : undefined}
+        draggable={props.tree.draggable() ? "true" : "false"}
+        onDragStart={(event) => {
+          event.dataTransfer?.setData(fileDrag, props.path);
+          if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+        }}
         onClick={() => props.tree.onOpen(props.path)}
       >
         <span class="icon file" />
