@@ -16,7 +16,7 @@ Find the defects in Ox's behavior, and write a sweep that tells the user which t
 
 Correctness matters for what happens in normal use and for the requirements in `docs/functional-requirements.md`. Handling every case that could occur does not.
 
-Change no code, tests, or documentation, and stage or commit nothing. Edit only the sweep file, and open, edit, and close `bug` issues for its findings. Start other agents only as [Child sessions](#child-sessions) describes.
+Change no code, tests, or documentation. Edit and commit only the sweep file, open its pull request, and open, edit, and close `bug` issues for its findings. Start other agents only as [Child sessions](#child-sessions) describes.
 
 ## Gather the evidence
 
@@ -106,7 +106,8 @@ For a test, document, or dead code, give its exact locations, the callers and te
 17. Make each `Plan` finding complete enough to plan from: the defect, every place it appears, the evidence, the consequence, and the change at the cause. Record a candidate as a `Rejected` finding only when a later sweep or review would otherwise raise it again, and state the reason.
 18. Group the `Plan` findings into changes, each one pull request through the project workflow: findings whose fixes share an owner or the same files form one change, and small unrelated fixes share one change. A finding gets its own change only when its fix is large enough to earn a plan, work, and review cycle. List the changes in the sweep's Changes section, highest-severity first, with the one to take up first.
 19. Open one issue labeled `bug` for each change and each `Record` finding, with `gh issue create --label bug`: a title naming the defect, one sentence on what goes wrong, and a link to each finding's section, `https://github.com/kkestell/ox/blob/main/agents/audits/<file>#<section>`, which resolves once the sweep's pull request merges. A `Record` issue also states the defect's worst cost, how it was found, and what it waits on. Close the issue of an earlier finding that has landed or that this sweep shows does not exist, and edit one this sweep shows is stale.
-20. Give the final response and stop.
+20. Rename the worktree's branch to the sweep's slug with `git branch -m <slug>`, if it has another name, and commit the sweep file alone, with the sweep's title as the subject. Run `git fetch` and `git rebase origin/main`, push with `git push -u origin <slug>`, and open the pull request with `gh pr create`. Its title is the sweep's title, and its body is one short paragraph on what the sweep found, then a list of the issues it opened, edited, or closed, with no other sections.
+21. Give the final response and stop.
 
 ## Final response
 
@@ -121,6 +122,8 @@ One or two sentences: what the sweep found, and the number of findings by severi
 | F2 | Low      | Settling     | Rejected | A stalled reader holds its connection  | `internal/server/conn.go:8` |
 
 **Sweep:** `agents/audits/YYYY-MM-DD-<slug>.md`
+
+**Pull request:** https://github.com/kkestell/ox/pull/N
 
 **Changes:** each change, its findings, and its issue.
 
