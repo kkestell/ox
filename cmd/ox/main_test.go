@@ -46,16 +46,21 @@ func TestRelayRefusesForeignPages(t *testing.T) {
 	}
 }
 
-// The page reaches the relay directly or through the tailnet address.
+// The page reaches the relay directly, at the host -addr names in any case,
+// or through the tailnet address.
 func TestRelayAcceptsItsPage(t *testing.T) {
 	relayEnd, daemonEnd := net.Pipe()
 	defer relayEnd.Close()
 	go io.Copy(io.Discard, daemonEnd)
-	r := tailnetRelay(t)
+	r, err := newRelay("", webAddrs("Ox.Test:8080", netip.MustParseAddr("100.64.1.2")))
+	if err != nil {
+		t.Fatal(err)
+	}
 	r.conns["page"] = relayEnd
 	h := r.handler(fstest.MapFS{})
 	for _, c := range []struct{ name, host, origin string }{
 		{"direct", "localhost:8080", "http://localhost:8080"},
+		{"configured host, lowercased by the browser", "ox.test:8080", "http://ox.test:8080"},
 		{"tailnet host", "100.64.1.2:17840", "http://100.64.1.2:17840"},
 	} {
 		req := httptest.NewRequest("POST", "/rpc?connection=page", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"harness/list"}`))
