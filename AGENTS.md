@@ -232,11 +232,11 @@ in its one pull request, except workflow and meta work. Before its first commit,
 the worktree's branch for the change with `git branch -m <slug>`. A child session
 that finds uncommitted work outside its brief, other than its sibling
 children's, stops and reports it to the session that started it. Features and
-bug fixes reach `main` only by pull request, which the user merges. Workflow
-and meta work goes straight to `main`: `AGENTS.md`, the skills in
-`.claude/skills`, and audits and sweeps in `agents/audits`. Its agent commits
-it alone, runs `git fetch` and `git rebase origin/main`, and pushes with
-`git push origin HEAD:main`.
+bug fixes reach `main` only by pull request, which the top-level agent merges
+once its checks pass. Workflow and meta work goes straight to `main`:
+`AGENTS.md`, the skills in `.claude/skills`, and audits and sweeps in
+`agents/audits`. Its agent commits it alone, runs `git fetch` and
+`git rebase origin/main`, and pushes with `git push origin HEAD:main`.
 
 Several changes run at once, each with its own top-level agent. Those agents
 are peers: each decides for its own change, and they settle what their changes
@@ -253,9 +253,10 @@ whole effect a single check observes, and that touches no state owner,
 protocol, persistence, harness driving, or requirement: a style rule, copy, or
 a contained bug fix with an obvious cause. The top-level agent makes a small
 change itself in its worktree, with the test that fails without it, runs the
-checks that observe it, and opens the pull request, with no plan or review
-session. Coral reviews every pull request. Every other change takes the steps
-below. When in doubt, a change is not small.
+checks that observe it, and opens and merges the pull request as steps 7 and
+8 say, with no plan or review session. Coral reviews every pull request.
+Every other change takes the steps below. When in doubt, a change is not
+small.
 
 1. A child session on Opus 5.5 at high effort runs `/ox-plan`. The user
    approves the plan's requirement changes with its other product questions.
@@ -276,12 +277,13 @@ below. When in doubt, a change is not small.
    resolved a conflict in code, the reviewing session runs `/ox-review verify`
    on the rebased commit before the push. The top-level agent pushes with
    `git push -u origin <slug>` and opens the pull request with
-   `gh pr create`, written as [Pull requests](#pull-requests) says, and gives
-   the user its [handoff](#handoff).
-8. A pull request merges by squash, with its title as the commit subject.
-   After the user merges, the top-level agent pulls and runs `make prune` in
-   the main checkout. `make prune` removes each local branch whose pull
-   request has merged, and its worktree.
+   `gh pr create`, written as [Pull requests](#pull-requests) says.
+8. The top-level agent waits for the pull request's checks with
+   `gh pr checks <N> --watch`, fixes the cause of any that fails, and merges
+   it by squash with `gh pr merge <N> --squash`, so its title is the commit
+   subject. It then pulls and runs `make prune` in the main checkout, and
+   gives the user its [handoff](#handoff). `make prune` removes each local
+   branch whose pull request has merged, and its worktree.
 
 The user owns `docs/functional-requirements.md`. It changes only when a change
 adds, alters, or removes behavior the user can observe, and only with the text
@@ -350,13 +352,13 @@ Fixes #N
 
 ### Handoff
 
-Once the pull request is open, the top-level agent replies to the user in the
-form below and nothing else. It leads with the main point, writes plainly, and
-leaves out the checks that passed and the steps it took.
+Once the pull request has merged, the top-level agent replies to the user in
+the form below and nothing else. It leads with the main point, writes plainly,
+and leaves out the checks that passed and the steps it took.
 
 ```markdown
 One or two sentences: what the change does for the user, and that its pull
-request is ready to merge.
+request has merged.
 
 **Pull request:** https://github.com/kkestell/ox/pull/N · **Fixes:** #N
 
