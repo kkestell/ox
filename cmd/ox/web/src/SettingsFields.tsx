@@ -9,6 +9,8 @@ type Entry = { harness: string; model: Model };
 // ModelPicker chooses a model from every harness in harnesses, and its effort.
 // The draft keeps the current effort when the model offers it; a session's
 // `oxd` decides its own. A pending value shows a spinner until it is confirmed.
+// The highlighted option opens on the current model and follows the pointer,
+// the arrow keys, and the option last chosen.
 export function ModelPicker(props: {
   harnesses: Record<string, Harness>;
   value: ModelChoice;
@@ -92,7 +94,7 @@ export function ModelPicker(props: {
         onToggle={(event) => {
           if (event.newState !== "open") return;
           setQuery("");
-          setActive(0);
+          setActive(Math.max(entries().findIndex(isCurrent), 0));
           input.focus();
         }}
       >
@@ -124,7 +126,10 @@ export function ModelPicker(props: {
                 class="option"
                 aria-selected={i() === active() ? "true" : "false"}
                 onPointerMove={() => setActive(i())}
-                onClick={() => choose(entry)}
+                onClick={() => {
+                  setActive(i());
+                  choose(entry);
+                }}
               >
                 <HarnessIcon harness={entry.harness} />
                 <span class="model">{entry.model.name}</span>

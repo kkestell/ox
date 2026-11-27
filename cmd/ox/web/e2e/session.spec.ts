@@ -283,6 +283,28 @@ test.describe("with two models", () => {
     expect(configures).toEqual([{ session_id: sessionId(page), model: "other" }]);
   });
 
+  test("the model picker opens with the current model highlighted", async ({ ox: page }) => {
+    await newDraft(page);
+    await openModelPicker(page);
+    await page.getByRole("option", { name: "Other" }).click();
+    await expect(model(page)).toContainText("Other");
+    await page.keyboard.press("Escape");
+    await openModelPicker(page);
+    await expect(page.getByRole("option", { name: "Other" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  test.describe("on a touch screen", () => {
+    test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+    test("tapping a model highlights it", async ({ ox: page }) => {
+      await newDraft(page);
+      await model(page).tap();
+      await page.getByRole("option", { name: "Other" }).tap();
+      await expect(model(page)).toContainText("Other");
+      await expect(page.getByRole("option", { name: "Other" })).toHaveAttribute("aria-selected", "true");
+    });
+  });
+
   test("Enter while composing in the model search does not choose the match", async ({ ox: page }) => {
     await newDraft(page);
     await model(page).click();
