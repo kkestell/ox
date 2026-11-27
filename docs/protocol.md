@@ -705,8 +705,8 @@ configure it, and destroy it.
 
 Closing a connection leaves its sessions running. A prompt continues, and its
 pending approvals stay pending until a client answers them. A client that
-connects calls `workspace/list` and `session/get` to load the sessions, then
-follows the notifications.
+connects calls `workspace/list` to load the sessions and `session/get` for each
+session whose snapshot it needs, then follows the notifications.
 
 ## MCP
 

@@ -69,6 +69,12 @@ function Layout() {
     () => session()?.id,
     (id) => ox.show(id),
   );
+  // loadFailure is the selected session's last failed request for its
+  // snapshot.
+  const loadFailure = () => {
+    const load = session()?.load;
+    return load?.kind === "loading" ? load.failure : undefined;
+  };
   // A removed workspace's draft is hidden until the effect below drops it.
   const liveDrafts = () => drafts().filter((d) => ox.workspaces().some((w) => w.id === d.workspaceId));
   createEffect(
@@ -209,6 +215,7 @@ function Layout() {
             </Switch>
           )}
         </Show>
+        <Show when={loadFailure()}>{(failure) => <p role="alert">{failure()}</p>}</Show>
         <For each={liveDrafts().filter((d) => d.control.error() && d !== draft())}>
           {(failed) => (
             <p role="alert">

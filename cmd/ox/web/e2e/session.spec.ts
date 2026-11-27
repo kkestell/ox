@@ -16,6 +16,7 @@ import {
   gitRepo,
   heading,
   hold,
+  isRequest,
   location,
   menuItem,
   model,
@@ -918,16 +919,41 @@ test("reloading loads only the selected session", async ({ ox: page }) => {
   expect(gets[1].session_id).toBe(sessionId(page));
 });
 
-test("a reconnect reloads only the shown session", async ({ ox: page, services }) => {
+test("a reconnect reloads only the shown session", async ({ ox: page, services, context }) => {
   await newSession(page, "first session");
   await newSession(page, "second session");
+  const other = await context.newPage();
+  await other.goto(page.url());
+  await expect(replies(other)).toHaveText(["You said: second session"]);
   const shown = sessionId(page);
   const gets = rpcCalls(page, "session/get");
+  const snapshot = await hold(page, "session/get", { session_id: shown });
   await services.restartRelay();
-  await expect(main(page).getByRole("alert")).toHaveCount(0, { timeout: 10_000 });
-  await expect(prompts(page)).toHaveText(["second session"]);
-  await expect.poll(() => gets.length).toBeGreaterThan(0);
+  await snapshot.arrived;
+  // The page shows this prompt only from the snapshot the reconnect loads.
+  await prompt(other).fill("while reloading");
+  await expect(send(other)).toBeEnabled();
+  await prompt(other).press("Enter");
+  await expect(replies(other).last()).toHaveText("You said: while reloading");
+  snapshot.release();
+  await expect(prompts(page)).toHaveText(["second session", "while reloading"]);
   expect(gets.map((g) => g.session_id)).toEqual([shown]);
+});
+
+clocked("a snapshot that fails after the user moves on shows no error", async ({ ox: page }) => {
+  await newSession(page, "first session");
+  await newSession(page, "second session");
+  const snapshot = await hold(page, "session/get");
+  await sessionButton(page, "first session").click();
+  await snapshot.arrived;
+  await sessionButton(page, "second session").click();
+  await expect(prompts(page)).toHaveText(["second session"]);
+  const failed = page.waitForResponse((response) => isRequest("session/get")(response.request()));
+  snapshot.fail("snapshot unavailable");
+  await failed;
+  await sessionButton(page, "first session").click();
+  await expect(prompts(page)).toHaveText(["first session"]);
+  await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
 test("a prompt sent before switching away resolves when its session is shown again", async ({ ox: page }) => {
