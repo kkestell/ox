@@ -2,16 +2,32 @@
 import { isRawJSON, stringify } from "@ungap/raw-json";
 import { snapshot } from "solid-js";
 
-// Ox's own MCP tools arrive named for the server that internal/claude/claude.go
-// registers, such as mcp__ox__send_message.
+// Ox's own MCP tools, defined in internal/server/mcp.go. Claude Code names
+// them for the server internal/claude/claude.go registers, such as
+// mcp__ox__send_message, and Ur names them as Ox does, such as send_message.
 const OX_PREFIX = "mcp__ox__";
+const OX_TOOLS = new Set([
+  "list_models",
+  "list_sessions",
+  "send_message",
+  "read_session",
+  "create_session",
+  "create_top_level_session",
+]);
+
+// oxTool is Ox's own name for a call to one of its tools, or undefined for
+// any other tool.
+function oxTool(tool: string): string | undefined {
+  const name = tool.startsWith(OX_PREFIX) ? tool.slice(OX_PREFIX.length) : tool;
+  return OX_TOOLS.has(name) ? name : undefined;
+}
 
 // toolLabel is the name a tool call shows. Ox's tools show their own name in
 // PascalCase, as built-in tools do; every other name shows as it arrives.
 export function toolLabel(tool: string): string {
-  if (!tool.startsWith(OX_PREFIX)) return tool;
-  return tool
-    .slice(OX_PREFIX.length)
+  const name = oxTool(tool);
+  if (name === undefined) return tool;
+  return name
     .split("_")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join("");
@@ -20,9 +36,9 @@ export function toolLabel(tool: string): string {
 // The input field that summarizes an Ox tool call, where it is not the first
 // string.
 const OX_SUBJECT_FIELD: Record<string, string> = {
-  [`${OX_PREFIX}send_message`]: "text",
-  [`${OX_PREFIX}create_session`]: "title",
-  [`${OX_PREFIX}create_top_level_session`]: "title",
+  send_message: "text",
+  create_session: "title",
+  create_top_level_session: "title",
 };
 
 // toolSubject is what a tool call acts on, such as Bash's command or Edit's
@@ -32,7 +48,8 @@ const OX_SUBJECT_FIELD: Record<string, string> = {
 export function toolSubject(tool: string, input: Record<string, unknown>): string {
   const plain = snapshot(input);
   if (Object.keys(plain).length === 0) return "";
-  const field = OX_SUBJECT_FIELD[tool];
+  const name = oxTool(tool);
+  const field = name === undefined ? undefined : OX_SUBJECT_FIELD[name];
   if (field !== undefined && typeof plain[field] === "string") return plain[field];
   return firstString(plain) ?? stringify(plain);
 }
