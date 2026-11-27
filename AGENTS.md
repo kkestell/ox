@@ -26,6 +26,7 @@ We test with `make dev`. Ox's test state is disposable.
 │       ├── ci.yml             # PR checks
 │       └── coral.yml          # Coral pull request reviews
 ├── .golangci.yml              # Go linters
+├── .worktreeinclude           # ignored files copied into new worktrees
 ├── bin                        # build output
 │   ├── ox
 │   ├── ox-mcp
