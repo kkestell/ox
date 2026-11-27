@@ -213,6 +213,23 @@ test("a second Ctrl-C forwards SIGINT", async () => {
   for (const name of names) assert.equal(readFileSync(`${paths[name]}.log`, "utf8"), "INT\nINT\n");
 });
 
+test("a second Ctrl-C reaches an oxd a restart is retiring", async () => {
+  const signals = new EventEmitter();
+  // oxd takes TERM as a graceful stop that ends 2 seconds later and INT as a
+  // forced stop that exits 1.
+  const oxd =
+    "trap 'echo TERM >> $0.log; touch $0.term; (sleep 2; kill -USR1 $$) &' TERM; " +
+    "trap 'exit 0' USR1; trap 'echo INT >> $0.log; exit 1' INT";
+  const paths = await start({ changed: ["oxd"], traps: { oxd }, signals });
+  input.write("\n");
+  await until(() => existsSync(`${paths.oxd}.term`));
+  signals.emit("SIGINT");
+  signals.emit("SIGINT");
+  assert.equal(await stack, 1);
+  assert.equal(readFileSync(`${paths.oxd}.log`, "utf8"), "TERM\nINT\n");
+  assert.equal(lines.includes("restarted oxd"), false);
+});
+
 test("stopProcess accepts only status 0, the signal it sent, or 128 plus its number", async () => {
   const spawned = (path) => {
     const proc = spawn(path, { stdio: "ignore" });

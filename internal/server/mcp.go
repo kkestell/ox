@@ -457,6 +457,7 @@ func (s *Server) addChild(parent *session, record *store.Session, physical, text
 		return err
 	}
 
+	record.CreatedAt = time.Now()
 	if err := s.store.AddSession(w.id, record); err != nil {
 		return err
 	}
@@ -654,7 +655,7 @@ func (s *Server) startedRecord(caller *session, harnessName, model, effort strin
 		return nil, err
 	}
 	return &store.Session{
-		ID: newID(), Harness: harnessName, Model: model, Effort: effort, PermissionMode: mode, CreatedAt: time.Now(),
+		ID: newID(), Harness: harnessName, Model: model, Effort: effort, PermissionMode: mode,
 	}, nil
 }
 

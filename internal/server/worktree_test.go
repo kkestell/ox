@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -599,14 +600,37 @@ func TestWorktreeDeleteRepeated(t *testing.T) {
 func TestWorktreeAfterRestart(t *testing.T) {
 	repo := gitRepo(t)
 	st := openStore(t)
+	open, waiting := gitGate(t)
 	s := worktreeServer(t, st, t.TempDir())
 	c := connect(t, s)
-	sess := worktreeSession(t, c, addWorkspace(t, c, filepath.Join(repo, "sub")))
+	workspace := addWorkspace(t, c, filepath.Join(repo, "sub"))
+	// A local session created during the worktree session's checkout joins the
+	// list first.
+	creating := c.send("session/create", createParams(workspace, ""))
+	waiting(1)
+	local := createParams(workspace, "")
+	local["worktree"] = false
+	c.call("session/create", local)
+	open()
+	var created struct {
+		SessionID string `json:"session_id"`
+	}
+	if response := c.response(creating); response.Error != nil || json.Unmarshal(response.Result, &created) != nil {
+		t.Fatalf("session/create returned %+v", response)
+	}
+	sess := listed(t, c, created.SessionID)
+	if sess.Worktree == "" {
+		t.Fatalf("session %s was created without a worktree", sess.SessionID)
+	}
+	before := allListed(t, c)
+	if len(before) != 2 || before[1] != sess {
+		t.Fatalf("listed %+v, with the worktree session %+v not last", before, sess)
+	}
 	s.Close()
 
 	c = connect(t, worktreeServer(t, st, t.TempDir()))
-	if got := listed(t, c, sess.SessionID); got != sess {
-		t.Fatalf("after a restart the session was listed %+v, not %+v", got, sess)
+	if after := allListed(t, c); !slices.Equal(after, before) {
+		t.Fatalf("after a restart the sessions were listed %+v, not %+v", after, before)
 	}
 	c.call("session/destroy", map[string]string{"session_id": sess.SessionID})
 	if _, err := os.Stat(sess.Worktree); !os.IsNotExist(err) {

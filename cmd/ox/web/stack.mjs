@@ -47,7 +47,8 @@ export function stopProcess(proc, signal = "SIGTERM") {
 // signals, such as process, delivers the stack's own SIGINT, SIGTERM, and
 // SIGHUP. The services run in their own process groups, so the stack sends
 // every signal they receive. A SIGINT while the stack is stopping goes on to
-// each service, which ends oxd at once.
+// every process the stack has stopped that has not exited, including one a
+// restart is retiring, which ends oxd at once.
 export function runStack({ services, build, input, signals, log = console.log }) {
   let stopping = false;
   let busy = false;
@@ -59,19 +60,19 @@ export function runStack({ services, build, input, signals, log = console.log })
 
   const records = services.map((spec) => ({ spec, proc: null, hash: null }));
 
-  // stops holds the exit of every process the stack has stopped that is in
-  // flight or failed.
+  // stops holds every process the stack has stopped whose exit is in flight
+  // or failed, with the promise of its exit.
   const stops = [];
 
   function retire(proc, signal) {
-    const stopped = stopProcess(proc, signal);
-    stops.push(stopped);
+    const entry = { proc, stopped: stopProcess(proc, signal) };
+    stops.push(entry);
     // A clean exit needs no later judgment; an in-flight or failed one stays.
-    stopped.then(
-      () => stops.splice(stops.indexOf(stopped), 1),
+    entry.stopped.then(
+      () => stops.splice(stops.indexOf(entry), 1),
       () => {},
     );
-    return stopped;
+    return entry.stopped;
   }
 
   // stop ends the stack: it signals each current process, waits for every
@@ -83,7 +84,7 @@ export function runStack({ services, build, input, signals, log = console.log })
     for (const record of records) {
       if (record.proc) retire(record.proc, signal);
     }
-    const settled = await Promise.allSettled(stops);
+    const settled = await Promise.allSettled(stops.map(({ stopped }) => stopped));
     for (const { reason } of settled.filter(({ status }) => status === "rejected")) log(reason.message);
     resolveCode(settled.some(({ status }) => status === "rejected") ? 1 : code);
   }
@@ -166,8 +167,8 @@ export function runStack({ services, build, input, signals, log = console.log })
       stop(130, "SIGINT");
       return;
     }
-    for (const { proc } of records) {
-      if (proc && proc.exitCode === null && proc.signalCode === null) proc.kill("SIGINT");
+    for (const { proc } of stops) {
+      if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGINT");
     }
   });
   signals?.on("SIGTERM", () => stop(143));
