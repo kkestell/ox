@@ -18,6 +18,7 @@ import {
   type Defaults,
   type FileRoot,
   type Harness,
+  type Methods,
   type Notification,
   notFound,
   type Prompt,
@@ -64,7 +65,9 @@ export type Session = {
   state: SessionState;
   load:
     | { kind: "unloaded"; snapshot?: undefined }
-    | { kind: "loading"; snapshot?: SessionSnapshot }
+    // failure is the last failed request for the snapshot, which the page
+    // repeats until it is answered.
+    | { kind: "loading"; snapshot?: SessionSnapshot; failure?: string }
     | { kind: "live"; snapshot: SessionSnapshot };
 };
 
@@ -664,49 +667,62 @@ function createOx() {
     }
   }
 
-  // shown is the session the page shows, which is the only one it loads.
-  let shown: string | undefined;
+  // shown is the session the page shows, which is the only one it loads. Each
+  // show makes a new value, and a load ends once its value is no longer shown.
+  let shown: { id: string } | undefined;
 
   // show records the session the page shows and loads it. The session shown
   // before drops its snapshot.
   function show(id: string | undefined) {
-    if (id === shown) return;
+    if (id === shown?.id) return;
     const previous = shown;
-    shown = id;
+    shown = id === undefined ? undefined : { id };
     setStore((s) => {
-      const old = previous === undefined ? undefined : sessionIn(s.workspaces, previous);
+      const old = previous && sessionIn(s.workspaces, previous.id);
       if (old) old.load = { kind: "unloaded" };
     });
     const current = live();
-    if (id !== undefined && current) begin(id, current.rpc);
+    if (shown && current) begin(shown, current.rpc);
   }
 
   // begin loads a listed session that has no snapshot yet.
-  function begin(id: string, rpc: Rpc) {
-    const session = stored(id);
+  function begin(view: { id: string }, rpc: Rpc) {
+    const session = stored(view.id);
     if (!session) return;
     if (session.load.kind === "unloaded") {
       setStore((s) => {
-        const loaded = sessionIn(s.workspaces, id);
+        const loaded = sessionIn(s.workspaces, view.id);
         if (loaded) loaded.load = { kind: "loading" };
       });
     }
-    void load(id, rpc);
+    void load(view, rpc);
   }
 
-  // Install the snapshot without replacing the session's view or its open
-  // tool details. Live updates start at the session/get response boundary.
-  async function load(id: string, rpc: Rpc) {
-    const result = await retry(async () => {
+  // load requests a shown session's snapshot each second, keeping each
+  // failure in the session's load, until it is answered, the page shows
+  // another session, or the stream ends. It installs the snapshot without
+  // replacing the session's view or its open tool details. Live updates start
+  // at the session/get response boundary.
+  async function load(view: { id: string }, rpc: Rpc) {
+    const { id } = view;
+    let result: Methods["session/get"][1];
+    for (;;) {
+      if (view !== shown) return;
       try {
-        if (id !== shown) return undefined;
-        return await rpc("session/get", { session_id: id });
+        result = await rpc("session/get", { session_id: id });
+        break;
       } catch (e) {
-        if (e instanceof RpcError && e.code === notFound) return undefined;
-        throw e;
+        if (e instanceof Disconnected || (e instanceof RpcError && e.code === notFound)) return;
+        if (view !== shown) return;
+        const failure = (e as Error).message;
+        setStore((s) => {
+          const loaded = sessionIn(s.workspaces, id);
+          if (loaded?.load.kind === "loading") loaded.load.failure = failure;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 1000));
       }
-    });
-    if (!result || id !== shown) return;
+    }
+    if (view !== shown) return;
     const snapshot: SessionSnapshot = {
       settings: settingsOf(result),
       entries: [],
@@ -773,7 +789,7 @@ function createOx() {
     });
     for (const { session_id, state } of listed) setState(session_id, state);
     setLive({ rpc });
-    if (shown !== undefined && ids.has(shown)) begin(shown, rpc);
+    if (shown && ids.has(shown.id)) begin(shown, rpc);
   }
 
   function receive({ method, params }: Notification) {
