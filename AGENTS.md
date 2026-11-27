@@ -451,6 +451,8 @@ facts listed for it:
 - `AGENTS.md`: instructions for agents working anywhere in the repository.
 - `cmd/ox/web/AGENTS.md`: instructions for agents working on the web client,
   and the Solid 2.0 reference.
+- `docs/configuration.md`: the configuration file `oxd` and `ox` read: its
+  location, fields, and the rules `oxd` checks at startup.
 - `docs/architecture.md`: how `oxd` and `ox` are built: their components, the
   boundaries between them, and what each owns.
 - `docs/protocol.md`: the interface `oxd` serves: messages, methods, updates,
