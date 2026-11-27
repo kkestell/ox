@@ -399,7 +399,7 @@ func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 	}
 	record := &store.Session{
 		ID: cmp.Or(input.SessionID, newID()), Harness: input.Harness,
-		Model: input.Model, Effort: input.Effort, PermissionMode: input.PermissionMode, CreatedAt: time.Now(),
+		Model: input.Model, Effort: input.Effort, PermissionMode: input.PermissionMode,
 	}
 	result, err := s.createTopLevel(input.WorkspaceID, record, input.Worktree)
 	if err != nil {
@@ -511,8 +511,10 @@ func (s *Server) existingLocked(w *workspace, sessionID string) (bool, error) {
 }
 
 // addSession stores a session in w, publishes it, and starts its goroutine.
-// The caller holds s.mu.
+// Its creation time is set here, where it joins w's list, so the list and the
+// store order sessions alike. The caller holds s.mu.
 func (s *Server) addSession(w *workspace, record *store.Session) error {
+	record.CreatedAt = time.Now()
 	if err := s.store.AddSession(w.id, record); err != nil {
 		log.Printf("session %s: store session: %v", record.ID, err)
 		return err
