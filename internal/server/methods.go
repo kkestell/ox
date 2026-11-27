@@ -83,8 +83,21 @@ func (s *Server) handle(reply replyFunc, request jsonrpc.Request) {
 	}
 }
 
+// codedError is an error whose reply carries code.
+type codedError struct {
+	code    int
+	message string
+}
+
+func (e *codedError) Error() string { return e.message }
+
+var errWorkspaceNotFound = &codedError{notFound, "workspace not found"}
+
 func failure(id json.RawMessage, err error) *jsonrpc.Response {
+	var coded *codedError
 	switch {
+	case errors.As(err, &coded):
+		return jsonrpc.Failure(id, coded.code, err.Error())
 	case errors.Is(err, agent.ErrBusy):
 		return jsonrpc.Failure(id, sessionBusy, "session is busy")
 	case errors.Is(err, agent.ErrApprovalNotFound):
@@ -155,13 +168,9 @@ func (s *Server) createWorkspace(reply replyFunc, id, params json.RawMessage) {
 		reply(invalidParams(id, "path is inside a session's worktree"))
 		return
 	}
-	// A symlink or a path that differs only in case can name a workspace's
-	// directory.
-	for _, w := range s.workspaces {
-		if existing, err := os.Stat(w.path); err == nil && os.SameFile(info, existing) {
-			reply(jsonrpc.Success(id, result{w.id}))
-			return
-		}
+	if w := s.workspaceAtLocked(info); w != nil {
+		reply(jsonrpc.Success(id, result{w.id}))
+		return
 	}
 	w := &workspace{id: newID(), path: path, createdAt: time.Now()}
 	if err := s.store.AddWorkspace(&store.Workspace{ID: w.id, Path: w.path, CreatedAt: w.createdAt}); err != nil {
@@ -175,6 +184,18 @@ func (s *Server) createWorkspace(reply replyFunc, id, params json.RawMessage) {
 		CreatedAt   time.Time `json:"created_at"`
 	}{w.id, w.path, w.createdAt})
 	reply(jsonrpc.Success(id, result{w.id}))
+}
+
+// workspaceAtLocked returns the workspace whose directory info describes, or
+// nil. A symlink or a path that differs only in case can name a workspace's
+// directory. The caller holds s.mu.
+func (s *Server) workspaceAtLocked(info os.FileInfo) *workspace {
+	for _, w := range s.workspaces {
+		if existing, err := os.Stat(w.path); err == nil && os.SameFile(info, existing) {
+			return w
+		}
+	}
+	return nil
 }
 
 func (s *Server) listWorkspaces(reply replyFunc, id json.RawMessage) {
@@ -359,12 +380,7 @@ type created struct {
 	Existing  bool   `json:"existing,omitempty"`
 }
 
-// createSession creates a session in a single s.mu section, or, with a
-// worktree, in three steps: it admits the creation under s.mu, makes the
-// worktree without it, and publishes the session under s.mu, deciding then
-// whether the daemon, the workspace, and another session with the ID allow
-// it. A creation that does not publish discards its worktree before it
-// replies, and Close waits for every admitted creation to reply.
+// createSession creates a top-level session from a client's request.
 func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 	var input struct {
 		SessionID   string `json:"session_id"`
@@ -381,17 +397,39 @@ func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 		reply(invalidParams(id, "session_id must be a base58 ID"))
 		return
 	}
+	record := &store.Session{
+		ID: cmp.Or(input.SessionID, newID()), Harness: input.Harness,
+		Model: input.Model, Effort: input.Effort, PermissionMode: input.PermissionMode, CreatedAt: time.Now(),
+	}
+	result, err := s.createTopLevel(input.WorkspaceID, record, input.Worktree)
+	if err != nil {
+		reply(failure(id, err))
+		return
+	}
+	reply(jsonrpc.Success(id, result))
+}
+
+// createTopLevel creates the top-level session record describes in the
+// workspace, in a single s.mu section, or, with a worktree, in three steps: it
+// admits the creation under s.mu, makes the worktree without it, and publishes
+// the session under s.mu, deciding then whether the daemon, the workspace, and
+// another session with the ID allow it. A creation that does not publish
+// discards its worktree before it returns, and Close waits for every admitted
+// creation to return. It fills in record's directory and worktree.
+func (s *Server) createTopLevel(workspaceID string, record *store.Session, worktree bool) (created, error) {
 	s.mu.Lock()
-	w, record, answer := s.admitSessionLocked(id, input.SessionID, input.WorkspaceID, input.Harness, input.Settings)
+	w, existing, err := s.admitSessionLocked(workspaceID, record)
 	switch {
-	case answer != nil:
-		reply(answer)
+	case err != nil:
 		s.mu.Unlock()
-		return
-	case !input.Worktree:
-		reply(s.addSessionReplyLocked(id, w, record))
+		return created{}, err
+	case existing:
 		s.mu.Unlock()
-		return
+		return created{SessionID: record.ID, Existing: true}, nil
+	case !worktree:
+		err := s.addSession(w, record)
+		s.mu.Unlock()
+		return created{SessionID: record.ID}, err
 	}
 	s.creations.Add(1)
 	s.mu.Unlock()
@@ -400,102 +438,88 @@ func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 	log.Printf("session %s: creating worktree in %s", record.ID, s.worktrees)
 	root, directory, err := addWorktree(w.path, s.worktrees)
 	if err != nil {
-		reply(failure(id, err))
-		return
+		return created{}, err
 	}
 	record.Directory, record.Worktree = directory, root
 
+	var result created
 	s.mu.Lock()
 	switch {
 	case s.closed:
-		answer = shuttingDown(id)
+		err = errShuttingDown
 	case !slices.Contains(s.workspaces, w):
-		answer = jsonrpc.Failure(id, notFound, "workspace not found")
+		err = errWorkspaceNotFound
 	default:
-		answer = s.existingAnswerLocked(id, w, record.ID)
-	}
-	if answer == nil {
-		if answer = s.addSessionReplyLocked(id, w, record); answer.Error == nil {
-			reply(answer)
-			s.mu.Unlock()
-			return
+		if existing, err = s.existingLocked(w, record.ID); existing {
+			result = created{SessionID: record.ID, Existing: true}
+		} else if err == nil {
+			if err = s.addSession(w, record); err == nil {
+				s.mu.Unlock()
+				return created{SessionID: record.ID}, nil
+			}
 		}
 	}
 	s.mu.Unlock()
-	if err := discardWorktree(w.path, root); err != nil {
-		if answer.Error == nil {
-			log.Printf("session %s: %v", record.ID, err)
+	if discardErr := discardWorktree(w.path, root); discardErr != nil {
+		if err == nil {
+			log.Printf("session %s: %v", record.ID, discardErr)
 		} else {
-			answer = jsonrpc.Failure(id, answer.Error.Code, errors.Join(errors.New(answer.Error.Message), err).Error())
+			err = errors.Join(err, discardErr)
 		}
 	}
-	reply(answer)
+	return result, err
 }
 
 // admitSessionLocked checks a top-level session's creation and returns its
-// workspace and the record to store, with the workspace's path as its
-// directory, or the answer to reply with instead. The caller holds s.mu.
-func (s *Server) admitSessionLocked(id json.RawMessage, sessionID, workspaceID, harnessName string, settings agent.Settings) (*workspace, *store.Session, *jsonrpc.Response) {
+// workspace, setting record's directory to the workspace's path, or reports
+// that record's ID names a session already in that workspace. The caller holds
+// s.mu.
+func (s *Server) admitSessionLocked(workspaceID string, record *store.Session) (w *workspace, existing bool, err error) {
 	// Close ends the goroutine of every session that exists when it starts.
 	if s.closed {
-		return nil, nil, shuttingDown(id)
+		return nil, false, errShuttingDown
 	}
-	w := s.workspace(workspaceID)
-	if sessionID == "" {
-		sessionID = newID()
-	} else if answer := s.existingAnswerLocked(id, w, sessionID); answer != nil {
-		return nil, nil, answer
+	w = s.workspace(workspaceID)
+	if existing, err := s.existingLocked(w, record.ID); existing || err != nil {
+		return nil, existing, err
 	}
-	harness, offered := s.config.Harnesses[harnessName]
+	harness, offered := s.config.Harnesses[record.Harness]
 	if !offered {
-		return nil, nil, invalidParams(id, fmt.Sprintf("harness %q is not configured", harnessName))
+		return nil, false, &codedError{jsonrpc.InvalidParams, fmt.Sprintf("harness %q is not configured", record.Harness)}
 	}
-	if err := cmp.Or(harness.CheckModel(settings.Model, settings.Effort), harness.CheckPermissionMode(settings.PermissionMode)); err != nil {
-		return nil, nil, invalidParams(id, err.Error())
+	if err := cmp.Or(harness.CheckModel(record.Model, record.Effort), harness.CheckPermissionMode(record.PermissionMode)); err != nil {
+		return nil, false, &codedError{jsonrpc.InvalidParams, err.Error()}
 	}
 	if w == nil {
-		return nil, nil, jsonrpc.Failure(id, notFound, "workspace not found")
+		return nil, false, errWorkspaceNotFound
 	}
-	return w, &store.Session{
-		ID: sessionID, Harness: harnessName, Model: settings.Model, Effort: settings.Effort, PermissionMode: settings.PermissionMode,
-		Directory: w.path, CreatedAt: time.Now(),
-	}, nil
+	record.Directory = w.path
+	return w, false, nil
 }
 
-// existingAnswerLocked answers a creation whose session_id names an existing
-// session: that session, when it is in w, or a refusal. It returns nil when no
-// session has the ID. The caller holds s.mu.
-func (s *Server) existingAnswerLocked(id json.RawMessage, w *workspace, sessionID string) *jsonrpc.Response {
+// existingLocked reports whether sessionID names a session in w, and refuses
+// one that names a session elsewhere. The caller holds s.mu.
+func (s *Server) existingLocked(w *workspace, sessionID string) (bool, error) {
 	existing := s.sessions[sessionID]
 	switch {
 	case existing == nil:
-		return nil
+		return false, nil
 	case w == nil || !slices.Contains(w.sessions, existing):
-		return invalidParams(id, "session_id belongs to another workspace")
+		return false, &codedError{jsonrpc.InvalidParams, "session_id belongs to another workspace"}
 	}
-	return jsonrpc.Success(id, created{SessionID: sessionID, Existing: true})
-}
-
-// addSessionReplyLocked adds the session record describes to w and returns
-// the reply. The caller holds s.mu.
-func (s *Server) addSessionReplyLocked(id json.RawMessage, w *workspace, record *store.Session) *jsonrpc.Response {
-	sess, err := s.addSession(w, record)
-	if err != nil {
-		return failure(id, err)
-	}
-	return jsonrpc.Success(id, created{SessionID: sess.id})
+	return true, nil
 }
 
 // addSession stores a session in w, publishes it, and starts its goroutine.
 // The caller holds s.mu.
-func (s *Server) addSession(w *workspace, record *store.Session) (*session, error) {
+func (s *Server) addSession(w *workspace, record *store.Session) error {
 	if err := s.store.AddSession(w.id, record); err != nil {
-		return nil, err
+		return err
 	}
 	sess := s.newSession(record, w.path, "")
 	s.publishLocked(w, sess)
 	go sess.run()
-	return sess, nil
+	return nil
 }
 
 // publishLocked adds sess to w and to the sessions requests reach, and tells

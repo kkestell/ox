@@ -94,6 +94,40 @@ func TestChildren(t *testing.T) {
 	if err := add("second", "worker"); err != nil {
 		t.Fatalf("a deleted child's name stayed taken: %v", err)
 	}
+
+	if err := st.AddSession("w", &Session{ID: "both", Directory: "/w", CreatedAt: time.Now(),
+		Child: &Child{ParentID: "parent", Name: "both", Title: "Both"}, Creator: "parent"}); err == nil {
+		t.Fatal("a child with a creator was stored")
+	}
+	if err := add("creator", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSession("w", &Session{ID: "started", Directory: "/w", CreatedAt: time.Now(), Creator: "creator", Title: "Started"}); err != nil {
+		t.Fatal(err)
+	}
+	started := func() *Session {
+		t.Helper()
+		workspaces, err := st.Workspaces()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range workspaces[0].Sessions {
+			if r.ID == "started" {
+				return r
+			}
+		}
+		t.Fatal("the started session was not read")
+		return nil
+	}
+	if r := started(); r.Creator != "creator" || r.Title != "Started" || r.Child != nil {
+		t.Fatalf("Workspaces read the started session %+v", r)
+	}
+	if err := st.DeleteSession("creator"); err != nil {
+		t.Fatalf("a creator with a started session was not deleted: %v", err)
+	}
+	if r := started(); r.Creator != "" || r.Title != "Started" {
+		t.Fatalf("after its creator was deleted Workspaces read the started session %+v", r)
+	}
 }
 
 func TestStoreHoldsDatabaseUntilClose(t *testing.T) {

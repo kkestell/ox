@@ -281,13 +281,13 @@ export function SubmittedPrompt(props: { prompt: Outgoing }) {
 }
 
 // PromptBubble shows a prompt and its images, stored or local, a message
-// headed with its sender's label, or child reports each headed with its
-// child's label.
+// headed with its sender's label, or session reports each headed with its
+// sender's label.
 function PromptBubble(props: { sessionId: string; input: Prompt; files?: File[]; queued?: boolean }) {
   return (
     <Show when={props.input.reports} fallback={<MessageBubble {...props} />}>
       {(reports) => (
-        <article class={["prompt", "message", "reports", { queued: props.queued }]} aria-label="Child reports">
+        <article class={["prompt", "message", "reports", { queued: props.queued }]} aria-label="Session reports">
           <For each={reports()}>
             {(report) => (
               <section aria-label={`Report from ${report.from_label}`}>

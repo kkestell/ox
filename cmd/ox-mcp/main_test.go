@@ -291,14 +291,15 @@ func TestForwarder(t *testing.T) {
 		} `json:"tools"`
 	}
 	json.Unmarshal(r.Result, &list)
-	if len(list.Tools) != 5 {
+	if len(list.Tools) != 6 {
 		t.Fatalf("tools/list returned %s", r.Result)
 	}
 	for i, want := range []struct {
 		name     string
 		readOnly bool
 		required string
-	}{{"list_models", true, ""}, {"list_sessions", true, ""}, {"send_message", false, "to,text"}, {"read_session", true, "to"}, {"create_session", false, "name,title,message"}} {
+	}{{"list_models", true, ""}, {"list_sessions", true, ""}, {"send_message", false, "to,text"}, {"read_session", true, "to"}, {"create_session", false, "name,title,message"},
+		{"create_top_level_session", false, "title,message"}} {
 		got := list.Tools[i]
 		if got.Name != want.name || got.InputSchema.Type != "object" || got.Annotations.ReadOnlyHint != want.readOnly ||
 			strings.Join(got.InputSchema.Required, ",") != want.required {
