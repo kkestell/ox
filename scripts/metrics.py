@@ -28,9 +28,12 @@ def run(*args, cwd=ROOT, input=None, check=True):
     return result.stdout
 
 
-def classify(path):
-    """Return a measured file's (language, is_test), or None."""
+def classify(path, nested_modules):
+    """Return a measured file's (language, is_test), or None. Go files in
+    modules nested below the root module belong to those modules."""
     if path.endswith(".go"):
+        if any(path.startswith(module) for module in nested_modules):
+            return None
         return "Go", path.endswith("_test.go")
     if not path.startswith((f"{WEB}/src/", f"{WEB}/e2e/")):
         return None
@@ -43,8 +46,8 @@ def classify(path):
     return language, path.startswith(f"{WEB}/e2e/")
 
 
-def go_complexity(snapshot):
-    out = run("go", "run", GOCOGNIT, "-json", "-test=false", snapshot)
+def go_complexity(snapshot, files):
+    out = run("go", "run", GOCOGNIT, "-json", "-test=false", *(snapshot / f for f in files))
     return [
         (f["Complexity"], f["FuncName"], f"{Path(f['Pos']['Filename']).relative_to(snapshot)}:{f['Pos']['Line']}")
         for f in json.loads(out) or []
@@ -102,7 +105,10 @@ def main():
         # Measure the index, so the numbers match the commit even when the
         # working tree has other changes.
         run("git", "checkout-index", "--all", f"--prefix={snapshot}/")
-        measured = {p: c for p in run("git", "ls-files").splitlines() if (c := classify(p))}
+        nested_modules = [
+            str(Path(p).parent) + "/" for p in run("git", "ls-files", "*/go.mod").splitlines()
+        ]
+        measured = {p: c for p in run("git", "ls-files").splitlines() if (c := classify(p, nested_modules))}
 
         by_file = json.loads(run("cloc", "--quiet", "--json", "--by-file", "--skip-uniqueness", "--list-file=-",
                                  cwd=snapshot, input="\n".join(measured)))
@@ -116,8 +122,9 @@ def main():
             group["code"] += by_file[path]["code"]
             suppressions[language] += (snapshot / path).read_text().count(SUPPRESSION[language])
 
+        go_files = [p for p, (language, test) in measured.items() if language == "Go" and not test]
         functions = [
-            f for f in go_complexity(snapshot) + ts_complexity(snapshot) if f[0] > COMPLEXITY_THRESHOLD
+            f for f in go_complexity(snapshot, go_files) + ts_complexity(snapshot) if f[0] > COMPLEXITY_THRESHOLD
         ]
 
     size_rows = [

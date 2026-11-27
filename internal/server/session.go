@@ -246,6 +246,7 @@ func (sess *session) sendPrompt(messageID, text string, images []agent.Image) (s
 			stored[i] = store.Image{ID: images[i].ID, MimeType: images[i].MimeType, Data: images[i].Data}
 		}
 		if err := sess.server.store.AddImages(sess.id, stored); err != nil {
+			log.Printf("session %s: store images: %v", sess.id, err)
 			return "", err
 		}
 	}
@@ -441,6 +442,7 @@ func (s *Server) setArchivedLocked(members []*session, archived bool) error {
 		ids[i] = m.id
 	}
 	if err := s.store.SetArchived(ids, archived); err != nil {
+		log.Printf("session %s: store archived: %v", members[0].id, err)
 		return err
 	}
 	method := "session/unarchived"
@@ -576,7 +578,9 @@ func (sess *session) finishDelete(err error) {
 	reply := sess.deleting.reply
 	sess.deleting = nil
 	if err == nil {
-		err = sess.server.store.DeleteSession(sess.id)
+		if err = sess.server.store.DeleteSession(sess.id); err != nil {
+			log.Printf("session %s: delete: %v", sess.id, err)
+		}
 	}
 	s := sess.server
 	if err != nil {

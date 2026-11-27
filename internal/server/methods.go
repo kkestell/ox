@@ -514,6 +514,7 @@ func (s *Server) existingLocked(w *workspace, sessionID string) (bool, error) {
 // The caller holds s.mu.
 func (s *Server) addSession(w *workspace, record *store.Session) error {
 	if err := s.store.AddSession(w.id, record); err != nil {
+		log.Printf("session %s: store session: %v", record.ID, err)
 		return err
 	}
 	sess := s.newSession(record, w.path, "")

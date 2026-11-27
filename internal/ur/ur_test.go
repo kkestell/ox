@@ -417,6 +417,13 @@ func TestEmptyReply(t *testing.T) {
 	}
 }
 
+// finishing streams "par" and then a chunk that ends the reply with reason.
+func finishing(w http.ResponseWriter, reason string) {
+	fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"par\"}}]}\n\n")
+	fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":%q}]}\n\n", reason)
+	fmt.Fprint(w, "data: [DONE]\n\n")
+}
+
 // A failed turn ends with its error. The next request carries the reply the
 // user saw, and no empty reply when there was none.
 func TestStreamErrors(t *testing.T) {
@@ -430,6 +437,15 @@ func TestStreamErrors(t *testing.T) {
 			fmt.Fprint(w, "data: {\"error\":{\"code\":502,\"message\":\"provider went away\"},\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":\"error\"}]}\n\n")
 			fmt.Fprint(w, "data: [DONE]\n\n")
 		}, "OpenRouter: provider went away", []string{"user", "assistant", "user"}},
+		"output limit": {func(w http.ResponseWriter, _ *http.Request, _ int) {
+			finishing(w, "length")
+		}, "OpenRouter stopped the reply at the model's output limit", []string{"user", "assistant", "user"}},
+		"filtered reply": {func(w http.ResponseWriter, _ *http.Request, _ int) {
+			finishing(w, "content_filter")
+		}, "OpenRouter's provider filtered the reply", []string{"user", "assistant", "user"}},
+		"error finish without an error chunk": {func(w http.ResponseWriter, _ *http.Request, _ int) {
+			finishing(w, "error")
+		}, "OpenRouter ended the reply with an error", []string{"user", "assistant", "user"}},
 		"refused request": {func(w http.ResponseWriter, _ *http.Request, _ int) {
 			w.WriteHeader(http.StatusUnauthorized)
 			fmt.Fprint(w, `{"error":{"code":401,"message":"No auth credentials found"}}`)
@@ -666,6 +682,10 @@ func TestAsk(t *testing.T) {
 			fmt.Fprint(w, `{"error":{"code":400,"message":"model not found"}}`)
 			return
 		}
+		if body["model"] == "long" {
+			finishing(w, "length")
+			return
+		}
 		sse(w, "A ", "title")
 	}))
 	t.Cleanup(server.Close)
@@ -698,6 +718,11 @@ func TestAsk(t *testing.T) {
 
 	if _, err := h.Ask(t.Context(), "unknown", "", "i", "t"); err == nil || err.Error() != "OpenRouter 400 Bad Request: model not found" {
 		t.Errorf("refused Ask: %v", err)
+	}
+	<-requests
+
+	if _, err := h.Ask(t.Context(), "long", "", "i", "t"); err == nil || err.Error() != "OpenRouter stopped the reply at the model's output limit" {
+		t.Errorf("cut-off Ask: %v", err)
 	}
 	<-requests
 

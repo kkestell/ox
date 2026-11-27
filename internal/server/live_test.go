@@ -836,7 +836,9 @@ func TestLive(t *testing.T) {
 
 	section("plan-mode message asks", func(l *live) {
 		// Haiku in plan mode usually declines to call a tool that is not
-		// read-only; when it does call send_message, the call asks first.
+		// read-only; when it does call send_message, the call asks first. A
+		// declined call leaves the approval path unobserved, so the section is
+		// skipped.
 		planner, recipient := l.create("plan"), l.create("manual")
 		askedToSend := false
 		tools := l.turn(planner, "Load and call the mcp__ox__send_message tool with to set to "+recipient+
@@ -856,12 +858,12 @@ func TestLive(t *testing.T) {
 		case slices.Contains(tools, "mcp__ox__send_message"):
 			l.t.Error("send_message ran without asking in plan mode")
 		default:
-			l.t.Logf("Haiku declined to call send_message in plan mode (%v)", tools)
 			for _, m := range l.c.received(recipient) {
 				if m.Method == "session/update" {
 					l.t.Errorf("a message reached the recipient without approval: %s", m.Params)
 				}
 			}
+			l.t.Skipf("Haiku declined to call send_message in plan mode (%v)", tools)
 		}
 	})
 

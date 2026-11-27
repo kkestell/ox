@@ -3,6 +3,7 @@ package server
 import (
 	"database/sql"
 	"encoding/json"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -569,6 +570,9 @@ func TestWorktreeDeleteRepeated(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 	c := connect(t, worktreeServer(t, st, t.TempDir()))
 	sess := worktreeSession(t, c, addWorkspace(t, c, filepath.Join(repo, "sub")))
+	logged := &lockedBuffer{}
+	log.SetOutput(logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -582,6 +586,9 @@ func TestWorktreeDeleteRepeated(t *testing.T) {
 		t.Fatal("a delete whose row delete failed succeeded")
 	}
 	listed(t, c, sess.SessionID)
+	if got := logged.String(); !strings.Contains(got, "session "+sess.SessionID+": delete:") || !strings.Contains(got, "refused") {
+		t.Errorf("a refused row delete logged %q", got)
+	}
 	if _, err := db.Exec(`DROP TRIGGER refuse`); err != nil {
 		t.Fatal(err)
 	}

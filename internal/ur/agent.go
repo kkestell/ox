@@ -259,7 +259,7 @@ func (a *Agent) Snapshot() agent.Snapshot {
 	return agent.Snapshot{State: a.tracker.State(), Approvals: append([]agent.Approval{}, a.approvals...), Queued: a.tracker.Queued()}
 }
 
-// Send writes the input to ur, which takes it into its running turn before
+// Send writes the input to ur at once. Ur takes it into its running turn before
 // the turn's next request, or starts a turn with it.
 func (a *Agent) Send(input agent.Input) error {
 	if a.exited {
