@@ -11,7 +11,7 @@ export type Tab =
 
 export type Group = { id: number; tabs: Tab[]; active: number };
 
-export type Direction = "row" | "column";
+type Direction = "row" | "column";
 
 export type Branch =
   | { kind: "group"; group: Group }
@@ -19,7 +19,7 @@ export type Branch =
 
 export type Layout = { root: Branch; focused: number };
 
-export type Zone = "left" | "right" | "top" | "bottom" | "center";
+type Zone = "left" | "right" | "top" | "bottom" | "center";
 
 // A target of a drop: a position among a group's tabs, or an edge or the
 // middle of a group.

@@ -715,23 +715,24 @@ func TestConfigurationTakenButNotStored(t *testing.T) {
 // session is titled once, and its title survives a restart.
 func TestSessionLabel(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
-		Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}},
-	}}, Titling: config.Titling{Harness: "fake", Model: "m"}}
+		Models:          []config.Model{{ID: "m"}, {ID: "titler", Efforts: []config.Option{{ID: "low"}}}},
+		PermissionModes: []config.Option{{ID: "manual"}},
+	}}, Titling: config.Titling{Harness: "fake", Model: "titler", Effort: "low"}}
 	type reply struct {
 		text string
 		err  error
 	}
 	type asked struct {
-		ctx                 context.Context
-		model, instructions string
-		text                string
-		reply               chan<- reply
+		ctx                context.Context
+		model, effort      string
+		instructions, text string
+		reply              chan<- reply
 	}
 	asks := make(chan asked)
 	ask := func(ctx context.Context, model, effort, instructions, text string) (string, error) {
 		r := make(chan reply, 1)
 		select {
-		case asks <- asked{ctx, model, instructions, text, r}:
+		case asks <- asked{ctx, model, effort, instructions, text, r}:
 		case <-ctx.Done():
 			return "", ctx.Err()
 		}
@@ -837,7 +838,7 @@ func TestSessionLabel(t *testing.T) {
 		t.Fatalf("session/labeled labeled A %q", got)
 	}
 	titling := nextAsk()
-	if titling.text != first || titling.instructions != titleInstructions || titling.model != "m" {
+	if titling.text != first || titling.instructions != titleInstructions || titling.model != "titler" || titling.effort != "low" {
 		t.Fatalf("titling asked %+v", titling)
 	}
 	titling.reply <- reply{text: "\"Generated title\"\nextra"}
