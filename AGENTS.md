@@ -119,6 +119,7 @@ We test with `make dev`. Ox's test state is disposable.
 │       │   ├── engine_test.go # end-of-input test
 │       │   ├── engine.go      # turn loop and conversation file
 │       │   ├── instructions.go # system message
+│       │   ├── mcp.go         # Ox's MCP forwarder and its tools
 │       │   ├── shell_test.go  # shell tool tests
 │       │   ├── shell.go       # shell tool
 │       │   └── stream.go      # OpenRouter requests and streams

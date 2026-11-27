@@ -682,10 +682,11 @@ session whose snapshot it needs, then follows the notifications.
 
 ## MCP
 
-`ox-mcp` connects a harness's MCP client, over stdio, to the socket on behalf of
-one session. It reads `OX_SOCKET` and `OX_SESSION_ID` from its environment,
-writes only `oxd`'s answers to stdout, and exits with a message on stderr when
-it cannot reach the socket or attach. It exits when stdin or the socket closes.
+`ox-mcp` connects a harness's MCP client, Claude Code's or `ur`'s, over stdio,
+to the socket on behalf of one session. It reads `OX_SOCKET` and `OX_SESSION_ID`
+from its environment, writes only `oxd`'s answers to stdout, and exits with a
+message on stderr when it cannot reach the socket or attach. It exits when stdin
+or the socket closes.
 
 ### `mcp/attach`
 
@@ -713,8 +714,9 @@ omitted or an array, or `name` is missing, invalid, or unknown. A recognized
 tool returns a result with one text content item; if it refuses its arguments or
 cannot perform the operation, the result sets `isError: true` and gives the
 reason as the text. Every tool is in the harness's pre-approved list, so it runs
-without an approval prompt where the permission mode allows; plan mode asks for
-a tool not annotated `readOnlyHint`.
+without an approval prompt where the permission mode allows; Claude's plan mode
+asks for a tool not annotated `readOnlyHint`, and Ur runs every tool without an
+approval prompt in both of its modes.
 
 `list_models` takes no arguments, is annotated `readOnlyHint`, and returns the
 JSON that [`harness/list`](#harnesslist) returns.

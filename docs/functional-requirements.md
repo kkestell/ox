@@ -440,9 +440,14 @@ title.
   exits, at its timeout of two minutes or up to ten that Ur sets, or when the
   turn is stopped, which also ends the processes it started; Ur gets its exit
   status and its output, or the start and end of output too long to keep whole.
+- **Ur works with other sessions.** Ur can do what Claude does under Sessions
+  working together: look up Ox's models, list, read, and message other sessions,
+  and start child sessions, in either permission mode without asking for
+  approval.
 - **Ur's instructions.** Ur knows the session's directory, its OS, and today's
-  date, follows Ox's style, and follows the `AGENTS.md` in that directory as it
-  stands when each request is sent.
+  date, that it is an Ox session, which one, and how to reach the other
+  sessions, follows Ox's style, and follows the `AGENTS.md` in that directory as
+  it stands when each request is sent.
 
 ## Configuration
 

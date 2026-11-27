@@ -5,12 +5,18 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,10 +25,21 @@ import (
 	"github.com/kkestell/ox/internal/fake"
 	"github.com/kkestell/ox/internal/server"
 	"github.com/kkestell/ox/internal/store"
+	"github.com/kkestell/ox/internal/ur"
+	"github.com/kkestell/ox/internal/ur/engine"
 )
 
-// TestMain runs the forwarder itself when a test starts this binary as ox-mcp.
+// TestMain runs the forwarder itself when a test starts this binary as
+// ox-mcp, and ur when it starts it as ur. A link's name tells them apart,
+// since ur passes its environment to the forwarder.
 func TestMain(m *testing.M) {
+	switch filepath.Base(os.Args[0]) {
+	case "ur":
+		os.Exit(engine.Main(os.Args[1:]))
+	case "ox-mcp":
+		main()
+		return
+	}
 	if os.Getenv("OX_MCP_TEST_MAIN") == "1" {
 		main()
 		return
@@ -381,5 +398,335 @@ func TestForwarderDropsLinesBeforeAttach(t *testing.T) {
 	f.stdout.ends()
 	if code := f.exit(t); code != 0 {
 		t.Fatalf("exit %d, stderr %q", code, f.stderr)
+	}
+}
+
+// runTool marks a prompt that has Ur's model call a tool: the marker, the
+// tool's name, and its arguments, to the end of the line.
+const runTool = "RUN-TOOL "
+
+// openRouter answers a request whose last message holds runTool with that
+// call, and any other with the reply "done". It keeps every request's body.
+type openRouter struct {
+	mu       sync.Mutex
+	requests []map[string]any
+	calls    atomic.Int32
+}
+
+func (o *openRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	var body map[string]any
+	json.NewDecoder(req.Body).Decode(&body)
+	o.mu.Lock()
+	o.requests = append(o.requests, body)
+	o.mu.Unlock()
+	write := func(chunk map[string]any) {
+		data, _ := json.Marshal(chunk)
+		fmt.Fprintf(w, "data: %s\n\n", data)
+	}
+	messages := body["messages"].([]any)
+	last := messages[len(messages)-1].(map[string]any)
+	content, _ := last["content"].(string)
+	if _, call, ok := strings.Cut(content, runTool); ok && last["role"] == "user" {
+		call, _, _ = strings.Cut(call, "\n")
+		name, arguments, _ := strings.Cut(call, " ")
+		write(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"tool_calls": []any{map[string]any{
+			"index": 0, "id": fmt.Sprintf("call_%d", o.calls.Add(1)), "type": "function",
+			"function": map[string]any{"name": name, "arguments": arguments},
+		}}}}}})
+		write(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": ""}, "finish_reason": "tool_calls"}}})
+	} else {
+		write(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": "done"}, "finish_reason": "stop"}}})
+	}
+	fmt.Fprint(w, "data: [DONE]\n\n")
+}
+
+// requestsOf is the requests of the Ox session sessionID's Ur, which its
+// system message names.
+func (o *openRouter) requestsOf(sessionID string) []map[string]any {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	var mine []map[string]any
+	for _, body := range o.requests {
+		system := body["messages"].([]any)[0].(map[string]any)["content"].(string)
+		if strings.Contains(system, "You are Ox session `"+sessionID+"`.") {
+			mine = append(mine, body)
+		}
+	}
+	return mine
+}
+
+// notice is a notification a page receives.
+type notice struct {
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
+}
+
+// sessionUpdate is a session/update notification's params.
+type sessionUpdate struct {
+	SessionID string `json:"session_id"`
+	agent.Update
+}
+
+// watcher is a page connection that keeps every notification.
+type watcher struct {
+	t       *testing.T
+	notices chan notice
+	backlog []notice // read but not yet matched, oldest first
+}
+
+func watch(t *testing.T, socket string) *watcher {
+	t.Helper()
+	conn, err := net.Dial("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	w := &watcher{t: t, notices: make(chan notice, 4096)}
+	go func() {
+		decoder := json.NewDecoder(conn)
+		for {
+			var n notice
+			if decoder.Decode(&n) != nil {
+				close(w.notices)
+				return
+			}
+			w.notices <- n
+		}
+	}()
+	return w
+}
+
+// next returns the oldest notification that matches, keeping the others for
+// later calls.
+func (w *watcher) next(matches func(notice) bool) notice {
+	w.t.Helper()
+	for i, n := range w.backlog {
+		if matches(n) {
+			w.backlog = slices.Delete(w.backlog, i, i+1)
+			return n
+		}
+	}
+	timeout := time.After(10 * time.Second)
+	for {
+		select {
+		case n, ok := <-w.notices:
+			if !ok {
+				w.t.Fatal("connection closed")
+			}
+			if matches(n) {
+				return n
+			}
+			w.backlog = append(w.backlog, n)
+		case <-timeout:
+			w.t.Fatal("no matching notification within 10s")
+		}
+	}
+}
+
+// update returns the session's next update that matches.
+func (w *watcher) update(sessionID string, matches func(agent.Update) bool) agent.Update {
+	w.t.Helper()
+	var u sessionUpdate
+	w.next(func(n notice) bool {
+		u = sessionUpdate{}
+		return n.Method == "session/update" && json.Unmarshal(n.Params, &u) == nil && u.SessionID == sessionID && matches(u.Update)
+	})
+	return u.Update
+}
+
+// turn returns the session's updates until its next result.
+func (w *watcher) turn(sessionID string) []agent.Update {
+	w.t.Helper()
+	var updates []agent.Update
+	for {
+		u := w.update(sessionID, func(agent.Update) bool { return true })
+		updates = append(updates, u)
+		if u.Type == agent.UpdateResult {
+			return updates
+		}
+	}
+}
+
+// toolResult is the result of the turn's one tool call, which ran without
+// asking.
+func toolResult(t *testing.T, updates []agent.Update) agent.Result {
+	t.Helper()
+	var results []agent.Result
+	for _, u := range updates {
+		switch u.Type {
+		case agent.UpdateApproval:
+			t.Fatalf("an Ox tool call asked for approval: %s", u.Request)
+		case agent.UpdateToolResult:
+			results = append(results, *u.Result)
+		}
+	}
+	if len(results) != 1 {
+		t.Fatalf("tool results %+v in %+v", results, updates)
+	}
+	return results[0]
+}
+
+// Ur runs Ox's tools through ox-mcp, as the session oxd started it for.
+func TestUr(t *testing.T) {
+	dir, err := os.MkdirTemp("", "oxmcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	self, err := filepath.Abs(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	urCommand, forwarderCommand := filepath.Join(dir, "ur"), filepath.Join(dir, "ox-mcp")
+	for _, link := range []string{urCommand, forwarderCommand} {
+		if err := os.Symlink(self, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
+	router := &openRouter{}
+	endpoint := httptest.NewServer(router)
+	t.Cleanup(endpoint.Close)
+
+	st, err := store.Open(filepath.Join(dir, "ox.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Harnesses: map[string]config.Harness{
+			"fake": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
+			"ur":   {Models: []config.Model{{ID: "u"}}, PermissionModes: []config.Option{{ID: "manual"}, {ID: "auto"}}},
+		},
+		Titling:       config.Titling{Harness: "fake", Model: "m"},
+		MaxChildDepth: 1,
+	}
+	harnesses := map[string]agent.Harness{
+		"fake": {Start: fake.Start, Ask: fake.Ask},
+		"ur":   ur.Harness(urCommand, endpoint.URL, filepath.Join(dir, "conversations"), nil),
+	}
+	socket := filepath.Join(dir, "s.sock")
+	s, err := server.New(st, cfg, 0, harnesses, server.MCP{Forwarder: forwarderCommand, Socket: socket}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go s.Serve(l)
+	t.Cleanup(func() { l.Close(); s.Close(); st.Close() })
+	w := watch(t, socket)
+	conn, err := net.Dial("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	p := &page{conn: conn, lines: readLines(t, conn)}
+
+	var workspace struct {
+		ID string `json:"workspace_id"`
+	}
+	json.Unmarshal(p.call("workspace/create", map[string]string{"path": t.TempDir()}).Result, &workspace)
+	create := func(harness, model string) string {
+		t.Helper()
+		r := p.call("session/create", map[string]string{"workspace_id": workspace.ID, "harness": harness, "model": model, "permission_mode": "manual"})
+		var created struct {
+			ID string `json:"session_id"`
+		}
+		if r.Error != nil || json.Unmarshal(r.Result, &created) != nil {
+			t.Fatalf("session/create: %s, %+v", r.Result, r.Error)
+		}
+		return created.ID
+	}
+	other, urSession := create("fake", "m"), create("ur", "u")
+	send := func(sessionID, text string) {
+		t.Helper()
+		if r := p.call("session/send", map[string]string{"session_id": sessionID, "text": text}); r.Error != nil {
+			t.Fatalf("session/send: %+v", r.Error)
+		}
+	}
+
+	t.Log("a manual Ur session messages another session without asking")
+	send(urSession, runTool+`send_message {"to":"`+other+`","text":"hello"}`)
+	if result := toolResult(t, w.turn(urSession)); result.IsError || result.Text != "Message queued for "+other+"." {
+		t.Fatalf("send_message returned %+v", result)
+	}
+	if u := w.update(other, func(u agent.Update) bool { return u.Type == agent.UpdatePrompt }); u.From != urSession || u.Text != "hello" {
+		t.Fatalf("the other session took %+v", u)
+	}
+	requests := router.requestsOf(urSession)
+	if len(requests) != 2 {
+		t.Fatalf("%d requests name the Ur session", len(requests))
+	}
+	toolMessage := requests[1]["messages"].([]any)[3].(map[string]any)
+	if toolMessage["role"] != "tool" || toolMessage["content"] != "Message queued for "+other+"." {
+		t.Fatalf("the model read %v", toolMessage)
+	}
+
+	t.Log("a manual Ur session starts a manual child of its own")
+	send(urSession, runTool+`create_session {"name":"kid","title":"Work: kid","message":"hi"}`)
+	result := toolResult(t, w.turn(urSession))
+	var kid struct {
+		SessionID string `json:"session_id"`
+		Harness   string `json:"harness"`
+		agent.Settings
+	}
+	if result.IsError || json.Unmarshal([]byte(result.Text), &kid) != nil || kid.Harness != "ur" || kid.PermissionMode != "manual" {
+		t.Fatalf("create_session returned %+v", result)
+	}
+	created := w.next(func(n notice) bool {
+		return n.Method == "session/created" && strings.Contains(string(n.Params), kid.SessionID)
+	})
+	var published struct {
+		Child *store.Child `json:"child"`
+	}
+	if json.Unmarshal(created.Params, &published) != nil || published.Child == nil || published.Child.ParentID != urSession {
+		t.Fatalf("the child was published as %s", created.Params)
+	}
+
+	t.Log("an Ur child whose last step messages its parent sends the parent no report")
+	f := startForwarder(t, "OX_SOCKET="+socket, "OX_SESSION_ID="+other)
+	createChild := func(arguments map[string]string) string {
+		t.Helper()
+		var called struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+			IsError bool `json:"isError"`
+		}
+		r := f.call("tools/call", map[string]any{"name": "create_session", "arguments": arguments})
+		var child struct {
+			SessionID string `json:"session_id"`
+		}
+		if json.Unmarshal(r.Result, &called) != nil || called.IsError || len(called.Content) != 1 ||
+			json.Unmarshal([]byte(called.Content[0].Text), &child) != nil {
+			t.Fatalf("create_session returned %s, %+v", r.Result, r.Error)
+		}
+		return child.SessionID
+	}
+	urKid := createChild(map[string]string{
+		"name": "ur-kid", "title": "Work: ur-kid", "harness": "ur", "model": "u",
+		"message": runTool + `send_message {"to":"` + other + `","text":"status"}`,
+	})
+	if result := toolResult(t, w.turn(urKid)); result.IsError {
+		t.Fatalf("the child's send_message returned %+v", result)
+	}
+	// The probe's report follows any report the Ur child sent.
+	probe := createChild(map[string]string{"name": "probe", "title": "Work: probe", "message": "hi"})
+	told := false
+	for {
+		u := w.update(other, func(u agent.Update) bool { return u.Type == agent.UpdatePrompt })
+		if u.From == urKid && u.Text == "status" {
+			told = true
+		}
+		if slices.ContainsFunc(u.Reports, func(r agent.Report) bool { return r.From == urKid }) {
+			t.Fatalf("the parent took a report from the Ur child that told it: %+v", u.Reports)
+		}
+		if slices.ContainsFunc(u.Reports, func(r agent.Report) bool { return r.From == probe }) {
+			break
+		}
+	}
+	if !told {
+		t.Fatal("the parent did not take the Ur child's message")
 	}
 }

@@ -60,6 +60,10 @@ func startAgent(command, endpoint, dir string, providers map[string][]string, op
 	if options.Resume != "" {
 		args = append(args, "-resume="+options.Resume)
 	}
+	if options.MCP.Command != "" {
+		mcp, _ := json.Marshal(options.MCP) // strings always marshal
+		args = append(args, "-mcp="+string(mcp), "-session-id="+options.SessionID)
+	}
 	cmd := exec.Command(command, args...)
 	cmd.Dir = options.Workspace
 	a := &Agent{
