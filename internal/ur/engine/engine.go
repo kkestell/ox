@@ -3,7 +3,8 @@
 // drives it over stdin and stdout with the wire protocol. Each turn is a
 // streamed request carrying Ur's instructions and then the conversation so
 // far, which ur keeps in a file of its own, then a request after each
-// response's commands have run.
+// response's calls have been answered. Given Ox's MCP forwarder, ur also
+// offers Ox's tools, which it calls through the forwarder.
 package engine
 
 import (
@@ -35,10 +36,11 @@ const Endpoint = "https://openrouter.ai/api/v1/chat/completions"
 //
 // Agent mode, run in the session's workspace:
 //
-//	ur -dir <conversations> [-resume <token>] -model <id> [-effort <e>] -permission-mode <m> [-providers <json>] [-endpoint <url>]
+//	ur -dir <conversations> [-resume <token>] -model <id> [-effort <e>] -permission-mode <m> [-providers <json>] [-endpoint <url>] [-mcp <json> -session-id <id>]
 //
 // reads Commands on stdin and writes Events on stdout until stdin ends or
-// SIGTERM. Ask mode:
+// SIGTERM. With -mcp, an agent.MCPServer as JSON, it starts the forwarder
+// and offers Ox's tools as session -session-id. Ask mode:
 //
 //	ur -ask -model <id> [-effort <e>] -instructions <text> [-providers <json>] [-endpoint <url>]
 //
@@ -64,6 +66,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	system := flags.String("instructions", "", "ask mode's system message")
 	providersJSON := flags.String("providers", "", "a JSON object from model ID to provider order")
 	endpoint := flags.String("endpoint", Endpoint, "the chat completions endpoint")
+	mcpJSON := flags.String("mcp", "", "Ox's MCP server for the session, as JSON")
+	sessionID := flags.String("session-id", "", "the Ox session ID, which -mcp acts for")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -97,6 +101,18 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "-dir is required")
 		return 2
 	}
+	var mcp *agent.MCPServer
+	if *mcpJSON != "" {
+		mcp = new(agent.MCPServer)
+		if err := json.Unmarshal([]byte(*mcpJSON), mcp); err != nil || mcp.Command == "" {
+			fmt.Fprintf(stderr, "-mcp: %q is not an MCP server with a command\n", *mcpJSON)
+			return 2
+		}
+		if *sessionID == "" {
+			fmt.Fprintln(stderr, "-session-id is required with -mcp")
+			return 2
+		}
+	}
 	workspace, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -108,7 +124,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		events: make(chan any), stopped: make(chan struct{}),
 		settings: agent.Settings{Model: *model, Effort: *effort, PermissionMode: *mode},
 	}
-	return e.serve(stdin)
+	return e.serve(stdin, mcp, *sessionID)
 }
 
 // engine holds one conversation, which it appends to the file <dir>/<id>.jsonl
@@ -122,6 +138,7 @@ type engine struct {
 	dir       string
 	id        string
 	workspace string
+	ox        *forwarder    // nil without -mcp
 	out       *json.Encoder // ur's stdout
 	stderr    io.Writer
 	events    chan any      // the turn's own goroutines' output
@@ -136,10 +153,11 @@ type engine struct {
 	shells sync.WaitGroup
 }
 
-// serve runs the conversation until stdin ends or SIGTERM arrives, then ends
-// the turn, which kills each command's process group, and returns once every
-// command is reaped.
-func (e *engine) serve(stdin io.Reader) int {
+// serve runs the conversation until stdin ends, SIGTERM arrives, or the
+// forwarder of mcp, when given, exits, then ends the turn, which kills each
+// command's process group, and returns once every command is reaped and the
+// forwarder has exited.
+func (e *engine) serve(stdin io.Reader, mcp *agent.MCPServer, sessionID string) int {
 	terminate := make(chan os.Signal, 1)
 	signal.Notify(terminate, syscall.SIGTERM)
 	defer signal.Stop(terminate)
@@ -166,6 +184,17 @@ func (e *engine) serve(stdin io.Reader) int {
 			}
 		}
 	}
+	var forwarderExited <-chan struct{}
+	if mcp != nil {
+		f, err := startForwarder(*mcp, sessionID, e.stderr)
+		if err != nil {
+			fmt.Fprintf(e.stderr, "start ox-mcp: %v\n", err)
+			close(e.stopped)
+			return 1
+		}
+		e.ox, forwarderExited = f, f.exited
+		go f.read(e.deliver)
+	}
 	for {
 		select {
 		case c, ok := <-commands:
@@ -187,6 +216,14 @@ func (e *engine) serve(stdin io.Reader) int {
 		case <-terminate:
 			e.stop()
 			return status
+		case <-forwarderExited:
+			if err := e.ox.err; err != nil {
+				fmt.Fprintf(e.stderr, "ox-mcp exited: %v\n", err)
+			} else {
+				fmt.Fprintln(e.stderr, "ox-mcp exited")
+			}
+			e.stop()
+			return 1
 		}
 	}
 }
@@ -218,14 +255,18 @@ func (e *engine) read(stdin io.Reader) (commands <-chan wire.Command, readErr *e
 	return c, readErr
 }
 
-// stop ends the running turn and waits for its commands' process groups to be
-// killed and reaped.
+// stop ends the running turn, waits for its commands' process groups to be
+// killed and reaped, then ends the forwarder and waits for it to exit. A call
+// still waiting on the forwarder gets no answer.
 func (e *engine) stop() {
 	if e.turn != nil {
 		e.turn.cancel()
 	}
 	close(e.stopped)
 	e.shells.Wait()
+	if e.ox != nil {
+		e.ox.close()
+	}
 }
 
 // command carries out a command from oxd.
@@ -356,9 +397,17 @@ type executing struct {
 	calls []toolCall
 }
 
+// calling waits on the answer to calls[0], the first of the response's calls
+// not yet answered, a call of one of Ox's tools written as request id.
+type calling struct {
+	calls []toolCall
+	id    int
+}
+
 func (streaming) isStep()  {}
 func (*asking) isStep()    {}
 func (*executing) isStep() {}
+func (*calling) isStep()   {}
 
 // delta is a chunk's reply text and reasoning fragments streamed for a turn.
 type delta struct {
@@ -431,6 +480,15 @@ func (e *engine) handle(event any) {
 			return
 		}
 		e.answer(ev.step.calls, ev.outcome)
+	case answered:
+		// Any other answer is to a call whose turn an interrupt or stop
+		// ended.
+		if e.turn == nil {
+			return
+		}
+		if s, ok := e.turn.step.(*calling); ok && s.id == ev.id {
+			e.answer(s.calls, ev.outcome)
+		}
 	}
 }
 
@@ -469,25 +527,25 @@ func (e *engine) request() {
 
 // next takes up calls, the response's calls not yet answered, oldest first,
 // and posts the next request once every call is answered. A call whose
-// arguments are invalid is answered at once; a valid one runs in auto mode and
-// asks for approval otherwise.
+// arguments are invalid is answered at once. A call of one of Ox's tools runs
+// without asking; a shell call runs in auto mode and asks for approval
+// otherwise.
 func (e *engine) next(calls []toolCall) {
 	if len(calls) == 0 {
 		e.request()
 		return
 	}
 	call := calls[0]
+	if e.ox.offers(call.Function.Name) {
+		e.callOx(calls)
+		return
+	}
 	command, err := parseCall(call)
 	var input json.RawMessage
 	if err == nil {
 		input, _ = json.Marshal(command) // strings and integers always marshal
 	} else {
-		// A call that does not run shows its arguments if they are an object.
-		input = json.RawMessage(call.Function.Arguments)
-		var object map[string]json.RawMessage
-		if json.Unmarshal(input, &object) != nil || object == nil {
-			input = json.RawMessage("{}")
-		}
+		input = shown(call.Function.Arguments)
 	}
 	e.publish(agent.Update{Type: agent.UpdateToolUse, ToolUseID: call.ID, ToolName: call.Function.Name, Input: input})
 	if err != nil {
@@ -503,6 +561,35 @@ func (e *engine) next(calls []toolCall) {
 	e.state(agent.StateRequiresAction)
 	request, _ := json.Marshal(map[string]any{"tool_name": "shell", "input": s.command, "tool_use_id": s.calls[0].ID}) // strings and valid JSON always marshal
 	e.publish(agent.Update{Type: agent.UpdateApproval, RequestID: s.requestID, Request: request})
+}
+
+// shown is a call's arguments as the transcript shows them: the arguments
+// when they are one JSON object, and an empty object otherwise.
+func shown(arguments string) json.RawMessage {
+	var object map[string]json.RawMessage
+	if json.Unmarshal([]byte(arguments), &object) != nil || object == nil {
+		return json.RawMessage("{}")
+	}
+	return json.RawMessage(arguments)
+}
+
+// callOx writes calls[0], a call of one of Ox's tools, to the forwarder, and
+// waits on its answer. Arguments that are not one JSON object are answered at
+// once.
+func (e *engine) callOx(calls []toolCall) {
+	call := calls[0]
+	input := shown(call.Function.Arguments)
+	e.publish(agent.Update{Type: agent.UpdateToolUse, ToolUseID: call.ID, ToolName: call.Function.Name, Input: input})
+	if string(input) != call.Function.Arguments {
+		e.answer(calls, outcome{"arguments: must be one JSON object", true})
+		return
+	}
+	id, err := e.ox.call(call.Function.Name, input, call.ID)
+	if err != nil {
+		e.answer(calls, outcome{"Could not reach ox-mcp: " + err.Error(), true})
+		return
+	}
+	e.turn.step = &calling{calls: calls, id: id}
 }
 
 // parseCall checks that call is a shell call with valid arguments.
@@ -547,7 +634,11 @@ func (e *engine) answer(calls []toolCall, o outcome) {
 // conversation, with the current settings. The instructions are not part of
 // the saved conversation.
 func (e *engine) body() ([]byte, error) {
-	text, err := instructions(e.workspace, time.Now())
+	var oxSession string
+	if e.ox != nil {
+		oxSession = e.ox.sessionID
+	}
+	text, err := instructions(e.workspace, oxSession, time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -558,7 +649,7 @@ func (e *engine) body() ([]byte, error) {
 		history[i].ReasoningDetails = nil
 	}
 	messages := append([]message{{Role: "system", Content: content{Text: text}}}, conversation(history)...)
-	body := request{Model: e.settings.Model, Messages: messages, Tools: []json.RawMessage{shellTool}, Stream: true}
+	body := request{Model: e.settings.Model, Messages: messages, Tools: e.tools(), Stream: true}
 	if e.settings.Effort != "" {
 		body.Reasoning = &reasoning{Effort: e.settings.Effort}
 	}
@@ -567,6 +658,15 @@ func (e *engine) body() ([]byte, error) {
 	}
 	data, _ := json.Marshal(body) // strings, slices of them, and valid JSON always marshal
 	return data, nil
+}
+
+// tools is every request's tools: shell, then Ox's.
+func (e *engine) tools() []json.RawMessage {
+	tools := []json.RawMessage{shellTool}
+	if e.ox != nil {
+		tools = append(tools, e.ox.definitions...)
+	}
+	return tools
 }
 
 // stopped answers a call whose command did not finish: an interrupt, a stop,

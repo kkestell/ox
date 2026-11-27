@@ -24,6 +24,7 @@ flowchart LR
   claude -- "MCP stdio" --> oxmcp
   oxmcp -- "Unix socket (mcp/attach)" --> oxd
   oxd -- "JSON lines on stdio" --> ur
+  ur -- "MCP stdio" --> oxmcp
   ur --> urfiles
   oxd --> fake
 ```
@@ -400,8 +401,12 @@ starts and once it is killed.
 The `ur` process:
 
 - Streams each turn from OpenRouter chat completions with an ephemeral system
-  message built from the workspace, OS, date, and the workspace's `AGENTS.md`
-  (never written to the conversation file).
+  message built from the workspace, OS, date, the Ox session it runs as, and the
+  workspace's `AGENTS.md` (never written to the conversation file).
+- Starts the forwarder `oxd` names and offers the tools its `tools/list` returns
+  beside `shell`. Each Ox tool call runs without approval in both permission
+  modes, and its answer is matched by request ID; an answer whose call the turn
+  no longer waits on, after an interrupt, is dropped.
 - Validates each shell call's arguments once, so the transcript, approval card,
   and executed command share one value.
 - Runs each shell call in the session's workspace inside its own process group,
@@ -409,9 +414,10 @@ The `ur` process:
 - Appends prompts, streamed reply deltas, tool calls, and finished outcomes to
   the JSONL file named by its resume token, reconstructing an interrupted call's
   outcome when resuming.
-- Stops when its stdin ends or on `SIGTERM`, which `children.KillAll` also
-  sends: it ends the turn, kills its commands' process groups, and exits once
-  they are reaped. It ignores `SIGINT`.
+- Stops when its stdin ends, on `SIGTERM`, which `children.KillAll` also sends,
+  or when the forwarder exits: it ends the turn, kills its commands' process
+  groups, closes the forwarder's stdin, and exits once they are reaped and the
+  forwarder has exited. It ignores `SIGINT`.
 
 The adapter in `internal/ur` keeps the inputs written and not yet reported taken
 or dropped, the pending approvals, the running turn's input, and the interrupts

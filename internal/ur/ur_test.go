@@ -1,6 +1,7 @@
 package ur
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
@@ -27,12 +28,71 @@ import (
 	"github.com/kkestell/ox/internal/ur/engine"
 )
 
-// TestMain runs ur itself when a test starts this binary as ur.
+// TestMain runs a stand-in MCP forwarder, or ur itself, when a test starts
+// this binary as one. ur passes its environment to the forwarder, so the
+// forwarder's variable is checked first.
 func TestMain(m *testing.M) {
+	if os.Getenv("OX_UR_FORWARDER") == "1" {
+		standInForwarder()
+		os.Exit(0)
+	}
 	if os.Getenv("OX_UR_MAIN") == "1" {
 		os.Exit(engine.Main(os.Args[1:]))
 	}
 	os.Exit(m.Run())
+}
+
+// standInForwarder serves one tool, echo, which answers with its text
+// argument. It writes its PID to the file OX_UR_FORWARDER_PID names. A call
+// with the text "hold" is answered only when the next call arrives, just
+// before it, and one with the text "exit" ends the forwarder unanswered.
+func standInForwarder() {
+	os.WriteFile(os.Getenv("OX_UR_FORWARDER_PID"), []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600)
+	out := json.NewEncoder(os.Stdout)
+	reply := func(id json.RawMessage, result any) {
+		out.Encode(map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
+	}
+	text := func(text string) map[string]any {
+		return map[string]any{"content": []any{map[string]any{"type": "text", "text": text}}, "isError": false}
+	}
+	var held json.RawMessage
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		var request struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params struct {
+				Arguments struct {
+					Text string `json:"text"`
+				} `json:"arguments"`
+			} `json:"params"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &request) != nil || request.ID == nil {
+			continue
+		}
+		switch request.Method {
+		case "initialize":
+			reply(request.ID, map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{"tools": map[string]any{}}})
+		case "tools/list":
+			reply(request.ID, map[string]any{"tools": []any{map[string]any{
+				"name": "echo", "description": "Echo the text.",
+				"inputSchema": map[string]any{"type": "object", "properties": map[string]any{"text": map[string]any{"type": "string"}}},
+			}}})
+		case "tools/call":
+			if held != nil {
+				reply(held, text("hold"))
+				held = nil
+			}
+			switch request.Params.Arguments.Text {
+			case "hold":
+				held = request.ID
+				continue
+			case "exit":
+				return
+			}
+			reply(request.ID, text(request.Params.Arguments.Text))
+		}
+	}
 }
 
 // urHarness is the harness with this test binary as ur.
@@ -80,6 +140,7 @@ type run struct {
 	harness    agent.Harness
 	dir        string
 	workspace  string
+	mcp        agent.MCPServer
 	settings   agent.Settings // the settings the next launch starts with
 	agent      agent.Agent
 	updates    []agent.Update
@@ -93,8 +154,14 @@ type handler func(w http.ResponseWriter, req *http.Request, n int)
 
 func start(t *testing.T, settings agent.Settings, providers map[string][]string, handle handler) *run {
 	t.Helper()
+	return startMCP(t, settings, providers, agent.MCPServer{}, handle)
+}
+
+// startMCP starts a run whose agent has mcp as Ox's MCP server.
+func startMCP(t *testing.T, settings agent.Settings, providers map[string][]string, mcp agent.MCPServer, handle handler) *run {
+	t.Helper()
 	t.Setenv("OPENROUTER_API_KEY", "test-key")
-	r := &run{t: t, dir: filepath.Join(t.TempDir(), "ur"), workspace: t.TempDir(), settings: settings, requests: make(chan recorded, 16)}
+	r := &run{t: t, dir: filepath.Join(t.TempDir(), "ur"), workspace: t.TempDir(), mcp: mcp, settings: settings, requests: make(chan recorded, 16)}
 	var count atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		data, _ := io.ReadAll(req.Body)
@@ -115,6 +182,8 @@ func start(t *testing.T, settings agent.Settings, providers map[string][]string,
 // conversation token names, as the server does after parking.
 func (r *run) launch(token string) error {
 	a, err := r.harness.Start(agent.Options{
+		SessionID:   "ur-session",
+		MCP:         r.mcp,
 		Resume:      token,
 		Workspace:   r.workspace,
 		Settings:    r.settings,
@@ -846,8 +915,8 @@ func systemMessages(body map[string]any) []string {
 func TestInstructions(t *testing.T) {
 	answer := func(w http.ResponseWriter, _ *http.Request, _ int) { sse(w, "ok") }
 	// system sends a prompt and returns the request's one system message,
-	// which must lead.
-	system := func(t *testing.T, r *run) string {
+	// which must lead, and the request.
+	system := func(t *testing.T, r *run) (string, map[string]any) {
 		t.Helper()
 		r.send("p", "hi")
 		r.idle()
@@ -856,7 +925,7 @@ func TestInstructions(t *testing.T) {
 		if len(got) != 1 || body["messages"].([]any)[0].(map[string]any)["role"] != "system" {
 			t.Fatalf("system messages %q, not one first", got)
 		}
-		return got[0]
+		return got[0], body
 	}
 
 	t.Run("fresh each request", func(t *testing.T) {
@@ -865,16 +934,24 @@ func TestInstructions(t *testing.T) {
 		if err := os.WriteFile(path, []byte("marker-one"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		first := system(t, r)
+		first, body := system(t, r)
 		for _, want := range []string{r.workspace, agent.Style, "marker-one", "Date: " + time.Now().Format("2006-01-02")} {
 			if !strings.Contains(first, want) {
 				t.Errorf("system message lacks %q:\n%s", want, first)
 			}
 		}
+		// Without Ox's MCP server, Ur has only shell and is told of no
+		// other sessions.
+		if got := toolNames(body); !slices.Equal(got, []string{"shell"}) {
+			t.Errorf("tools %q, not just shell", got)
+		}
+		if strings.Contains(first, "Ox session") || strings.Contains(first, agent.Sessions) {
+			t.Errorf("system message tells of other sessions:\n%s", first)
+		}
 		if err := os.WriteFile(path, []byte("marker-two"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		second := system(t, r)
+		second, _ := system(t, r)
 		if !strings.Contains(second, "marker-two") || strings.Contains(second, "marker-one") {
 			t.Errorf("system message after the edit:\n%s", second)
 		}
@@ -882,7 +959,7 @@ func TestInstructions(t *testing.T) {
 
 	t.Run("no AGENTS.md", func(t *testing.T) {
 		r := start(t, agent.Settings{Model: model}, nil, answer)
-		got := system(t, r)
+		got, _ := system(t, r)
 		if !strings.Contains(got, r.workspace) || strings.Contains(got, "Instructions from the workspace's") {
 			t.Errorf("system message:\n%s", got)
 		}
@@ -1816,4 +1893,162 @@ func TestAnswerCrossesInterrupt(t *testing.T) {
 	if got := kinds(r.updates); !slices.Equal(got, []string{"approval_answered p1", "result p1", "state p1 idle"}) {
 		t.Errorf("updates %q, not the answer and the interrupted turn's end", got)
 	}
+}
+
+// toolNames is the names of a request's tools.
+func toolNames(body map[string]any) []string {
+	var names []string
+	tools, _ := body["tools"].([]any)
+	for _, tool := range tools {
+		names = append(names, tool.(map[string]any)["function"].(map[string]any)["name"].(string))
+	}
+	return names
+}
+
+// standIn is Ox's MCP server as the stand-in forwarder, which writes its PID
+// to pidFile.
+func standIn(pidFile string) agent.MCPServer {
+	return agent.MCPServer{Command: os.Args[0], Env: map[string]string{"OX_UR_FORWARDER": "1", "OX_UR_FORWARDER_PID": pidFile}}
+}
+
+func TestOxTools(t *testing.T) {
+	t.Run("offered and run without approval", func(t *testing.T) {
+		r := startMCP(t, agent.Settings{Model: model, PermissionMode: "manual"}, nil, standIn(filepath.Join(t.TempDir(), "pid")), func(w http.ResponseWriter, _ *http.Request, n int) {
+			if n == 0 {
+				sseCalls(w, "", call{"call_1", "echo", `{"text":"hi"}`})
+				return
+			}
+			sse(w, "ok")
+		})
+		r.send("p1", "go")
+		for _, u := range r.turn() {
+			switch u.Type {
+			case agent.UpdateApproval:
+				t.Errorf("an Ox tool call asked for approval: %s", u.Request)
+			case agent.UpdateToolUse:
+				if u.ToolUseID != "call_1" || u.ToolName != "echo" || string(u.Input) != `{"text":"hi"}` {
+					t.Errorf("tool_use %+v", u)
+				}
+			case agent.UpdateToolResult:
+				if u.ToolUseID != "call_1" || u.Result.IsError || u.Result.Text != "hi" {
+					t.Errorf("tool_result %+v", u.Result)
+				}
+			}
+		}
+		first := r.request().body
+		if got := toolNames(first); !slices.Equal(got, []string{"shell", "echo"}) {
+			t.Errorf("tools %q, not shell and echo", got)
+		}
+		system := systemMessages(first)[0]
+		for _, want := range []string{"You are Ox session `ur-session`.", "`create_session`", agent.Sessions} {
+			if !strings.Contains(system, want) {
+				t.Errorf("system message lacks %q:\n%s", want, system)
+			}
+		}
+		if got := messages(r.request().body)[2]; got["tool_call_id"] != "call_1" || got["content"] != "hi" {
+			t.Errorf("the call's answer %v", got)
+		}
+	})
+
+	t.Run("arguments not an object", func(t *testing.T) {
+		r := startMCP(t, agent.Settings{Model: model, PermissionMode: "auto"}, nil, standIn(filepath.Join(t.TempDir(), "pid")), func(w http.ResponseWriter, _ *http.Request, n int) {
+			if n == 0 {
+				sseCalls(w, "", call{"call_1", "echo", `["hi"]`})
+				return
+			}
+			sse(w, "ok")
+		})
+		r.send("p1", "go")
+		result := r.until(func(u agent.Update) bool { return u.Type == agent.UpdateToolResult })
+		if !result.Result.IsError || result.Result.Text != "arguments: must be one JSON object" {
+			t.Errorf("tool_result %+v", result.Result)
+		}
+		if final := r.result(); final.IsError || final.Text != "ok" {
+			t.Errorf("result %+v", final)
+		}
+	})
+
+	t.Run("answer after an interrupt", func(t *testing.T) {
+		r := startMCP(t, agent.Settings{Model: model, PermissionMode: "auto"}, nil, standIn(filepath.Join(t.TempDir(), "pid")), func(w http.ResponseWriter, _ *http.Request, n int) {
+			switch n {
+			case 0:
+				sseCalls(w, "", call{"call_1", "echo", `{"text":"hold"}`})
+			case 1:
+				sseCalls(w, "", call{"call_2", "echo", `{"text":"two"}`})
+			default:
+				sse(w, "ok")
+			}
+		})
+		r.send("p1", "go")
+		r.until(func(u agent.Update) bool { return u.Type == agent.UpdateToolUse })
+		interrupt(t, r)
+		r.request()
+		r.updates = nil
+		r.send("p2", "next")
+		for _, u := range r.turn() {
+			if u.Type == agent.UpdateToolResult && (u.ToolUseID != "call_2" || u.Result.Text != "two") {
+				t.Errorf("tool_result %s %+v", u.ToolUseID, u.Result)
+			}
+		}
+		r.request()
+		body := r.request().body
+		if got := roles(body); !slices.Equal(got, []string{"user", "assistant", "tool", "user", "assistant", "tool"}) {
+			t.Fatalf("the last request's roles %q", got)
+		}
+		ms := messages(body)
+		if ms[2]["tool_call_id"] != "call_1" || ms[2]["content"] != stopped {
+			t.Errorf("the interrupted call's answer %v", ms[2])
+		}
+		if ms[5]["tool_call_id"] != "call_2" || ms[5]["content"] != "two" {
+			t.Errorf("the next call's answer %v", ms[5])
+		}
+	})
+
+	t.Run("ended with ur", func(t *testing.T) {
+		pidFile := filepath.Join(t.TempDir(), "pid")
+		r := startMCP(t, agent.Settings{Model: model}, nil, standIn(pidFile), func(w http.ResponseWriter, _ *http.Request, _ int) {
+			sse(w, "ok")
+		})
+		r.send("p1", "hi")
+		r.idle()
+		waitFile(t, pidFile)
+		r.agent.Stop()
+		select {
+		case <-r.agent.Reaped():
+		case <-time.After(5 * time.Second):
+			t.Fatal("ur did not exit")
+		}
+		data, err := os.ReadFile(pidFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pid, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+			syscall.Kill(pid, syscall.SIGKILL)
+			t.Errorf("the forwarder %d outlived ur: %v", pid, err)
+		}
+	})
+
+	t.Run("forwarder exits", func(t *testing.T) {
+		r := startMCP(t, agent.Settings{Model: model, PermissionMode: "auto"}, nil, standIn(filepath.Join(t.TempDir(), "pid")), func(w http.ResponseWriter, _ *http.Request, _ int) {
+			sseCalls(w, "", call{"call_1", "echo", `{"text":"exit"}`})
+		})
+		r.send("p1", "go")
+		r.until(func(u agent.Update) bool { return u.Type == agent.UpdateToolUse })
+		exited := r.until(func(u agent.Update) bool { return u.Type == agent.UpdateExited })
+		if !strings.Contains(exited.Error, "ox-mcp exited") || strings.Contains(exited.Error, "start ox-mcp") {
+			t.Errorf("exited with %q", exited.Error)
+		}
+	})
+
+	t.Run("forwarder fails", func(t *testing.T) {
+		r := startMCP(t, agent.Settings{Model: model}, nil, agent.MCPServer{Command: "false"}, func(w http.ResponseWriter, _ *http.Request, _ int) {
+			sse(w, "ok")
+		})
+		r.send("p1", "hi")
+		exited := r.until(func(u agent.Update) bool { return u.Type == agent.UpdateExited })
+		if !strings.Contains(exited.Error, "ox-mcp exited") {
+			t.Errorf("exited with %q", exited.Error)
+		}
+	})
 }

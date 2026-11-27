@@ -1259,12 +1259,28 @@ func TestLiveUr(t *testing.T) {
 	if out, err := exec.Command("go", "build", "-race", "-o", command, "../../cmd/ur").CombinedOutput(); err != nil {
 		t.Fatalf("build ur: %v\n%s", err, out)
 	}
+	// t.TempDir is too long for a socket path on macOS.
+	bin, err := os.MkdirTemp("", "oxlive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(bin) })
+	mcp := MCP{Forwarder: filepath.Join(bin, "ox-mcp"), Socket: filepath.Join(bin, "oxd.sock")}
+	if out, err := exec.Command("go", "build", "-o", mcp.Forwarder, "../../cmd/ox-mcp").CombinedOutput(); err != nil {
+		t.Fatalf("build ox-mcp: %v\n%s", err, out)
+	}
 	harnesses := map[string]agent.Harness{"ur": ur.Harness(command, "", t.TempDir(), cfg.Harnesses["ur"].Providers())}
-	s, err := newServer(openStore(t), cfg, time.Second, harnesses, MCP{})
+	s, err := newServer(openStore(t), cfg, time.Second, harnesses, mcp)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(s.Close)
+	listener, err := net.Listen("unix", mcp.Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	go s.Serve(listener)
 	c := connect(t, s)
 	c.timeout = time.Minute
 	var workspace struct {
@@ -1300,6 +1316,25 @@ func TestLiveUr(t *testing.T) {
 	c.update(id, "parked")
 	if reply := turn("What number did I ask you to remember? Reply with just the number."); !strings.Contains(reply, "7341") {
 		t.Errorf("the second turn forgot the first: %q", reply)
+	}
+
+	// Ur calls Ox's tools through ox-mcp, without asking even in manual mode.
+	turn("Use the list_sessions tool, then reply with how many sessions it lists.")
+	listed := false
+	for _, m := range c.received(id) {
+		var u agent.Update
+		json.Unmarshal(m.Params, &u)
+		switch {
+		case u.Type == "approval":
+			t.Errorf("an Ox tool asked for approval: %s", u.Request)
+		case u.Type == "tool_use" && u.ToolName == "list_sessions":
+			listed = true
+		case u.Type == "tool_result" && listed && u.Result.IsError:
+			t.Errorf("list_sessions failed: %s", u.Result.Text)
+		}
+	}
+	if !listed {
+		t.Error("Ur did not call list_sessions")
 	}
 
 	// In manual mode the command waits for approval, then runs. The prompt
