@@ -58,17 +58,21 @@ async function until(condition) {
   assert.fail("timed out");
 }
 
-// start runs the stack with a build that appends a comment to each script
-// named in changed, or exits nonzero when fail is set. The build waits
-// buildDelay seconds first. Each service runs with the trap traps names for
-// it, and the stack takes signals.
+// start runs the stack with a build that appends a comment to each file named
+// in changed, or exits nonzero when fail is set: a service's script, or ur,
+// which oxd lists in starts. The build waits buildDelay seconds first. Each
+// service runs with the trap traps names for it, and the stack takes signals.
 async function start({ changed = [], fail = false, buildDelay = 0, traps = {}, signals } = {}) {
   const paths = Object.fromEntries(["oxd", "ox"].map((name) => [name, script(name, traps[name])]));
-  const edits = changed.map((name) => `echo '#' >> ${paths[name]}`).join("; ");
+  const ur = join(dir, "ur");
+  writeFileSync(ur, "#!/bin/sh\n", { mode: 0o755 });
+  const files = { ...paths, ur };
+  const edits = changed.map((name) => `echo '#' >> ${files[name]}`).join("; ");
   stack = runStack({
     services: Object.entries(paths).map(([name, command]) => ({
       name,
       command,
+      starts: name === "oxd" ? [ur] : [],
     })),
     build: fail ? "exit 1" : `sleep ${buildDelay}; ${edits || ":"}`,
     input,
@@ -92,6 +96,17 @@ test("a changed binary restarts alone", async () => {
   assert.notEqual(after.ox, before.ox);
   assert.equal(after.oxd, before.oxd);
   assert.equal(process.kill(Number(after.oxd), 0), true);
+});
+
+test("a changed executable a service starts restarts it", async () => {
+  const paths = await start({ changed: ["ur"] });
+  const before = snapshot(paths);
+  input.write("\n");
+  await until(() => lines.includes("restarted oxd") && pid(paths.oxd) !== before.oxd);
+  const after = snapshot(paths);
+  assert.notEqual(after.oxd, before.oxd);
+  assert.equal(after.ox, before.ox);
+  assert.equal(lines.includes("restarted ox"), false);
 });
 
 test("an unchanged binary is not restarted", async () => {

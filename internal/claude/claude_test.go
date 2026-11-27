@@ -41,7 +41,7 @@ func failingStart(t *testing.T) (*Agent, string, *startLog) {
 	t.Helper()
 	cmd := exec.Command("sleep", "60")
 	events, done := make(chan agent.Event), make(chan struct{})
-	proc, _, err := process.Start(cmd, "claude", "ox-session", syscall.SIGKILL, parse, events, done)
+	proc, _, err := process.Start(cmd, "claude", "ox-session", syscall.SIGKILL, parse, nil, events, done)
 	if err != nil {
 		t.Fatal(err)
 	}

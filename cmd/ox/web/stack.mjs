@@ -4,8 +4,12 @@ import { readFileSync } from "node:fs";
 import { constants } from "node:os";
 import { createInterface } from "node:readline";
 
-function fileHash(path) {
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
+// serviceHash hashes a service's command together with each executable it
+// starts.
+function serviceHash({ command, starts = [] }) {
+  const hash = createHash("sha256");
+  for (const path of [command, ...starts]) hash.update(readFileSync(path));
+  return hash.digest("hex");
 }
 
 // exited waits for proc to exit without signalling it, and resolves when it
@@ -36,7 +40,8 @@ export function stopProcess(proc, signal = "SIGTERM") {
 // service. The code resolves once every process the stack stopped, on a
 // restart or a shutdown, has exited, and is 1 when any of them failed. Each
 // line of input, and each SIGUSR2, rebuilds with the build command line and
-// restarts the services whose binary changed. A service's current process and hash belong to its
+// restarts the services whose binary changed, or any of the executables a
+// service lists in starts. A service's current process and hash belong to its
 // record here, and only a restart replaces them.
 //
 // signals, such as process, delivers the stack's own SIGINT, SIGTERM, and
@@ -87,7 +92,7 @@ export function runStack({ services, build, input, signals, log = console.log })
     const { command, args = [] } = record.spec;
     const proc = spawn(command, args, { detached: true, stdio: ["ignore", "inherit", "inherit"] });
     record.proc = proc;
-    record.hash = fileHash(command);
+    record.hash = serviceHash(record.spec);
     proc.on("error", (error) => {
       console.error(error.message);
       record.proc = null;
@@ -132,7 +137,7 @@ export function runStack({ services, build, input, signals, log = console.log })
     let changed = false;
     for (const record of records) {
       if (stopping) return;
-      if (fileHash(record.spec.command) === record.hash) continue;
+      if (serviceHash(record.spec) === record.hash) continue;
       changed = true;
       await restart(record);
     }

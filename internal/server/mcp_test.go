@@ -307,7 +307,8 @@ func TestCreateSession(t *testing.T) {
 		}
 		return child
 	}
-	// createdChild returns the child and directory session/created carried.
+	// createdChild returns the child and directory session/created carried,
+	// which is the first the page hears of the child.
 	createdChild := func(c *client, id string) (store.Child, string) {
 		t.Helper()
 		var params struct {
@@ -316,9 +317,13 @@ func TestCreateSession(t *testing.T) {
 			Child     json.RawMessage `json:"child"`
 			State     string          `json:"state"`
 		}
-		json.Unmarshal(c.next(func(m message) bool { return m.Method == "session/created" && m.sessionID() == id }).Params, &params)
-		if params.State != "idle" {
-			t.Fatalf("session/created published child %s %q, not idle", id, params.State)
+		first := c.next(func(m message) bool { return m.Method != "" && m.sessionID() == id })
+		if first.Method != "session/created" {
+			t.Fatalf("the page heard %s about child %s before session/created", first.Method, id)
+		}
+		json.Unmarshal(first.Params, &params)
+		if params.State != "running" {
+			t.Fatalf("session/created published child %s %q, not running", id, params.State)
 		}
 		var child *store.Child
 		var fields map[string]any
@@ -334,6 +339,20 @@ func TestCreateSession(t *testing.T) {
 		return *child, params.Directory
 	}
 
+	// firstMessage returns the prompt a child's history starts with. The child
+	// holds it before it is published, so the page reads it from session/get.
+	firstMessage := func(id string) agent.Update {
+		t.Helper()
+		var got struct {
+			History []agent.Update `json:"history"`
+		}
+		json.Unmarshal(c.call("session/get", map[string]string{"session_id": id}), &got)
+		if len(got.History) == 0 || got.History[0].Type != agent.UpdatePrompt {
+			t.Fatalf("child %s's history does not start with its first message: %+v", id, got.History)
+		}
+		return got.History[0]
+	}
+
 	t.Log("a child takes its parent's settings and directory and hears from it first")
 	worker := createChild(map[string]string{"name": "worker", "title": "Worker", "message": "hello child"})
 	if want := (created{SessionID: worker.SessionID, Name: "worker", Harness: "fake",
@@ -344,10 +363,7 @@ func TestCreateSession(t *testing.T) {
 	if got, directory := createdChild(c, worker.SessionID); got != workerChild || directory != dir {
 		t.Fatalf("session/created carried %+v in %q", got, directory)
 	}
-	if state := c.update(worker.SessionID, "state").State; state != "running" {
-		t.Fatalf("the child's first state update was %q, not running", state)
-	}
-	if taken := c.update(worker.SessionID, "prompt"); taken.From != a || taken.FromLabel != "parent A" || taken.Text != "hello child" {
+	if taken := firstMessage(worker.SessionID); taken.From != a || taken.FromLabel != "parent A" || taken.Text != "hello child" {
 		t.Fatalf("the child did not take the message from its parent: %+v", taken)
 	}
 	if echoed := c.update(worker.SessionID, "result"); !strings.HasSuffix(echoed.Result.Text,
@@ -413,7 +429,6 @@ func TestCreateSession(t *testing.T) {
 	if sub.Directory != dir+"/sub" {
 		t.Fatalf("a child in sub has directory %q", sub.Directory)
 	}
-	c.update(sub.SessionID, "prompt")
 	if got := startedIn(sub.SessionID); got != dir+"/sub" {
 		t.Fatalf("the child in sub started in %q", got)
 	}
@@ -473,7 +488,7 @@ func TestCreateSession(t *testing.T) {
 	if got, directory := createdChild(c, leaf.SessionID); got != (store.Child{ParentID: worker.SessionID, Name: "leaf", Title: "Leaf"}) || directory != dir {
 		t.Fatalf("session/created for the grandchild carried %+v in %q", got, directory)
 	}
-	if taken := c.update(leaf.SessionID, "prompt"); taken.From != worker.SessionID || taken.FromLabel != "Worker" || taken.Text != "hello grandchild" {
+	if taken := firstMessage(leaf.SessionID); taken.From != worker.SessionID || taken.FromLabel != "Worker" || taken.Text != "hello grandchild" {
 		t.Fatalf("the grandchild did not take the message from its parent: %+v", taken)
 	}
 	if text, refused := attach(t, s, leaf.SessionID).tool("create_session", map[string]string{"name": "x", "title": "T", "message": "hi"}); !refused || text != "child sessions nest at most 2 deep" {
@@ -702,21 +717,24 @@ func TestFailedLaunchKeepsItsErrorWhenDeleteFails(t *testing.T) {
 	}
 }
 
+// sendGateAgent runs gate before each Send, and refuses the input with gate's
+// error.
 type sendGateAgent struct {
 	agent.Agent
-	gate func(agent.Input)
+	gate func(agent.Input) error
 }
 
 func (a sendGateAgent) Send(input agent.Input) error {
-	a.gate(input)
+	if err := a.gate(input); err != nil {
+		return err
+	}
 	return a.Agent.Send(input)
 }
 
 // A child's launch and first message hold up no request to another session.
-// A child is published only once its harness is launched. A shutdown that
-// takes its snapshot during the launch refuses the child and leaves no trace;
-// one that takes it during the first Send ends the child like any member, and
-// the child keeps its first message through a restart.
+// A child is published only once its agent holds its first message. A shutdown
+// that takes its snapshot during the launch or the first Send refuses the
+// child and leaves no trace.
 func TestChildStartHoldsUpNoOtherSession(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{
 		"fake": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
@@ -735,7 +753,7 @@ func TestChildStartHoldsUpNoOtherSession(t *testing.T) {
 				}
 				a, err := fake.Start(o)
 				if gateSend && err == nil {
-					return sendGateAgent{a, func(agent.Input) { gate() }}, nil
+					return sendGateAgent{a, func(agent.Input) error { gate(); return nil }}, nil
 				}
 				return a, err
 			}
@@ -767,9 +785,8 @@ func TestChildStartHoldsUpNoOtherSession(t *testing.T) {
 			<-gated
 			c.call("session/get", map[string]string{"session_id": unrelated})
 			c.call("harness/list", map[string]any{})
-			created := c.created()
-			if !gateSend && len(created) != 2 {
-				t.Fatalf("a child was published while its harness was launching: %+v", created)
+			if created := c.created(); len(created) != 2 {
+				t.Fatalf("a child was published before its agent held its first message: %+v", created)
 			}
 
 			closed := make(chan struct{})
@@ -788,29 +805,12 @@ func TestChildStartHoldsUpNoOtherSession(t *testing.T) {
 				IsError bool `json:"isError"`
 			}
 			json.Unmarshal(fromParent.response(creating).Result, &result)
-			if len(result.Content) != 1 {
-				t.Fatalf("create_session racing shutdown returned %+v", result)
+			if len(result.Content) != 1 || !result.IsError || result.Content[0].Text != "daemon is shutting down" {
+				t.Fatalf("create_session refused at publication returned %+v", result)
 			}
-			var late struct {
-				SessionID string `json:"session_id"`
-			}
-			if !gateSend {
-				if !result.IsError || result.Content[0].Text != "daemon is shutting down" {
-					t.Fatalf("create_session refused at publication returned %+v", result)
-				}
-				<-closed
-				if created := c.created(); len(created) != 2 {
-					t.Fatalf("a refused child was published: %+v", created)
-				}
-			} else {
-				if result.IsError || json.Unmarshal([]byte(result.Content[0].Text), &late) != nil || late.SessionID == "" {
-					t.Fatalf("create_session racing shutdown returned %+v", result)
-				}
-				if first := c.next(func(m message) bool { return m.Method != "" && m.sessionID() == late.SessionID }); first.Method != "session/created" {
-					t.Fatalf("the page heard %s about the child before session/created", first.Method)
-				}
-				<-closed
-				c.update(late.SessionID, agent.UpdateParked)
+			<-closed
+			if created := c.created(); len(created) != 2 {
+				t.Fatalf("a refused child was published: %+v", created)
 			}
 
 			s, err = newServer(st, cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
@@ -833,26 +833,99 @@ func TestChildStartHoldsUpNoOtherSession(t *testing.T) {
 					ids = append(ids, sess.SessionID)
 				}
 			}
-			want := []string{parent, unrelated}
-			if gateSend {
-				want = []string{parent, late.SessionID, unrelated}
-			}
-			if !slices.Equal(ids, want) {
+			if want := []string{parent, unrelated}; !slices.Equal(ids, want) {
 				t.Fatalf("after a restart workspace/list listed %v, want %v", ids, want)
 			}
-			if !gateSend {
-				return
-			}
-			var got struct {
-				History []agent.Update `json:"history"`
-			}
-			json.Unmarshal(c.call("session/get", map[string]string{"session_id": late.SessionID}), &got)
-			if !slices.ContainsFunc(got.History, func(u agent.Update) bool {
-				return u.Type == agent.UpdatePrompt && u.From == parent && u.Text == "hi"
-			}) {
-				t.Fatalf("after a restart the child's history is %+v", got.History)
-			}
 		})
+	}
+}
+
+// A child whose agent refuses its first message is never published: the
+// caller gets the error, the page hears nothing of it, nothing is stored, and
+// the name stays free for a retry.
+func TestRefusedFirstMessageLeavesNoChild(t *testing.T) {
+	cfg := &config.Config{Harnesses: map[string]config.Harness{
+		"fake": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
+	}, MaxChildDepth: 1}
+	// The parent is never prompted, so the first Send is the child's.
+	var refusedID string
+	refused := false
+	start := func(o agent.Options) (agent.Agent, error) {
+		a, err := fake.Start(o)
+		if err != nil {
+			return nil, err
+		}
+		return sendGateAgent{a, func(agent.Input) error {
+			if refused {
+				return nil
+			}
+			refused, refusedID = true, o.SessionID
+			return errors.New("send input to Ur: broken pipe")
+		}}, nil
+	}
+	st := openStore(t)
+	s, err := newServer(st, cfg, 0, map[string]agent.Harness{"fake": {Start: start}}, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c := connect(t, s)
+	var workspace, session struct {
+		WorkspaceID string `json:"workspace_id"`
+		SessionID   string `json:"session_id"`
+	}
+	json.Unmarshal(c.call("workspace/create", map[string]string{"path": t.TempDir()}), &workspace)
+	json.Unmarshal(c.call("session/create", map[string]string{
+		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "permission_mode": "manual",
+	}), &session)
+	parent := session.SessionID
+	fromParent := attach(t, s, parent)
+	arguments := map[string]string{"name": "worker", "title": "Worker", "message": "hi"}
+
+	if text, isError := fromParent.tool("create_session", arguments); !isError || text != "send input to Ur: broken pipe" {
+		t.Fatalf("create_session with a refused first message returned %q, %v", text, isError)
+	}
+	listed := func(c *client) []string {
+		t.Helper()
+		var listed struct {
+			Workspaces []struct {
+				Sessions []struct {
+					SessionID string `json:"session_id"`
+				} `json:"sessions"`
+			} `json:"workspaces"`
+		}
+		json.Unmarshal(c.call("workspace/list", map[string]any{}), &listed)
+		var ids []string
+		for _, w := range listed.Workspaces {
+			for _, sess := range w.Sessions {
+				ids = append(ids, sess.SessionID)
+			}
+		}
+		return ids
+	}
+	// workspace/list's response follows every notification queued before it.
+	if ids := listed(c); !slices.Equal(ids, []string{parent}) {
+		t.Fatalf("after a refused child workspace/list listed %v", ids)
+	}
+	if created := c.created(); len(created) != 1 {
+		t.Fatalf("a refused child was published: %+v", created)
+	}
+	if heard := c.received(refusedID); len(heard) != 0 {
+		t.Fatalf("the page heard of the refused child: %+v", heard)
+	}
+
+	if text, isError := fromParent.tool("create_session", arguments); isError {
+		t.Fatalf("a retry under the same name returned %q", text)
+	}
+
+	s.Close()
+	s, err = newServer(st, cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	if ids := listed(connect(t, s)); len(ids) != 2 || slices.Contains(ids, refusedID) {
+		t.Fatalf("after a restart workspace/list listed %v", ids)
 	}
 }
 

@@ -47,7 +47,7 @@ oxArgs.push("-addr", `localhost:${port}`);
 // other must stop too, especially when another daemon owns the socket.
 const stack = runStack({
   services: [
-    { name: "oxd", command: "bin/oxd", args: oxdArgs },
+    { name: "oxd", command: "bin/oxd", args: oxdArgs, starts: ["bin/ur", "bin/ox-mcp"] },
     { name: "ox", command: "bin/ox", args: oxArgs },
   ],
   build: "make build",

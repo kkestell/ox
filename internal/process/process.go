@@ -34,10 +34,13 @@ type Exit struct {
 }
 
 // Start starts cmd and delivers parse's event for each nonblank line of its
-// stdout, then its Exit, on events until done is closed. name, the program,
-// and logID, the session's ID, name each line of its stderr in the log.
-// children.KillAll sends the process kill. The returned writer is its stdin.
-func Start(cmd *exec.Cmd, name, logID string, kill syscall.Signal, parse func([]byte) agent.Event, events chan<- agent.Event, done <-chan struct{}) (*Process, io.WriteCloser, error) {
+// stdout, skipping a nil event, then its Exit, on events until done is closed.
+// parse and exited, which may be nil, run on the reader goroutine; exited runs
+// once the process has exited and its output is read, before Reaped closes.
+// name, the program, and logID, the session's ID, name each line of its stderr
+// in the log. children.KillAll sends the process kill. The returned writer is
+// its stdin.
+func Start(cmd *exec.Cmd, name, logID string, kill syscall.Signal, parse func([]byte) agent.Event, exited func(), events chan<- agent.Event, done <-chan struct{}) (*Process, io.WriteCloser, error) {
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, nil, err
@@ -73,7 +76,7 @@ func Start(cmd *exec.Cmd, name, logID string, kill syscall.Signal, parse func([]
 	go logStderr(stderr, name, logID, stderrTail)
 	p := &Process{cmd: cmd, output: stdout, stderr: stderr, reaped: make(chan struct{})}
 	captured := make(chan agent.Event)
-	go p.read(parse, stderrTail, captured)
+	go p.read(parse, exited, stderrTail, captured)
 	go deliverOutput(captured, events, done)
 	return p, stdin, nil
 }
@@ -119,33 +122,39 @@ func logStderr(stderr *os.File, name, logID string, tail chan<- string) {
 }
 
 // read drains the process's output, from spawn to exit, into the delivery
-// queue, then records its exit. A second after the process exits, the pipe
-// reads stop even if an inherited descriptor is open; delivery from the queue
-// is independent of that limit.
-func (p *Process) read(parse func([]byte) agent.Event, stderrTail <-chan string, captured chan<- agent.Event) {
+// queue, runs exited, marks the process reaped, and then records its exit. A
+// second after the process exits, the pipe reads stop even if an inherited
+// descriptor is open; delivery from the queue is independent of that limit.
+func (p *Process) read(parse func([]byte) agent.Event, exited func(), stderrTail <-chan string, captured chan<- agent.Event) {
 	defer close(captured)
-	exited := make(chan error, 1)
+	waited := make(chan error, 1)
 	go func() {
 		err := p.cmd.Wait()
-		children.Done(p.cmd)
-		close(p.reaped)
 		p.output.SetReadDeadline(time.Now().Add(time.Second))
 		p.stderr.SetReadDeadline(time.Now().Add(time.Second))
-		exited <- err
+		waited <- err
 	}()
 	output := bufio.NewReader(p.output)
 	for {
 		// A line that ends at EOF is still a line.
 		line, err := output.ReadBytes('\n')
 		if len(bytes.TrimSpace(line)) > 0 {
-			captured <- parse(line)
+			if event := parse(line); event != nil {
+				captured <- event
+			}
 		}
 		if err != nil {
 			break
 		}
 	}
 	p.output.Close()
-	captured <- Exit{Err: <-exited, Stderr: <-stderrTail}
+	err := <-waited
+	if exited != nil {
+		exited()
+	}
+	children.Done(p.cmd)
+	close(p.reaped)
+	captured <- Exit{Err: err, Stderr: <-stderrTail}
 }
 
 // deliverOutput never makes the reader wait for the session, which may be
@@ -191,7 +200,8 @@ func (p *Process) Terminate(after time.Duration) {
 	}
 }
 
-// Reaped is closed once the process has exited and been reaped.
+// Reaped is closed once the process has exited and been reaped, its output has
+// been read, and Start's exited has run.
 func (p *Process) Reaped() <-chan struct{} {
 	return p.reaped
 }
