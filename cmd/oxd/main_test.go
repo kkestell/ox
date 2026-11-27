@@ -169,16 +169,51 @@ func TestListenWaitsForAnotherStarter(t *testing.T) {
 	}
 }
 
+// modelList is Claude's answer to initialize: the built-in models, by
+// alias, Haiku 4.5, which takes no effort, and Opus 4.6, which takes no xhigh.
+const modelList = `{"type":"control_response","response":{"subtype":"success","request_id":"initialize","response":{"models":[` +
+	`{"value":"opus","resolvedModel":"claude-opus-5-5","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]},` +
+	`{"value":"sonnet","resolvedModel":"claude-sonnet-5-5","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]},` +
+	`{"value":"haiku","resolvedModel":"claude-haiku-5-5","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]},` +
+	`{"value":"claude-haiku-4-5-20251001","resolvedModel":"claude-haiku-4-5-20251001"},` +
+	`{"value":"claude-opus-4-6","resolvedModel":"claude-opus-4-6","supportsEffort":true,"supportedEffortLevels":["low","medium","high","max"]}]}}}`
+
+// listsModels is the start of a stand-in Claude's script that answers model
+// discovery, which runs Claude without --model, with modelList.
+const listsModels = `case "$*" in
+  *--model=*) ;;
+  *) echo '` + modelList + `'; exit;;
+esac
+`
+
+// claudeListsModels puts a stand-in Claude on PATH that answers model
+// discovery with modelList.
+func claudeListsModels(t *testing.T) {
+	t.Helper()
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\n"+listsModels), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 func TestConfigOffersOnlyWhatHarnessesTake(t *testing.T) {
+	claudeListsModels(t)
 	builtIn, err := config.Load(filepath.Join(t.TempDir(), "none.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	refuse := func(string) error { return errors.New("refused") }
+	refuseEfforts := func(_ string, efforts []string) error {
+		if len(efforts) > 0 {
+			return errors.New("refused")
+		}
+		return nil
+	}
 	harnesses := map[string]agent.Harness{
 		"claude": claude.Harness(false),
 		"ur":     ur.Harness("ur", "", t.TempDir(), nil),
-		"picky":  {Start: fake.Start, CheckEffort: refuse, CheckPermissionMode: refuse},
+		"picky":  {Start: fake.Start, CheckEfforts: refuseEfforts, CheckPermissionMode: refuse},
 		"plain":  {Start: fake.Start},
 	}
 	if err := checkConfig(builtIn, harnesses); err != nil {
@@ -192,8 +227,14 @@ func TestConfigOffersOnlyWhatHarnessesTake(t *testing.T) {
 		t.Fatalf("a harness without checks was refused: %v", err)
 	}
 	for name, cfg := range map[string]*config.Config{
-		"a Claude effort level Claude does not take": {Harnesses: map[string]config.Harness{"claude": {
-			Models: []config.Model{{ID: "claude-haiku-5-5", Efforts: []config.Option{{ID: "hgih"}}}},
+		"an effort level for a Claude model that takes none": {Harnesses: map[string]config.Harness{"claude": {
+			Models: []config.Model{{ID: "claude-haiku-4-5-20251001", Efforts: []config.Option{{ID: "low"}}}},
+		}}},
+		"an effort level Claude does not list for its model": {Harnesses: map[string]config.Harness{"claude": {
+			Models: []config.Model{{ID: "claude-opus-4-6", Efforts: []config.Option{{ID: "xhigh"}}}},
+		}}},
+		"a Claude model Claude does not list": {Harnesses: map[string]config.Harness{"claude": {
+			Models: []config.Model{{ID: "claude-haiku-9"}},
 		}}},
 		"an Ur effort level Ur does not take": {Harnesses: map[string]config.Harness{"ur": {
 			Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "extreme"}}}},
@@ -232,13 +273,15 @@ func TestConfigOffersOnlyWhatHarnessesTake(t *testing.T) {
 // Claude streams its thinking summaries when the configuration turns them on.
 func TestConfiguredThinkingSummariesReachClaude(t *testing.T) {
 	bin, argv := t.TempDir(), filepath.Join(t.TempDir(), "argv")
-	stand := "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > " + argv + ".tmp && mv " + argv + ".tmp " + argv + "\n"
+	stand := "#!/bin/sh\n" + listsModels + "for a in \"$@\"; do printf '%s\\n' \"$a\"; done > " + argv + ".tmp && mv " + argv + ".tmp " + argv + "\n"
 	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(stand), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	cfg := &config.Config{Harnesses: map[string]config.Harness{"claude": {ThinkingSummaries: true}}}
-	a, err := newHarnesses(cfg, "ur", t.TempDir())["claude"].Start(agent.Options{Workspace: t.TempDir()})
+	a, err := newHarnesses(cfg, "ur", t.TempDir())["claude"].Start(agent.Options{
+		Workspace: t.TempDir(), Settings: agent.Settings{Model: "claude-haiku-5-5", PermissionMode: "manual"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,6 +301,7 @@ func TestConfiguredThinkingSummariesReachClaude(t *testing.T) {
 }
 
 func TestConfigRefusesPermissionModesClaudeRefuses(t *testing.T) {
+	claudeListsModels(t)
 	harnesses := map[string]agent.Harness{"claude": claude.Harness(false)}
 	for mode, want := range map[string]string{"default": "manual", "acceptEdit": "acceptEdit"} {
 		cfg := &config.Config{Harnesses: map[string]config.Harness{"claude": {
@@ -368,6 +412,43 @@ func TestRefusesToStartWithoutUr(t *testing.T) {
 	}
 }
 
+// Without Claude, oxd cannot read which models and effort levels Claude takes,
+// so it refuses to start when the configuration offers Claude.
+func TestRefusesToStartWithoutClaude(t *testing.T) {
+	// t.TempDir is too long for a socket path on macOS.
+	dir, err := os.MkdirTemp("", "oxd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	self, err := os.ReadFile(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string][]byte{"oxd": self, "ox-mcp": self, "ur": nil} {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	socket := filepath.Join(dir, "oxd.sock")
+	// The refusal comes before the database opens; an oxd still running at
+	// the deadline started without Claude, and is killed.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	oxd := exec.CommandContext(ctx, filepath.Join(dir, "oxd"), "-socket="+socket, "-db="+filepath.Join(dir, "ox.db"), "-config="+filepath.Join(dir, "none.json"))
+	oxd.Env = append(os.Environ(), "OXD_TEST_MAIN=1", "PATH="+t.TempDir())
+	out, err := oxd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("oxd started without Claude:\n%s", out)
+	}
+	if err == nil || !strings.Contains(string(out), "read Claude's models") {
+		t.Fatalf("oxd without Claude: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(socket); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("oxd without Claude left its socket: %v", err)
+	}
+}
+
 // The socket and the database each exclude a second daemon while oxd is
 // serving or still stopping. A second signal kills both running and
 // initializing children.
@@ -382,8 +463,7 @@ func TestDaemonOwnsSocketAndDatabaseUntilShutdown(t *testing.T) {
 	if err := os.Mkdir(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	standIn := `#!/bin/sh
-trap '' TERM
+	standIn := "#!/bin/sh\n" + listsModels + `trap '' TERM
 case "$*" in
   *--permission-mode=plan*) echo $$ > initializing; exec sleep 60;;
 esac

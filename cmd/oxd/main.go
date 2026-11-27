@@ -161,13 +161,15 @@ func checkConfig(cfg *config.Config, harnesses map[string]agent.Harness) error {
 			if len(model.Providers) > 0 && !harness.TakesProviders {
 				return fmt.Errorf("model %q: harness %q takes no providers", model.ID, name)
 			}
-			if harness.CheckEffort == nil {
+			if harness.CheckEfforts == nil {
 				continue
 			}
-			for _, effort := range model.Efforts {
-				if err := harness.CheckEffort(effort.ID); err != nil {
-					return fmt.Errorf("model %q: %w", model.ID, err)
-				}
+			efforts := make([]string, len(model.Efforts))
+			for i, effort := range model.Efforts {
+				efforts[i] = effort.ID
+			}
+			if err := harness.CheckEfforts(model.ID, efforts); err != nil {
+				return fmt.Errorf("model %q: %w", model.ID, err)
 			}
 		}
 	}

@@ -75,9 +75,10 @@ func (m message) usageWindows() []agent.UsageWindow {
 }
 
 type controlReply struct {
-	Subtype   string `json:"subtype"`
-	RequestID string `json:"request_id"`
-	Error     string `json:"error"`
+	Subtype   string          `json:"subtype"`
+	RequestID string          `json:"request_id"`
+	Error     string          `json:"error"`
+	Response  json.RawMessage `json:"response"`
 }
 
 type toolUse struct {

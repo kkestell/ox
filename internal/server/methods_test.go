@@ -1048,7 +1048,7 @@ func TestStartAndStopHoldUpNoOtherSession(t *testing.T) {
 	gate, pidFile := filepath.Join(dir, "gate"), filepath.Join(dir, "pid")
 	// A stand-in for Claude that ignores SIGTERM and answers initialize only
 	// once the gate exists.
-	script := "#!/bin/sh\ntrap '' TERM\necho $$ > " + pidFile + "\nread line\n" +
+	script := "#!/bin/sh\n" + listsModels + "trap '' TERM\necho $$ > " + pidFile + "\nread line\n" +
 		"while [ ! -e " + gate + " ]; do sleep .02; done\n" +
 		`echo '{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}'` + "\n" +
 		takePrompt +
@@ -1169,7 +1169,7 @@ func TestDestroyWhileStartingOrConfiguring(t *testing.T) {
 	started, configuring := filepath.Join(dir, "started"), filepath.Join(dir, "configuring")
 	// A stand-in for Claude that answers initialize once the started gate
 	// exists, takes a prompt, and marks the configuration it reads.
-	script := "#!/bin/sh\nread line\n" +
+	script := "#!/bin/sh\n" + listsModels + "read line\n" +
 		"while [ ! -e " + started + " ]; do sleep .02; done\n" +
 		`echo '{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}'` + "\n" +
 		takePrompt +
@@ -1303,10 +1303,22 @@ uuid=${prompt##*'"uuid":"'}; uuid=${uuid%%'"'*}
 printf '{"type":"command_lifecycle","state":"started","command_uuid":"%s"}\n' "$uuid"
 `
 
-// logStarts is the head of a stand-in claude script: it appends each start's
-// arguments to the file args as one line, which starts reads.
+// listsModels is a step of a stand-in claude script: it answers model
+// discovery, which runs Claude without --model, with the models m and new at
+// low and high effort.
+const listsModels = `case "$*" in
+  *--model=*) ;;
+  *) echo '{"type":"control_response","response":{"subtype":"success","request_id":"initialize","response":{"models":[` +
+	`{"value":"m","supportsEffort":true,"supportedEffortLevels":["low","high"]},` +
+	`{"value":"new","supportsEffort":true,"supportedEffortLevels":["low","high"]}]}}}'; exit;;
+esac
+`
+
+// logStarts is the head of a stand-in claude script: it answers model
+// discovery and appends each session start's arguments to the file args as
+// one line, which starts reads.
 func logStarts(args string) string {
-	return "#!/bin/sh\nprintf '%s\\n' \"$(echo \"$@\" | tr '\\n' ' ')\" >> " + args + "\n"
+	return "#!/bin/sh\n" + listsModels + "printf '%s\\n' \"$(echo \"$@\" | tr '\\n' ' ')\" >> " + args + "\n"
 }
 
 // starts returns the arguments of each start the stand-in Claude recorded.

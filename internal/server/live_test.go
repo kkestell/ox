@@ -309,6 +309,21 @@ func TestLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Claude's own model list takes every built-in model at its efforts, and
+	// lists Haiku 4.5 without effort.
+	check := claude.Harness(true).CheckEfforts
+	for _, model := range cfg.Harnesses["claude"].Models {
+		var efforts []string
+		for _, effort := range model.Efforts {
+			efforts = append(efforts, effort.ID)
+		}
+		if err := check(model.ID, efforts); err != nil {
+			t.Fatalf("Claude refused a built-in model: %v", err)
+		}
+	}
+	if err := check("claude-haiku-4-5-20251001", []string{"low"}); err == nil || !strings.Contains(err.Error(), "no effort level") {
+		t.Errorf("Claude took Haiku 4.5 at low effort: %v", err)
+	}
 	// A misspelled mode, which Claude refuses on stderr.
 	h := cfg.Harnesses["claude"]
 	h.PermissionModes = append(h.PermissionModes, config.Option{ID: "acceptEdit", Name: "Misspelled"})

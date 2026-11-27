@@ -513,18 +513,69 @@ func TestThinkingSummaries(t *testing.T) {
 	}
 }
 
-// Claude runs at its default effort, with only a warning, when given an
-// effort it does not know.
-func TestUnknownEffortFailsToStart(t *testing.T) {
-	standIn(t, "exec sleep 15\n")
-	for effort, known := range map[string]bool{"": true, "high": true, "hgih": false} {
-		p, input, err := startProcess(t.TempDir(), "ox-session", newUUID(), false, false, agent.Settings{Effort: effort}, agent.MCPServer{}, make(chan agent.Event, 1), nil)
-		if p != nil {
-			input.w.(io.Closer).Close()
-			p.Terminate(0)
+// modelList is Claude's answer to initialize with an alias for a model with
+// five effort levels, a model with four, and a model without effort.
+const modelList = `{"type":"control_response","response":{"subtype":"success","request_id":"initialize","response":{"models":[` +
+	`{"value":"opus","resolvedModel":"claude-opus-5-5","supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"]},` +
+	`{"value":"claude-opus-4-6","resolvedModel":"claude-opus-4-6","supportsEffort":true,"supportedEffortLevels":["low","medium","high","max"]},` +
+	`{"value":"claude-haiku-4-5-20251001","resolvedModel":"claude-haiku-4-5-20251001"}]}}}`
+
+// Claude's model list, read once, decides which models and effort levels
+// the harness takes, in the configuration and in a session it starts.
+func TestClaudeModelList(t *testing.T) {
+	runs := filepath.Join(t.TempDir(), "runs")
+	script(t, "#!/bin/sh\necho run >> "+runs+"\necho '"+modelList+"'\n")
+	h := Harness(false)
+	five := []string{"low", "medium", "high", "xhigh", "max"}
+	for _, c := range []struct {
+		model   string
+		efforts []string
+		refusal string
+	}{
+		{"opus", five, ""},
+		{"claude-opus-5-5", five, ""},
+		{"claude-opus-4-6", []string{"low", "max"}, ""},
+		{"claude-opus-4-6", []string{"xhigh"}, `Claude takes no effort level "xhigh" with model "claude-opus-4-6"`},
+		{"claude-haiku-4-5-20251001", nil, ""},
+		{"claude-haiku-4-5-20251001", []string{"low"}, `Claude takes no effort level "low" with model "claude-haiku-4-5-20251001"`},
+		{"claude-opsu-5-5", nil, `Claude does not offer model "claude-opsu-5-5"`},
+	} {
+		err := h.CheckEfforts(c.model, c.efforts)
+		if c.refusal == "" && err != nil || c.refusal != "" && (err == nil || err.Error() != c.refusal) {
+			t.Errorf("%s at %q: %v, want %q", c.model, c.efforts, err, c.refusal)
 		}
-		if (err == nil) != known {
-			t.Errorf("effort %q started: %v", effort, err)
-		}
+	}
+	// A session stored with an effort its model does not take starts no
+	// Claude.
+	_, err := h.Start(agent.Options{Workspace: t.TempDir(), Settings: agent.Settings{Model: "claude-haiku-4-5-20251001", Effort: "low", PermissionMode: "manual"}})
+	if err == nil || !strings.Contains(err.Error(), `no effort level "low"`) {
+		t.Errorf("a session at an effort its model does not take started: %v", err)
+	}
+	if data, _ := os.ReadFile(runs); string(data) != "run\n" {
+		t.Errorf("Claude ran %d times, want once", strings.Count(string(data), "run"))
+	}
+
+	for name, c := range map[string]struct{ script, reason string }{
+		"not logged in": {"#!/bin/sh\necho 'Not logged in'\nexit 1\n", "Not logged in"},
+		"refused":       {"#!/bin/sh\n" + `echo '{"type":"control_response","response":{"subtype":"error","request_id":"initialize","error":"initialize failed"}}'` + "\n", "initialize failed"},
+		"stuck":         {"#!/bin/sh\nexec sleep 60\n", "timed out after 200ms"},
+		"missing":       {"", "executable file not found"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if name == "stuck" {
+				saved := startupLimit
+				startupLimit = 200 * time.Millisecond
+				t.Cleanup(func() { startupLimit = saved })
+			}
+			if c.script == "" {
+				t.Setenv("PATH", t.TempDir())
+			} else {
+				script(t, c.script)
+			}
+			err := Harness(false).CheckEfforts("opus", nil)
+			if err == nil || !strings.HasPrefix(err.Error(), "read Claude's models: ") || !strings.Contains(err.Error(), c.reason) {
+				t.Errorf("discovery failure = %v, want it to name %q", err, c.reason)
+			}
+		})
 	}
 }

@@ -90,9 +90,11 @@ type Event any
 // only when the harness cannot be launched; a start that fails later ends the
 // agent.
 type Harness struct {
-	Start               func(Options) (Agent, error)
-	CheckPrompt         func(string) error // nil means the harness accepts all prompts
-	CheckEffort         func(string) error // nil means the harness takes every effort level
+	Start       func(Options) (Agent, error)
+	CheckPrompt func(string) error // nil means the harness accepts all prompts
+	// CheckEfforts reports whether the harness runs model at each of
+	// efforts; nil means the harness takes every model and effort level.
+	CheckEfforts        func(model string, efforts []string) error
 	CheckPermissionMode func(string) error // nil means the harness takes every permission mode
 	TakesProviders      bool               // whether a model may set a provider order
 	// TakesThinkingSummaries is whether the configuration may turn on

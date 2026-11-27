@@ -1,12 +1,15 @@
 package claude
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"slices"
 	"strings"
@@ -14,6 +17,7 @@ import (
 	"time"
 
 	"github.com/kkestell/ox/internal/agent"
+	"github.com/kkestell/ox/internal/children"
 	"github.com/kkestell/ox/internal/process"
 )
 
@@ -29,19 +33,6 @@ func systemPrompt(oxSessionID, workspace string) string {
 		"Use no other messaging tool. " +
 		"To hand work to another agent, start a child session with `create_session` from the same server.\n\n" +
 		agent.Sessions
-}
-
-// efforts are the effort levels Claude takes. Given any other, it runs at its
-// default effort with only a warning.
-var efforts = []string{"low", "medium", "high", "xhigh", "max"}
-
-// checkEffort reports whether Claude takes effort; an empty effort leaves its
-// default.
-func checkEffort(effort string) error {
-	if effort != "" && !slices.Contains(efforts, effort) {
-		return fmt.Errorf("Claude has no effort level %q", effort)
-	}
-	return nil
 }
 
 // permissionModes are the permission modes Claude takes, other than its alias
@@ -66,9 +57,6 @@ func checkPermissionMode(mode string) error {
 // and the log of its stderr name it. With thinkingSummaries, Claude streams a
 // summary of its thinking; without it, thinking deltas arrive empty.
 func startProcess(workspace, oxSessionID, sessionID string, resume, thinkingSummaries bool, settings agent.Settings, mcp agent.MCPServer, events chan<- agent.Event, done <-chan struct{}) (*process.Process, *writer, error) {
-	if err := checkEffort(settings.Effort); err != nil {
-		return nil, nil, err
-	}
 	// Strings always marshal.
 	mcpConfig, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{
 		"ox": map[string]any{"command": mcp.Command, "args": []string{}, "env": mcp.Env},
@@ -146,6 +134,102 @@ func launchEnv(cmd *exec.Cmd) []string {
 		name, _, _ := strings.Cut(v, "=")
 		return strings.HasPrefix(name, "ANTHROPIC_") || slices.Contains(overrides, name)
 	})
+}
+
+// discoverModels runs Claude once to read its model list, and returns the
+// effort levels Claude takes with each model, under both the model's alias
+// and the model it resolves to. A model without effort maps to no levels.
+// Claude answers initialize and exits at the end of its input.
+func discoverModels() (map[string][]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), startupLimit)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "claude", "-p", "--safe-mode", "--input-format=stream-json", "--output-format=stream-json", "--verbose")
+	cmd.Dir = os.TempDir()
+	cmd.Env = launchEnv(cmd)
+	cmd.Stdin = strings.NewReader(`{"type":"control_request","request_id":"initialize","request":{"subtype":"initialize"}}` + "\n")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	cmd.WaitDelay = time.Second
+	if err := children.Start(cmd, func() { cmd.Process.Kill() }); err != nil {
+		return nil, err
+	}
+	waitErr := cmd.Wait()
+	children.Done(cmd)
+	var plain []string
+	for line := range strings.Lines(stdout.String()) {
+		event := parse([]byte(line))
+		if text, ok := event.(plainText); ok {
+			if text != "" {
+				plain = append(plain, string(text))
+			}
+			continue
+		}
+		m := event.(message)
+		if m.Type != "control_response" || m.Response.RequestID != "initialize" {
+			continue
+		}
+		if m.Response.Subtype != "success" {
+			return nil, errors.New(m.Response.Error)
+		}
+		var answer struct {
+			Models []struct {
+				Value                 string   `json:"value"`
+				ResolvedModel         string   `json:"resolvedModel"`
+				SupportsEffort        bool     `json:"supportsEffort"`
+				SupportedEffortLevels []string `json:"supportedEffortLevels"`
+			} `json:"models"`
+		}
+		if err := json.Unmarshal(m.Response.Response, &answer); err != nil {
+			return nil, fmt.Errorf("parse Claude's model list: %w", err)
+		}
+		models := map[string][]string{}
+		for _, model := range answer.Models {
+			var levels []string
+			if model.SupportsEffort {
+				levels = model.SupportedEffortLevels
+			}
+			models[model.Value] = levels
+			if model.ResolvedModel != "" {
+				models[model.ResolvedModel] = levels
+			}
+		}
+		return models, nil
+	}
+	if len(plain) > 0 {
+		return nil, errors.New(strings.Join(plain, "\n"))
+	}
+	if out := strings.TrimSpace(stderr.String()); out != "" {
+		return nil, errors.New(out)
+	}
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("timed out after %v", startupLimit)
+	}
+	if waitErr != nil {
+		return nil, waitErr
+	}
+	return nil, errors.New("claude printed no model list")
+}
+
+// checkEfforts returns a check that Claude, whose model list models reads,
+// takes model at each of efforts.
+func checkEfforts(models func() (map[string][]string, error)) func(model string, efforts []string) error {
+	return func(model string, efforts []string) error {
+		list, err := models()
+		if err != nil {
+			return fmt.Errorf("read Claude's models: %w", err)
+		}
+		levels, ok := list[model]
+		if !ok {
+			return fmt.Errorf("Claude does not offer model %q", model)
+		}
+		for _, effort := range efforts {
+			if !slices.Contains(levels, effort) {
+				return fmt.Errorf("Claude takes no effort level %q with model %q", effort, model)
+			}
+		}
+		return nil
+	}
 }
 
 // plainText is a line of Claude's stdout that is not JSON, such as a

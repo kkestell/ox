@@ -92,8 +92,9 @@ Clients offer these choices, and the daemon accepts only these in
 [`session/create`](#sessioncreate) and [`session/configure`](#sessionconfigure).
 It passes them to the harness as they are, so a configured value the harness
 does not accept surfaces as its error, usually after the next `session/send`. A
-session stored with a Claude effort level Claude does not take fails to start;
-see [Claude's effort levels](harnesses/claude-code.md#initialize-first).
+session stored with a Claude model, or an effort level for its model, that
+Claude does not take fails to start; see
+[Claude's model list](harnesses/claude-code.md#initialize-first).
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"harness/list","params":{}}

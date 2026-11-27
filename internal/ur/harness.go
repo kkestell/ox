@@ -12,14 +12,16 @@ import (
 	"github.com/kkestell/ox/internal/agent"
 )
 
-// efforts are the reasoning efforts OpenRouter takes.
-var efforts = []string{"max", "xhigh", "high", "medium", "low", "minimal", "none"}
+// openRouterEfforts are the reasoning efforts OpenRouter takes.
+var openRouterEfforts = []string{"max", "xhigh", "high", "medium", "low", "minimal", "none"}
 
-// checkEffort reports whether OpenRouter takes effort; an empty effort sends
-// none.
-func checkEffort(effort string) error {
-	if effort != "" && !slices.Contains(efforts, effort) {
-		return fmt.Errorf("Ur has no effort level %q", effort)
+// checkEfforts reports whether OpenRouter takes each of efforts, with any
+// model.
+func checkEfforts(model string, efforts []string) error {
+	for _, effort := range efforts {
+		if !slices.Contains(openRouterEfforts, effort) {
+			return fmt.Errorf("Ur has no effort level %q", effort)
+		}
 	}
 	return nil
 }
@@ -43,7 +45,7 @@ func Harness(command, endpoint, dir string, providers map[string][]string) agent
 		Start: func(options agent.Options) (agent.Agent, error) {
 			return startAgent(command, endpoint, dir, providers, options)
 		},
-		CheckEffort:         checkEffort,
+		CheckEfforts:        checkEfforts,
 		CheckPermissionMode: checkPermissionMode,
 		TakesProviders:      true,
 		Ask: func(ctx context.Context, model, effort, instructions, text string) (string, error) {

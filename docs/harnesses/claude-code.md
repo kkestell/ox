@@ -183,6 +183,14 @@ runs and no conversation is created:
   changes. `resolvedModel` is the model an alias selects.
   `supportedEffortLevels` lists the effort choices for models with
   `supportsEffort`.
+- Logged in, `models` lists the aliases and full model IDs. Among them,
+  `claude-haiku-4-5-20251001` has no `supportsEffort`, and `claude-opus-4-6` and
+  `claude-sonnet-4-6` take only `low`, `medium`, `high`, and `max`. Logged out,
+  `initialize` still succeeds and lists only the aliases, each with its
+  `resolvedModel`; a built-in ID such as `claude-opus-5-5` appears only as an
+  alias's `resolvedModel` (2.1.332).
+- Given `--effort` with a model that takes no effort, such as Haiku 4.5, Claude
+  runs without effort and reports none.
 - A refusal is `{"subtype":"error","request_id":"initialize","error":"..."}`.
 - The response carries `session_state` (`idle` or `running`). Sent during a
   turn, `initialize` is answered at once with `running` (2.1.331).
@@ -191,9 +199,11 @@ runs and no conversation is created:
 - Claude accepts any model in `--model` or a runtime change and fails only on
   the next prompt. An unknown `--effort` value produces a stderr warning, and
   Claude runs at its default effort.
-- Model discovery alone: run `claude -p --input-format stream-json
-  --output-format stream-json --verbose` with no `--model` and no MCP config in
-  the project directory, send `initialize`, read `models`, close stdin.
+- Model discovery alone: run `claude -p --safe-mode --input-format stream-json
+  --output-format stream-json --verbose` with no `--model` and no MCP config,
+  send `initialize`, and close stdin. Claude answers, then exits 0, in about a
+  second. With `--safe-mode`, Claude lists the same models and runs no hooks
+  (2.1.332).
 
 ### User messages
 
