@@ -36,9 +36,14 @@ type Session struct {
 	Directory string
 	CreatedAt time.Time
 	// Child is set for a child session, nil for a top-level one.
-	Child    *Child
+	Child *Child
+	// Creator is the ID of the session whose Claude started this top-level
+	// session, empty for one the user created or whose creator was deleted.
+	// Fixed at creation.
+	Creator  string
 	Archived bool
-	// Title is a top-level session's generated title, empty until it has one.
+	// Title is a top-level session's title: the one its creator gave it, or
+	// else its generated title, empty until it has one.
 	Title string
 	// Worktree is the root of the git worktree a top-level session was
 	// created in, empty for a session without one. Fixed at creation.
@@ -95,6 +100,10 @@ CREATE TABLE IF NOT EXISTS children (
 	name       TEXT NOT NULL,
 	title      TEXT NOT NULL,
 	UNIQUE (parent_id, name)
+);
+CREATE TABLE IF NOT EXISTS creators (
+	session_id TEXT PRIMARY KEY REFERENCES sessions ON DELETE CASCADE,
+	creator_id TEXT NOT NULL REFERENCES sessions ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS archived (
 	session_id TEXT PRIMARY KEY REFERENCES sessions ON DELETE CASCADE
@@ -235,9 +244,9 @@ func (s *Store) Workspaces() ([]*Workspace, error) {
 	}
 
 	rows, err = s.db.Query(`SELECT s.id, s.workspace_id, s.harness, s.model, s.effort, s.permission_mode, s.resume_token, s.created_at, s.directory,
-			c.parent_id, c.name, c.title, a.session_id IS NOT NULL, coalesce(t.title, ''), coalesce(wt.worktree, '')
-		FROM sessions s LEFT JOIN children c ON c.session_id = s.id LEFT JOIN archived a ON a.session_id = s.id
-			LEFT JOIN titles t ON t.session_id = s.id LEFT JOIN worktrees wt ON wt.session_id = s.id
+			c.parent_id, c.name, c.title, coalesce(cr.creator_id, ''), a.session_id IS NOT NULL, coalesce(t.title, ''), coalesce(wt.worktree, '')
+		FROM sessions s LEFT JOIN children c ON c.session_id = s.id LEFT JOIN creators cr ON cr.session_id = s.id
+			LEFT JOIN archived a ON a.session_id = s.id LEFT JOIN titles t ON t.session_id = s.id LEFT JOIN worktrees wt ON wt.session_id = s.id
 		ORDER BY s.created_at, s.rowid`)
 	if err != nil {
 		return nil, err
@@ -248,7 +257,7 @@ func (s *Store) Workspaces() ([]*Workspace, error) {
 		var workspaceID, created string
 		var parentID, name, title sql.NullString
 		if err := rows.Scan(&r.ID, &workspaceID, &r.Harness, &r.Model, &r.Effort, &r.PermissionMode, &r.ResumeToken, &created, &r.Directory,
-			&parentID, &name, &title, &r.Archived, &r.Title, &r.Worktree); err != nil {
+			&parentID, &name, &title, &r.Creator, &r.Archived, &r.Title, &r.Worktree); err != nil {
 			return nil, err
 		}
 		if parentID.Valid {
@@ -269,14 +278,17 @@ func (s *Store) AddWorkspace(w *Workspace) error {
 	return err
 }
 
-// AddSession stores a session, and a child session's child row or a
-// session's worktree with it.
+// AddSession stores a session, and with it a child session's child row, a
+// started session's creator, and a session's title and worktree.
 func (s *Store) AddSession(workspaceID string, r *Session) error {
 	if !filepath.IsAbs(r.Directory) {
 		return errors.New("session directory must be an absolute path")
 	}
 	if r.Child != nil && r.Worktree != "" {
 		return errors.New("a child session cannot have a worktree")
+	}
+	if r.Child != nil && r.Creator != "" {
+		return errors.New("a child session cannot have a creator")
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -291,6 +303,16 @@ func (s *Store) AddSession(workspaceID string, r *Session) error {
 	if c := r.Child; c != nil {
 		if _, err := tx.Exec(`INSERT INTO children (session_id, parent_id, name, title) VALUES (?, ?, ?, ?)`,
 			r.ID, c.ParentID, c.Name, c.Title); err != nil {
+			return err
+		}
+	}
+	if r.Creator != "" {
+		if _, err := tx.Exec(`INSERT INTO creators (session_id, creator_id) VALUES (?, ?)`, r.ID, r.Creator); err != nil {
+			return err
+		}
+	}
+	if r.Title != "" {
+		if _, err := tx.Exec(`INSERT INTO titles (session_id, title) VALUES (?, ?)`, r.ID, r.Title); err != nil {
 			return err
 		}
 	}

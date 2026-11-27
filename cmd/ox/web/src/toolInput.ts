@@ -22,6 +22,7 @@ export function toolLabel(tool: string): string {
 const OX_SUBJECT_FIELD: Record<string, string> = {
   [`${OX_PREFIX}send_message`]: "text",
   [`${OX_PREFIX}create_session`]: "title",
+  [`${OX_PREFIX}create_top_level_session`]: "title",
 };
 
 // toolSubject is what a tool call acts on, such as Bash's command or Edit's

@@ -18,12 +18,13 @@ title.
 - **Session order.** Each workspace lists its top-level sessions newest first,
   each followed by its child sessions, oldest first and indented beneath it; a
   child's own children follow it the same way, indented one level further.
-- **Session labels.** A child session is labeled with the title it was created
-  with. Any other session is labeled with a short title the configured titling
-  model writes from the first prompt with text the user sent it, which replaces
-  the label everywhere it shows once it arrives and lasts through restarts.
-  Until then, or if titling fails, the session is labeled with that prompt's
-  first line, shortened, or a short identifier before it has one.
+- **Session labels.** A child session, or a session another session's Claude
+  started, is labeled with the title it was created with. Any other session is
+  labeled with a short title the configured titling model writes from the first
+  prompt with text the user sent it, which replaces the label everywhere it
+  shows once it arrives and lasts through restarts. Until then, or if titling
+  fails, the session is labeled with that prompt's first line, shortened, or a
+  short identifier before it has one.
 - **Session status.** Each session shows whether it is parked, idle, idle while
   background work Claude started still runs, running, waiting on the user, or
   archived, as soon as the session list shows it.
@@ -207,6 +208,15 @@ title.
   worktree unless Claude picks another directory. No other session is started
   there: Ox refuses a child of another session in it and refuses to add a folder
   inside it as a workspace, and says why.
+- **Claude can start top-level sessions.** A session the user created can have
+  its Claude start a top-level session in any Ox workspace, with a title and a
+  first message, which reaches it as a message from the session that started it,
+  without asking for approval except in plan mode. The new session runs in its
+  own new worktree, made as for a session the user creates, unless Claude
+  chooses the workspace directory; it takes the starting session's permission
+  mode, and its harness, model, and effort unless Claude picks others Ox offers,
+  and it can start child sessions of its own. Deleting or archiving the session
+  that started it leaves it running.
 - **Message delivery.** A message from another session reaches Claude as a
   prompt sent while it works does: Claude takes it into the running turn after
   its current step, or runs it next, and an idle session starts a turn with it.
@@ -216,15 +226,17 @@ title.
   sending Claude gets the reason. Messages Claude has not taken are dropped if
   Claude fails to start, when Claude exits, or when `oxd` stops; a failed start
   shows why in the transcript.
-- **Child reports.** When a child session's turn ends, its parent receives the
-  child's final reply, or why the turn failed, as a report, without either
-  session sending a message. Reports wait until the parent is idle or parked and
-  none of its children is working, then arrive together as one message, after
-  any message already waiting, each headed with its child's label and rendered
-  as Markdown; a child waiting on the user does not hold them back. A report
-  carries only the first 400 characters of a longer reply, none is sent when the
-  child's last action was a message to its parent, and reports not yet delivered
-  are dropped when `oxd` stops.
+- **Session reports.** When the turn of a child session, or of a top-level
+  session another session's Claude started, ends, the session that started it
+  receives its final reply, or why the turn failed, as a report, without either
+  session sending a message. Reports wait until the receiving session is idle or
+  parked and none of the sessions it started is working, then arrive together as
+  one message, after any message already waiting, each headed with its sender's
+  label and rendered as Markdown; a session waiting on the user does not hold
+  them back. A report carries only the first 400 characters of a longer reply,
+  none is sent when the sender's last action was a message to the session that
+  started it, and reports not yet delivered are dropped when `oxd` stops or that
+  session is deleted.
 - **Messages stay in Ox.** Claude messages only Ox's own sessions, and only
   through Ox. Other Claude Code sessions on this machine cannot message an Ox
   session.

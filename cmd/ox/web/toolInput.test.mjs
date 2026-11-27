@@ -9,6 +9,7 @@ test("Ox's tools show their names in PascalCase and other tools show as they arr
     ["mcp__ox__send_message", "SendMessage"],
     ["mcp__ox__read_session", "ReadSession"],
     ["mcp__ox__create_session", "CreateSession"],
+    ["mcp__ox__create_top_level_session", "CreateTopLevelSession"],
     ["Bash", "Bash"],
     ["mcp__context7__query-docs", "mcp__context7__query-docs"],
   ]) {
@@ -19,6 +20,10 @@ test("Ox's tools show their names in PascalCase and other tools show as they arr
 test("a call is summarized by the field that says what it does", () => {
   assert.equal(toolSubject("mcp__ox__send_message", { to: "abc", text: "hello there" }), "hello there");
   assert.equal(toolSubject("mcp__ox__create_session", { name: "n", title: "Review: F2", message: "go" }), "Review: F2");
+  assert.equal(
+    toolSubject("mcp__ox__create_top_level_session", { message: "go", title: "Fix the retry", workspace: "/w" }),
+    "Fix the retry",
+  );
   assert.equal(toolSubject("mcp__ox__read_session", { to: "abc", cursor: 3 }), "abc");
   assert.equal(toolSubject("Bash", { command: "ls", description: "list" }), "ls");
 });

@@ -31,6 +31,9 @@ type session struct {
 	directory string       // where the harness runs
 	worktree  string       // the root of the session's worktree, or ""
 	child     *store.Child // nil for a top-level session
+	// creator is the ID of the session whose Claude started this top-level
+	// session, or "".
+	creator   string
 	createdAt time.Time
 	ops       chan func()
 	done      chan struct{} // closed once run returns
@@ -52,10 +55,10 @@ type session struct {
 	// The state last published to clients. Written by whoever owns the
 	// session: its builder until run starts, then run.
 	state string
-	// toParent is what a child keeps for its parent while it is in its
-	// family, nil for a top-level session and for a child being deleted.
-	// Written only by run, so run reads it without the lock.
-	toParent *toParent
+	// reporting is what a session that reports to another keeps while it
+	// reports, nil for a session that reports to none and for one being
+	// deleted. Written only by run, so run reads it without the lock.
+	reporting *reporting
 
 	// Owned by run.
 	settings    agent.Settings
@@ -78,29 +81,39 @@ type deleting struct {
 	reply func(error)
 }
 
-// toParent is what a child keeps for its parent: the reports its parent has
-// not taken, oldest first, and which calls in its turn told the parent
-// itself.
-type toParent struct {
-	// Guarded by Server.mu, beside the child's published state, so its parent
-	// reads both in one critical section.
+// reporting is what a session keeps for the session it reports to, its
+// recipient: the reports the recipient has not taken, oldest first, and which
+// calls in its turn told the recipient itself.
+type reporting struct {
+	// Guarded by Server.mu, beside the session's published state, so its
+	// recipient reads both in one critical section.
 	reports []agent.Report
 
-	// Owned by the child's run, and cleared by a turn's result or exit.
+	// Owned by the session's run, and cleared by a turn's result or exit.
 	// step is the tool_use IDs of the turn's latest step. answered is set
 	// by a tool_result, so the next tool_use begins a step. told is the
-	// tool_use IDs of send_message calls to the parent that the parent
+	// tool_use IDs of send_message calls to the recipient that the recipient
 	// accepted; a call's tool_use and its acceptance arrive in either order.
 	step     []string
 	answered bool
 	told     map[string]bool
 }
 
-func newToParent() *toParent {
-	return &toParent{told: map[string]bool{}}
+func newReporting() *reporting {
+	return &reporting{told: map[string]bool{}}
 }
 
-// reportRunes is how much of a child's text a report carries.
+// reportsTo is the ID of the session sess reports to: a child's parent, or
+// the creator of a session another session's Claude started, or "" for a
+// session the user created.
+func (sess *session) reportsTo() string {
+	if sess.child != nil {
+		return sess.child.ParentID
+	}
+	return sess.creator
+}
+
+// reportRunes is how much of a session's text a report carries.
 const reportRunes = 400
 
 // firstLine is the line of a prompt that labels its session, shortened.
@@ -134,8 +147,8 @@ func cleanTitle(reply string) string {
 	return shorten(strings.TrimSpace(title))
 }
 
-// labelLocked is the session's label: a child's title, or else its generated
-// title, or else the first nonblank first line of the prompts the user sent
+// labelLocked is the session's label: a child's title, or else the title it
+// was started with or its generated title, or else the first nonblank first line of the prompts the user sent
 // it, or the start of its ID before it has one. The caller holds Server.mu.
 func (sess *session) labelLocked() string {
 	switch {
@@ -163,7 +176,7 @@ func (sess *session) broadcastLabelLocked() {
 // or "".
 func (s *Server) newSession(record *store.Session, workspace, firstLine string) *session {
 	sess := &session{
-		server: s, id: record.ID, harness: record.Harness, workspace: workspace, directory: record.Directory, worktree: record.Worktree, child: record.Child, createdAt: record.CreatedAt,
+		server: s, id: record.ID, harness: record.Harness, workspace: workspace, directory: record.Directory, worktree: record.Worktree, child: record.Child, creator: record.Creator, createdAt: record.CreatedAt,
 		ops: make(chan func()), done: make(chan struct{}), archived: record.Archived, firstLine: firstLine, title: record.Title,
 		state:       agent.StateParked,
 		settings:    agent.Settings{Model: record.Model, Effort: record.Effort, PermissionMode: record.PermissionMode},
@@ -171,8 +184,8 @@ func (s *Server) newSession(record *store.Session, workspace, firstLine string) 
 		history:     history{store: s.store, sessionID: record.ID},
 	}
 	sess.ctx, sess.cancel = context.WithCancel(context.Background())
-	if record.Child != nil {
-		sess.toParent = newToParent()
+	if sess.reportsTo() != "" {
+		sess.reporting = newReporting()
 	}
 	return sess
 }
@@ -526,12 +539,12 @@ func (sess *session) destroy(reply func(error)) {
 		reply(errors.New("session has child sessions"))
 		return
 	}
-	// A child leaves its family before it stops, so its stop makes no
+	// A session stops reporting before it stops, so its stop makes no
 	// report, its untaken reports are dropped, and it holds back none of
-	// its siblings'.
-	if sess.toParent != nil {
-		sess.toParent = nil
-		s.familyChangedLocked(s.parentLocked(sess))
+	// the other reports to its recipient.
+	if sess.reporting != nil {
+		sess.reporting = nil
+		s.familyChangedLocked(s.reportsToLocked(sess))
 	}
 	s.mu.Unlock()
 	// The process stops first, so it records nothing after the events are gone.
@@ -558,7 +571,7 @@ func (sess *session) destroy(reply func(error)) {
 
 // finishDelete ends the delete in progress: it deletes the session and
 // removes it from every client, or, when that fails, leaves the session
-// parked and listed, a child back in its family. Either way it replies.
+// parked and listed, reporting again if it reported. Either way it replies.
 func (sess *session) finishDelete(err error) {
 	reply := sess.deleting.reply
 	sess.deleting = nil
@@ -567,9 +580,9 @@ func (sess *session) finishDelete(err error) {
 	}
 	s := sess.server
 	if err != nil {
-		if sess.child != nil {
+		if sess.reportsTo() != "" {
 			s.mu.Lock()
-			sess.toParent = newToParent()
+			sess.reporting = newReporting()
 			s.mu.Unlock()
 		}
 		reply(err)
@@ -619,7 +632,7 @@ func (sess *session) update(update agent.Update) {
 	if s.sessions[sess.id] == sess {
 		s.broadcast("session/update", notification)
 		if update.Type == agent.UpdateState || update.Type == agent.UpdateParked {
-			s.familyChangedLocked(s.parentLocked(sess))
+			s.familyChangedLocked(s.reportsToLocked(sess))
 			s.familyChangedLocked(sess)
 		}
 	}
@@ -630,16 +643,17 @@ func (sess *session) update(update agent.Update) {
 	case update.Type == agent.UpdatePrompt && update.From == "" && update.Reports == nil && sess.child == nil:
 		sess.labelFrom(update.Text)
 	}
-	if sess.toParent != nil {
+	if sess.reporting != nil {
 		sess.report(update)
 	}
 }
 
-// report keeps a child's report of a turn's result, unless a send_message
-// in the turn's last step told its parent itself, or of an exit, and tracks
-// the turn's steps. A turn's result or exit starts the next turn.
+// report keeps a session's report of a turn's result, unless a send_message
+// in the turn's last step told its recipient itself, or of an exit, and
+// tracks the turn's steps. A turn's result or exit starts the next turn. A
+// report to a recipient that has been deleted is dropped.
 func (sess *session) report(update agent.Update) {
-	t := sess.toParent
+	t := sess.reporting
 	var text string
 	switch update.Type {
 	case agent.UpdateToolResult:
@@ -674,39 +688,50 @@ func (sess *session) report(update agent.Update) {
 	s := sess.server
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	t.reports = append(t.reports, agent.Report{From: sess.id, FromLabel: sess.child.Title, Text: text})
-	s.familyChangedLocked(s.parentLocked(sess))
+	recipient := s.reportsToLocked(sess)
+	if recipient == nil {
+		return
+	}
+	t.reports = append(t.reports, agent.Report{From: sess.id, FromLabel: sess.labelLocked(), Text: text})
+	s.familyChangedLocked(recipient)
 }
 
-// told records that the parent accepted the child's send_message whose
+// told records that the recipient accepted the session's send_message whose
 // tool_use has toolUseID, so the step holding that tool_use sends no report.
 func (sess *session) told(toolUseID string) {
-	if sess.toParent != nil {
-		sess.toParent.told[toolUseID] = true
+	if sess.reporting != nil {
+		sess.reporting.told[toolUseID] = true
 	}
 }
 
-// parentLocked is a child's parent, or nil for a top-level session. A
-// session with children cannot be deleted, so a child's parent is a member.
-// The caller holds Server.mu.
-func (s *Server) parentLocked(sess *session) *session {
-	if sess.child == nil {
-		return nil
+// reportsToLocked is the session sess reports to, or nil when it reports to
+// none or its recipient has been deleted. A session with children cannot be
+// deleted, so a child's parent is a member; a started session's creator may
+// not be. The caller holds Server.mu.
+func (s *Server) reportsToLocked(sess *session) *session {
+	if id := sess.reportsTo(); id != "" {
+		return s.sessions[id]
 	}
-	return s.sessions[sess.child.ParentID]
+	return nil
 }
 
-// familyLocked is the children of sess still in its family, oldest first. The
-// caller holds Server.mu.
-func (s *Server) familyLocked(sess *session) []*session {
-	children := slices.DeleteFunc(s.children(sess), func(c *session) bool { return c.toParent == nil })
-	slices.SortFunc(children, func(a, b *session) int { return a.createdAt.Compare(b.createdAt) })
-	return children
+// reportersLocked is the sessions that report to sess and are reporting,
+// oldest first: its children and the sessions its Claude started. The caller
+// holds Server.mu.
+func (s *Server) reportersLocked(sess *session) []*session {
+	var reporters []*session
+	for _, other := range s.sessions {
+		if other.reporting != nil && other.reportsTo() == sess.id {
+			reporters = append(reporters, other)
+		}
+	}
+	slices.SortFunc(reporters, func(a, b *session) int { return a.createdAt.Compare(b.createdAt) })
+	return reporters
 }
 
-// readyLocked reports whether sess should take its children's reports now:
+// readyLocked reports whether sess should take the reports sent to it now:
 // oxd is not shutting down, sess is not archived and is idle, in the
-// background, or parked, none of its children is running, and some child
+// background, or parked, none of its reporters is running, and some reporter
 // holds a report. It reads only facts guarded by Server.mu, and every change
 // to one of them calls familyChangedLocked. The caller holds Server.mu.
 func (s *Server) readyLocked(sess *session) bool {
@@ -718,14 +743,14 @@ func (s *Server) readyLocked(sess *session) bool {
 	default:
 		return false
 	}
-	children := s.familyLocked(sess)
-	return !slices.ContainsFunc(children, func(c *session) bool { return c.state == agent.StateRunning }) &&
-		slices.ContainsFunc(children, func(c *session) bool { return len(c.toParent.reports) > 0 })
+	reporters := s.reportersLocked(sess)
+	return !slices.ContainsFunc(reporters, func(r *session) bool { return r.state == agent.StateRunning }) &&
+		slices.ContainsFunc(reporters, func(r *session) bool { return len(r.reporting.reports) > 0 })
 }
 
-// familyChangedLocked has sess deliver its children's reports when they are
-// ready, after a change to a fact readyLocked reads. A nil sess is a
-// top-level session's parent. The caller holds Server.mu.
+// familyChangedLocked has sess deliver the reports sent to it when they are
+// ready, after a change to a fact readyLocked reads. A nil sess is the
+// recipient of a session that reports to none. The caller holds Server.mu.
 func (s *Server) familyChangedLocked(sess *session) {
 	if sess != nil && s.readyLocked(sess) {
 		// A later operation, so no session waits on another here.
@@ -733,8 +758,8 @@ func (s *Server) familyChangedLocked(sess *session) {
 	}
 }
 
-// deliverReports sends the session every untaken report of its children as
-// one input, when they are ready. It runs on the session's goroutine, where
+// deliverReports sends the session every untaken report sent to it as one
+// input, when they are ready. It runs on the session's goroutine, where
 // its published state is its current state, so the take is serialized with
 // its own archive, prompts, and starts. A ready session has no input
 // untaken, so messages already waiting go first.
@@ -748,8 +773,8 @@ func (sess *session) deliverReports() {
 	}
 }
 
-// takeReports takes every untaken report of the session's children, children
-// oldest first, when they are ready. It reads the children's states and takes
+// takeReports takes every untaken report sent to the session, reporters
+// oldest first, when they are ready. It reads the reporters' states and takes
 // their reports in one critical section, so every report it takes existed
 // while none of them was running.
 func (sess *session) takeReports() []agent.Report {
@@ -760,21 +785,22 @@ func (sess *session) takeReports() []agent.Report {
 		return nil
 	}
 	var reports []agent.Report
-	for _, c := range s.familyLocked(sess) {
-		reports = append(reports, c.toParent.reports...)
-		c.toParent.reports = nil
+	for _, r := range s.reportersLocked(sess) {
+		reports = append(reports, r.reporting.reports...)
+		r.reporting.reports = nil
 	}
 	return reports
 }
 
 // labelFrom labels a top-level session with the first prompt the user sent it
 // whose first line is not blank, tells every client, and starts titling it.
-// Later prompts leave the label as it is.
+// Later prompts, and any prompt to a session that already has a title, leave
+// the label as it is.
 func (sess *session) labelFrom(prompt string) {
 	line := firstLine(prompt)
 	s := sess.server
 	s.mu.Lock()
-	if sess.firstLine != "" || line == "" {
+	if sess.firstLine != "" || sess.title != "" || line == "" {
 		s.mu.Unlock()
 		return
 	}

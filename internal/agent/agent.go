@@ -31,7 +31,7 @@ const Sessions = "A message from another session arrives as input headed \"Messa
 	"Answer with `send_message` only when the sender needs something back, " +
 	"and don't reply to a reply that needs no answer.\n\n" +
 	"`send_message` returns once the message is queued. " +
-	"Answers arrive later as new input, and when a child session's turn ends, Ox sends you its final reply, " +
+	"Answers arrive later as new input, and when a session you started ends its turn, Ox sends you its final reply, " +
 	"so end your turn instead of waiting or polling with `read_session`.\n\n" +
 	"A parked session has no running process, and a message starts it. Message one only when you need it."
 
@@ -205,7 +205,7 @@ type Update struct {
 	ToolName  string          `json:"tool_name,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
 	Images    []string        `json:"images,omitempty"`  // the image IDs of a prompt's lifecycle updates
-	Reports   []Report        `json:"reports,omitempty"` // the child reports of a reports input's lifecycle updates
+	Reports   []Report        `json:"reports,omitempty"` // the session reports of a reports input's lifecycle updates
 	Usage     []UsageWindow   `json:"usage,omitempty"`   // a usage update's windows, shortest first
 	Time      time.Time       `json:"time,omitzero"`     // when the agent published it
 }
@@ -238,7 +238,7 @@ type Snapshot struct {
 	Queued []Input `json:"queued"`
 }
 
-// Input is the user prompt, wrapped message, or child reports the harness
+// Input is the user prompt, wrapped message, or session reports the harness
 // writes to the model.
 type Input struct {
 	MessageID string   `json:"message_id"`
@@ -246,13 +246,14 @@ type Input struct {
 	From      string   `json:"from,omitempty"` // the sending session of a message
 	FromLabel string   `json:"from_label,omitempty"`
 	Images    []Image  `json:"images,omitempty"`  // a user prompt's images, which the model receives with Content
-	Reports   []Report `json:"reports,omitempty"` // the child reports of a reports input
+	Reports   []Report `json:"reports,omitempty"` // the session reports of a reports input
 	Content   string   `json:"-"`                 // what the model receives
 }
 
-// Report is a child session's account of one of its turns, which Ox sends to
-// its parent: the child's ID, its label when the report was made, and the
-// report's text.
+// Report is a session's account of one of its turns, which Ox sends to the
+// session that started it, as a child or a session another session's Claude
+// started: the reporting session's ID, its label when the report was made,
+// and the report's text.
 type Report struct {
 	From      string `json:"from"`
 	FromLabel string `json:"from_label"`

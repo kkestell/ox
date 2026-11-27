@@ -1908,11 +1908,11 @@ test("a child's reply reaches its parent as a report headed with its title, also
   for (const reload of [false, true]) {
     if (reload) await page.reload();
     const report = transcript(page)
-      .getByRole("article", { name: "Child reports" })
+      .getByRole("article", { name: "Session reports" })
       .getByRole("region", { name: "Report from Report child" });
     await expect(report).toContainText(`Report childYou said: Message from Ox session ${parent} ("report parent")`);
     await expect(report.getByRole("strong")).toHaveText("hello");
-    await expect(replies(page).last()).toContainText("You said: Reports from your child sessions");
+    await expect(replies(page).last()).toContainText("You said: Reports from sessions you started");
   }
 });
 

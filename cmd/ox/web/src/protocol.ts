@@ -39,7 +39,8 @@ export type Prompt = { message_id: string; text?: string } & (
   | { from?: never; from_label?: never; images?: never; reports: Report[] }
 );
 
-// Report is a child session's account of one of its turns.
+// Report is the account of one of its turns that a session sends the session
+// that started it, as a child or a session another session's Claude started.
 export type Report = { from: string; from_label: string; text: string };
 
 export type Update = { time: string } & (
