@@ -20,6 +20,8 @@ export function AttentionMark(props: { attention: Attention }) {
 export type PickerTab = {
   key: string;
   label: string;
+  title?: string;
+  detail?: string;
   icon: string;
   counts?: { added: number; removed: number };
   active: boolean;
@@ -38,7 +40,7 @@ export function TabPicker(props: { tabs: PickerTab[]; onPick(key: string): void;
   const hidden = () => props.tabs.find((tab) => tab.attention && !tab.active)?.attention;
   return (
     <>
-      <button type="button" class="tab-picker" popovertarget={id} aria-haspopup="menu">
+      <button type="button" class="tab-picker" popovertarget={id} aria-haspopup="menu" title={current()?.title}>
         <Show when={current()}>
           {(tab) => (
             <>
@@ -58,6 +60,7 @@ export function TabPicker(props: { tabs: PickerTab[]; onPick(key: string): void;
                 type="button"
                 role="menuitemradio"
                 aria-checked={tab().active ? "true" : "false"}
+                title={tab().title}
                 onClick={() => {
                   menu.hidePopover();
                   props.onPick(tab().key);
@@ -65,6 +68,7 @@ export function TabPicker(props: { tabs: PickerTab[]; onPick(key: string): void;
               >
                 <span class={["icon", tab().icon]} />
                 <span class="label">{tab().label}</span>
+                <Show when={tab().detail}>{(detail) => <span class="detail">{detail()}</span>}</Show>
                 <Show when={tab().attention}>{(attention) => <AttentionMark attention={attention()} />}</Show>
                 <Show when={tab().counts}>{(each) => <Counts added={each().added} removed={each().removed} />}</Show>
               </button>

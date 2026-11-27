@@ -1157,6 +1157,63 @@ test.describe("on a wide screen", () => {
     await expect(files(page)).toBeInViewport({ ratio: 1 });
   });
 
+  test("a split beside a group is refused while the groups would not keep their minimum width, and offered once a panel narrows", async ({
+    ox: page,
+  }) => {
+    await page.setViewportSize({ width: 840, height: 900 });
+    await newDraft(page);
+    await showFiles(page);
+    await openFile(page, "src/a.txt");
+    await dropOn(fileTab(page, "a.txt"), groups(page).first(), right);
+    await expect(groups(page)).toHaveCount(1);
+    await drag(page, "Resize sessions", -1000);
+    await drag(page, "Resize panel", 1000);
+    await dropOn(fileTab(page, "a.txt"), groups(page).first(), right);
+    await expect(groups(page)).toHaveCount(2);
+  });
+
+  test("with groups side by side, the panels' sashes stop where the groups reach their minimum, and every control stays reachable", async ({
+    ox: page,
+  }) => {
+    await newDraft(page);
+    await showFiles(page);
+    await openFile(page, "src/a.txt");
+    await dropOn(fileTab(page, "a.txt"), groups(page).first(), right);
+    await expect(groups(page)).toHaveCount(2);
+    await page.setViewportSize({ width: 960, height: 900 });
+    await drag(page, "Resize sessions", -2000);
+    await drag(page, "Resize panel", 2000);
+    await drag(page, "Resize sessions", 2000);
+    await drag(page, "Resize panel", -2000);
+    await expect(files(page)).toBeInViewport({ ratio: 1 });
+    for (const group of [groups(page).first(), groups(page).nth(1)]) {
+      expect(await width(group)).toBeGreaterThanOrEqual(239);
+    }
+    await closeButton(page, "a.txt").click();
+    await expect(groups(page)).toHaveCount(1);
+  });
+
+  test("opening a file from the tree brings its tab into the strip", async ({ ox: page, services }) => {
+    await page.setViewportSize({ width: 1000, height: 900 });
+    const names = Array.from({ length: 8 }, (_, i) => `${"a-long-file-name-".repeat(2)}${i}.txt`);
+    for (const name of names) writeFileSync(join(services.workspace, "src", name), "x\n");
+    await newDraft(page);
+    await showFiles(page);
+    await entry(page, "src").click();
+    for (const name of names) await entry(page, name).click();
+    await expect(fileTab(page, names[7])).toBeInViewport({ ratio: 1 });
+    await expect(fileTab(page, names[0])).not.toBeInViewport();
+    await entry(page, names[0]).click();
+    await expect(fileTab(page, names[0])).toBeInViewport({ ratio: 1 });
+    await entry(page, names[7]).click();
+    await expect(fileTab(page, names[7])).toBeInViewport({ ratio: 1 });
+  });
+
+  test("the blank page has no panel button", async ({ ox: page }) => {
+    await expect(page.getByRole("button", { name: "Toggle sessions" }).first()).toBeVisible();
+    await expect(togglePanel(page)).toHaveCount(0);
+  });
+
   test("panel widths are page-wide, and whether the panel shows is too", async ({ ox: page }) => {
     const nav = sessions(page);
     await newSession(page, "first");
@@ -1341,7 +1398,7 @@ test.describe("on a phone", () => {
     await expect(tabMenu(page)).toMatchAriaSnapshot(`
       - menu "Tabs":
         - menuitemradio "first"
-        - menuitemradio "a.txt" [checked]
+        - menuitemradio "a.txt src" [checked]
     `);
     await tabMenu(page).getByRole("menuitemradio", { name: "first" }).tap();
     await expect(tabMenu(page)).toBeHidden();
@@ -1376,6 +1433,43 @@ test.describe("on a phone", () => {
     await entry(page, "src").tap();
     await expect(entry(page, "a.txt")).not.toHaveAttribute("draggable", "true");
     await expect(separator("Resize groups")).toHaveCount(0);
+  });
+
+  test("the blank page leaves no scrim over the page after the panel was open in a session", async ({ ox: page }) => {
+    await newSession(page, "first");
+    await bar(page).getByRole("button", { name: "Toggle panel" }).tap();
+    await expect(files(page)).toBeVisible();
+    await page.evaluate(() => {
+      location.hash = "";
+    });
+    await expect(togglePanel(page)).toHaveCount(0);
+    await toggleSessions(page).tap();
+    await expect(sessions(page)).toBeVisible();
+  });
+
+  test("the menu tells two files of one name apart by folder, and the chat's directory is its tooltip", async ({
+    ox: page,
+    services,
+  }) => {
+    mkdirSync(join(services.workspace, "docs"));
+    writeFileSync(join(services.workspace, "docs", "README.md"), "docs\n");
+    writeFileSync(join(services.workspace, "src", "README.md"), "src\n");
+    await newSession(page, "first");
+    for (const dir of ["docs", "src"]) {
+      await bar(page).getByRole("button", { name: "Toggle panel" }).tap();
+      await entry(page, dir).tap();
+      await folder(page, dir).getByRole("button", { name: "README.md", exact: true }).tap();
+      await expect(viewer(page)).toBeVisible();
+    }
+    await bar(page)
+      .getByRole("button", { name: /^README\.md/ })
+      .tap();
+    await expect(tabMenu(page).getByRole("menuitemradio", { name: "README.md docs" })).toBeVisible();
+    await expect(tabMenu(page).getByRole("menuitemradio", { name: "README.md src" })).toBeVisible();
+    await expect(tabMenu(page).getByRole("menuitemradio", { name: "first" })).toHaveAttribute(
+      "title",
+      services.workspace,
+    );
   });
 
   test("crossing the breakpoint keeps the tabs, closes the drawer, and leaves the wide panel as it was", async ({

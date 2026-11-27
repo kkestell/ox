@@ -3,7 +3,9 @@ import { test } from "node:test";
 import {
   activate,
   closeTab,
+  columns,
   dropZone,
+  fits,
   groups,
   initial,
   leftmostTop,
@@ -123,4 +125,27 @@ test("dropZone gives an edge in its outer quarter, the nearer edge in a corner, 
   assert.equal(dropZone(rect, 20, 5), "top");
   assert.equal(dropZone(rect, 24, 50), "left");
   assert.equal(dropZone(rect, 26, 50), "center");
+});
+
+test("columns counts the groups a layout puts side by side", () => {
+  let layout = open(initial(), "a", "b", "c");
+  assert.equal(columns(layout.root), 1);
+  layout = placeTab(layout, file("a"), { kind: "zone", group: 1, zone: "right" });
+  assert.equal(columns(layout.root), 2);
+  layout = placeTab(layout, file("b"), { kind: "zone", group: 1, zone: "bottom" });
+  assert.equal(columns(layout.root), 2);
+  layout = placeTab(layout, file("c"), { kind: "zone", group: 2, zone: "left" });
+  assert.equal(columns(layout.root), 3);
+  layout = placeTab(layout, file("c"), { kind: "zone", group: 1, zone: "top" });
+  assert.equal(columns(layout.root), 2);
+});
+
+test("fits is whether the layout a drop produces keeps every group at its minimum", () => {
+  const layout = open(initial(), "a");
+  const right = { kind: "zone", group: 1, zone: "right" };
+  assert.equal(fits(layout, file("a"), right, 480, 240), true);
+  assert.equal(fits(layout, file("a"), right, 479, 240), false);
+  const split = placeTab(layout, file("a"), right);
+  assert.equal(fits(split, file("x"), { kind: "zone", group: 2, zone: "left" }, 600, 240), false);
+  assert.equal(fits(split, file("a"), { kind: "tabs", group: 1 }, 240, 240), true);
 });

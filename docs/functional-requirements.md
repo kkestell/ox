@@ -307,7 +307,8 @@ title.
   its panel is shown. A button sits in its panel's header while the panel shows.
   While the session list is closed its button is at the left end of the leftmost
   top tab strip; while the panel is closed its button is at the right end of the
-  rightmost top tab strip.
+  rightmost top tab strip. The blank page, with no session or draft, has no
+  panel and no panel button.
 - **Tabs.** The center is a tab area. Each session and draft has a chat tab,
   labeled with its title, that cannot be closed; the Changes view, opened from
   the Changes list, with the total lines added and removed on its tab; and a tab
@@ -319,7 +320,9 @@ title.
   the edge of a group opens a new group beside or above or below it; onto the
   middle of a group or its tab strip moves the tab into it; onto a tab places it
   there. A group whose last tab leaves or closes disappears. On a wide screen
-  the boundaries between groups resize by dragging.
+  the boundaries between groups resize by dragging. A split beside a group is
+  offered only while every group would keep its minimum width; the panels'
+  boundaries stop where the groups reach it.
 - **Chat status behind other tabs.** While another tab hides a session's or
   draft's chat, its chat tab is marked when the chat shows an error, a notice,
   or an approval waiting on the user, and selecting it shows them. On a narrow
@@ -337,12 +340,12 @@ title.
 - **Narrow screens.** On a narrow screen the page shows one tab at a time and
   offers no splitting or dragging. The header holds the session list's button, a
   picker showing the active tab that opens a menu of the session's tabs (the
-  active one checked, each closable tab with a close button), and the panel's
-  button. The session list and the Files | Changes panel open over the page from
-  the left and the right; either closes when the user taps outside it, picks a
-  session or draft, or opens a file; panels cannot be resized. At load the
-  session list is open when the URL names no session. Switching between a narrow
-  and a wide screen keeps the tabs.
+  active one checked, each closable tab with a close button; each file's folder
+  shows beside its name), and the panel's button. The session list and the Files
+  | Changes panel open over the page from the left and the right; either closes
+  when the user taps outside it, picks a session or draft, or opens a file;
+  panels cannot be resized. At load the session list is open when the URL names
+  no session. Switching between a narrow and a wide screen keeps the tabs.
 - **Touch screens.** On a touch screen, session and file rows are tall enough to
   tap, controls that appear on hover elsewhere always show, focusing a text
   field does not zoom the page, and the page keeps its controls clear of the

@@ -296,16 +296,17 @@ dialog [role="alert"] { margin-top: var(--space-3); }
    icon at the end of a row puts its glyph on that edge. */
 .layout {
   --bottom-inset: env(safe-area-inset-bottom);
-  position: fixed; inset: 0;
+  position: fixed; inset: 0; overflow-x: auto;
   display: flex; padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
 }
 .layout:has(textarea:focus, input:not([type="radio"], [type="checkbox"]):focus) { --bottom-inset: 0px; }
 /* The space the tab area and the panel at the right share. The session list
-   leaves it the minimum width of a group beside the panel. --tree is the
-   panel's width, and --beside the width the panel takes. */
+   leaves it the minimum width of its groups beside the panel. --columns is
+   how many groups the layout puts side by side, --tree the panel's width, and
+   --beside the width the panel takes. */
 .center {
   --beside: 0px;
-  flex: 1 1 0; min-width: calc(var(--group-min-width) + var(--beside)); height: 100%;
+  flex: 1 1 0; min-width: calc(var(--columns) * var(--group-min-width) + var(--beside)); height: 100%;
   display: flex; flex-direction: column; container-type: size;
 }
 .layout:not(.narrow) > .center:has(> .panes > aside.files) { --beside: clamp(var(--panel-min-width), var(--tree), var(--panel-max-width)); }
@@ -466,6 +467,7 @@ nav li:is(:hover, :has(:focus-visible)) button.chevron-right { opacity: 1; }
 /* Groups of tabs in splits, after VS Code's editor groups. A group's strip is
    as tall as the session list's header and the panel's. */
 .tab-area, .split { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; }
+.tab-area { min-width: calc(var(--columns) * var(--group-min-width)); }
 .split.column { flex-direction: column; }
 .cell { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; }
 .cell > :is(.group, .split) { flex: 1 1 0; }
@@ -528,6 +530,7 @@ main > .loading { flex: 1; display: flex; align-items: center; justify-content: 
   content: ""; width: var(--icon-size); height: var(--icon-size); margin-left: auto;
   background: currentColor; mask: url(lucide-static/icons/check.svg) center / contain no-repeat;
 }
+.tab-menu .detail { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--text-xs); color: var(--muted-foreground); }
 .tab-menu button.x { color: var(--muted-foreground); }
 
 /* SessionView.tsx */

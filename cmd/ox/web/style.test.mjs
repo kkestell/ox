@@ -11,6 +11,7 @@ const inline = new Set([
   "--depth",
   "--rise",
   "--tree",
+  "--columns",
   "--digits",
   "--p",
   "--shiki-light-font-style",

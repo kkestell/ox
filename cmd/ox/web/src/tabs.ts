@@ -36,6 +36,20 @@ export function groups(node: Branch): Group[] {
   return node.kind === "group" ? [node.group] : node.children.flatMap(groups);
 }
 
+// columns is how many groups of the minimum width the node needs side by side:
+// one for a group, the sum of its children's for a row, the widest child's for
+// a column.
+export function columns(node: Branch): number {
+  if (node.kind === "group") return 1;
+  const each = node.children.map(columns);
+  return node.direction === "row" ? each.reduce((a, b) => a + b, 0) : Math.max(...each);
+}
+
+// fits is whether the layout that dropping tab on target produces needs no
+// more than width, with every group at least min wide.
+export const fits = (layout: Layout, tab: Tab, target: Target, width: number, min: number) =>
+  columns(placeTab(layout, tab, target).root) * min <= width;
+
 export const findGroup = (layout: Layout, id: number) => groups(layout.root).find((g) => g.id === id);
 
 export const findTab = (layout: Layout, key: string) =>
