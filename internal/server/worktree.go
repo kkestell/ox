@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"os/exec"
@@ -72,6 +73,22 @@ func exists(path string) bool {
 	return err == nil
 }
 
+// physicalPath is path with the symlinks in its existing part resolved, so
+// a directory can be placed before it is made.
+func physicalPath(path string) (string, error) {
+	dir, rest := filepath.Clean(path), ""
+	for {
+		resolved, err := filepath.EvalSymlinks(dir)
+		if err == nil {
+			return filepath.Join(resolved, rest), nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) || filepath.Dir(dir) == dir {
+			return "", err
+		}
+		dir, rest = filepath.Dir(dir), filepath.Join(filepath.Base(dir), rest)
+	}
+}
+
 // worktreeBranch is the branch Ox makes for the worktree at root.
 func worktreeBranch(root string) string {
 	return "ox/" + filepath.Base(root)
@@ -88,10 +105,7 @@ func addWorktree(workspace, worktrees string) (root, directory string, err error
 		return "", "", err
 	}
 	prefix = strings.TrimSuffix(prefix, "\n")
-	if err := os.MkdirAll(worktrees, 0o700); err != nil {
-		return "", "", err
-	}
-	physical, err := filepath.EvalSymlinks(worktrees)
+	physical, err := physicalPath(worktrees)
 	if err != nil {
 		return "", "", err
 	}
@@ -103,6 +117,9 @@ func addWorktree(workspace, worktrees string) (root, directory string, err error
 		if within(physical, path) {
 			return "", "", fmt.Errorf("worktree directory %s is inside the repository at %s", worktrees, path)
 		}
+	}
+	if err := os.MkdirAll(worktrees, 0o700); err != nil {
+		return "", "", err
 	}
 	path := filepath.Join(worktrees, newID())
 	branch := worktreeBranch(path)
