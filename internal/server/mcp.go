@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"time"
 	"unicode/utf8"
 
 	"github.com/kkestell/ox/internal/agent"
@@ -443,9 +442,9 @@ func createSession(s *Server, caller *session, arguments json.RawMessage, _ stri
 // it with text as its first message, on parent's goroutine. The checks hold
 // until publication: only parent's goroutine creates its children or archives
 // it, and its depth is fixed. Only shutdown can intervene, so it is decided at
-// publication. The store write, launch, and first Send run without s.mu, and
-// the child is published only once its agent holds the first message. A launch
-// or first Send that fails leaves no child.
+// publication. The child is launched off s.mu and published only once its
+// agent holds the first message. A launch or first Send that fails leaves no
+// child.
 func (s *Server) addChild(parent *session, record *store.Session, physical, text string) error {
 	s.mu.Lock()
 	err := s.checkChildLocked(parent, record.Child.Name, physical)
@@ -457,35 +456,55 @@ func (s *Server) addChild(parent *session, record *store.Session, physical, text
 		return err
 	}
 
-	record.CreatedAt = time.Now()
-	if err := s.store.AddSession(w.id, record); err != nil {
-		log.Printf("session %s: store session: %v", record.ID, err)
-		return err
-	}
-	sess := s.newSession(record, w.path, "")
-	if err := sess.start(); err != nil {
-		s.deleteUnpublished(sess)
-		return err
-	}
-
-	if err := sess.acceptMessage(messageInput(parent, label, sess, text)); err != nil {
-		// sess.stop would publish parked for a session no client knows.
-		sess.agent.Stop()
-		s.deleteUnpublished(sess)
+	sess, err := s.launch(w, record, func(sess *session) agent.Input { return messageInput(parent, label, sess, text) })
+	if err != nil {
 		return err
 	}
 
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		sess.agent.Stop()
-		s.deleteUnpublished(sess)
+		s.discardUnpublished(sess)
 		return errShuttingDown
 	}
 	s.publishLocked(w, sess)
 	s.mu.Unlock()
 	go sess.run()
 	return nil
+}
+
+// launch stores the session record describes in w, starts its agent, and
+// hands it first's message, without s.mu. The session is not published, so
+// the caller owns it until it publishes it or discards it with
+// discardUnpublished. A failure leaves no agent or stored row.
+func (s *Server) launch(w *workspace, record *store.Session, first func(*session) agent.Input) (*session, error) {
+	sess, err := s.storeSession(w, record)
+	if err != nil {
+		return nil, err
+	}
+	err = sess.start()
+	if err == nil {
+		err = sess.acceptMessage(first(sess))
+	}
+	if err != nil {
+		s.discardUnpublished(sess)
+		return nil, err
+	}
+	return sess, nil
+}
+
+// discardUnpublished stops the agent of a session that was never published
+// and waits for its processes to exit, so its directory can be removed, then
+// deletes its stored row. sess.stop would publish parked for a session no
+// client knows.
+func (s *Server) discardUnpublished(sess *session) {
+	if sess.agent != nil {
+		sess.agent.Stop()
+		<-sess.agent.Reaped()
+	}
+	if err := s.store.DeleteSession(sess.id); err != nil {
+		log.Printf("session %s: delete unpublished session: %v", sess.id, err)
+	}
 }
 
 // checkChildLocked reports why parent may not have a child named name now, in
@@ -495,12 +514,8 @@ func (s *Server) checkChildLocked(parent *session, name, physical string) error 
 	if slices.ContainsFunc(s.children(parent), func(other *session) bool { return other.child.Name == name }) {
 		return fmt.Errorf("a child named %q already exists", name)
 	}
-	if parent.archived {
-		return errArchived
-	}
-	// The parent's goroutine runs this, so it may read the parent's deleting.
-	if parent.deleting != nil {
-		return errDeleting
+	if err := s.checkStarterLocked(parent); err != nil {
+		return err
 	}
 	if s.depthLocked(parent) >= s.config.MaxChildDepth {
 		return fmt.Errorf("child sessions nest at most %d deep", s.config.MaxChildDepth)
@@ -513,12 +528,16 @@ func (s *Server) checkChildLocked(parent *session, name, physical string) error 
 	return nil
 }
 
-// deleteUnpublished removes the stored row of a child that was never
-// published.
-func (s *Server) deleteUnpublished(sess *session) {
-	if err := s.store.DeleteSession(sess.id); err != nil {
-		log.Printf("session %s: delete unpublished child: %v", sess.id, err)
+// checkStarterLocked reports why caller may not start a session now. The
+// caller holds s.mu, on caller's goroutine, so it may read caller's deleting.
+func (s *Server) checkStarterLocked(caller *session) error {
+	if caller.archived {
+		return errArchived
 	}
+	if caller.deleting != nil {
+		return errDeleting
+	}
+	return nil
 }
 
 // checkTitle returns the title a session is started with, trimmed, or why it
@@ -534,9 +553,10 @@ func checkTitle(title string) (string, error) {
 // createTopLevelSession starts a top-level session for a caller the user
 // created and hands it its first message. The call goroutine checks the
 // arguments and finds the workspace. The caller's goroutine, which owns its
-// settings, resolves the new session's. The call goroutine then creates the
-// session as session/create does, worktree and all, and posts the first
-// message to it once it is published.
+// settings, checks that the caller may start a session and resolves the new
+// session's settings. The call goroutine then creates the session as
+// session/create does, worktree and all, handing it the first message before
+// it is published.
 func createTopLevelSession(s *Server, caller *session, arguments json.RawMessage, _ string, respond func(string, error)) {
 	var input struct {
 		Title     string `json:"title"`
@@ -571,26 +591,39 @@ func createTopLevelSession(s *Server, caller *session, arguments json.RawMessage
 		}
 	}
 	s.mu.Lock()
-	// The caller is a member while its tool call is answered, unless it is
-	// being deleted, which the creation's own checks then refuse.
+	// The caller is a member while its tool call is answered, until its
+	// delete finishes.
 	w := s.workspaceOf(caller)
 	if info != nil {
 		w = s.workspaceAtLocked(info)
 	}
 	s.mu.Unlock()
-	if w == nil {
+	switch {
+	case w == nil && info == nil:
+		respond("", errSessionNotFound)
+		return
+	case w == nil:
 		respond("", errNotWorkspace)
 		return
 	}
 
 	type answer struct {
 		record *store.Session
+		label  string
 		err    error
 	}
 	resolved := make(chan answer, 1)
 	if !caller.post(func() {
+		s.mu.Lock()
+		err := s.checkStarterLocked(caller)
+		label := caller.labelLocked()
+		s.mu.Unlock()
+		if err != nil {
+			resolved <- answer{err: err}
+			return
+		}
 		record, err := s.startedRecord(caller, input.Harness, input.Model, input.Effort)
-		resolved <- answer{record, err}
+		resolved <- answer{record, label, err}
 	}) {
 		respond("", errSessionNotFound)
 		return
@@ -602,21 +635,9 @@ func createTopLevelSession(s *Server, caller *session, arguments json.RawMessage
 	}
 	record := a.record
 	record.Creator, record.Title = caller.id, title
-	if _, err := s.createTopLevel(w.id, record, input.Worktree == nil || *input.Worktree); err != nil {
+	first := func(sess *session) agent.Input { return messageInput(caller, a.label, sess, input.Message) }
+	if _, err := s.createTopLevel(w.id, record, input.Worktree == nil || *input.Worktree, first); err != nil {
 		respond("", err)
-		return
-	}
-
-	s.mu.Lock()
-	sess := s.sessions[record.ID]
-	label := caller.labelLocked()
-	s.mu.Unlock()
-	accepted := make(chan error, 1)
-	if sess == nil || !sess.post(func() { accepted <- sess.acceptMessage(messageInput(caller, label, sess, input.Message)) }) {
-		accepted <- errShuttingDown
-	}
-	if err := <-accepted; err != nil {
-		respond("", fmt.Errorf("session %s was created, but refused its first message: %w", record.ID, err))
 		return
 	}
 	text, err := json.Marshal(struct {

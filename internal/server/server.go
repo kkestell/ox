@@ -38,9 +38,9 @@ type Server struct {
 	sessions   map[string]*session
 	closed     bool
 
-	// creations counts the worktree creations admitted under mu while not
-	// closed that have not replied, so Close waits for each to publish or
-	// discard its worktree.
+	// creations counts the top-level creations admitted under mu while not
+	// closed that have not returned, so Close waits for each to publish or
+	// discard its session and worktree.
 	creations sync.WaitGroup
 
 	connsMu sync.Mutex // guards conns; taken after mu

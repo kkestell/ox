@@ -665,7 +665,7 @@ Every connection is told when workspaces and sessions come and go:
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `workspace/created`  | `workspace_id`, `path`, `created_at`                                                                                                                                                                                     | A workspace was registered.                                                                                                                                                                                                               |
 | `workspace/removed`  | `workspace_id`                                                                                                                                                                                                           | A workspace was removed.                                                                                                                                                                                                                  |
-| `session/created`    | `session_id`, `workspace_id`, `label` (a child's or started session's title, or the first 8 characters of its ID), `harness`, `created_at`, `directory`, `state`, a worktree session's `worktree`, and a child's `child` | A session was created: a top-level session `parked`, a child `running` with its first message, whose later updates follow.                                                                                                                |
+| `session/created`    | `session_id`, `workspace_id`, `label` (a child's or started session's title, or the first 8 characters of its ID), `harness`, `created_at`, `directory`, `state`, a worktree session's `worktree`, and a child's `child` | A session was created: a top-level session from `session/create` `parked`, a child or started session `running` with its first message, whose later updates follow.                                                                       |
 | `session/labeled`    | `session_id`, `label`                                                                                                                                                                                                    | A top-level session took the first prompt the user sent it with text, and `label` is that text's first nonblank line, shortened to 48 characters; sent again with the title the titling model generated from that prompt once it arrives. |
 | `session/configured` | `session_id`, `model`, `effort`, `permission_mode`                                                                                                                                                                       | A session's settings changed, by `session/configure` or by the harness itself, such as Claude leaving plan mode; the fields are the settings the session now uses.                                                                        |
 | `session/destroyed`  | `session_id`                                                                                                                                                                                                             | A session was destroyed, after its last update.                                                                                                                                                                                           |
@@ -817,11 +817,11 @@ so a symlink to it or a path that differs only in case names it; without it, the
 session starts in the caller's workspace. Unless `worktree` is `false`, the
 session is created in a new worktree as [`session/create`](#sessioncreate)
 creates one with `worktree`; with `false`, it runs in the workspace's directory.
-Its settings are resolved as `create_session` resolves a child's. The session is
-published `parked`, labeled with `title`, and then the message reaches it as
-`send_message` delivers it, starting it. The result is JSON: `session_id`,
-`directory`, and `worktree` when it has one. Refusals, in the order they are
-checked:
+Its settings are resolved as `create_session` resolves a child's. The message
+reaches the session as `send_message` delivers it, starting it, and the session
+is published, labeled with `title`, once it accepts the message, carrying its
+state then. The result is JSON: `session_id`, `directory`, and `worktree` when
+it has one. Refusals, in the order they are checked:
 
 - arguments that do not decode: `invalid arguments`;
 - a caller that is a child or was itself started by another session: `only a
@@ -832,13 +832,15 @@ checked:
 - `workspace` not the absolute path of a workspace's directory: `workspace must
   be the path of an Ox workspace`;
 - the caller gone first: `session not found`;
+- an archived caller: `session is archived`;
+- a caller being deleted: `session is being deleted`;
 - `harness`, `model`, `effort`, or the caller's permission mode refused as
   `create_session` refuses them;
 - the `session/create` refusals that follow its settings checks, such as `daemon
   is shutting down`, `workspace not found`, or a worktree that cannot be made;
   no session is created, and a worktree made for it is discarded;
-- a first message the session refuses: `session <id> was created, but refused
-  its first message: <error>`; the session stays listed and parked.
+- a harness that cannot be launched, or a first message the session refuses: its
+  error; no session is created, and a worktree made for it is discarded.
 
 Each time the session's turn ends, its final reply reaches the caller as a
 [report](#session-reports). The caller can be deleted or archived while the
