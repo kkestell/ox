@@ -39,7 +39,7 @@ export function FileView(props: { root: FileRoot; path: string; mode: FileMode; 
         </Match>
         <Match when={props.mode === "preview"}>
           <div role="tabpanel" class="preview">
-            <Markdown text={text() ?? ""} />
+            <Markdown text={text() ?? ""} file />
           </div>
         </Match>
         <Match when={props.mode === "source"}>
