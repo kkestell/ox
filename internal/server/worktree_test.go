@@ -347,10 +347,10 @@ func TestWorktreeCreationFails(t *testing.T) {
 	if err := os.Remove(filepath.Join(linked, "data")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(filepath.Join(linked, "data"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(linked, "data", "x"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for name, text := range map[string]string{"data/x.log": "x", ".worktreeinclude": "data/x.log\n"} {
+	for name, text := range map[string]string{"data/x/y.log": "y", ".worktreeinclude": "data/x/y.log\n"} {
 		if err := os.WriteFile(filepath.Join(linked, name), []byte(text), 0o600); err != nil {
 			t.Fatal(err)
 		}

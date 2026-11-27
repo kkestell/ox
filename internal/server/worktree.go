@@ -130,21 +130,21 @@ func copyWorktreeInclude(top, root string) error {
 	return nil
 }
 
-// copyFile copies the regular file src to dst, which must lie within root
-// once its parent directories exist. Other entries are skipped.
+// copyFile copies the regular file src to dst, whose parent directory must
+// resolve within root before any of it is made. Other entries are skipped.
 func copyFile(src, dst, root string) error {
 	info, err := os.Lstat(src)
 	if err != nil || !info.Mode().IsRegular() {
 		return err
 	}
 	dir := filepath.Dir(dst)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	if resolved, err := filepath.EvalSymlinks(dir); err != nil {
+	if resolved, err := physicalPath(dir); err != nil {
 		return err
 	} else if !within(resolved, root) {
 		return errors.New("destination is outside the worktree")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
 	}
 	in, err := os.Open(src)
 	if err != nil {
