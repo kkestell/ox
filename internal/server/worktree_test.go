@@ -45,7 +45,7 @@ func gitRepo(t *testing.T) string {
 	if err := os.Mkdir(filepath.Join(repo, "sub"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for name, text := range map[string]string{"sub/file.txt": "committed\n", ".gitignore": "*.log\n"} {
+	for name, text := range map[string]string{"sub/file.txt": "committed\n", ".gitignore": "*.log\n.env*\n"} {
 		if err := os.WriteFile(filepath.Join(repo, name), []byte(text), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -233,6 +233,17 @@ func TestWorktreeSession(t *testing.T) {
 	if err := os.WriteFile(hook, []byte("#!/bin/sh\ntouch "+marker+"\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	for name, text := range map[string]string{
+		".env": "secret\n", ".env.local": "local\n", "build.log": "build\n", "sub/local.log": "log\n",
+		".worktreeinclude": ".env*\nsub/*.log\nsub/file.txt\n",
+	} {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(text), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(filepath.Join(repo, ".env.local"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	worktrees := t.TempDir()
 	s := worktreeServer(t, openStore(t), worktrees)
 	c := connect(t, s)
@@ -251,13 +262,24 @@ func TestWorktreeSession(t *testing.T) {
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("the post-checkout hook ran")
 	}
+	for name, want := range map[string]string{".env": "secret\n", ".env.local": "local\n", "sub/local.log": "log\n", "sub/file.txt": "committed\n"} {
+		if got, err := os.ReadFile(filepath.Join(sess.Worktree, name)); err != nil || string(got) != want {
+			t.Fatalf("worktree %s is %q, %v; want %q", name, got, err, want)
+		}
+	}
+	if info, err := os.Stat(filepath.Join(sess.Worktree, ".env")); err != nil || info.Mode().Perm() != 0o755 {
+		t.Fatalf(".env mode %v, %v; want 0755", info, err)
+	}
+	if exists(filepath.Join(sess.Worktree, "build.log")) {
+		t.Fatal("build.log is not listed in .worktreeinclude and was copied")
+	}
 	var folder struct {
 		Entries []struct {
 			Name string `json:"name"`
 		} `json:"entries"`
 	}
 	json.Unmarshal(c.call("workspace/list_folder", map[string]string{"session_id": sess.SessionID, "path": ""}), &folder)
-	if len(folder.Entries) != 1 || folder.Entries[0].Name != "file.txt" {
+	if len(folder.Entries) != 2 || folder.Entries[0].Name != "file.txt" || folder.Entries[1].Name != "local.log" {
 		t.Fatalf("the worktree's folder listed %+v", folder.Entries)
 	}
 
@@ -301,7 +323,39 @@ func TestWorktreeCreationFails(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(untracked, "new.txt"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for _, failure := range []struct {
+	badInclude := gitRepo(t)
+	if err := os.Mkdir(filepath.Join(badInclude, ".worktreeinclude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	unreadable := gitRepo(t)
+	secret := filepath.Join(unreadable, ".env")
+	if err := os.WriteFile(secret, []byte("x"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unreadable, ".worktreeinclude"), []byte(".env\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// HEAD has data as a symlink out of the checkout; the main checkout has
+	// it as a directory holding a listed file.
+	outside := t.TempDir()
+	linked := gitRepo(t)
+	if err := os.Symlink(outside, filepath.Join(linked, "data")); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, "-C", linked, "add", "data")
+	runGit(t, "-C", linked, "commit", "-q", "-m", "link")
+	if err := os.Remove(filepath.Join(linked, "data")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(linked, "data"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, text := range map[string]string{"data/x.log": "x", ".worktreeinclude": "data/x.log\n"} {
+		if err := os.WriteFile(filepath.Join(linked, name), []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	failures := []struct {
 		name, workspace, worktrees, want string
 		repo                             string
 	}{
@@ -309,8 +363,15 @@ func TestWorktreeCreationFails(t *testing.T) {
 		{"empty repository", empty, t.TempDir(), "create worktree: ", empty},
 		{"untracked folder", untracked, t.TempDir(), "untracked-only is not in the worktree", repo},
 		{"inside the repository", filepath.Join(repo, "sub"), filepath.Join(repo, "worktrees"), "is inside the repository", repo},
-	} {
+		{"unreadable include file", badInclude, t.TempDir(), "worktreeinclude", badInclude},
+		{"unreadable listed file", unreadable, t.TempDir(), "copy .env", unreadable},
+		{"copy through a symlink", linked, t.TempDir(), "outside the worktree", linked},
+	}
+	for _, failure := range failures {
 		t.Run(failure.name, func(t *testing.T) {
+			if failure.name == "unreadable listed file" && os.Geteuid() == 0 {
+				t.Skip("root reads any file")
+			}
 			c := connect(t, worktreeServer(t, openStore(t), failure.worktrees))
 			response := c.request("session/create", createParams(addWorkspace(t, c, failure.workspace), ""))
 			if response.Error == nil || !strings.Contains(response.Error.Message, failure.want) {
@@ -321,6 +382,9 @@ func TestWorktreeCreationFails(t *testing.T) {
 			}
 			if failure.repo != "" {
 				nothingLeft(t, failure.repo, failure.worktrees)
+			}
+			if entries, err := os.ReadDir(outside); err != nil || len(entries) != 0 {
+				t.Fatalf("the directory a worktree symlink leads to holds %v, %v", entries, err)
 			}
 			if failure.name == "inside the repository" && exists(failure.worktrees) {
 				t.Fatalf("the refused worktree directory %s was made", failure.worktrees)
