@@ -127,10 +127,10 @@ func newRelay(socket string, addrs []string) (*relay, error) {
 func (r *relay) handler(web fs.FS) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /", http.FileServerFS(web))
-	mux.Handle("GET /events", r.checkHost(http.HandlerFunc(r.events)))
-	mux.Handle("GET /images/{session_id}/{image_id}", r.checkHost(http.HandlerFunc(r.image)))
-	mux.Handle("POST /rpc", r.checkHost(http.NewCrossOriginProtection().Handler(http.HandlerFunc(r.rpc))))
-	return mux
+	mux.HandleFunc("GET /events", r.events)
+	mux.HandleFunc("GET /images/{session_id}/{image_id}", r.image)
+	mux.Handle("POST /rpc", http.NewCrossOriginProtection().Handler(http.HandlerFunc(r.rpc)))
+	return r.checkHost(mux)
 }
 
 // checkHost refuses a request not addressed to a loopback name or a host ox

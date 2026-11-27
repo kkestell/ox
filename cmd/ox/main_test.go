@@ -18,16 +18,17 @@ import (
 )
 
 // A page whose domain rebinds to the relay's address, or a page of another
-// origin, cannot open an event stream or send a request to oxd.
+// origin, cannot load the page, open an event stream, or send a request to oxd.
 func TestRelayRefusesForeignPages(t *testing.T) {
 	relayEnd, daemonEnd := net.Pipe()
 	defer relayEnd.Close()
 	go io.Copy(io.Discard, daemonEnd)
 	r := tailnetRelay(t)
 	r.conns["page"] = relayEnd
-	h := r.handler(fstest.MapFS{})
+	h := r.handler(fstest.MapFS{"index.html": {Data: []byte("ox")}})
 	body := `{"jsonrpc":"2.0","id":1,"method":"workspace/create","params":{"path":"/"}}`
 	for _, c := range []struct{ name, method, path, host, origin string }{
+		{"page from a foreign host", "GET", "/", "attacker.example:8080", ""},
 		{"events from a foreign host", "GET", "/events", "attacker.example:8080", ""},
 		{"rpc from a foreign host", "POST", "/rpc?connection=page", "attacker.example:8080", "http://attacker.example:8080"},
 		{"rpc from another origin", "POST", "/rpc?connection=page", "localhost:8080", "http://attacker.example"},
