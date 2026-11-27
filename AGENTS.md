@@ -325,10 +325,12 @@ alternative before any session builds it.
    `git push -u origin <slug>` and opens the pull request with
    `gh pr create`, written as [Pull requests](#pull-requests) says.
 8. The top-level agent waits for the pull request's checks with
-   `gh pr checks <N> --watch`, fixes the cause of any that fails, and merges
-   it by squash with `gh pr merge <N> --squash`, so its title is the commit
-   subject. It then pulls in the main checkout, runs `git fetch` in its
-   worktree, and, when both `git status --porcelain` and
+   `gh pr checks <N> --watch` and fixes the cause of any that fails. It
+   brings the user each decision made since the plan that changes what the
+   user sees, and waits for the answer. It then merges the pull request by
+   squash with `gh pr merge <N> --squash`, so its title is the commit
+   subject. After the merge, it pulls in the main checkout, runs `git fetch`
+   in its worktree, and, when both `git status --porcelain` and
    `git diff origin/main HEAD` are empty, resets the worktree's branch with
    `git reset --hard origin/main`, so the Changes view and the next change
    start from `main`. When either is not empty, it reports what remains
@@ -404,7 +406,8 @@ Fixes #N
 
 Once the pull request has merged, the top-level agent replies to the user in
 the form below and nothing else. It leads with the main point, writes plainly,
-and leaves out the checks that passed and the steps it took.
+and leaves out the checks that passed, the steps it took, and the findings
+it rejected.
 
 ```markdown
 One or two sentences: what the change does for the user, and that its pull
@@ -417,14 +420,12 @@ request has merged.
 - `internal/server/changes.go` (modified)
 - `internal/server/changes_test.go` (modified)
 
-**Open choices:** each choice the user should check, in a sentence.
-
 **Blocked:** `make live`: what blocks it.
 ```
 
 It lists every file the change creates or modifies, outside `agents/`. It
-omits Fixes when the change resolves no issue, Open choices when there are
-none, and Blocked when every check that can observe the change ran.
+omits Fixes when the change resolves no issue, and Blocked when every check
+that can observe the change ran.
 
 ## Verification
 
