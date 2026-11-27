@@ -55,9 +55,12 @@ type session struct {
 	// The state last published to clients. Written by whoever owns the
 	// session: its builder until run starts, then run.
 	state string
-	// reporting is what a session that reports to another keeps while it
-	// reports, nil for a session that reports to none and for one being
-	// deleted. Written only by run, so run reads it without the lock.
+	// deleting is the delete in progress, nil when none is. Written only by
+	// run, under the lock, so run reads it without the lock.
+	deleting *deleting
+
+	// reporting is what a session that reports to another keeps for its
+	// recipient, nil for a session that reports to none. Fixed at creation.
 	reporting *reporting
 
 	// Owned by run.
@@ -70,8 +73,6 @@ type session struct {
 	// exiting holds the Reaped channels of dropped agents whose processes
 	// may still be running, so a delete waits for them.
 	exiting []<-chan struct{}
-	// deleting is the delete in progress, nil when none is.
-	deleting *deleting
 }
 
 // deleting is a delete waiting off the session's goroutine for the session's
@@ -521,14 +522,16 @@ func (sess *session) parked() {
 	sess.update(agent.Update{Type: agent.UpdateParked, Time: time.Now()})
 }
 
-// destroy stops the agent and puts the session into deleting, then waits off
+// destroy puts the session into deleting and stops the agent, then waits off
 // the goroutine for every process the session started to exit and removes
 // its worktree, so the goroutine keeps answering meanwhile. finishDelete
 // takes the outcome back on the goroutine and replies. destroy refuses while
 // the session has children; a child is created only on its parent's
 // goroutine, which refuses while deleting, so none appears before the delete
 // finishes. Nothing starts the agent while it waits, since only the goroutine
-// starts it and it refuses while deleting.
+// starts it and it refuses while deleting. While deleting, the session makes
+// no report, its untaken reports wait and its state holds back none of the
+// other reports to its recipient, and reports to it wait.
 func (sess *session) destroy(reply func(error)) {
 	if sess.deleting != nil {
 		reply(errDeleting)
@@ -541,13 +544,10 @@ func (sess *session) destroy(reply func(error)) {
 		reply(errors.New("session has child sessions"))
 		return
 	}
-	// A session stops reporting before it stops, so its stop makes no
-	// report, its untaken reports are dropped, and it holds back none of
-	// the other reports to its recipient.
-	if sess.reporting != nil {
-		sess.reporting = nil
-		s.familyChangedLocked(s.reportsToLocked(sess))
-	}
+	// The session is deleting before it stops, so its stop makes no report
+	// and delivers none to it.
+	sess.deleting = &deleting{reply: reply}
+	s.familyChangedLocked(s.reportsToLocked(sess))
 	s.mu.Unlock()
 	// The process stops first, so it records nothing after the events are gone.
 	if sess.agent != nil {
@@ -555,7 +555,6 @@ func (sess *session) destroy(reply func(error)) {
 	}
 	exiting := sess.exiting
 	sess.exiting = nil
-	sess.deleting = &deleting{reply: reply}
 	id, workspace, worktree := sess.id, sess.workspace, sess.worktree
 	go func() {
 		for _, reaped := range exiting {
@@ -572,11 +571,12 @@ func (sess *session) destroy(reply func(error)) {
 }
 
 // finishDelete ends the delete in progress: it deletes the session and
-// removes it from every client, or, when that fails, leaves the session
-// parked and listed, reporting again if it reported. Either way it replies.
+// removes it from every client, dropping its untaken reports, or, when that
+// fails, leaves the session parked and listed, with its reports and the
+// reports to it delivered as if no delete had been tried. Either way it
+// replies.
 func (sess *session) finishDelete(err error) {
 	reply := sess.deleting.reply
-	sess.deleting = nil
 	if err == nil {
 		if err = sess.server.store.DeleteSession(sess.id); err != nil {
 			log.Printf("session %s: delete: %v", sess.id, err)
@@ -584,11 +584,11 @@ func (sess *session) finishDelete(err error) {
 	}
 	s := sess.server
 	if err != nil {
-		if sess.reportsTo() != "" {
-			s.mu.Lock()
-			sess.reporting = newReporting()
-			s.mu.Unlock()
-		}
+		s.mu.Lock()
+		sess.deleting = nil
+		s.familyChangedLocked(s.reportsToLocked(sess))
+		s.familyChangedLocked(sess)
+		s.mu.Unlock()
 		reply(err)
 		return
 	}
@@ -656,7 +656,8 @@ func (sess *session) update(update agent.Update) {
 // report keeps a session's report of a turn's result, unless a send_message
 // in the turn's last step told its recipient itself, or of an exit, and
 // tracks the turn's steps. A turn's result or exit starts the next turn. A
-// report to a recipient that has been deleted is dropped.
+// session being deleted keeps no report, and a report to a recipient that has
+// been deleted is dropped.
 func (sess *session) report(update agent.Update) {
 	t := sess.reporting
 	var text string
@@ -694,7 +695,7 @@ func (sess *session) report(update agent.Update) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	recipient := s.reportsToLocked(sess)
-	if recipient == nil {
+	if recipient == nil || sess.deleting != nil {
 		return
 	}
 	t.reports = append(t.reports, agent.Report{From: sess.id, FromLabel: sess.labelLocked(), Text: text})
@@ -720,13 +721,13 @@ func (s *Server) reportsToLocked(sess *session) *session {
 	return nil
 }
 
-// reportersLocked is the sessions that report to sess and are reporting,
-// oldest first: its children and the sessions its Claude started. The caller
-// holds Server.mu.
+// reportersLocked is the sessions that report to sess and are not being
+// deleted, oldest first: its children and the sessions its Claude started.
+// The caller holds Server.mu.
 func (s *Server) reportersLocked(sess *session) []*session {
 	var reporters []*session
 	for _, other := range s.sessions {
-		if other.reporting != nil && other.reportsTo() == sess.id {
+		if other.reportsTo() == sess.id && other.deleting == nil {
 			reporters = append(reporters, other)
 		}
 	}
@@ -735,12 +736,13 @@ func (s *Server) reportersLocked(sess *session) []*session {
 }
 
 // readyLocked reports whether sess should take the reports sent to it now:
-// oxd is not shutting down, sess is not archived and is idle, in the
-// background, or parked, none of its reporters is running, and some reporter
-// holds a report. It reads only facts guarded by Server.mu, and every change
-// to one of them calls familyChangedLocked. The caller holds Server.mu.
+// oxd is not shutting down, sess is not archived or being deleted and is
+// idle, in the background, or parked, none of its reporters is running, and
+// some reporter holds a report. It reads only facts guarded by Server.mu, and
+// every change to one of them calls familyChangedLocked. The caller holds
+// Server.mu.
 func (s *Server) readyLocked(sess *session) bool {
-	if s.closed || sess.archived {
+	if s.closed || sess.archived || sess.deleting != nil {
 		return false
 	}
 	switch sess.state {
