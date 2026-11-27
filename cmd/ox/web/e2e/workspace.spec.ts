@@ -1668,13 +1668,15 @@ test("the wrap choice holds for the next file and resets on reload", async ({ ox
 });
 
 test("an unchanged Markdown file opens in Preview, and Source shows its text", async ({ ox: page, services }) => {
-  writeFileSync(join(services.workspace, "notes.md"), "# Title\n\ntext\n");
+  writeFileSync(join(services.workspace, "notes.md"), "# Title\n\none paragraph\nwrapped across lines\n");
   await newDraft(page);
   await showFiles(page);
   await openFile(page, "notes.md");
   await expect(pane(page).getByRole("heading", { name: "Title" })).toBeVisible();
   await expect(modeButton(page, "Preview")).toHaveAttribute("aria-pressed", "true");
   await expect(wrapButton(page)).toHaveCount(0);
+  await expect(pane(page).locator("p")).toHaveText("one paragraph wrapped across lines");
+  await expect(pane(page).locator("p br")).toHaveCount(0);
 
   await modeButton(page, "Source").click();
   await expect(modeButton(page, "Source")).toHaveAttribute("aria-pressed", "true");
