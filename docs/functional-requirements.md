@@ -48,9 +48,11 @@ title.
 - **Worktrees.** Before sending, the user can choose to run a new session in its
   own git worktree, the choice a draft starts with, or in the workspace
   directory. Ox makes the worktree outside the repository, on a new branch from
-  the workspace's current commit, holding only committed files, and runs the
-  session in the worktree's copy of the workspace directory; if it cannot,
-  creation fails with the reason and leaves no worktree or branch behind.
+  the workspace's current commit, holding the committed files and the ignored
+  files the repository's `.worktreeinclude` lists, and runs the session in the
+  worktree's copy of the workspace directory; if it cannot make the worktree or
+  copy a listed file, creation fails with the reason and leaves no worktree or
+  branch behind.
 - **Creating a session.** Submitting a new session creates it and sends the
   prompt exactly once.
 - **Creation keeps the user's view.** A session whose creation finishes after

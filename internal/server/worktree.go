@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -94,9 +95,77 @@ func worktreeBranch(root string) string {
 	return "ox/" + filepath.Base(root)
 }
 
+// copyWorktreeInclude copies into the worktree at root the untracked,
+// gitignored files that the repository's .worktreeinclude at top matches, the
+// way Claude Code does. Git does the matching. Nothing happens without the
+// file.
+func copyWorktreeInclude(top, root string) error {
+	const step = "copy worktree files"
+	if _, err := os.Stat(filepath.Join(top, ".worktreeinclude")); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	matched, err := git(step, "-C", top, "ls-files", "-z", "--others", "--ignored", "--exclude-from=.worktreeinclude")
+	if err != nil || matched == "" {
+		return err
+	}
+	check := exec.Command("git", "-C", top, "check-ignore", "-z", "--stdin")
+	check.Stdin = strings.NewReader(matched)
+	ignored, err := gitCommand(step, check)
+	var exit *gitError
+	if errors.As(err, &exit) && exit.code == 1 {
+		return nil // no path is ignored
+	} else if err != nil {
+		return err
+	}
+	for name := range strings.SplitSeq(ignored, "\x00") {
+		if name == "" {
+			continue
+		}
+		if err := copyFile(filepath.Join(top, name), filepath.Join(root, name), root); err != nil {
+			return fmt.Errorf("copy %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// copyFile copies the regular file src to dst, whose parent directory must
+// resolve within root before any of it is made. Other entries are skipped.
+func copyFile(src, dst, root string) error {
+	info, err := os.Lstat(src)
+	if err != nil || !info.Mode().IsRegular() {
+		return err
+	}
+	dir := filepath.Dir(dst)
+	if resolved, err := physicalPath(dir); err != nil {
+		return err
+	} else if !within(resolved, root) {
+		return errors.New("destination is outside the worktree")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
+}
+
 // addWorktree makes a worktree of workspace's repository in worktrees, on a
 // new branch from HEAD, both named for a fresh name. It returns the
-// worktree's physical root and its copy of workspace. On failure it leaves
+// worktree's physical root and its copy of workspace, holding the committed
+// files and those .worktreeinclude lists. On failure it leaves
 // nothing behind, unless discarding fails too, which its error says.
 func addWorktree(workspace, worktrees string) (root, directory string, err error) {
 	const step = "create worktree"
@@ -105,6 +174,11 @@ func addWorktree(workspace, worktrees string) (root, directory string, err error
 		return "", "", err
 	}
 	prefix = strings.TrimSuffix(prefix, "\n")
+	top, err := git(step, "-C", workspace, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", "", err
+	}
+	top = strings.TrimSuffix(top, "\n")
 	physical, err := physicalPath(worktrees)
 	if err != nil {
 		return "", "", err
@@ -141,6 +215,8 @@ func addWorktree(workspace, worktrees string) (root, directory string, err error
 		info, statErr := os.Stat(resolved)
 		if resolveErr != nil || statErr != nil || !info.IsDir() || !within(resolved, root) {
 			err = fmt.Errorf("%s is not in the worktree", strings.TrimSuffix(prefix, "/"))
+		} else {
+			err = copyWorktreeInclude(top, root)
 		}
 	}
 	if err != nil {

@@ -267,7 +267,8 @@ closed and git's stderr surfaced as the error.
 1. Under `Server.mu`, run normal creation checks and register in
    `Server.creations`.
 2. Without the lock, create the git worktree under a fresh name on a matching
-   branch with hooks disabled, and verify the workspace's copy exists inside it.
+   branch with hooks disabled, and verify the workspace's copy exists inside it,
+   then copy the ignored files the repository's `.worktreeinclude` lists.
 3. Under `Server.mu`, refuse if shutting down or the workspace is gone, return
    the existing session if the same ID appeared meanwhile, or store and publish
    the session.
