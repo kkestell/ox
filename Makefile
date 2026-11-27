@@ -1,4 +1,4 @@
-.PHONY: dev restart build web test live lint e2e screenshots metrics docs hooks skills
+.PHONY: dev restart build web test live lint format e2e screenshots metrics docs hooks skills
 
 # A recipe that fails leaves no target behind, such as a partial download.
 .DELETE_ON_ERROR:
@@ -38,6 +38,11 @@ lint: web $(GOLANGCI_LINT)
 	$(GOLANGCI_LINT) run ./...
 	go vet -tags screenshots ./cmd/oxd
 	npm --prefix cmd/ox/web run lint
+
+# format rewrites the Go and TypeScript in the style lint checks.
+format: cmd/ox/web/node_modules
+	gofmt -w .
+	npm --prefix cmd/ox/web run format
 
 # live drives real Claude Code processes with Haiku, through oxd and through
 # the web client, and Ur through OpenRouter.
