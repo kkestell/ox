@@ -1302,6 +1302,7 @@ test.describe("on a phone", () => {
   const toggleSessions = (page: Page) => page.getByRole("button", { name: "Toggle sessions" });
   const bar = (page: Page) => page.getByRole("toolbar", { name: "Tabs" });
   const picker = (page: Page, name: string) => bar(page).getByRole("button", { name, exact: true });
+  const label = (page: Page, name: string) => bar(page).getByText(name, { exact: true });
   const tabMenu = (page: Page) => page.getByRole("menu", { name: "Tabs" });
   // tapBeside taps the page just past the drawer's edge on the side given.
   async function tapBeside(page: Page, drawer: Locator, side: "left" | "right") {
@@ -1386,9 +1387,15 @@ test.describe("on a phone", () => {
     await expect(page.getByRole("main")).toBeHidden();
   });
 
+  test("with only the chat open, the picker shows it without a menu", async ({ ox: page }) => {
+    await newSession(page, "first");
+    await expect(label(page, "first")).toBeVisible();
+    await expect(bar(page).getByRole("button", { name: /first/ })).toHaveCount(0);
+    await expect(page.getByRole("menu", { name: "Tabs", includeHidden: true })).toHaveCount(0);
+  });
+
   test("the picker shows the active tab, its menu lists every tab, and choosing one shows it", async ({ ox: page }) => {
     await newSession(page, "first");
-    await expect(picker(page, "first")).toBeVisible();
     await showFile(page);
     await expect(picker(page, "a.txt")).toBeVisible();
     await expect(page.getByRole("tab")).toHaveCount(0);
@@ -1417,7 +1424,8 @@ test.describe("on a phone", () => {
     await expect(closeButton(page, "first")).toHaveCount(0);
     await closeButton(page, "a.txt").tap();
     await expect(viewer(page)).toHaveCount(0);
-    await expect(picker(page, "first")).toBeVisible();
+    await expect(label(page, "first")).toBeVisible();
+    await expect(tabMenu(page)).toBeHidden();
     await expect(page.getByRole("main")).toBeVisible();
   });
 

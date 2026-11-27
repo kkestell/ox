@@ -512,12 +512,13 @@ main > .loading { flex: 1; display: flex; align-items: center; justify-content: 
 .drop-preview.bottom { inset: 50% 0 0 0; }
 
 /* TabPicker.tsx */
-/* The narrow layout's strip: the picker shows the active tab and opens the menu of all of them. */
+/* The narrow layout's strip: the picker shows the active tab and, beside other tabs, opens the menu of all of them. */
 .tab-picker {
   flex: 1; min-width: 0; gap: var(--space-2); height: var(--control-height); padding: 0 var(--space-3);
   font-weight: var(--font-medium); color: var(--foreground);
 }
-.tab-picker:hover { background: var(--accent); }
+div.tab-picker { display: flex; align-items: center; justify-content: center; }
+button.tab-picker:hover { background: var(--accent); }
 .tab-picker .chevrons-up-down { color: var(--muted-foreground); }
 .tab-menu { position-area: bottom; position-try-fallbacks: flip-block; margin: var(--space-1) 0 0; width: min(var(--popover-width), var(--popover-max-width)); }
 .tab-menu .item { display: flex; align-items: center; gap: var(--space-1); }
