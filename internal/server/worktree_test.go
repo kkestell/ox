@@ -320,6 +320,9 @@ func TestWorktreeCreationFails(t *testing.T) {
 			if failure.repo != "" {
 				nothingLeft(t, failure.repo, failure.worktrees)
 			}
+			if failure.name == "inside the repository" && exists(failure.worktrees) {
+				t.Fatalf("the refused worktree directory %s was made", failure.worktrees)
+			}
 		})
 	}
 }
