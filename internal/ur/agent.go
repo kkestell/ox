@@ -38,7 +38,6 @@ type Agent struct {
 	approvals    []agent.Approval // pending, in arrival order
 	turn         string           // the ID of the latest input ur took into its running turn
 	stops        []func(error)    // interrupts written and not yet carried out, oldest first
-	groups       []int            // the process groups of ur's commands reported started and not ended
 	settings     agent.Settings
 	exited       bool
 	onUpdate     func(agent.Update)
@@ -68,7 +67,8 @@ func startAgent(command, endpoint, dir string, providers map[string][]string, op
 		onUpdate: options.OnUpdate, onResumable: options.OnResumable, onConfigured: options.OnConfigured,
 	}
 	// On SIGTERM ur kills its commands' process groups before it exits.
-	proc, stdin, err := process.Start(cmd, "ur", options.SessionID, syscall.SIGTERM, parse, a.events, a.done)
+	c := &commands{}
+	proc, stdin, err := process.Start(cmd, "ur", options.SessionID, syscall.SIGTERM, c.parse, c.kill, a.events, a.done)
 	if err != nil {
 		return nil, err
 	}
@@ -80,12 +80,50 @@ func startAgent(command, endpoint, dir string, providers map[string][]string, op
 // protocolError is a line of ur's stdout that is not an event.
 type protocolError string
 
-func parse(line []byte) agent.Event {
+// commands holds the process groups of the commands ur reported started and
+// not ended. Only ur's reader goroutine uses it, through parse and kill, so it
+// sees every command event in order and ur's exit, whether or not the agent
+// has ended.
+type commands struct {
+	groups []int
+}
+
+// parse reads one line of ur's stdout. It keeps the command events itself and
+// returns nil for a valid one, so they never reach the agent.
+func (c *commands) parse(line []byte) agent.Event {
 	var e wire.Event
 	if err := json.Unmarshal(line, &e); err != nil {
 		return protocolError(fmt.Sprintf("%v: %q", err, line))
 	}
+	switch e.Type {
+	case wire.EventCommandStarted:
+		// The group reaches kill, where 0 or a negative number names other
+		// processes than a command's.
+		if e.Group <= 0 {
+			return protocolError(fmt.Sprintf("command_started for group %d", e.Group))
+		}
+		c.groups = append(c.groups, e.Group)
+		return nil
+	case wire.EventCommandEnded:
+		i := slices.Index(c.groups, e.Group)
+		if i < 0 {
+			return protocolError(fmt.Sprintf("command_ended for group %d, which did not start", e.Group))
+		}
+		c.groups = slices.Delete(c.groups, i, i+1)
+		return nil
+	}
 	return e
+}
+
+// kill runs on the reader goroutine once ur has exited and its output is read.
+// Only ur ends its commands, so the commands it left end here. After SIGTERM
+// ur kills its commands without reporting them ended, so a group may already
+// be gone.
+func (c *commands) kill() {
+	for _, group := range c.groups {
+		syscall.Kill(-group, syscall.SIGKILL)
+	}
+	c.groups = nil
 }
 
 func (a *Agent) Events() <-chan agent.Event {
@@ -113,11 +151,6 @@ func (a *Agent) Handle(event agent.Event) {
 	case protocolError:
 		a.broke(string(e))
 	case process.Exit:
-		// Only ur ends its commands, so the commands of a ur that died end
-		// here.
-		for _, group := range a.groups {
-			syscall.Kill(-group, syscall.SIGKILL)
-		}
 		reason := "Ur exited"
 		if e.Err != nil {
 			reason += ": " + e.Err.Error()
@@ -165,19 +198,6 @@ func (a *Agent) handle(e wire.Event) error {
 			a.proc.Terminate(killAfter)
 			a.end(lostConversation)
 		}
-	case wire.EventCommandStarted:
-		// The group reaches kill, where 0 or a negative number names other
-		// processes than a command's.
-		if e.Group <= 0 {
-			return fmt.Errorf("command_started for group %d", e.Group)
-		}
-		a.groups = append(a.groups, e.Group)
-	case wire.EventCommandEnded:
-		i := slices.Index(a.groups, e.Group)
-		if i < 0 {
-			return fmt.Errorf("command_ended for group %d, which did not start", e.Group)
-		}
-		a.groups = slices.Delete(a.groups, i, i+1)
 	case wire.EventInterrupted:
 		if len(a.stops) == 0 {
 			return errors.New("interrupted without an interrupt")
@@ -246,7 +266,7 @@ func (a *Agent) Send(input agent.Input) error {
 		in.Images = append(in.Images, wire.Image{MimeType: image.MimeType, Data: image.Data})
 	}
 	if err := a.write(wire.Command{Type: wire.CommandInput, Input: in}); err != nil {
-		return err
+		return fmt.Errorf("send input to Ur: %w", err)
 	}
 	a.tracker.Accept(input)
 	return nil
@@ -355,7 +375,6 @@ func (a *Agent) end(reason string) {
 		stop(nil)
 	}
 	a.stops = nil
-	a.groups = nil
 	a.turn = ""
 	a.exited = true
 	close(a.done)
@@ -365,8 +384,8 @@ func (a *Agent) Exited() bool {
 	return a.exited
 }
 
-// Reaped is closed once ur has exited, which it does after its commands'
-// process groups are killed and reaped.
+// Reaped is closed once ur has exited and the process groups of the commands
+// it reported started and not ended have been killed.
 func (a *Agent) Reaped() <-chan struct{} {
 	return a.proc.Reaped()
 }

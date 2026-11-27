@@ -595,8 +595,9 @@ func (sess *session) end() {
 	sess.ended = true
 }
 
-// update records an update and tells every client. A state or parked update
-// is broadcast under Server.mu as it sets the published state, so it and
+// update records an update and, for a member session, tells every client.
+// Every update is broadcast under Server.mu, where membership is decided, and
+// a state or parked update as it sets the published state, so it and
 // workspace/list reach every connection in one order, and the session's
 // family learns of it in the same critical section.
 func (sess *session) update(update agent.Update) {
@@ -606,21 +607,23 @@ func (sess *session) update(update agent.Update) {
 		agent.Update
 	}{sess.id, update}
 	s := sess.server
+	s.mu.Lock()
 	switch update.Type {
-	case agent.UpdateState, agent.UpdateParked:
-		state := update.State
-		if update.Type == agent.UpdateParked {
-			state = agent.StateParked
-		}
-		s.mu.Lock()
-		sess.state = state
-		s.broadcast("session/update", notification)
-		s.familyChangedLocked(s.parentLocked(sess))
-		s.familyChangedLocked(sess)
-		s.mu.Unlock()
-	default:
-		s.broadcast("session/update", notification)
+	case agent.UpdateState:
+		sess.state = update.State
+	case agent.UpdateParked:
+		sess.state = agent.StateParked
 	}
+	// A child's creator holds it outside membership until its agent has
+	// accepted the first input; publication then reports its state.
+	if s.sessions[sess.id] == sess {
+		s.broadcast("session/update", notification)
+		if update.Type == agent.UpdateState || update.Type == agent.UpdateParked {
+			s.familyChangedLocked(s.parentLocked(sess))
+			s.familyChangedLocked(sess)
+		}
+	}
+	s.mu.Unlock()
 	switch {
 	case update.Type == agent.UpdatePromptCancelled:
 		sess.deleteImages(update.Images)

@@ -416,7 +416,9 @@ func createSession(s *Server, caller *session, arguments json.RawMessage, _ stri
 // it with text as its first message, on parent's goroutine. The checks hold
 // until publication: only parent's goroutine creates its children or archives
 // it, and its depth is fixed. Only shutdown can intervene, so it is decided at
-// publication. The store write, launch, and first Send run without s.mu.
+// publication. The store write, launch, and first Send run without s.mu, and
+// the child is published only once its agent holds the first message. A launch
+// or first Send that fails leaves no child.
 func (s *Server) addChild(parent *session, record *store.Session, physical, text string) error {
 	s.mu.Lock()
 	err := s.checkChildLocked(parent, record.Child.Name, physical)
@@ -437,22 +439,24 @@ func (s *Server) addChild(parent *session, record *store.Session, physical, text
 		return err
 	}
 
+	if err := sess.acceptMessage(messageInput(parent, label, sess, text)); err != nil {
+		// sess.stop would publish parked for a session no client knows.
+		sess.agent.Stop()
+		s.deleteUnpublished(sess)
+		return err
+	}
+
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		// sess.stop would publish parked for a session no client knows.
 		sess.agent.Stop()
 		s.deleteUnpublished(sess)
 		return errShuttingDown
 	}
 	s.publishLocked(w, sess)
 	s.mu.Unlock()
-
-	// The child's goroutine starts only once its agent holds the message, so
-	// a request posted to the child waits until then.
-	err = sess.acceptMessage(messageInput(parent, label, sess, text))
 	go sess.run()
-	return err
+	return nil
 }
 
 // checkChildLocked reports why parent may not have a child named name now, in

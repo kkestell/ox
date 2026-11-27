@@ -117,7 +117,7 @@ func startProcess(workspace, oxSessionID, sessionID string, resume, thinkingSumm
 	cmd := exec.Command("claude", args...)
 	cmd.Dir = workspace
 	cmd.Env = append(launchEnv(cmd), "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1")
-	p, stdin, err := process.Start(cmd, "claude", oxSessionID, syscall.SIGKILL, parse, events, done)
+	p, stdin, err := process.Start(cmd, "claude", oxSessionID, syscall.SIGKILL, parse, nil, events, done)
 	if err != nil {
 		return nil, nil, err
 	}

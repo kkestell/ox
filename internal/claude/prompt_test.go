@@ -85,7 +85,7 @@ func stoppableStartingAgent(t *testing.T) (*Agent, *bytes.Buffer, *recorder) {
 func agentRunning(t *testing.T, cmd *exec.Cmd) (*Agent, *bytes.Buffer, *recorder) {
 	t.Helper()
 	events := make(chan agent.Event, 1)
-	proc, _, err := process.Start(cmd, "claude", "ox-session", syscall.SIGKILL, parse, events, nil)
+	proc, _, err := process.Start(cmd, "claude", "ox-session", syscall.SIGKILL, parse, nil, events, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

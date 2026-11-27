@@ -1675,6 +1675,10 @@ func TestUnexpectedExit(t *testing.T) {
 			"read line\necho '{\"type\":\"command_started\"}'\nexec sleep 60\n",
 			"Ur broke its protocol: command_started for group 0",
 		},
+		"end of a command that did not start": {
+			"read line\necho '{\"type\":\"command_ended\",\"group\":5}'\nexec sleep 60\n",
+			"Ur broke its protocol: command_ended for group 5, which did not start",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			command := filepath.Join(t.TempDir(), "ur")
@@ -1705,28 +1709,65 @@ func TestUnexpectedExit(t *testing.T) {
 	}
 }
 
+// An input written to a ur that has gone is refused with an error that names
+// Ur.
+func TestSendToGoneUr(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
+	command := filepath.Join(t.TempDir(), "ur")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := &run{t: t, harness: Harness(command, "", t.TempDir(), nil), workspace: t.TempDir(), settings: agent.Settings{Model: model}}
+	if err := r.launch(""); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-r.agent.Reaped():
+	case <-time.After(5 * time.Second):
+		t.Fatal("ur was not reaped")
+	}
+	err := r.agent.Send(agent.Input{MessageID: "p1", Content: "hi"})
+	if err == nil || !strings.HasPrefix(err.Error(), "send input to Ur: ") {
+		t.Fatalf("Send to a ur that has gone returned %v", err)
+	}
+}
+
 // A ur that dies without ending its command, as on SIGKILL, leaves no command
-// running once the agent has ended.
+// running once it is reaped, whether the agent handles its exit or is stopped
+// first.
 func TestCrashEndsCommands(t *testing.T) {
-	r := start(t, agent.Settings{Model: model, PermissionMode: "auto"}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
-		sseCalls(w, "", call{"call_1", "shell", `{"command":"echo $PPID > ur.pid; echo $$ > pid; sleep 60"}`})
-	})
-	r.send("p1", "go")
-	r.until(func(u agent.Update) bool { return u.Type == agent.UpdateToolUse })
-	waitFile(t, filepath.Join(r.workspace, "pid"))
-	data, err := os.ReadFile(filepath.Join(r.workspace, "ur.pid"))
-	if err != nil {
-		t.Fatal(err)
+	for name, stopFirst := range map[string]bool{"exit handled": false, "stopped before the exit": true} {
+		t.Run(name, func(t *testing.T) {
+			r := start(t, agent.Settings{Model: model, PermissionMode: "auto"}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
+				sseCalls(w, "", call{"call_1", "shell", `{"command":"echo $PPID > ur.pid; echo $$ > pid; sleep 60"}`})
+			})
+			r.send("p1", "go")
+			r.until(func(u agent.Update) bool { return u.Type == agent.UpdateToolUse })
+			waitFile(t, filepath.Join(r.workspace, "pid"))
+			data, err := os.ReadFile(filepath.Join(r.workspace, "ur.pid"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+				t.Fatal(err)
+			}
+			if stopFirst {
+				r.agent.Stop()
+				select {
+				case <-r.agent.Reaped():
+				case <-time.After(5 * time.Second):
+					t.Fatal("ur was not reaped")
+				}
+			} else {
+				r.until(func(u agent.Update) bool { return u.Type == agent.UpdateExited })
+			}
+			gone(t, filepath.Join(r.workspace, "pid"))
+		})
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
-		t.Fatal(err)
-	}
-	r.until(func(u agent.Update) bool { return u.Type == agent.UpdateExited })
-	gone(t, filepath.Join(r.workspace, "pid"))
 }
 
 // A relative conversation directory is oxd's, not the session's workspace.

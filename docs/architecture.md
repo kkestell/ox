@@ -194,10 +194,14 @@ the same transaction as its session row; top-level sessions have none.
 2. Under `Server.mu`, check name uniqueness, archive state, and depth.
 3. Without the lock, store the child row and launch its harness (a launch
    failure leaves the child unstored and unpublished).
-4. Under `Server.mu`, abort (stopping the agent and deleting the row) if `oxd`
+4. Hand the child's agent its first message. A refusal stops the agent and
+   deletes the row.
+5. Under `Server.mu`, abort (stopping the agent and deleting the row) if `oxd`
    is shutting down; otherwise publish the child into membership.
-5. Hand the child's agent its first message and start its goroutine (requests
-   posted to the child wait until then).
+6. Start the child's goroutine (requests posted to the child wait until then).
+
+Only a member session's updates are broadcast, so the page first hears of a
+child in `session/created`, which carries its state with its first message.
 
 A session belongs to its builder until its goroutine starts. Destroying a
 session refuses while it has any children; because children are created only on
@@ -280,10 +284,10 @@ flowchart LR
 ```
 
 - `Agent.Reaped` closes once every process the agent started has exited (Claude
-  reaped by its reader; `ur` reaped by its reader once it has killed and reaped
-  its commands' process groups). Every dropped agent passes through
-  `session.parked`, which appends its `Reaped` channel to `session.exiting` and
-  prunes closed ones.
+  reaped by its reader; `ur` reaped by its reader, which then kills the process
+  groups of the commands `ur` reported started and not ended). Every dropped
+  agent passes through `session.parked`, which appends its `Reaped` channel to
+  `session.exiting` and prunes closed ones.
 - While `session.deleting` is set, the session keeps answering unrelated
   operations while refusing starts, child starts, and a second destroy. If
   shutdown ends the goroutine first, the delete goroutine replies that `oxd` is
@@ -410,12 +414,14 @@ The `ur` process:
   they are reaped. It ignores `SIGINT`.
 
 The adapter in `internal/ur` keeps the inputs written and not yet reported taken
-or dropped, the pending approvals, the running turn's input, the interrupts
-written and not yet carried out, and the process groups of `ur`'s running
-commands. It is the one place that tags and times Ur's updates. It reports
-`Parkable` when idle, and ends the agent when `ur` exits, reports the
-conversation lost, or breaks the protocol. When `ur` exits, it first kills the
-process groups `ur` left running.
+or dropped, the pending approvals, the running turn's input, and the interrupts
+written and not yet carried out. It is the one place that tags and times Ur's
+updates. It reports `Parkable` when idle, and ends the agent when `ur` exits,
+reports the conversation lost, or breaks the protocol. The reader goroutine of
+`ur`'s process keeps the process groups of `ur`'s running commands from its
+command events, which never reach the adapter. Once `ur` has exited and its
+output is read, the reader kills the groups `ur` left running, before `Reaped`
+closes, whether or not the agent has ended.
 
 ### The Fake agent
 
@@ -443,9 +449,10 @@ The web UI in `cmd/ox/web` is a Solid 2.0 TypeScript app built with Vite into
 `cmd/ox/web/dist` (`make web`) and embedded in `ox` (`make build`).
 
 `make dev` runs `oxd` and `ox` together at `http://localhost:8080`; pressing
-Enter, or `make restart`, rebuilds the web client and binaries and restarts
-whichever binary changed. In a linked worktree, `make dev` keeps its config,
-state, and socket under `.state`, serves on a free port, and prints the URL.
+Enter, or `make restart`, rebuilds the web client and binaries and restarts each
+binary that changed, and `oxd` when `ur` or `ox-mcp` changed. In a linked
+worktree, `make dev` keeps its config, state, and socket under `.state`, serves
+on a free port, and prints the URL.
 
 ### Relay endpoints and security
 
