@@ -47,6 +47,7 @@ We test with `make dev`. Ox's test state is disposable.
 │       └── main.go            # runs the engine
 ├── docs
 │   ├── architecture.md        # how oxd and ox are built
+│   ├── configuration.md       # the configuration file
 │   ├── functional-requirements.md # what users see and rely on
 │   ├── harnesses
 │   │   └── claude-code.md     # observed Claude Code behavior
