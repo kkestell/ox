@@ -4,6 +4,13 @@ import { toolLabel, toolSubject, toolSummary } from "./src/toolInput.ts";
 
 test("Ox's tools show their names in PascalCase and other tools show as they arrive", () => {
   for (const [name, label] of [
+    ["list_models", "ListModels"],
+    ["list_sessions", "ListSessions"],
+    ["send_message", "SendMessage"],
+    ["read_session", "ReadSession"],
+    ["create_session", "CreateSession"],
+    ["create_top_level_session", "CreateTopLevelSession"],
+    ["shell", "shell"],
     ["mcp__ox__list_models", "ListModels"],
     ["mcp__ox__list_sessions", "ListSessions"],
     ["mcp__ox__send_message", "SendMessage"],
@@ -26,6 +33,16 @@ test("a call is summarized by the field that says what it does", () => {
   );
   assert.equal(toolSubject("mcp__ox__read_session", { to: "abc", cursor: 3 }), "abc");
   assert.equal(toolSubject("Bash", { command: "ls", description: "list" }), "ls");
+});
+
+test("Ur's calls to Ox's tools are summarized as Claude's are", () => {
+  assert.equal(toolSubject("send_message", { to: "abc", text: "hello there" }), "hello there");
+  assert.equal(toolSubject("create_session", { name: "n", title: "Review: F2", message: "go" }), "Review: F2");
+  assert.equal(
+    toolSubject("create_top_level_session", { message: "go", title: "Fix the retry", workspace: "/w" }),
+    "Fix the retry",
+  );
+  assert.equal(toolSubject("shell", { command: "ls" }), "ls");
 });
 
 test("a call with an empty input has no summary", () => {
