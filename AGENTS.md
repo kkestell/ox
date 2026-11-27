@@ -23,7 +23,8 @@ We test with `make dev`. Ox's test state is disposable.
 │   └── pre-commit             # checks docs formatting
 ├── .github
 │   └── workflows
-│       └── ci.yml             # PR checks
+│       ├── ci.yml             # PR checks
+│       └── coral.yml          # Coral pull request reviews
 ├── .golangci.yml              # Go linters
 ├── bin                        # build output
 │   ├── ox
@@ -68,6 +69,8 @@ We test with `make dev`. Ox's test state is disposable.
 │   │   ├── agent.go           # Claude agent state machine
 │   │   ├── approval_test.go   # approval tests
 │   │   ├── approval.go        # tool approvals
+│   │   ├── ask_test.go        # one-shot prompt tests
+│   │   ├── ask.go             # one-shot prompt for session titles
 │   │   ├── claude_test.go     # startup tests
 │   │   ├── claude.go          # Claude process and input
 │   │   ├── configure_test.go  # configuration tests
@@ -93,6 +96,8 @@ We test with `make dev`. Ox's test state is disposable.
 │   │   ├── process_test.go    # delivery tests
 │   │   └── process.go         # harness process I/O
 │   ├── server
+│   │   ├── changes_test.go    # Changes listing tests
+│   │   ├── changes.go         # Changes listing against the base
 │   │   ├── client_test.go     # test client
 │   │   ├── conn.go            # client connections
 │   │   ├── files.go           # workspace folder listing and file reads
