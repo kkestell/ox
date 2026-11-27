@@ -763,8 +763,10 @@ claude -p --input-format stream-json --output-format stream-json --verbose \
 ```
 
 - Run it in a fresh empty temp directory and delete it afterwards.
-- Still send `initialize` first to validate model and effort, then the prompt,
-  read `result`, close stdin.
+- `initialize` validates neither model nor effort: Claude accepts an unknown
+  model until the prompt, whose `result` reports the refusal, and runs an
+  unknown effort at its default (§2). Send the prompt, read `result`, and close
+  stdin.
 - Decide success from `result.subtype` and `is_error`, not the exit code.
 - `--bare` rejects subscription login (bare accepts only `ANTHROPIC_API_KEY` or
   `apiKeyHelper`). `--safe-mode` keeps the normal login and skips CLAUDE.md,

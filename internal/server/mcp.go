@@ -458,6 +458,7 @@ func (s *Server) addChild(parent *session, record *store.Session, physical, text
 	}
 
 	if err := s.store.AddSession(w.id, record); err != nil {
+		log.Printf("session %s: store session: %v", record.ID, err)
 		return err
 	}
 	sess := s.newSession(record, w.path, "")

@@ -236,10 +236,12 @@ func statusError(resp *http.Response) error {
 // stream, and returns the response's tool calls in index order. A call arrives
 // as fragments keyed by its index: the first carries its ID and name, and each
 // adds to its arguments. OpenRouter reports an error after the response has
-// started as a chunk with an error.
+// started as a chunk with an error. The response is complete when its last
+// finish reason is stop or tool_calls; any other reason, such as length or
+// content_filter, is an error.
 func read(r io.Reader, onDelta func(string, []reasoningDetail)) ([]toolCall, error) {
 	lines := bufio.NewReader(r)
-	finished := false
+	finishReason := ""
 	calls := map[int]*toolCall{}
 	for {
 		line, readErr := lines.ReadString('\n')
@@ -278,8 +280,8 @@ func read(r io.Reader, onDelta func(string, []reasoningDetail)) ([]toolCall, err
 					}
 					call.Function.Arguments += fragment.Function.Arguments
 				}
-				if c.Choices[0].FinishReason != "" {
-					finished = true
+				if reason := c.Choices[0].FinishReason; reason != "" {
+					finishReason = reason
 				}
 			}
 		}
@@ -287,8 +289,18 @@ func read(r io.Reader, onDelta func(string, []reasoningDetail)) ([]toolCall, err
 			break
 		}
 	}
-	if !finished {
+	switch finishReason {
+	case "stop", "tool_calls":
+	case "":
 		return nil, errors.New("OpenRouter stream ended before the response finished")
+	case "length":
+		return nil, errors.New("OpenRouter stopped the reply at the model's output limit")
+	case "content_filter":
+		return nil, errors.New("OpenRouter's provider filtered the reply")
+	case "error":
+		return nil, errors.New("OpenRouter ended the reply with an error")
+	default:
+		return nil, fmt.Errorf("OpenRouter ended the reply with finish reason %q", finishReason)
 	}
 	var assembled []toolCall
 	for _, index := range slices.Sorted(maps.Keys(calls)) {

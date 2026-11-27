@@ -43,13 +43,12 @@ type Agent interface {
 	Events() <-chan Event
 	Handle(Event)
 	Snapshot() Snapshot
-	// Send queues input behind every input the harness has not taken, and
-	// writes its Content with its session-assigned ID once the harness has
-	// taken or dropped the inputs ahead of it, has started, and has finished
-	// any configuration. A Tracker keeps the queue, publishes the input's
-	// lifecycle updates, and derives the published state. Send returns an
-	// error only when it writes the input at once and the write fails, or when
-	// the agent has ended; it then publishes and keeps nothing.
+	// Send accepts the input behind every input the harness has not taken,
+	// and the harness takes them in that order. A Tracker keeps them,
+	// publishes each input's lifecycle updates, and derives the published
+	// state. Send returns ErrExited once the agent has ended, or the error of
+	// a failed write, and then publishes and keeps nothing. Each harness
+	// documents when it writes the input to its process.
 	Send(input Input) error
 	// Approve answers a pending approval, or returns ErrApprovalNotFound.
 	Approve(requestID string, response json.RawMessage) error
