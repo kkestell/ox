@@ -155,9 +155,7 @@ p { overflow-wrap: break-word; }
   --pending-max-height: 50cqh;
   --composer-max-height: calc(8lh + 0.5rem);
   --thumbnail-size: 4rem;
-  --usage-bar-width: 4rem;
-  --usage-bar-width-narrow: 3rem;
-  --usage-bar-height: 0.5rem;
+  --usage-ring-stroke: 2;
   --slider-track-height: 0.375rem;
   --slider-thumb-size: 1rem;
   --tick-length: 0.375rem;
@@ -607,7 +605,7 @@ details.tool pre + pre { border-top: var(--border-width) solid var(--border); }
 }
 .composer .box button.icon { width: var(--control-height); height: var(--control-height); }
 .composer .box .send::before { translate: 0 var(--space-px); }
-.composer .settings { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); margin: var(--space-2) calc(-1 * var(--space-2)) 0; }
+.composer .settings { display: flex; flex-wrap: nowrap; align-items: center; gap: var(--space-1); margin: var(--space-2) calc(-1 * var(--space-2)) 0; }
 
 /* Pending approvals sit on the composer, their card tucked beneath it. */
 .pending {
@@ -689,7 +687,7 @@ details.tool pre + pre { border-top: var(--border-width) solid var(--border); }
 /* SettingsFields.tsx */
 .composer .settings > button.picker, .composer .select { height: var(--control-height-sm); border-radius: var(--radius-md); font-size: var(--text-xs); color: var(--muted-foreground); }
 .composer .settings > button.picker:hover, .composer .select:hover { background: var(--accent); }
-.composer .settings > button.picker { gap: var(--space-1-5); min-width: 0; padding: 0 var(--space-2); }
+.composer .settings > button.picker { flex: 0 1 auto; gap: var(--space-1-5); min-width: 0; padding: 0 var(--space-2); }
 .picker .model { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .picker .effort-name { opacity: var(--opacity-dim); }
 .model-picker {
@@ -744,7 +742,7 @@ details.tool pre + pre { border-top: var(--border-width) solid var(--border); }
 
 /* The chevron sits where the picker's does: a space after the text, half a
    row's padding from the edge. */
-.composer .select { position: relative; display: inline-flex; align-items: center; }
+.composer .select { position: relative; flex: none; display: inline-flex; align-items: center; }
 .composer .select select {
   appearance: none; height: 100%; padding: 0 calc(var(--space-2) + var(--icon-size) + var(--space-1-5)) 0 var(--space-2);
   border: 0; border-radius: inherit; background: transparent; outline: none; cursor: pointer; field-sizing: content;
@@ -756,11 +754,10 @@ details.tool pre + pre { border-top: var(--border-width) solid var(--border); }
 
 /* Usage.tsx */
 .composer .settings > button.usage {
-  display: grid; grid-template-columns: auto var(--usage-bar-width) auto auto; column-gap: var(--space-1-5);
+  display: grid; flex: none; grid-template-columns: auto var(--icon-size) auto auto; column-gap: var(--space-1-5);
   height: var(--control-height-sm); margin-left: auto; padding: 0 var(--space-2); font-size: var(--text-xs); color: var(--muted-foreground);
 }
 .composer .settings > button.usage:hover { background: var(--accent); }
-.narrow .composer .settings > button.usage { grid-template-columns: auto var(--usage-bar-width-narrow) auto; }
 .narrow button.usage .left { display: none; }
 /* The popover is a flex box holding the grid; iOS Safari stretches an anchored grid popover to the viewport's height. */
 .usage-windows {
@@ -769,13 +766,14 @@ details.tool pre + pre { border-top: var(--border-width) solid var(--border); }
   box-shadow: var(--shadow-md); font-size: var(--text-xs); white-space: nowrap;
 }
 .usage-windows:popover-open { display: flex; }
-.usage-windows .rows { display: grid; grid-template-columns: auto var(--usage-bar-width) auto auto; align-items: center; gap: var(--space-2) var(--space-1-5); }
+.usage-windows .rows { display: grid; grid-template-columns: auto var(--icon-size) auto auto; align-items: center; gap: var(--space-2) var(--space-1-5); }
 :is(.usage, .usage-windows) :is(.percent, .left) { justify-self: end; font-variant-numeric: tabular-nums; }
-:is(.usage, .usage-windows) .bar { position: relative; height: var(--usage-bar-height); overflow: hidden; border-radius: var(--radius-full); background: var(--usage-track); }
-:is(.usage, .usage-windows) .fill { position: absolute; inset: 0 auto 0 0; background: var(--muted-foreground); }
-:is(.usage, .usage-windows) .fill.warn { background: var(--warning); }
-:is(.usage, .usage-windows) .fill.high { background: var(--critical); }
-:is(.usage, .usage-windows) .elapsed { position: absolute; inset-block: 0; width: var(--border-width-lg); background: var(--foreground); }
+:is(.usage, .usage-windows) .ring svg { display: block; width: var(--icon-size); height: var(--icon-size); fill: none; stroke-width: var(--usage-ring-stroke); }
+:is(.usage, .usage-windows) .track { stroke: var(--usage-track); }
+:is(.usage, .usage-windows) .fill { stroke: var(--muted-foreground); }
+:is(.usage, .usage-windows) .fill.warn { stroke: var(--warning); }
+:is(.usage, .usage-windows) .fill.high { stroke: var(--critical); }
+:is(.usage, .usage-windows) .elapsed { stroke: var(--foreground); }
 :is(.usage, .usage-windows) .reset { opacity: var(--opacity-faint); }
 
 /* HarnessIcon.tsx */

@@ -19,9 +19,9 @@ function timeLeft(minutes: number) {
 
 // Usage is the composer's subscription usage: the shortest window of the
 // session's latest reading, and a popover listing every window. Each window
-// shows a bar of the limit used with a marker for how much of the window has
-// passed. The button is named "Subscription usage" followed by its content,
-// so its visible text stays part of its name.
+// shows an open ring of the limit used with a marker for how much of the
+// window has passed. The button is named "Subscription usage" followed by its
+// content, so its visible text stays part of its name.
 export function Usage(props: { harness: string; windows: UsageWindow[] }) {
   const id = createUniqueId();
   return (
@@ -56,7 +56,7 @@ export function Usage(props: { harness: string; windows: UsageWindow[] }) {
 }
 
 // WindowRow fills one row of its container's four-column grid: the window's
-// length, its bar, the percent used, and the time until it resets. A window
+// length, its ring, the percent used, and the time until it resets. A window
 // that has reset dims until the harness reports a new reading.
 function WindowRow(props: { harness: string; window: UsageWindow }) {
   const ox = useOx();
@@ -76,9 +76,9 @@ function WindowRow(props: { harness: string; window: UsageWindow }) {
       <span class={cell("label")} title={waiting()}>
         {label()}
       </span>
-      {/* biome-ignore lint/a11y/useSemanticElements: the bar holds the elapsed marker, and a <meter> renders no children. */}
+      {/* biome-ignore lint/a11y/useSemanticElements: the ring holds the elapsed marker, and a <meter> renders no children. */}
       <span
-        class={cell("bar")}
+        class={cell("ring")}
         role="meter"
         aria-label={`${label()} usage`}
         aria-valuemin={0}
@@ -87,8 +87,29 @@ function WindowRow(props: { harness: string; window: UsageWindow }) {
         aria-valuetext={waiting()}
         title={waiting()}
       >
-        <span class={["fill", level()]} style={{ width: `${Math.min(100, used())}%` }} />
-        <span class="elapsed" style={{ left: `${elapsed()}%` }} />
+        {/* A 270° arc with its gap at the bottom: each circle's path is 100 long, and 135° puts the arc's start at the
+            bottom left. The marker is drawn at the top, so 225° puts it on the arc's start. */}
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <circle
+            class="track"
+            cx="8"
+            cy="8"
+            r="7"
+            pathLength="100"
+            stroke-dasharray="75 25"
+            transform="rotate(135 8 8)"
+          />
+          <circle
+            class={["fill", level()]}
+            cx="8"
+            cy="8"
+            r="7"
+            pathLength="100"
+            stroke-dasharray={`${0.75 * Math.min(100, used())} 100`}
+            transform="rotate(135 8 8)"
+          />
+          <line class="elapsed" x1="8" y1="0" x2="8" y2="3" transform={`rotate(${225 + 2.7 * elapsed()} 8 8)`} />
+        </svg>
       </span>
       <span class={cell("percent")} title={waiting()}>
         {used()}%

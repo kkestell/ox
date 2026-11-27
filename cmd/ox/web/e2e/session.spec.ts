@@ -460,6 +460,33 @@ test("subscription usage shows under the composer once the harness reports it", 
   await expect(usage(page).getByRole("meter", { name: "5h usage" })).toHaveAttribute("aria-valuenow", "80");
 });
 
+test.describe("with a long model name on a phone", () => {
+  const fake = fakeConfig.harnesses.fake;
+  const [echo] = fake.models;
+  test.use({
+    viewport: { width: 390, height: 844 },
+    config: {
+      ...fakeConfig,
+      harnesses: {
+        fake: {
+          ...fake,
+          models: [{ ...echo, name: "A model whose name is far too long to fit beside the other settings" }],
+        },
+      },
+    },
+  });
+
+  test("the composer's settings stay on one line beside the usage", async ({ ox: page }) => {
+    await newSession(page, "usage");
+    await expect(usage(page)).toBeVisible();
+    const tops = await Promise.all(
+      [model(page), permissionMode(page), usage(page)].map(async (control) => (await control.boundingBox())?.y),
+    );
+    expect(new Set(tops).size).toBe(1);
+    await expect(usage(page)).toBeInViewport({ ratio: 1 });
+  });
+});
+
 test("a usage window that has reset shows it is waiting for a new reading", async ({ ox: page }) => {
   await newSession(page, "usage reset");
   await expect(usage(page)).toContainText("Waiting");
