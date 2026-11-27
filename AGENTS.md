@@ -205,11 +205,18 @@ need them cannot happen.
 
 ## Defects
 
+- A defect is behavior a user reaches in normal use and would report as
+  broken, or a failure that loses the user's work, lets anyone but the user
+  reach Ox, or leaves a session unusable until a restart. Normal use is the
+  workflows in `docs/functional-requirements.md`, done as their requirements
+  describe, on a typical macOS or Linux setup. Behavior reached only by an
+  injected fault, a contrived sequence of actions, or an unusual environment
+  is not a defect, however reproducible.
 - Fix every confirmed defect. A defect is confirmed live, from the source, or
-  by an injected fault.
-- Fix a defect at its cause. A race that can leave state the design says
-  cannot exist comes from who owns the state, however unlikely it is. Fix it
-  by changing who owns the state, not by handling the interleaving. A race
+  by an injected fault that stands in for a failure normal use reaches.
+- Fix a defect at its cause. A race that normal use reaches and that leaves
+  state the design says cannot exist comes from who owns the state. Fix it by
+  changing who owns the state, not by handling the interleaving. A race
   between independent requests in which every outcome is valid is not a
   defect.
 - A reviewer confirms a finding with one reproduction. A failure it cannot
@@ -219,7 +226,8 @@ need them cannot happen.
   - **Fix:** a confirmed defect, or a design, test, or documentation problem
     whose fix costs less than keeping it.
   - **Reject,** with the reason in the review: the finding is speculative,
-    misreads the intended behavior, or costs less to keep than to fix, such
+    is not reached in normal use, misreads the intended behavior, or costs
+    less to keep than to fix, such
     as an unmeasured scaling cost.
   - **Record** as a GitHub issue labeled `bug`: a defect that cannot be fixed
     yet, because it needs reproducing or depends on Claude Code behavior Ox

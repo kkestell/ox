@@ -12,9 +12,9 @@ Find the defects in Ox's behavior, and write a sweep that tells the user which t
 
 - `Plan`: a confirmed defect, or a test, document, or piece of dead code, whose fix costs less than keeping it.
 - `Record`: a confirmed defect that cannot be fixed yet, because it needs reproducing or depends on Claude Code behavior Ox cannot change.
-- `Rejected`: speculative, a misreading of the intended behavior, or cheaper to keep than to fix. The reason is recorded so the next sweep does not raise it again.
+- `Rejected`: speculative, not reached in normal use, a misreading of the intended behavior, or cheaper to keep than to fix. The reason is recorded so the next sweep does not raise it again.
 
-Correctness matters for what happens in normal use and for the requirements in `docs/functional-requirements.md`. Handling every case that could occur does not.
+Correctness matters for what happens in normal use and for the requirements in `docs/functional-requirements.md`, as `AGENTS.md` ("Defects") defines a defect. Handling every case that could occur does not.
 
 Change no code, tests, or documentation. Edit and commit only the sweep file, push it to `main`, and open, edit, and close `bug` issues for its findings. Start other agents only as [Child sessions](#child-sessions) describes.
 
@@ -57,12 +57,12 @@ Change no code, tests, or documentation. Edit and commit only the sweep file, pu
 
 ### Concerns
 
-**Workflows.** For each workflow, list every asynchronous edge it crosses: a request and its reply, an event, a stream opening or closing, a timer, a process exit, a child report. For each edge, check every state it can arrive in: its request in flight, its reply lost, a reconnect, navigation away and back, a second page acting on the same session, the process exiting or parking, and `oxd` running independent requests in any order. Check that each requirement assigned to you holds through all of them, and that:
+**Workflows.** For each workflow, list every asynchronous edge it crosses: a request and its reply, an event, a stream opening or closing, a timer, a process exit, a child report. For each edge, check the states normal use puts it in: a reconnect, navigation away and back, and the session parking. Skip orderings and failures that only an injected fault produces. Check that each requirement assigned to you holds through them, and that:
 
 - Text the user typed is never lost or sent twice.
 - The page offers an action unless the state it has from `oxd` rules it out, shows its result as soon as the user takes it, and returns to `oxd`'s state with the error if `oxd` refuses it.
 - Each wait on a reply, a pipe, a process, or a child of Claude ends, by what it waits on or by a bound. Every request, stop, and shutdown gets a result, and each error is shown where its request was made.
-- State is changed only by its owner: the session goroutine in `oxd`, the session's control on the page. A race that can leave state the design says cannot exist is a defect, however unlikely.
+- State is changed only by its owner: the session goroutine in `oxd`, the session's control on the page. A race that normal use reaches and that leaves state the design says cannot exist is a defect.
 
 **Inputs.** For each place Ox reads your input source, list the forms the input takes in normal use, from the source's documentation, its observed behavior, and the settings a user may have, and check each one: the result Ox shows, the error it reports, the limit it keeps, and what it admits. Also check that:
 
@@ -81,6 +81,7 @@ Change no code, tests, or documentation. Edit and commit only the sweep file, pu
 - Change no files except temporary ones you remove before you answer, and make no git writes. Fix nothing, however small.
 - Confirm a conclusion that turns on runtime behavior with the smallest check that reaches it: an existing test, a stand-in `claude` script, an injected `/rpc` delay or failure in an e2e spec, a probe against built binaries on a temporary socket, database, and port, or a small live check against Claude Code with Haiku. Keep test state and output out of the checkout. When a check cannot run, say what stays unconfirmed.
 - Report missing handling only when a requirement or a failure normal use reaches needs it.
+- Report a candidate only with the steps a user takes in normal use to reach it. A candidate reached only by injecting a fault, scripting an unusual sequence, or changing the environment is not a finding.
 - Follow your workflows across component boundaries, and send leads outside your scope to the parent in your report.
 - Make one pass, and answer after about 40 minutes or 60 tool calls, whichever comes first, with the coverage you reached.
 - Reply with `send_message`, or in your final message if you cannot. Start no sessions of your own, and propose no action for a finding.
@@ -91,13 +92,13 @@ For a test, document, or dead code, give its exact locations, the callers and te
 
 ## Confirm and weigh the findings
 
-11. Confirm every candidate yourself against the current source, its callers, and its tests, including the guards and recovery around it. Where two children stopped at the same interface, follow the handoff yourself or record the gap. Revert every edit a check needs before you finish. Leave out what you cannot confirm.
+11. Confirm every candidate yourself against the current source, its callers, and its tests, including the guards and recovery around it. Where two children stopped at the same interface, follow the handoff yourself or record the gap. Revert every edit a check needs before you finish. Leave out what you cannot confirm. Reject a candidate whose trigger needs an injected fault, a contrived action, or an unusual environment, with that reason.
 12. Check that every requirement in scope has a child's answer, and record each one without an answer as a gap.
 13. Group candidates that one change at one cause would correct into one finding, across files and children, and keep failures that need independent changes apart.
 14. Give each finding its severity, its origin, and its action:
     - **Severity**, as the template defines it.
     - **Origin**: the commit that introduced the defect, found with `git log -S` or `git blame`, and that change's review in `agents/reviews/` when there is one. Say when the origin is unknown.
-    - **Action**, as the Objective defines it, weighing the cost of keeping the defect against the cost of the change. Whether the change would alter what the user sees is for `/ox-plan` to settle with the user; note it, and do not ask.
+    - **Action**, as the Objective defines it, weighing the cost of keeping the defect against the cost of the change. Plan at most the ten findings that cost the user most, and reject the rest as cheaper to keep than to fix. Whether the change would alter what the user sees is for `/ox-plan` to settle with the user; note it, and do not ask.
 15. Before you write, check whether the swept files changed during the sweep. Recheck the findings they affect, or record the gap. Report no stale line numbers.
 
 ## Write the sweep

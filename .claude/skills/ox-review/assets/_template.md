@@ -4,9 +4,9 @@ Delete placeholder text and unused sections, including this guidance. Give every
 
 Severity describes the cost of leaving the finding as it is, and orders the work. The action is decided separately.
 
-- `High`: a broken requirement, wrong results, lost work, a process running with settings other than those shown, or a security hole that normal use can trigger.
-- `Medium`: wrong behavior that only an uncommon but realistic case triggers, or code that makes future changes materially riskier or more expensive.
-- `Low`: an unlikely case, or no effect on behavior and little effect on future changes.
+- `High`: lost work, a session unusable until a restart, a process running with settings other than those shown, or a security hole, that normal use can trigger.
+- `Medium`: a broken requirement or wrong results that normal use can trigger, or code that makes future changes materially riskier or more expensive.
+- `Low`: no effect on behavior and little effect on future changes.
 
 Actions: `Fix`, `Record`, `Rejected`, as the skill defines them. Status: `Open` or `Resolved` for `Fix` and `Record`; `—` for `Rejected`.
 

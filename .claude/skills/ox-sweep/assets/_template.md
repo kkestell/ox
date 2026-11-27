@@ -4,9 +4,9 @@ Delete placeholder text and unused sections, including this guidance. Give every
 
 Severity describes the cost of leaving the finding as it is, and orders the work. The action is decided separately.
 
-- `High`: a broken requirement, wrong results, lost work, a process running with settings other than those shown, or a security hole that normal use can trigger.
-- `Medium`: wrong behavior that only an uncommon but realistic case triggers, or a test or document that misleads whoever relies on it.
-- `Low`: an unlikely case, or dead code with a concrete cost to keep.
+- `High`: lost work, a session unusable until a restart, a process running with settings other than those shown, or a security hole, that normal use can trigger.
+- `Medium`: a broken requirement or wrong results that normal use can trigger.
+- `Low`: a test or document that misleads whoever relies on it, or dead code with a concrete cost to keep.
 
 Categories: `Requirements`, `Ownership`, `Settling`, `Settings`, `Process I/O`, `Claude Code`, `Security`, `Correctness`, `Testing`, `Documentation`, `Simplicity`, as `/ox-review` defines them. Dead code is `Simplicity`.
 
