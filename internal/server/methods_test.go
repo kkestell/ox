@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -112,6 +113,44 @@ func TestInvalidLines(t *testing.T) {
 		if len(c.backlog) != 0 {
 			t.Errorf("%s: a request without an ID was answered: %+v", name, c.backlog)
 		}
+	}
+}
+
+// harness/list serves the choices a client offers, and none of the
+// configuration's other fields.
+func TestHarnessListServesCatalog(t *testing.T) {
+	cfg := &config.Config{
+		Harnesses: map[string]config.Harness{"h": {
+			Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}}}},
+			PermissionModes: []config.Option{{ID: "plan"}},
+		}},
+		Titling:       config.Titling{Model: "m", Effort: "low"},
+		MaxChildDepth: 2,
+		TailscaleIP:   netip.MustParseAddr("100.101.102.103"),
+	}
+	s, err := newServer(openStore(t), cfg, 0, nil, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := answer(s, `{"jsonrpc":"2.0","id":1,"method":"harness/list","params":{}}`)
+	if response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	encoded, err := json.Marshal(response.Result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &result); err != nil {
+		t.Fatal(err)
+	}
+	var keys []string
+	for key := range result {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	if !slices.Equal(keys, []string{"defaults", "harnesses"}) {
+		t.Errorf("harness/list result has %v, want defaults and harnesses", keys)
 	}
 }
 

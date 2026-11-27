@@ -224,7 +224,7 @@ func approvedTools() []string {
 }
 
 func listModels(s *Server, _ *session, _ json.RawMessage, _ string, respond func(string, error)) {
-	text, err := json.Marshal(s.config)
+	text, err := json.Marshal(s.catalog())
 	respond(string(text), err)
 }
 

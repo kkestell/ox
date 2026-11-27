@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/kkestell/ox/internal/agent"
+	"github.com/kkestell/ox/internal/config"
 	"github.com/kkestell/ox/internal/jsonrpc"
 	"github.com/kkestell/ox/internal/store"
 )
@@ -27,6 +28,16 @@ const (
 )
 
 type replyFunc func(*jsonrpc.Response)
+
+// catalog is the choices `harness/list` and the `list_models` tool serve.
+type catalog struct {
+	Harnesses map[string]config.Harness `json:"harnesses"`
+	Defaults  config.Defaults           `json:"defaults"`
+}
+
+func (s *Server) catalog() catalog {
+	return catalog{Harnesses: s.config.Harnesses, Defaults: s.config.Defaults}
+}
 
 // handle runs one request. Each method queues its own response through
 // reply, from wherever it holds the state the response reports.
@@ -46,7 +57,7 @@ func (s *Server) handle(reply replyFunc, request jsonrpc.Request) {
 	case "workspace/list_changes":
 		s.listChanges(reply, id, params)
 	case "harness/list":
-		reply(jsonrpc.Success(id, s.config))
+		reply(jsonrpc.Success(id, s.catalog()))
 	case "session/create":
 		s.createSession(reply, id, params)
 	case "session/get":

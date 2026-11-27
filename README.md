@@ -97,8 +97,8 @@ Ox keeps its files in the XDG base directories (all overridable by flag):
 - **Session worktrees:** `$XDG_DATA_HOME/ox/worktrees/` (default
   `~/.local/share/ox/worktrees/`).
 
-See [docs/protocol.md](docs/protocol.md#configuration) for the configuration
-schema, including `tailscale_ip` and `max_child_depth`.
+See [docs/configuration.md](docs/configuration.md) for the configuration file's
+fields.
 
 ## Development
 
@@ -116,6 +116,7 @@ make hooks       # install the git pre-commit hook
 
 - [docs/functional-requirements.md](docs/functional-requirements.md) — user-facing behavior
 - [docs/architecture.md](docs/architecture.md) — package layout, concurrency, and web UI structure
-- [docs/protocol.md](docs/protocol.md) — `oxd` JSON-RPC protocol, configuration, and MCP tools
+- [docs/configuration.md](docs/configuration.md) — the configuration file
+- [docs/protocol.md](docs/protocol.md) — `oxd` JSON-RPC protocol and MCP tools
 - [docs/harnesses/claude-code.md](docs/harnesses/claude-code.md) — observed Claude Code CLI behavior
 - [AGENTS.md](AGENTS.md) — engineering conventions and workflow
