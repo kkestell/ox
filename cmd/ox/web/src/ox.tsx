@@ -211,7 +211,7 @@ export type CardDraft = { choice?: "allow" | "deny" | "other"; reply: string };
 export type QuestionAnswer = { labels: string[]; other: boolean; text: string };
 
 // FormDraft is a question form's unsent answers and the question it shows.
-export type FormDraft = { answers: QuestionAnswer[]; page: number };
+type FormDraft = { answers: QuestionAnswer[]; page: number };
 
 type Draft<T> = [Store<T>, StoreSetter<T>];
 

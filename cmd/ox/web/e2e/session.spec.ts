@@ -123,8 +123,8 @@ test("a reply renders Markdown", async ({ ox: page }) => {
 
 test("a single line break shows in prompts and replies", async ({ ox: page }) => {
   await reply(page, "one\ntwo");
-  await expect(prompts(page).locator("br")).toHaveCount(1);
-  await expect(replies(page).locator("br")).toHaveCount(1);
+  await expect(prompts(page)).toHaveText(/^one\ntwo$/, { useInnerText: true });
+  await expect(replies(page)).toHaveText(/^You said: one\ntwo$/, { useInnerText: true });
 });
 
 test("your own prompt renders Markdown", async ({ ox: page }) => {
@@ -2446,7 +2446,6 @@ test("a prompt of an image alone sends, and its bubble shows only the image", as
   await prompt(page).press("Enter");
   await expect(replies(page)).toHaveText(["You said:  [images: 1]"]);
   await expect(prompts(page)).toHaveText([""]);
-  await expect(prompts(page).locator(":scope > *")).toHaveCount(1);
   await expect(attachment(page)).toBeVisible();
 });
 

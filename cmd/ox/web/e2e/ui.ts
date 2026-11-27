@@ -101,7 +101,7 @@ export const pixel = Buffer.from(
   "base64",
 );
 
-export type Picked = { name: string; mimeType: string; buffer: Buffer };
+type Picked = { name: string; mimeType: string; buffer: Buffer };
 
 // pickFiles attaches files through the Attach Image button's file picker.
 export async function pickFiles(page: Page, files: Picked[]) {
