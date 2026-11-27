@@ -457,8 +457,8 @@ state, and socket under `.state`, serves on a free port, and prints the URL.
 
 - **Host and origin checks:** `ox` answers all three routes only when `Host`
   matches `localhost`, `127.0.0.1`, `[::1]`, the `-addr` host, or the configured
-  [`tailscale_ip`](protocol.md#configuration), and refuses cross-origin `POST`
-  to `/rpc`, preventing DNS rebinding from reaching `oxd`.
+  [`tailscale_ip`](configuration.md), and refuses cross-origin `POST` to `/rpc`,
+  preventing DNS rebinding from reaching `oxd`.
 - **Tailscale listener:** When `tailscale_ip` is configured, `ox` also binds
   that address on port `17840` alongside `-addr` and prints the tailnet URL once
   both bind; both listeners serve the same relay and UI.

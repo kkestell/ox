@@ -20,10 +20,10 @@ title.
   child's own children follow it the same way, indented one level further.
 - **Session labels.** A child session is labeled with the title it was created
   with. Any other session is labeled with a short title the configured titling
-  model writes from the first prompt the user sent it, which replaces the label
-  everywhere it shows once it arrives and lasts through restarts. Until then, or
-  if titling fails, the session is labeled with that prompt's first line,
-  shortened, or a short identifier before it has one.
+  model writes from the first prompt with text the user sent it, which replaces
+  the label everywhere it shows once it arrives and lasts through restarts.
+  Until then, or if titling fails, the session is labeled with that prompt's
+  first line, shortened, or a short identifier before it has one.
 - **Session status.** Each session shows whether it is parked, idle, idle while
   background work Claude started still runs, running, waiting on the user, or
   archived, as soon as the session list shows it.
@@ -160,7 +160,7 @@ title.
 - **Model within its harness.** An existing session can change its model only
   within its harness.
 - **Effort across models.** Choosing a model keeps the effort when the new model
-  offers it.
+  offers it, and otherwise takes the new model's first effort level.
 - **Retired settings.** A model or permission mode the configuration no longer
   offers still shows as the session's setting.
 - **Claude's own mode changes.** When Claude changes its own permission mode, as

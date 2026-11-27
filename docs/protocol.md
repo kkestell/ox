@@ -56,7 +56,7 @@ A child session is one a session's Claude started with
 `parent_id`, the session that started it; `name`, unique among that parent's
 children; and `title`, its label. A child belongs to its parent's workspace,
 whatever its directory. A session without `child` is top-level. Children nest at
-most [`max_child_depth`](#configuration) levels below a top-level session.
+most [`max_child_depth`](configuration.md) levels below a top-level session.
 
 A new session starts parked. `session/send` starts its harness and resumes its
 conversation when a resume token is available. When the harness no longer has
@@ -74,58 +74,28 @@ call, or a resumed conversation whose history has a `CronCreate` call, keeps the
 harness active until its next
 [Stop hook schedule report](harnesses/claude-code.md#8-background-work-and-schedules).
 
-## Configuration
+## Harness methods
 
-The daemon reads the harnesses it offers from `ox/config.json` beneath
-`$XDG_CONFIG_HOME`, or beneath `~/.config` when that is unset; `-config
-/absolute/path/to/config.json` chooses a different file. A missing file is
-written with the built-in catalog of Claude Code and Ur, creating its directory,
-and then read. The daemon validates harness names at startup. `ox` reads the
-same file, for its optional `tailscale_ip`.
+### `harness/list`
 
-Each harness lists at least one model, each with the effort levels it takes, and
-at least one permission mode. Every choice has a nonempty `id`, unique within
-its list and passed to the harness, and a nonempty `name` to show. For Claude,
-use `manual`, not its alias `default`. Ur takes the permission modes `manual`,
-where each shell command asks for approval first, and `auto`, where every
-command runs without asking, and the effort levels `max`, `xhigh`, `high`,
-`medium`, `low`, `minimal`, and `none`, which it sends to OpenRouter as the
-reasoning effort. An Ur model may list `providers`, the OpenRouter providers
-that serve it, in order; its requests go to those alone. Claude's optional
-`thinking_summaries`, off unless set to `true`, has Claude stream a summary of
-its thinking as [`reasoning_delta`](#session-updates). A model with no effort
-levels omits `efforts` or lists none, and takes an empty `effort`. The required
-`defaults` name the harness, model, effort, and permission mode a new session
-starts with, each one of the configured choices; the daemon refuses to start
-otherwise. The required `max_child_depth`, at least 1, is how many levels of
-child sessions a top-level session can have beneath it; the built-in
-configuration sets 2. The optional `tailscale_ip` is this machine's Tailscale
-IPv4 address, within `100.64.0.0/10`; see [Web UI](architecture.md#web-ui) for
-what setting it does.
-
-```json
-{"harnesses":{"claude":{"models":[{"id":"claude-haiku-5-5","name":"Haiku 5.5","efforts":[{"id":"low","name":"Low"},{"id":"high","name":"High"}]}],"permission_modes":[{"id":"manual","name":"Manual"},{"id":"plan","name":"Plan"}]}},"defaults":{"harness":"claude","model":"claude-haiku-5-5","effort":"low","permission_mode":"plan"},"max_child_depth":2,"tailscale_ip":"100.101.102.103"}
-```
+Returns `harnesses`, the configured harnesses with their models, effort levels,
+and permission modes as the [configuration file](configuration.md) lists them,
+and `defaults`, the harness, model, effort, and permission mode a new session
+starts with.
 
 Clients offer these choices, and the daemon accepts only these in
 [`session/create`](#sessioncreate) and [`session/configure`](#sessionconfigure).
 It passes them to the harness as they are, so a configured value the harness
-does not accept surfaces as its error, usually after the next `session/send`.
-Claude ignores an effort level it does not know, so the daemon refuses to start
-with one and a session stored with one fails to start; see
-[Claude's effort levels](harnesses/claude-code.md#initialize-first).
-
-### `harness/list`
-
-Returns the configuration's harnesses, new-session defaults, `max_child_depth`,
-and `tailscale_ip` when it is set.
+does not accept surfaces as its error, usually after the next `session/send`. A
+session stored with a Claude effort level Claude does not take fails to start;
+see [Claude's effort levels](harnesses/claude-code.md#initialize-first).
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"harness/list","params":{}}
 ```
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"harnesses":{"claude":{"models":[{"id":"claude-haiku-5-5","name":"Haiku 5.5","efforts":[{"id":"low","name":"Low"}]}],"permission_modes":[{"id":"manual","name":"Manual"}]}},"defaults":{"harness":"claude","model":"claude-haiku-5-5","effort":"low","permission_mode":"manual"},"max_child_depth":2}}
+{"jsonrpc":"2.0","id":1,"result":{"harnesses":{"claude":{"models":[{"id":"claude-haiku-5-5","name":"Haiku 5.5","efforts":[{"id":"low","name":"Low"}]}],"permission_modes":[{"id":"manual","name":"Manual"}]}},"defaults":{"harness":"claude","model":"claude-haiku-5-5","effort":"low","permission_mode":"manual"}}}
 ```
 
 ## Workspace methods
@@ -236,20 +206,19 @@ Requires exactly one of `session_id` or `workspace_id`, which names the
 directory, as for [`workspace/list_folder`](#workspacelist_folder). Returns the
 files in the directory that differ from its base, with their diffs.
 
-The base is where the directory's branch left the workspace's branch: the merge
-base of the directory's `HEAD` and the workspace's `HEAD`. For a worktree
-session it is the commit the worktree forked from; for a session in the
-workspace directory, and for a workspace, it is `HEAD` itself, so only
-uncommitted edits and untracked files show. In a repository with no commits, the
-base is the empty tree, so every file shows as added. The listing counts commits
-since the base, uncommitted edits, and untracked files Git does not ignore, and
-leaves out files outside the directory. Each path shows once, with its change
-from the base, including a file removed from the index but kept on disk and a
-file staged while the listing runs. A renamed file shows as its old path deleted
-and its new path added. A file whose type changed, such as a regular file that
-became a symlink, shows as modified, its old content removed and its new content
-added. A submodule shows as a change to the commit it records. Listing writes
-nothing in the repository.
+The base is the merge base of the directory's `HEAD` and the workspace's `HEAD`:
+the newest commit both branches contain, where the directory's branch last left
+the workspace's branch. For a session in the workspace directory, and for a
+workspace, it is `HEAD` itself, so only uncommitted edits and untracked files
+show. In a repository with no commits, the base is the empty tree, so every file
+shows as added. The listing counts commits since the base, uncommitted edits,
+and untracked files Git does not ignore, and leaves out files outside the
+directory. Each path shows once, with its change from the base, including a file
+removed from the index but kept on disk and a file staged while the listing
+runs. A renamed file shows as its old path deleted and its new path added. A
+file whose type changed, such as a regular file that became a symlink, shows as
+modified, its old content removed and its new content added. A submodule shows
+as a change to the commit it records. Listing writes nothing in the repository.
 
 The result holds `branch`, the directory's current branch, omitted when `HEAD`
 is detached, and `files`, sorted by `path`. Each file has:
@@ -290,7 +259,7 @@ reason.
 
 Records a parked session in the workspace and returns its ID. The first
 [`session/send`](#sessionsend) starts the harness, so startup errors surface
-after it. A setting the [configuration](#configuration) does not offer returns
+after it. A setting [`harness/list`](#harnesslist) does not offer returns
 `-32602`.
 
 | Parameter         | Required | Meaning                                                                                                                                                           |
@@ -430,10 +399,13 @@ the conversation. Deleting the session deletes its history.
 
 Requires `session_id` and at least one of `model`, `effort`, and
 `permission_mode`. Changes the settings given and keeps the others, preserving
-the conversation, and stores them for the session's later processes. The changed
-settings must be configured choices, as at creation: a changed model or effort
-is checked as a pair, and a changed permission mode alone. A stored setting the
-configuration no longer offers stays until it is changed.
+the conversation, and stores them for the session's later processes. A model
+given without an effort keeps the session's effort when the new model offers it,
+and otherwise takes the model's first effort level, or none for a model without
+effort levels. The changed settings must be configured choices, as at creation:
+a changed model or effort is checked as a pair, and a changed permission mode
+alone. A stored setting the configuration no longer offers stays until it is
+changed.
 
 ```json
 {"jsonrpc":"2.0","id":6,"method":"session/configure","params":{"session_id":"session-id","effort":"high"}}
@@ -683,16 +655,16 @@ notifications precede the corresponding `idle` or `exited` update:
 
 Every connection is told when workspaces and sessions come and go:
 
-| Method               | `params`                                                                                                                                                                                            | Meaning                                                                                                                                                                                                        |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `workspace/created`  | `workspace_id`, `path`, `created_at`                                                                                                                                                                | A workspace was registered.                                                                                                                                                                                    |
-| `workspace/removed`  | `workspace_id`                                                                                                                                                                                      | A workspace was removed.                                                                                                                                                                                       |
-| `session/created`    | `session_id`, `workspace_id`, `label` (a child's title, or the first 8 characters of its ID), `harness`, `created_at`, `directory`, `state`, a worktree session's `worktree`, and a child's `child` | A session was created: a top-level session `parked`, a child `idle` and started with its first message, whose updates follow.                                                                                  |
-| `session/labeled`    | `session_id`, `label`                                                                                                                                                                               | A top-level session took the first prompt the user sent it, and `label` is its first line, shortened to 48 characters; sent again with the title the titling model generated from that prompt once it arrives. |
-| `session/configured` | `session_id`, `model`, `effort`, `permission_mode`                                                                                                                                                  | A session's settings changed, by `session/configure` or by the harness itself, such as Claude leaving plan mode; the fields are the settings the session now uses.                                             |
-| `session/destroyed`  | `session_id`                                                                                                                                                                                        | A session was destroyed, after its last update.                                                                                                                                                                |
-| `session/archived`   | `session_id`                                                                                                                                                                                        | A session was archived, before the `parked` update that stops its process.                                                                                                                                     |
-| `session/unarchived` | `session_id`                                                                                                                                                                                        | A session was unarchived.                                                                                                                                                                                      |
+| Method               | `params`                                                                                                                                                                                            | Meaning                                                                                                                                                                                                                                   |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `workspace/created`  | `workspace_id`, `path`, `created_at`                                                                                                                                                                | A workspace was registered.                                                                                                                                                                                                               |
+| `workspace/removed`  | `workspace_id`                                                                                                                                                                                      | A workspace was removed.                                                                                                                                                                                                                  |
+| `session/created`    | `session_id`, `workspace_id`, `label` (a child's title, or the first 8 characters of its ID), `harness`, `created_at`, `directory`, `state`, a worktree session's `worktree`, and a child's `child` | A session was created: a top-level session `parked`, a child `idle` and started with its first message, whose updates follow.                                                                                                             |
+| `session/labeled`    | `session_id`, `label`                                                                                                                                                                               | A top-level session took the first prompt the user sent it with text, and `label` is that text's first nonblank line, shortened to 48 characters; sent again with the title the titling model generated from that prompt once it arrives. |
+| `session/configured` | `session_id`, `model`, `effort`, `permission_mode`                                                                                                                                                  | A session's settings changed, by `session/configure` or by the harness itself, such as Claude leaving plan mode; the fields are the settings the session now uses.                                                                        |
+| `session/destroyed`  | `session_id`                                                                                                                                                                                        | A session was destroyed, after its last update.                                                                                                                                                                                           |
+| `session/archived`   | `session_id`                                                                                                                                                                                        | A session was archived, before the `parked` update that stops its process.                                                                                                                                                                |
+| `session/unarchived` | `session_id`                                                                                                                                                                                        | A session was unarchived.                                                                                                                                                                                                                 |
 
 ```json
 {"jsonrpc":"2.0","method":"session/created","params":{"session_id":"session-id","workspace_id":"workspace-id","label":"session-","harness":"claude","created_at":"2026-11-18T19:53:48.416Z","directory":"/Users/kyle/src/ox","state":"parked"}}
@@ -751,11 +723,11 @@ JSON that [`harness/list`](#harnesslist) returns.
 JSON array of every session except the caller and archived sessions, in
 workspace order and oldest first. Each entry has `session_id`, `label` (a
 child's title, or else the title the titling model generated from the first
-prompt the user sent it, or else that prompt's first line shortened to 48
-characters, or the first 8 characters of its ID), `workspace` (the path), its
-[`directory` and `worktree`](#workspaces-and-sessions), `harness`, `model`,
-`effort`, `permission_mode`, and `state` (`parked`, or the execution state,
-including `background`).
+prompt with text the user sent it, or else that prompt's first nonblank line
+shortened to 48 characters, or the first 8 characters of its ID), `workspace`
+(the path), its [`directory` and `worktree`](#workspaces-and-sessions),
+`harness`, `model`, `effort`, `permission_mode`, and `state` (`parked`, or the
+execution state, including `background`).
 
 `send_message` takes `to`, a session ID, and `text`. It queues the text behind
 every input that session has not taken, starting the session first when parked,
