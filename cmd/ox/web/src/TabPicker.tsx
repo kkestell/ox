@@ -29,26 +29,36 @@ export type PickerTab = {
   attention?: Attention;
 };
 
-// TabPicker shows the active tab's label and opens a menu of every tab, the
-// narrow layout's tab strip. Choosing a tab shows it; a closable tab has a
-// button that closes it.
+// TabPicker shows the active tab's label and, while more than one tab is open,
+// opens a menu of every tab, the narrow layout's tab strip. Choosing a tab
+// shows it; a closable tab has a button that closes it.
 export function TabPicker(props: { tabs: PickerTab[]; onPick(key: string): void; onClose(key: string): void }) {
   const id = createUniqueId();
   let menu!: HTMLDivElement;
   const current = () => props.tabs.find((tab) => tab.active);
   // The button carries the mark of a tab that needs the user and is not shown.
   const hidden = () => props.tabs.find((tab) => tab.attention && !tab.active)?.attention;
+  const shown = () => (
+    <Show when={current()}>
+      {(tab) => (
+        <>
+          <span class={["icon", tab().icon]} />
+          <span class="label">{tab().label}</span>
+        </>
+      )}
+    </Show>
+  );
   return (
-    <>
+    <Show
+      when={props.tabs.length > 1}
+      fallback={
+        <div class="tab-picker" title={current()?.title}>
+          {shown()}
+        </div>
+      }
+    >
       <button type="button" class="tab-picker" popovertarget={id} aria-haspopup="menu" title={current()?.title}>
-        <Show when={current()}>
-          {(tab) => (
-            <>
-              <span class={["icon", tab().icon]} />
-              <span class="label">{tab().label}</span>
-            </>
-          )}
-        </Show>
+        {shown()}
         <Show when={hidden()}>{(attention) => <AttentionMark attention={attention()} />}</Show>
         <span class="icon chevrons-up-down" />
       </button>
@@ -85,6 +95,6 @@ export function TabPicker(props: { tabs: PickerTab[]; onPick(key: string): void;
           )}
         </For>
       </div>
-    </>
+    </Show>
   );
 }
