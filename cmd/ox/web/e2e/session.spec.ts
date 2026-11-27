@@ -1409,6 +1409,7 @@ test("a question form shows no raw input", async ({ ox: page }) => {
 test("a long question keeps its buttons in view", async ({ ox: page }) => {
   await newDraft(page);
   await page.setViewportSize({ width: 390, height: 700 });
+  await expect(sessions(page)).toBeHidden();
   const options = Array.from({ length: 12 }, (_, i) => ({
     label: `Option ${i + 1}`,
     description: "A description long enough to wrap onto a second line on a phone",
@@ -1430,6 +1431,7 @@ test("a long question keeps its buttons in view", async ({ ox: page }) => {
 test("a long permission card keeps Submit in view", async ({ ox: page }) => {
   await newDraft(page);
   await page.setViewportSize({ width: 390, height: 700 });
+  await expect(sessions(page)).toBeHidden();
   const plan = Array.from({ length: 40 }, (_, i) => `${i + 1}. Step ${i + 1} of the plan`).join("\n");
   const approval = await ask(page, "ExitPlanMode", JSON.stringify({ plan }));
   await expect(approval.getByRole("button", { name: "Submit" })).toBeInViewport({ ratio: 1 });
