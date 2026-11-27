@@ -29,10 +29,12 @@ session can have beneath it; the built-in configuration sets 2. The optional
 `tailscale_ip` is this machine's Tailscale IPv4 address, within `100.64.0.0/10`;
 see [Web UI](architecture.md#web-ui) for what setting it does.
 
-`oxd` refuses to start when `harnesses` names any other harness, when a default
-or titling choice is not configured, or when a Claude effort level is one Claude
-does not take; see
-[Claude's effort levels](harnesses/claude-code.md#initialize-first).
+`oxd` refuses to start when `harnesses` names any other harness, or when a
+default or titling choice is not configured. When the configuration offers
+Claude, `oxd` runs Claude at startup to read its model list, and refuses to
+start when it cannot run Claude, when a Claude model is one Claude does not
+list, or when an effort level is one Claude does not list for that model; see
+[Claude's model list](harnesses/claude-code.md#initialize-first).
 
 ```json
 {

@@ -4,20 +4,31 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kkestell/ox/internal/agent"
 )
 
 // Harness starts Claude agents, which stream a summary of Claude's thinking
-// when thinkingSummaries is set.
+// when thinkingSummaries is set. It reads Claude's model list once, the first
+// time it checks a model, and refuses a model or effort level the list does
+// not offer, both in the configuration and in a session it starts.
 func Harness(thinkingSummaries bool) agent.Harness {
+	check := checkEfforts(sync.OnceValues(discoverModels))
 	return agent.Harness{
 		Start: func(options agent.Options) (agent.Agent, error) {
+			var efforts []string
+			if options.Settings.Effort != "" {
+				efforts = []string{options.Settings.Effort}
+			}
+			if err := check(options.Settings.Model, efforts); err != nil {
+				return nil, err
+			}
 			return Start(options, thinkingSummaries)
 		},
 		CheckPrompt:            checkPrompt,
-		CheckEffort:            checkEffort,
+		CheckEfforts:           check,
 		CheckPermissionMode:    checkPermissionMode,
 		TakesThinkingSummaries: true,
 		Ask:                    Ask,

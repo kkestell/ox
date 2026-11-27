@@ -4,7 +4,7 @@ import { mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Page, Route } from "@playwright/test";
 import type { Services } from "./services";
-import { fakeConfig, haikuConfig } from "./services";
+import { fakeConfig } from "./services";
 import {
   allow,
   ask,
@@ -1530,7 +1530,16 @@ test("a reconnect keeps an expanded tool call open", async ({ ox: page, services
 
 test("a session whose harness is no longer offered shows its settings", async ({ ox: page, services }) => {
   await newSession(page, "harness retired");
-  await services.restartDaemon(haikuConfig);
+  const ur = {
+    models: [{ id: "deepseek/deepseek-v4.1-flash-1017", name: "DeepSeek", efforts: [{ id: "low", name: "Low" }] }],
+    permission_modes: [{ id: "manual", name: "Manual" }],
+  };
+  await services.restartDaemon({
+    harnesses: { ur },
+    defaults: { harness: "ur", model: ur.models[0].id, effort: "low", permission_mode: "manual" },
+    titling: { harness: "ur", model: ur.models[0].id, effort: "low" },
+    max_child_depth: 2,
+  });
   await expect(model(page)).toContainText("echo");
   await expect(permissionMode(page)).toHaveValue("manual");
 });
