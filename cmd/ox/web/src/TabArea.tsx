@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createSignal, For, Match, Show, Switch, untrack } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Match, Show, Switch, untrack } from "solid-js";
 import { ChangesView, Counts, type Listing } from "./Changes";
 import { fileDrag, tabDrag } from "./drag";
 import { FileView } from "./FileView";
@@ -12,10 +12,12 @@ import {
   activate,
   type Branch,
   closeTab,
+  columns,
   dropZone,
   type FileMode,
   findGroup,
   findTab,
+  fits,
   focus,
   type Group,
   groups,
@@ -68,7 +70,7 @@ export function TabArea(props: Props) {
   const edit = props.control.edit;
   // over is where the drag in progress would drop, the page's own fact.
   const [over, setOver] = createSignal<{ group: number; target: Target }>();
-  const area: Area = { props, layout, edit, over, setOver };
+  const area: Area = { props, layout, edit, over, setOver, dragging: {} };
   const focused = () => findGroup(layout(), layout().focused) as Group;
   return (
     <Show when={!props.panels.narrow()} fallback={<GroupView area={area} group={focused()} phone />}>
@@ -85,6 +87,8 @@ type Area = {
   edit: SessionControl["edit"];
   over: () => { group: number; target: Target } | undefined;
   setOver(over: { group: number; target: Target } | undefined): void;
+  // The key of the tab being dragged; a drag from the file tree has none.
+  dragging: { key?: string };
 };
 
 const nodeKey = (node: Branch): string =>
@@ -166,6 +170,18 @@ function GroupView(props: { area: Area; group: Group; phone?: boolean }) {
     const path = event.dataTransfer?.getData(fileDrag);
     return path ? { kind: "file", path } : undefined;
   };
+  // allowed is whether a drop at target keeps every group at its minimum width:
+  // a split beside a group needs room, any other drop does not. The minimum is
+  // the tab area's own, over the columns its layout has now.
+  const allowed = (target: Target, tab: Tab | undefined) => {
+    if (target.kind !== "zone" || (target.zone !== "left" && target.zone !== "right")) return true;
+    const root = body.closest<HTMLElement>(".tab-area");
+    if (!root) return true;
+    const layout = area.layout();
+    const min = Number.parseFloat(getComputedStyle(root).minWidth) / columns(layout.root);
+    const moving = tab ?? { kind: "file" as const, path: "" };
+    return fits(layout, moving, target, root.clientWidth, min);
+  };
   const preview = () => {
     const current = area.over();
     return current?.group === props.group.id && current.target.kind === "zone" ? current.target.zone : undefined;
@@ -182,8 +198,14 @@ function GroupView(props: { area: Area; group: Group; phone?: boolean }) {
       onFocusIn={() => area.edit((l) => focus(l, props.group.id))}
       onDragOver={(event) => {
         if (props.phone || !accepts(event)) return;
+        const target = targetAt(event);
+        const key = area.dragging.key;
+        if (!allowed(target, key ? findTab(area.layout(), key) : undefined)) {
+          area.setOver(undefined);
+          return;
+        }
         event.preventDefault();
-        area.setOver({ group: props.group.id, target: targetAt(event) });
+        area.setOver({ group: props.group.id, target });
       }}
       onDragLeave={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget as globalThis.Node | null)) area.setOver(undefined);
@@ -194,7 +216,7 @@ function GroupView(props: { area: Area; group: Group; phone?: boolean }) {
         const tab = dropped(event);
         const target = targetAt(event);
         area.setOver(undefined);
-        if (tab) area.edit((l) => placeTab(l, tab, target));
+        if (tab && allowed(target, tab)) area.edit((l) => placeTab(l, tab, target));
       }}
     >
       <Show
@@ -238,6 +260,11 @@ function GroupView(props: { area: Area; group: Group; phone?: boolean }) {
     </section>
   );
 }
+
+const parentOf = (path: string) => {
+  const at = path.lastIndexOf("/");
+  return at > 0 ? path.slice(0, at) : undefined;
+};
 
 // label and title are a tab's text and its tooltip.
 function labelOf(chat: Chat, tab: Tab) {
@@ -301,12 +328,26 @@ function Actions(props: { area: Area; tab: Tab }) {
 function Strip(props: { area: Area; group: Group; ref: (el: HTMLDivElement) => void; dropping: boolean }) {
   const { area } = props;
   const id = () => props.group.id;
+  let tabs!: HTMLDivElement;
+  // Whatever activates a tab brings it into the strip: the tab's own strip
+  // scrolls, and no ancestor does.
+  createEffect(
+    () => tabKey(props.group.tabs[props.group.active]),
+    () => {
+      const tab = tabs.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.parentElement;
+      if (!tab) return;
+      const box = tab.getBoundingClientRect();
+      const strip = tabs.getBoundingClientRect();
+      if (box.left < strip.left) tabs.scrollLeft += box.left - strip.left;
+      else if (box.right > strip.right) tabs.scrollLeft += box.right - strip.right;
+    },
+  );
   return (
     <div ref={props.ref} class={["strip", { dropping: props.dropping }]}>
       <Show when={leftmostTop(area.layout()) === id() && !area.props.panels.sessions()}>
         <SessionsToggle panels={area.props.panels} />
       </Show>
-      <div role="tablist" aria-label="Tabs" class="tabs">
+      <div ref={tabs} role="tablist" aria-label="Tabs" class="tabs">
         <For each={props.group.tabs} keyed={tabKey}>
           {(tab, i) => {
             const label = () => labelOf(area.props.chat, tab());
@@ -317,10 +358,14 @@ function Strip(props: { area: Area; group: Group; ref: (el: HTMLDivElement) => v
                 data-index={i()}
                 draggable="true"
                 onDragStart={(event) => {
+                  area.dragging.key = tabKey(tab());
                   event.dataTransfer?.setData(tabDrag, tabKey(tab()));
                   if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
                 }}
-                onDragEnd={() => area.setOver(undefined)}
+                onDragEnd={() => {
+                  area.dragging.key = undefined;
+                  area.setOver(undefined);
+                }}
               >
                 <button
                   type="button"
@@ -376,6 +421,8 @@ function PhoneBar(props: { area: Area }) {
       group.tabs.map((tab, i) => ({
         key: tabKey(tab),
         label: labelOf(area.props.chat, tab),
+        title: titleOf(area.props.chat, tab),
+        detail: tab.kind === "file" ? parentOf(tab.path) : undefined,
         icon: icons[tab.kind],
         counts: tab.kind === "changes" ? area.props.listing.total() : undefined,
         active: group.id === shown && group.active === i,

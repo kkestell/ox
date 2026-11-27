@@ -2,12 +2,12 @@ import { createEffect, createSignal, For, Match, onSettled, Show, Switch } from 
 import { Disconnected } from "./connection";
 import { createDraft, type Draft, NewSessionView } from "./NewSessionView";
 import { OxProvider, type SessionControl, useOx } from "./ox";
-import { createPanels, PanelToggle, Sash, SessionsToggle } from "./Panels";
+import { createPanels, Sash, SessionsToggle } from "./Panels";
 import type { FileRoot } from "./protocol";
 import { SessionView } from "./SessionView";
 import { Sidebar } from "./Sidebar";
 import type { Chat } from "./TabArea";
-import { activate } from "./tabs";
+import { activate, columns } from "./tabs";
 import { Workspace } from "./Workspace";
 
 export type Selection = { kind: "session"; id: string } | { kind: "draft"; workspaceId: string };
@@ -131,16 +131,20 @@ function Layout() {
       </Switch>
     ),
   };
-  // With nothing selected, one bare strip carries both toggles.
+  // How many groups the selection's layout puts side by side.
+  const columnsOf = () => {
+    const current = files();
+    return current ? columns(current.control.layout().root) : 1;
+  };
+  // The panel and its toggle exist only where Workspace renders them.
+  const hasPanel = () => files() !== undefined;
+  // With nothing selected, one bare strip carries the sessions toggle.
   const BareStrip = () => (
     <section class="group">
       <div class="strip bare">
         <Show when={!panels.sessions()}>
           <SessionsToggle panels={panels} />
         </Show>
-        <div class="editor-actions">
-          <PanelToggle panels={panels} />
-        </div>
       </div>
     </section>
   );
@@ -175,14 +179,17 @@ function Layout() {
         hidden={!panels.sessions()}
         toggle={<SessionsToggle panels={panels} />}
       />
-      <Show when={panels.narrow() && (panels.sessions() || panels.right())}>
+      <Show when={panels.narrow() && (panels.sessions() || (panels.right() && hasPanel()))}>
         {/* biome-ignore lint/a11y/noStaticElementInteractions: a tap outside the drawer closes it; the header's toggles close it from the keyboard. */}
         <div class="scrim" onClick={() => panels.dismiss()} />
       </Show>
       <Show when={panels.sessions()}>
         <Sash label="Resize sessions" drag={(before) => (dx) => panels.setLeftWidth(before + dx)} />
       </Show>
-      <div class="center" style={{ "--tree": `${panels.rightWidth()}px` }}>
+      <div
+        class="center"
+        style={{ "--tree": `${panels.rightWidth()}px`, "--columns": panels.narrow() ? 1 : columnsOf() }}
+      >
         <Show when={ox.error()}>
           {(error) => (
             // A dropped stream that is reconnecting is routine, such as after the
