@@ -401,7 +401,7 @@ func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 		ID: cmp.Or(input.SessionID, newID()), Harness: input.Harness,
 		Model: input.Model, Effort: input.Effort, PermissionMode: input.PermissionMode,
 	}
-	result, err := s.createTopLevel(input.WorkspaceID, record, input.Worktree)
+	result, err := s.createTopLevel(input.WorkspaceID, record, input.Worktree, nil)
 	if err != nil {
 		reply(failure(id, err))
 		return
@@ -410,13 +410,15 @@ func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 }
 
 // createTopLevel creates the top-level session record describes in the
-// workspace, in a single s.mu section, or, with a worktree, in three steps: it
-// admits the creation under s.mu, makes the worktree without it, and publishes
-// the session under s.mu, deciding then whether the daemon, the workspace, and
-// another session with the ID allow it. A creation that does not publish
-// discards its worktree before it returns, and Close waits for every admitted
-// creation to return. It fills in record's directory and worktree.
-func (s *Server) createTopLevel(workspaceID string, record *store.Session, worktree bool) (created, error) {
+// workspace. It admits the creation under s.mu, then, without it, makes the
+// worktree, and, given first, launches the session and hands it first's
+// message. It publishes the session under s.mu, deciding then whether the
+// daemon, the workspace, and another session with the ID allow it. A
+// session without first is stored there. A creation that does not publish
+// discards its session and worktree before it returns, and Close waits for
+// every admitted creation to return. It fills in record's directory and
+// worktree.
+func (s *Server) createTopLevel(workspaceID string, record *store.Session, worktree bool, first func(*session) agent.Input) (created, error) {
 	s.mu.Lock()
 	w, existing, err := s.admitSessionLocked(workspaceID, record)
 	switch {
@@ -426,23 +428,28 @@ func (s *Server) createTopLevel(workspaceID string, record *store.Session, workt
 	case existing:
 		s.mu.Unlock()
 		return created{SessionID: record.ID, Existing: true}, nil
-	case !worktree:
-		err := s.addSession(w, record)
-		s.mu.Unlock()
-		return created{SessionID: record.ID}, err
 	}
 	s.creations.Add(1)
 	s.mu.Unlock()
 	defer s.creations.Done()
 
-	log.Printf("session %s: creating worktree in %s", record.ID, s.worktrees)
-	root, directory, err := addWorktree(w.path, s.worktrees)
-	if err != nil {
-		return created{}, err
+	root := ""
+	if worktree {
+		log.Printf("session %s: creating worktree in %s", record.ID, s.worktrees)
+		var directory string
+		if root, directory, err = addWorktree(w.path, s.worktrees); err != nil {
+			return created{}, err
+		}
+		record.Directory, record.Worktree = directory, root
 	}
-	record.Directory, record.Worktree = directory, root
 
-	var result created
+	var sess *session
+	if first != nil {
+		if sess, err = s.launch(w, record, first); err != nil {
+			return created{}, s.abandonWorktree(w, record.ID, root, err)
+		}
+	}
+
 	s.mu.Lock()
 	switch {
 	case s.closed:
@@ -450,24 +457,54 @@ func (s *Server) createTopLevel(workspaceID string, record *store.Session, workt
 	case !slices.Contains(s.workspaces, w):
 		err = errWorkspaceNotFound
 	default:
-		if existing, err = s.existingLocked(w, record.ID); existing {
-			result = created{SessionID: record.ID, Existing: true}
-		} else if err == nil {
-			if err = s.addSession(w, record); err == nil {
-				s.mu.Unlock()
-				return created{SessionID: record.ID}, nil
-			}
-		}
+		existing, err = s.existingLocked(w, record.ID)
+	}
+	if err == nil && !existing && sess == nil {
+		sess, err = s.storeSession(w, record)
+	}
+	if err == nil && !existing {
+		s.publishLocked(w, sess)
+		s.mu.Unlock()
+		go sess.run()
+		return created{SessionID: record.ID}, nil
 	}
 	s.mu.Unlock()
+	if sess != nil {
+		s.discardUnpublished(sess)
+	}
+	var result created
+	if existing {
+		result = created{SessionID: record.ID, Existing: true}
+	}
+	return result, s.abandonWorktree(w, record.ID, root, err)
+}
+
+// storeSession stores the session record describes in w and builds it,
+// unpublished. Its creation time is set here, just before it is published or
+// launched, so the list and the store order sessions alike.
+func (s *Server) storeSession(w *workspace, record *store.Session) (*session, error) {
+	record.CreatedAt = time.Now()
+	if err := s.store.AddSession(w.id, record); err != nil {
+		log.Printf("session %s: store session: %v", record.ID, err)
+		return nil, err
+	}
+	return s.newSession(record, w.path, ""), nil
+}
+
+// abandonWorktree removes the worktree at root, if any, of a creation that
+// did not publish, and returns err joined with any failure to remove it.
+func (s *Server) abandonWorktree(w *workspace, sessionID, root string, err error) error {
+	if root == "" {
+		return err
+	}
 	if discardErr := discardWorktree(w.path, root); discardErr != nil {
 		if err == nil {
-			log.Printf("session %s: %v", record.ID, discardErr)
+			log.Printf("session %s: %v", sessionID, discardErr)
 		} else {
 			err = errors.Join(err, discardErr)
 		}
 	}
-	return result, err
+	return err
 }
 
 // admitSessionLocked checks a top-level session's creation and returns its
@@ -508,21 +545,6 @@ func (s *Server) existingLocked(w *workspace, sessionID string) (bool, error) {
 		return false, &codedError{jsonrpc.InvalidParams, "session_id belongs to another workspace"}
 	}
 	return true, nil
-}
-
-// addSession stores a session in w, publishes it, and starts its goroutine.
-// Its creation time is set here, where it joins w's list, so the list and the
-// store order sessions alike. The caller holds s.mu.
-func (s *Server) addSession(w *workspace, record *store.Session) error {
-	record.CreatedAt = time.Now()
-	if err := s.store.AddSession(w.id, record); err != nil {
-		log.Printf("session %s: store session: %v", record.ID, err)
-		return err
-	}
-	sess := s.newSession(record, w.path, "")
-	s.publishLocked(w, sess)
-	go sess.run()
-	return nil
 }
 
 // publishLocked adds sess to w and to the sessions requests reach, and tells

@@ -660,6 +660,41 @@ func TestCreateSessionByDeletedCaller(t *testing.T) {
 	}
 }
 
+// An archived session cannot start a top-level session, and nothing is
+// published for its call.
+func TestCreateTopLevelSessionByArchivedCaller(t *testing.T) {
+	cfg := &config.Config{Harnesses: map[string]config.Harness{
+		"fake": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
+	}, MaxChildDepth: 1}
+	s, err := newServer(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c := connect(t, s)
+	var workspace struct {
+		WorkspaceID string `json:"workspace_id"`
+	}
+	json.Unmarshal(c.call("workspace/create", map[string]string{"path": t.TempDir()}), &workspace)
+	var caller struct {
+		SessionID string `json:"session_id"`
+	}
+	json.Unmarshal(c.call("session/create", map[string]string{
+		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "permission_mode": "manual",
+	}), &caller)
+	c.call("session/send", map[string]string{"session_id": caller.SessionID, "text": "hi"})
+	for c.update(caller.SessionID, agent.UpdateState).State != agent.StateIdle {
+	}
+	c.call("session/archive", map[string]string{"session_id": caller.SessionID})
+
+	if text, refused := attach(t, s, caller.SessionID).tool("create_top_level_session", map[string]any{"title": "T", "message": "hi", "worktree": false}); !refused || text != "session is archived" {
+		t.Fatalf("create_top_level_session by an archived caller returned %q, %v", text, refused)
+	}
+	if created := c.created(); len(created) != 1 {
+		t.Fatalf("an archived caller's session was published: %v", created)
+	}
+}
+
 // lockedBuffer collects log output written from any goroutine.
 type lockedBuffer struct {
 	mu  sync.Mutex
@@ -712,7 +747,7 @@ func TestFailedLaunchKeepsItsErrorWhenDeleteFails(t *testing.T) {
 	if text, refused := attach(t, s, parent.SessionID).tool("create_session", map[string]string{"name": "doomed", "title": "Doomed", "message": "hi"}); !refused || text != "no such harness binary" {
 		t.Fatalf("create_session with an unlaunchable harness and a closed store returned %q, %v", text, refused)
 	}
-	if !strings.Contains(logged.String(), "delete unpublished child") {
+	if !strings.Contains(logged.String(), "delete unpublished session") {
 		t.Fatalf("the failed delete was not logged: %q", logged.String())
 	}
 }
@@ -731,112 +766,122 @@ func (a sendGateAgent) Send(input agent.Input) error {
 	return a.Agent.Send(input)
 }
 
-// A child's launch and first message hold up no request to another session.
-// A child is published only once its agent holds its first message. A shutdown
-// that takes its snapshot during the launch or the first Send refuses the
-// child and leaves no trace.
-func TestChildStartHoldsUpNoOtherSession(t *testing.T) {
+// The launch and first message of a session another session starts, a child
+// or a top-level session, hold up no request to another session. The session
+// is published only once its agent holds its first message. A shutdown that
+// takes its snapshot during the launch or the first Send refuses the session
+// and leaves no trace.
+func TestStartHoldsUpNoOtherSession(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{
 		"fake": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
 	}, MaxChildDepth: 1}
-	for _, gateSend := range []bool{false, true} {
-		t.Run(map[bool]string{false: "start", true: "send"}[gateSend], func(t *testing.T) {
-			// The parent is never prompted, so the only start is the child's.
-			gated, release := make(chan struct{}), make(chan struct{})
-			gate := func() {
-				close(gated)
-				<-release
-			}
-			start := func(o agent.Options) (agent.Agent, error) {
-				if !gateSend {
-					gate()
+	tools := []struct {
+		name      string
+		arguments map[string]any
+	}{
+		{"create_session", map[string]any{"name": "late", "title": "Late", "message": "hi"}},
+		{"create_top_level_session", map[string]any{"title": "Late", "message": "hi", "worktree": false}},
+	}
+	for _, tool := range tools {
+		for _, gateSend := range []bool{false, true} {
+			t.Run(tool.name+"/"+map[bool]string{false: "start", true: "send"}[gateSend], func(t *testing.T) {
+				// The parent is never prompted, so the only start is the started
+				// session's.
+				gated, release := make(chan struct{}), make(chan struct{})
+				gate := func() {
+					close(gated)
+					<-release
 				}
-				a, err := fake.Start(o)
-				if gateSend && err == nil {
-					return sendGateAgent{a, func(agent.Input) error { gate(); return nil }}, nil
+				start := func(o agent.Options) (agent.Agent, error) {
+					if !gateSend {
+						gate()
+					}
+					a, err := fake.Start(o)
+					if gateSend && err == nil {
+						return sendGateAgent{a, func(agent.Input) error { gate(); return nil }}, nil
+					}
+					return a, err
 				}
-				return a, err
-			}
-			st := openStore(t)
-			s, err := newServer(st, cfg, 0, map[string]agent.Harness{"fake": {Start: start}}, MCP{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(s.Close)
-			unblock := sync.OnceFunc(func() { close(release) })
-			t.Cleanup(unblock)
-			c := connect(t, s)
-			addSession := func() string {
-				var workspace, session struct {
-					WorkspaceID string `json:"workspace_id"`
-					SessionID   string `json:"session_id"`
+				st := openStore(t)
+				s, err := newServer(st, cfg, 0, map[string]agent.Harness{"fake": {Start: start}}, MCP{})
+				if err != nil {
+					t.Fatal(err)
 				}
-				json.Unmarshal(c.call("workspace/create", map[string]string{"path": t.TempDir()}), &workspace)
-				json.Unmarshal(c.call("session/create", map[string]string{
-					"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "permission_mode": "manual",
-				}), &session)
-				return session.SessionID
-			}
-			parent, unrelated := addSession(), addSession()
-			fromParent := attach(t, s, parent)
-
-			creating := fromParent.send("tools/call", map[string]any{"name": "create_session",
-				"arguments": map[string]string{"name": "late", "title": "Late", "message": "hi"}})
-			<-gated
-			c.call("session/get", map[string]string{"session_id": unrelated})
-			c.call("harness/list", map[string]any{})
-			if created := c.created(); len(created) != 2 {
-				t.Fatalf("a child was published before its agent held its first message: %+v", created)
-			}
-
-			closed := make(chan struct{})
-			go func() {
-				s.Close()
-				close(closed)
-			}()
-			for c.request("session/get", map[string]string{"session_id": unrelated}).Error == nil {
-			}
-			unblock()
-
-			var result struct {
-				Content []struct {
-					Text string `json:"text"`
-				} `json:"content"`
-				IsError bool `json:"isError"`
-			}
-			json.Unmarshal(fromParent.response(creating).Result, &result)
-			if len(result.Content) != 1 || !result.IsError || result.Content[0].Text != "daemon is shutting down" {
-				t.Fatalf("create_session refused at publication returned %+v", result)
-			}
-			<-closed
-			if created := c.created(); len(created) != 2 {
-				t.Fatalf("a refused child was published: %+v", created)
-			}
-
-			s, err = newServer(st, cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(s.Close)
-			c = connect(t, s)
-			var listed struct {
-				Workspaces []struct {
-					Sessions []struct {
-						SessionID string `json:"session_id"`
-					} `json:"sessions"`
-				} `json:"workspaces"`
-			}
-			json.Unmarshal(c.call("workspace/list", map[string]any{}), &listed)
-			var ids []string
-			for _, w := range listed.Workspaces {
-				for _, sess := range w.Sessions {
-					ids = append(ids, sess.SessionID)
+				t.Cleanup(s.Close)
+				unblock := sync.OnceFunc(func() { close(release) })
+				t.Cleanup(unblock)
+				c := connect(t, s)
+				addSession := func() string {
+					var workspace, session struct {
+						WorkspaceID string `json:"workspace_id"`
+						SessionID   string `json:"session_id"`
+					}
+					json.Unmarshal(c.call("workspace/create", map[string]string{"path": t.TempDir()}), &workspace)
+					json.Unmarshal(c.call("session/create", map[string]string{
+						"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "permission_mode": "manual",
+					}), &session)
+					return session.SessionID
 				}
-			}
-			if want := []string{parent, unrelated}; !slices.Equal(ids, want) {
-				t.Fatalf("after a restart workspace/list listed %v, want %v", ids, want)
-			}
-		})
+				parent, unrelated := addSession(), addSession()
+				fromParent := attach(t, s, parent)
+
+				creating := fromParent.send("tools/call", map[string]any{"name": tool.name, "arguments": tool.arguments})
+				<-gated
+				c.call("session/get", map[string]string{"session_id": unrelated})
+				c.call("harness/list", map[string]any{})
+				if created := c.created(); len(created) != 2 {
+					t.Fatalf("a session was published before its agent held its first message: %+v", created)
+				}
+
+				closed := make(chan struct{})
+				go func() {
+					s.Close()
+					close(closed)
+				}()
+				for c.request("session/get", map[string]string{"session_id": unrelated}).Error == nil {
+				}
+				unblock()
+
+				var result struct {
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+					IsError bool `json:"isError"`
+				}
+				json.Unmarshal(fromParent.response(creating).Result, &result)
+				if len(result.Content) != 1 || !result.IsError || result.Content[0].Text != "daemon is shutting down" {
+					t.Fatalf("%s refused at publication returned %+v", tool.name, result)
+				}
+				<-closed
+				if created := c.created(); len(created) != 2 {
+					t.Fatalf("a refused session was published: %+v", created)
+				}
+
+				s, err = newServer(st, cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(s.Close)
+				c = connect(t, s)
+				var listed struct {
+					Workspaces []struct {
+						Sessions []struct {
+							SessionID string `json:"session_id"`
+						} `json:"sessions"`
+					} `json:"workspaces"`
+				}
+				json.Unmarshal(c.call("workspace/list", map[string]any{}), &listed)
+				var ids []string
+				for _, w := range listed.Workspaces {
+					for _, sess := range w.Sessions {
+						ids = append(ids, sess.SessionID)
+					}
+				}
+				if want := []string{parent, unrelated}; !slices.Equal(ids, want) {
+					t.Fatalf("after a restart workspace/list listed %v, want %v", ids, want)
+				}
+			})
+		}
 	}
 }
 
@@ -1636,13 +1681,22 @@ func TestCreateTopLevelSession(t *testing.T) {
 	plain := t.TempDir()
 	worktrees := t.TempDir()
 	cfg := &config.Config{
-		Harnesses: map[string]config.Harness{"fake": {
-			Models:          []config.Model{{ID: "m"}, {ID: "n"}},
-			PermissionModes: []config.Option{{ID: "manual"}, {ID: "plan"}},
-		}},
+		Harnesses: map[string]config.Harness{
+			"fake": {
+				Models:          []config.Model{{ID: "m"}, {ID: "n"}},
+				PermissionModes: []config.Option{{ID: "manual"}, {ID: "plan"}},
+			},
+			"broken": {
+				Models:          []config.Model{{ID: "m"}, {ID: "n"}},
+				PermissionModes: []config.Option{{ID: "manual"}, {ID: "plan"}},
+			},
+		},
 		Titling: config.Titling{Harness: "fake", Model: "m"}, MaxChildDepth: 1,
 	}
-	harnesses := map[string]agent.Harness{"fake": {Start: fake.Start, Ask: fake.Ask}}
+	harnesses := map[string]agent.Harness{
+		"fake":   {Start: fake.Start, Ask: fake.Ask},
+		"broken": {Start: func(agent.Options) (agent.Agent, error) { return nil, errors.New("no such harness binary") }},
+	}
 	st := openStore(t)
 	serve := func() (*Server, *client) {
 		t.Helper()
@@ -1715,6 +1769,33 @@ func TestCreateTopLevelSession(t *testing.T) {
 	nothingLeft(t, repo, worktrees)
 	if created := c.created(); len(created) != 1 {
 		t.Fatalf("the refused creation was published: %v", created)
+	}
+
+	t.Log("a harness that cannot launch refuses with its error and leaves nothing, with or without a worktree")
+	for _, arguments := range []map[string]any{
+		{"title": "T", "message": "hi", "harness": "broken", "model": "m"},
+		{"title": "T", "message": "hi", "harness": "broken", "model": "m", "worktree": false},
+	} {
+		if text, refused := fromCreator.tool("create_top_level_session", arguments); !refused || text != "no such harness binary" {
+			t.Fatalf("create_top_level_session %v returned %q, %v", arguments, text, refused)
+		}
+		nothingLeft(t, repo, worktrees)
+		if created := c.created(); len(created) != 1 {
+			t.Fatalf("a session that could not launch was published: %v", created)
+		}
+		workspaces, err := st.Workspaces()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var stored []string
+		for _, w := range workspaces {
+			for _, record := range w.Sessions {
+				stored = append(stored, record.ID)
+			}
+		}
+		if !slices.Equal(stored, []string{creator}) {
+			t.Fatalf("the store holds sessions %v, want only the creator", stored)
+		}
 	}
 
 	t.Log("by default the session runs in a new worktree, with the creator's permission mode, and hears from it first")

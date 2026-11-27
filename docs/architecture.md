@@ -210,12 +210,16 @@ the parent's goroutine, none can appear during destroy.
 
 **Started sessions (`create_top_level_session`):** a session the user created
 can start a top-level session. The call goroutine finds the workspace, posts
-once to the caller's goroutine to resolve the settings as for a child, creates
-the session through `createTopLevel` as `session/create` does, and then posts
-the first message to the published session. The session's `creator`, stored in a
-`creators` row with its session row and its title in a `titles` row, is fixed at
-creation. Started sessions are not children: they do not block deleting the
-creator, are not archived with it, and own their worktrees.
+once to the caller's goroutine to refuse an archived or deleting caller and
+resolve the settings as for a child, then creates the session through
+`createTopLevel` with its first message. As for a child, `createTopLevel` stores
+and launches the session and hands it the message off the lock, and publishes it
+only once it holds the message; a failure, or a shutdown that arrives meanwhile,
+stops the agent, deletes the row, and discards the worktree. The session's
+`creator`, stored in a `creators` row with its session row and its title in a
+`titles` row, is fixed at creation. Started sessions are not children: they do
+not block deleting the creator, are not archived with it, and own their
+worktrees.
 
 **Turn reports:**
 
@@ -265,19 +269,23 @@ closed and git's stderr surfaced as the error.
 `create_top_level_session` both go through `Server.createTopLevel`.
 
 1. Under `Server.mu`, run normal creation checks and register in
-   `Server.creations`.
-2. Without the lock, create the git worktree under a fresh name on a matching
-   branch with hooks disabled, and verify the workspace's copy exists inside it,
-   then copy the ignored files the repository's `.worktreeinclude` lists.
-3. Under `Server.mu`, refuse if shutting down or the workspace is gone, return
-   the existing session if the same ID appeared meanwhile, or store and publish
-   the session.
+   `Server.creations`, as every admitted creation does.
+2. Without the lock, with `worktree`, create the git worktree under a fresh name
+   on a matching branch with hooks disabled, and verify the workspace's copy
+   exists inside it, then copy the ignored files the repository's
+   `.worktreeinclude` lists.
+3. Without the lock, for a session Claude started, store it, launch its harness,
+   and hand it its first message.
+4. Under `Server.mu`, refuse if shutting down or the workspace is gone, return
+   the existing session if the same ID appeared meanwhile, or publish the
+   session, storing it first when step 3 did not.
 
 Publication is the sole ownership transfer from the request to the session; any
-other outcome force-removes the worktree and branch before replying. `Close`
-sets the shutdown flag (blocking new creations), waits for sessions, and then
-waits for `Server.creations`. A second stop signal exits immediately and can
-leave an in-progress checkout behind (logged with its session ID).
+other outcome stops a launched agent, deletes its row, and force-removes the
+worktree and branch before replying. `Close` sets the shutdown flag (blocking
+new creations), waits for sessions, and then waits for `Server.creations`. A
+second stop signal exits immediately and can leave an in-progress checkout
+behind (logged with its session ID).
 
 **Ownership:** `Server.worktreeOwnerLocked` maps a physical path to its owning
 worktree session. `workspace/create` refuses any path it owns, and

@@ -631,8 +631,9 @@ func (sess *session) update(update agent.Update) {
 	case agent.UpdateParked:
 		sess.state = agent.StateParked
 	}
-	// A child's creator holds it outside membership until its agent has
-	// accepted the first input; publication then reports its state.
+	// A session another session starts, child or top-level, is held outside
+	// membership until its agent has accepted the first input; publication
+	// then reports its state.
 	if s.sessions[sess.id] == sess {
 		s.broadcast("session/update", notification)
 		if update.Type == agent.UpdateState || update.Type == agent.UpdateParked {
