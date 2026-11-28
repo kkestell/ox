@@ -66,11 +66,11 @@ One or two sentences: what the change does, and whether it is ready for review.
 
 **Findings:** F1 fixed; F2 recorded as #123; F3 not fixed: its defect does not exist, because …
 
-**Open choices:** each choice the plan or review left open that a reviewer should check.
+**Decisions made:** each decision the plan or review left to the implementer, and what was chosen, for the reviewer to check.
 
 **Checks:** `make test` passed; `make e2e` passed; `make live` passed; headless Chrome through `make dev` passed.
 
 **Blocked:** `make live`: what blocks it.
 ```
 
-List every file created or modified. Under Checks, list each check from step 7 with its result on the final tree. Write `None.` for Requirement changes when the plan has none. Include Findings only when fixing a review. Omit Open choices when there are none, and Blocked when every check ran.
+List every file created or modified. Under Checks, list each check from step 7 with its result on the final tree. Write `None.` for Requirement changes when the plan has none. Include Findings only when fixing a review. Omit Decisions made when there are none, and Blocked when every check ran.
