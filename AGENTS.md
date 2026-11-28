@@ -250,10 +250,6 @@ need them cannot happen.
     yet, because it needs reproducing or depends on behavior of Claude Code or
     OpenRouter that Ox cannot change. The issue states the defect's worst
     cost, how it was found, and what it waits on.
-- No finding stays open without an issue. A confirmed defect that the change
-  does not fix, including one outside its scope, is recorded. A rejected
-  finding that a later review, audit, or sweep reproduces in normal use is
-  fixed or recorded, and the record names the review that rejected it.
 - A review reads the open `bug` issues first. It skips a defect that an open
   `bug` issue records, unless the change resolves that issue or what the issue
   waits on has changed, and checks that the change fixes each issue it
@@ -310,11 +306,10 @@ small.
 Plans and reviews are proportional to the change. A plan or review covers only
 the concerns the change touches, at the length they need. Every change that is
 not small still takes each step below in its own child session. A contained
-change is one that touches no state owner in `oxd`, protocol, persistence, or
-harness driving, and changes fewer than 400 lines outside tests. It runs those
-child sessions on Claude with Sonnet 5.5 at medium effort, and its planning and
-reviewing sessions start no children of their own. A change of 400 lines or
-more outside tests is not contained, in any layer.
+change, one that touches no state owner in `oxd`, protocol, persistence, or
+harness driving, such as a change to the web client alone, runs those child
+sessions on Claude with Sonnet 5.5 at medium effort, and its planning and
+reviewing sessions start no children of their own.
 
 When a decision the user approved turns out to need machinery the plan did not
 include, the top-level agent brings the user its cost and the simpler
