@@ -84,10 +84,11 @@ For Ur, it means idle with no input.
 
 ### `harness/list`
 
-Returns `harnesses`, the configured harnesses with their models, effort levels,
-and permission modes as the [configuration file](configuration.md) lists them,
-and `defaults`, the harness, model, effort, and permission mode a new session
-starts with.
+Returns `harnesses`, the configured harnesses with their models and effort
+levels as the [configuration file](configuration.md) lists them;
+`permission_modes`, the permission modes every harness takes, `manual` and
+`auto`; and `defaults`, the harness, model, effort, and permission mode a new
+session starts with.
 
 Clients offer these choices, and the daemon accepts only these in
 [`session/create`](#sessioncreate) and [`session/configure`](#sessionconfigure).
@@ -102,7 +103,7 @@ Claude does not take fails to start; see
 ```
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"harnesses":{"claude":{"models":[{"id":"claude-haiku-5-5","name":"Haiku 5.5","efforts":[{"id":"low","name":"Low"}]}],"permission_modes":[{"id":"manual","name":"Manual"}]}},"defaults":{"harness":"claude","model":"claude-haiku-5-5","effort":"low","permission_mode":"manual"}}}
+{"jsonrpc":"2.0","id":1,"result":{"harnesses":{"claude":{"models":[{"id":"claude-haiku-5-5","name":"Haiku 5.5","efforts":[{"id":"low","name":"Low"}]}]}},"permission_modes":[{"id":"manual","name":"Manual"},{"id":"auto","name":"Auto"}],"defaults":{"harness":"claude","model":"claude-haiku-5-5","effort":"low","permission_mode":"manual"}}}
 ```
 
 ## Workspace methods
@@ -276,7 +277,7 @@ after it. A setting [`harness/list`](#harnesslist) does not offer returns
 | `harness`         | Yes      | A harness in the configuration.                                                                                                                              |
 | `model`           | Yes      | One of the harness's models, passed to the harness as is.                                                                                                    |
 | `effort`          | Yes      | One of the model's effort levels, passed to the harness as is. A model without effort levels takes an empty or omitted value, which leaves the effort unset. |
-| `permission_mode` | Yes      | One of the harness's permission modes, passed to the harness as is.                                                                                          |
+| `permission_mode` | Yes      | `manual` or `auto`, applied by Ox; see [Approval lifecycle](#approval-lifecycle).                                                                            |
 | `worktree`        | No       | `true` runs the session in a git worktree of its own.                                                                                                        |
 
 A repeat using the same ID in the same workspace returns the existing ID and
@@ -410,9 +411,9 @@ Requires `session_id` and at least one of `model`, `effort`, and
 the conversation, and stores them for the session's later processes. A model
 given without an effort keeps the session's effort when the new model offers it,
 and otherwise takes the model's first effort level, or none for a model without
-effort levels. The changed settings must be configured choices, as at creation:
-a changed model or effort is checked as a pair, and a changed permission mode
-alone. A stored setting the configuration no longer offers stays until it is
+effort levels. A changed model or effort must be configured choices, as at
+creation, checked as a pair, and a changed permission mode must be `manual` or
+`auto`. A stored model the configuration no longer offers stays until it is
 changed.
 
 ```json
@@ -430,14 +431,13 @@ configuration requests then return `-32002`, and inputs sent meanwhile wait for
 it.
 
 On a running Ur process, the changes take effect from the next request. On a
-running Claude process, Claude acknowledges changes to model, effort, and
-permission mode in that order. Each change the session adopts, including a
-change Claude makes on its own, is stored and broadcast as `session/configured`
-when it happens. One request can produce several notifications before its
-response. If a change fails, earlier changes remain applied and later ones are
-skipped. The response is success or the harness's error; failed database writes
-are logged, not returned. Changes that could not be stored last until the daemon
-restarts.
+running Claude process, a permission mode change applies at once, and Claude
+acknowledges changes to model and effort in that order. Each change the session
+adopts is stored and broadcast as `session/configured` when it happens. One
+request can produce several notifications before its response. If a change
+fails, earlier changes remain applied and later ones are skipped. The response
+is success or the harness's error; failed database writes are logged, not
+returned. Changes that could not be stored last until the daemon restarts.
 
 A control Claude has not acknowledged after one minute stops the process. If it
 exits first, including by that stop, the session applies just the request's
@@ -632,6 +632,14 @@ top-level `Agent` tool call and result.
 
 ### Approval lifecycle
 
+In `manual`, every request the harness makes reaches clients as an approval. In
+`auto`, Ox answers each request itself, allowing it, except a shell command that
+starts with `rm` and a question for the user, which reach clients as in
+`manual`. A request Ox answers publishes no approval and no `requires_action`
+state. Claude always runs in its own manual mode, which asks only about the
+calls its rules do not already allow; see
+[`can_use_tool`](harnesses/claude-code.md#can_use_tool).
+
 Ox forwards the complete [`can_use_tool`](harnesses/claude-code.md#can_use_tool)
 request, including any display metadata, tool input, permission suggestions, or
 question fields:
@@ -672,7 +680,7 @@ Every connection is told when workspaces and sessions come and go:
 | `workspace/removed`  | `workspace_id`                                                                                                                                                                                                           | A workspace was removed.                                                                                                                                                                                                                  |
 | `session/created`    | `session_id`, `workspace_id`, `label` (a child's or started session's title, or the first 8 characters of its ID), `harness`, `created_at`, `directory`, `state`, a worktree session's `worktree`, and a child's `child` | A session was created: a top-level session from `session/create` `parked`, a child or started session `running` with its first message, whose later updates follow.                                                                       |
 | `session/labeled`    | `session_id`, `label`                                                                                                                                                                                                    | A top-level session took the first prompt the user sent it with text, and `label` is that text's first nonblank line, shortened to 48 characters; sent again with the title the titling model generated from that prompt once it arrives. |
-| `session/configured` | `session_id`, `model`, `effort`, `permission_mode`                                                                                                                                                                       | A session's settings changed, by `session/configure` or by the harness itself, such as Claude leaving plan mode; the fields are the settings the session now uses.                                                                        |
+| `session/configured` | `session_id`, `model`, `effort`, `permission_mode`                                                                                                                                                                       | A session's settings changed, by `session/configure` or by the harness acknowledging it; the fields are the settings the session now uses.                                                                                                |
 | `session/destroyed`  | `session_id`                                                                                                                                                                                                             | A session was destroyed, after its last update.                                                                                                                                                                                           |
 | `session/archived`   | `session_id`                                                                                                                                                                                                             | A session was archived, before the `parked` update that stops its process.                                                                                                                                                                |
 | `session/unarchived` | `session_id`                                                                                                                                                                                                             | A session was unarchived.                                                                                                                                                                                                                 |
@@ -725,20 +733,17 @@ omitted or an array, or `name` is missing, invalid, or unknown. A recognized
 tool returns a result with one text content item; if it refuses its arguments or
 cannot perform the operation, the result sets `isError: true` and gives the
 reason as the text. Every tool is in the harness's pre-approved list, so it runs
-without an approval prompt where the permission mode allows; Claude's plan mode
-asks for a tool not annotated `readOnlyHint`, and Ur runs every tool without an
-approval prompt in both of its modes.
+without an approval prompt in both permission modes.
 
-`list_models` takes no arguments, is annotated `readOnlyHint`, and returns the
-JSON that [`harness/list`](#harnesslist) returns.
+`list_models` takes no arguments and returns the JSON that
+[`harness/list`](#harnesslist) returns.
 
-`list_sessions` takes no arguments, is annotated `readOnlyHint`, and returns a
-JSON array of every session except the caller and archived sessions, in
-workspace order and oldest first. Each entry has `session_id`, `label` (a
-child's or started session's title, or else the title the titling model
-generated from the first prompt with text the user sent it, or else that
-prompt's first nonblank line shortened to 48 characters, or the first 8
-characters of its ID), `workspace` (the path), its
+`list_sessions` takes no arguments and returns a JSON array of every session
+except the caller and archived sessions, in workspace order and oldest first.
+Each entry has `session_id`, `label` (a child's or started session's title, or
+else the title the titling model generated from the first prompt with text the
+user sent it, or else that prompt's first nonblank line shortened to 48
+characters, or the first 8 characters of its ID), `workspace` (the path), its
 [`directory` and `worktree`](#workspaces-and-sessions), `harness`, `model`,
 `effort`, `permission_mode`, and `state` (`parked`, or the execution state,
 including `background`).
@@ -795,8 +800,7 @@ Refusals, in the order they are checked:
 - `dir` not an existing directory: `dir must be an existing directory`;
 - `harness` not configured: `harness "<harness>" is not configured`;
 - another harness without `model`: `model is required with another harness`;
-- a model, effort, or permission mode the harness does not offer: the
-  `session/create` error;
+- a model or effort the harness does not offer: the `session/create` error;
 - `name` already one of the caller's children's: `a child named "<name>" already
   exists`;
 - the caller gone first: `session not found`;
@@ -839,8 +843,7 @@ it has one. Refusals, in the order they are checked:
 - the caller gone first: `session not found`;
 - an archived caller: `session is archived`;
 - a caller being deleted: `session is being deleted`;
-- `harness`, `model`, `effort`, or the caller's permission mode refused as
-  `create_session` refuses them;
+- `harness`, `model`, or `effort` refused as `create_session` refuses them;
 - the `session/create` refusals that follow its settings checks, such as `daemon
   is shutting down`, `workspace not found`, or a worktree that cannot be made;
   no session is created, and a worktree made for it is discarded;
@@ -851,12 +854,11 @@ Each time the session's turn ends, its final reply reaches the caller as a
 [report](#session-reports). The caller can be deleted or archived while the
 session remains.
 
-`read_session` takes `to`, a session ID, and an optional integer `cursor`, and
-is annotated `readOnlyHint`. It returns a page of the session's history, newest
-last, ending with the session's state, and starts nothing: a parked session
-stays parked. Each history update is one entry, and entries are separated by a
-blank line. A time is the update's, in `oxd`'s local zone, as `2006-01-02
-15:04:05 -0700`.
+`read_session` takes `to`, a session ID, and an optional integer `cursor`. It
+returns a page of the session's history, newest last, ending with the session's
+state, and starts nothing: a parked session stays parked. Each history update is
+one entry, and entries are separated by a blank line. A time is the update's, in
+`oxd`'s local zone, as `2006-01-02 15:04:05 -0700`.
 
 - `prompt`: `[<time>] User: <text>`, or, with `from`, `[<time>] Message from
   <from_label> (<from>): <text>`, or, with `reports`, `[<time>] Reports:`

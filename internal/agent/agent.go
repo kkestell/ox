@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"time"
 )
@@ -93,9 +94,8 @@ type Harness struct {
 	CheckPrompt func(string) error // nil means the harness accepts all prompts
 	// CheckEfforts reports whether the harness runs model at each of
 	// efforts; nil means the harness takes every model and effort level.
-	CheckEfforts        func(model string, efforts []string) error
-	CheckPermissionMode func(string) error // nil means the harness takes every permission mode
-	TakesProviders      bool               // whether a model may set a provider order
+	CheckEfforts   func(model string, efforts []string) error
+	TakesProviders bool // whether a model may set a provider order
 	// TakesThinkingSummaries is whether the configuration may turn on
 	// summaries of the model's thinking.
 	TakesThinkingSummaries bool
@@ -122,8 +122,8 @@ type Options struct {
 	// an empty token when the harness no longer has the conversation to
 	// resume.
 	OnResumable func(token string)
-	// OnConfigured receives every settings change the harness makes, whether
-	// it makes the change itself or acknowledges a Configure control.
+	// OnConfigured receives each settings change of a Configure as the
+	// harness applies it.
 	OnConfigured func(Settings)
 	// OnError receives failures that no call returns, for the session's log.
 	OnError func(error)
@@ -134,20 +134,53 @@ type Options struct {
 type MCPServer struct {
 	Command  string            // absolute path of the forwarder
 	Env      map[string]string // the forwarder's environment
-	Approved []string          // tools that run without an approval prompt where the permission mode allows
+	Approved []string          // tools that run without an approval prompt
 }
 
 type Settings struct {
-	Model          string `json:"model"`
-	Effort         string `json:"effort"`
-	PermissionMode string `json:"permission_mode"`
+	Model          string         `json:"model"`
+	Effort         string         `json:"effort"`
+	PermissionMode PermissionMode `json:"permission_mode"`
 }
 
 // SettingsPatch names only the fields the request changes.
 type SettingsPatch struct {
-	Model          *string `json:"model"`
-	Effort         *string `json:"effort"`
-	PermissionMode *string `json:"permission_mode"`
+	Model          *string         `json:"model"`
+	Effort         *string         `json:"effort"`
+	PermissionMode *PermissionMode `json:"permission_mode"`
+}
+
+// PermissionMode is how a session's tool calls are approved, the same for
+// every harness: in Manual the user answers each call the harness asks
+// about, and in Auto Ox answers each call AutoRuns allows.
+type PermissionMode string
+
+const (
+	Manual PermissionMode = "manual"
+	Auto   PermissionMode = "auto"
+)
+
+// ParsePermissionMode returns s as a PermissionMode, or an error unless it is
+// manual or auto.
+func ParsePermissionMode(s string) (PermissionMode, error) {
+	switch m := PermissionMode(s); m {
+	case Manual, Auto:
+		return m, nil
+	}
+	return "", fmt.Errorf("permission mode %q is not manual or auto", s)
+}
+
+func (m *PermissionMode) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	parsed, err := ParsePermissionMode(s)
+	if err != nil {
+		return err
+	}
+	*m = parsed
+	return nil
 }
 
 func (p SettingsPatch) Apply(s Settings) Settings {

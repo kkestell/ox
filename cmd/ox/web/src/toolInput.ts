@@ -73,10 +73,6 @@ function firstString(value: unknown): string | undefined {
   return undefined;
 }
 
-// planOf is the plan of an ExitPlanMode call, which is Markdown.
-export const planOf = (tool: string, input: Record<string, unknown>) =>
-  tool === "ExitPlanMode" && typeof input.plan === "string" ? input.plan : undefined;
-
 // Question is one question of an AskUserQuestion call, Claude's payload.
 export type Question = {
   question: string;

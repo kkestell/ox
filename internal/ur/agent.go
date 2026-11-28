@@ -55,7 +55,7 @@ func startAgent(command, endpoint, dir string, providers map[string][]string, op
 	if err != nil {
 		return nil, err
 	}
-	args := append([]string{"-dir=" + dir, "-permission-mode=" + options.Settings.PermissionMode},
+	args := append([]string{"-dir=" + dir, "-permission-mode=" + string(options.Settings.PermissionMode)},
 		requestFlags(endpoint, providers, options.Settings.Model, options.Settings.Effort)...)
 	if options.Resume != "" {
 		args = append(args, "-resume="+options.Resume)

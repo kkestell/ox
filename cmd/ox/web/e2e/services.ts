@@ -18,19 +18,10 @@ const fake = {
       ],
     },
   ],
-  permission_modes: [
-    { id: "manual", name: "Manual" },
-    { id: "plan", name: "Plan" },
-  ],
 };
 
 const claude = {
   models: [{ id: "claude-haiku-5-5", name: "Haiku 5.5", efforts: [{ id: "low", name: "Low" }] }],
-  permission_modes: [
-    { id: "manual", name: "Manual" },
-    { id: "acceptEdits", name: "Accept edits" },
-    { id: "plan", name: "Plan" },
-  ],
 };
 
 export const fakeConfig = {

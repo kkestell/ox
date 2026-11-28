@@ -13,10 +13,16 @@ import (
 func TestApprovalRouting(t *testing.T) {
 	a, input, updates, id := promptingAgent(t)
 	request := json.RawMessage(`{"subtype":"can_use_tool","tool_name":"Example","input":{"number":9007199254740993},"permission_suggestions":[],"extra":"preserved"}`)
+	// Claude's requires_action is the agent's to report, with the approval.
+	state(t, a, "requires_action")
+	if len(*updates) != 0 {
+		t.Fatalf("Claude's requires_action was published: %+v", *updates)
+	}
 	output(t, a, `{"type":"control_request","request_id":"request","request":`+string(request)+`}`)
-	if len(*updates) != 1 || (*updates)[0].Type != "approval" || (*updates)[0].MessageID != id || !bytes.Equal((*updates)[0].Request, request) {
+	if len(*updates) != 2 || (*updates)[0].State != "requires_action" || (*updates)[1].Type != "approval" || (*updates)[1].MessageID != id || !bytes.Equal((*updates)[1].Request, request) {
 		t.Fatalf("approval did not reach the prompt client intact: %+v", *updates)
 	}
+	*updates = (*updates)[1:]
 	if pending := a.Snapshot().Approvals; len(pending) != 1 || !bytes.Equal(pending[0].Request, request) {
 		t.Fatalf("the snapshot does not hold the approval's request: %+v", pending)
 	}
@@ -46,6 +52,70 @@ func TestApprovalRouting(t *testing.T) {
 	}
 }
 
+// In auto, the agent answers each request Claude makes itself, echoing its
+// input, except a shell command that starts with rm and a question for the
+// user, which reach the user as in manual.
+func TestAutoApproval(t *testing.T) {
+	a, input, updates, _ := promptingAgent(t)
+	a.settings.PermissionMode = agent.Auto
+	for _, request := range []string{
+		`{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch x","number":9007199254740993}}`,
+		`{"subtype":"can_use_tool","tool_name":"Write","input":{"file_path":"x"}}`,
+		`{"subtype":"can_use_tool","tool_name":"Monitor","input":{"command":"tail -f log"}}`,
+		`{"subtype":"can_use_tool","tool_name":"Example","input":"not an object"}`,
+	} {
+		state(t, a, "requires_action")
+		output(t, a, `{"type":"control_request","request_id":"auto","request":`+request+`}`)
+		state(t, a, "running")
+		if len(*updates) != 0 || len(a.Snapshot().Approvals) != 0 {
+			t.Fatalf("an auto-approved request was published: %s: %+v", request, *updates)
+		}
+		var call, wire struct {
+			Input    json.RawMessage `json:"input"`
+			Response struct {
+				RequestID string `json:"request_id"`
+				Response  struct {
+					Behavior     string          `json:"behavior"`
+					UpdatedInput json.RawMessage `json:"updatedInput"`
+				} `json:"response"`
+			} `json:"response"`
+		}
+		json.Unmarshal([]byte(request), &call)
+		if call.Input[0] != '{' {
+			call.Input = json.RawMessage("{}")
+		}
+		if err := json.Unmarshal(input.Bytes(), &wire); err != nil {
+			t.Fatalf("%s: %s: %v", request, input, err)
+		}
+		if wire.Response.RequestID != "auto" || wire.Response.Response.Behavior != "allow" || !bytes.Equal(wire.Response.Response.UpdatedInput, call.Input) {
+			t.Fatalf("%s was answered %s", request, input)
+		}
+		input.Reset()
+	}
+	for _, request := range []string{
+		`{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"  rm -rf x"}}`,
+		`{"subtype":"can_use_tool","tool_name":"Monitor","input":{"command":"rm log"}}`,
+		`{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[]},"requires_user_interaction":true}`,
+	} {
+		state(t, a, "requires_action")
+		output(t, a, `{"type":"control_request","request_id":"asks","request":`+request+`}`)
+		if len(*updates) != 2 || (*updates)[0].State != "requires_action" || (*updates)[1].Type != "approval" || input.Len() != 0 {
+			t.Fatalf("%s did not wait for the user in auto: %+v, %s", request, *updates, input)
+		}
+		if err := a.Approve("asks", json.RawMessage(`{"behavior":"deny","message":"no"}`)); err != nil {
+			t.Fatal(err)
+		}
+		state(t, a, "running")
+		input.Reset()
+		*updates = nil
+	}
+	a.settings.PermissionMode = agent.Manual
+	output(t, a, `{"type":"control_request","request_id":"manual","request":{"subtype":"can_use_tool","tool_name":"Write","input":{"file_path":"x"}}}`)
+	if len(*updates) != 2 || (*updates)[0].State != "requires_action" || (*updates)[1].Type != "approval" || input.Len() != 0 {
+		t.Fatalf("a Write did not wait for the user in manual: %+v, %s", *updates, input)
+	}
+}
+
 func TestApprovalCancellation(t *testing.T) {
 	for _, event := range []string{"control_cancel_request", "idle", "exit"} {
 		t.Run(event, func(t *testing.T) {
@@ -59,7 +129,7 @@ func TestApprovalCancellation(t *testing.T) {
 			default:
 				output(t, a, `{"type":"control_cancel_request","request_id":"request"}`)
 			}
-			if len(*updates) < 2 || (*updates)[1].Type != "approval_cancelled" || (*updates)[1].RequestID != "request" {
+			if len(*updates) < 3 || (*updates)[2].Type != "approval_cancelled" || (*updates)[2].RequestID != "request" {
 				t.Fatalf("approval not withdrawn before the terminal update: %+v", *updates)
 			}
 			if err := a.Approve("request", json.RawMessage(`{"behavior":"allow"}`)); !errors.Is(err, agent.ErrApprovalNotFound) || input.Len() != 0 {
@@ -95,7 +165,7 @@ func TestApprovalSurvivesResult(t *testing.T) {
 func TestApprovalWithoutPrompt(t *testing.T) {
 	a, input, updates := testAgent()
 	output(t, a, `{"type":"control_request","request_id":"scheduled","request":{"subtype":"can_use_tool"}}`)
-	if len(*updates) != 1 || (*updates)[0].Type != "approval" || (*updates)[0].MessageID != "" {
+	if len(*updates) != 2 || (*updates)[1].Type != "approval" || (*updates)[1].MessageID != "" {
 		t.Fatalf("approval in a turn Claude started was not published: %+v", *updates)
 	}
 	if a.Parkable() {

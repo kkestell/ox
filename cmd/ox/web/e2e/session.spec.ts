@@ -160,7 +160,7 @@ test("a reply shows raw HTML as text, loads no images, and opens safe links in a
 
 test("a failed first send is retried in the session with its settings", async ({ ox: page }) => {
   await newDraft(page);
-  await permissionMode(page).selectOption("plan");
+  await permissionMode(page).selectOption("auto");
   const firstSend = await hold(page, "session/send");
   await prompt(page).fill("retry me");
   await prompt(page).press("Enter");
@@ -168,7 +168,7 @@ test("a failed first send is retried in the session with its settings", async ({
   firstSend.fail("relay unavailable");
   await expect(main(page).getByRole("alert")).toHaveText("relay unavailable");
   await expect(prompt(page)).toHaveValue("retry me");
-  await expect(permissionMode(page)).toHaveValue("plan");
+  await expect(permissionMode(page)).toHaveValue("auto");
   await send(page).click();
   await expect(replies(page)).toHaveText(["You said: retry me"]);
   await expect(prompts(page)).toHaveText(["retry me"]);
@@ -208,7 +208,7 @@ test("Enter in the new-session settings sends nothing", async ({ ox: page }) => 
 test("a rejected creation keeps the draft and its settings after switching views", async ({ ox: page }) => {
   await newSession(page, "existing conversation");
   await newDraft(page);
-  await permissionMode(page).selectOption("plan");
+  await permissionMode(page).selectOption("auto");
   const create = await hold(page, "session/create");
   await attachPixel(page);
   await prompt(page).fill("keep this draft");
@@ -223,17 +223,17 @@ test("a rejected creation keeps the draft and its settings after switching views
   await expect(main(page).getByRole("alert")).toContainText("not-offered");
   await expect(prompt(page)).toHaveValue("keep this draft");
   await expect(thumbnail(page)).toBeVisible();
-  await expect(permissionMode(page)).toHaveValue("plan");
+  await expect(permissionMode(page)).toHaveValue("auto");
   await send(page).click();
   await expect(prompts(page)).toHaveText(["keep this draft"]);
-  await expect(permissionMode(page)).toHaveValue("plan");
+  await expect(permissionMode(page)).toHaveValue("auto");
 });
 
 test("a pending setting is marked pending and holds Send until confirmed", async ({ ox: page }) => {
   await newSession(page, "configure me");
   const sends = rpcCalls(page, "session/send");
   const configure = await hold(page, "session/configure");
-  await permissionMode(page).selectOption("plan");
+  await permissionMode(page).selectOption("auto");
   await configure.arrived;
   await expect(permissionMode(page)).toHaveAttribute("aria-busy", "true");
   await prompt(page).fill("after configuring");
@@ -241,7 +241,7 @@ test("a pending setting is marked pending and holds Send until confirmed", async
   await prompt(page).press("Enter");
   configure.release();
   await expect(permissionMode(page)).not.toHaveAttribute("aria-busy");
-  await expect(permissionMode(page)).toHaveValue("plan");
+  await expect(permissionMode(page)).toHaveValue("auto");
   await expect(send(page)).toBeEnabled();
   await expect(prompts(page)).toHaveText(["configure me"]);
   expect(sends).toEqual([]);
@@ -319,7 +319,7 @@ test.describe("with two models", () => {
 test("a failed setting change shows the error and the settings Claude has", async ({ ox: page }) => {
   await newSession(page, "configure me");
   const failed = await hold(page, "session/configure");
-  await permissionMode(page).selectOption("plan");
+  await permissionMode(page).selectOption("auto");
   await failed.arrived;
   await expect(permissionMode(page)).toHaveAttribute("aria-busy", "true");
   failed.fail("configuration refused");
@@ -333,7 +333,7 @@ test("another page's change during a pending one shows without being marked pend
   const other = await context.newPage();
   await other.goto(page.url());
   const configure = await hold(page, "session/configure");
-  await permissionMode(page).selectOption("plan");
+  await permissionMode(page).selectOption("auto");
   await configure.arrived;
   await expect(permissionMode(page)).toHaveAttribute("aria-busy", "true");
   await expect(model(page)).not.toHaveAttribute("aria-busy");
@@ -341,10 +341,10 @@ test("another page's change during a pending one shows without being marked pend
   await other.getByRole("slider", { name: "Effort" }).press("End");
   await expect(model(page)).toContainText("High");
   await expect(model(page)).not.toHaveAttribute("aria-busy");
-  await expect(permissionMode(page)).toHaveValue("plan");
+  await expect(permissionMode(page)).toHaveValue("auto");
   await expect(permissionMode(page)).toHaveAttribute("aria-busy", "true");
   configure.release();
-  await expect(permissionMode(page)).toHaveValue("plan");
+  await expect(permissionMode(page)).toHaveValue("auto");
   await expect(permissionMode(page)).not.toHaveAttribute("aria-busy");
 });
 
@@ -1492,15 +1492,6 @@ test("a long question keeps its buttons in view", async ({ ox: page }) => {
   await expect(submit).toBeEnabled();
 });
 
-test("a long permission card keeps Submit in view", async ({ ox: page }) => {
-  await newDraft(page);
-  await page.setViewportSize({ width: 390, height: 700 });
-  await expect(sessions(page)).toBeHidden();
-  const plan = Array.from({ length: 40 }, (_, i) => `${i + 1}. Step ${i + 1} of the plan`).join("\n");
-  const approval = await ask(page, "ExitPlanMode", JSON.stringify({ plan }));
-  await expect(approval.getByRole("button", { name: "Submit" })).toBeInViewport({ ratio: 1 });
-});
-
 test("a malformed question falls back to Allow and Deny", async ({ ox: page }) => {
   await newDraft(page);
   const approval = await ask(page, "AskUserQuestion", '{"questions":"x"}');
@@ -1574,7 +1565,6 @@ test("a session whose harness is no longer offered shows its settings", async ({
   await newSession(page, "harness retired");
   const ur = {
     models: [{ id: "deepseek/deepseek-v4.1-flash-1017", name: "DeepSeek", efforts: [{ id: "low", name: "Low" }] }],
-    permission_modes: [{ id: "manual", name: "Manual" }],
   };
   await services.restartDaemon({
     harnesses: { ur },
@@ -1754,7 +1744,7 @@ test("on reconnect each session waits for its own settings", async ({ ox: page, 
   const snapshot = await hold(page, "session/get", { session_id: sessionId(page) });
   await services.restartRelay();
   await snapshot.arrived;
-  await permissionMode(other).selectOption("plan");
+  await permissionMode(other).selectOption("auto");
   await expect(permissionMode(other)).not.toHaveAttribute("aria-busy");
   await prompt(other).fill("written while reloading");
   await prompt(other).press("Enter");
@@ -1768,7 +1758,7 @@ test("on reconnect each session waits for its own settings", async ({ ox: page, 
   await expect(send(page)).toBeEnabled();
   await sessionButton(page, "refresh my settings").click();
   snapshot.release();
-  await expect(permissionMode(page)).toHaveValue("plan");
+  await expect(permissionMode(page)).toHaveValue("auto");
   await expect(prompts(page)).toHaveText(["refresh my settings", "written while reloading"]);
   await expect(send(page)).toBeEnabled();
   await prompt(other).fill("written after reloading");

@@ -150,13 +150,6 @@ func checkConfig(cfg *config.Config, harnesses map[string]agent.Harness) error {
 		if offered.ThinkingSummaries && !harness.TakesThinkingSummaries {
 			return fmt.Errorf("harness %q takes no thinking_summaries", name)
 		}
-		if harness.CheckPermissionMode != nil {
-			for _, mode := range offered.PermissionModes {
-				if err := harness.CheckPermissionMode(mode.ID); err != nil {
-					return fmt.Errorf("harness %q: %w", name, err)
-				}
-			}
-		}
 		for _, model := range offered.Models {
 			if len(model.Providers) > 0 && !harness.TakesProviders {
 				return fmt.Errorf("model %q: harness %q takes no providers", model.ID, name)

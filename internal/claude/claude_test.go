@@ -407,7 +407,8 @@ func TestClaudeStartsWithOxsChoices(t *testing.T) {
 }
 
 // Every Claude process, new or resumed, has Ox's MCP server, Ox's
-// instructions, and no other messaging.
+// instructions, no other messaging, and Claude's own manual mode whatever
+// Ox's permission mode.
 func TestClaudeRunsAsAnOxSession(t *testing.T) {
 	mcp := agent.MCPServer{
 		Command: "/x/ox-mcp", Env: map[string]string{"OX_SOCKET": "/s", "OX_SESSION_ID": "id"}, Approved: []string{"list_models"},
@@ -418,7 +419,7 @@ func TestClaudeRunsAsAnOxSession(t *testing.T) {
 		standIn(t, "pwd -P > "+cwd+"\nfor a in \"$@\"; do printf '%s\\0' \"$a\"; done > "+argv+"\n")
 		events := make(chan agent.Event, 1)
 		workspace := t.TempDir()
-		if _, _, err := startProcess(workspace, "ox-session", newUUID(), resume, false, agent.Settings{}, mcp, events, nil); err != nil {
+		if _, _, err := startProcess(workspace, "ox-session", newUUID(), resume, false, agent.Settings{PermissionMode: agent.Auto}, mcp, events, nil); err != nil {
 			t.Fatal(err)
 		}
 		for e := range events {
@@ -462,8 +463,11 @@ func TestClaudeRunsAsAnOxSession(t *testing.T) {
 		if !slices.Contains(args, "--allowedTools=mcp__ox__list_models") {
 			t.Errorf("resume %v: list_models is not pre-approved in %q", resume, args)
 		}
-		if !slices.Contains(args, "--disallowedTools=SendMessage,ListAgents,Agent,EnterWorktree,ExitWorktree") {
-			t.Errorf("resume %v: built-in messaging, subagents, and worktrees are not disallowed in %q", resume, args)
+		if !slices.Contains(args, "--disallowedTools=SendMessage,ListAgents,Agent,EnterWorktree,ExitWorktree,EnterPlanMode,ExitPlanMode") {
+			t.Errorf("resume %v: built-in messaging, subagents, worktrees, and plan mode are not disallowed in %q", resume, args)
+		}
+		if !slices.Contains(args, "--permission-mode=manual") || slices.Contains(args, "--permission-mode=auto") {
+			t.Errorf("resume %v: Claude does not run in its own manual mode in Ox's auto: %q", resume, args)
 		}
 		var settings struct {
 			CrossSessionInbound string `json:"crossSessionInbound"`

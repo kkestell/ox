@@ -234,7 +234,7 @@
           "harness": "claude",
           "model": "claude-sonnet-5-5",
           "effort": "medium",
-          "permission_mode": "acceptEdits",
+          "permission_mode": "manual",
           "parked": true,
           "prompt": "Add a `field-sync status` command that prints the last sync time and how many records are pending.",
           "turns": [
@@ -382,7 +382,7 @@
           "harness": "claude",
           "model": "claude-haiku-5-5",
           "effort": "low",
-          "permission_mode": "acceptEdits",
+          "permission_mode": "manual",
           "archived": true,
           "prompt": "Summarize the decisions in 2026-11-18-planning.md.",
           "turns": [

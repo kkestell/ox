@@ -134,7 +134,7 @@ func gitGate(t *testing.T) (open func(), waiting func(n int)) {
 
 // worktreeConfig offers the fake harness, which also titles sessions.
 var worktreeConfig = &config.Config{
-	Harnesses: map[string]config.Harness{"fake": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}}},
+	Harnesses: map[string]config.Harness{"fake": {Models: []config.Model{{ID: "m"}}}},
 	Titling:   config.Titling{Harness: "fake", Model: "m"},
 }
 

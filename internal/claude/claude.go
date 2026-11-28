@@ -35,22 +35,6 @@ func systemPrompt(oxSessionID, workspace string) string {
 		agent.Sessions
 }
 
-// permissionModes are the permission modes Claude takes, other than its alias
-// default for manual.
-var permissionModes = []string{"acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"}
-
-// checkPermissionMode refuses default, Claude's alias for manual, so that one
-// mode has one ID, and any mode Claude does not take.
-func checkPermissionMode(mode string) error {
-	if mode == "default" {
-		return errors.New("use permission mode \"manual\" instead of \"default\" for Claude")
-	}
-	if !slices.Contains(permissionModes, mode) {
-		return fmt.Errorf("Claude has no permission mode %q", mode)
-	}
-	return nil
-}
-
 // startProcess starts Claude for the conversation sessionID, with Ox's MCP
 // server registered as ox, and delivers its output and exit on events until
 // done is closed. oxSessionID is the Ox session's ID: Claude's instructions
@@ -78,7 +62,10 @@ func startProcess(workspace, oxSessionID, sessionID string, resume, thinkingSumm
 	} else {
 		args = append(args, "--session-id="+sessionID)
 	}
-	args = append(args, "--model="+settings.Model, "--permission-mode="+settings.PermissionMode)
+	// Claude always runs in its own manual mode, which the flag holds over
+	// the user's defaultMode, and the agent applies Ox's permission mode to
+	// the requests Claude makes.
+	args = append(args, "--model="+settings.Model, "--permission-mode=manual")
 	if settings.Effort != "" {
 		args = append(args, "--effort="+settings.Effort)
 	}
@@ -89,8 +76,9 @@ func startProcess(workspace, oxSessionID, sessionID string, resume, thinkingSumm
 	// session, so an Ox session would message and be messaged outside Ox. Ox's
 	// sessions message only through Ox, hand work to another agent by starting
 	// an Ox child session instead of a subagent, and work in the worktree Ox
-	// gives them instead of one Claude Code creates.
-	args = append(args, "--disallowedTools=SendMessage,ListAgents,Agent,EnterWorktree,ExitWorktree", `--settings={"crossSessionInbound":"refuse"}`)
+	// gives them instead of one Claude Code creates. Without its plan tools,
+	// Claude's own mode never leaves manual.
+	args = append(args, "--disallowedTools=SendMessage,ListAgents,Agent,EnterWorktree,ExitWorktree,EnterPlanMode,ExitPlanMode", `--settings={"crossSessionInbound":"refuse"}`)
 
 	cmd := exec.Command("claude", args...)
 	cmd.Dir = workspace

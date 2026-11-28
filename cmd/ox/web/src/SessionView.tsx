@@ -5,7 +5,7 @@ import { Markdown } from "./Markdown";
 import { type Entry, type Outgoing, type Session, type SessionControl, type SessionSnapshot, useOx } from "./ox";
 import type { Prompt, Settings } from "./protocol";
 import { ModelPicker, Select } from "./SettingsFields";
-import { planOf, toolInputJSON, toolLabel, toolSummary } from "./toolInput";
+import { toolInputJSON, toolLabel, toolSummary } from "./toolInput";
 import { Usage } from "./Usage";
 
 type Tool = Extract<Entry, { kind: "tool" }>;
@@ -344,9 +344,6 @@ function ToolCall(props: { tool: Tool }) {
         <span class="name">{toolLabel(props.tool.name)}</span> <span class="detail">{detail()}</span>
       </summary>
       <div class="card">
-        <Show when={planOf(props.tool.name, props.tool.input)}>
-          {(plan) => <Markdown class="plan" text={plan()} />}
-        </Show>
         <pre>{toolInputJSON(props.tool.input)}</pre>
         <Show when={props.tool.result}>{(result) => <pre>{result().text}</pre>}</Show>
       </div>
@@ -363,7 +360,7 @@ function SettingsForm(props: { harness: string; settings: Settings; control: Ses
   const pending = (key: keyof Settings) => props.control.requested()?.[key] !== undefined;
   // A harness the configuration no longer offers has no choices, and its
   // session still shows the settings it has.
-  const harness = () => ox.state.harnesses[props.harness] ?? { models: [], permission_modes: [] };
+  const harness = () => ox.state.harnesses[props.harness] ?? { models: [] };
 
   // Once the session starts, the picker offers only its harness's models.
   return (
@@ -382,7 +379,7 @@ function SettingsForm(props: { harness: string; settings: Settings; control: Ses
       <Select
         name="permission_mode"
         label="Permission mode"
-        options={harness().permission_modes}
+        options={ox.state.permission_modes}
         value={shown().permission_mode}
         disabled={!props.control.canConfigure()}
         pending={pending("permission_mode")}

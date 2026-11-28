@@ -26,8 +26,48 @@ func (a *Agent) controlRequest(requestID string, request json.RawMessage) {
 		}
 		return
 	}
+	var tool struct {
+		ToolName                string          `json:"tool_name"`
+		Input                   json.RawMessage `json:"input"`
+		RequiresUserInteraction bool            `json:"requires_user_interaction"`
+	}
+	json.Unmarshal(request, &tool)
+	if a.settings.PermissionMode == agent.Auto && autoAllows(tool.ToolName, tool.Input, tool.RequiresUserInteraction) {
+		input := tool.Input
+		if len(input) == 0 || input[0] != '{' {
+			input = json.RawMessage("{}")
+		}
+		response, _ := json.Marshal(map[string]any{"behavior": "allow", "updatedInput": input})
+		// A failed write means Claude has exited or is exiting; its exit
+		// ends the turn.
+		if err := a.input.Respond(requestID, json.RawMessage(response)); err != nil {
+			a.onError(fmt.Errorf("answer Claude: %w", err))
+		}
+		return
+	}
+	// Claude reports requires_action before every request, including those
+	// Ox answers itself, so the agent reports it only for the requests the
+	// user answers.
+	a.tracker.Report(agent.StateRequiresAction, "")
 	a.approvals = append(a.approvals, agent.Approval{RequestID: requestID, Request: request})
 	a.publish(agent.Update{Type: agent.UpdateApproval, RequestID: requestID, Request: request})
+}
+
+// autoAllows reports whether Ox answers a tool call itself in auto: every
+// call except a question for the user and a shell command AutoRuns refuses.
+func autoAllows(toolName string, input json.RawMessage, requiresUserInteraction bool) bool {
+	if requiresUserInteraction {
+		return false
+	}
+	switch toolName {
+	case "Bash", "Monitor":
+		var shell struct {
+			Command string `json:"command"`
+		}
+		json.Unmarshal(input, &shell)
+		return agent.AutoRuns(shell.Command)
+	}
+	return true
 }
 
 func (a *Agent) Approve(requestID string, response json.RawMessage) error {

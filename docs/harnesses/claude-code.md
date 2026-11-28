@@ -84,16 +84,14 @@ claude -p \
   from="uds:<socket>" from-name="<name>"
   from-mode="prompting">…</cross-session-message>`, with `origin.kind` `"peer"`
   (2.1.328).
-- `plan` mode ignores `--allowedTools` for an MCP tool and asks with
-  `decision_reason_type: "mode"`, unless the tool's `tools/list` entry has
-  `annotations: {"readOnlyHint": true}`. `readOnlyHint` alone does not skip the
-  prompt in `default`, so a tool that runs without asking in every mode needs
-  both.
+- `--allowedTools` runs an MCP tool it names without asking in `manual`.
 - `auto` runs an MCP tool `--allowedTools` names, read-only or not, without
   asking and without a classifier refusal (2.1.328).
-- In `plan` mode Haiku declines to call an MCP tool that is not read-only,
-  citing plan mode, even when the prompt asks for the call and says it asks for
-  approval first (2.1.328).
+- `--permission-mode=manual` holds over a `permissions.defaultMode` in the
+  user's settings, including `"auto"` (2.1.332).
+- `--disallowedTools=EnterPlanMode,ExitPlanMode` drops both tools from the
+  `init` line's tool list, and `ToolSearch` cannot load them. A `/plan` prompt
+  then changes no mode (2.1.332).
 - An MCP tool's text result of about 38,000 characters reaches the model whole,
   and the `tool_result` the stream reports carries all of it (2.1.329).
 - MCP tools are deferred: the model loads one with `ToolSearch` `select:<name>`,
@@ -303,9 +301,7 @@ Stdout carries JSON lines and can carry plain text on
   `connected`, `failed`, or `needs-auth`; a server whose command is missing or
   whose `initialize` fails is `failed`, and Claude runs without its tools.
 - `status`: `status` and `permissionMode`, emitted after every permission mode
-  change: a `set_permission_mode` (after its `control_response`),
-  `EnterPlanMode` (which asks for no approval), and an approved `ExitPlanMode`
-  (to `default` in a process started in `plan`).
+  change, such as a `set_permission_mode` (after its `control_response`).
 - `session_state_changed`: `state` is `running`, `requires_action` (just before
   a `can_use_tool` request) or `idle`; carries `"sdk_host_only":true`. `idle`
   arrives after the turn's `result` is flushed.
@@ -534,8 +530,11 @@ new `session_id`.
 ```
 
 An MCP tool's request also carries `mcp_server` `{name, source}` and
-`display_name`. A request the permission mode forces, such as an MCP tool in
-`plan`, carries `decision_reason_type: "mode"`.
+`display_name`.
+
+In `manual`, Claude runs `Read`, read-only Bash such as `ls -la`, `cat`, `find`,
+`grep`, and `git status`, and calls a settings `allow` rule matches, without a
+request, and asks for `touch`, `rm`, `rm -f`, and `Write` (Haiku, 2.1.332).
 
 Order on stdout: the assistant `tool_use`, `session_state_changed
 requires_action`, the `control_request`, then `running` again after the answer.
@@ -797,10 +796,3 @@ claude -p --input-format stream-json --output-format stream-json --verbose \
 `ReadMcpResourceTool`, `ReadMcpResourceDirTool`, `ListAgents{cursor}`,
 `SendMessage{to,message,summary,notify_when_idle}`, `PushNotification{message}`,
 `AskUserQuestion{questions}`.
-
-Haiku writes its plan to a file in the plans directory and calls `ExitPlanMode`
-with empty input. Claude fills in `{plan, planFilePath}` from the file in the
-`assistant` `tool_use`, the transcript, and `can_use_tool` (2.1.331; on 2.1.329
-the `tool_use` kept `{}`). An approved call's `tool_result` text ends with `##
-Approved Plan:` and the plan, and its `tool_use_result` is `{plan, isAgent,
-filePath}`. A denied call's result is the deny message.

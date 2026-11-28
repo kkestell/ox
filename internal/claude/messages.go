@@ -13,7 +13,6 @@ type message struct {
 	SessionID       string            `json:"session_id"`
 	Subtype         string            `json:"subtype"`
 	State           string            `json:"state"`
-	PermissionMode  string            `json:"permissionMode"` // system status and init lines
 	CommandUUID     string            `json:"command_uuid"`
 	ParentToolUseID string            `json:"parent_tool_use_id"`
 	Result          string            `json:"result"`

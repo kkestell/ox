@@ -21,6 +21,7 @@ import {
   type Methods,
   type Notification,
   notFound,
+  type Option,
   type Prompt,
   type SessionState,
   type Settings,
@@ -554,10 +555,12 @@ type ListRequest = "archive" | "unarchive" | "destroy";
 function createOx() {
   const [state, setStore] = createStore<{
     harnesses: Record<string, Harness>;
+    permission_modes: Option[];
     defaults?: Defaults;
     workspaces: Workspace[];
   }>({
     harnesses: {},
+    permission_modes: [],
     workspaces: [],
   });
   // listing holds the session list's requests in flight, at most one for each
@@ -759,12 +762,13 @@ function createOx() {
     if (!harnessList) return;
     const workspaceList = await retry(() => rpc("workspace/list", {}));
     if (!workspaceList) return;
-    const { harnesses, defaults } = harnessList;
+    const { harnesses, permission_modes, defaults } = harnessList;
     const { workspaces } = workspaceList;
     const listed = workspaces.flatMap((w) => w.sessions);
     const ids = new Set(listed.map((s) => s.session_id));
     setStore((s) => {
       s.harnesses = harnesses;
+      s.permission_modes = permission_modes;
       s.defaults = defaults;
       const previous = new Map(
         s.workspaces.flatMap((w) => w.sessions.map((session) => [session.id, session] as const)),

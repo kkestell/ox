@@ -2,7 +2,7 @@
 
 export type Option = { id: string; name: string };
 export type Model = Option & { efforts: Option[] };
-export type Harness = { models: Model[]; permission_modes: Option[] };
+export type Harness = { models: Model[] };
 export type Defaults = { harness: string; model: string; effort: string; permission_mode: string };
 
 export type Settings = { model: string; effort: string; permission_mode: string };
@@ -113,7 +113,7 @@ export type Notification =
 type Empty = Record<string, never>;
 
 export type Methods = {
-  "harness/list": [Empty, { harnesses: Record<string, Harness>; defaults: Defaults }];
+  "harness/list": [Empty, { harnesses: Record<string, Harness>; permission_modes: Option[]; defaults: Defaults }];
   "workspace/create": [{ path: string }, { workspace_id: string }];
   "workspace/list": [
     Empty,

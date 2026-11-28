@@ -285,19 +285,6 @@ func describe(messages []message) string {
 	return b.String()
 }
 
-// keepPlansIn has Claude write the plan files of sessions in workspace under
-// it, where the test removes them, rather than in the user's ~/.claude/plans.
-func keepPlansIn(t *testing.T, workspace string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Join(workspace, ".claude"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	settings := []byte(`{"plansDirectory": ".claude/plans"}`)
-	if err := os.WriteFile(filepath.Join(workspace, ".claude", "settings.json"), settings, 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // TestLive runs sections against real Claude Code with Haiku. Each section
 // creates the sessions it uses, so -run TestLive/<section> runs one alone.
 func TestLive(t *testing.T) {
@@ -324,13 +311,8 @@ func TestLive(t *testing.T) {
 	if err := check("claude-haiku-4-5-20251001", []string{"low"}); err == nil || !strings.Contains(err.Error(), "no effort level") {
 		t.Errorf("Claude took Haiku 4.5 at low effort: %v", err)
 	}
-	// A misspelled mode, which Claude refuses on stderr.
-	h := cfg.Harnesses["claude"]
-	h.PermissionModes = append(h.PermissionModes, config.Option{ID: "acceptEdit", Name: "Misspelled"})
-	cfg.Harnesses["claude"] = h
 	st := openStore(t)
 	dir := t.TempDir()
-	keepPlansIn(t, dir)
 	// A stored session whose conversation Claude does not have.
 	const lost = "lost-session"
 	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: dir, CreatedAt: time.Now()}); err != nil {
@@ -407,13 +389,6 @@ func TestLive(t *testing.T) {
 		l.c.update(lost, "parked")
 		if token := l.resumeToken(lost); token != "" {
 			l.t.Errorf("the missing conversation's token was kept: %q", token)
-		}
-		misspelled := l.create("acceptEdit")
-		l.c.call("session/send", map[string]string{"session_id": misspelled, "text": "Reply with just the word ok."})
-		if u := l.c.update(misspelled, "exited"); !strings.Contains(u.Error, "'acceptEdit' is invalid") {
-			l.t.Errorf("a start Claude refused on stderr failed without its reason: %+v", u)
-		} else {
-			l.t.Logf("exited: %s", u.Error)
 		}
 	})
 
@@ -591,20 +566,20 @@ func TestLive(t *testing.T) {
 	})
 
 	section("configure keeps other settings", func(l *live) {
-		a := l.create("acceptEdits")
+		a := l.create("auto")
 		l.turn(a, "Reply with just the word ok.", allow)
 		l.c.call("session/configure", map[string]string{"session_id": a, "effort": "high"})
 		configured := l.c.next(func(m message) bool { return m.Method == "session/configured" && m.sessionID() == a })
 		var settings agent.Settings
 		json.Unmarshal(configured.Params, &settings)
-		if settings != (agent.Settings{Model: haiku, Effort: "high", PermissionMode: "acceptEdits"}) {
+		if settings != (agent.Settings{Model: haiku, Effort: "high", PermissionMode: agent.Auto}) {
 			l.t.Errorf("configuring effort changed other settings: %+v", settings)
 		}
 		l.turn(a, "Reply with just the word again.", allow)
 	})
 
 	section("interrupt", func(l *live) {
-		a := l.create("acceptEdits")
+		a := l.create("auto")
 		l.turn(a, "Reply with just the word ok.", allow)
 
 		// An interrupt ends a generating turn with an error result.
@@ -712,18 +687,35 @@ func TestLive(t *testing.T) {
 		}
 	})
 
-	section("own mode change", func(l *live) {
-		// A mode Claude changes itself reaches the client.
-		planned := l.create("plan")
-		tools := l.turn(planned, "Load and call the ExitPlanMode tool now with the one-line plan: reply ok. Then reply with just ok.", allow)
-		if !slices.Contains(tools, "ExitPlanMode") {
-			l.t.Fatalf("Haiku did not call ExitPlanMode (%v); run again", tools)
+	section("auto mode", func(l *live) {
+		// In auto, Ox runs a command without asking, and asks before one that
+		// starts with rm.
+		a := l.create("auto")
+		var asked []string
+		tools := l.turn(a, "Run the Bash command `touch auto.txt`. After it finishes, run the Bash command `rm auto.txt`. Then reply with just the word done.", func(r liveRequest) any {
+			var input struct {
+				Command string `json:"command"`
+			}
+			json.Unmarshal(r.Input, &input)
+			asked = append(asked, input.Command)
+			return allow(r)
+		})
+		if bash := slices.DeleteFunc(slices.Clone(tools), func(name string) bool { return name != "Bash" }); len(bash) < 2 {
+			l.t.Fatalf("Haiku did not call Bash twice (%v); run again: %s", tools, describe(l.c.received(a)))
 		}
-		moved := l.c.next(func(m message) bool { return m.Method == "session/configured" && m.sessionID() == planned })
-		var movedTo agent.Settings
-		json.Unmarshal(moved.Params, &movedTo)
-		if movedTo.PermissionMode != "manual" {
-			l.t.Errorf("approving ExitPlanMode left the mode %q", movedTo.PermissionMode)
+		if len(asked) != 1 || !strings.HasPrefix(strings.TrimSpace(asked[0]), "rm") {
+			l.t.Errorf("auto asked about %q, want only the rm", asked)
+		}
+		requiresAction := 0
+		for _, m := range l.c.received(a) {
+			var u agent.Update
+			json.Unmarshal(m.Params, &u)
+			if u.Type == "state" && u.State == "requires_action" {
+				requiresAction++
+			}
+		}
+		if requiresAction != len(asked) {
+			l.t.Errorf("the session waited on the user %d times for %d approvals", requiresAction, len(asked))
 		}
 	})
 
@@ -732,7 +724,7 @@ func TestLive(t *testing.T) {
 		// resumed.
 		listed := l.create("manual")
 		l.listModels(listed)
-		l.listModels(l.create("plan"))
+		l.listModels(l.create("auto"))
 		l.c.update(listed, "parked")
 		l.listModels(listed)
 	})
@@ -782,12 +774,11 @@ func TestLive(t *testing.T) {
 	})
 
 	section("read long transcript", func(l *live) {
-		// Claude reads another session's long transcript without asking, in
-		// plan mode.
+		// Claude reads another session's long transcript without asking.
 		const endMarker = "END-MARKER-7731"
 		long := l.create("manual")
 		l.turn(long, strings.Repeat("lorem ipsum dolor sit amet ", 1420)+"The marker is "+endMarker+". Reply with just ok.", l.refuse)
-		reader := l.create("plan")
+		reader := l.create("auto")
 		tools := l.turn(reader, "Load and call the mcp__ox__read_session tool with to set to "+long+
 			`. Then reply with just the marker that ends the user prompt in the transcript, the word after "The marker is".`, l.refuse)
 		if !slices.Contains(tools, "mcp__ox__read_session") {
@@ -815,7 +806,7 @@ func TestLive(t *testing.T) {
 
 	section("plain-words messaging", func(l *live) {
 		// Asked in plain words, Claude messages another session through Ox.
-		from, to := l.create("acceptEdits"), l.create("manual")
+		from, to := l.create("auto"), l.create("manual")
 		tools := l.turn(from, "Exchange a message with the other agent, session "+to+
 			": ask it to reply with just the word ok, without calling any tool. Then reply with just ok.", l.refuse)
 		if slices.Contains(tools, "SendMessage") || slices.Contains(tools, "ListAgents") {
@@ -831,39 +822,6 @@ func TestLive(t *testing.T) {
 		tools = l.turn(from, "Load and call the ListAgents tool. Then reply with just ok.", l.refuse)
 		if slices.Contains(tools, "ListAgents") {
 			l.t.Errorf("Claude called ListAgents: %v", tools)
-		}
-	})
-
-	section("plan-mode message asks", func(l *live) {
-		// Haiku in plan mode usually declines to call a tool that is not
-		// read-only; when it does call send_message, the call asks first. A
-		// declined call leaves the approval path unobserved, so the section is
-		// skipped.
-		planner, recipient := l.create("plan"), l.create("manual")
-		askedToSend := false
-		tools := l.turn(planner, "Load and call the mcp__ox__send_message tool with to set to "+recipient+
-			` and text "Reply with just the word ok." Then reply with just ok.`, func(r liveRequest) any {
-			if r.ToolName != "mcp__ox__send_message" {
-				l.t.Errorf("%s asked for approval in plan mode", r.ToolName)
-			}
-			askedToSend = true
-			return allow(r)
-		})
-		switch {
-		case askedToSend:
-			if u := l.c.update(recipient, "prompt"); u.From != planner {
-				l.t.Errorf("the recipient took a prompt from %q, not %q", u.From, planner)
-			}
-			l.idle(recipient)
-		case slices.Contains(tools, "mcp__ox__send_message"):
-			l.t.Error("send_message ran without asking in plan mode")
-		default:
-			for _, m := range l.c.received(recipient) {
-				if m.Method == "session/update" {
-					l.t.Errorf("a message reached the recipient without approval: %s", m.Params)
-				}
-			}
-			l.t.Skipf("Haiku declined to call send_message in plan mode (%v)", tools)
 		}
 	})
 

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kkestell/ox/internal/agent"
 )
 
 func TestOpenUsesLiteralPath(t *testing.T) {
@@ -249,6 +251,42 @@ func TestTitles(t *testing.T) {
 	var left int
 	if err := st.db.QueryRow(`SELECT count(*) FROM titles`).Scan(&left); err != nil || left != 0 {
 		t.Fatalf("%d titles outlived their session: %v", left, err)
+	}
+}
+
+// Opening a database turns a session stored in a permission mode Ox no
+// longer offers to manual, and keeps manual and auto.
+func TestOpenRetiresPermissionModes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ox.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddWorkspace(&Workspace{ID: "w", Path: "/w", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"manual", "auto", "acceptEdits", "plan"} {
+		if err := st.AddSession("w", &Session{ID: id, PermissionMode: agent.Manual, Directory: "/w", CreatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.db.Exec(`UPDATE sessions SET permission_mode = ? WHERE id = ?`, id, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st.Close()
+	if st, err = Open(path); err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	workspaces, err := st.Workspaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]agent.PermissionMode{"manual": agent.Manual, "auto": agent.Auto, "acceptEdits": agent.Manual, "plan": agent.Manual}
+	for _, s := range workspaces[0].Sessions {
+		if s.PermissionMode != want[s.ID] {
+			t.Errorf("session stored in %s opened in %q", s.ID, s.PermissionMode)
+		}
 	}
 }
 

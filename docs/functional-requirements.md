@@ -122,8 +122,8 @@ title.
   loaded, unsafe links are not links, and links open in a new tab.
 - **Tool calls.** Each tool call shows its name, a summary of its input, and
   whether it is running, done, failed, or stopped; expanding it shows the full
-  input and the result's text, and a plan renders as Markdown. Expanding or
-  collapsing a tool call keeps its summary where it was on screen.
+  input and the result's text. Expanding or collapsing a tool call keeps its
+  summary where it was on screen.
 - **Reasoning.** When Ur reasons, or Claude reasons with thinking summaries
   turned on in the configuration, the transcript shows a collapsed Thinking row
   where it happened; expanding it shows the reasoning in full, streaming in as
@@ -165,16 +165,20 @@ title.
   within its harness.
 - **Effort across models.** Choosing a model keeps the effort when the new model
   offers it, and otherwise takes the new model's first effort level.
-- **Retired settings.** A model or permission mode the configuration no longer
-  offers still shows as the session's setting.
-- **Claude's own mode changes.** When Claude changes its own permission mode, as
-  when leaving plan mode, the page shows the new mode and later processes use
-  it.
+- **Retired settings.** A model the configuration no longer offers still shows
+  as the session's setting. A session in a permission mode Ox no longer offers,
+  such as Accept edits or Plan, runs in Manual and shows it.
 
 ## Approvals
 
 - **Permission requests.** A tool permission request appears in its session on
   every page, including after a reload, until it is answered or withdrawn.
+- **Permission modes.** Every session, of any harness, runs in Manual or Auto.
+  In Manual the user approves each tool call the agent asks about; Claude reads
+  files, runs read-only commands, and makes the calls the user's Claude settings
+  allow without asking. In Auto, Ox approves each tool call itself, except a
+  shell command that starts with `rm` and a question for the user, which wait
+  for the user as in Manual.
 - **Allow and Deny.** Allow approves the tool's input exactly as shown; Deny, or
   a typed reply, denies with that message.
 - **Questions from Claude.** A question from Claude appears as a form with its
@@ -237,8 +241,7 @@ title.
   started it, and reports not yet delivered are dropped when `oxd` stops or that
   session is deleted.
 - **Working together without approval.** A session of any harness does each of
-  these without asking for approval, except a Claude session in plan mode, which
-  asks before each message it sends and each session it starts.
+  these without asking for approval, in either permission mode.
 - **Messages stay in Ox.** Sessions message only Ox's own sessions, and only
   through Ox. Other Claude Code sessions on this machine cannot message an Ox
   session.
@@ -448,12 +451,12 @@ title.
   in the transcript and its text returns to the composer, and the next send
   starts a new conversation without the earlier context.
 - **Ur's shell commands.** Ur can run shell commands in the session's directory,
-  without `OPENROUTER_API_KEY` in their environment. In manual mode each command
-  asks for approval first, and a denied command tells Ur so and the turn goes
-  on; in auto mode every command runs without asking. A command ends when it
-  exits, at its timeout of two minutes or up to ten that Ur sets, or when the
-  turn is stopped, which also ends the processes it started; Ur gets its exit
-  status and its output, or the start and end of output too long to keep whole.
+  without `OPENROUTER_API_KEY` in their environment. Each command runs or asks
+  for approval first as its session's permission mode says, and a denied command
+  tells Ur so and the turn goes on. A command ends when it exits, at its timeout
+  of two minutes or up to ten that Ur sets, or when the turn is stopped, which
+  also ends the processes it started; Ur gets its exit status and its output, or
+  the start and end of output too long to keep whole.
 - **Ur's instructions.** Ur knows the session's directory, its OS, and today's
   date, that it is an Ox session, which one, and how to reach the other
   sessions, follows Ox's style, and follows the `AGENTS.md` in that directory as
@@ -463,7 +466,7 @@ title.
 
 - **Built-in catalog.** When Ox starts without a configuration file, it writes
   one for the user to edit, offering the Claude and Ur models Ox supports with
-  their effort levels and permission modes.
+  their effort levels.
 - **Titling model.** The user chooses in the configuration the harness, model,
   and effort that title sessions, from those Ox offers.
 - **Configuration checks.** `oxd` refuses to start with a configuration that is

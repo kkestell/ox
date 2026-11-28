@@ -21,6 +21,7 @@ import {
   newSessionButton,
   open,
   openMenu,
+  openModelPicker,
   permissionMode,
   prompt,
   replies,
@@ -175,7 +176,7 @@ test("a draft keeps its permission mode through a relay restart", async ({ ox: p
   await newDraft(page);
   await prompt(page).fill("draft through a restart");
   await expect(permissionMode(page)).toHaveValue("manual");
-  await permissionMode(page).selectOption("plan");
+  await permissionMode(page).selectOption("auto");
   const reconnect = await hold(page, "workspace/list");
   await services.restartRelay();
   await reconnect.arrived;
@@ -185,9 +186,34 @@ test("a draft keeps its permission mode through a relay restart", async ({ ox: p
   await prompt(page).press("Enter");
   reconnect.release();
   await expect(send(page)).toBeEnabled();
-  await expect(permissionMode(page)).toHaveValue("plan");
+  await expect(permissionMode(page)).toHaveValue("auto");
   await expect(prompt(page)).toHaveValue("draft through a restart");
   expect(creates).toEqual([]);
+});
+
+test.describe("with two harnesses", () => {
+  test.use({
+    config: {
+      ...fakeConfig,
+      harnesses: {
+        ...fakeConfig.harnesses,
+        ur: {
+          models: [
+            { id: "deepseek/deepseek-v4.1-flash-1017", name: "DeepSeek", efforts: [{ id: "low", name: "Low" }] },
+          ],
+        },
+      },
+    },
+  });
+
+  test("a draft keeps its permission mode when the harness changes", async ({ ox: page }) => {
+    await newDraft(page);
+    await permissionMode(page).selectOption("auto");
+    await openModelPicker(page);
+    await page.getByRole("option", { name: "DeepSeek" }).click();
+    await expect(model(page)).toContainText("DeepSeek");
+    await expect(permissionMode(page)).toHaveValue("auto");
+  });
 });
 
 test.describe(() => {
@@ -812,7 +838,7 @@ test.describe("chat status behind a file tab", () => {
   test("a refused setting change while a file tab shows marks the chat tab", async ({ ox: page }) => {
     await newSession(page, "configure me");
     const failed = await hold(page, "session/configure");
-    await permissionMode(page).selectOption("plan");
+    await permissionMode(page).selectOption("auto");
     await failed.arrived;
     await showFile(page);
     failed.fail("configuration refused");
@@ -894,7 +920,7 @@ test.describe("on a wide screen", () => {
     await dropOn(fileTab(page, "a.txt"), groups(page).first(), right);
     await expect(groups(page)).toHaveCount(2);
     const failed = await hold(page, "session/configure");
-    await permissionMode(page).selectOption("plan");
+    await permissionMode(page).selectOption("auto");
     await failed.arrived;
     failed.fail("configuration refused");
     await expect(page.getByRole("main").getByRole("alert")).toHaveText("configuration refused");

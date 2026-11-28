@@ -1,8 +1,7 @@
 import { createUniqueId, For, flush, Show, snapshot, untrack } from "solid-js";
-import { Markdown } from "./Markdown";
 import type { Approval, CardDraft, QuestionAnswer, SessionControl } from "./ox";
 import type { ApprovalResponse } from "./protocol";
-import { planOf, type Question, questionsOf, toolInputJSON, toolLabel, toolSubject } from "./toolInput";
+import { type Question, questionsOf, toolInputJSON, toolLabel, toolSubject } from "./toolInput";
 
 type Choice = NonNullable<CardDraft["choice"]>;
 
@@ -42,9 +41,7 @@ function PermissionCard(props: Props) {
       d.reply = text;
     });
   let field!: HTMLInputElement;
-  const plan = () => planOf(props.approval.request.tool_name, props.approval.request.input);
-  const subject = () =>
-    (plan() ? "" : toolSubject(props.approval.request.tool_name, props.approval.request.input)) || "Input";
+  const subject = () => toolSubject(props.approval.request.tool_name, props.approval.request.input) || "Input";
   const ready = () => choice() === "allow" || choice() === "deny" || (choice() === "other" && !!reply().trim());
 
   const pick = (picked: Choice) => {
@@ -75,7 +72,6 @@ function PermissionCard(props: Props) {
   return (
     <article class="approval" aria-labelledby={`${id}-title`}>
       <p id={`${id}-title`}>Allow {toolLabel(props.approval.request.tool_name)}?</p>
-      <Show when={plan()}>{(text) => <Markdown class="plan" text={text()} />}</Show>
       {/* The subject summarizes the input; expanding shows all of it. */}
       <details class="input">
         <summary>

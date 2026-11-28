@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kkestell/ox/internal/agent"
 	_ "modernc.org/sqlite"
 )
 
@@ -27,7 +28,7 @@ type Session struct {
 	Harness        string
 	Model          string
 	Effort         string
-	PermissionMode string
+	PermissionMode agent.PermissionMode
 	// ResumeToken is the harness's token for resuming the conversation,
 	// empty until the harness has saved enough to resume it.
 	ResumeToken string
@@ -179,6 +180,13 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		lock.Close()
 		return nil, fmt.Errorf("upgrade database: %w", err)
+	}
+	// A session stored in a permission mode Ox no longer offers runs in
+	// manual.
+	if _, err := db.Exec(`UPDATE sessions SET permission_mode = 'manual' WHERE permission_mode NOT IN ('manual', 'auto')`); err != nil {
+		db.Close()
+		lock.Close()
+		return nil, err
 	}
 	return &Store{db, lock}, nil
 }

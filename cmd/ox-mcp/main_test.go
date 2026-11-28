@@ -182,7 +182,7 @@ func startOxd(t *testing.T) (s *server.Server, socket string, p *page, sessionID
 	}
 	r := p.call("session/create", map[string]string{
 		"workspace_id": w.ID, "harness": cfg.Defaults.Harness, "model": cfg.Defaults.Model,
-		"effort": cfg.Defaults.Effort, "permission_mode": cfg.Defaults.PermissionMode,
+		"effort": cfg.Defaults.Effort, "permission_mode": string(cfg.Defaults.PermissionMode),
 	})
 	if r.Error != nil {
 		t.Fatalf("session/create: %+v", r.Error)
@@ -285,9 +285,6 @@ func TestForwarder(t *testing.T) {
 				Type     string   `json:"type"`
 				Required []string `json:"required"`
 			} `json:"inputSchema"`
-			Annotations struct {
-				ReadOnlyHint bool `json:"readOnlyHint"`
-			} `json:"annotations"`
 		} `json:"tools"`
 	}
 	json.Unmarshal(r.Result, &list)
@@ -296,12 +293,11 @@ func TestForwarder(t *testing.T) {
 	}
 	for i, want := range []struct {
 		name     string
-		readOnly bool
 		required string
-	}{{"list_models", true, ""}, {"list_sessions", true, ""}, {"send_message", false, "to,text"}, {"read_session", true, "to"}, {"create_session", false, "name,title,message"},
-		{"create_top_level_session", false, "title,message"}} {
+	}{{"list_models", ""}, {"list_sessions", ""}, {"send_message", "to,text"}, {"read_session", "to"}, {"create_session", "name,title,message"},
+		{"create_top_level_session", "title,message"}} {
 		got := list.Tools[i]
-		if got.Name != want.name || got.InputSchema.Type != "object" || got.Annotations.ReadOnlyHint != want.readOnly ||
+		if got.Name != want.name || got.InputSchema.Type != "object" ||
 			strings.Join(got.InputSchema.Required, ",") != want.required {
 			t.Fatalf("tools/list returned %s", r.Result)
 		}
@@ -595,8 +591,8 @@ func TestUr(t *testing.T) {
 	}
 	cfg := &config.Config{
 		Harnesses: map[string]config.Harness{
-			"fake": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
-			"ur":   {Models: []config.Model{{ID: "u"}}, PermissionModes: []config.Option{{ID: "manual"}, {ID: "auto"}}},
+			"fake": {Models: []config.Model{{ID: "m"}}},
+			"ur":   {Models: []config.Model{{ID: "u"}}},
 		},
 		Titling:       config.Titling{Harness: "fake", Model: "m"},
 		MaxChildDepth: 1,

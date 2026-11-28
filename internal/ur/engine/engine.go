@@ -71,6 +71,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
+	permissionMode, err := agent.ParsePermissionMode(*mode)
+	if err != nil {
+		fmt.Fprintf(stderr, "-permission-mode: %v\n", err)
+		return 2
+	}
 	var providers map[string][]string
 	if *providersJSON != "" {
 		if err := json.Unmarshal([]byte(*providersJSON), &providers); err != nil {
@@ -122,7 +127,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		endpoint: *endpoint, key: key, providers: providers, dir: *dir, id: *resume, workspace: workspace,
 		out: json.NewEncoder(stdout), stderr: stderr,
 		events: make(chan any), stopped: make(chan struct{}),
-		settings: agent.Settings{Model: *model, Effort: *effort, PermissionMode: *mode},
+		settings: agent.Settings{Model: *model, Effort: *effort, PermissionMode: permissionMode},
 	}
 	return e.serve(stdin, mcp, *sessionID)
 }
@@ -528,8 +533,8 @@ func (e *engine) request() {
 // next takes up calls, the response's calls not yet answered, oldest first,
 // and posts the next request once every call is answered. A call whose
 // arguments are invalid is answered at once. A call of one of Ox's tools runs
-// without asking; a shell call runs in auto mode and asks for approval
-// otherwise.
+// without asking; a shell call runs at once when the auto permission mode
+// lets it, and asks for approval otherwise.
 func (e *engine) next(calls []toolCall) {
 	if len(calls) == 0 {
 		e.request()
@@ -552,7 +557,7 @@ func (e *engine) next(calls []toolCall) {
 		e.answer(calls, outcome{err.Error(), true})
 		return
 	}
-	if e.settings.PermissionMode == "auto" {
+	if e.settings.PermissionMode == agent.Auto && agent.AutoRuns(command.Command) {
 		e.execute(calls, command)
 		return
 	}

@@ -236,11 +236,10 @@ func TestCreateSession(t *testing.T) {
 		{ID: "m", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}},
 		{ID: "n", Efforts: []config.Option{{ID: "medium"}}},
 	}
-	modes := []config.Option{{ID: "manual"}, {ID: "plan"}}
 	cfg := &config.Config{Harnesses: map[string]config.Harness{
-		"fake":   {Models: models, PermissionModes: modes},
-		"broken": {Models: models, PermissionModes: modes},
-		"manual": {Models: models, PermissionModes: []config.Option{{ID: "manual"}}},
+		"fake":   {Models: models},
+		"broken": {Models: models},
+		"other":  {Models: models},
 	}, MaxChildDepth: 2}
 	var startedMu sync.Mutex
 	started := map[string]string{} // each started session's Options.Workspace
@@ -257,6 +256,7 @@ func TestCreateSession(t *testing.T) {
 			return fake.Start(o)
 		}},
 		"broken": {Start: func(agent.Options) (agent.Agent, error) { return nil, errors.New("no such harness binary") }},
+		"other":  {Start: fake.Start},
 	}
 	st := openStore(t)
 	s, err := newServer(st, cfg, 0, harnesses, MCP{})
@@ -448,9 +448,10 @@ func TestCreateSession(t *testing.T) {
 		t.Fatalf("the child in sub's folder listed %+v", folder.Entries)
 	}
 	reportsTaken(t, c, a, map[string]int{worker.SessionID: 2, other: 1, low: 1, abs: 1, sub.SessionID: 1})
-	c.call("session/configure", map[string]string{"session_id": a, "permission_mode": "plan"})
-	if planner := createChild(map[string]string{"name": "planner", "title": "Planner", "message": "hi"}); planner.PermissionMode != "plan" {
-		t.Fatalf("a child of a plan-mode parent got %+v", planner)
+	// A child on any harness takes its parent's permission mode.
+	c.call("session/configure", map[string]string{"session_id": a, "permission_mode": "auto"})
+	if auto := createChild(map[string]string{"name": "auto", "title": "Auto", "message": "hi", "harness": "other", "model": "m"}); auto.Harness != "other" || auto.PermissionMode != agent.Auto {
+		t.Fatalf("a child on another harness of an auto parent got %+v", auto)
 	}
 
 	t.Log("refusals")
@@ -470,7 +471,6 @@ func TestCreateSession(t *testing.T) {
 		{map[string]string{"name": "x", "title": "T", "message": "hi", "harness": "nope"}, `harness "nope" is not configured`},
 		{map[string]string{"name": "x", "title": "T", "message": "hi", "harness": "broken"}, "model is required with another harness"},
 		{map[string]string{"name": "x", "title": "T", "message": "hi", "model": "x"}, `model "x" is not configured`},
-		{map[string]string{"name": "x", "title": "T", "message": "hi", "harness": "manual", "model": "m"}, `permission mode "plan" is not configured`},
 		{map[string]string{"name": "worker", "title": "T", "message": "hi"}, `a child named "worker" already exists`},
 	} {
 		if text, refused := fromA.tool("create_session", refusal.arguments); !refused || text != refusal.want {
@@ -620,7 +620,7 @@ func TestCreateSession(t *testing.T) {
 // reaches the caller's goroutine is refused, since the caller is gone.
 func TestCreateSessionByDeletedCaller(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{
-		"fake": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
+		"fake": {Models: []config.Model{{ID: "m"}}},
 	}, MaxChildDepth: 2}
 	s, err := newServer(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
 	if err != nil {
@@ -664,7 +664,7 @@ func TestCreateSessionByDeletedCaller(t *testing.T) {
 // published for its call.
 func TestCreateTopLevelSessionByArchivedCaller(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{
-		"fake": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
+		"fake": {Models: []config.Model{{ID: "m"}}},
 	}, MaxChildDepth: 1}
 	s, err := newServer(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
 	if err != nil {
@@ -717,7 +717,7 @@ func (b *lockedBuffer) String() string {
 // when its row cannot be deleted again, and the failed delete is logged.
 func TestFailedLaunchKeepsItsErrorWhenDeleteFails(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{
-		"fake": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
+		"fake": {Models: []config.Model{{ID: "m"}}},
 	}, MaxChildDepth: 1}
 	st := openStore(t)
 	// The parent is never prompted, so the only start is the child's.
@@ -773,7 +773,7 @@ func (a sendGateAgent) Send(input agent.Input) error {
 // and leaves no trace.
 func TestStartHoldsUpNoOtherSession(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{
-		"fake": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
+		"fake": {Models: []config.Model{{ID: "m"}}},
 	}, MaxChildDepth: 1}
 	tools := []struct {
 		name      string
@@ -890,7 +890,7 @@ func TestStartHoldsUpNoOtherSession(t *testing.T) {
 // the name stays free for a retry.
 func TestRefusedFirstMessageLeavesNoChild(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{
-		"fake": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
+		"fake": {Models: []config.Model{{ID: "m"}}},
 	}, MaxChildDepth: 1}
 	// The parent is never prompted, so the first Send is the child's.
 	var refusedID string
@@ -996,8 +996,7 @@ func TestMCPHandshakeNeedsNoSession(t *testing.T) {
 // unarchived.
 func TestArchive(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
-		Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}}},
-		PermissionModes: []config.Option{{ID: "manual"}},
+		Models: []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}}},
 	}}, MaxChildDepth: 2}
 	configuring := make(chan struct{}, 1)
 	start := func(o agent.Options) (agent.Agent, error) {
@@ -1283,7 +1282,7 @@ func TestArchive(t *testing.T) {
 // itself sends none for that step.
 func TestChildReports(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{
-		"fake": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
+		"fake": {Models: []config.Model{{ID: "m"}}},
 	}, MaxChildDepth: 1}
 	harnesses := map[string]agent.Harness{"fake": {Start: fake.Start}}
 	st := openStore(t)
@@ -1800,12 +1799,10 @@ func TestCreateTopLevelSession(t *testing.T) {
 	cfg := &config.Config{
 		Harnesses: map[string]config.Harness{
 			"fake": {
-				Models:          []config.Model{{ID: "m"}, {ID: "n"}},
-				PermissionModes: []config.Option{{ID: "manual"}, {ID: "plan"}},
+				Models: []config.Model{{ID: "m"}, {ID: "n"}},
 			},
 			"broken": {
-				Models:          []config.Model{{ID: "m"}, {ID: "n"}},
-				PermissionModes: []config.Option{{ID: "manual"}, {ID: "plan"}},
+				Models: []config.Model{{ID: "m"}, {ID: "n"}},
 			},
 		},
 		Titling: config.Titling{Harness: "fake", Model: "m"}, MaxChildDepth: 1,
@@ -1833,7 +1830,7 @@ func TestCreateTopLevelSession(t *testing.T) {
 			SessionID string `json:"session_id"`
 		}
 		json.Unmarshal(c.call("session/create", map[string]string{
-			"workspace_id": inRepo, "harness": "fake", "model": "m", "permission_mode": "plan",
+			"workspace_id": inRepo, "harness": "fake", "model": "m", "permission_mode": "auto",
 		}), &created)
 		creator = created.SessionID
 	}
@@ -1934,7 +1931,7 @@ func TestCreateTopLevelSession(t *testing.T) {
 		History []agent.Update `json:"history"`
 	}
 	json.Unmarshal(c.call("session/get", map[string]string{"session_id": first.SessionID}), &got)
-	if got.Model != "n" || got.PermissionMode != "plan" {
+	if got.Model != "n" || got.PermissionMode != agent.Auto {
 		t.Fatalf("the started session runs with %+v", got.Settings)
 	}
 	if len(got.History) == 0 || got.History[0].Type != agent.UpdatePrompt || got.History[0].From != creator ||

@@ -116,13 +116,12 @@ func TestInvalidLines(t *testing.T) {
 	}
 }
 
-// harness/list serves the choices a client offers, and none of the
-// configuration's other fields.
+// harness/list serves the choices a client offers, with the permission modes
+// every harness takes, and none of the configuration's other fields.
 func TestHarnessListServesCatalog(t *testing.T) {
 	cfg := &config.Config{
 		Harnesses: map[string]config.Harness{"h": {
-			Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}}}},
-			PermissionModes: []config.Option{{ID: "plan"}},
+			Models: []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}}}},
 		}},
 		Titling:       config.Titling{Model: "m", Effort: "low"},
 		MaxChildDepth: 2,
@@ -149,15 +148,20 @@ func TestHarnessListServesCatalog(t *testing.T) {
 		keys = append(keys, key)
 	}
 	slices.Sort(keys)
-	if !slices.Equal(keys, []string{"defaults", "harnesses"}) {
-		t.Errorf("harness/list result has %v, want defaults and harnesses", keys)
+	if !slices.Equal(keys, []string{"defaults", "harnesses", "permission_modes"}) {
+		t.Errorf("harness/list result has %v, want defaults, harnesses, and permission_modes", keys)
+	}
+	if modes := string(result["permission_modes"]); modes != `[{"id":"manual","name":"Manual"},{"id":"auto","name":"Auto"}]` {
+		t.Errorf("harness/list permission_modes %s", modes)
+	}
+	if strings.Contains(string(result["harnesses"]), "permission_modes") {
+		t.Errorf("a harness lists its own permission modes: %s", result["harnesses"])
 	}
 }
 
 func TestSettingsValidation(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{"h": {
-		Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}}}},
-		PermissionModes: []config.Option{{ID: "plan"}},
+		Models: []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}}}},
 	}}}
 	s, err := newServer(openStore(t), cfg, 0, nil, MCP{})
 	if err != nil {
@@ -177,17 +181,28 @@ func TestSettingsValidation(t *testing.T) {
 	}
 	for _, params := range []string{
 		`{"workspace_id":"missing"}`,
-		`{"workspace_id":"missing","harness":"x","model":"m","effort":"low","permission_mode":"plan"}`,
-		`{"workspace_id":"missing","harness":"h","model":"x","effort":"low","permission_mode":"plan"}`,
-		`{"workspace_id":"missing","harness":"h","model":"m","effort":"high","permission_mode":"plan"}`,
+		`{"workspace_id":"missing","harness":"x","model":"m","effort":"low","permission_mode":"auto"}`,
+		`{"workspace_id":"missing","harness":"h","model":"x","effort":"low","permission_mode":"auto"}`,
+		`{"workspace_id":"missing","harness":"h","model":"m","effort":"high","permission_mode":"auto"}`,
 		`{"workspace_id":"missing","harness":"h","model":"m","effort":"low","permission_mode":""}`,
+		`{"workspace_id":"missing","harness":"h","model":"m","effort":"low"}`,
 	} {
 		if response := answer(s, request("session/create", params)); response.Error == nil || response.Error.Code != -32602 {
 			t.Errorf("invalid creation %s: %+v", params, response.Error)
 		}
 	}
+	// A permission mode Ox does not offer is refused, named.
+	const retired = `permission mode "acceptEdits" is not manual or auto`
+	for method, params := range map[string]string{
+		"session/create":    `{"workspace_id":"missing","harness":"h","model":"m","effort":"low","permission_mode":"acceptEdits"}`,
+		"session/configure": `{"session_id":"missing","permission_mode":"acceptEdits"}`,
+	} {
+		if response := answer(s, request(method, params)); response.Error == nil || response.Error.Code != -32602 || response.Error.Message != retired {
+			t.Errorf("%s in acceptEdits: %+v", method, response.Error)
+		}
+	}
 	for _, sessionID := range []string{"00112233445566778899aabbccddeeff", "12"} {
-		params := `{"session_id":"` + sessionID + `","workspace_id":"missing","harness":"h","model":"m","effort":"low","permission_mode":"plan"}`
+		params := `{"session_id":"` + sessionID + `","workspace_id":"missing","harness":"h","model":"m","effort":"low","permission_mode":"auto"}`
 		if response := answer(s, request("session/create", params)); response.Error == nil || response.Error.Message != "session_id must be a base58 ID" {
 			t.Errorf("malformed session_id %s: %+v", sessionID, response.Error)
 		}
@@ -295,7 +310,7 @@ func pngBase64(n int) string {
 // updates and history, and served by session/image until the prompt drops.
 func TestPromptImages(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
-		Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}},
+		Models: []config.Model{{ID: "m"}},
 	}}}
 	s, err := newServer(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
 	if err != nil {
@@ -419,7 +434,7 @@ func TestRepeatSessionCreation(t *testing.T) {
 	id := "C3CPq7c8PY"
 	params := map[string]string{
 		"workspace_id": workspace(), "session_id": id, "harness": cfg.Defaults.Harness,
-		"model": cfg.Defaults.Model, "effort": cfg.Defaults.Effort, "permission_mode": cfg.Defaults.PermissionMode,
+		"model": cfg.Defaults.Model, "effort": cfg.Defaults.Effort, "permission_mode": string(cfg.Defaults.PermissionMode),
 	}
 	check := func(existing bool) {
 		t.Helper()
@@ -432,12 +447,12 @@ func TestRepeatSessionCreation(t *testing.T) {
 		}
 	}
 	check(false)
-	c.call("session/configure", map[string]string{"session_id": id, "permission_mode": "plan"})
-	params["permission_mode"] = "obsolete"
+	c.call("session/configure", map[string]string{"session_id": id, "permission_mode": "auto"})
+	params["permission_mode"] = "manual"
 	check(true)
 	var settings agent.Settings
 	json.Unmarshal(c.call("session/get", map[string]string{"session_id": id}), &settings)
-	if settings.PermissionMode != "plan" {
+	if settings.PermissionMode != agent.Auto {
 		t.Fatalf("a retried creation changed existing settings: %+v", settings)
 	}
 	params["workspace_id"] = workspace()
@@ -448,8 +463,7 @@ func TestRepeatSessionCreation(t *testing.T) {
 
 func TestSessionLifecycle(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
-		Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}}},
-		PermissionModes: []config.Option{{ID: "plan"}},
+		Models: []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}}},
 	}}}
 	st := openStore(t)
 	s, err := newServer(st, cfg, 300*time.Millisecond, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
@@ -467,7 +481,7 @@ func TestSessionLifecycle(t *testing.T) {
 		SessionID string `json:"session_id"`
 	}
 	json.Unmarshal(c.call("session/create", map[string]string{
-		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "effort": "low", "permission_mode": "plan",
+		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "effort": "low", "permission_mode": "auto",
 	}), &created)
 	id := created.SessionID
 	listedState := func() string {
@@ -543,7 +557,7 @@ func TestSessionLifecycle(t *testing.T) {
 	}
 	c.call("session/configure", map[string]string{"session_id": id, "effort": "high"})
 	configured := c.next(func(m message) bool { return m.Method == "session/configured" })
-	if !strings.Contains(string(configured.Params), `"model":"m","effort":"high","permission_mode":"plan"`) {
+	if !strings.Contains(string(configured.Params), `"model":"m","effort":"high","permission_mode":"auto"`) {
 		t.Fatalf("configuring effort changed other settings: %s", configured.Params)
 	}
 
@@ -568,7 +582,7 @@ func TestSessionLifecycle(t *testing.T) {
 	// A background task that outlasts the park period keeps the session
 	// from parking until it ends.
 	json.Unmarshal(c.call("session/create", map[string]string{
-		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "effort": "low", "permission_mode": "plan",
+		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "effort": "low", "permission_mode": "auto",
 	}), &created)
 	worker := created.SessionID
 	c.call("session/send", map[string]string{"session_id": worker, "text": "background 800"})
@@ -635,7 +649,7 @@ func TestSessionLifecycle(t *testing.T) {
 		t.Fatalf("a removed workspace was removed again: %+v", again.Error)
 	}
 	if late := c.request("session/create", map[string]string{
-		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "effort": "low", "permission_mode": "plan",
+		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "effort": "low", "permission_mode": "auto",
 	}); late.Error == nil || late.Error.Code != notFound {
 		t.Fatalf("a session was created in a removed workspace: %+v", late.Error)
 	}
@@ -655,8 +669,7 @@ func TestSessionLifecycle(t *testing.T) {
 // what the session now uses, and the session's next process starts with them.
 func TestConfigurationTakenButNotStored(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
-		Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}}},
-		PermissionModes: []config.Option{{ID: "plan"}},
+		Models: []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}}},
 	}}}
 	st := openStore(t)
 	started := make(chan agent.Settings, 2)
@@ -678,11 +691,11 @@ func TestConfigurationTakenButNotStored(t *testing.T) {
 		SessionID string `json:"session_id"`
 	}
 	json.Unmarshal(c.call("session/create", map[string]string{
-		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "effort": "low", "permission_mode": "plan",
+		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "effort": "low", "permission_mode": "auto",
 	}), &created)
 	id := created.SessionID
 	json.Unmarshal(c.call("session/create", map[string]string{
-		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "effort": "low", "permission_mode": "plan",
+		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "effort": "low", "permission_mode": "auto",
 	}), &created)
 	parked := created.SessionID
 	// The background task keeps the running session from parking until it
@@ -704,7 +717,7 @@ func TestConfigurationTakenButNotStored(t *testing.T) {
 	c.update(id, agent.UpdateParked)
 	for _, id := range []string{id, parked} {
 		c.call("session/send", map[string]string{"session_id": id, "text": "hi"})
-		if settings, want := <-started, (agent.Settings{Model: "m", Effort: "high", PermissionMode: "plan"}); settings != want {
+		if settings, want := <-started, (agent.Settings{Model: "m", Effort: "high", PermissionMode: agent.Auto}); settings != want {
 			t.Fatalf("the session's next process started with %+v, not the settings it took", settings)
 		}
 	}
@@ -715,8 +728,7 @@ func TestConfigurationTakenButNotStored(t *testing.T) {
 // session is titled once, and its title survives a restart.
 func TestSessionLabel(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
-		Models:          []config.Model{{ID: "m"}, {ID: "titler", Efforts: []config.Option{{ID: "low"}}}},
-		PermissionModes: []config.Option{{ID: "manual"}},
+		Models: []config.Model{{ID: "m"}, {ID: "titler", Efforts: []config.Option{{ID: "low"}}}},
 	}}, Titling: config.Titling{Harness: "fake", Model: "titler", Effort: "low"}}
 	type reply struct {
 		text string
@@ -949,7 +961,6 @@ read model
 request=${model#*'"request_id":"'}; request=${request%%'"'*}
 printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s"}}\n' "$request"
 read effort
-printf '%s\n' '{"type":"system","subtype":"status","permissionMode":"default"}'
 while [ ! -e '` + exit + `' ]; do sleep .02; done
 `
 	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
@@ -958,8 +969,7 @@ while [ ! -e '` + exit + `' ]; do sleep .02; done
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	efforts := []config.Option{{ID: "low"}, {ID: "high"}}
 	cfg := &config.Config{Harnesses: map[string]config.Harness{"claude": {
-		Models:          []config.Model{{ID: "m", Efforts: efforts}, {ID: "new", Efforts: efforts}},
-		PermissionModes: []config.Option{{ID: "plan"}, {ID: "manual"}},
+		Models: []config.Model{{ID: "m", Efforts: efforts}, {ID: "new", Efforts: efforts}},
 	}}}
 	s, err := newServer(openStore(t), cfg, 0, map[string]agent.Harness{"claude": claude.Harness(false)}, MCP{})
 	if err != nil {
@@ -975,7 +985,7 @@ while [ ! -e '` + exit + `' ]; do sleep .02; done
 		ID string `json:"session_id"`
 	}
 	json.Unmarshal(c.call("session/create", map[string]string{
-		"workspace_id": workspace.ID, "harness": "claude", "model": "m", "effort": "low", "permission_mode": "plan",
+		"workspace_id": workspace.ID, "harness": "claude", "model": "m", "effort": "low", "permission_mode": "auto",
 	}), &created)
 	id := created.ID
 	c.call("session/send", map[string]string{"session_id": id, "text": "hi"})
@@ -993,8 +1003,7 @@ while [ ! -e '` + exit + `' ]; do sleep .02; done
 	nextConfigured := func() []byte {
 		return c.next(func(m message) bool { return m.Method == "session/configured" && m.sessionID() == id }).Params
 	}
-	checkSettings(nextConfigured(), agent.Settings{Model: "new", Effort: "low", PermissionMode: "plan"})
-	beforeExit := agent.Settings{Model: "new", Effort: "low", PermissionMode: "manual"}
+	beforeExit := agent.Settings{Model: "new", Effort: "low", PermissionMode: agent.Auto}
 	checkSettings(nextConfigured(), beforeExit)
 	checkSettings(c.call("session/get", map[string]string{"session_id": id}), beforeExit)
 	if err := os.WriteFile(exit, nil, 0o600); err != nil {
@@ -1003,7 +1012,7 @@ while [ ! -e '` + exit + `' ]; do sleep .02; done
 	if r := c.response(configure); r.Error != nil {
 		t.Fatalf("a configuration whose process exited failed: %+v", r.Error)
 	}
-	afterExit := agent.Settings{Model: "new", Effort: "high", PermissionMode: "manual"}
+	afterExit := agent.Settings{Model: "new", Effort: "high", PermissionMode: agent.Auto}
 	checkSettings(nextConfigured(), afterExit)
 	c.update(id, "parked")
 	checkSettings(c.call("session/get", map[string]string{"session_id": id}), afterExit)
@@ -1182,8 +1191,7 @@ func TestDestroyWhileStartingOrConfiguring(t *testing.T) {
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	cfg := &config.Config{Harnesses: map[string]config.Harness{"claude": {
-		Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}}},
-		PermissionModes: []config.Option{{ID: "manual"}},
+		Models: []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}}},
 	}}}
 	st := openStore(t)
 	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: dir, CreatedAt: time.Now()}); err != nil {
@@ -1356,7 +1364,7 @@ func unresumableSession(t *testing.T) (*store.Store, *Server, *client, string) {
 	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: dir, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Model: "m", PermissionMode: "plan", ResumeToken: "gone", Directory: dir, CreatedAt: time.Now()}); err != nil {
+	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Model: "m", PermissionMode: agent.Auto, ResumeToken: "gone", Directory: dir, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.AddSession("w", &store.Session{ID: "sender-session", Harness: "claude", Directory: dir, CreatedAt: time.Now()}); err != nil {
@@ -1390,7 +1398,7 @@ func TestResumeTokenKeptWhenNotStored(t *testing.T) {
 	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: dir, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Model: "m", PermissionMode: "plan", Directory: dir, CreatedAt: time.Now()}); err != nil {
+	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Model: "m", PermissionMode: agent.Auto, Directory: dir, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness(false)}, MCP{})
@@ -1413,74 +1421,11 @@ func TestResumeTokenKeptWhenNotStored(t *testing.T) {
 	}
 }
 
-// A mode Claude changes itself, as it does when a plan is approved, reaches
-// every client, the store, and the session's later processes.
-func TestClaudeModeChangeIsAdopted(t *testing.T) {
-	dir := t.TempDir()
-	args := filepath.Join(dir, "args")
-	// A stand-in for Claude that leaves plan mode once it has read a prompt,
-	// answers it, and exits.
-	script := logStarts(args) +
-		"read line\n" +
-		`echo '{"type":"control_response","response":{"subtype":"success","request_id":"initialize"}}'` + "\n" +
-		"read prompt\n" +
-		`echo '{"type":"system","subtype":"status","status":null,"permissionMode":"default"}'` + "\n" +
-		`echo '{"type":"result","subtype":"success","session_id":"11111111-1111-4111-8111-111111111111","is_error":false,"result":"done"}'` + "\n"
-	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	st := openStore(t)
-	if err := st.AddWorkspace(&store.Workspace{ID: "w", Path: dir, CreatedAt: time.Now()}); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.AddSession("w", &store.Session{ID: "s", Harness: "claude", Model: "m", Effort: "low", PermissionMode: "plan", Directory: dir, CreatedAt: time.Now()}); err != nil {
-		t.Fatal(err)
-	}
-	s, err := newServer(st, &config.Config{}, 0, map[string]agent.Harness{"claude": claude.Harness(false)}, MCP{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(s.Close)
-	c := connect(t, s)
-
-	c.call("session/send", map[string]string{"session_id": "s", "text": "hi"})
-	configured := c.next(func(m message) bool { return m.Method == "session/configured" && m.sessionID() == "s" })
-	var settings agent.Settings
-	json.Unmarshal(configured.Params, &settings)
-	if want := (agent.Settings{Model: "m", Effort: "low", PermissionMode: "manual"}); settings != want {
-		t.Fatalf("session/configured reported %+v", settings)
-	}
-	var got struct {
-		PermissionMode string `json:"permission_mode"`
-	}
-	json.Unmarshal(c.call("session/get", map[string]string{"session_id": "s"}), &got)
-	if got.PermissionMode != "manual" {
-		t.Fatalf("session/get reported %q", got.PermissionMode)
-	}
-	workspaces, err := st.Workspaces()
-	if err != nil || workspaces[0].Sessions[0].PermissionMode != "manual" {
-		t.Fatalf("the stored mode was not updated: %v", err)
-	}
-
-	c.update("s", "parked")
-	c.forget("s")
-	c.call("session/send", map[string]string{"session_id": "s", "text": "again"})
-	c.update("s", "result")
-	lines := starts(t, args)
-	if len(lines) != 2 || !strings.Contains(lines[1], "--resume=11111111-1111-4111-8111-111111111111") ||
-		!strings.Contains(lines[1], "--permission-mode=manual") {
-		t.Fatalf("the next process did not resume in the mode Claude chose: %q", lines)
-	}
-}
-
 // An approval reaches every client and a reloaded snapshot, takes one answer,
 // which reaches the harness untouched, and is refused once answered.
 func TestApprovalAnsweredOnce(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
-		Models:          []config.Model{{ID: "m"}},
-		PermissionModes: []config.Option{{ID: "manual"}},
+		Models: []config.Model{{ID: "m"}},
 	}}}
 	s, err := newServer(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
 	if err != nil {
@@ -1543,8 +1488,7 @@ func TestApprovalAnsweredOnce(t *testing.T) {
 // harness takes it or Stop drops it.
 func TestPromptQueuedWhileClaudeWorks(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
-		Models:          []config.Model{{ID: "m"}},
-		PermissionModes: []config.Option{{ID: "manual"}},
+		Models: []config.Model{{ID: "m"}},
 	}}}
 	s, err := newServer(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
 	if err != nil {
@@ -1831,7 +1775,7 @@ func (a gatedReap) Reaped() <-chan struct{} {
 // A delete waits for the processes of an agent that parked earlier to exit.
 func TestDestroyWaitsForParkedProcesses(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {
-		Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "plan"}},
+		Models: []config.Model{{ID: "m"}},
 	}}}
 	gate := make(chan struct{})
 	start := func(o agent.Options) (agent.Agent, error) {
@@ -1852,7 +1796,7 @@ func TestDestroyWaitsForParkedProcesses(t *testing.T) {
 		SessionID string `json:"session_id"`
 	}
 	json.Unmarshal(c.call("session/create", map[string]string{
-		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "permission_mode": "plan",
+		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "permission_mode": "auto",
 	}), &created)
 	c.call("session/send", map[string]string{"session_id": created.SessionID, "text": "hi"})
 	c.update(created.SessionID, "parked")
@@ -1881,8 +1825,8 @@ func (a configuringAgent) Configure(patch agent.SettingsPatch, done func(error))
 // reach the recipient as prompts with their sender, queued in order.
 func TestSendMessage(t *testing.T) {
 	cfg := &config.Config{Harnesses: map[string]config.Harness{
-		"fake":   {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
-		"broken": {Models: []config.Model{{ID: "m"}}, PermissionModes: []config.Option{{ID: "manual"}}},
+		"fake":   {Models: []config.Model{{ID: "m"}}},
+		"broken": {Models: []config.Model{{ID: "m"}}},
 	}}
 	configuring := make(chan struct{}, 1)
 	start := func(o agent.Options) (agent.Agent, error) {
@@ -2285,7 +2229,6 @@ func TestModelChangeKeepsCurrentEffort(t *testing.T) {
 			{ID: "a", Efforts: []config.Option{{ID: "low"}, {ID: "high"}}},
 			{ID: "b", Efforts: []config.Option{{ID: "medium"}, {ID: "high"}}},
 		},
-		PermissionModes: []config.Option{{ID: "plan"}},
 	}}}
 	s, err := newServer(openStore(t), cfg, time.Minute, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{})
 	if err != nil {
@@ -2301,7 +2244,7 @@ func TestModelChangeKeepsCurrentEffort(t *testing.T) {
 		SessionID string `json:"session_id"`
 	}
 	json.Unmarshal(c1.call("session/create", map[string]string{
-		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "a", "effort": "low", "permission_mode": "plan",
+		"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "a", "effort": "low", "permission_mode": "auto",
 	}), &created)
 	id := created.SessionID
 	settings := func() string {

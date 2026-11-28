@@ -29,7 +29,6 @@ func Harness(thinkingSummaries bool) agent.Harness {
 		},
 		CheckPrompt:            checkPrompt,
 		CheckEfforts:           check,
-		CheckPermissionMode:    checkPermissionMode,
 		TakesThinkingSummaries: true,
 		Ask:                    Ask,
 	}

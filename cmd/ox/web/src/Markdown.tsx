@@ -20,6 +20,6 @@ const file = renderer(false);
 
 // Markdown renders transcript text with its line breaks kept, and a file's text
 // with each paragraph's lines joined, as Markdown renders a document.
-export function Markdown(props: { text: string; file?: boolean; class?: string }) {
-  return <div class={["markdown", props.class]} innerHTML={(props.file ? file : chat).render(props.text)} />;
+export function Markdown(props: { text: string; file?: boolean }) {
+  return <div class="markdown" innerHTML={(props.file ? file : chat).render(props.text)} />;
 }

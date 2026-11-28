@@ -22,6 +22,13 @@ func (a *Agent) Configure(patch agent.SettingsPatch, done func(error)) {
 		return
 	}
 	settings := patch.Apply(a.settings)
+	// Claude always runs in its own manual mode, and the agent applies Ox's
+	// permission mode to the requests it answers.
+	if settings.PermissionMode != a.settings.PermissionMode {
+		changed := a.settings
+		changed.PermissionMode = settings.PermissionMode
+		a.configured(changed)
+	}
 	var requests []control
 	if settings.Model != a.settings.Model {
 		requests = append(requests, control{
@@ -33,12 +40,6 @@ func (a *Agent) Configure(patch agent.SettingsPatch, done func(error)) {
 		requests = append(requests, control{
 			map[string]any{"subtype": "apply_flag_settings", "settings": map[string]any{"effortLevel": effortLevel(settings.Effort)}},
 			func(s *agent.Settings) { s.Effort = settings.Effort },
-		})
-	}
-	if settings.PermissionMode != a.settings.PermissionMode {
-		requests = append(requests, control{
-			map[string]any{"subtype": "set_permission_mode", "mode": settings.PermissionMode},
-			func(s *agent.Settings) { s.PermissionMode = settings.PermissionMode },
 		})
 	}
 	if len(requests) == 0 {

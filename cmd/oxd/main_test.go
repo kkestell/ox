@@ -203,7 +203,6 @@ func TestConfigOffersOnlyWhatHarnessesTake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	refuse := func(string) error { return errors.New("refused") }
 	refuseEfforts := func(_ string, efforts []string) error {
 		if len(efforts) > 0 {
 			return errors.New("refused")
@@ -213,15 +212,14 @@ func TestConfigOffersOnlyWhatHarnessesTake(t *testing.T) {
 	harnesses := map[string]agent.Harness{
 		"claude": claude.Harness(false),
 		"ur":     ur.Harness("ur", "", t.TempDir(), nil),
-		"picky":  {Start: fake.Start, CheckEfforts: refuseEfforts, CheckPermissionMode: refuse},
+		"picky":  {Start: fake.Start, CheckEfforts: refuseEfforts},
 		"plain":  {Start: fake.Start},
 	}
 	if err := checkConfig(builtIn, harnesses); err != nil {
 		t.Fatalf("the built-in configuration was refused: %v", err)
 	}
 	plain := &config.Config{Harnesses: map[string]config.Harness{"plain": {
-		Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "any"}}}},
-		PermissionModes: []config.Option{{ID: "any"}},
+		Models: []config.Model{{ID: "m", Efforts: []config.Option{{ID: "any"}}}},
 	}}}
 	if err := checkConfig(plain, harnesses); err != nil {
 		t.Fatalf("a harness without checks was refused: %v", err)
@@ -237,31 +235,20 @@ func TestConfigOffersOnlyWhatHarnessesTake(t *testing.T) {
 			Models: []config.Model{{ID: "claude-haiku-9"}},
 		}}},
 		"an Ur effort level Ur does not take": {Harnesses: map[string]config.Harness{"ur": {
-			Models:          []config.Model{{ID: "m", Efforts: []config.Option{{ID: "extreme"}}}},
-			PermissionModes: []config.Option{{ID: "manual"}},
-		}}},
-		"an Ur permission mode Ur does not take": {Harnesses: map[string]config.Harness{"ur": {
-			Models:          []config.Model{{ID: "m"}},
-			PermissionModes: []config.Option{{ID: "manual"}, {ID: "acceptEdits"}},
+			Models: []config.Model{{ID: "m", Efforts: []config.Option{{ID: "extreme"}}}},
 		}}},
 		"an effort level a harness's own check refuses": {Harnesses: map[string]config.Harness{"picky": {
 			Models: []config.Model{{ID: "m", Efforts: []config.Option{{ID: "low"}}}},
-		}}},
-		"a permission mode a harness's own check refuses": {Harnesses: map[string]config.Harness{"picky": {
-			Models:          []config.Model{{ID: "m"}},
-			PermissionModes: []config.Option{{ID: "manual"}},
 		}}},
 		"a harness oxd does not have": {Harnesses: map[string]config.Harness{"nope": {
 			Models: []config.Model{{ID: "m"}},
 		}}},
 		"thinking summaries on Ur": {Harnesses: map[string]config.Harness{"ur": {
 			Models:            []config.Model{{ID: "m"}},
-			PermissionModes:   []config.Option{{ID: "manual"}},
 			ThinkingSummaries: true,
 		}}},
 		"a provider order on a Claude model": {Harnesses: map[string]config.Harness{"claude": {
-			Models:          []config.Model{{ID: "claude-haiku-5-5", Providers: []string{"anthropic"}}},
-			PermissionModes: []config.Option{{ID: "manual"}},
+			Models: []config.Model{{ID: "claude-haiku-5-5", Providers: []string{"anthropic"}}},
 		}}},
 	} {
 		if err := checkConfig(cfg, harnesses); err == nil {
@@ -297,28 +284,6 @@ func TestConfiguredThinkingSummariesReachClaude(t *testing.T) {
 	}
 	if !slices.Contains(strings.Split(string(data), "\n"), "--thinking-display=summarized") {
 		t.Errorf("Claude started without thinking summaries: %q", data)
-	}
-}
-
-func TestConfigRefusesPermissionModesClaudeRefuses(t *testing.T) {
-	claudeListsModels(t)
-	harnesses := map[string]agent.Harness{"claude": claude.Harness(false)}
-	for mode, want := range map[string]string{"default": "manual", "acceptEdit": "acceptEdit"} {
-		cfg := &config.Config{Harnesses: map[string]config.Harness{"claude": {
-			PermissionModes: []config.Option{{ID: mode}},
-		}}}
-		if err := checkConfig(cfg, harnesses); err == nil || !strings.Contains(err.Error(), want) {
-			t.Fatalf("permission mode %q was not refused: %v", mode, err)
-		}
-	}
-	cfg, err := config.Load(filepath.Join(t.TempDir(), "missing.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	harnesses["fake"] = agent.Harness{Start: fake.Start}
-	harnesses["ur"] = agent.Harness{Start: fake.Start, TakesProviders: true}
-	if err := checkConfig(cfg, harnesses); err != nil {
-		t.Fatalf("the built-in configuration was refused: %v", err)
 	}
 }
 
@@ -465,7 +430,7 @@ func TestDaemonOwnsSocketAndDatabaseUntilShutdown(t *testing.T) {
 	}
 	standIn := "#!/bin/sh\n" + listsModels + `trap '' TERM
 case "$*" in
-  *--permission-mode=plan*) echo $$ > initializing; exec sleep 60;;
+  *--effort=high*) echo $$ > initializing; exec sleep 60;;
 esac
 echo $$ > running
 read line
@@ -561,7 +526,7 @@ exec sleep 60
 		t.Fatal(err)
 	}
 	loading := call(4, "session/create", map[string]string{
-		"workspace_id": workspace, "harness": "claude", "model": "claude-haiku-5-5", "effort": "low", "permission_mode": "plan",
+		"workspace_id": workspace, "harness": "claude", "model": "claude-haiku-5-5", "effort": "high", "permission_mode": "manual",
 	})["session_id"]
 	send(5, "session/send", map[string]string{"session_id": loading, "text": "hello"})
 	pid := func(name string) int {
