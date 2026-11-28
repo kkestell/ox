@@ -5,8 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -378,12 +376,6 @@ func (s *Server) listChanges(reply replyFunc, id, params json.RawMessage) {
 	reply(jsonrpc.Success(id, result))
 }
 
-// created is session/create's result.
-type created struct {
-	SessionID string `json:"session_id"`
-	Existing  bool   `json:"existing,omitempty"`
-}
-
 // createSession creates a top-level session from a client's request.
 func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 	var input struct {
@@ -415,164 +407,6 @@ func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 		return
 	}
 	reply(jsonrpc.Success(id, result))
-}
-
-// createTopLevel creates the top-level session record describes in the
-// workspace. It admits the creation under s.mu, then, without it, makes the
-// worktree, and, given first, launches the session and hands it first's
-// message. It publishes the session under s.mu, deciding then whether the
-// daemon, the workspace, and another session with the ID allow it. A
-// session without first is stored there. A creation that does not publish
-// discards its session and worktree before it returns, and Close waits for
-// every admitted creation to return. It fills in record's directory and
-// worktree.
-func (s *Server) createTopLevel(workspaceID string, record *store.Session, worktree bool, first func(*session) agent.Input) (created, error) {
-	s.mu.Lock()
-	w, existing, err := s.admitSessionLocked(workspaceID, record)
-	switch {
-	case err != nil:
-		s.mu.Unlock()
-		return created{}, err
-	case existing:
-		s.mu.Unlock()
-		return created{SessionID: record.ID, Existing: true}, nil
-	}
-	s.creations.Add(1)
-	s.mu.Unlock()
-	defer s.creations.Done()
-
-	root := ""
-	if worktree {
-		log.Printf("session %s: creating worktree in %s", record.ID, s.worktrees)
-		var directory string
-		if root, directory, err = addWorktree(w.path, s.worktrees); err != nil {
-			return created{}, err
-		}
-		record.Directory, record.Worktree = directory, root
-	}
-
-	var sess *session
-	if first != nil {
-		if sess, err = s.launch(w, record, first); err != nil {
-			return created{}, s.abandonWorktree(w, record.ID, root, err)
-		}
-	}
-
-	s.mu.Lock()
-	switch {
-	case s.closed:
-		err = errShuttingDown
-	case !slices.Contains(s.workspaces, w):
-		err = errWorkspaceNotFound
-	default:
-		existing, err = s.existingLocked(w, record.ID)
-	}
-	if err == nil && !existing && sess == nil {
-		sess, err = s.storeSession(w, record)
-	}
-	if err == nil && !existing {
-		s.publishLocked(w, sess)
-		s.mu.Unlock()
-		go sess.run()
-		return created{SessionID: record.ID}, nil
-	}
-	s.mu.Unlock()
-	if sess != nil {
-		s.discardUnpublished(sess)
-	}
-	var result created
-	if existing {
-		result = created{SessionID: record.ID, Existing: true}
-	}
-	return result, s.abandonWorktree(w, record.ID, root, err)
-}
-
-// storeSession stores the session record describes in w and builds it,
-// unpublished. Its creation time is set here, just before it is published or
-// launched, so the list and the store order sessions alike.
-func (s *Server) storeSession(w *workspace, record *store.Session) (*session, error) {
-	record.CreatedAt = time.Now()
-	if err := s.store.AddSession(w.id, record); err != nil {
-		log.Printf("session %s: store session: %v", record.ID, err)
-		return nil, err
-	}
-	return s.newSession(record, w.path, ""), nil
-}
-
-// abandonWorktree removes the worktree at root, if any, of a creation that
-// did not publish, and returns err joined with any failure to remove it.
-func (s *Server) abandonWorktree(w *workspace, sessionID, root string, err error) error {
-	if root == "" {
-		return err
-	}
-	if discardErr := discardWorktree(w.path, root); discardErr != nil {
-		if err == nil {
-			log.Printf("session %s: %v", sessionID, discardErr)
-		} else {
-			err = errors.Join(err, discardErr)
-		}
-	}
-	return err
-}
-
-// admitSessionLocked checks a top-level session's creation and returns its
-// workspace, setting record's directory to the workspace's path, or reports
-// that record's ID names a session already in that workspace. The caller holds
-// s.mu.
-func (s *Server) admitSessionLocked(workspaceID string, record *store.Session) (w *workspace, existing bool, err error) {
-	// Close ends the goroutine of every session that exists when it starts.
-	if s.closed {
-		return nil, false, errShuttingDown
-	}
-	w = s.workspace(workspaceID)
-	if existing, err := s.existingLocked(w, record.ID); existing || err != nil {
-		return nil, existing, err
-	}
-	harness, offered := s.config.Harnesses[record.Harness]
-	if !offered {
-		return nil, false, &codedError{jsonrpc.InvalidParams, fmt.Sprintf("harness %q is not configured", record.Harness)}
-	}
-	if err := harness.CheckModel(record.Model, record.Effort); err != nil {
-		return nil, false, &codedError{jsonrpc.InvalidParams, err.Error()}
-	}
-	if w == nil {
-		return nil, false, errWorkspaceNotFound
-	}
-	record.Directory = w.path
-	return w, false, nil
-}
-
-// existingLocked reports whether sessionID names a session in w, and refuses
-// one that names a session elsewhere. The caller holds s.mu.
-func (s *Server) existingLocked(w *workspace, sessionID string) (bool, error) {
-	existing := s.sessions[sessionID]
-	switch {
-	case existing == nil:
-		return false, nil
-	case w == nil || !slices.Contains(w.sessions, existing):
-		return false, &codedError{jsonrpc.InvalidParams, "session_id belongs to another workspace"}
-	}
-	return true, nil
-}
-
-// publishLocked adds sess to w and to the sessions requests reach, and tells
-// every client. The caller holds s.mu and still owns sess, whose goroutine
-// has not started.
-func (s *Server) publishLocked(w *workspace, sess *session) {
-	sess.state = sess.snapshot().State
-	w.sessions = append(w.sessions, sess)
-	s.sessions[sess.id] = sess
-	s.broadcast("session/created", struct {
-		SessionID   string       `json:"session_id"`
-		WorkspaceID string       `json:"workspace_id"`
-		Label       string       `json:"label"`
-		Harness     string       `json:"harness"`
-		CreatedAt   time.Time    `json:"created_at"`
-		Directory   string       `json:"directory"`
-		Worktree    string       `json:"worktree,omitempty"`
-		Child       *store.Child `json:"child,omitempty"`
-		State       string       `json:"state"`
-	}{sess.id, w.id, sess.labelLocked(), sess.harness, sess.createdAt, sess.directory, sess.worktree, sess.child, sess.state})
 }
 
 // getSession returns a session's settings, history, queue, approvals, and
