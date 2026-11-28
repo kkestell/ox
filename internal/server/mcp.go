@@ -155,7 +155,7 @@ func init() {
 		{
 			name: "send_message",
 			description: "Send a message to another Ox session, named by its session ID from list_sessions. " +
-				"Its Claude takes the message after its current step, or runs it next, and a parked session starts for it. " +
+				"It takes the message after its current step, or runs it next, and a parked session starts for it. " +
 				"Its reply does not come back; it can answer with send_message.",
 			inputSchema: map[string]any{
 				"type": "object",

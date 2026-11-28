@@ -105,7 +105,7 @@ func newReporting() *reporting {
 }
 
 // reportsTo is the ID of the session sess reports to: a child's parent, or
-// the creator of a session another session's Claude started, or "" for a
+// the creator of a session another session started, or "" for a
 // session the user created.
 func (sess *session) reportsTo() string {
 	if sess.child != nil {

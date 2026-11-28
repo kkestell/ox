@@ -252,7 +252,7 @@ type Input struct {
 }
 
 // Report is a session's account of one of its turns, which Ox sends to the
-// session that started it, as a child or a session another session's Claude
+// session that started it, as a child or a session another session
 // started: the reporting session's ID, its label when the report was made,
 // and the report's text.
 type Report struct {

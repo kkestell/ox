@@ -1,4 +1,4 @@
-// Helpers that read Claude's tool calls, for the transcript and approval cards.
+// Helpers that read tool calls, for the transcript and approval cards.
 import { isRawJSON, stringify } from "@ungap/raw-json";
 import { snapshot } from "solid-js";
 
