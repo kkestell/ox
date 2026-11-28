@@ -379,11 +379,13 @@ export function Sidebar(props: {
       },
       {
         label: "Remove workspace",
-        disabledBecause: !ox.sessionsOf(workspace).length
-          ? undefined
-          : ox.sessionsOf(workspace).some(ox.archived)
-            ? "Delete its sessions first, including archived ones"
-            : "Delete its sessions first",
+        disabledBecause: workspace.sessions.some((s) => ox.busy(s.id))
+          ? "Wait until Ox answers"
+          : !ox.sessionsOf(workspace).length
+            ? undefined
+            : ox.sessionsOf(workspace).some(ox.archived)
+              ? "Delete its sessions first, including archived ones"
+              : "Delete its sessions first",
         onChoose: () => setRequest({ kind: "remove", id: workspace.id, path: workspace.path }),
       },
     ];
