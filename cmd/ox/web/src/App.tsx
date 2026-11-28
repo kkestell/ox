@@ -197,43 +197,45 @@ function Layout() {
         class="center"
         style={{ "--tree": `${panels.rightWidth()}px`, "--columns": panels.narrow() ? 1 : columnsOf() }}
       >
-        <Show when={ox.error()}>
-          {(error) => (
-            // A dropped stream that is reconnecting is routine, such as after the
-            // phone wakes the page, so it shows as a status rather than an error.
-            <Switch fallback={<p role="alert">{error().message}</p>}>
-              <Match when={error() instanceof Disconnected && !(error() as Disconnected).closed}>
-                <p role="status">Reconnecting…</p>
-              </Match>
-              <Match when={error() instanceof Disconnected}>
-                <p role="alert">
-                  {error().message}{" "}
-                  <button type="button" class="outline" onClick={() => location.reload()}>
-                    Reload
-                  </button>
-                </p>
-              </Match>
-            </Switch>
-          )}
-        </Show>
-        <Show when={loadFailure()}>{(failure) => <p role="alert">{failure()}</p>}</Show>
-        <For each={liveDrafts().filter((d) => d.control.error() && d !== draft())}>
-          {(failed) => (
-            <p role="alert">
-              {failed.control.error()}{" "}
-              <button
-                type="button"
-                class="outline"
-                onClick={() => {
-                  select({ kind: "draft", workspaceId: failed.workspaceId });
-                  failed.control.edit((l) => activate(l, "chat"));
-                }}
-              >
-                Reopen draft
-              </button>
-            </p>
-          )}
-        </For>
+        <div class="toasts">
+          <Show when={ox.error()}>
+            {(error) => (
+              // A dropped stream that is reconnecting is routine, such as after the
+              // phone wakes the page, so it shows as a status rather than an error.
+              <Switch fallback={<p role="alert">{error().message}</p>}>
+                <Match when={error() instanceof Disconnected && !(error() as Disconnected).closed}>
+                  <p role="status">Reconnecting…</p>
+                </Match>
+                <Match when={error() instanceof Disconnected}>
+                  <p role="alert">
+                    {error().message}{" "}
+                    <button type="button" class="outline" onClick={() => location.reload()}>
+                      Reload
+                    </button>
+                  </p>
+                </Match>
+              </Switch>
+            )}
+          </Show>
+          <Show when={loadFailure()}>{(failure) => <p role="alert">{failure()}</p>}</Show>
+          <For each={liveDrafts().filter((d) => d.control.error() && d !== draft())}>
+            {(failed) => (
+              <p role="alert">
+                {failed.control.error()}{" "}
+                <button
+                  type="button"
+                  class="outline"
+                  onClick={() => {
+                    select({ kind: "draft", workspaceId: failed.workspaceId });
+                    failed.control.edit((l) => activate(l, "chat"));
+                  }}
+                >
+                  Reopen draft
+                </button>
+              </p>
+            )}
+          </For>
+        </div>
         <div class="panes">
           {/* Keyed by selection, so the tab area and panel read beneath that
               selection's root. */}

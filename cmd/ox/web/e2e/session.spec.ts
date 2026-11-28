@@ -617,6 +617,17 @@ test("a closed stream offers a Reload button that reconnects", async ({ ox: page
   await expect(send(page)).toBeEnabled();
 });
 
+test("a lost connection's alert leaves the tab strip in place", async ({ ox: page, services }) => {
+  await newSession(page, "stay put");
+  const tabs = page.getByRole("tablist", { name: "Tabs" });
+  const before = await tabs.boundingBox();
+  const refuse = (route: Route) => route.fulfill({ status: 502 });
+  await page.route("**/events", refuse);
+  await services.restartRelay();
+  await expect(page.getByRole("alert")).toContainText("Lost the connection to ox.");
+  expect(await tabs.boundingBox()).toEqual(before);
+});
+
 test("a stalled reconnect resumes when the page is shown", async ({ ox: page, services }) => {
   await newSession(page, "stalled");
   // A request that is never answered, as when iOS suspends the page mid-reconnect.
