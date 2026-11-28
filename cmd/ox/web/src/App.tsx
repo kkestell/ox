@@ -1,11 +1,12 @@
 import { createEffect, createSignal, For, Match, onSettled, Show, Switch } from "solid-js";
 import { Disconnected } from "./connection";
 import { createDraft, type Draft, NewSessionView } from "./NewSessionView";
-import { OxProvider, type SessionControl, useOx } from "./ox";
+import { OxProvider, useOx } from "./ox";
 import { createPanels, Sash, SessionsToggle } from "./Panels";
 import type { FileRoot } from "./protocol";
 import { SessionView } from "./SessionView";
 import { Sidebar } from "./Sidebar";
+import type { SessionControl } from "./sessionControl";
 import type { Chat } from "./TabArea";
 import { activate, columns } from "./tabs";
 import { Workspace } from "./Workspace";

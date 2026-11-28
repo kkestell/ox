@@ -2,9 +2,10 @@ import { createMemo, For, Match, Show, Switch, untrack } from "solid-js";
 import { Counts, type Listing } from "./Changes";
 import { treeEntries } from "./diff";
 import { fileDrag } from "./drag";
-import { type SessionControl, useOx } from "./ox";
+import { useOx } from "./ox";
 import { createPoll, type Polled } from "./poll";
 import type { FileRoot, FolderEntry } from "./protocol";
+import type { SessionControl } from "./sessionControl";
 
 type Tree = {
   root: FileRoot;

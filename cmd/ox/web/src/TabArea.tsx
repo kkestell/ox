@@ -4,9 +4,9 @@ import { ChangesView, Counts, type Listing } from "./Changes";
 import { fileDrag, tabDrag } from "./drag";
 import { FileView } from "./FileView";
 import { languageFor } from "./highlight";
-import type { Attention, SessionControl } from "./ox";
 import { type Panels, PanelToggle, Sash, SessionsToggle } from "./Panels";
 import type { FileRoot } from "./protocol";
+import type { Attention, SessionControl } from "./sessionControl";
 import { AttentionMark, type PickerTab, TabPicker } from "./TabPicker";
 import {
   activate,

@@ -2,9 +2,11 @@ import { createSignal, For, Match, onCleanup, onSettled, Show, Switch, untrack }
 import { ApprovalRequest } from "./ApprovalRequest";
 import { AttachButton, createImageDrop, pasteImages, Thumbnails } from "./Attachments";
 import { Markdown } from "./Markdown";
-import { type Entry, type Outgoing, type Session, type SessionControl, type SessionSnapshot, useOx } from "./ox";
+import { type Session, useOx } from "./ox";
 import type { Prompt, Settings } from "./protocol";
 import { ModelPicker, Select } from "./SettingsFields";
+import type { Outgoing, SessionControl } from "./sessionControl";
+import type { Entry, SessionSnapshot } from "./snapshot";
 import { toolInputJSON, toolLabel, toolSummary } from "./toolInput";
 import { Usage } from "./Usage";
 

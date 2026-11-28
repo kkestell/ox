@@ -1,7 +1,8 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, createUniqueId, For, onSettled, Show } from "solid-js";
 import type { Selection } from "./App";
-import { createAttempt, directoryName, type Session, useOx, type Workspace } from "./ox";
+import { createAttempt } from "./attempt";
+import { directoryName, type Session, useOx, type Workspace } from "./ox";
 import { settled } from "./protocol";
 
 type DialogRequest =
