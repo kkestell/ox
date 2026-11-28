@@ -87,33 +87,11 @@ func listChanges(workspace, dir string) (changes, error) {
 	if err != nil {
 		return changes{}, err
 	}
-	// A file removed from the index but kept on disk, as git rm --cached
-	// leaves it, is both deleted from the index and untracked. The diff runs
-	// on a copy of the index that holds the base's version of each such file,
-	// so it shows the file's change from the base once.
-	removed, err := run(dir, "diff", "--cached", "--name-only", "-z", "--no-renames", "--relative", "--diff-filter=D", base, "--")
+	restored, env, cleanup, err := restoreRemoved(dir, base, untracked)
 	if err != nil {
 		return changes{}, err
 	}
-	restore := map[string]bool{}
-	for path := range nulSeparated(removed) {
-		restore[path] = true
-	}
-	var env []string
-	var paths []string
-	for path := range nulSeparated(untracked) {
-		if restore[path] {
-			paths = append(paths, path)
-		}
-	}
-	if len(paths) > 0 {
-		index, err := restoredIndex(dir, base, paths)
-		if err != nil {
-			return changes{}, err
-		}
-		defer os.RemoveAll(filepath.Dir(index))
-		env = []string{"GIT_INDEX_FILE=" + index}
-	}
+	defer cleanup()
 	// git diff refreshes the index whenever it finds a file whose stat
 	// changed but whose content did not, optional locks or not; with
 	// diff.autoRefreshIndex off it still compares and skips such files but
@@ -138,7 +116,7 @@ func listChanges(workspace, dir string) (changes, error) {
 		listed[file.Path] = true
 	}
 	for path := range nulSeparated(untracked) {
-		if !restore[path] && !listed[localName(path)] {
+		if !restored[path] && !listed[localName(path)] {
 			files = append(files, untrackedFile(dir, path))
 		}
 	}
@@ -168,6 +146,38 @@ func nulSeparated(out string) iter.Seq[string] {
 			}
 		}
 	}
+}
+
+// restoreRemoved finds the files in untracked that the index has deleted
+// since base, as git rm --cached leaves a file: removed from the index but
+// kept on disk. When there are any, env points the diff at a copy of the
+// index holding base's version of each, so the diff shows each file's change
+// from base once, and cleanup removes the copy.
+func restoreRemoved(dir, base, untracked string) (restored map[string]bool, env []string, cleanup func(), err error) {
+	removed, err := listGit(dir, nil, "", "diff", "--cached", "--name-only", "-z", "--no-renames", "--relative", "--diff-filter=D", base, "--")
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	deleted := map[string]bool{}
+	for path := range nulSeparated(removed) {
+		deleted[path] = true
+	}
+	restored = map[string]bool{}
+	var paths []string
+	for path := range nulSeparated(untracked) {
+		if deleted[path] {
+			restored[path] = true
+			paths = append(paths, path)
+		}
+	}
+	if len(paths) == 0 {
+		return restored, nil, func() {}, nil
+	}
+	index, err := restoredIndex(dir, base, paths)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return restored, []string{"GIT_INDEX_FILE=" + index}, func() { os.RemoveAll(filepath.Dir(index)) }, nil
 }
 
 // restoredIndex copies dir's index into a new temporary directory and sets
