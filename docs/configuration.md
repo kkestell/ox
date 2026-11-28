@@ -23,7 +23,10 @@ configured choices, and the permission mode `manual` or `auto`. The required
 `titling` names the harness, model, and effort that write session titles, each a
 configured choice, on a harness that can title sessions. The required
 `max_child_depth`, at least 1, is how many levels of child sessions a top-level
-session can have beneath it; the built-in configuration sets 2. The optional
+session can have beneath it; the built-in configuration sets 2. The required
+`auto_archive_minutes`, 0 or more, is how many minutes a session family stays
+parked and unused before `oxd` archives it, for every workspace; 0 turns
+auto-archive off, and the built-in configuration sets 60. The optional
 `tailscale_ip` is this machine's Tailscale IPv4 address, within `100.64.0.0/10`;
 see [Web UI](architecture.md#web-ui) for what setting it does.
 
@@ -62,6 +65,7 @@ list, or when an effort level is one Claude does not list for that model; see
     "effort": "low"
   },
   "max_child_depth": 2,
+  "auto_archive_minutes": 60,
   "tailscale_ip": "100.101.102.103"
 }
 ```

@@ -135,6 +135,7 @@ func (s *Server) existingLocked(w *workspace, sessionID string) (bool, error) {
 // launched, so the list and the store order sessions alike.
 func (s *Server) storeSession(w *workspace, record *store.Session) (*session, error) {
 	record.CreatedAt = time.Now()
+	record.ActiveAt = record.CreatedAt
 	if err := s.store.AddSession(w.id, record); err != nil {
 		log.Printf("session %s: store session: %v", record.ID, err)
 		return nil, err

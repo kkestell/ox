@@ -45,6 +45,12 @@ type session struct {
 	// Guarded by Server.mu. An archived session has no agent, and the child
 	// of an archived session is archived.
 	archived bool
+	// pinned is set for a top-level session the user pinned, and never for a
+	// child. Guarded by Server.mu.
+	pinned bool
+	// activeAt is when the session was last used: its last update other than
+	// parked, settings change, unarchive, or unpin. Guarded by Server.mu.
+	activeAt time.Time
 	// The first nonblank first line of the prompts the user sent a top-level
 	// session, shortened, empty before it has one. Written only by run.
 	firstLine string
@@ -52,7 +58,8 @@ type session struct {
 	// before it has one. Written only by run.
 	title string
 	// The state last published to clients. Written by whoever owns the
-	// session: its builder until run starts, then run.
+	// session: its builder until run starts, then run, under Server.mu once
+	// the session is published.
 	state string
 	// deleting is the delete in progress, nil when none is. Written only by
 	// run, under the lock, so run reads it without the lock.
@@ -87,7 +94,7 @@ type deleting struct {
 func (s *Server) newSession(record *store.Session, workspace, firstLine string) *session {
 	sess := &session{
 		server: s, id: record.ID, harness: record.Harness, workspace: workspace, directory: record.Directory, worktree: record.Worktree, child: record.Child, creator: record.Creator, createdAt: record.CreatedAt,
-		ops: make(chan func()), done: make(chan struct{}), archived: record.Archived, firstLine: firstLine, title: record.Title,
+		ops: make(chan func()), done: make(chan struct{}), archived: record.Archived, pinned: record.Pinned, activeAt: record.ActiveAt, firstLine: firstLine, title: record.Title,
 		state:       agent.StateParked,
 		settings:    agent.Settings{Model: record.Model, Effort: record.Effort, PermissionMode: record.PermissionMode},
 		resumeToken: record.ResumeToken,
@@ -458,6 +465,10 @@ func (sess *session) update(update agent.Update) {
 	case agent.UpdateParked:
 		sess.state = agent.StateParked
 	}
+	if update.Type != agent.UpdateParked {
+		sess.activeAt = time.Now()
+	}
+
 	// A session another session starts, child or top-level, is held outside
 	// membership until its agent has accepted the first input; publication
 	// then reports its state.
@@ -492,6 +503,9 @@ func (sess *session) adopt(settings agent.Settings) {
 		return
 	}
 	sess.settings = settings
+	sess.server.mu.Lock()
+	sess.activeAt = time.Now()
+	sess.server.mu.Unlock()
 	if err := sess.save(settings, sess.resumeToken); err != nil {
 		log.Printf("session %s: store settings: %v", sess.id, err)
 	}

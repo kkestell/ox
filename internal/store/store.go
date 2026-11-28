@@ -43,6 +43,11 @@ type Session struct {
 	// Fixed at creation.
 	Creator  string
 	Archived bool
+	// Pinned is set for a top-level session the user pinned.
+	Pinned bool
+	// ActiveAt is the time of the session's last event other than parked, or
+	// CreatedAt when it has none.
+	ActiveAt time.Time
 	// Title is a top-level session's title: the one its creator gave it, or
 	// else its generated title, empty until it has one.
 	Title string
@@ -107,6 +112,9 @@ CREATE TABLE IF NOT EXISTS creators (
 	creator_id TEXT NOT NULL REFERENCES sessions ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS archived (
+	session_id TEXT PRIMARY KEY REFERENCES sessions ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS pinned (
 	session_id TEXT PRIMARY KEY REFERENCES sessions ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS titles (
@@ -248,9 +256,12 @@ func (s *Store) Workspaces() ([]*Workspace, error) {
 	}
 
 	rows, err := s.db.Query(`SELECT s.id, s.workspace_id, s.harness, s.model, s.effort, s.permission_mode, s.resume_token, s.created_at, s.directory,
-			c.parent_id, c.name, c.title, coalesce(cr.creator_id, ''), a.session_id IS NOT NULL, coalesce(t.title, ''), coalesce(wt.worktree, '')
+			c.parent_id, c.name, c.title, coalesce(cr.creator_id, ''), a.session_id IS NOT NULL, coalesce(t.title, ''), coalesce(wt.worktree, ''),
+			p.session_id IS NOT NULL,
+			coalesce((SELECT e.created_at FROM events e WHERE e.session_id = s.id AND json_extract(e.data, '$.type') != 'parked'
+				ORDER BY e.id DESC LIMIT 1), s.created_at)
 		FROM sessions s LEFT JOIN children c ON c.session_id = s.id LEFT JOIN creators cr ON cr.session_id = s.id
-			LEFT JOIN archived a ON a.session_id = s.id LEFT JOIN titles t ON t.session_id = s.id LEFT JOIN worktrees wt ON wt.session_id = s.id
+			LEFT JOIN archived a ON a.session_id = s.id LEFT JOIN pinned p ON p.session_id = s.id LEFT JOIN titles t ON t.session_id = s.id LEFT JOIN worktrees wt ON wt.session_id = s.id
 		ORDER BY s.created_at, s.rowid`)
 	if err != nil {
 		return nil, err
@@ -258,16 +269,20 @@ func (s *Store) Workspaces() ([]*Workspace, error) {
 	defer rows.Close()
 	for rows.Next() {
 		r := &Session{}
-		var workspaceID, created string
+		var workspaceID, created, active string
 		var parentID, name, title sql.NullString
 		if err := rows.Scan(&r.ID, &workspaceID, &r.Harness, &r.Model, &r.Effort, &r.PermissionMode, &r.ResumeToken, &created, &r.Directory,
-			&parentID, &name, &title, &r.Creator, &r.Archived, &r.Title, &r.Worktree); err != nil {
+			&parentID, &name, &title, &r.Creator, &r.Archived, &r.Title, &r.Worktree,
+			&r.Pinned, &active); err != nil {
 			return nil, err
 		}
 		if parentID.Valid {
 			r.Child = &Child{ParentID: parentID.String, Name: name.String, Title: title.String}
 		}
 		if r.CreatedAt, err = parseTime(created); err != nil {
+			return nil, err
+		}
+		if r.ActiveAt, err = parseTime(active); err != nil {
 			return nil, err
 		}
 		w := byID[workspaceID]
@@ -375,6 +390,16 @@ func (s *Store) SetArchived(ids []string, archived bool) error {
 		}
 		return nil
 	})
+}
+
+// SetPinned pins or unpins the session.
+func (s *Store) SetPinned(id string, pinned bool) error {
+	query := `DELETE FROM pinned WHERE session_id = ?`
+	if pinned {
+		query = `INSERT OR IGNORE INTO pinned (session_id) VALUES (?)`
+	}
+	_, err := s.db.Exec(query, id)
+	return err
 }
 
 func (s *Store) DeleteWorkspace(id string) error {

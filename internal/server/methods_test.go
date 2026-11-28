@@ -952,7 +952,7 @@ func TestSessionLabel(t *testing.T) {
 // New refuses a titling harness that cannot title sessions.
 func TestTitlingHarnessNeedsAsk(t *testing.T) {
 	cfg := &config.Config{Titling: config.Titling{Harness: "fake"}}
-	_, err := New(openStore(t), cfg, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{}, os.TempDir())
+	_, err := New(openStore(t), cfg, 0, 0, map[string]agent.Harness{"fake": {Start: fake.Start}}, MCP{}, os.TempDir())
 	if err == nil || err.Error() != `titling harness "fake" cannot title sessions` {
 		t.Fatalf("New returned %v", err)
 	}

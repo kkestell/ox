@@ -108,7 +108,9 @@ export type Notification =
   | { method: "session/configured"; params: Settings & { session_id: string } }
   | { method: "session/destroyed"; params: { session_id: string } }
   | { method: "session/archived"; params: { session_id: string } }
-  | { method: "session/unarchived"; params: { session_id: string } };
+  | { method: "session/unarchived"; params: { session_id: string } }
+  | { method: "session/pinned"; params: { session_id: string } }
+  | { method: "session/unpinned"; params: { session_id: string } };
 
 type Empty = Record<string, never>;
 
@@ -131,6 +133,7 @@ export type Methods = {
           worktree?: string;
           child?: Child;
           archived?: boolean;
+          pinned?: boolean;
           state: SessionState;
         }[];
       }[];
@@ -169,4 +172,6 @@ export type Methods = {
   "session/destroy": [{ session_id: string }, Empty];
   "session/archive": [{ session_id: string }, Empty];
   "session/unarchive": [{ session_id: string }, Empty];
+  "session/pin": [{ session_id: string }, Empty];
+  "session/unpin": [{ session_id: string }, Empty];
 };

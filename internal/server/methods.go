@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -80,6 +81,10 @@ func (s *Server) handle(reply replyFunc, request jsonrpc.Request) {
 		s.archiveSession(reply, id, params)
 	case "session/unarchive":
 		s.unarchiveSession(reply, id, params)
+	case "session/pin":
+		s.pinSession(reply, id, params, true)
+	case "session/unpin":
+		s.pinSession(reply, id, params, false)
 	default:
 		reply(jsonrpc.Failure(id, jsonrpc.MethodNotFound, "Method not found"))
 	}
@@ -245,12 +250,13 @@ type sessionInfo struct {
 	Worktree  string       `json:"worktree,omitempty"`
 	Child     *store.Child `json:"child,omitempty"`
 	Archived  bool         `json:"archived,omitempty"`
+	Pinned    bool         `json:"pinned,omitempty"`
 	State     string       `json:"state"`
 }
 
 // infoLocked returns the session's wire form. The caller holds s.mu.
 func (sess *session) infoLocked() sessionInfo {
-	return sessionInfo{sess.id, sess.labelLocked(), sess.harness, sess.createdAt, sess.directory, sess.worktree, sess.child, sess.archived, sess.state}
+	return sessionInfo{sess.id, sess.labelLocked(), sess.harness, sess.createdAt, sess.directory, sess.worktree, sess.child, sess.archived, sess.pinned, sess.state}
 }
 
 func (s *Server) listWorkspaces(reply replyFunc, id json.RawMessage) {
@@ -618,7 +624,7 @@ func (s *Server) destroySession(reply replyFunc, id, params json.RawMessage) {
 // every member has stopped.
 func (s *Server) archiveSession(reply replyFunc, id, params json.RawMessage) {
 	s.onSessionID(reply, id, params, func(sess *session) {
-		replyEmpty(reply, id)(sess.archive())
+		replyEmpty(reply, id)(sess.archive(false))
 	})
 }
 
@@ -633,4 +639,46 @@ func (s *Server) unarchiveSession(reply replyFunc, id, params json.RawMessage) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	replyEmpty(reply, id)(s.unarchiveLocked(sessionID))
+}
+
+// pinSession pins or unpins a top-level session and replies under s.mu, so the
+// reply follows the broadcast it reflects and precedes any later one.
+func (s *Server) pinSession(reply replyFunc, id, params json.RawMessage, pinned bool) {
+	sessionID, ok := sessionIDParam(params)
+	if !ok {
+		reply(invalidParams(id, "session_id is required"))
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	replyEmpty(reply, id)(s.setPinnedLocked(sessionID, pinned))
+}
+
+// setPinnedLocked stores and sets the session's pinned flag and tells every
+// client. Unpinning gives the session the full auto-archive period. The
+// caller holds s.mu.
+func (s *Server) setPinnedLocked(sessionID string, pinned bool) error {
+	sess := s.sessions[sessionID]
+	switch {
+	case sess == nil:
+		return errSessionNotFound
+	case sess.child != nil:
+		return errors.New("only a top-level session can be pinned")
+	case s.closed:
+		return errShuttingDown
+	}
+	if err := s.store.SetPinned(sess.id, pinned); err != nil {
+		log.Printf("session %s: store pinned: %v", sess.id, err)
+		return err
+	}
+	sess.pinned = pinned
+	method := "session/pinned"
+	if !pinned {
+		method = "session/unpinned"
+		sess.activeAt = time.Now()
+	}
+	s.broadcast(method, struct {
+		SessionID string `json:"session_id"`
+	}{sess.id})
+	return nil
 }
