@@ -34,6 +34,23 @@ func (l *startLog) options() agent.Options {
 	}
 }
 
+// Model output reports the conversation as resumable once, and system/init
+// does not.
+func TestModelOutputMakesConversationResumable(t *testing.T) {
+	log := new(startLog)
+	a := newAgent(newWriter(io.Discard), make(chan agent.Event), make(chan struct{}), nil, log.options())
+	a.Handle(initialized)
+	output(t, a, `{"type":"system","subtype":"init","session_id":"c1"}`)
+	if len(log.tokens) != 0 {
+		t.Fatalf("system/init reported a token: %q", log.tokens)
+	}
+	output(t, a, `{"type":"assistant","session_id":"c1","message":{"content":[]}}`)
+	output(t, a, `{"type":"assistant","session_id":"c1","message":{"content":[]}}`)
+	if len(log.tokens) != 1 || log.tokens[0] != "c1" {
+		t.Fatalf("model output reported %q, want [c1]", log.tokens)
+	}
+}
+
 // failingStart returns a starting agent holding a prompt, with its ID and
 // what the agent reports after the prompt's acceptance. Its process waits to
 // be stopped, which the test's cleanup does.
