@@ -298,3 +298,34 @@ export async function cutReply(page: Page, field: "session_id" | "message_id") {
     cut,
   };
 }
+
+export const files = (page: Page) => page.getByRole("complementary", { name: "Files" });
+// entry is the file tree's button for the file or folder called name.
+export const entry = (page: Page, name: string) => files(page).getByRole("button", { name, exact: true });
+// fileTab is the tab of the file called name.
+export const fileTab = (page: Page, name: string) => page.getByRole("tab", { name, exact: true });
+export const togglePanel = (page: Page) => page.getByRole("button", { name: "Toggle panel" });
+export const closeButton = (page: Page, name: string) => page.getByRole("button", { name: `Close ${name}` });
+export const groups = (page: Page) => page.getByRole("region", { name: "Tab group" });
+
+// showFiles opens the panel at the right, which the page closes at load.
+export async function showFiles(page: Page) {
+  if ((await togglePanel(page).getAttribute("aria-pressed")) === "false") await togglePanel(page).click();
+  await expect(files(page)).toBeVisible();
+}
+
+// openFile opens the file at path from the tree, expanding the folders on the
+// way.
+export async function openFile(page: Page, path: string) {
+  const names = path.split("/");
+  for (const name of names.slice(0, -1)) await entry(page, name).click();
+  await entry(page, names.at(-1) ?? path).click();
+  await expect(fileTab(page, names.at(-1) ?? path)).toHaveAttribute("aria-selected", "true");
+}
+
+// dropOn drops the tab or file row from onto the group at the fraction of its box.
+export async function dropOn(source: Locator, group: Locator, at: { x: number; y: number }) {
+  const box = await group.boundingBox();
+  if (!box) throw new Error("no group");
+  await source.dragTo(group, { targetPosition: { x: box.width * at.x, y: box.height * at.y } });
+}

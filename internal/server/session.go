@@ -359,8 +359,7 @@ func (sess *session) parked() {
 // goroutine, which refuses while deleting, so none appears before the delete
 // finishes. Nothing starts the agent while it waits, since only the goroutine
 // starts it and it refuses while deleting. While deleting, the session makes
-// no report, its untaken reports wait and its state holds back none of the
-// other reports to its recipient, and reports to it wait.
+// no report, its untaken reports wait, and reports to it wait.
 func (sess *session) destroy(reply func(error)) {
 	if sess.deleting != nil {
 		reply(errDeleting)
@@ -376,7 +375,6 @@ func (sess *session) destroy(reply func(error)) {
 	// The session is deleting before it stops, so its stop makes no report
 	// and delivers none to it.
 	sess.deleting = &deleting{reply: reply}
-	s.familyChangedLocked(s.reportsToLocked(sess))
 	s.mu.Unlock()
 	// The process stops first, so it records nothing after the events are gone.
 	if sess.agent != nil {
@@ -445,7 +443,7 @@ func (sess *session) end() {
 // Every update is broadcast under Server.mu, where membership is decided, and
 // a state or parked update as it sets the published state, so it and
 // workspace/list reach every connection in one order, and the session's
-// family learns of it in the same critical section.
+// readiness for the reports sent to it is decided in the same critical section.
 func (sess *session) update(update agent.Update) {
 	sess.history.record(update)
 	notification := struct {
@@ -466,7 +464,6 @@ func (sess *session) update(update agent.Update) {
 	if s.sessions[sess.id] == sess {
 		s.broadcast("session/update", notification)
 		if update.Type == agent.UpdateState || update.Type == agent.UpdateParked {
-			s.familyChangedLocked(s.reportsToLocked(sess))
 			s.familyChangedLocked(sess)
 		}
 	}

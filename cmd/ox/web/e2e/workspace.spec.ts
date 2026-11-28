@@ -9,9 +9,15 @@ import {
   allow,
   ask,
   clocked,
+  closeButton,
   cutReply,
+  dropOn,
+  entry,
   expect,
+  files,
+  fileTab,
   gitRepo,
+  groups,
   heading,
   hold,
   isRequest,
@@ -21,6 +27,7 @@ import {
   newSession,
   newSessionButton,
   open,
+  openFile,
   openMenu,
   openModelPicker,
   permissionMode,
@@ -31,24 +38,21 @@ import {
   sessionButton,
   sessionItem,
   sessions,
+  showFiles,
   showPage,
   test,
+  togglePanel,
   transcript,
   waiting,
   workspaceSection,
 } from "./ui";
 
-const files = (page: Page) => page.getByRole("complementary", { name: "Files" });
-// entry is the file tree's button for the file or folder called name.
-const entry = (page: Page, name: string) => files(page).getByRole("button", { name, exact: true });
 // folder is the file tree's item for the folder called name, holding its listing.
 const folder = (page: Page, name: string) =>
   files(page)
     .getByRole("listitem")
     .filter({ has: page.getByRole("button", { name, exact: true }) });
 const viewer = (page: Page) => page.getByRole("region", { name: "File" });
-// fileTab is the tab of the file called name.
-const fileTab = (page: Page, name: string) => page.getByRole("tab", { name, exact: true });
 const changesTab = (page: Page) => page.getByRole("tab", { name: /^Changes/ });
 const pane = (page: Page) => viewer(page).getByRole("tabpanel");
 const wrapButton = (page: Page) => page.getByRole("button", { name: "Toggle word wrap" });
@@ -56,14 +60,6 @@ const modes = (page: Page) => page.getByRole("group", { name: "Show as" });
 // modeButton is the tab strip's button that shows the file as label.
 const modeButton = (page: Page, label: "Source" | "Preview") =>
   modes(page).getByRole("button", { name: label, exact: true });
-const togglePanel = (page: Page) => page.getByRole("button", { name: "Toggle panel" });
-const closeButton = (page: Page, name: string) => page.getByRole("button", { name: `Close ${name}` });
-
-// showFiles opens the panel at the right, which the page closes at load.
-async function showFiles(page: Page) {
-  if ((await togglePanel(page).getAttribute("aria-pressed")) === "false") await togglePanel(page).click();
-  await expect(files(page)).toBeVisible();
-}
 
 // branchRow is the file tree's top row, with the branch and the totals.
 const branchRow = (page: Page) => files(page).getByRole("button", { name: /^master / });
@@ -75,15 +71,6 @@ async function showChanges(page: Page) {
   await showFiles(page);
   await branchRow(page).click();
   await expect(changesTab(page)).toHaveAttribute("aria-selected", "true");
-}
-
-// openFile opens the file at path from the tree, expanding the folders on the
-// way.
-async function openFile(page: Page, path: string) {
-  const names = path.split("/");
-  for (const name of names.slice(0, -1)) await entry(page, name).click();
-  await entry(page, names.at(-1) ?? path).click();
-  await expect(fileTab(page, names.at(-1) ?? path)).toHaveAttribute("aria-selected", "true");
 }
 
 // requests collects each request for method the page posts from now on.
@@ -1016,13 +1003,6 @@ test.describe("on a wide screen", () => {
     writeFileSync(join(services.workspace, "src", "b.txt"), "b\n");
   });
 
-  const groups = (page: Page) => page.getByRole("region", { name: "Tab group" });
-  // dropOn drops the tab or file row from onto the group at the fraction of its box.
-  async function dropOn(source: Locator, group: Locator, at: { x: number; y: number }) {
-    const box = await group.boundingBox();
-    if (!box) throw new Error("no group");
-    await source.dragTo(group, { targetPosition: { x: box.width * at.x, y: box.height * at.y } });
-  }
   const right = { x: 0.9, y: 0.5 };
   const middle = { x: 0.5, y: 0.5 };
 

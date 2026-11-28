@@ -245,11 +245,11 @@ session and answers from there, so the mark precedes the call's `tool_result`.
   both to be delivered as if no delete had been tried.
 - **Delivery:** `readyLocked` decides, from facts `Server.mu` guards, whether a
   recipient takes its reports: `oxd` is not shutting down, the recipient is not
-  archived or being deleted and is `idle`, `background`, or `parked`, none of
-  its reporters (`reportersLocked`: its children and started sessions that are
-  not being deleted) is `running`, and some reporter holds a report. Every
-  writer of those facts (a published state, a report, an archived flag, a delete
-  starting or failing) calls `familyChangedLocked` in the same critical section,
+  archived or being deleted and is `idle`, `background`, or `parked`, and some
+  reporter (`reportersLocked`: its children and started sessions that are not
+  being deleted) holds a report. A reporter's state is no input. Every writer of
+  those facts (the recipient's published state, a report, an archived flag, a
+  delete failing) calls `familyChangedLocked` in the same critical section,
   which posts a delivery to the recipient when `readyLocked` holds. The delivery
   runs on the recipient's goroutine, checks `readyLocked` again and takes the
   reports in one critical section, and after releasing the lock hands them to

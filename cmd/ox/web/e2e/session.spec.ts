@@ -2155,6 +2155,19 @@ test("a session with children cannot be deleted", async ({ ox: page, services })
   await expect(deletion).toBeDisabled();
 });
 
+test("a session whose last child's delete is in flight offers Delete", async ({ ox: page, services }) => {
+  await newSession(page, "Parent");
+  await createChild(services, sessionId(page), "Child");
+  await expect(sessionButton(page, "Child")).toBeVisible();
+  await hold(page, "session/destroy");
+  await menuItem(await openMenu(sessionItem(page, "Child")), "Delete").click();
+  await page.getByRole("alertdialog", { name: "Delete session?" }).getByRole("button", { name: "Delete" }).click();
+  await expect(sessionButton(page, "Child")).toHaveCount(0);
+  const deletion = menuItem(await openMenu(sessionItem(page, "Parent")), "Delete");
+  await expect(deletion).toBeEnabled();
+  await expect(deletion).toHaveAccessibleDescription("");
+});
+
 test("a waiting descendant keeps its family from being archived", async ({ ox: page, services }) => {
   await family(page, services);
   await sessionButton(page, "Grandchild").click();

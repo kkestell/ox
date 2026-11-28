@@ -79,7 +79,7 @@ function Layout() {
   // A removed workspace's draft is hidden until the effect below drops it.
   const liveDrafts = () => drafts().filter((d) => ox.workspaces().some((w) => w.id === d.workspaceId));
   createEffect(
-    () => drafts().filter((d) => !ox.state.workspaces.some((w) => w.id === d.workspaceId)),
+    () => drafts().filter((d) => !ox.listsWorkspace(d.workspaceId)),
     (removed) => {
       if (removed.length === 0) return;
       setDrafts((all) => all.filter((d) => !removed.includes(d)));
