@@ -64,6 +64,7 @@ We test with `make dev`. Ox's test state is disposable.
 ├── internal
 │   ├── agent
 │   │   ├── agent.go           # harness interface
+│   │   ├── auto.go            # Auto's shell command rule
 │   │   ├── tracker_test.go    # tracker tests
 │   │   └── tracker.go         # untaken inputs and published state
 │   ├── children
