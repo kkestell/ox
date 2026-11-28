@@ -19,6 +19,8 @@ We test with `make dev`. Ox's test state is disposable.
 │   ├── plans                  # plans from /ox-plan
 │   ├── reviews                # reviews from /ox-review
 │   └── scratch                # research notes
+├── .claude
+│   └── skills                 # the ox-* workflow skills
 ├── .githooks
 │   └── pre-commit             # checks docs formatting
 ├── .github
@@ -134,6 +136,7 @@ We test with `make dev`. Ox's test state is disposable.
 │       └── wire
 │           └── wire.go        # stdio protocol between oxd and ur
 ├── Makefile                   # build, test, run, and format docs
+├── README.md                  # overview and quick start
 └── scripts
     └── metrics.py             # prints size and complexity
 ```
@@ -238,9 +241,9 @@ need them cannot happen.
     less to keep than to fix, such
     as an unmeasured scaling cost.
   - **Record** as a GitHub issue labeled `bug`: a defect that cannot be fixed
-    yet, because it needs reproducing or depends on Claude Code behavior Ox
-    cannot change. The issue states the defect's worst cost, how it was found,
-    and what it waits on.
+    yet, because it needs reproducing or depends on behavior of Claude Code or
+    OpenRouter that Ox cannot change. The issue states the defect's worst
+    cost, how it was found, and what it waits on.
 - A review reads the open `bug` issues first. It skips a defect that an open
   `bug` issue records, unless the change resolves that issue or what the issue
   waits on has changed, and checks that the change fixes each issue it
@@ -250,10 +253,12 @@ need them cannot happen.
 ## Workflow
 
 The user settles the direction and rough scope of a change with a top-level
-agent, which carries it through child sessions. It reads a child's final reply,
-which Ox delivers, and not the child's transcript. When Codex leads the
-workflow, use Codex child sessions on Sol 6.2. The Claude model choices below
-apply when Claude Code leads the workflow.
+agent, an Ox session on any harness Ox offers, which carries it through child
+sessions. It starts each child with `create_session`, naming the harness, model,
+and effort the steps below give it, since a child otherwise takes its parent's.
+It reads a child's final reply, which Ox delivers, and not the child's
+transcript. A child on a harness without skills, such as Ur, runs a skill by
+reading its `SKILL.md` in `.claude/skills`.
 
 The main checkout stays on `main` and only pulls. Each change runs in an Ox
 worktree session started from the main checkout, and every step below runs in
@@ -297,21 +302,22 @@ the concerns the change touches, at the length they need. Every change that is
 not small still takes each step below in its own child session. A contained
 change, one that touches no state owner in `oxd`, protocol, persistence, or
 harness driving, such as a change to the web client alone, runs those child
-sessions on Sonnet at medium effort, and its planning and reviewing sessions
-start no children of their own.
+sessions on Claude with Sonnet 5.5 at medium effort, and its planning and
+reviewing sessions start no children of their own.
 
 When a decision the user approved turns out to need machinery the plan did not
 include, the top-level agent brings the user its cost and the simpler
 alternative before any session builds it.
 
-1. A child session on Opus 5.5 at high effort runs `/ox-plan`. The user
-   approves the plan's requirement changes with its other product questions.
+1. A child session on Claude with Opus 5.5 at high effort runs `/ox-plan`. The
+   user approves the plan's requirement changes with its other product
+   questions.
 2. The top-level agent sanity-checks the plan with a quick look at the code it
    names, without redoing the planning.
-3. A child session on Sonnet or Opus, chosen by the change's complexity,
-   runs `/ox-work` on the plan.
-4. A child session on Opus or Sol runs `/ox-review` on the uncommitted
-   changes for the plan.
+3. A child session on Claude with Sonnet 5.5 or Opus 5.5, chosen by the
+   change's complexity, runs `/ox-work` on the plan.
+4. A child session on Claude with Opus 5.5 runs `/ox-review` on the
+   uncommitted changes for the plan.
 5. The implementing session runs `/ox-work fix` on the review.
 6. The reviewing session runs `/ox-review verify` on its review. Open
    findings or new regressions go back to the implementing session, until

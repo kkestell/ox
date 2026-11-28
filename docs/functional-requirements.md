@@ -18,13 +18,13 @@ title.
 - **Session order.** Each workspace lists its top-level sessions newest first,
   each followed by its child sessions, oldest first and indented beneath it; a
   child's own children follow it the same way, indented one level further.
-- **Session labels.** A child session, or a session another session's Claude
-  started, is labeled with the title it was created with. Any other session is
-  labeled with a short title the configured titling model writes from the first
-  prompt with text the user sent it, which replaces the label everywhere it
-  shows once it arrives and lasts through restarts. Until then, or if titling
-  fails, the session is labeled with that prompt's first line, shortened, or a
-  short identifier before it has one.
+- **Session labels.** A child session, or a session another session started, is
+  labeled with the title it was created with. Any other session is labeled with
+  a short title the configured titling model writes from the first prompt with
+  text the user sent it, which replaces the label everywhere it shows once it
+  arrives and lasts through restarts. Until then, or if titling fails, the
+  session is labeled with that prompt's first line, shortened, or a short
+  identifier before it has one.
 - **Session status.** Each session shows whether it is parked, idle, idle while
   background work Claude started still runs, running, waiting on the user, or
   archived, as soon as the session list shows it.
@@ -71,7 +71,7 @@ title.
   parent: showing a view, reconnecting, or reloading sends nothing, and a failed
   send is never retried automatically.
 - **Send cut off.** A send cut off by a lost connection shows an error even if
-  Claude received the prompt; the transcript shows whether it did.
+  the agent received the prompt; the transcript shows whether it did.
 - **Unsent text.** Unsent text, in a session or in a workspace's new-session
   draft, and an approval's unsent answers survive switching views and
   reconnecting; a question form stays on the question the user left it on.
@@ -92,20 +92,20 @@ title.
   tablet, Return starts a new line and only Send sends.
 - **Prompt size limit.** A prompt over 1 MiB is refused with an error and stays
   in the composer.
-- **One prompt at a time.** While Claude works, the user can send a prompt,
-  which Claude takes into the running turn after its current step, or runs next
-  if the turn ends first. Until Claude takes it, the prompt shows as pending at
-  the end of the transcript and Send is unavailable, as it is while a message
-  from another session is pending or waiting; once taken, it becomes a normal
-  prompt where Claude took it.
-- **Stop.** While Claude works, the composer is empty, and Ox has accepted any
-  prompt this page sent, the Send button becomes Stop. Once pressed, Stop does
-  not return, and Send stays unavailable, until the turn it stopped has ended.
-  Stop ends the turn, the transcript shows it was interrupted, and the session
-  takes prompts again; a pending prompt is dropped, and its text returns to the
-  composer of the page that sent it, ahead of anything typed since. Messages
-  from other sessions that Claude has not taken are dropped, and their senders
-  are not told.
+- **One prompt at a time.** While the agent works, the user can send a prompt,
+  which the agent takes into the running turn after its current step, or runs
+  next if the turn ends first. Until the agent takes it, the prompt shows as
+  pending at the end of the transcript and Send is unavailable, as it is while a
+  message from another session is pending or waiting; once taken, it becomes a
+  normal prompt where the agent took it.
+- **Stop.** While the agent works, the composer is empty, and Ox has accepted
+  any prompt this page sent, the Send button becomes Stop. Once pressed, Stop
+  does not return, and Send stays unavailable, until the turn it stopped has
+  ended. Stop ends the turn, the transcript shows it was interrupted, and the
+  session takes prompts again; a pending prompt is dropped, and its text returns
+  to the composer of the page that sent it, ahead of anything typed since.
+  Messages from other sessions that the agent has not taken are dropped, and
+  their senders are not told.
 
 ## Transcript
 
@@ -115,9 +115,9 @@ title.
   the same rules as replies, followed by the images attached to them.
 - **Messages in the transcript.** A message shows in the recipient's transcript
   rendered as Markdown under the same rules as replies, headed with the label of
-  the session that sent it, pending at the end of the transcript until Claude
+  the session that sent it, pending at the end of the transcript until the agent
   takes it, on every page and after a reload.
-- **Replies as Markdown.** Claude's replies stream in as Markdown, with each
+- **Replies as Markdown.** The agent's replies stream in as Markdown, with each
   line break shown as a line break. Raw HTML shows as text, images are not
   loaded, unsafe links are not links, and links open in a new tab.
 - **Tool calls.** Each tool call shows its name, a summary of its input, and
@@ -148,14 +148,15 @@ title.
 ## Settings
 
 - **Settings shown are settings used.** The settings shown for a session are the
-  ones Claude runs with.
-- **Setting commands.** A prompt whose first word is `/model` or `/effort` is
-  refused with an error and stays in the composer; the model and effort change
-  only through the session's settings. Other slash commands are sent as typed.
-- **Pending setting changes.** A settings change reaches Claude before the next
-  prompt. While it is pending, the page marks the changed setting as pending and
-  holds Send. If it fails, the page shows the error and the settings Claude
-  actually has.
+  ones its agent runs with.
+- **Setting commands.** A prompt to a Claude session whose first word is
+  `/model` or `/effort` is refused with an error and stays in the composer; the
+  model and effort change only through the session's settings. Other slash
+  commands are sent as typed.
+- **Pending setting changes.** A settings change reaches the agent before the
+  next prompt. While it is pending, the page marks the changed setting as
+  pending and holds Send. If it fails, the page shows the error and the settings
+  the agent actually has.
 - **Setting changes keep the rest.** Changing a setting keeps the conversation
   and leaves the other settings alone.
 - **When settings can change.** Settings can change only while the session is
@@ -182,64 +183,63 @@ title.
   the shown question is answered, submits from the last question, and can
   decline from any question.
 - **Approvals wait.** An approval waits for an answer, and the session does not
-  park meanwhile. It is withdrawn on every page when Claude cancels it, goes
+  park meanwhile. It is withdrawn on every page when the agent cancels it, goes
   idle, or exits.
 - **One answer per approval.** An approval already answered, from this page or
   another, refuses a second answer with an error.
 
 ## Sessions working together
 
-- **Claude can list Ox's models.** Claude can look up the harnesses, models,
-  effort levels, and permission modes Ox offers, in any permission mode, without
-  asking for approval.
-- **Claude can message other sessions.** Claude can list the other sessions that
-  are not archived, with each one's label, workspace, the folder it works in,
-  its worktree if it has one, settings, and status, and send any of them a
-  message. It does so without asking for approval, except in plan mode, where
-  each message asks first.
-- **Claude can read other sessions.** Claude can read any other session's
-  transcript and current status, in any permission mode, without asking for
-  approval.
-- **Claude can start child sessions.** A session's Claude can start a child
-  session with a title and a first message, which reaches the child as a message
-  from its parent, without asking for approval except in plan mode, where Claude
-  asks first. The child takes its parent's permission mode, and its parent's
-  harness, model, effort, and directory unless Claude picks others Ox offers,
-  and can start children of its own up to the configured depth.
+- **Sessions can list Ox's models.** A session can look up the harnesses,
+  models, effort levels, and permission modes Ox offers.
+- **Sessions can message other sessions.** A session can list the other sessions
+  that are not archived, with each one's label, workspace, the folder it works
+  in, its worktree if it has one, settings, and status, and send any of them a
+  message.
+- **Sessions can read other sessions.** A session can read any other session's
+  transcript and current status.
+- **Sessions can start child sessions.** A session can start a child session
+  with a title and a first message, which reaches the child as a message from
+  its parent. The child takes its parent's permission mode, and its parent's
+  harness, model, effort, and directory unless the parent picks others Ox
+  offers, and can start children of its own up to the configured depth.
 - **Who works in a worktree.** A worktree session's child sessions work in its
-  worktree unless Claude picks another directory. No other session is started
-  there: Ox refuses a child of another session in it and refuses to add a folder
-  inside it as a workspace, and says why.
-- **Claude can start top-level sessions.** A session the user created can have
-  its Claude start a top-level session in any Ox workspace, with a title and a
-  first message, which reaches it as a message from the session that started it,
-  without asking for approval except in plan mode. The new session runs in its
-  own new worktree, made as for a session the user creates, unless Claude
-  chooses the workspace directory; it takes the starting session's permission
-  mode, and its harness, model, and effort unless Claude picks others Ox offers,
-  and it can start child sessions of its own. Deleting or archiving the session
-  that started it leaves it running.
-- **Message delivery.** A message from another session reaches Claude as a
-  prompt sent while it works does: Claude takes it into the running turn after
-  its current step, or runs it next, and an idle session starts a turn with it.
-  Messages that arrive while a prompt or message is pending wait their turn in
-  order, and a message to a parked session starts it. A message to an archived
-  session, or to a session whose Claude cannot be launched, is refused, and the
-  sending Claude gets the reason. Messages Claude has not taken are dropped if
-  Claude fails to start, when Claude exits, or when `oxd` stops; a failed start
-  shows why in the transcript.
+  worktree unless their parent picks another directory. No other session is
+  started there: Ox refuses a child of another session in it and refuses to add
+  a folder inside it as a workspace, and says why.
+- **Sessions can start top-level sessions.** A session the user created can
+  start a top-level session in any Ox workspace, with a title and a first
+  message, which reaches it as a message from the session that started it. The
+  new session runs in its own new worktree, made as for a session the user
+  creates, unless the starting session chooses the workspace directory; it takes
+  the starting session's permission mode, and its harness, model, and effort
+  unless the starting session picks others Ox offers, and it can start child
+  sessions of its own. Deleting or archiving the session that started it leaves
+  it running.
+- **Message delivery.** A message from another session reaches the agent as a
+  prompt sent while it works does: the agent takes it into the running turn
+  after its current step, or runs it next, and an idle session starts a turn
+  with it. Messages that arrive while a prompt or message is pending wait their
+  turn in order, and a message to a parked session starts it. A message to an
+  archived session, or to a session whose agent cannot be launched, is refused,
+  and the sending agent gets the reason. Messages the agent has not taken are
+  dropped if it fails to start, when it exits, or when `oxd` stops; a failed
+  start shows why in the transcript.
 - **Session reports.** When the turn of a child session, or of a top-level
-  session another session's Claude started, ends, the session that started it
-  receives its final reply, or why the turn failed, as a report, without either
-  session sending a message. Reports wait until the receiving session is idle or
-  parked and none of the sessions it started is working, then arrive together as
-  one message, after any message already waiting, each headed with its sender's
+  session another session started, ends, the session that started it receives
+  its final reply, or why the turn failed, as a report, without either session
+  sending a message. Reports wait until the receiving session is idle or parked
+  and none of the sessions it started is working, then arrive together as one
+  message, after any message already waiting, each headed with its sender's
   label and rendered as Markdown; a session waiting on the user does not hold
   them back. A report carries only the first 400 characters of a longer reply,
   none is sent when the sender's last action was a message to the session that
   started it, and reports not yet delivered are dropped when `oxd` stops or that
   session is deleted.
-- **Messages stay in Ox.** Claude messages only Ox's own sessions, and only
+- **Working together without approval.** A session of any harness does each of
+  these without asking for approval, except a Claude session in plan mode, which
+  asks before each message it sends and each session it starts.
+- **Messages stay in Ox.** Sessions message only Ox's own sessions, and only
   through Ox. Other Claude Code sessions on this machine cannot message an Ox
   session.
 
@@ -247,8 +247,8 @@ title.
 
 - **Surviving restarts.** Workspaces, sessions, their settings, and their
   transcripts survive parking and `oxd` restarts.
-- **Resuming the conversation.** A parked session resumes its Claude
-  conversation on the next send or message.
+- **Resuming the conversation.** A parked session resumes its conversation on
+  the next send or message.
 - **Database failures.** Adding a workspace shows a failure to save in its
   dialog, and removing one in the session list; any other failure to save goes
   to `oxd`'s log. A session whose conversation could not be saved still resumes
@@ -266,9 +266,9 @@ title.
 ## Archiving and deleting
 
 - **Deleting a session.** A session, archived or not, can be deleted only when
-  it has no child sessions. Deleting it asks first, then stops Claude and waits
-  for it to exit, deletes Ox's history of it, removes its worktree if it has
-  one, leaves Claude's transcript, Ur's saved conversation, the session's
+  it has no child sessions. Deleting it asks first, then stops its agent and
+  waits for it to exit, deletes Ox's history of it, removes its worktree if it
+  has one, leaves Claude's transcript, Ur's saved conversation, the session's
   branch, and the workspace on disk, and removes it from every page. A session
   whose worktree has uncommitted changes or untracked files, or whose worktree
   is on no branch, is not deleted, and the error says why; files Git ignores are
@@ -276,7 +276,7 @@ title.
   the deletion.
 - **Archiving a session.** While a session and every session beneath it are idle
   or parked, the user can archive it from its menu without confirmation, which
-  archives the sessions beneath it too and stops their Claude processes,
+  archives the sessions beneath it too and stops their agents' processes,
   schedules, and background tasks. Unarchiving a session unarchives the sessions
   beneath it; a child can be archived without its parent, but not unarchived
   while its parent is archived.
@@ -454,10 +454,6 @@ title.
   exits, at its timeout of two minutes or up to ten that Ur sets, or when the
   turn is stopped, which also ends the processes it started; Ur gets its exit
   status and its output, or the start and end of output too long to keep whole.
-- **Ur works with other sessions.** Ur can do what Claude does under Sessions
-  working together: look up Ox's models, list, read, and message other sessions,
-  and start child sessions, in either permission mode without asking for
-  approval.
 - **Ur's instructions.** Ur knows the session's directory, its OS, and today's
   date, that it is an Ox session, which one, and how to reach the other
   sessions, follows Ox's style, and follows the `AGENTS.md` in that directory as

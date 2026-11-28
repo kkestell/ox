@@ -40,7 +40,7 @@ export type Prompt = { message_id: string; text?: string } & (
 );
 
 // Report is the account of one of its turns that a session sends the session
-// that started it, as a child or a session another session's Claude started.
+// that started it, as a child or a session another session started.
 export type Report = { from: string; from_label: string; text: string };
 
 export type Update = { time: string } & (

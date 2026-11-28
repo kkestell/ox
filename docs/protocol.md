@@ -34,7 +34,7 @@ limited backlog; a client that stops reading loses its connection.
 | `workspace_id` | Opaque identifier returned by `workspace/create`.                                                                                                            |
 | `session_id`   | Opaque identifier returned by `session/create`.                                                                                                              |
 | `message_id`   | Input identifier chosen by the client or returned by `session/send` for a user prompt, and included in [updates](#session-updates) for prompts and messages. |
-| `request_id`   | Claude's identifier for an approval, used to answer or withdraw it.                                                                                          |
+| `request_id`   | The harness's identifier for an approval, used to answer or withdraw it.                                                                                     |
 
 ## Workspaces and sessions
 
@@ -51,14 +51,14 @@ directory's copy in its worktree. A top-level session created with
 [`worktree`](#sessioncreate) has a `worktree`, the physical path of the git
 worktree's root, fixed at creation; a session without one has no `worktree`.
 
-A child session is one a session's Claude started with
-[`create_session`](#tools). It has a `child` object, fixed at creation:
-`parent_id`, the session that started it; `name`, unique among that parent's
-children; and `title`, its label. A child belongs to its parent's workspace,
-whatever its directory. A session without `child` is top-level. Children nest at
-most [`max_child_depth`](configuration.md) levels below a top-level session.
+A child session is one another session started with [`create_session`](#tools).
+It has a `child` object, fixed at creation: `parent_id`, the session that
+started it; `name`, unique among that parent's children; and `title`, its label.
+A child belongs to its parent's workspace, whatever its directory. A session
+without `child` is top-level. Children nest at most
+[`max_child_depth`](configuration.md) levels below a top-level session.
 
-A top-level session may have been started by another session's Claude with
+A top-level session may have been started by another session with
 [`create_top_level_session`](#tools). The session that started it, its creator,
 is fixed at creation and receives its [reports](#session-reports) until the
 creator is deleted. Its label is the title it was started with.
@@ -78,6 +78,7 @@ configuration, approval, background task, or pending schedule. A scheduling tool
 call, or a resumed conversation whose history has a `CronCreate` call, keeps the
 harness active until its next
 [Stop hook schedule report](harnesses/claude-code.md#8-background-work-and-schedules).
+For Ur, it means idle with no input.
 
 ## Harness methods
 
@@ -268,15 +269,15 @@ Records a parked session in the workspace and returns its ID. The first
 after it. A setting [`harness/list`](#harnesslist) does not offer returns
 `-32602`.
 
-| Parameter         | Required | Meaning                                                                                                                                                           |
-| ----------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `session_id`      | No       | A client-chosen ID: 64 random bits in Bitcoin's base58. Omit it for a daemon-generated ID.                                                                        |
-| `workspace_id`    | Yes      | The workspace whose directory the harness runs in.                                                                                                                |
-| `harness`         | Yes      | A harness in the configuration.                                                                                                                                   |
-| `model`           | Yes      | One of the harness's models; passed to Claude's `--model` flag.                                                                                                   |
-| `effort`          | Yes      | One of the model's effort levels; passed to Claude's `--effort` flag. A model without effort levels takes an empty or omitted value, which leaves the flag unset. |
-| `permission_mode` | Yes      | One of the harness's permission modes; passed to Claude's `--permission-mode` flag.                                                                               |
-| `worktree`        | No       | `true` runs the session in a git worktree of its own.                                                                                                             |
+| Parameter         | Required | Meaning                                                                                                                                                      |
+| ----------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `session_id`      | No       | A client-chosen ID: 64 random bits in Bitcoin's base58. Omit it for a daemon-generated ID.                                                                   |
+| `workspace_id`    | Yes      | The workspace whose directory the harness runs in.                                                                                                           |
+| `harness`         | Yes      | A harness in the configuration.                                                                                                                              |
+| `model`           | Yes      | One of the harness's models, passed to the harness as is.                                                                                                    |
+| `effort`          | Yes      | One of the model's effort levels, passed to the harness as is. A model without effort levels takes an empty or omitted value, which leaves the effort unset. |
+| `permission_mode` | Yes      | One of the harness's permission modes, passed to the harness as is.                                                                                          |
+| `worktree`        | No       | `true` runs the session in a git worktree of its own.                                                                                                        |
 
 A repeat using the same ID in the same workspace returns the existing ID and
 `"existing":true`. It leaves the session and its settings intact. An ID already
@@ -323,13 +324,13 @@ base64 strings, each a PNG, JPEG, GIF, or WebP image, whose type the daemon
 takes from its bytes; any other data, or more than 10,485,760 bytes of images in
 total after decoding, returns `-32602`. The daemon stores each image with the
 session under an image ID, which the prompt's updates carry and
-[`session/image`](#sessionimage) serves; Claude receives the images before the
-text. A parked session first starts a process; a process that cannot be launched
-returns an operation error, and a session whose directory no longer exists
-returns `-32000` `session directory <directory> no longer exists`. Success means
-the prompt was written to Claude, or is held until Claude has started or a
-configuration has ended; its output and eventual result arrive through
-`session/update` notifications. A start that fails, within a one-minute
+[`session/image`](#sessionimage) serves; the harness receives the images before
+the text. A parked session first starts a process; a process that cannot be
+launched returns an operation error, and a session whose directory no longer
+exists returns `-32000` `session directory <directory> no longer exists`.
+Success means the prompt was written to the harness, or is held until it has
+started or a configuration has ended; its output and eventual result arrive
+through `session/update` notifications. A start that fails, within a one-minute
 initialization limit, drops the prompt with `prompt_cancelled` and reports why
 with `exited`. For Claude, a prompt whose first word is `/model` or `/effort` is
 refused with `-32602`, without starting a parked session. Use
@@ -344,21 +345,22 @@ session refuses the prompt with `-32000` `session is archived`.
 {"jsonrpc":"2.0","id":4,"result":{"message_id":"prompt-id"}}
 ```
 
-A prompt sent while Claude works may join the running turn or start a new turn
-after the previous `result`, as
-[User messages](harnesses/claude-code.md#user-messages) describes. A successful
-send publishes `prompt_queued` until Claude takes the prompt (`prompt`) or it is
+A prompt sent while the harness works may join the running turn or start a new
+turn after the previous `result`, as
+[User messages](harnesses/claude-code.md#user-messages) describes for Claude; Ur
+takes it into the running turn before the turn's next request. A successful send
+publishes `prompt_queued` until the harness takes the prompt (`prompt`) or it is
 dropped (`prompt_cancelled`). A send while any input is still queued, including
 a message from another session ([`send_message`](#tools)), returns `-32002`. A
 send while a configuration runs waits for it to end, and is written even when
-Claude refused the change.
+the harness refused the change.
 
 ### `session/image`
 
 Requires `session_id` and `image_id`. Returns an image attached to one of the
 session's prompts: its `mime_type` and its `data` as base64. An image whose
-prompt was dropped before Claude took it, or that the session does not have,
-returns `-32001` `image not found`.
+prompt was dropped before the harness took it, or that the session does not
+have, returns `-32001` `image not found`.
 
 ```json
 {"jsonrpc":"2.0","id":6,"method":"session/image","params":{"session_id":"session-id","image_id":"image-id"}}
@@ -384,13 +386,13 @@ response arrives.
 {"jsonrpc":"2.0","id":5,"result":{"model":"claude-haiku-5-5","effort":"low","permission_mode":"manual","state":"requires_action","queued":[],"approvals":[{"request_id":"claude-request-id","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch notes.txt"}}}],"history":[{"message_id":"prompt-id","type":"prompt","text":"Create notes.txt.","time":"2026-11-18T19:53:50Z"},{"message_id":"prompt-id","type":"text_delta","text":"I'll create the file.","time":"2026-11-18T19:53:51Z"}]}}
 ```
 
-| Field                                | Meaning                                                                                                                                                                                                                                          |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `model`, `effort`, `permission_mode` | The settings the session now uses.                                                                                                                                                                                                               |
-| `state`                              | `parked`, or the execution state: `running`, `requires_action`, `idle`, or `background`. A prompt is `running` from the moment `session/send` accepts it.                                                                                        |
-| `approvals`                          | Pending approvals in the order they arrived, each with `request_id` and Claude's `request`, whether or not a prompt is active.                                                                                                                   |
-| `queued`                             | All inputs Claude has not taken, prompts and messages, oldest first. Each has `message_id` and `text`, with `images` for a prompt with images, `from` and `from_label` for a message, and `reports` for session reports. An empty queue is `[]`. |
-| `history`                            | The session's recorded updates, oldest first, in the form of `session/update` params without `session_id`.                                                                                                                                       |
+| Field                                | Meaning                                                                                                                                                                                                                                               |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `model`, `effort`, `permission_mode` | The settings the session now uses.                                                                                                                                                                                                                    |
+| `state`                              | `parked`, or the execution state: `running`, `requires_action`, `idle`, or `background`. A prompt is `running` from the moment `session/send` accepts it.                                                                                             |
+| `approvals`                          | Pending approvals in the order they arrived, each with `request_id` and the harness's `request`, whether or not a prompt is active.                                                                                                                   |
+| `queued`                             | All inputs the harness has not taken, prompts and messages, oldest first. Each has `message_id` and `text`, with `images` for a prompt with images, `from` and `from_label` for a message, and `reports` for session reports. An empty queue is `[]`. |
+| `history`                            | The session's recorded updates, oldest first, in the form of `session/update` params without `session_id`.                                                                                                                                            |
 
 The daemon records every session's `prompt`, `text_delta`, `reasoning_delta`,
 `tool_use`, `tool_result`, `result`, `exited`, `parked`, and `usage` updates,
@@ -427,7 +429,8 @@ idle with no queued input. Configuration reserves it until completion; other
 configuration requests then return `-32002`, and inputs sent meanwhile wait for
 it.
 
-On a running process, Claude acknowledges changes to model, effort, and
+On a running Ur process, the changes take effect from the next request. On a
+running Claude process, Claude acknowledges changes to model, effort, and
 permission mode in that order. Each change the session adopts, including a
 change Claude makes on its own, is stored and broadcast as `session/configured`
 when it happens. One request can produce several notifications before its
@@ -445,7 +448,7 @@ succeeds. See
 ### `session/approve`
 
 Requires `session_id`, `request_id`, and a `response` object whose `behavior` is
-`"allow"` or `"deny"`. The response payload is forwarded to Claude.
+`"allow"` or `"deny"`. The response payload is forwarded to the harness.
 
 ```json
 {"jsonrpc":"2.0","id":7,"method":"session/approve","params":{"session_id":"session-id","request_id":"claude-request-id","response":{"behavior":"allow","updatedInput":{"command":"echo hello"},"toolUseID":"toolu_example"}}}
@@ -468,21 +471,22 @@ array; a running session returns `-32000` for an invalid shape. See
 for permission changes, interrupts, and `AskUserQuestion` answers.
 
 A successful RPC consumes the pending request; a duplicate or late answer is
-rejected. Success confirms forwarding to Claude, not tool execution. Continue
-reading prompt updates for the outcome.
+rejected. Success confirms forwarding to the harness, not tool execution.
+Continue reading prompt updates for the outcome.
 
 ### `session/interrupt`
 
 Requires `session_id`. Asks a running session to stop its turn and the tools it
-runs, using Claude's [interrupt](harnesses/claude-code.md#interrupt). Success
-arrives once the stopped turn has ended, after the update that ends it: the
-`idle` or `background` state, the next input taken, or the session's exit. A
-session that is idle or parked has nothing to stop and succeeds at once. The
-stopped turn ends with an error `result` whose text is `Interrupted`, and an
-`idle` or `background` state, which release a prompt as usual. Every prompt and
-message Claude has not taken is dropped with a `prompt_cancelled` update each.
-When no turn is running, Claude's interrupt ends with the cancellations and
-`idle`, with no `result`; an idle Ur session sends nothing.
+runs, with Claude's [interrupt](harnesses/claude-code.md#interrupt) for a Claude
+session. Success arrives once the stopped turn has ended, after the update that
+ends it: the `idle` or `background` state, the next input taken, or the
+session's exit. A session that is idle or parked has nothing to stop and
+succeeds at once. The stopped turn ends with an error `result` whose text is
+`Interrupted`, and an `idle` or `background` state, which release a prompt as
+usual. Every prompt and message the harness has not taken is dropped with a
+`prompt_cancelled` update each. When no turn is running, Claude's interrupt ends
+with the cancellations and `idle`, with no `result`; an idle Ur session sends
+nothing.
 
 ```json
 {"jsonrpc":"2.0","id":8,"method":"session/interrupt","params":{"session_id":"session-id"}}
@@ -499,10 +503,11 @@ receives SIGTERM so Claude can clean up its tool processes, and is killed if it
 has not exited after ten seconds; the destroy waits until every process the
 session started, including one an earlier park or archive stopped, has exited.
 Pending approvals are withdrawn, and an active prompt receives an `exited`
-update before the destroy response. Claude's transcript stays on disk. A session
-with children returns `-32000` `session has child sessions`. While a destroy
-waits, the session answers other requests, and refuses a prompt, a message, a
-child, and another destroy with `-32000` `session is being deleted`.
+update before the destroy response. Claude's transcript and Ur's conversation
+file stay on disk. A session with children returns `-32000` `session has child
+sessions`. While a destroy waits, the session answers other requests, and
+refuses a prompt, a message, a child, and another destroy with `-32000` `session
+is being deleted`.
 
 A worktree session's worktree is then removed with git, without force; its
 branch is not deleted. Files git ignores are deleted with the worktree. These
@@ -570,13 +575,13 @@ and includes `session_id`, `type`, and `time` inside `params`, and `message_id`
 when the update belongs to a client's prompt: its `prompt_queued`, `prompt`, and
 `prompt_cancelled` updates, the turn from its `prompt` update to the turn's
 `result`, and the `state` or `exited` update that releases the session, which
-names the latest prompt Claude took or dropped. A prompt Claude takes during an
-earlier prompt's turn tags the rest of that turn. `time` is when the daemon
-published the update, as an RFC 3339 timestamp; a recorded reply's `text_delta`
-carries the time of its first fragment. Turns Claude starts itself, such as a
-scheduled prompt firing or a background task finishing, produce the same updates
-without `message_id`. Such a turn can run after a prompt's `result` and before
-the `idle` or `background` that releases it:
+names the latest prompt the harness took or dropped. A prompt the harness takes
+during an earlier prompt's turn tags the rest of that turn. `time` is when the
+daemon published the update, as an RFC 3339 timestamp; a recorded reply's
+`text_delta` carries the time of its first fragment. Turns Claude starts itself,
+such as a scheduled prompt firing or a background task finishing, produce the
+same updates without `message_id`. Such a turn can run after a prompt's `result`
+and before the `idle` or `background` that releases it:
 
 ```json
 {"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"text_delta","text":"This repository ","time":"2026-11-18T19:53:50.674Z"}}
@@ -584,16 +589,16 @@ the `idle` or `background` that releases it:
 
 | `type`               | Additional fields                                                                                                                                                     | Meaning                                                                                                                                                                                                                                                                          |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `prompt_queued`      | `text`: string; `images`: image IDs for a prompt with images; `from`, `from_label`: strings for a message; `reports` for session reports                              | The prompt or message was accepted, behind every input Claude has not taken. Claude has not taken it yet. Each is announced once, at acceptance.                                                                                                                                 |
-| `prompt`             | `text`: string; `images`: image IDs for a prompt with images; `from`, `from_label`: strings for a message; `reports` for session reports                              | Claude took this prompt or message into its conversation.                                                                                                                                                                                                                        |
-| `prompt_cancelled`   | `text`: string; `images`: image IDs for a prompt with images; `from`, `from_label`: strings for a message; `reports` for session reports                              | This input was dropped before Claude took it, on interrupt, process exit, or a failed start.                                                                                                                                                                                     |
+| `prompt_queued`      | `text`: string; `images`: image IDs for a prompt with images; `from`, `from_label`: strings for a message; `reports` for session reports                              | The prompt or message was accepted, behind every input the harness has not taken. The harness has not taken it yet. Each is announced once, at acceptance.                                                                                                                       |
+| `prompt`             | `text`: string; `images`: image IDs for a prompt with images; `from`, `from_label`: strings for a message; `reports` for session reports                              | The harness took this prompt or message into its conversation.                                                                                                                                                                                                                   |
+| `prompt_cancelled`   | `text`: string; `images`: image IDs for a prompt with images; `from`, `from_label`: strings for a message; `reports` for session reports                              | This input was dropped before the harness took it, on interrupt, process exit, or a failed start.                                                                                                                                                                                |
 | `text_delta`         | `text`: string                                                                                                                                                        | Append this fragment of top-level assistant text. If a successful turn result has text but none was streamed, the daemon publishes its text here before the result.                                                                                                              |
 | `reasoning_delta`    | `text`: string                                                                                                                                                        | Append this fragment of top-level reasoning: Claude's summary of its thinking, or Ur's model's reasoning text. Consecutive fragments form one stretch of reasoning; any other entry between them starts a new one.                                                               |
-| `tool_use`           | `tool_use_id`: string; `tool_name`: string; `input`: object                                                                                                           | Claude called a tool at the top level. A call with no `tool_result` when its turn's `result`, `exited`, or `parked` arrives did not finish.                                                                                                                                      |
+| `tool_use`           | `tool_use_id`: string; `tool_name`: string; `input`: object                                                                                                           | The model called a tool at the top level. A call with no `tool_result` when its turn's `result`, `exited`, or `parked` arrives did not finish.                                                                                                                                   |
 | `tool_result`        | `tool_use_id`: string; `result`: object with `text` and `is_error`                                                                                                    | The outcome of the top-level tool call with this `tool_use_id`. `text` joins the result's text blocks. A call an interrupt stopped gets none.                                                                                                                                    |
-| `state`              | `state`: `running`, `requires_action`, `idle`, or `background`                                                                                                        | The session's execution state: Claude's report, `running` for a prompt Claude has not taken yet, or `background` while Claude is idle with background tasks running.                                                                                                             |
-| `result`             | `result`: object with `text` and `is_error`                                                                                                                           | Claude's final response or turn error. The text is a complete result, not another delta to append.                                                                                                                                                                               |
-| `approval`           | `request_id`: string; `request`: object                                                                                                                               | A pending Claude request needing a client decision.                                                                                                                                                                                                                              |
+| `state`              | `state`: `running`, `requires_action`, `idle`, or `background`                                                                                                        | The session's execution state: the harness's report, `running` for a prompt the harness has not taken yet, or `background` while Claude is idle with background tasks running.                                                                                                   |
+| `result`             | `result`: object with `text` and `is_error`                                                                                                                           | The turn's final response or error. The text is a complete result, not another delta to append.                                                                                                                                                                                  |
+| `approval`           | `request_id`: string; `request`: object                                                                                                                               | A pending harness request needing a client decision.                                                                                                                                                                                                                             |
 | `approval_answered`  | `request_id`: string                                                                                                                                                  | A client answered the approval.                                                                                                                                                                                                                                                  |
 | `approval_cancelled` | `request_id`: string                                                                                                                                                  | Withdraw an unanswered approval. Discard any later answer.                                                                                                                                                                                                                       |
 | `exited`             | `error`: string                                                                                                                                                       | The process exited during an active prompt or without being stopped, it was stopped during an active prompt, or it could not start or resume. The text includes the available reason, including the process's stderr tail for an unexpected exit and for a start that timed out. |
@@ -607,8 +612,8 @@ array of reports, each with `from`, the reporting session's ID, `from_label`,
 its label when the report was made, and `text`; `text` is empty, and there is no
 top-level `from`, `from_label`, or `images`.
 
-`running` means Claude is working. `requires_action` means it is waiting for
-user action; read the approval notifications to obtain the requests. `idle`
+`running` means the harness is working. `requires_action` means it is waiting
+for user action; read the approval notifications to obtain the requests. `idle`
 means the turn is over and the session can be configured. `background` is `idle`
 while background work Claude started, such as a background Bash command or a
 Monitor, still runs; when it ends, the session publishes `idle`, and Claude
@@ -621,9 +626,9 @@ usually starts a turn of its own.
 {"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"result","result":{"text":"The repository contains a Go daemon.","is_error":false},"time":"2026-11-18T19:53:53Z"}}
 ```
 
-Claude's turn errors are delivered as `result.is_error: true`. JSON-RPC errors
-describe failures of the client operation itself. A subagent appears in the
-stream as its top-level `Agent` tool call and result.
+Turn errors are delivered as `result.is_error: true`. JSON-RPC errors describe
+failures of the client operation itself. A subagent appears in the stream as its
+top-level `Agent` tool call and result.
 
 ### Approval lifecycle
 
@@ -648,10 +653,10 @@ Multiple approvals can be pending; identify each by its `request_id`.
 An approval waits until a client answers it, however long that takes; while it
 is pending, the session's process keeps running.
 
-When Claude cancels a request, becomes idle, or exits, Ox withdraws unanswered
-approvals. A `result` alone does not withdraw approvals: background subagents
-can still be waiting for a decision. For idle or exit, the cancellation
-notifications precede the corresponding `idle` or `exited` update:
+When the harness cancels a request, becomes idle, or exits, Ox withdraws
+unanswered approvals. A `result` alone does not withdraw approvals: background
+subagents can still be waiting for a decision. For idle or exit, the
+cancellation notifications precede the corresponding `idle` or `exited` update:
 
 ```json
 {"jsonrpc":"2.0","method":"session/update","params":{"session_id":"session-id","message_id":"prompt-id","type":"approval_cancelled","request_id":"claude-request-id","time":"2026-11-18T19:53:52Z"}}
@@ -884,16 +889,16 @@ session`, `session not found`, or `cursor out of range`.
 
 ### Session reports
 
-A child session, and a session another session's Claude started, reports to the
-session that started it, its recipient. It makes a report when a turn's `result`
+A child session, and a session another session started, reports to the session
+that started it, its recipient. It makes a report when a turn's `result`
 arrives: the result's text, or `Turn failed: <text>` for an error, including
 `Turn failed: Interrupted`. It makes none for a turn whose last step before the
 result included the `tool_use` of a `send_message` to its recipient that the
 recipient accepted; a step ends at the next `tool_use` after one of its
-`tool_result`s. The call names its `tool_use` by the ID Claude Code sends in the
-request's `_meta`, `claudecode/toolUseId`; a call without one marks no step. It
-also makes one when `exited` arrives: `Exited: <error>`. A text over 400
-characters keeps its first 400, then `…` and a line `(first 400 of <n>
+`tool_result`s. The call names its `tool_use` by the ID Claude Code and `ur`
+send in the request's `_meta`, `claudecode/toolUseId`; a call without one marks
+no step. It also makes one when `exited` arrives: `Exited: <error>`. A text over
+400 characters keeps its first 400, then `…` and a line `(first 400 of <n>
 characters; read the rest with read_session on <from>.)`. A report to a
 recipient that has been deleted is dropped.
 
@@ -930,13 +935,13 @@ underlying process or I/O errors.
 {"jsonrpc":"2.0","id":5,"error":{"code":-32002,"message":"session is busy"}}
 ```
 
-| Code     | Meaning                                                                                                                                                            |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `-32700` | Parse error: malformed JSON.                                                                                                                                       |
-| `-32600` | Invalid request envelope, field types, JSON-RPC version, or batch request.                                                                                         |
-| `-32601` | Unknown method.                                                                                                                                                    |
-| `-32602` | Missing or invalid method parameters.                                                                                                                              |
-| `-32000` | Operation failed, such as a Claude process that cannot be launched, a process write failure, a database write failure, or an approval response Claude cannot take. |
-| `-32001` | Workspace, session, or image not found.                                                                                                                            |
-| `-32002` | Session is busy; a prompt or message is already queued, or a configuration cannot start yet.                                                                       |
-| `-32003` | Approval request is no longer pending, including duplicate or cancelled answers.                                                                                   |
+| Code     | Meaning                                                                                                                                                          |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-32700` | Parse error: malformed JSON.                                                                                                                                     |
+| `-32600` | Invalid request envelope, field types, JSON-RPC version, or batch request.                                                                                       |
+| `-32601` | Unknown method.                                                                                                                                                  |
+| `-32602` | Missing or invalid method parameters.                                                                                                                            |
+| `-32000` | Operation failed, such as a harness that cannot be launched, a process write failure, a database write failure, or an approval response the harness cannot take. |
+| `-32001` | Workspace, session, or image not found.                                                                                                                          |
+| `-32002` | Session is busy; a prompt or message is already queued, or a configuration cannot start yet.                                                                     |
+| `-32003` | Approval request is no longer pending, including duplicate or cancelled answers.                                                                                 |
