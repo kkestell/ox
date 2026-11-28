@@ -3,202 +3,156 @@
 ## Scope and evidence
 
 Research only. Read: every structural audit and sweep from November 24 to 27,
-the plans and reviews behind the defects they trace, the 51 `bug` issues closed
-since November 21, `.claude/skills/ox-plan` and `ox-review`, `AGENTS.md`,
-`docs/architecture.md` ("State ownership and locking"), and
-`internal/server/session.go`. PR sizes come from `gh pr view`.
+the plans and reviews behind the defects they trace, the 54 `bug` issues since
+November 21, `.claude/skills/ox-plan` and `ox-review`, `AGENTS.md`,
+`docs/architecture.md`, `internal/server`, and the web client's state modules.
+Blame data, per PR, comes from a parallel measurement in `/tmp/oxdesign`: for
+each bug-fix PR, the commits whose lines it rewrote. Blame measures churn in
+code a fix touched. In hot code it overstates who introduced a defect, so the
+counts below are evidence and not proof.
 
 ## Summary
 
-Most post-merge defects trace to a decision written in a plan, which no step
-reviews, or to a second code path that broke an invariant written only in prose.
-The instructions get applied. What fails is the mechanism: nothing executable
-holds Ox's lifecycle invariants, and the review gate checks code against the
-plan instead of checking the plan.
+The defects come from one place more than any other: session lifecycle, the
+rules for how sessions start, report, archive, and end, which interact across
+sessions and across the page and `oxd`. A change there is checked by a plan
+and a review that each reason about one path, and by example tests that cover
+the sequences the plan names. Nothing checks the interactions between paths
+until an audit does. That is why 41 of the 54 `bug` issues came from audits,
+and why fixes to that code are rewritten twice as often as other changes. The
+remedies that fit this cause are one test that explores those interactions,
+and fewer interacting rules. More prose in `AGENTS.md` does not fit it: the
+rate of defects per change stayed flat while the rules grew.
 
-| Rank | Root cause | Defects |
-| ---- | ---------- | ------- |
-| 1 | No step reviews a plan's decisions | 11-27 F1, 11-27 F2, 11-24 F1, F2, F3 |
-| 2 | Invariants live in prose, so a new path breaks them unseen | 11-27 F1, F2, F3; 11-26 F23; #147 |
-| 3 | A fix covers the reported path, not the class | #71→#74, #85→#95, Ur review F2, #147→#167 |
-| 4 | Review depth follows the layer, not the size | #144: 11-26 F5, F7, F13, F16, F25, F26; #150, #174 |
-| 5 | Review findings rejected or left open without an issue | #175 review F3; Go/TS review F2, F3 |
+## What the data shows
+
+- **Where the defects are.** 21 of 54 are session lifecycle: about 11 in
+  `oxd` and the Claude driver (#5, #33, #34, #71, #85, #110, #127, #128, #147,
+  #187, #188) and about 10 in the page (#28, #72, #84, #86, #107, #111, #148,
+  #155, #162, #202). Child report delivery alone took five rounds (#71, #85,
+  #110, #127, #187). Next come 9 layout defects, mostly from tabs and splits
+  (#144).
+- **Who catches them.** Audits and sweeps found 41 of the 54. The plan and
+  review of the change that introduced a defect almost never found it.
+- **Size does not predict defects.** Among PRs merged by November 25, the
+  later fixes per thousand changed lines (tests and docs excluded) fall as PRs
+  grow: 13 for PRs under 150 lines, about 7 for PRs from 150 to 900 lines.
+  27% of the 55 smallest PRs were later rewritten by a fix. Defects come per
+  change to the wrong code, not per line.
+- **Fixes in that code get fixed again.** 11 of 17 bug-fix PRs were later
+  rewritten by another fix, against 18 of 54 other PRs. The most-blamed
+  commits are #66 (actions shown at once and session status, rewritten by 9
+  fix PRs) and #64 (child reports, by 4). Both added lifecycle state that more
+  than one path reads.
+- **No defect was a data race.** None of the 54 issues reports one. The race
+  detector already runs under `make test`.
 
 ## Root causes
 
-### 1. No step reviews a plan's decisions
+### 1. Lifecycle rules interact, and nothing checks the interactions
 
-`ox-plan` step 16 forbids reviewing the plan. `ox-review` step 3 makes the
-plan's Decisions "the requirements" the code is checked against. The top-level
-agent's check is "a quick look ... without redoing the planning." So a wrong
-decision in a plan passes plan, work, review, verify, and Coral by
-construction, because each gate takes the plan as true.
+Each lifecycle rule is sound alone. The defects appear where a new path meets
+an old rule:
 
-- **11-27 F1** (#187). The report-delivery plan
-  (`2026-11-25-child-report-delivery.md`) chose to clear `toParent` as a stand-in
-  for "being deleted," and restore it when the delete failed. That encoded one
-  fact in two places: `deleting` on the goroutine, `reporting == nil` under
-  `Server.mu`. It held only because no reporter had a worktree. The top-level
-  sessions plan (`2026-11-27-agent-top-level-sessions.md`, lines 122–124)
-  extended the same sentinel to sessions that own worktrees, which made a
-  failed delete reachable and drop reports.
-- **11-27 F2** (#188). The same plan chose publish-first on purpose (lines
-  60–67), one day after #167 fixed exactly that defect for `create_session`.
-- **11-24 F1, F2, F3.** The audit traced each one to an explicit plan
-  decision: the page-errors plan's assumption about rejected fetches, the
-  child-reports plan's "either outcome is valid," and the usage plan's reuse of
-  the clock gate.
+- #175 added sessions that report to their creator and own worktrees. That
+  broke the report-delivery design from #130, which assumed no reporter had a
+  worktree (11-27 F1, #187). It also added a second creation path that
+  published before its first message was accepted, a defect #167 had fixed one
+  day earlier in the first path (11-27 F2, #188).
+- #168 sent Ur's Ox tools with bare names. The page matched a prefix that
+  only Claude sends (#189).
+- #140 made loading per-session and kept #38's global retry (#155).
 
-### 2. Invariants live in prose, so a new path breaks them unseen
+Every one of these is a sequence across two features. The tests that exist
+are examples: each fixes one sequence the plan named. A new path does not run
+through the old examples, so they pass. The audits that found these defects
+wrote probes that walked those sequences, confirmed them, and then deleted the
+probes.
 
-Ox's lifecycle rules are written in `docs/architecture.md` and in field
-comments ("Guarded by Server.mu", "Written only by run", "its builder until
-run starts"). Eight fields carry ownership that only a comment states. Nothing
-fails when a new path breaks one of these rules, and the race detector sees only
-the interleavings some test happens to run. Every High finding in the last
-three structural audits came in when a change added a second path beside a
-sound first one:
+### 2. Reviews check the change against its plan, and the plan can be wrong
 
-- **#147 → 11-27 F2.** #167 made `addChild` own an unpublished child until its
-  first message was accepted. `createTopLevel` (#175) was a new creation path,
-  and it published first.
-- **11-27 F3** (#189). #14 fixed tool labels by matching the `mcp__ox__` prefix.
-  Ur's Ox tools (#168) arrive with bare names, and `toolInput.ts` was not a
-  caller of anything #168 changed, so the review never reached it.
-- **11-26 F23** (#155). #38 added global snapshot retries. #140 made loading
-  per-session and kept the global retry.
-- **11-26 F2, F9** (#147). The Ur process split (#133) added a second stop
-  route and a second first-input route beside the existing ones.
+`ox-review` took a plan's Decisions as requirements, and `ox-plan` forbids
+reviewing the plan. Two of the defects above were explicit plan decisions:
+the #130 plan used a cleared `toParent` to stand for "being deleted," and the
+#175 plan extended it and chose to publish first, with reasons. The #175
+review did raise the publish-first symptom (its F3) and rejected it as not
+reached in normal use.
 
-### 3. A fix covers the reported path, not the class
+### 3. Some rules couple sessions more than they need to
 
-`ox-plan` step 1 tells a plan for an audit finding to replace the structure "at
-every place the finding names," which is a closed list. Report delivery took
-five rounds: #71, #85, #110, #127, #187. The 11-25 structural audit described
-each earlier fix: #74 "guarded the symptom," and #95 "changed the structure,
-for the take only." The Ur process review's F2 fix added a kill on the exit
-event, which made a second owner of command cleanup. The next day's sweep found
-Delete racing that second owner (11-26 F2).
+The requirement "Session reports" makes reports wait until the recipient is
+idle "and none of the sessions it started is working," then delivers them
+together. That makes every reporter's state an input to every sibling's
+delivery. Every path that changes any of those states must re-check delivery.
+The sibling condition is behind #85 (a report delivered while a sibling ran),
+sweep F10 (a failed start split the batch), and part of #110.
 
-### 4. Review depth follows the layer, not the size
+"Actions show at once" makes the page keep its own projected state beside
+`oxd`'s for every action in flight. The page's `Session` type still carries
+`oxd`'s raw `archived` beside the projected `ox.archived()`, so each view must
+remember to call the right one. #202 was three views that read the raw field.
 
-A change to the web client alone counts as "contained": Sonnet at medium
-effort, no concern reviewers, a short plan. Tabs and splits (#144) added 3,630
-lines and removed 1,413 across 39 files. Its review is 53 lines long and has one
-finding. The next day's sweep found six defects in it (11-26 F5, F7, F13, F16,
-F25, F26), and #174 followed. The Changes view (#100, #112) shows the same
-pattern, with 11-26 F6, F14, F15, and F21. By count, the web client is the
-largest cluster: about 19 of the 51 closed issues.
+## What does not fit the cause
 
-### 5. Review findings rejected or left open without an issue
+These were in the first version of this audit and do not hold up:
 
-The #175 review rejected F3 ("a session deleted before its first message
-reports a shutdown"). That was a symptom of the publish-first structure that
-became 11-27 F2. The Go and TypeScript review left F2 and F3 "Open. No issue,"
-and they came back as #128 and #127. `AGENTS.md` ("Defects") offers broad
-grounds for rejection, and nothing tracks a finding marked Open.
+- **Lock annotations (`checklocks`).** No defect was a data race. #187 was a
+  delivery decision that did not consult `deleting`, not an unlocked access,
+  and #192 fixed it. Annotating would have forced moving every `Server.mu`
+  fact off `session`, which touches every server file to prevent a class that
+  produced no defects.
+- **Generating `protocol.ts` from Go.** The protocol's Go types are mostly
+  anonymous, so generation needs a dispatch rewrite and a custom generator, to
+  prevent cheap defects (#152, #193).
+- **Review depth by diff size.** Defects do not grow with PR size. The
+  concern reviewers check lifecycle, boundaries, and construction. None checks
+  layout, so a deeper review of #144 would not have reached its layout defects.
+- **Fix the class in prose, and record every open finding.** Both add rules
+  of the kind whose growth left the defect rate flat. The first is better done
+  by recommendation 1. The second widened "Record" past its definition in
+  "Defects," and it rests on three cases.
 
-## Clusters
+## Recommendations, ranked by defects prevented per cost
 
-- **By structure.** The most severe and most repeated cluster is a fact that
-  two owners need, `Server.mu` and the session goroutine: `deleting`, the `told`
-  mark (#71), configuring in flight (#128), and report eligibility (#85, #110).
-  The rule "a session's state is owned by its goroutine" pushes facts onto the
-  goroutine that cross-session decisions under `Server.mu` must read. The
-  architecture table already lists `deleting` under `Server.mu` with the note
-  "written only by the session goroutine." That is the seam.
-- **By layer.** Severity concentrates in `internal/server` lifecycle (create,
-  delete, archive, reports). Volume concentrates in the web client's layout.
-  Next come Ur's process lifecycle and the Claude driver's settings and exit
-  reasons.
-- **By kind of change.** Large features that add a second path or surface: #133,
-  #144, #168, #175, and #100/#112. Second come fixes scoped to one path.
-
-Blame data from the parallel design-quality measurement (`/tmp/oxdesign`)
-agrees:
-
-- 41 of 54 `bug` issues came from audits.
-- 21 of 54 are session lifecycle, and 8 are one fact kept in two places.
-- 5 of 39 bug-fix commits needed a later fix themselves.
-- The share of commits that a fix rewrote within 48 hours is flat from Nov 22
-  to 25, at 20–40%.
-- The most-blamed commits are #66 (optimistic actions: rewritten by 9 fix PRs,
-  including #95, #117, #126, #130, #161, #167, and #211) and #64 (child reports:
-  #74, #95, #130, #167). Both introduced lifecycle state that more than one
-  owner reads.
-- `internal/agent/agent.go` changed together with `server/session.go` 19
-  times. `protocol.ts` and `ox.tsx` changed together with `server/methods.go`
-  15–16 times: the protocol is written twice, in Go and TypeScript.
-
-## Instructions
-
-The plans cite and apply the principles in `AGENTS.md`. They fail where
-principles conflict at a concrete decision. The #175 plan satisfied "decide
-each rule in one place" (one shared `createTopLevel`) and broke the builder
-rule (own the session until its first message is accepted). The abstract text
-gives no way to choose between them, and the concrete invariant was not written
-anywhere a planner reads before deciding. More prose would not have changed
-either decision. A test would have caught both.
-
-## Mechanical versus process
-
-| Defects | Mechanical guard |
-| ------- | ---------------- |
-| 11-27 F1, F2; #147, #127, #110, #85, #71, #128 | Stateful property test of server lifecycle (below) |
-| `deleting`, reporting, and other comment-owned fields | Lock annotations checked by `checklocks` (gVisor) |
-| 11-26 F24, #109, #27 (F12, F13) | Closed outcome type at the boundary, held exhaustive by the `exhaustive` / `gochecksumtype` linters already enabled |
-| #189, #14 | One table of Ox tool names; a test that every harness's form renders |
-| #150, #174, 11-26 F7, F13, F25 | One reachability spec over viewports and split layouts |
-| 11-26 F11 (#153) | Open a fixture database from each older schema |
-
-Process alone has to cover plan decisions (cause 1), review depth (4), and
-open findings (5).
-
-## Recommendations, ranked by effect per cost
-
-1. **A stateful property test for server lifecycle.** Drive the JSON-RPC test
-   client with the fake harness through random sequences of create (child and
-   top-level, with and without a worktree, with a launch that fails), message,
-   finish, archive, unarchive, and delete (clean and dirty worktree). After each
-   step, check that:
-   - every report is delivered once, or dropped only because its session was
-     deleted;
-   - a failed create leaves no row, broadcast, worktree, or branch;
-   - no published session lacks its first message;
+1. **A stateful lifecycle test in `internal/server`.** Drive the test client
+   with the fake harness through seeded random sequences: create (child,
+   top-level, with and without a worktree, with a harness that fails to
+   launch or refuses its first message), send, a long turn, interrupt,
+   archive, unarchive, dirty a worktree, and delete. After each step, check:
+   - every report is delivered once, or dropped because its sender or
+     recipient was deleted;
+   - the sessions in `workspace/list`, in the store, and announced by
+     `session/created` agree, and git's worktrees and `ox/` branches match
+     them;
+   - every started session has its first message;
    - a refused delete changes nothing.
 
-   This reproduces 11-27 F1 and F2 and the five report-delivery rounds. It also
-   covers any future creation or deletion path, because each new path joins the
-   generator. Cost: one test file in `internal/server`, using the existing test
-   client and fake harness.
-2. **Make review check the plan.** In `ox-review`, the plan's Goal and the
-   user's answers stay requirements. Its Decisions become claims that the
-   Construction reviewer re-derives on its own: name the owner of each state,
-   and list every other path that creates or ends the same state. Cost: one
-   paragraph in the skill.
-3. **Size review depth by diff, not layer.** A change over a few hundred
-   non-test lines gets concern reviewers and Opus, whatever its layer. Cost: one
-   rule in `AGENTS.md` and `ox-review`.
-4. **Fix the class, not the path.** A plan for a defect lists every path that
-   produces the same state (`grep` for the sibling constructors and stops),
-   routes them through one function, and adds the case to the property test
-   from (1). Replaces "every place the finding names" in `ox-plan` step 1.
-5. **Lock annotations on `session` and `Server`.** Add `checklocks`
-   annotations and run it in `make test` and CI. Turns the eight ownership
-   comments into compile-time checks. Cost: one analyzer in the build and
-   annotations on eight fields. The "written by run under the lock, read by run
-   without it" fields may not fit its model and may need splitting, which is
-   the point.
-6. **A layout reachability spec.** One Playwright spec that walks phone and
-   desktop widths across one, two, and nested split layouts, and asserts that
-   every tab control and panel toggle is in the viewport and not covered.
-7. **Every Open or Rejected-then-reproduced review finding becomes an issue.**
-   One line in `ox-review`.
-8. **Generate `protocol.ts` from the Go protocol types.** Removes the second
-   copy of every message shape and setting, which accounts for the 15–16
-   co-changes and part of the "one fact in two places" cluster (#152, #193).
-   Cost: a generator dependency, a build step, and replacing the hand-written
-   types. Ranked last because the defects it prevents are cheaper ones.
+   It must fail with #191 or #192 reverted. Every later lifecycle path joins
+   its generator, and an audit's lifecycle probe becomes a seed or a step in it
+   instead of being deleted. Cost: one test file using existing helpers
+   (`gitRepo`, `worktreeServer`, `sendGateAgent`, the fake's `wait`). It covers
+   the server half of the lifecycle defects, which are also the most severe.
+2. **Views read only the page's projected state.** In `ox.tsx`, the `Session`
+   type that views receive drops `oxd`'s raw `archived`. The store keeps the
+   raw value out of the views' reach, so `ox.archived()` is the only way to
+   read it, and `tsc` rejects the mistake behind #202. Cost: a type change in
+   `ox.tsx` and the views that read it.
+3. **Product choice: deliver reports without waiting for siblings.** Change
+   "Session reports" so reports arrive when the recipient is idle or parked,
+   whether or not its other sessions are working. Readiness then depends only
+   on the recipient, and the sibling coupling behind #85, sweep F10, and part
+   of #110 goes away. What the user gives up: a session running several
+   sessions at once wakes once per finished turn instead of once per batch, so
+   it uses more turns and sees partial results. This is a product question.
+4. **One layout reachability spec.** Walk phone and desktop widths across one,
+   two, and nested groups, with panels open and closed. Assert that every tab
+   control and panel toggle is in the viewport and passes a trial click. Some
+   specs from #164 already check single layouts; this one covers combinations,
+   where #150, #174, and 11-26 F7, F13, and F25 were found. Cost: one spec.
 
-Leave `AGENTS.md` at its length or shorter. Items 2, 3, 4, and 7 replace
-existing sentences rather than adding sections.
+## Workflow rules from the first version
+
+`ee8b8fd` put four rules on `main`. Keep the plan-review rule in `ox-review`
+(cause 2). Revert the 400-line threshold, the fix-the-class step in `ox-plan`,
+and the record-every-finding rule in "Defects," for the reasons under "What does
+not fit the cause."
