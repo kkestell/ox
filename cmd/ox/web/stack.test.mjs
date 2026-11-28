@@ -22,23 +22,33 @@ beforeEach(() => {
 
 afterEach(async () => {
   stack?.stop(0);
+  finish();
   await stack;
   stack = undefined;
   rmSync(dir, { recursive: true, force: true });
 });
 
-// script writes a service that sleeps until killed, or, given trap, sets the
-// trap before writing its PID and then waits in a loop that lets it run. The
-// loop waits on each sleep with the wait builtin, which a trapped signal
-// interrupts at once, while sh can drop a SIGINT that arrives during a
-// foreground command.
-function script(name, trap) {
+// script writes a Node service that runs handlers, which may call log(line)
+// to append a line to its log and mark(name) to create a file named for it,
+// then writes its PID and runs until a signal ends it or finish runs. Node
+// sees every signal delivered, where sh can drop a trapped SIGINT.
+function script(name, handlers = "") {
   const path = join(dir, name);
-  const body = trap
-    ? `${trap}\necho $$ > ${path}.pid\nwhile :; do sleep 0.05 & wait $!; done`
-    : `echo $$ > ${path}.pid\nexec sleep 1000`;
-  writeFileSync(path, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+  const program = `#!${process.execPath}
+const fs = require("node:fs");
+const log = (line) => fs.appendFileSync(__filename + ".log", line + "\\n");
+const mark = (name) => fs.writeFileSync(__filename + "." + name, "");
+${handlers}
+fs.writeFileSync(__filename + ".pid", String(process.pid));
+setInterval(() => fs.existsSync(${JSON.stringify(join(dir, "finish"))}) && process.exit(0), 50);
+`;
+  writeFileSync(path, program, { mode: 0o755 });
   return path;
+}
+
+// finish ends every service still running, as a graceful stop ends.
+function finish() {
+  if (dir) writeFileSync(join(dir, "finish"), "");
 }
 
 function pid(path) {
@@ -60,21 +70,21 @@ async function until(condition) {
 
 // start runs the stack with a build that appends a comment to each file named
 // in changed, or exits nonzero when fail is set: a service's script, or ur,
-// which oxd lists in starts. The build waits buildDelay seconds first. Each
-// service runs with the trap traps names for it, and the stack takes signals.
-async function start({ changed = [], fail = false, buildDelay = 0, traps = {}, signals } = {}) {
-  const paths = Object.fromEntries(["oxd", "ox"].map((name) => [name, script(name, traps[name])]));
+// which oxd lists in starts. Each service runs with the handlers handlers
+// names for it, and the stack takes signals.
+async function start({ changed = [], fail = false, handlers = {}, signals } = {}) {
+  const paths = Object.fromEntries(["oxd", "ox"].map((name) => [name, script(name, handlers[name])]));
   const ur = join(dir, "ur");
-  writeFileSync(ur, "#!/bin/sh\n", { mode: 0o755 });
+  writeFileSync(ur, "", { mode: 0o755 });
   const files = { ...paths, ur };
-  const edits = changed.map((name) => `echo '#' >> ${files[name]}`).join("; ");
+  const edits = changed.map((name) => `echo '//' >> ${files[name]}`).join("; ");
   stack = runStack({
     services: Object.entries(paths).map(([name, command]) => ({
       name,
       command,
       starts: name === "oxd" ? [ur] : [],
     })),
-    build: fail ? "exit 1" : `sleep ${buildDelay}; ${edits || ":"}`,
+    build: fail ? "exit 1" : edits || ":",
     input,
     signals,
     log: (line) => lines.push(line),
@@ -130,9 +140,9 @@ test("a failed build restarts nothing", async () => {
 });
 
 test("an exit the stack did not cause stops the stack", async () => {
-  const paths = await start({ traps: { ox: "trap 'exit 3' USR1" } });
+  const paths = await start({ handlers: { ox: 'process.on("SIGUSR2", () => process.exit(3));' } });
   const oxd = Number(pid(paths.oxd));
-  process.kill(Number(pid(paths.ox)), "SIGUSR1");
+  process.kill(Number(pid(paths.ox)), "SIGUSR2");
   assert.equal(await stack, 3);
   assert.deepEqual(lines, []);
   assert.ok(!alive(oxd));
@@ -148,7 +158,7 @@ test("an exit after a restart stops the stack", async () => {
 });
 
 test("a retiring service that fails stops the stack", async () => {
-  const paths = await start({ changed: ["oxd"], traps: { oxd: "trap 'exit 66' TERM" } });
+  const paths = await start({ changed: ["oxd"], handlers: { oxd: exitOn("SIGTERM", 66) } });
   const before = pid(paths.oxd);
   input.write("\n");
   assert.notEqual(await stack, 0);
@@ -159,31 +169,48 @@ test("a retiring service that fails stops the stack", async () => {
 
 test("a service that fails on Ctrl-C fails the stack", async () => {
   const signals = new EventEmitter();
-  const paths = await start({ traps: { oxd: "trap 'exit 66' INT" }, signals });
+  const paths = await start({ handlers: { oxd: exitOn("SIGINT", 66) }, signals });
   signals.emit("SIGINT");
   assert.equal(await stack, 1);
   assert.deepEqual(lines, [`${paths.oxd} exited with status 66`]);
 });
 
+function exitOn(signal, code) {
+  return `process.on("${signal}", () => process.exit(${code}));`;
+}
+
 // signalStack sends signal to the stack and expects each service to have
 // received only the signals in received. A service takes a first SIGINT as a
-// graceful stop that ends 0.3 seconds later and a second as a forced stop that
-// exits 1, as oxd does.
+// graceful stop, which ends when the test finishes it, and a second as a
+// forced stop that exits 1, as oxd does.
 async function signalStack(signal, received) {
   const names = ["oxd", "ox"];
   const signals = new EventEmitter();
-  const paths = await start({ traps: Object.fromEntries(names.map((name) => [name, record])), signals });
+  const paths = await start({ handlers: Object.fromEntries(names.map((name) => [name, record])), signals });
   const pids = names.map((name) => Number(pid(paths[name])));
   signals.emit(signal);
+  if (signal === "SIGINT") {
+    await until(() => names.every((name) => existsSync(`${paths[name]}.int`)));
+    finish();
+  }
   await until(() => pids.every((id) => !alive(id)));
   const code = await stack;
   for (const name of names) assert.equal(readFileSync(`${paths[name]}.log`, "utf8"), `${received}\n`);
   return code;
 }
 
-const record =
-  "trap 'echo INT >> $0.log; [ -e $0.int ] && exit 1; touch $0.int; (sleep 0.3; kill -USR1 $$) &' INT; " +
-  "trap 'exit 0' USR1; trap 'echo TERM >> $0.log; exit 0' TERM";
+const record = `
+let stopping = false;
+process.on("SIGINT", () => {
+  log("INT");
+  if (stopping) process.exit(1);
+  stopping = true;
+  mark("int");
+});
+process.on("SIGTERM", () => {
+  log("TERM");
+  process.exit(0);
+});`;
 
 test("Ctrl-C to the stack signals each service once", async () => {
   assert.equal(await signalStack("SIGINT", "INT"), 130);
@@ -205,26 +232,35 @@ test("a terminal Ctrl-C reaches only the stack", async () => {
 test("a second Ctrl-C forwards SIGINT", async () => {
   const names = ["oxd", "ox"];
   const signals = new EventEmitter();
-  const paths = await start({ traps: Object.fromEntries(names.map((name) => [name, record])), signals });
+  const paths = await start({ handlers: Object.fromEntries(names.map((name) => [name, record])), signals });
+  const pids = names.map((name) => Number(pid(paths[name])));
   signals.emit("SIGINT");
   await until(() => names.every((name) => existsSync(`${paths[name]}.int`)));
   signals.emit("SIGINT");
+  await until(() => pids.every((id) => !alive(id)));
   assert.equal(await stack, 1);
   for (const name of names) assert.equal(readFileSync(`${paths[name]}.log`, "utf8"), "INT\nINT\n");
 });
 
 test("a second Ctrl-C reaches an oxd a restart is retiring", async () => {
   const signals = new EventEmitter();
-  // oxd takes TERM as a graceful stop that ends 2 seconds later and INT as a
-  // forced stop that exits 1.
-  const oxd =
-    "trap 'echo TERM >> $0.log; touch $0.term; (sleep 2; kill -USR1 $$) &' TERM; " +
-    "trap 'exit 0' USR1; trap 'echo INT >> $0.log; exit 1' INT";
-  const paths = await start({ changed: ["oxd"], traps: { oxd }, signals });
+  // oxd takes TERM as a graceful stop and INT as a forced stop that exits 1.
+  const oxd = `
+process.on("SIGTERM", () => {
+  log("TERM");
+  mark("term");
+});
+process.on("SIGINT", () => {
+  log("INT");
+  process.exit(1);
+});`;
+  const paths = await start({ changed: ["oxd"], handlers: { oxd }, signals });
+  const retiring = Number(pid(paths.oxd));
   input.write("\n");
   await until(() => existsSync(`${paths.oxd}.term`));
   signals.emit("SIGINT");
   signals.emit("SIGINT");
+  await until(() => !alive(retiring));
   assert.equal(await stack, 1);
   assert.equal(readFileSync(`${paths.oxd}.log`, "utf8"), "TERM\nINT\n");
   assert.equal(lines.includes("restarted oxd"), false);
@@ -235,12 +271,14 @@ test("stopProcess accepts only status 0, the signal it sent, or 128 plus its num
     const proc = spawn(path, { stdio: "ignore" });
     return until(() => pid(path)).then(() => proc);
   };
-  await assert.rejects(stopProcess(await spawned(script("failing", "trap 'exit 66' TERM"))), /status 66$/);
-  await stopProcess(await spawned(script("killed", "trap 'exit 66' TERM")), "SIGKILL");
+  await assert.rejects(stopProcess(await spawned(script("failing", exitOn("SIGTERM", 66)))), /status 66$/);
+  await stopProcess(await spawned(script("killed", exitOn("SIGTERM", 66))), "SIGKILL");
   await stopProcess(await spawned(script("terminated")));
-  await stopProcess(await spawned(script("clean", "trap 'exit 0' TERM")));
-  await stopProcess(await spawned(script("handled", "trap 'exit 143' TERM")));
-  const crashing = await spawned(script("crashing", "trap 'kill -KILL $$' TERM"));
+  await stopProcess(await spawned(script("clean", exitOn("SIGTERM", 0))));
+  await stopProcess(await spawned(script("handled", exitOn("SIGTERM", 143))));
+  const crashing = await spawned(
+    script("crashing", 'process.on("SIGTERM", () => process.kill(process.pid, "SIGKILL"));'),
+  );
   await assert.rejects(stopProcess(crashing), /exited on SIGKILL$/);
   const exited = spawn("sh", ["-c", "exit 3"]);
   await new Promise((resolve) => exited.once("exit", resolve));
@@ -248,12 +286,12 @@ test("stopProcess accepts only status 0, the signal it sent, or 128 plus its num
 });
 
 test("a second Enter during a rebuild does not start another", async () => {
-  const paths = await start({ changed: ["ox"], buildDelay: 0.3 });
+  const paths = await start({ changed: ["ox"] });
   const before = pid(paths.ox);
   input.write("\n\n");
   await until(() => lines.includes("restarted ox") && pid(paths.ox) !== before);
-  // Both lines are read before the first build ends, so a second rebuild
-  // would already have logged.
+  // The stack reads both lines in one chunk, before the first build can end,
+  // so a second rebuild would already have logged.
   assert.equal(lines.filter((line) => line === "rebuilding").length, 1);
   assert.ok(lines.includes("a rebuild is in progress"));
 });
@@ -270,12 +308,13 @@ test("SIGUSR2 rebuilds and restarts what changed", async () => {
 test("stopping during a restart starts no new process", async () => {
   const paths = await start({
     changed: ["ox"],
-    traps: { ox: "trap 'touch $0.stopping; sleep 0.5; exit 0' TERM" },
+    handlers: { ox: 'process.on("SIGTERM", () => mark("stopping"));' },
   });
   const before = pid(paths.ox);
   input.write("\n");
   await until(() => existsSync(`${paths.ox}.stopping`));
   stack.stop(0);
+  finish();
   await stack;
   assert.equal(alive(Number(before)), false);
   assert.equal(pid(paths.ox), before);
