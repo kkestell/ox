@@ -302,11 +302,25 @@ dialog [role="alert"] { margin-top: var(--space-3); }
 .center {
   --beside: 0px;
   flex: 1 1 0; min-width: calc(var(--columns) * var(--group-min-width) + var(--beside)); height: 100%;
-  display: flex; flex-direction: column; container-type: size;
+  position: relative; display: flex; flex-direction: column; container-type: size;
 }
 .layout:not(.narrow) > .center:has(> .panes > aside.files) { --beside: clamp(var(--panel-min-width), var(--tree), var(--panel-max-width)); }
 .panes { flex: 1 1 0; min-height: 0; display: flex; }
-.center > :is([role="alert"], [role="status"]) { flex: none; padding: var(--space-2) var(--inset); font-size: var(--text-xs); background: var(--pane); }
+/* The page's alerts float over the tab area below its strip, clear of the
+   panel at the right, as a stack of toasts, as shadcn/ui's Sonner shows them,
+   and leave the layout in place. */
+.toasts {
+  position: absolute; z-index: var(--z-overlay); top: calc(var(--header-height) + var(--space-2)); right: calc(var(--beside) + var(--inset));
+  display: flex; flex-direction: column; gap: var(--space-2); width: var(--popover-width); max-width: calc(100% - var(--beside) - 2 * var(--inset));
+  pointer-events: none;
+}
+.toasts > * {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+  padding: var(--space-3) var(--space-4); font-size: var(--text-sm); pointer-events: auto;
+  border: var(--border-width) solid var(--border); border-radius: var(--radius-md); background: var(--popover); box-shadow: var(--shadow-lg);
+}
+.toasts button { flex: none; color: var(--foreground); }
+.narrow .toasts { left: var(--inset); width: auto; max-width: none; }
 
 /* Sash: a zero-width bar between two panels, after VS Code's, with a hit area
    on the boundary that shows after a short hover and while dragging. */
