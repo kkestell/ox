@@ -55,7 +55,7 @@ func worktreePaths(step, workspace string) ([]string, error) {
 		return nil, err
 	}
 	var paths []string
-	for field := range strings.SplitSeq(out, "\x00") {
+	for field := range nulSeparated(out) {
 		if path, ok := strings.CutPrefix(field, "worktree "); ok {
 			paths = append(paths, path)
 		}
@@ -113,16 +113,12 @@ func copyWorktreeInclude(top, root string) error {
 	check := exec.Command("git", "-C", top, "check-ignore", "-z", "--stdin")
 	check.Stdin = strings.NewReader(matched)
 	ignored, err := gitCommand(step, check)
-	var exit *gitError
-	if errors.As(err, &exit) && exit.code == 1 {
+	if failed, ok := errors.AsType[*gitError](err); ok && failed.code == 1 {
 		return nil // no path is ignored
 	} else if err != nil {
 		return err
 	}
-	for name := range strings.SplitSeq(ignored, "\x00") {
-		if name == "" {
-			continue
-		}
+	for name := range nulSeparated(ignored) {
 		if err := copyFile(filepath.Join(top, name), filepath.Join(root, name), root); err != nil {
 			return fmt.Errorf("copy %s: %w", name, err)
 		}
@@ -207,22 +203,19 @@ func addWorktree(workspace, worktrees string) (root, directory string, err error
 		return "", "", errors.Join(err, deleteErr)
 	}
 	root, err = filepath.EvalSymlinks(path)
-	if err == nil {
-		directory = filepath.Join(root, prefix)
-		// A folder holding only untracked files is absent from the checkout,
-		// and one HEAD has as a symlink can lead out of it.
-		resolved, resolveErr := filepath.EvalSymlinks(directory)
-		info, statErr := os.Stat(resolved)
-		if resolveErr != nil || statErr != nil || !info.IsDir() || !within(resolved, root) {
-			err = fmt.Errorf("%s is not in the worktree", strings.TrimSuffix(prefix, "/"))
-		} else {
-			err = copyWorktreeInclude(top, root)
-		}
-	}
 	if err != nil {
-		if root == "" {
-			root = path
-		}
+		return "", "", errors.Join(err, discardWorktree(workspace, path))
+	}
+	directory = filepath.Join(root, prefix)
+	// A folder holding only untracked files is absent from the checkout, and
+	// one HEAD has as a symlink can lead out of it.
+	resolved, resolveErr := filepath.EvalSymlinks(directory)
+	info, statErr := os.Stat(resolved)
+	if resolveErr != nil || statErr != nil || !info.IsDir() || !within(resolved, root) {
+		notIn := fmt.Errorf("%s is not in the worktree", strings.TrimSuffix(prefix, "/"))
+		return "", "", errors.Join(notIn, discardWorktree(workspace, root))
+	}
+	if err := copyWorktreeInclude(top, root); err != nil {
 		return "", "", errors.Join(err, discardWorktree(workspace, root))
 	}
 	return root, directory, nil
@@ -268,8 +261,8 @@ func removeWorktree(sessionID, workspace, root string) error {
 	}
 	switch registered := slices.Contains(listed, root); {
 	case registered && present:
-		var exit *gitError
-		if _, err := git(step, "-C", root, "symbolic-ref", "-q", "HEAD"); errors.As(err, &exit) && exit.code == 1 {
+		_, err = git(step, "-C", root, "symbolic-ref", "-q", "HEAD")
+		if failed, ok := errors.AsType[*gitError](err); ok && failed.code == 1 {
 			return errors.New("worktree HEAD is not on a branch")
 		} else if err != nil {
 			return err
