@@ -529,7 +529,7 @@ func (s *Server) checkChildLocked(parent *session, name, physical string) error 
 }
 
 // checkStarterLocked reports why caller may not start a session now. The
-// caller holds s.mu, on caller's goroutine, so it may read caller's deleting.
+// caller holds s.mu.
 func (s *Server) checkStarterLocked(caller *session) error {
 	if caller.archived {
 		return errArchived
