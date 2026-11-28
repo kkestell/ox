@@ -277,6 +277,28 @@ test("Remove workspace gives its reason while sessions remain, archived ones inc
   await expect(await removeItem()).toBeEnabled();
 });
 
+test("Remove workspace follows archive and delete requests before oxd answers", async ({ ox: page, services }) => {
+  const workspace = workspaceSection(page, services.workspace);
+  const removeItem = async () => menuItem(await openMenu(workspace), "Remove workspace");
+  await newSession(page, "hello");
+
+  const archive = await hold(page, "session/archive");
+  await menuItem(await openMenu(sessionItem(page, "hello")), "Archive").click();
+  await archive.arrived;
+  await expect(await removeItem()).toHaveAccessibleDescription("Delete its sessions first, including archived ones");
+  await page.keyboard.press("Escape");
+  archive.release();
+  await menuItem(await openMenu(workspace), "Show archived").click();
+
+  const destroy = await hold(page, "session/destroy");
+  await menuItem(await openMenu(sessionItem(page, "hello")), "Delete").click();
+  await page.getByRole("alertdialog", { name: "Delete session?" }).getByRole("button", { name: "Delete" }).click();
+  await destroy.arrived;
+  await expect(await removeItem()).toBeEnabled();
+  await page.keyboard.press("Escape");
+  destroy.release();
+});
+
 test("removing a workspace asks first, removes its section before oxd answers, and shows a failure in the session list", async ({
   ox: page,
   services,

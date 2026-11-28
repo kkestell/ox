@@ -345,7 +345,8 @@ export function Sidebar(props: {
       ? {
           label: "Unarchive",
           disabledBecause:
-            waiting ?? (parent?.archived ? "Unarchive its parent first" : ox.ready() ? undefined : "Not connected"),
+            waiting ??
+            (parent && ox.archived(parent) ? "Unarchive its parent first" : ox.ready() ? undefined : "Not connected"),
           onChoose: () => attempt(ox.unarchive(session.id)),
         }
       : {
@@ -378,9 +379,9 @@ export function Sidebar(props: {
       },
       {
         label: "Remove workspace",
-        disabledBecause: !workspace.sessions.length
+        disabledBecause: !ox.sessionsOf(workspace).length
           ? undefined
-          : workspace.sessions.some((s) => s.archived)
+          : ox.sessionsOf(workspace).some(ox.archived)
             ? "Delete its sessions first, including archived ones"
             : "Delete its sessions first",
         onChoose: () => setRequest({ kind: "remove", id: workspace.id, path: workspace.path }),
