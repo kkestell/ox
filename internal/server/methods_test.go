@@ -1451,6 +1451,9 @@ func TestApprovalAnsweredOnce(t *testing.T) {
 	if parked := approve("none", `{}`); parked.Error == nil || parked.Error.Code != approvalNotPending {
 		t.Fatalf("a parked session took an answer: %+v", parked.Error)
 	}
+	if parked := c.request("session/interrupt", map[string]string{"session_id": id}); parked.Error != nil {
+		t.Fatalf("a parked session refused an interrupt: %+v", parked.Error)
+	}
 	c.call("session/send", map[string]string{"session_id": id, "text": `approve Bash {"command":"ls"}`})
 	asked := c.update(id, "approval")
 	if seen := other.update(id, "approval"); seen.RequestID != asked.RequestID {

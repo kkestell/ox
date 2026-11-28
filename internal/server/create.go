@@ -166,16 +166,9 @@ func (s *Server) publishLocked(w *workspace, sess *session) {
 	w.sessions = append(w.sessions, sess)
 	s.sessions[sess.id] = sess
 	s.broadcast("session/created", struct {
-		SessionID   string       `json:"session_id"`
-		WorkspaceID string       `json:"workspace_id"`
-		Label       string       `json:"label"`
-		Harness     string       `json:"harness"`
-		CreatedAt   time.Time    `json:"created_at"`
-		Directory   string       `json:"directory"`
-		Worktree    string       `json:"worktree,omitempty"`
-		Child       *store.Child `json:"child,omitempty"`
-		State       string       `json:"state"`
-	}{sess.id, w.id, sess.labelLocked(), sess.harness, sess.createdAt, sess.directory, sess.worktree, sess.child, sess.state})
+		WorkspaceID string `json:"workspace_id"`
+		sessionInfo
+	}{w.id, sess.infoLocked()})
 }
 
 // addChild checks that parent may have the child record names now, in the
