@@ -539,12 +539,27 @@ realClock("a usage reading keeps counting down while the page is disconnected", 
   );
 });
 
-test("clicking subscription usage lists every window, shortest first", async ({ ox: page }) => {
+test("clicking subscription usage lists every window, longest first", async ({ ox: page }) => {
   await newSession(page, "usage");
   await usage(page).click();
   await expect(usageWindows(page)).toHaveCount(2);
-  await expect(usageWindows(page).nth(0)).toHaveAccessibleName("5h usage");
-  await expect(usageWindows(page).nth(1)).toHaveAccessibleName("7d usage");
+  await expect(usageWindows(page).nth(0)).toHaveAccessibleName("7d usage");
+  await expect(usageWindows(page).nth(1)).toHaveAccessibleName("5h usage");
+});
+
+test("opening subscription usage keeps the shortest window in place", async ({ ox: page }) => {
+  await newSession(page, "usage");
+  const button = await usage(page).getByRole("meter", { name: "5h usage" }).boundingBox();
+  await usage(page).click();
+  await expect.poll(() => usageWindows(page).nth(1).boundingBox()).toEqual(button);
+});
+
+test("clicking open subscription usage closes it", async ({ ox: page }) => {
+  await newSession(page, "usage");
+  await usage(page).click();
+  await expect(usageWindows(page)).toHaveCount(2);
+  await usageWindows(page).nth(1).click();
+  await expect(usageWindows(page)).toHaveCount(0);
 });
 
 test("subscription usage survives a reload", async ({ ox: page }) => {
