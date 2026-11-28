@@ -211,32 +211,28 @@ export function placeTab(layout: Layout, tab: Tab, target: Target): Layout {
   return splitAt(rest, current, target.group, target.zone);
 }
 
-// setMode shows the file at path in mode.
-export function setMode(layout: Layout, path: string, mode: FileMode): Layout {
-  const group = locate(layout, `file:${path}`);
+// mapTab rewrites the tab with key, leaving the layout unchanged when there is none.
+function mapTab(layout: Layout, key: string, change: (tab: Tab) => Tab): Layout {
+  const group = locate(layout, key);
   if (!group) return layout;
   return {
     ...layout,
     root: mapGroup(layout.root, group.id, (g) => ({
       ...g,
-      tabs: g.tabs.map((t) => (t.kind === "file" && t.path === path ? { ...t, mode } : t)),
+      tabs: g.tabs.map((t) => (tabKey(t) === key ? change(t) : t)),
     })),
   };
 }
+
+// setMode shows the file at path in mode.
+export const setMode = (layout: Layout, path: string, mode: FileMode): Layout =>
+  mapTab(layout, `file:${path}`, (t) => (t.kind === "file" ? { ...t, mode } : t));
 
 // reveal opens the Changes tab and asks it to scroll to the file at path.
 export function reveal(layout: Layout, path?: string): Layout {
   const opened = openTab(layout, { kind: "changes" });
   if (path === undefined) return opened;
-  const group = locate(opened, "changes");
-  if (!group) return opened;
-  return {
-    ...opened,
-    root: mapGroup(opened.root, group.id, (g) => ({
-      ...g,
-      tabs: g.tabs.map((t) => (t.kind === "changes" ? { kind: "changes", reveal: { path } } : t)),
-    })),
-  };
+  return mapTab(opened, "changes", () => ({ kind: "changes", reveal: { path } }));
 }
 
 // setSizes sets the sizes of the split at path, the child indices from the root.
@@ -281,8 +277,11 @@ export function dropZone(
   return fy < 0.5 ? "top" : "bottom";
 }
 
+// focusedGroup is the focused group, which the layout keeps in existence.
+export const focusedGroup = (layout: Layout) => findGroup(layout, layout.focused) as Group;
+
 // focusedTab is the tab the focused group shows.
 export function focusedTab(layout: Layout): Tab {
-  const group = findGroup(layout, layout.focused) as Group;
+  const group = focusedGroup(layout);
   return group.tabs[group.active];
 }

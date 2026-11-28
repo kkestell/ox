@@ -1,6 +1,7 @@
 import { createSignal, For, Match, onCleanup, onSettled, Show, Switch, untrack } from "solid-js";
 import { ApprovalRequest } from "./ApprovalRequest";
-import { AttachButton, createImageDrop, pasteImages, Thumbnails } from "./Attachments";
+import { createImageDrop } from "./Attachments";
+import { keepPromptFocus, PromptBox } from "./Composer";
 import { Markdown } from "./Markdown";
 import { type Session, useOx } from "./ox";
 import type { Prompt, Settings } from "./protocol";
@@ -11,23 +12,6 @@ import { toolInputJSON, toolLabel, toolSummary } from "./toolInput";
 import { Usage } from "./Usage";
 
 type Tool = Extract<Entry, { kind: "tool" }>;
-
-export function sendOnEnter(event: KeyboardEvent & { currentTarget: HTMLTextAreaElement }) {
-  // A phone keyboard has no Shift+Return, so Return there starts a new line and Send sends.
-  if (matchMedia("(pointer: coarse)").matches) return;
-  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
-    event.preventDefault();
-    if (!event.repeat) event.currentTarget.form?.requestSubmit();
-  }
-}
-
-// keepPromptFocus leaves focus in the prompt when the user presses a button in
-// the composer's box, as a chat app keeps its keyboard up after Send. The
-// composer's inset follows the prompt's focus, so a button that took focus
-// would move under the pointer before the click.
-export function keepPromptFocus(event: PointerEvent) {
-  if (!(event.target instanceof HTMLTextAreaElement)) event.preventDefault();
-}
 
 // keepRowInPlace opens or closes the row whose summary was clicked
 // and scrolls the transcript so the summary stays where it was on screen. The
@@ -149,44 +133,30 @@ export function SessionView(props: { session: Session; snapshot: SessionSnapshot
               </For>
             </section>
           </Show>
-          <form class={["box", { dragging: drop.dragging() }]} onSubmit={send} onPointerDown={keepPromptFocus}>
-            <Thumbnails control={control} />
-            <div class="field">
-              <AttachButton control={control} />
-              <textarea
-                name="text"
-                rows="1"
-                aria-label="Prompt"
-                required={!control.images().length}
-                value={control.text()}
-                onInput={(event) => control.setText(event.currentTarget.value)}
-                onKeyDown={sendOnEnter}
-                onPaste={pasteImages(control)}
-              />
-              {/* Send becomes Stop while Claude works and the composer is empty,
-                  once Ox has accepted the page's prompt, until a Stop is in flight. */}
-              <Show
-                when={control.canStop() && !control.sendable()}
-                fallback={
-                  <button
-                    type="submit"
-                    class="icon send"
-                    aria-label="Send"
-                    title="Send"
-                    disabled={!control.canSend() || !control.sendable()}
-                  />
-                }
-              >
+          <PromptBox control={control} onSubmit={send} dragging={drop.dragging()}>
+            {/* Send becomes Stop while Claude works and the composer is empty,
+                once Ox has accepted the page's prompt, until a Stop is in flight. */}
+            <Show
+              when={control.canStop() && !control.sendable()}
+              fallback={
                 <button
-                  type="button"
-                  class="icon stop"
-                  aria-label="Stop"
-                  title="Stop"
-                  onClick={() => control.interrupt()}
+                  type="submit"
+                  class="icon send"
+                  aria-label="Send"
+                  title="Send"
+                  disabled={!control.canSend() || !control.sendable()}
                 />
-              </Show>
-            </div>
-          </form>
+              }
+            >
+              <button
+                type="button"
+                class="icon stop"
+                aria-label="Stop"
+                title="Stop"
+                onClick={() => control.interrupt()}
+              />
+            </Show>
+          </PromptBox>
           <div class="settings">
             <SettingsForm harness={props.session.harness} settings={props.snapshot.settings} control={control} />
             <Show when={props.snapshot.usage}>
