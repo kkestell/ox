@@ -388,11 +388,13 @@ func TestUnpinnedModelWithoutEffort(t *testing.T) {
 	}
 }
 
-// The stream's last line counts even without a trailing newline.
+// The stream's lines may end in CRLF, and its last line counts even without a
+// trailing newline.
 func TestLastLineWithoutNewline(t *testing.T) {
 	for name, stream := range map[string]string{
 		"[DONE]":       "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]",
 		"finish chunk": "data: {\"choices\":[{\"delta\":{\"content\":\"o\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"k\"},\"finish_reason\":\"stop\"}]}",
+		"CRLF":         ": OPENROUTER PROCESSING\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"o\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"k\"},\"finish_reason\":\"stop\"}]}\r\n\r\ndata: [DONE]\r\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := start(t, agent.Settings{Model: model, PermissionMode: agent.Manual}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
@@ -1344,7 +1346,10 @@ func TestShellDenied(t *testing.T) {
 func TestShellAuto(t *testing.T) {
 	r := start(t, agent.Settings{Model: model, PermissionMode: "auto"}, nil, func(w http.ResponseWriter, _ *http.Request, n int) {
 		if n == 0 {
-			sseReasoning(w, reasoningText("List "), reasoningText("both."))
+			first, last := reasoningText("List "), reasoningText("both.")
+			first["id"], first["signature"] = "rs_1", "sig_0"
+			last["id"], last["signature"] = "rs_2", "sig"
+			sseReasoning(w, first, last, map[string]any{"type": "reasoning.encrypted", "data": "opaque", "index": 1})
 			sseCalls(w, "", call{"call_1", "shell", `{"command":"echo one"}`}, call{"call_2", "shell", `{"command":"echo two"}`})
 			return
 		}
@@ -1355,7 +1360,7 @@ func TestShellAuto(t *testing.T) {
 		sse(w, "ok")
 	})
 	r.send("p1", "count")
-	var results []string
+	var results, reasoning []string
 	for _, u := range r.turn() {
 		if u.Type == agent.UpdateApproval || u.Type == agent.UpdateState && u.State == agent.StateRequiresAction {
 			t.Errorf("auto mode published %s", u.Type)
@@ -1363,9 +1368,16 @@ func TestShellAuto(t *testing.T) {
 		if u.Type == agent.UpdateToolResult {
 			results = append(results, u.ToolUseID+" "+u.Result.Text)
 		}
+		if u.Type == agent.UpdateReasoningDelta {
+			reasoning = append(reasoning, u.Text)
+		}
 	}
 	if want := []string{"call_1 Exit code: 0\n\none\n", "call_2 Exit code: 0\n\ntwo\n", "call_3 Exit code: 0\n\nthree\n"}; !slices.Equal(results, want) {
 		t.Errorf("tool results %q, not %q", results, want)
+	}
+	// Encrypted reasoning has no text to show.
+	if want := []string{"List ", "both."}; !slices.Equal(reasoning, want) {
+		t.Errorf("reasoning deltas %q, not %q", reasoning, want)
 	}
 	r.request()
 	second := r.request().body
@@ -1377,7 +1389,10 @@ func TestShellAuto(t *testing.T) {
 		ms[3]["tool_call_id"] != "call_2" || ms[3]["content"] != "Exit code: 0\n\ntwo\n" {
 		t.Errorf("tool messages %v %v", ms[2], ms[3])
 	}
-	const listBoth = `[{"format":"unknown","index":0,"text":"List both.","type":"reasoning.text"}]`
+	// Fragments of one detail merge by index: the text joins, the first id
+	// stays, and the last signature wins. The encrypted detail is kept as sent.
+	const listBoth = `[{"format":"unknown","id":"rs_1","index":0,"signature":"sig","text":"List both.","type":"reasoning.text"},` +
+		`{"data":"opaque","index":1,"type":"reasoning.encrypted"}]`
 	details, _ := json.Marshal(ms[1]["reasoning_details"])
 	if string(details) != listBoth {
 		t.Errorf("the calling message's reasoning %s, not %s", details, listBoth)

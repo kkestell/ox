@@ -9,10 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"maps"
 	"net/http"
 	"slices"
 	"strings"
+
+	"github.com/kkestell/ox/internal/agent"
 )
 
 // message is one entry of the conversation, in OpenRouter's request shape.
@@ -173,39 +176,46 @@ type apiError struct {
 	Message string `json:"message"`
 }
 
-// stream posts body for t and delivers its reply text and reasoning and its
-// end. It runs on its own goroutine and reads only the engine's fields set at
-// start.
-func (e *engine) stream(ctx context.Context, t *turn, body []byte) {
-	calls, err := post(ctx, e.endpoint, e.key, body, func(text string, reasoning []reasoningDetail) { e.deliver(delta{t, text, reasoning}) })
-	e.deliver(ended{t, calls, err})
+// client posts requests to OpenRouter. Request goroutines share it.
+type client struct {
+	endpoint  string
+	key       string
+	providers map[string][]string // model ID to provider order
 }
 
-// ask posts one request to endpoint with instructions as the system message
-// and text as the user's, without tools, and returns the whole reply.
-func ask(ctx context.Context, endpoint, key string, providers map[string][]string, model, effort, instructions, text string) (string, error) {
-	messages := []message{{Role: "system", Content: content{Text: instructions}}, {Role: "user", Content: content{Text: text}}}
-	body := request{Model: model, Messages: messages, Stream: true}
-	if effort != "" {
-		body.Reasoning = &reasoning{Effort: effort}
+// body is a streamed request of messages and tools with settings' model and
+// effort, pinned to the model's providers when it has any.
+func (c client) body(s agent.Settings, messages []message, tools []json.RawMessage) []byte {
+	body := request{Model: s.Model, Messages: messages, Tools: tools, Stream: true}
+	if s.Effort != "" {
+		body.Reasoning = &reasoning{Effort: s.Effort}
 	}
-	if order := providers[model]; len(order) > 0 {
+	if order := c.providers[s.Model]; len(order) > 0 {
 		body.Provider = &provider{Order: order}
 	}
-	data, _ := json.Marshal(body) // strings and slices of them always marshal
+	data, _ := json.Marshal(body) // strings, slices of them, and valid JSON always marshal
+	return data
+}
+
+// ask posts one request with instructions as the system message and text as
+// the user's, without tools, and returns the whole reply.
+func (c client) ask(ctx context.Context, s agent.Settings, instructions, text string) (string, error) {
+	messages := []message{{Role: "system", Content: content{Text: instructions}}, {Role: "user", Content: content{Text: text}}}
 	var reply strings.Builder
-	if _, err := post(ctx, endpoint, key, data, func(text string, _ []reasoningDetail) { reply.WriteString(text) }); err != nil {
+	if _, err := c.post(ctx, c.body(s, messages, nil), func(text string, _ []reasoningDetail) { reply.WriteString(text) }); err != nil {
 		return "", err
 	}
 	return reply.String(), nil
 }
 
-func post(ctx context.Context, endpoint, key string, body []byte, onDelta func(string, []reasoningDetail)) ([]toolCall, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+// post posts body, passing each chunk's reply text and reasoning fragments to
+// onDelta, and returns the response's tool calls.
+func (c client) post(ctx context.Context, body []byte, onDelta func(string, []reasoningDetail)) ([]toolCall, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Authorization", "Bearer "+c.key)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -231,84 +241,125 @@ func statusError(resp *http.Response) error {
 	return fmt.Errorf("OpenRouter %s", resp.Status)
 }
 
-// read reads a completion's server-sent events, passing each chunk's reply text
-// and reasoning fragments to onDelta, until data: [DONE] or the end of the
-// stream, and returns the response's tool calls in index order. A call arrives
-// as fragments keyed by its index: the first carries its ID and name, and each
-// adds to its arguments. OpenRouter reports an error after the response has
-// started as a chunk with an error. The response is complete when its last
-// finish reason is stop or tool_calls; any other reason, such as length or
-// content_filter, is an error.
+// read reads a completion's server-sent events, passing each chunk's reply
+// text and reasoning fragments to onDelta, and returns the response's tool
+// calls in index order.
 func read(r io.Reader, onDelta func(string, []reasoningDetail)) ([]toolCall, error) {
-	lines := bufio.NewReader(r)
-	finishReason := ""
-	calls := map[int]*toolCall{}
-	for {
-		line, readErr := lines.ReadString('\n')
-		if readErr != nil && !errors.Is(readErr, io.EOF) {
-			return nil, readErr
+	c := completion{calls: map[int]*toolCall{}}
+	for data, err := range sseData(r) {
+		if err != nil {
+			return nil, err
 		}
-		// Blank lines end events, and lines starting with ":" are keep-alive
-		// comments.
-		data, ok := strings.CutPrefix(strings.TrimRight(line, "\r\n"), "data: ")
-		if ok && data == "[DONE]" {
-			break
+		var ch chunk
+		if err := json.Unmarshal([]byte(data), &ch); err != nil {
+			return nil, fmt.Errorf("malformed OpenRouter stream chunk: %w", err)
 		}
-		if ok {
-			var c chunk
-			if err := json.Unmarshal([]byte(data), &c); err != nil {
-				return nil, fmt.Errorf("malformed OpenRouter stream chunk: %w", err)
-			}
-			if c.Error != nil {
-				return nil, fmt.Errorf("OpenRouter: %s", c.Error.Message)
-			}
-			if len(c.Choices) > 0 {
-				if d := c.Choices[0].Delta; d.Content != "" || len(d.ReasoningDetails) > 0 {
-					onDelta(d.Content, d.ReasoningDetails)
-				}
-				for _, fragment := range c.Choices[0].Delta.ToolCalls {
-					call := calls[fragment.Index]
-					if call == nil {
-						call = &toolCall{Type: "function"}
-						calls[fragment.Index] = call
-					}
-					if fragment.ID != "" {
-						call.ID = fragment.ID
-					}
-					if fragment.Function.Name != "" {
-						call.Function.Name = fragment.Function.Name
-					}
-					call.Function.Arguments += fragment.Function.Arguments
-				}
-				if reason := c.Choices[0].FinishReason; reason != "" {
-					finishReason = reason
-				}
-			}
-		}
-		if readErr != nil {
-			break
+		if err := c.add(ch, onDelta); err != nil {
+			return nil, err
 		}
 	}
-	switch finishReason {
-	case "stop", "tool_calls":
-	case "":
-		return nil, errors.New("OpenRouter stream ended before the response finished")
-	case "length":
-		return nil, errors.New("OpenRouter stopped the reply at the model's output limit")
-	case "content_filter":
-		return nil, errors.New("OpenRouter's provider filtered the reply")
-	case "error":
-		return nil, errors.New("OpenRouter ended the reply with an error")
-	default:
-		return nil, fmt.Errorf("OpenRouter ended the reply with finish reason %q", finishReason)
+	return c.end()
+}
+
+// sseData yields the payload of each data: line of a stream of server-sent
+// events, until data: [DONE] or the end of the stream, counting a last line
+// without a newline. Lines may end in CRLF. Blank lines, which end events,
+// and lines starting with ":", which are keep-alive comments, carry no data.
+func sseData(r io.Reader) iter.Seq2[string, error] {
+	return func(yield func(string, error) bool) {
+		lines := bufio.NewReader(r)
+		for {
+			line, err := lines.ReadString('\n')
+			if err != nil && !errors.Is(err, io.EOF) {
+				yield("", err)
+				return
+			}
+			data, ok := strings.CutPrefix(strings.TrimRight(line, "\r\n"), "data: ")
+			if ok && data == "[DONE]" {
+				return
+			}
+			if ok && !yield(data, nil) {
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}
+}
+
+// completion is a streamed response as its chunks arrive: its latest finish
+// reason, and its tool calls by index.
+type completion struct {
+	reason string
+	calls  map[int]*toolCall
+}
+
+// add takes a chunk. OpenRouter reports an error after the response has
+// started as a chunk with an error. A call arrives as fragments keyed by its
+// index: the first carries its ID and name, and each adds to its arguments.
+func (c *completion) add(ch chunk, onDelta func(string, []reasoningDetail)) error {
+	if ch.Error != nil {
+		return fmt.Errorf("OpenRouter: %s", ch.Error.Message)
+	}
+	if len(ch.Choices) == 0 {
+		return nil
+	}
+	choice := ch.Choices[0]
+	if d := choice.Delta; d.Content != "" || len(d.ReasoningDetails) > 0 {
+		onDelta(d.Content, d.ReasoningDetails)
+	}
+	for _, fragment := range choice.Delta.ToolCalls {
+		call := c.calls[fragment.Index]
+		if call == nil {
+			call = &toolCall{Type: "function"}
+			c.calls[fragment.Index] = call
+		}
+		if fragment.ID != "" {
+			call.ID = fragment.ID
+		}
+		if fragment.Function.Name != "" {
+			call.Function.Name = fragment.Function.Name
+		}
+		call.Function.Arguments += fragment.Function.Arguments
+	}
+	if choice.FinishReason != "" {
+		c.reason = choice.FinishReason
+	}
+	return nil
+}
+
+// end returns the finished response's tool calls in index order.
+func (c *completion) end() ([]toolCall, error) {
+	if err := finishError(c.reason); err != nil {
+		return nil, err
 	}
 	var assembled []toolCall
-	for _, index := range slices.Sorted(maps.Keys(calls)) {
-		call := *calls[index]
+	for _, index := range slices.Sorted(maps.Keys(c.calls)) {
+		call := *c.calls[index]
 		if call.ID == "" || call.Function.Name == "" {
 			return nil, errors.New("OpenRouter sent a tool call without an id or name")
 		}
 		assembled = append(assembled, call)
 	}
 	return assembled, nil
+}
+
+// finishError is the error a response's last finish reason ends it with. The
+// response is complete when the reason is stop or tool_calls; any other
+// reason, such as length or content_filter, is an error.
+func finishError(reason string) error {
+	switch reason {
+	case "stop", "tool_calls":
+		return nil
+	case "":
+		return errors.New("OpenRouter stream ended before the response finished")
+	case "length":
+		return errors.New("OpenRouter stopped the reply at the model's output limit")
+	case "content_filter":
+		return errors.New("OpenRouter's provider filtered the reply")
+	case "error":
+		return errors.New("OpenRouter ended the reply with an error")
+	}
+	return fmt.Errorf("OpenRouter ended the reply with finish reason %q", reason)
 }

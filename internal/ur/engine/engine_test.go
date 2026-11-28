@@ -78,6 +78,26 @@ func TestEndOfInputEndsCommands(t *testing.T) {
 	gone(t, filepath.Join(workspace, "child"))
 }
 
+// A command from oxd that ur cannot read or carry out ends ur with status 1
+// and an error that names it.
+func TestBadCommand(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
+	for line, want := range map[string]string{
+		`not json`:             "read command: ",
+		`{"type":"bogus"}`:     `unknown command "bogus"`,
+		`{"type":"input"}`:     "input command without an input",
+		`{"type":"configure"}`: "configure command without settings",
+	} {
+		t.Run(line, func(t *testing.T) {
+			stderr := new(bytes.Buffer)
+			status := run([]string{"-dir=" + t.TempDir(), "-model=m"}, strings.NewReader(line+"\n"), io.Discard, stderr)
+			if status != 1 || !strings.Contains(stderr.String(), want) {
+				t.Errorf("status %d and stderr %q, not 1 and %q", status, stderr, want)
+			}
+		})
+	}
+}
+
 // running is an engine whose turn is running, writing its events to out.
 func running(t *testing.T) (*engine, *bytes.Buffer) {
 	t.Helper()
@@ -85,8 +105,9 @@ func running(t *testing.T) (*engine, *bytes.Buffer) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	e := &engine{
-		dir: t.TempDir(), id: "conversation", workspace: t.TempDir(), out: json.NewEncoder(out), stderr: io.Discard,
-		events: make(chan any), stopped: make(chan struct{}),
+		workspace: t.TempDir(), out: json.NewEncoder(out), stderr: io.Discard,
+		events: make(chan event), stopped: make(chan struct{}),
+		conv: &conversation{dir: t.TempDir(), token: "conversation"},
 		turn: &turn{ctx: ctx, cancel: cancel, step: streaming{}},
 	}
 	return e, out
@@ -98,26 +119,28 @@ func running(t *testing.T) (*engine, *bytes.Buffer) {
 func TestStaleOutput(t *testing.T) {
 	t.Run("delta", func(t *testing.T) {
 		e, out := running(t)
-		e.handle(delta{turn: &turn{}, text: "late"})
-		if out.Len() != 0 || len(e.history) != 0 {
-			t.Errorf("a stale delta wrote %q and saved %+v", out, e.history)
+		current := e.turn
+		err := e.handle(delta{turn: &turn{}, text: "late"})
+		if err != nil || out.Len() != 0 || len(e.conv.entries) != 0 || e.turn != current {
+			t.Errorf("a stale delta returned %v, wrote %q, saved %+v, and left turn %p, not %p", err, out, e.conv.entries, e.turn, current)
 		}
 	})
 	t.Run("end of request", func(t *testing.T) {
 		e, out := running(t)
 		current := e.turn
-		e.handle(ended{turn: &turn{}, err: errors.New("context canceled")})
-		if out.Len() != 0 || e.turn != current {
-			t.Errorf("a stale request's end wrote %q and left turn %p, not %p", out, e.turn, current)
+		err := e.handle(streamed{turn: &turn{}, err: errors.New("context canceled")})
+		if err != nil || out.Len() != 0 || e.turn != current {
+			t.Errorf("a stale request's end returned %v, wrote %q, and left turn %p, not %p", err, out, e.turn, current)
 		}
 	})
 	t.Run("command outcome", func(t *testing.T) {
 		e, out := running(t)
-		e.turn.step = &executing{calls: []toolCall{{ID: "call_2"}}}
-		e.handle(ran{step: &executing{calls: []toolCall{{ID: "call_1"}}}, group: 7, outcome: outcome{"Terminated by signal: 9", true}})
+		current := e.turn
+		e.turn.step = &executing{pending{call: toolCall{ID: "call_2"}}}
+		err := e.handle(ran{turn: &turn{}, group: 7, outcome: outcome{"Terminated by signal: 9", true}})
 		want := `{"type":"command_ended","group":7}` + "\n"
-		if out.String() != want || len(e.history) != 0 {
-			t.Errorf("a stale command outcome wrote %q, not %q, and saved %+v", out, want, e.history)
+		if err != nil || out.String() != want || len(e.conv.entries) != 0 || e.turn != current {
+			t.Errorf("a stale command outcome returned %v, wrote %q, not %q, saved %+v, and left turn %p, not %p", err, out, want, e.conv.entries, e.turn, current)
 		}
 	})
 }
