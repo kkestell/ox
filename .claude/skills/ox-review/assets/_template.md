@@ -45,7 +45,7 @@ For `Fix`, the change to make at the cause, and the test to keep: its layer, the
 
 ## Checks run
 
-- Each check you ran and its result, including new tests run without the change and each spot-checked removal.
+- Each check you ran and its result.
 - Each check something outside your control blocked, and what blocked it.
 
 ## Verification 1
@@ -54,7 +54,7 @@ The revision checked, and the checks run.
 
 | ID | Status   | Evidence                                              |
 | -- | -------- | ----------------------------------------------------- |
-| F1 | Resolved | `TestReconnectKeepsFirstPrompt` fails without the fix |
+| F1 | Resolved | `TestReconnectKeepsFirstPrompt` covers the fix |
 
 New findings, each in its own section above with the next ID.
 

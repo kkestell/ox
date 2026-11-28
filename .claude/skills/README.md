@@ -47,7 +47,7 @@ flowchart TB
     subgraph roles [" "]
         direction LR
         Plan["Planner<br/>decides how<br/><i>writes no code</i>"]
-        Work["Implementer<br/>builds it, proves its tests<br/><i>judges nothing</i>"]
+        Work["Implementer<br/>builds and tests it<br/><i>judges nothing</i>"]
         Review["Reviewer<br/>judges it against the plan<br/>and the requirements<br/><i>fixes nothing</i>"]
         Plan -- plan --> Work
         Work -- changes --> Review

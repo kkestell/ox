@@ -39,7 +39,7 @@ Keep this work in this session:
 
 - The plan's intent and the word-for-word requirements diff.
 - Product questions to the user.
-- Running the checks at step 9.
+- Running the checks at step 8.
 - Verifying fixes, which works from the review's own findings.
 - Writing the review.
 
@@ -71,24 +71,23 @@ Correctness matters for what happens in normal use and for the requirements in `
    - **Documentation.** Each changed fact is stated by the document `AGENTS.md` assigns it, and no document contradicts the code.
 6. Confirm each suspected finding by tracing the code, reproducing it, or running a focused check: a stand-in `claude` script, an injected `/rpc` delay or failure in an e2e spec, or a probe against built binaries on a temporary socket, database, and port. Report missing handling only when a requirement or a failure normal use reaches needs it. Do not ask for tests of hypothetical cases. Leave out what you cannot confirm. Reject a finding whose trigger needs an injected fault, a contrived action, or an unusual environment, with that reason. Revert every edit a check needs before you finish.
 7. Skip a defect that an open `bug` issue records, unless the change resolves that issue or what the issue waits on has changed. Check that the change fixes each issue it resolves.
-8. Check the Tests proved results from `/ox-work`'s final response, which the request passes on, against the change: each new or changed test failed without the change. Spot-check a few branches, guards, or state transitions the change adds by removing them one at a time and confirming a test fails. A test that passes without the change, and a branch, guard, or state transition no test protects, is a `Testing` finding.
-9. Take the checks from the Checks in `/ox-work`'s final response: each check `AGENTS.md` ("Verification") requires for the change ran on the final tree and passed. A required check that is missing, failed, or blocked by something the implementer could change is a finding. Run another suite only to confirm or reject a finding, as step 6 describes.
+8. Take the checks from the Checks in `/ox-work`'s final response: each check `AGENTS.md` ("Verification") requires for the change ran on the final tree and passed. A required check that is missing, failed, or blocked by something the implementer could change is a finding. Run another suite only to confirm or reject a finding, as step 6 describes.
 
 ## Write the review
 
-10. Give each finding its action, as the Objective defines them. When the right fix raises a product question, a choice that changes what the user sees or does in everyday use that the plan and the user's answers do not settle, ask the user, one focused question at a time: what they would see happen, the options as they would experience them, and your recommendation, without code names. Wait for the answer, and make it the finding's `Fix`. Design, interface, and internal behavior choices, and how a rare case behaves, are yours; severity, size, and file count alone do not make a product question.
-11. Read this skill's `assets/_template.md` and write the review in `agents/reviews/`, named `YYYY-MM-DD-<slug>.md`, where the slug is the branch name.
-12. For each `Fix`, state the change to make at the cause, and the test to keep: its layer, the behavior it guards, and the existing test that should carry it when one already reaches the case. For each `Record`, state the `bug` issue to open: its worst cost, how it was confirmed, and what it waits on. For a fix the user decided, state their decision.
-13. Give the final response and stop.
+9. Give each finding its action, as the Objective defines them. When the right fix raises a product question, a choice that changes what the user sees or does in everyday use that the plan and the user's answers do not settle, ask the user, one focused question at a time: what they would see happen, the options as they would experience them, and your recommendation, without code names. Wait for the answer, and make it the finding's `Fix`. Design, interface, and internal behavior choices, and how a rare case behaves, are yours; severity, size, and file count alone do not make a product question.
+10. Read this skill's `assets/_template.md` and write the review in `agents/reviews/`, named `YYYY-MM-DD-<slug>.md`, where the slug is the branch name.
+11. For each `Fix`, state the change to make at the cause, and the test to keep: its layer, the behavior it guards, and the existing test that should carry it when one already reaches the case. For each `Record`, state the `bug` issue to open: its worst cost, how it was confirmed, and what it waits on. For a fix the user decided, state their decision.
+12. Give the final response and stop.
 
 ## Verify fixes
 
 Run this when asked to verify the fixes for an existing review.
 
-14. Read the review. Inspect the changes made since it was written, and the code each `Fix` and `Record` finding names.
-15. For each `Fix` and `Record` finding, confirm the change addresses its cause, and that its test exists, fails with the fix removed, and passes with it. A `Record` finding is resolved by its `bug` issue. Mark each finding `Resolved` or `Open`, with the evidence. Do not raise a `Rejected` finding again.
-16. Review the changes made since the review as in [Review](#review), for regressions and new defects, and apply step 9 to the final response of the fixes. Add each new finding with the next ID and its action.
-17. Add a verification round to the review: the revision you checked, each finding's status, the new findings, and the checks run. Then give the final response and stop.
+13. Read the review. Inspect the changes made since it was written, and the code each `Fix` and `Record` finding names.
+14. For each `Fix` and `Record` finding, confirm the change addresses its cause, and that its test exists and passes. A `Record` finding is resolved by its `bug` issue. Mark each finding `Resolved` or `Open`, with the evidence. Do not raise a `Rejected` finding again.
+15. Review the changes made since the review as in [Review](#review), for regressions and new defects, and apply step 8 to the final response of the fixes. Add each new finding with the next ID and its action.
+16. Add a verification round to the review: the revision you checked, each finding's status, the new findings, and the checks run. Then give the final response and stop.
 
 ## Final response
 

@@ -1,6 +1,6 @@
 ---
 name: ox-work
-description: Implement a plan for Ox from `agents/plans/`, or fix the findings of a review from `agents/reviews/`, and leave the changes uncommitted for `/ox-review`. Proves that each new test protects the change before handing off. Use to carry out a plan or a review's fixes, not to plan or review. Never use it unless the user, or an agent acting on the user's request, invokes it.
+description: Implement a plan for Ox from `agents/plans/`, or fix the findings of a review from `agents/reviews/`, and leave the changes uncommitted for `/ox-review`. Use to carry out a plan or a review's fixes, not to plan or review. Never use it unless the user, or an agent acting on the user's request, invokes it.
 argument-hint: "[plan path, or fix <review path>]"
 ---
 
@@ -8,7 +8,7 @@ Use this skill only when the user, or an agent acting on the user's request, inv
 
 ## Objective
 
-Change Ox exactly as the plan or review says, and hand off changes whose tests are proven, so that `/ox-review` finds nothing the implementer could have found. Leave the changes uncommitted. Edit no plan or review. Start other agents only as [Child sessions](#child-sessions) describes.
+Change Ox exactly as the plan or review says, and hand off changes whose checks pass, so that `/ox-review` finds nothing the implementer could have found. Leave the changes uncommitted. Edit no plan or review. Start other agents only as [Child sessions](#child-sessions) describes.
 
 ## Child sessions
 
@@ -22,7 +22,7 @@ Before you start the children:
 
 Then end your turn until every child has answered.
 
-Afterwards, read the children's changes as one change, apply the Requirement changes, and prove the tests and run the checks yourself on the final tree, as steps 7 and 8 describe. Children do not run `make test`, `make e2e`, or `make live`. A run in a shared checkout sees the other children's unfinished edits, and the checks count only on the integrated tree.
+Afterwards, read the children's changes as one change, apply the Requirement changes, and run the checks yourself on the final tree, as step 7 describes. Children do not run `make test`, `make e2e`, or `make live`. A run in a shared checkout sees the other children's unfinished edits, and the checks count only on the integrated tree.
 
 Keep this work in this session:
 
@@ -30,7 +30,6 @@ Keep this work in this session:
 - Parts that edit the same file.
 - Edits to `docs/functional-requirements.md`.
 - A review's fixes, which are usually small and need the review's context.
-- Proving the tests.
 
 ## Establish the work
 
@@ -47,10 +46,9 @@ Keep this work in this session:
 
 6. For each `Fix` finding not yet `Resolved`, make the change it states at its cause, and keep the test it names. For each `Record` finding, open the issue it states with `gh issue create --label bug`. Leave `Rejected` findings alone. When a finding's defect does not exist or its fix would contradict the plan, report that with the evidence instead of changing the code.
 
-## Prove the tests
+## Run the checks
 
-7. Run each new or changed test without the change and confirm it fails at an assertion. Work in the change's tree and run only those tests, with `go test -run` or `playwright test -g`. Take out the change and keep the tests: save the change's non-test files as a patch (`git add -N .`, then `git diff <base> -- <files> > <patch>`), reverse it with `git apply -R <patch>`, run the tests, and restore it with `git apply <patch>`. For a plan, `<base>` is `git merge-base origin/main HEAD`; for a review's fix, reverse only that fix. When a test cannot build without the change, reverse only the part of the change its assertions check. A changed test that only drops assertions needs no run. Rewrite a test that passes without the change until it fails.
-8. Run the checks `AGENTS.md` ("Verification") requires for the change on the final tree, after your last edit, and fix each failure it causes. Report a check as blocked only when something you cannot change prevents it, and name the blocker.
+7. Run the checks `AGENTS.md` ("Verification") requires for the change on the final tree, after your last edit, and fix each failure it causes. Report a check as blocked only when something you cannot change prevents it, and name the blocker.
 
 ## Final response
 
@@ -68,8 +66,6 @@ One or two sentences: what the change does, and whether it is ready for review.
 
 **Findings:** F1 fixed; F2 recorded as #123; F3 not fixed: its defect does not exist, because …
 
-**Tests proved:** `TestHeldPromptDropped` and `TestSendAfterEnd` fail without the change.
-
 **Open choices:** each choice the plan or review left open that a reviewer should check.
 
 **Checks:** `make test` passed; `make e2e` passed; `make live` passed; headless Chrome through `make dev` passed.
@@ -77,4 +73,4 @@ One or two sentences: what the change does, and whether it is ready for review.
 **Blocked:** `make live`: what blocks it.
 ```
 
-List every file created or modified. Under Tests proved, list each test run without the change in step 7. Under Checks, list each check from step 8 with its result on the final tree. Write `None.` for Requirement changes when the plan has none. Include Findings only when fixing a review. Omit Open choices when there are none, and Blocked when every check ran.
+List every file created or modified. Under Checks, list each check from step 7 with its result on the final tree. Write `None.` for Requirement changes when the plan has none. Include Findings only when fixing a review. Omit Open choices when there are none, and Blocked when every check ran.
