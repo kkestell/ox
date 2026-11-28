@@ -325,8 +325,10 @@ export function Sidebar(props: {
     });
   const [error, attempt] = createAttempt();
   const isSelected = (session: Session) => props.selected?.kind === "session" && props.selected.id === session.id;
-  const childrenOf = (session: Session) =>
-    ox.workspaceOf(session.id)?.sessions.filter((other) => other.child?.parent_id === session.id) ?? [];
+  const childrenOf = (session: Session) => {
+    const workspace = ox.workspaceOf(session.id);
+    return workspace ? ox.sessionsOf(workspace).filter((other) => other.child?.parent_id === session.id) : [];
+  };
   const descendantsOf = (session: Session): Session[] =>
     childrenOf(session).flatMap((child) => [child, ...descendantsOf(child)]);
   const visible = (workspaceId: string, session: Session) => !ox.archived(session) || shown().has(workspaceId);
@@ -380,7 +382,7 @@ export function Sidebar(props: {
       },
       {
         label: "Remove workspace",
-        disabledBecause: workspace.sessions.some((s) => ox.busy(s.id))
+        disabledBecause: ox.workspaceBusy(workspace.id)
           ? "Wait until Ox answers"
           : !ox.sessionsOf(workspace).length
             ? undefined

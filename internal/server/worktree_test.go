@@ -33,6 +33,15 @@ func runGit(t *testing.T, args ...string) string {
 // configuration, and returns its path.
 func gitRepo(t *testing.T) string {
 	t.Helper()
+	gitEnv(t)
+	return newGitRepo(t)
+}
+
+// gitEnv keeps git from the user's own configuration and names its author.
+// A parallel test cannot set the environment, so its parent calls gitEnv
+// and the test calls newGitRepo.
+func gitEnv(t *testing.T) {
+	t.Helper()
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, variable := range []string{"GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"} {
@@ -41,6 +50,11 @@ func gitRepo(t *testing.T) string {
 	for _, variable := range []string{"GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"} {
 		t.Setenv(variable, "ox@example.com")
 	}
+}
+
+// newGitRepo makes gitRepo's repository in the environment gitEnv set.
+func newGitRepo(t *testing.T) string {
+	t.Helper()
 	repo := t.TempDir()
 	if err := os.Mkdir(filepath.Join(repo, "sub"), 0o700); err != nil {
 		t.Fatal(err)

@@ -232,14 +232,13 @@ title.
 - **Session reports.** When the turn of a child session, or of a top-level
   session another session started, ends, the session that started it receives
   its final reply, or why the turn failed, as a report, without either session
-  sending a message. Reports wait until the receiving session is idle or parked
-  and none of the sessions it started is working, then arrive together as one
-  message, after any message already waiting, each headed with its sender's
-  label and rendered as Markdown; a session waiting on the user does not hold
-  them back. A report carries only the first 400 characters of a longer reply,
-  none is sent when the sender's last action was a message to the session that
-  started it, and reports not yet delivered are dropped when `oxd` stops or that
-  session is deleted.
+  sending a message. A report arrives as soon as the receiving session is idle
+  or parked, even while other sessions it started are still working; reports
+  waiting together arrive as one message, after any message already waiting,
+  each headed with its sender's label and rendered as Markdown. A report carries
+  only the first 400 characters of a longer reply, none is sent when the
+  sender's last action was a message to the session that started it, and reports
+  not yet delivered are dropped when `oxd` stops or that session is deleted.
 - **Working together without approval.** A session of any harness does each of
   these without asking for approval, in either permission mode.
 - **Messages stay in Ox.** Sessions message only Ox's own sessions, and only

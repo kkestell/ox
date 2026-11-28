@@ -111,6 +111,7 @@ We test with `make dev`. Ox's test state is disposable.
 │   │   ├── history.go         # session history
 │   │   ├── id_test.go         # ID tests
 │   │   ├── id.go              # Ox's IDs
+│   │   ├── lifecycle_test.go  # session lifecycle cases
 │   │   ├── live_test.go       # live Claude and Ur tests
 │   │   ├── mcp_test.go        # MCP tests
 │   │   ├── mcp.go             # MCP connections

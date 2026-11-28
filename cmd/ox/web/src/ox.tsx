@@ -14,9 +14,13 @@ import {
 import { createSessionControl, type SessionControl } from "./sessionControl";
 import { apply, type SessionSnapshot, settingsOf, snapshotOf } from "./snapshot";
 
-export type Workspace = { id: string; path: string; sessions: Session[] };
+// StoredWorkspace and StoredSession are oxd's session list as the page holds
+// it. Views read the list through createOx's projections, which show the
+// requests the page has in flight, so they receive Workspace and Session,
+// which leave out the raw membership and archived flag.
+type StoredWorkspace = { id: string; path: string; sessions: StoredSession[] };
 
-export type Session = {
+type StoredSession = {
   id: string;
   harness: string;
   // directory is where the session's harness runs.
@@ -39,6 +43,10 @@ export type Session = {
     | { kind: "live"; snapshot: SessionSnapshot };
 };
 
+export type Workspace = Omit<StoredWorkspace, "sessions">;
+
+export type Session = Omit<StoredSession, "archived">;
+
 // directoryName is the name of a directory.
 export const directoryName = (path: string) => path.replace(/\/+$/, "").split("/").at(-1) || path;
 
@@ -50,7 +58,7 @@ function createOx() {
     harnesses: Record<string, Harness>;
     permission_modes: Option[];
     defaults?: Defaults;
-    workspaces: Workspace[];
+    workspaces: StoredWorkspace[];
   }>({
     harnesses: {},
     permission_modes: [],
@@ -70,14 +78,15 @@ function createOx() {
   const ready = () => live() !== undefined;
   let connection!: Connection;
 
-  const workspaceOf = (id: string) => containing(state.workspaces, id);
-  const containing = (workspaces: Workspace[], id: string) =>
+  const workspaceOf = (id: string): Workspace | undefined => containing(state.workspaces, id);
+  const containing = (workspaces: StoredWorkspace[], id: string) =>
     workspaces.find((w) => w.sessions.some((s) => s.id === id));
-  const sessionIn = (workspaces: Workspace[], id: string) =>
+  const sessionIn = (workspaces: StoredWorkspace[], id: string) =>
     containing(workspaces, id)?.sessions.find((s) => s.id === id);
   const stored = (id: string) => sessionIn(state.workspaces, id);
+  const storedWorkspace = (id: string) => state.workspaces.find((w) => w.id === id);
   // lineOf is a session and its ancestors, nearest first.
-  function* lineOf(session: Session | undefined) {
+  function* lineOf(session: StoredSession | undefined) {
     for (let s = session; s; s = s.child && stored(s.child.parent_id)) yield s;
   }
 
@@ -85,20 +94,33 @@ function createOx() {
   // session being deleted and a workspace being removed are gone, and a
   // session being archived or unarchived, with every session beneath it,
   // shows as it will be.
-  const session = (id: string) => (listing.sessions[id] === "destroy" ? undefined : stored(id));
-  const workspaces = () => state.workspaces.filter((w) => listing.workspaces[w.id] === undefined);
-  const sessionsOf = (workspace: Workspace) => workspace.sessions.filter((s) => listing.sessions[s.id] !== "destroy");
+  const session = (id: string): Session | undefined => (listing.sessions[id] === "destroy" ? undefined : stored(id));
+  const workspaces = (): Workspace[] => state.workspaces.filter((w) => listing.workspaces[w.id] === undefined);
+  const sessionsOf = (workspace: Workspace): Session[] =>
+    storedWorkspace(workspace.id)?.sessions.filter((s) => listing.sessions[s.id] !== "destroy") ?? [];
   const archived = (session: Session) => {
-    for (const s of lineOf(session)) {
+    for (const s of lineOf(stored(session.id))) {
       const request = listing.sessions[s.id];
       if (request === "archive") return true;
       if (request === "unarchive") return false;
     }
-    return session.archived;
+    return stored(session.id)?.archived ?? false;
   };
   // busy is whether a session or an ancestor has a session list request in
   // flight.
   const busy = (id: string) => [...lineOf(stored(id))].some((s) => listing.sessions[s.id] !== undefined);
+  // workspaceBusy is whether any session in a workspace, including one being
+  // deleted, has a session list request in flight.
+  const workspaceBusy = (id: string) => storedWorkspace(id)?.sessions.some((s) => busy(s.id)) ?? false;
+  // listsWorkspace is whether oxd lists a workspace, whatever the page has in
+  // flight.
+  const listsWorkspace = (id: string) => storedWorkspace(id) !== undefined;
+  // catalog is what oxd offers, the part of the store views read directly.
+  const catalog: {
+    readonly harnesses: Record<string, Harness>;
+    readonly permission_modes: Option[];
+    readonly defaults?: Defaults;
+  } = state;
 
   // requestFor sends a session list request for a session, and returns its
   // promise once it settles.
@@ -384,7 +406,7 @@ function createOx() {
   });
 
   return {
-    state,
+    state: catalog,
     error,
     ready,
     clock,
@@ -394,6 +416,8 @@ function createOx() {
     sessionsOf,
     archived,
     busy,
+    workspaceBusy,
+    listsWorkspace,
     addWorkspace: (path: string) => connection.rpc("workspace/create", { path }),
     // removeWorkspace sends a workspace's removal, which shows at once.
     removeWorkspace(id: string) {
