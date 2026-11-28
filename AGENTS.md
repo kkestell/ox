@@ -100,10 +100,12 @@ We test with `make dev`. Ox's test state is disposable.
 │   │   ├── process_test.go    # delivery tests
 │   │   └── process.go         # harness process I/O
 │   ├── server
+│   │   ├── archive.go         # archiving a session and its family
 │   │   ├── changes_test.go    # Changes listing tests
 │   │   ├── changes.go         # Changes listing against the base
 │   │   ├── client_test.go     # test client
 │   │   ├── conn.go            # client connections
+│   │   ├── create.go          # session creation and publication
 │   │   ├── files.go           # workspace folder listing and file reads
 │   │   ├── history_test.go    # history tests
 │   │   ├── history.go         # session history
@@ -114,8 +116,11 @@ We test with `make dev`. Ox's test state is disposable.
 │   │   ├── mcp.go             # MCP connections
 │   │   ├── methods_test.go    # method tests
 │   │   ├── methods.go         # RPC methods
+│   │   ├── report.go          # reports to a session's parent or creator
 │   │   ├── server.go          # listener, workspaces, and sessions
 │   │   ├── session.go         # session goroutine and lifecycle
+│   │   ├── title.go           # session labels and generated titles
+│   │   ├── transcript.go      # read_session transcript pages
 │   │   ├── worktree_test.go   # worktree tests
 │   │   └── worktree.go        # session worktrees
 │   ├── store
