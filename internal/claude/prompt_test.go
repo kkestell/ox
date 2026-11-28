@@ -521,6 +521,10 @@ func TestTurnsClaudeStartsArePublished(t *testing.T) {
 		output(t, a, `{"type":"result","subtype":"success","result":"tick"}`)
 		output(t, a, `{"type":"result","subtype":"success","result":""}`)
 		state(t, a, "idle")
+		// A result with nothing streamed is the turn's text.
+		state(t, a, "running")
+		output(t, a, `{"type":"result","subtype":"success","result":"tock"}`)
+		state(t, a, "idle")
 		if starting {
 			a.Handle(initialized)
 		}
@@ -532,8 +536,11 @@ func TestTurnsClaudeStartsArePublished(t *testing.T) {
 			}
 			types = append(types, u.Type)
 		}
-		if strings.Join(types, ",") != "state,text_delta,result,state,exited" {
+		if strings.Join(types, ",") != "state,text_delta,result,state,state,text_delta,result,state,exited" {
 			t.Fatalf("starting %v: unexpected updates: %v", starting, types)
+		}
+		if u := (*updates)[5]; u.Text != "tock" {
+			t.Fatalf("starting %v: the second turn's text is %q, want tock", starting, u.Text)
 		}
 	}
 }

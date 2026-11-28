@@ -181,6 +181,36 @@ func (a *Agent) handleOutput(m message) {
 	if s, ok := a.phase.(*starting); ok && a.startupOutput(s, m) {
 		return
 	}
+	a.noteConversation(m)
+	switch m.Type {
+	case "control_response":
+		a.controlResponse(m.Response)
+	case "control_request":
+		a.controlRequest(m.RequestID, m.Request)
+	case "control_cancel_request":
+		a.cancelApproval(m.RequestID)
+	case "command_lifecycle":
+		a.commandLifecycle(m)
+	case "system":
+		a.systemMessage(m)
+	case "assistant":
+		a.assistantMessage(m)
+	case "user":
+		a.userMessage(m)
+	case "stream_event":
+		a.streamEvent(m)
+	case "rate_limit_event":
+		if windows := m.usageWindows(); len(windows) > 0 {
+			a.publish(agent.UsageUpdate(windows))
+		}
+	case "result":
+		a.turnResult(m)
+	}
+}
+
+// noteConversation records the conversation m belongs to and reports it as
+// resumable once model output has begun it.
+func (a *Agent) noteConversation(m message) {
 	if m.SessionID != "" {
 		a.conversationID = m.SessionID
 	}
@@ -196,91 +226,92 @@ func (a *Agent) handleOutput(m message) {
 			}
 		}
 	}
-	switch m.Type {
-	case "control_response":
-		a.controlResponse(m.Response)
-	case "control_request":
-		a.controlRequest(m.RequestID, m.Request)
-	case "control_cancel_request":
-		a.cancelApproval(m.RequestID)
-	case "command_lifecycle":
+}
+
+func (a *Agent) commandLifecycle(m message) {
+	switch m.State {
+	case "started":
+		a.commandStarted(m.CommandUUID)
+	case "cancelled":
+		a.commandCancelled(m.CommandUUID)
+	}
+}
+
+func (a *Agent) systemMessage(m message) {
+	switch m.Subtype {
+	case "session_state_changed":
+		// The agent reports requires_action itself, when it publishes
+		// an approval.
 		switch m.State {
-		case "started":
-			a.commandStarted(m.CommandUUID)
-		case "cancelled":
-			a.commandCancelled(m.CommandUUID)
+		case agent.StateRunning, agent.StateIdle:
+			a.sessionState(m.State)
 		}
-	case "system":
-		switch m.Subtype {
-		case "session_state_changed":
-			// The agent reports requires_action itself, when it publishes
-			// an approval.
-			switch m.State {
-			case agent.StateRunning, agent.StateIdle:
-				a.sessionState(m.State)
-			}
-		case "background_tasks_changed":
-			a.tracker.SetTasks(len(m.Tasks))
+	case "background_tasks_changed":
+		a.tracker.SetTasks(len(m.Tasks))
+	}
+}
+
+func (a *Agent) assistantMessage(m message) {
+	for _, use := range m.toolUses() {
+		switch use.Name {
+		case "CronCreate", "ScheduleWakeup":
+			a.mayHaveSchedules = true
 		}
-	case "assistant":
-		for _, use := range m.toolUses() {
-			switch use.Name {
-			case "CronCreate", "ScheduleWakeup":
-				a.mayHaveSchedules = true
-			}
-			if m.ParentToolUseID == "" {
-				a.publish(agent.Update{Type: agent.UpdateToolUse, ToolUseID: use.ID, ToolName: use.Name, Input: use.Input})
-			}
-		}
-	case "user":
 		if m.ParentToolUseID == "" {
-			for _, r := range m.toolResults() {
-				// An interrupt answers each running tool with an error
-				// result. A call an interrupt stopped has no result, as for
-				// Ur, and the page shows it stopped.
-				if r.IsError && len(a.stops) > 0 {
-					continue
-				}
-				a.publish(agent.Update{Type: agent.UpdateToolResult, ToolUseID: r.ToolUseID, Result: &agent.Result{Text: r.Text, IsError: r.IsError}})
-			}
+			a.publish(agent.Update{Type: agent.UpdateToolUse, ToolUseID: use.ID, ToolName: use.Name, Input: use.Input})
 		}
-	case "stream_event":
-		delta := m.Event.Delta
-		if m.ParentToolUseID != "" || m.Event.Type != "content_block_delta" {
-			break
+	}
+}
+
+func (a *Agent) userMessage(m message) {
+	if m.ParentToolUseID != "" {
+		return
+	}
+	for _, r := range m.toolResults() {
+		// An interrupt answers each running tool with an error
+		// result. A call an interrupt stopped has no result, as for
+		// Ur, and the page shows it stopped.
+		if r.IsError && len(a.stops) > 0 {
+			continue
 		}
-		switch {
-		case delta.Type == "text_delta" && delta.Text != "":
-			a.streamedText = true
-			a.publish(agent.Update{Type: agent.UpdateTextDelta, Text: delta.Text})
-		case delta.Type == "thinking_delta" && delta.Thinking != "":
-			a.publish(agent.Update{Type: agent.UpdateReasoningDelta, Text: delta.Thinking})
-		}
-	case "rate_limit_event":
-		if windows := m.usageWindows(); len(windows) > 0 {
-			a.publish(agent.UsageUpdate(windows))
-		}
-	case "result":
-		result := agent.Result{Text: m.Result, IsError: m.failed()}
-		if strings.HasPrefix(m.TerminalReason, "aborted") {
-			// errors[] holds only internal diagnostics for an interrupt.
-			result.Text = "Interrupted"
-		} else if result.IsError {
-			result.Text = m.errorText()
-		}
-		if !result.IsError && !a.streamedText && result.Text != "" {
-			a.publish(agent.Update{Type: agent.UpdateTextDelta, Text: result.Text})
-		}
-		a.streamedText = false
-		// Claude follows an automatic turn with an empty bookkeeping result.
-		if result.Text != "" || result.IsError {
-			a.publish(agent.Update{Type: agent.UpdateResult, Result: &result})
-		}
-		// A later turn before idle, such as one reporting a background
-		// subagent's findings, is Claude's own.
-		if p, ok := a.phase.(*prompting); ok {
-			p.turn = ""
-		}
+		a.publish(agent.Update{Type: agent.UpdateToolResult, ToolUseID: r.ToolUseID, Result: &agent.Result{Text: r.Text, IsError: r.IsError}})
+	}
+}
+
+func (a *Agent) streamEvent(m message) {
+	delta := m.Event.Delta
+	if m.ParentToolUseID != "" || m.Event.Type != "content_block_delta" {
+		return
+	}
+	switch {
+	case delta.Type == "text_delta" && delta.Text != "":
+		a.streamedText = true
+		a.publish(agent.Update{Type: agent.UpdateTextDelta, Text: delta.Text})
+	case delta.Type == "thinking_delta" && delta.Thinking != "":
+		a.publish(agent.Update{Type: agent.UpdateReasoningDelta, Text: delta.Thinking})
+	}
+}
+
+func (a *Agent) turnResult(m message) {
+	result := agent.Result{Text: m.Result, IsError: m.failed()}
+	if strings.HasPrefix(m.TerminalReason, "aborted") {
+		// errors[] holds only internal diagnostics for an interrupt.
+		result.Text = "Interrupted"
+	} else if result.IsError {
+		result.Text = m.errorText()
+	}
+	if !result.IsError && !a.streamedText && result.Text != "" {
+		a.publish(agent.Update{Type: agent.UpdateTextDelta, Text: result.Text})
+	}
+	a.streamedText = false
+	// Claude follows an automatic turn with an empty bookkeeping result.
+	if result.Text != "" || result.IsError {
+		a.publish(agent.Update{Type: agent.UpdateResult, Result: &result})
+	}
+	// A later turn before idle, such as one reporting a background
+	// subagent's findings, is Claude's own.
+	if p, ok := a.phase.(*prompting); ok {
+		p.turn = ""
 	}
 }
 
