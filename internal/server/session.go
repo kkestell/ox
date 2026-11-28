@@ -471,7 +471,7 @@ func (sess *session) update(update agent.Update) {
 	switch {
 	case update.Type == agent.UpdatePromptCancelled:
 		sess.deleteImages(update.Images)
-	case update.Type == agent.UpdatePrompt && update.From == "" && update.Reports == nil && sess.child == nil:
+	case update.Type == agent.UpdatePromptQueued && update.From == "" && update.Reports == nil && sess.child == nil:
 		sess.labelFrom(update.Text)
 	}
 	if sess.reporting != nil {

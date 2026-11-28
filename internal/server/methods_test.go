@@ -843,11 +843,25 @@ func TestSessionLabel(t *testing.T) {
 		t.Fatalf("an image-only prompt labeled A %q", got)
 	}
 
-	t.Log("the first prompt labels A with its first line, then its title")
+	t.Log("the first prompt labels A with its first line before the agent takes it, then its title")
 	first := "\u0085\nActual title\nmore"
+	c.forget(a)
 	c.call("session/send", map[string]string{"session_id": a, "text": first})
-	if got := labelOf(c, a); got != "Actual title" {
-		t.Fatalf("session/labeled labeled A %q", got)
+	labeledOrTaken := c.next(func(m message) bool {
+		if m.sessionID() != a {
+			return false
+		}
+		var update struct{ Type string }
+		json.Unmarshal(m.Params, &update)
+		return m.Method == "session/labeled" || m.Method == "session/update" && update.Type == agent.UpdatePrompt
+	})
+	if labeledOrTaken.Method != "session/labeled" {
+		t.Fatal("the agent took A's first prompt before it labeled A")
+	}
+	var firstLabel labeled
+	json.Unmarshal(labeledOrTaken.Params, &firstLabel)
+	if firstLabel.Label != "Actual title" {
+		t.Fatalf("session/labeled labeled A %q", firstLabel.Label)
 	}
 	titling := nextAsk()
 	if titling.text != first || titling.instructions != titleInstructions || titling.model != "titler" || titling.effort != "low" {
