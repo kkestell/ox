@@ -15,9 +15,10 @@ tasks to each other.
   harness for OpenRouter models.
 - Run sessions across your local repositories, or give a session its own Git
   worktree on a new branch.
-- Let any session start child and top-level sessions on any harness, message
-  other sessions, and read their transcripts. The sessions it starts report
-  each finished turn back automatically.
+- Let any session start child sessions on any harness, message other sessions,
+  and read their transcripts, and let the sessions you create start top-level
+  sessions too. The sessions it starts report each finished turn back
+  automatically.
 - Approve tool calls, answer questions, send follow-up prompts mid-turn, and
   browse each session's files beside its transcript.
 - Keep sessions running after you close the browser. Transcripts survive
