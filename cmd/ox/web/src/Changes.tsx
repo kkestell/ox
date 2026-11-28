@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, For, Match, Show, Switch, untrack } from "solid-js";
-import { counts, statuses } from "./diff";
+import { counts, deletedEntries, statuses } from "./diff";
 import { rowsHtml } from "./highlight";
 import { useOx } from "./ox";
 import { createPoll } from "./poll";
@@ -7,8 +7,9 @@ import type { ChangedFile, FileRoot, Hunk } from "./protocol";
 
 // createListing polls the files beneath root that differ from where its branch
 // left the workspace's branch, read when it appears and on each tick of the
-// page's clock. It gives their total counts and the status of each changed
-// file and of each folder above one.
+// page's clock. It gives their total counts, each changed file's counts, the
+// status of each changed file and of each folder above one, and the deleted
+// entries of each folder.
 export function createListing(root: FileRoot) {
   const ox = useOx();
   const listing = createPoll(() => ox.listChanges(root));
@@ -30,92 +31,20 @@ export function createListing(root: FileRoot) {
     return { added, removed };
   });
   const byPath = createMemo(() => statuses(changes()?.files ?? []));
+  const byFile = createMemo(() => new Map((changes()?.files ?? []).map((file) => [file.path, file])));
+  const deleted = createMemo(() => deletedEntries(changes()?.files ?? []));
   return {
     changes,
     error,
     total,
     fileStatus: (path: string) => byPath().files.get(path),
     folderStatus: (path: string) => byPath().folders.get(path),
+    fileCounts: (path: string) => byFile().get(path)?.counts,
+    deletedIn: (folder: string) => deleted().get(folder) ?? [],
   };
 }
 
 export type Listing = ReturnType<typeof createListing>;
-
-// BranchSummary shows the branch and the lines the changes add and remove, or
-// why they cannot be listed.
-function BranchSummary(props: { listing: Listing }) {
-  return (
-    <Switch>
-      <Match when={props.listing.error()}>
-        {(message) => (
-          <span class="branch-summary message" title={message()}>
-            {message()}
-          </span>
-        )}
-      </Match>
-      <Match when={props.listing.changes()}>
-        {(current) => (
-          <span class="branch-summary">
-            <Show when={current().branch}>
-              {(branch) => (
-                <>
-                  <span class="icon git-branch" />
-                  <span class="branch">{branch()}</span>
-                </>
-              )}
-            </Show>
-            <Counts added={props.listing.total().added} removed={props.listing.total().removed} />
-          </span>
-        )}
-      </Match>
-    </Switch>
-  );
-}
-
-// ChangesList lists each changed file under a summary row with the branch and
-// totals, or why the changes cannot be listed. The summary row opens the
-// Changes tab, and a file's row opens it at that file.
-export function ChangesList(props: { listing: Listing; onOpen(path?: string): void }) {
-  return (
-    <div class="tree">
-      <button type="button" class="row summary" onClick={() => props.onOpen()}>
-        <BranchSummary listing={props.listing} />
-      </button>
-      <Show when={props.listing.changes()}>
-        {(current) => (
-          <ul>
-            <For each={current().files} keyed={(file) => file.path}>
-              {(file) => {
-                const path = () => file().path;
-                const name = () => path().slice(path().lastIndexOf("/") + 1);
-                const folder = () => path().slice(0, Math.max(0, path().lastIndexOf("/")));
-                return (
-                  <li>
-                    <button
-                      type="button"
-                      class="row change-row"
-                      title={path()}
-                      data-status={file().status}
-                      onClick={() => props.onOpen(path())}
-                    >
-                      <span class="name">{name()}</span>
-                      <Show when={folder()}>
-                        <span class="folder">{folder()}</span>
-                      </Show>
-                      <Show when={file().counts}>
-                        {(each) => <Counts added={each().added} removed={each().removed} />}
-                      </Show>
-                    </button>
-                  </li>
-                );
-              }}
-            </For>
-          </ul>
-        )}
-      </Show>
-    </div>
-  );
-}
 
 // ChangesView shows each changed file as a card after GitHub's pull request
 // files, or why the changes cannot be listed. It scrolls to the card of

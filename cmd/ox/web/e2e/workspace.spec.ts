@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -38,7 +39,6 @@ import {
 } from "./ui";
 
 const files = (page: Page) => page.getByRole("complementary", { name: "Files" });
-const changesList = (page: Page) => page.getByRole("complementary", { name: "Changes" });
 // entry is the file tree's button for the file or folder called name.
 const entry = (page: Page, name: string) => files(page).getByRole("button", { name, exact: true });
 // folder is the file tree's item for the folder called name, holding its listing.
@@ -57,28 +57,23 @@ const modes = (page: Page) => page.getByRole("group", { name: "Show as" });
 const modeButton = (page: Page, label: "Source" | "Preview") =>
   modes(page).getByRole("button", { name: label, exact: true });
 const togglePanel = (page: Page) => page.getByRole("button", { name: "Toggle panel" });
-// panelMode is the panel's button that lists its files or its changes.
-const panelMode = (page: Page, label: "Files" | "Changes") => page.getByRole("button", { name: label, exact: true });
 const closeButton = (page: Page, name: string) => page.getByRole("button", { name: `Close ${name}` });
 
-// showPanel opens the panel at the right, which the page closes at load, on
-// its files or its changes.
-async function showPanel(page: Page, mode: "Files" | "Changes") {
+// showFiles opens the panel at the right, which the page closes at load.
+async function showFiles(page: Page) {
   if ((await togglePanel(page).getAttribute("aria-pressed")) === "false") await togglePanel(page).click();
-  await panelMode(page, mode).click();
-  await expect(panelMode(page, mode)).toHaveAttribute("aria-pressed", "true");
+  await expect(files(page)).toBeVisible();
 }
 
-// showFiles opens the panel on the file tree.
-const showFiles = (page: Page) => showPanel(page, "Files");
+// branchRow is the file tree's top row, with the branch and the totals.
+const branchRow = (page: Page) => files(page).getByRole("button", { name: /^master / });
+// countsButton is the file tree's button with the counts of the file called name.
+const countsButton = (page: Page, name: string) => files(page).getByRole("button", { name: `Changes in ${name}` });
 
-// showChanges opens the panel on the changes, and the Changes tab from its
-// summary row.
+// showChanges opens the panel, and the Changes tab from the tree's top row.
 async function showChanges(page: Page) {
-  await showPanel(page, "Changes");
-  await changesList(page)
-    .getByRole("button", { name: /^master |git repository/ })
-    .click();
+  await showFiles(page);
+  await branchRow(page).click();
   await expect(changesTab(page)).toHaveAttribute("aria-selected", "true");
 }
 
@@ -669,27 +664,56 @@ test("the Changes tab's label counts the lines added and removed", async ({ ox: 
   await expect(changesTab(page)).toHaveText(/^Changes\s*\+70002\s*−1$/);
 });
 
-test("the panel's Changes list shows the branch, the totals, and each changed file", async ({ ox: page, services }) => {
+test("the file tree shows the branch and totals above the files, and each changed file's counts", async ({
+  ox: page,
+  services,
+}) => {
+  mkdirSync(join(services.workspace, "src"));
   gitRepo(services.workspace);
   writeFileSync(join(services.workspace, "committed.txt"), "edited\nmore\n");
+  writeFileSync(join(services.workspace, "src", "new.txt"), "new\n");
   await newDraft(page);
-  await showPanel(page, "Changes");
-  await expect(changesList(page)).toMatchAriaSnapshot(`
-    - complementary "Changes":
-      - button "master +2 −1"
+  await showFiles(page);
+  await expect(files(page)).toMatchAriaSnapshot(`
+    - complementary "Files":
+      - /children: deep-equal
+      - heading "Files"
+      - button "Toggle panel"
+      - button "master +3 −1"
       - list:
         - listitem:
-          - button "committed.txt +2 −1"
+          - button "src"
         - listitem:
-          - button "untracked.txt +0 −0"
+          - button "committed.txt"
+          - button "Changes in committed.txt": +2 −1
+        - listitem:
+          - button "untracked.txt"
+          - button "Changes in untracked.txt": +0 −0
   `);
   await expect(changesTab(page)).toHaveCount(0);
 });
 
-test("the Changes list says why outside a Git repository", async ({ ox: page }) => {
+clocked("outside a Git repository the file tree shows no branch or counts", async ({ ox: page, services }) => {
+  writeFileSync(join(services.workspace, "a.txt"), "a\n");
+  const listed = rpcCalls(page, "workspace/list_changes");
   await newDraft(page);
-  await showPanel(page, "Changes");
-  await expect(changesList(page)).toContainText("not a git repository");
+  await showFiles(page);
+  // The page lists the changes again only once the last listing is answered.
+  await expect
+    .poll(async () => {
+      await page.clock.runFor(1000);
+      return listed.length;
+    })
+    .toBeGreaterThanOrEqual(2);
+  await expect(files(page)).toMatchAriaSnapshot(`
+    - complementary "Files":
+      - /children: deep-equal
+      - heading "Files"
+      - button "Toggle panel"
+      - list:
+        - listitem:
+          - button "a.txt"
+  `);
 });
 
 test("a section's header collapses and expands its lines", async ({ ox: page, services }) => {
@@ -714,14 +738,14 @@ test("a changed file's Open button opens its file tab beside the Changes tab", a
   await expect(changesTab(page)).toHaveAttribute("aria-selected", "false");
 });
 
-test("a file in the Changes list opens the Changes tab at its card", async ({ ox: page, services }) => {
+test("a changed file's counts open the Changes tab at its card", async ({ ox: page, services }) => {
   gitRepo(services.workspace);
   for (let i = 0; i < 20; i++) {
     writeFileSync(join(services.workspace, `file-${String(i).padStart(2, "0")}.txt`), "line\n".repeat(30));
   }
   await newDraft(page);
-  await showPanel(page, "Changes");
-  await changesList(page).getByRole("button", { name: "file-19.txt" }).click();
+  await showFiles(page);
+  await countsButton(page, "file-19.txt").click();
   await expect(changesTab(page)).toHaveAttribute("aria-selected", "true");
   await expect(change(page, "file-19.txt")).toBeInViewport();
   await expect(change(page, "file-00.txt")).not.toBeInViewport();
@@ -737,14 +761,93 @@ test("a file in the Changes list opens the Changes tab at its card", async ({ ox
   await expect(change(page, "file-19.txt")).toBeInViewport();
 });
 
+test("clicking a changed file's name opens its file tab", async ({ ox: page, services }) => {
+  gitRepo(services.workspace);
+  writeFileSync(join(services.workspace, "committed.txt"), "edited\n");
+  await newDraft(page);
+  await showFiles(page);
+  await expect(countsButton(page, "committed.txt")).toBeVisible();
+  await entry(page, "committed.txt").click();
+  await expect(fileTab(page, "committed.txt")).toHaveAttribute("aria-selected", "true");
+  await expect(pane(page)).toHaveText("edited");
+  await expect(changesTab(page)).toHaveCount(0);
+});
+
+test("a deleted file is a row in its folder that opens the Changes tab at its card", async ({ ox: page, services }) => {
+  mkdirSync(join(services.workspace, "src"));
+  writeFileSync(join(services.workspace, "src", "a.txt"), "a\n");
+  writeFileSync(join(services.workspace, "src", "b.txt"), "b\n");
+  gitRepo(services.workspace);
+  rmSync(join(services.workspace, "src", "a.txt"));
+  await newDraft(page);
+  await showFiles(page);
+  await entry(page, "src").click();
+  await expect(folder(page, "src")).toMatchAriaSnapshot(`
+    - listitem:
+      - button "src" [expanded]
+      - list:
+        - /children: deep-equal
+        - listitem:
+          - button "a.txt +0 −1"
+        - listitem:
+          - button "b.txt"
+  `);
+  await files(page).getByRole("button", { name: "a.txt +0 −1" }).click();
+  await expect(changesTab(page)).toHaveAttribute("aria-selected", "true");
+  await expect(change(page, "src/a.txt")).toBeInViewport();
+});
+
+clocked(
+  "a deleted folder lists its deleted files without reading the disk, and returns as a folder on disk",
+  async ({ ox: page, services }) => {
+    mkdirSync(join(services.workspace, "gone", "deep"), { recursive: true });
+    writeFileSync(join(services.workspace, "gone", "deep", "c.txt"), "c\n");
+    gitRepo(services.workspace);
+    rmSync(join(services.workspace, "gone"), { recursive: true });
+    const listed = rpcCalls(page, "workspace/list_folder");
+    await newDraft(page);
+    await showFiles(page);
+    await entry(page, "gone").click();
+    await entry(page, "deep").click();
+    const deleted = files(page).getByRole("button", { name: "c.txt +0 −1" });
+    await expect(folder(page, "gone")).toMatchAriaSnapshot(`
+    - listitem:
+      - button "gone" [expanded]
+      - list:
+        - /children: deep-equal
+        - listitem:
+          - button "deep" [expanded]
+          - list:
+            - /children: deep-equal
+            - listitem:
+              - button "c.txt +0 −1"
+  `);
+    await tick(page, "workspace/list_folder");
+    expect(listed.map((params) => params.path)).not.toContain("gone");
+    expect(listed.map((params) => params.path)).not.toContain("gone/deep");
+    await deleted.click();
+    await expect(changesTab(page)).toHaveAttribute("aria-selected", "true");
+    await expect(change(page, "gone/deep/c.txt")).toBeInViewport();
+
+    execFileSync("git", ["-C", services.workspace, "checkout", "--", "gone"]);
+    await page.clock.runFor(1000);
+    await expect(entry(page, "c.txt")).toBeVisible();
+    await expect(entry(page, "gone")).toHaveAttribute("aria-expanded", "true");
+    await expect(entry(page, "deep")).toHaveAttribute("aria-expanded", "true");
+    await entry(page, "c.txt").click();
+    await expect(fileTab(page, "c.txt")).toHaveAttribute("aria-selected", "true");
+    await expect(pane(page)).toHaveText("c");
+  },
+);
+
 clocked("a revealed file that leaves and returns keeps the Changes tab's scroll", async ({ ox: page, services }) => {
   gitRepo(services.workspace);
   for (let i = 0; i < 20; i++) {
     writeFileSync(join(services.workspace, `file-${String(i).padStart(2, "0")}.txt`), "line\n".repeat(30));
   }
   await newDraft(page);
-  await showPanel(page, "Changes");
-  await changesList(page).getByRole("button", { name: "file-19.txt" }).click();
+  await showFiles(page);
+  await countsButton(page, "file-19.txt").click();
   await expect(change(page, "file-19.txt")).toBeInViewport();
   await change(page, "file-00.txt").scrollIntoViewIfNeeded();
   await expect(change(page, "file-00.txt")).toBeInViewport();
@@ -778,12 +881,6 @@ test("a draft's Changes tab carries to its session, which keeps it through switc
   await page.reload();
   await expect(sessionButton(page, "first")).toHaveAttribute("aria-current", "page");
   await expect(changesTab(page)).toHaveCount(0);
-});
-
-test("a directory outside a Git repository says why in the Changes tab", async ({ ox: page }) => {
-  await newDraft(page);
-  await showChanges(page);
-  await expect(changes(page).getByText("not a git repository")).toHaveCount(1);
 });
 
 clocked("the Changes tab shows a new edit on the next tick", async ({ ox: page, services }) => {
@@ -992,19 +1089,6 @@ test.describe("on a wide screen", () => {
     const close = await closeButton(page, long).boundingBox();
     const next = await fileTab(page, "b.txt").boundingBox();
     expect((close?.x ?? 0) + (close?.width ?? 0)).toBeLessThanOrEqual(next?.x ?? 0);
-  });
-
-  test("the panel lists the files or the changes, and the choice holds for every session", async ({ ox: page }) => {
-    await newSession(page, "first");
-    await showFiles(page);
-    await expect(files(page)).toBeVisible();
-    await expect(panelMode(page, "Changes")).toHaveAttribute("aria-pressed", "false");
-    await panelMode(page, "Changes").click();
-    await expect(changesList(page)).toBeVisible();
-    await expect(files(page)).toHaveCount(0);
-    await newSession(page, "second");
-    await expect(changesList(page)).toBeVisible();
-    await expect(panelMode(page, "Changes")).toHaveAttribute("aria-pressed", "true");
   });
 
   test("a file opens as a tab in the focused group, opening it again shows its tab, and closing it removes the tab", async ({

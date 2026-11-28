@@ -320,20 +320,21 @@ title.
 ## Layout
 
 - **Panel toggles.** A button shows and hides the session list, and a button
-  shows and hides the Files | Changes panel at the right, each showing whether
-  its panel is shown. A button sits in its panel's header while the panel shows.
-  While the session list is closed its button is at the left end of the leftmost
-  top tab strip; while the panel is closed its button is at the right end of the
+  shows and hides the Files panel at the right, each showing whether its panel
+  is shown. A button sits in its panel's header while the panel shows. While the
+  session list is closed its button is at the left end of the leftmost top tab
+  strip; while the panel is closed its button is at the right end of the
   rightmost top tab strip. The blank page, with no session or draft, has no
   panel and no panel button.
 - **Tabs.** The center is a tab area. Each session and draft has a chat tab,
   labeled with its title, that cannot be closed; the Changes view, opened from
-  the Changes list, with the total lines added and removed on its tab; and a tab
-  for each open file. Clicking a file in the Files tab opens it in the group
-  last used, or shows its tab. Each session and draft keeps its tabs, groups,
-  and splits through switching views and reconnecting, a draft's carry to the
-  session it creates, and reloading resets them.
-- **Splitting tab groups.** Dragging a tab, or a file from the Files tab, onto
+  the top of the file tree or a changed file's counts, with the total lines
+  added and removed on its tab; and a tab for each open file. Clicking a file in
+  the file tree opens it in the group last used, or shows its tab. Each session
+  and draft keeps its tabs, groups, and splits through switching views and
+  reconnecting, a draft's carry to the session it creates, and reloading resets
+  them.
+- **Splitting tab groups.** Dragging a tab, or a file from the file tree, onto
   the edge of a group opens a new group beside or above or below it; onto the
   middle of a group or its tab strip moves the tab into it; onto a tab places it
   there. A group whose last tab leaves or closes disappears. On a wide screen
@@ -348,21 +349,21 @@ title.
   group's tab strip: Source and Preview for a Markdown file, and a word wrap
   button for a file's source and for the Changes view.
 - **Resizing panels.** On a wide screen, dragging the boundary beside the
-  session list, the Files | Changes panel, or between tab groups resizes them.
-- **Layout through navigation.** Whether the session list and the Files |
-  Changes panel show, the panel's tab, and the side panels' widths are the same
-  for every session; each session and new-session draft keeps its own tabs and
-  groups (see Tabs). The layout lasts through switching views and reconnecting.
-  Reloading the page restores the default layout: panel closed, only chat tabs.
+  session list, the Files panel, or between tab groups resizes them.
+- **Layout through navigation.** Whether the session list and the Files panel
+  show, and the side panels' widths, are the same for every session; each
+  session and new-session draft keeps its own tabs and groups (see Tabs). The
+  layout lasts through switching views and reconnecting. Reloading the page
+  restores the default layout: panel closed, only chat tabs.
 - **Narrow screens.** On a narrow screen the page shows one tab at a time and
   offers no splitting or dragging. The header holds the session list's button, a
   picker showing the active tab that opens a menu of the session's tabs (the
   active one checked, each closable tab with a close button; each file's folder
   shows beside its name), and the panel's button. The session list and the Files
-  | Changes panel open over the page from the left and the right; either closes
-  when the user taps outside it, picks a session or draft, or opens a file;
-  panels cannot be resized. At load the session list is open when the URL names
-  no session. Switching between a narrow and a wide screen keeps the tabs.
+  panel open over the page from the left and the right; either closes when the
+  user taps outside it, picks a session or draft, or opens a file; panels cannot
+  be resized. At load the session list is open when the URL names no session.
+  Switching between a narrow and a wide screen keeps the tabs.
 - **Touch screens.** On a touch screen, session and file rows are tall enough to
   tap, controls that appear on hover elsewhere always show, focusing a text
   field does not zoom the page, and the page keeps its controls clear of the
@@ -370,20 +371,23 @@ title.
 
 ## Files
 
-- **File tree.** The panel's Files tab shows the directory the selected session
-  works in, or a new-session draft's workspace directory, as a tree, folders
-  first, whose folders expand and collapse. It hides version-control folders and
+- **File tree.** The Files panel shows the directory the selected session works
+  in, or a new-session draft's workspace directory, as a tree, folders first,
+  whose folders expand and collapse. It hides version-control folders and
   operating-system metadata files at any depth, such as `.git` and `.DS_Store`,
   shows files Git ignores, lists nothing outside that directory, and shows why a
   folder cannot be read. Each changed file, and each folder above one, is
   colored by its change: modified, added, or deleted, and modified for a folder
-  whose files changed in different ways.
+  whose files changed in different ways. A deleted file shows as a row in its
+  folder, and each deleted folder above one shows as a folder whose rows are the
+  deleted files and folders it held. A changed file's row shows its lines added
+  and removed at its right.
 - **File tree updates.** While the page is visible, the tree shows changes on
   disk to the folders it shows within about a second.
-- **File viewer.** Clicking a file in the file tree opens it as a tab, and marks
-  its row. The pane shows the file's text, or why, when the file is binary,
-  larger than 1 MiB, not UTF-8 text, or cannot be read, and reads nothing
-  outside the file tree's directory.
+- **File viewer.** Clicking a file in the file tree, anywhere on its row but its
+  counts, opens it as a tab, and marks its row. The pane shows the file's text,
+  or why, when the file is binary, larger than 1 MiB, not UTF-8 text, or cannot
+  be read, and reads nothing outside the file tree's directory.
 - **File viewer updates.** While the page is visible, the open file shows
   changes on disk within about a second; a file deleted or renamed keeps its tab
   and shows why it cannot be read until it returns.
@@ -402,23 +406,24 @@ title.
   source. The choice lasts while the tab stays open in its session.
 - **File tree expansion.** Each session keeps which folders are expanded through
   switching views and reconnecting; reloading the page collapses them.
-- **Changes view.** The panel's Changes tab lists each file in the selected
-  session's directory, or a draft's workspace directory, that differs from where
-  the session's branch left the workspace's branch (counting commits,
-  uncommitted edits, and untracked files but not files Git ignores), with its
-  folder and lines added and removed, and the branch and totals at its top.
-  Clicking a file, or the top row, opens the Changes tab; the Changes tab shows
-  every file's diff, and a click on a file scrolls to it. It says why when the
-  directory is not in a Git repository.
+- **Changes view.** The top of the file tree shows the branch and the total
+  lines added and removed across every file in the selected session's directory,
+  or a draft's workspace directory, that differs from where the session's branch
+  left the workspace's branch (counting commits, uncommitted edits, and
+  untracked files but not files Git ignores). Clicking it opens the Changes tab,
+  which shows every file's diff. Clicking a changed file's lines added and
+  removed in the tree, or a deleted file's row, opens the Changes tab scrolled
+  to that file. When the directory is not in a Git repository the top of the
+  tree shows nothing and the Changes tab cannot be opened.
 - **Change diffs.** Each file in the Changes tab has a button that opens its
   file tab, unless it was deleted, and shows its changed lines with the lines
   around them in sections that collapse and start expanded, numbered, colored by
   whether they were added or removed, and highlighted as the file viewer
   highlights them. A binary file, or one whose diff is larger than 1 MiB or not
   UTF-8 text, says so instead.
-- **Changes updates.** While the page is visible, the Changes list and tab, and
-  the file tree's colors show changes on disk and new commits within about a
-  second.
+- **Changes updates.** While the page is visible, the Changes tab, and the file
+  tree's colors, counts, and deleted files and folders show changes on disk and
+  new commits within about a second.
 
 ## Claude Code
 

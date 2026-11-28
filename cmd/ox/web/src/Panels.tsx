@@ -7,23 +7,18 @@ const narrowQuery = "(max-width: 767px)";
 
 type Drawer = "sessions" | "right";
 
-// RightMode is what the panel at the right lists: the files or the changes.
-export type RightMode = "files" | "changes";
-
 // createPanels holds which of the page's panels show, for the life of the
 // page. The wide layout shows the session list and the right panel while
 // their flags are set, each at its own width. The narrow layout shows at most
 // one drawer over the page, the session list or the right panel, starting with
 // drawerAtLoad. Crossing the breakpoint closes the drawer and leaves the wide
-// layout's panels as they were. The right panel lists the same mode for every
-// session.
+// layout's panels as they were.
 export function createPanels(drawerAtLoad: "sessions" | undefined) {
   const media = matchMedia(narrowQuery);
   const [narrow, setNarrow] = createSignal(media.matches);
   const [drawer, setDrawer] = createSignal<Drawer | undefined>(drawerAtLoad);
   const [left, setLeft] = createSignal(true);
   const [right, setRight] = createSignal(false);
-  const [rightMode, setRightMode] = createSignal<RightMode>("files");
   const [leftWidth, setLeftWidth] = createSignal(288);
   const [rightWidth, setRightWidth] = createSignal(240);
   onSettled(() => {
@@ -39,8 +34,6 @@ export function createPanels(drawerAtLoad: "sessions" | undefined) {
     narrow,
     sessions: () => (narrow() ? drawer() === "sessions" : left()),
     right: () => (narrow() ? drawer() === "right" : right()),
-    rightMode,
-    setRightMode,
     toggleSessions: () => (narrow() ? toggle("sessions") : setLeft((shown) => !shown)),
     toggleRight: () => (narrow() ? toggle("right") : setRight((shown) => !shown)),
     // dismiss closes the open drawer; the wide layout has none.
