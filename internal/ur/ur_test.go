@@ -2009,20 +2009,24 @@ func TestOxTools(t *testing.T) {
 	})
 
 	t.Run("arguments not an object", func(t *testing.T) {
-		r := startMCP(t, agent.Settings{Model: model, PermissionMode: "auto"}, nil, standIn(filepath.Join(t.TempDir(), "pid")), func(w http.ResponseWriter, _ *http.Request, n int) {
-			if n == 0 {
-				sseCalls(w, "", call{"call_1", "echo", `["hi"]`})
-				return
-			}
-			sse(w, "ok")
-		})
-		r.send("p1", "go")
-		result := r.until(func(u agent.Update) bool { return u.Type == agent.UpdateToolResult })
-		if !result.Result.IsError || result.Result.Text != "arguments: must be one JSON object" {
-			t.Errorf("tool_result %+v", result.Result)
-		}
-		if final := r.result(); final.IsError || final.Text != "ok" {
-			t.Errorf("result %+v", final)
+		for _, arguments := range []string{`["hi"]`, `null`} {
+			t.Run(arguments, func(t *testing.T) {
+				r := startMCP(t, agent.Settings{Model: model, PermissionMode: "auto"}, nil, standIn(filepath.Join(t.TempDir(), "pid")), func(w http.ResponseWriter, _ *http.Request, n int) {
+					if n == 0 {
+						sseCalls(w, "", call{"call_1", "echo", arguments})
+						return
+					}
+					sse(w, "ok")
+				})
+				r.send("p1", "go")
+				result := r.until(func(u agent.Update) bool { return u.Type == agent.UpdateToolResult })
+				if !result.Result.IsError || result.Result.Text != "arguments: must be one JSON object" {
+					t.Errorf("tool_result %+v", result.Result)
+				}
+				if final := r.result(); final.IsError || final.Text != "ok" {
+					t.Errorf("result %+v", final)
+				}
+			})
 		}
 	})
 
