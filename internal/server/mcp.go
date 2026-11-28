@@ -25,10 +25,8 @@ func (s *Server) attach(c *conn, reply replyFunc, request jsonrpc.Request) (stri
 	if request.Method != "mcp/attach" {
 		return "", false
 	}
-	var input struct {
-		SessionID string `json:"session_id"`
-	}
-	if err := json.Unmarshal(request.Params, &input); err != nil || input.SessionID == "" {
+	sessionID, ok := sessionIDParam(request.Params)
+	if !ok {
 		reply(invalidParams(request.ID, "session_id is required"))
 		return "", true
 	}
@@ -36,7 +34,7 @@ func (s *Server) attach(c *conn, reply replyFunc, request jsonrpc.Request) (stri
 	delete(s.conns, c)
 	s.connsMu.Unlock()
 	reply(jsonrpc.Success(request.ID, struct{}{}))
-	return input.SessionID, true
+	return sessionID, true
 }
 
 // handleMCP answers one MCP request from the forwarder of a session. It waits

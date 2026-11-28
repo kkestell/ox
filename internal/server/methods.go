@@ -135,6 +135,40 @@ func (s *Server) onSession(reply replyFunc, id json.RawMessage, sessionID string
 	}
 }
 
+// sessionIDParam reads params that hold only a session_id, and reports false
+// when it is missing.
+func sessionIDParam(params json.RawMessage) (string, bool) {
+	var input struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(params, &input); err != nil || input.SessionID == "" {
+		return "", false
+	}
+	return input.SessionID, true
+}
+
+// onSessionID runs op on the goroutine of the session params name.
+func (s *Server) onSessionID(reply replyFunc, id, params json.RawMessage, op func(*session)) {
+	sessionID, ok := sessionIDParam(params)
+	if !ok {
+		reply(invalidParams(id, "session_id is required"))
+		return
+	}
+	s.onSession(reply, id, sessionID, op)
+}
+
+// replyEmpty returns a function that answers a request whose success has no
+// result.
+func replyEmpty(reply replyFunc, id json.RawMessage) func(error) {
+	return func(err error) {
+		if err != nil {
+			reply(failure(id, err))
+			return
+		}
+		reply(jsonrpc.Success(id, struct{}{}))
+	}
+}
+
 func (s *Server) createWorkspace(reply replyFunc, id, params json.RawMessage) {
 	var input struct {
 		Path string `json:"path"`
@@ -200,18 +234,26 @@ func (s *Server) workspaceAtLocked(info os.FileInfo) *workspace {
 	return nil
 }
 
+// sessionInfo is a session's wire form in workspace/list and
+// session/created.
+type sessionInfo struct {
+	SessionID string       `json:"session_id"`
+	Label     string       `json:"label"`
+	Harness   string       `json:"harness"`
+	CreatedAt time.Time    `json:"created_at"`
+	Directory string       `json:"directory"`
+	Worktree  string       `json:"worktree,omitempty"`
+	Child     *store.Child `json:"child,omitempty"`
+	Archived  bool         `json:"archived,omitempty"`
+	State     string       `json:"state"`
+}
+
+// infoLocked returns the session's wire form. The caller holds s.mu.
+func (sess *session) infoLocked() sessionInfo {
+	return sessionInfo{sess.id, sess.labelLocked(), sess.harness, sess.createdAt, sess.directory, sess.worktree, sess.child, sess.archived, sess.state}
+}
+
 func (s *Server) listWorkspaces(reply replyFunc, id json.RawMessage) {
-	type sessionInfo struct {
-		SessionID string       `json:"session_id"`
-		Label     string       `json:"label"`
-		Harness   string       `json:"harness"`
-		CreatedAt time.Time    `json:"created_at"`
-		Directory string       `json:"directory"`
-		Worktree  string       `json:"worktree,omitempty"`
-		Child     *store.Child `json:"child,omitempty"`
-		Archived  bool         `json:"archived,omitempty"`
-		State     string       `json:"state"`
-	}
 	type workspaceInfo struct {
 		WorkspaceID string        `json:"workspace_id"`
 		Path        string        `json:"path"`
@@ -225,7 +267,7 @@ func (s *Server) listWorkspaces(reply replyFunc, id json.RawMessage) {
 	for i, w := range s.workspaces {
 		workspaces[i] = workspaceInfo{WorkspaceID: w.id, Path: w.path, CreatedAt: w.createdAt, Sessions: make([]sessionInfo, len(w.sessions))}
 		for j, sess := range w.sessions {
-			workspaces[i].Sessions[j] = sessionInfo{sess.id, sess.labelLocked(), sess.harness, sess.createdAt, sess.directory, sess.worktree, sess.child, sess.archived, sess.state}
+			workspaces[i].Sessions[j] = sess.infoLocked()
 		}
 	}
 	reply(jsonrpc.Success(id, struct {
@@ -244,28 +286,31 @@ func (s *Server) removeWorkspace(reply replyFunc, id, params json.RawMessage) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	replyEmpty(reply, id)(s.removeWorkspaceLocked(input.WorkspaceID))
+}
+
+// removeWorkspaceLocked removes a workspace that has no sessions and tells
+// every client. The caller holds s.mu, and replies under it, so the reply
+// follows the broadcast.
+func (s *Server) removeWorkspaceLocked(workspaceID string) error {
 	if s.closed {
-		reply(shuttingDown(id))
-		return
+		return errShuttingDown
 	}
-	w := s.workspace(input.WorkspaceID)
+	w := s.workspace(workspaceID)
 	switch {
 	case w == nil:
-		reply(jsonrpc.Failure(id, notFound, "workspace not found"))
-		return
+		return errWorkspaceNotFound
 	case len(w.sessions) > 0:
-		reply(jsonrpc.Failure(id, operationFailed, "workspace has sessions"))
-		return
+		return &codedError{operationFailed, "workspace has sessions"}
 	}
 	if err := s.store.DeleteWorkspace(w.id); err != nil {
-		reply(failure(id, err))
-		return
+		return err
 	}
 	s.workspaces = slices.DeleteFunc(s.workspaces, func(other *workspace) bool { return other == w })
 	s.broadcast("workspace/removed", struct {
 		WorkspaceID string `json:"workspace_id"`
 	}{w.id})
-	reply(jsonrpc.Success(id, struct{}{}))
+	return nil
 }
 
 // fileParams are the params of the file methods: a path relative to the
@@ -277,24 +322,23 @@ type fileParams struct {
 }
 
 // fileRoot returns the directory a file request reads beneath, its
-// session's directory or its workspace's path, and the workspace's path. On
-// failure it returns the error response instead.
-func (s *Server) fileRoot(id json.RawMessage, input fileParams) (dir, workspace string, failed *jsonrpc.Response) {
+// session's directory or its workspace's path, and the workspace's path.
+func (s *Server) fileRoot(input fileParams) (dir, workspace string, err error) {
 	if (input.SessionID == "") == (input.WorkspaceID == "") {
-		return "", "", invalidParams(id, "exactly one of session_id and workspace_id is required")
+		return "", "", &codedError{jsonrpc.InvalidParams, "exactly one of session_id and workspace_id is required"}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if input.SessionID != "" {
 		sess := s.sessions[input.SessionID]
 		if sess == nil {
-			return "", "", sessionNotFound(id)
+			return "", "", errSessionNotFound
 		}
 		return sess.directory, sess.workspace, nil
 	}
 	w := s.workspace(input.WorkspaceID)
 	if w == nil {
-		return "", "", jsonrpc.Failure(id, notFound, "workspace not found")
+		return "", "", errWorkspaceNotFound
 	}
 	return w.path, w.path, nil
 }
@@ -311,9 +355,9 @@ func (s *Server) listFolder(reply replyFunc, id, params json.RawMessage) {
 		reply(invalidParams(id, "path must be relative to the directory"))
 		return
 	}
-	dir, _, failed := s.fileRoot(id, input)
-	if failed != nil {
-		reply(failed)
+	dir, _, err := s.fileRoot(input)
+	if err != nil {
+		reply(failure(id, err))
 		return
 	}
 	entries, err := listFolder(dir, input.Path)
@@ -339,9 +383,9 @@ func (s *Server) readFile(reply replyFunc, id, params json.RawMessage) {
 		reply(invalidParams(id, "path must be relative to the directory"))
 		return
 	}
-	dir, _, failed := s.fileRoot(id, input)
-	if failed != nil {
-		reply(failed)
+	dir, _, err := s.fileRoot(input)
+	if err != nil {
+		reply(failure(id, err))
 		return
 	}
 	text, err := readFile(dir, input.Path)
@@ -363,9 +407,9 @@ func (s *Server) listChanges(reply replyFunc, id, params json.RawMessage) {
 		reply(invalidParams(id, "exactly one of session_id and workspace_id is required"))
 		return
 	}
-	dir, workspace, failed := s.fileRoot(id, input)
-	if failed != nil {
-		reply(failed)
+	dir, workspace, err := s.fileRoot(input)
+	if err != nil {
+		reply(failure(id, err))
 		return
 	}
 	result, err := listChanges(workspace, dir)
@@ -414,14 +458,7 @@ func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 // those queued before the response are reflected in it, and those after it
 // are not.
 func (s *Server) getSession(reply replyFunc, id, params json.RawMessage) {
-	var input struct {
-		SessionID string `json:"session_id"`
-	}
-	if err := json.Unmarshal(params, &input); err != nil || input.SessionID == "" {
-		reply(invalidParams(id, "session_id is required"))
-		return
-	}
-	s.onSession(reply, id, input.SessionID, func(sess *session) {
+	s.onSessionID(reply, id, params, func(sess *session) {
 		history, err := sess.history.entries()
 		if err != nil {
 			reply(failure(id, err))
@@ -543,38 +580,13 @@ func (s *Server) approveSession(reply replyFunc, id, params json.RawMessage) {
 		return
 	}
 	s.onSession(reply, id, input.SessionID, func(sess *session) {
-		if sess.agent == nil {
-			reply(failure(id, agent.ErrApprovalNotFound))
-			return
-		}
-		if err := sess.agent.Approve(input.RequestID, input.Response); err != nil {
-			reply(failure(id, err))
-			return
-		}
-		reply(jsonrpc.Success(id, struct{}{}))
+		replyEmpty(reply, id)(sess.approve(input.RequestID, input.Response))
 	})
 }
 
 func (s *Server) interruptSession(reply replyFunc, id, params json.RawMessage) {
-	var input struct {
-		SessionID string `json:"session_id"`
-	}
-	if err := json.Unmarshal(params, &input); err != nil || input.SessionID == "" {
-		reply(invalidParams(id, "session_id is required"))
-		return
-	}
-	s.onSession(reply, id, input.SessionID, func(sess *session) {
-		if sess.agent == nil {
-			reply(jsonrpc.Success(id, struct{}{}))
-			return
-		}
-		sess.agent.Interrupt(func(err error) {
-			if err != nil {
-				reply(failure(id, err))
-				return
-			}
-			reply(jsonrpc.Success(id, struct{}{}))
-		})
+	s.onSessionID(reply, id, params, func(sess *session) {
+		sess.interrupt(replyEmpty(reply, id))
 	})
 }
 
@@ -592,100 +604,33 @@ func (s *Server) configureSession(reply replyFunc, id, params json.RawMessage) {
 		return
 	}
 	s.onSession(reply, id, input.SessionID, func(sess *session) {
-		harness := s.config.Harnesses[sess.harness]
-		// A model alone takes the session's current effort when the model
-		// offers it, so a page need not know the effort.
-		if input.Model != nil && input.Effort == nil {
-			if effort := harness.Effort(*input.Model, sess.settings.Effort); effort != sess.settings.Effort {
-				input.Effort = &effort
-			}
-		}
-		settings := input.Apply(sess.settings)
-		// Only the model and effort the request changes are checked, so a
-		// stored model the configuration no longer offers can stay.
-		if input.Model != nil || input.Effort != nil {
-			if err := harness.CheckModel(settings.Model, settings.Effort); err != nil {
-				reply(invalidParams(id, err.Error()))
-				return
-			}
-		}
-		if sess.agent == nil {
-			if sess.isArchived() {
-				reply(failure(id, errArchived))
-				return
-			}
-			sess.adopt(settings)
-			reply(jsonrpc.Success(id, struct{}{}))
-			return
-		}
-		sess.agent.Configure(input.SettingsPatch, func(err error) {
-			if errors.Is(err, agent.ErrExited) {
-				// Retain any changes the harness made in the meantime.
-				sess.adopt(input.Apply(sess.settings))
-				err = nil
-			}
-			if err != nil {
-				reply(failure(id, err))
-				return
-			}
-			reply(jsonrpc.Success(id, struct{}{}))
-		})
+		sess.configure(input.SettingsPatch, replyEmpty(reply, id))
 	})
 }
 
 func (s *Server) destroySession(reply replyFunc, id, params json.RawMessage) {
-	var input struct {
-		SessionID string `json:"session_id"`
-	}
-	if err := json.Unmarshal(params, &input); err != nil || input.SessionID == "" {
-		reply(invalidParams(id, "session_id is required"))
-		return
-	}
-	s.onSession(reply, id, input.SessionID, func(sess *session) {
-		sess.destroy(func(err error) {
-			if err != nil {
-				reply(failure(id, err))
-				return
-			}
-			reply(jsonrpc.Success(id, struct{}{}))
-		})
+	s.onSessionID(reply, id, params, func(sess *session) {
+		sess.destroy(replyEmpty(reply, id))
 	})
 }
 
 // archiveSession archives a session on its goroutine, which replies once
 // every member has stopped.
 func (s *Server) archiveSession(reply replyFunc, id, params json.RawMessage) {
-	var input struct {
-		SessionID string `json:"session_id"`
-	}
-	if err := json.Unmarshal(params, &input); err != nil || input.SessionID == "" {
-		reply(invalidParams(id, "session_id is required"))
-		return
-	}
-	s.onSession(reply, id, input.SessionID, func(sess *session) {
-		if err := sess.archive(); err != nil {
-			reply(failure(id, err))
-			return
-		}
-		reply(jsonrpc.Success(id, struct{}{}))
+	s.onSessionID(reply, id, params, func(sess *session) {
+		replyEmpty(reply, id)(sess.archive())
 	})
 }
 
 // unarchiveSession unarchives a session and replies under s.mu, so the reply
 // follows the broadcasts it reflects and precedes any later one.
 func (s *Server) unarchiveSession(reply replyFunc, id, params json.RawMessage) {
-	var input struct {
-		SessionID string `json:"session_id"`
-	}
-	if err := json.Unmarshal(params, &input); err != nil || input.SessionID == "" {
+	sessionID, ok := sessionIDParam(params)
+	if !ok {
 		reply(invalidParams(id, "session_id is required"))
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.unarchiveLocked(input.SessionID); err != nil {
-		reply(failure(id, err))
-		return
-	}
-	reply(jsonrpc.Success(id, struct{}{}))
+	replyEmpty(reply, id)(s.unarchiveLocked(sessionID))
 }

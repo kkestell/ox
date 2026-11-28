@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kkestell/ox/internal/agent"
+	"github.com/kkestell/ox/internal/jsonrpc"
 	"github.com/kkestell/ox/internal/store"
 )
 
@@ -167,6 +169,62 @@ func (sess *session) sendPrompt(messageID, text string, images []agent.Image) (s
 		return "", err
 	}
 	return input.MessageID, nil
+}
+
+// approve answers a pending approval. A parked session has none.
+func (sess *session) approve(requestID string, response json.RawMessage) error {
+	if sess.agent == nil {
+		return agent.ErrApprovalNotFound
+	}
+	return sess.agent.Approve(requestID, response)
+}
+
+// interrupt stops the agent's turn. A parked session has none to stop.
+func (sess *session) interrupt(done func(error)) {
+	if sess.agent == nil {
+		done(nil)
+		return
+	}
+	sess.agent.Interrupt(done)
+}
+
+// configure applies patch to the session's settings. A model alone takes the
+// session's current effort when the model offers it, so a page need not know
+// the effort. A parked session adopts the settings at once, unless it is
+// archived; a running one hands the patch to its agent.
+func (sess *session) configure(patch agent.SettingsPatch, done func(error)) {
+	harness := sess.server.config.Harnesses[sess.harness]
+	if patch.Model != nil && patch.Effort == nil {
+		if effort := harness.Effort(*patch.Model, sess.settings.Effort); effort != sess.settings.Effort {
+			patch.Effort = &effort
+		}
+	}
+	settings := patch.Apply(sess.settings)
+	// Only the model and effort the patch changes are checked, so a stored
+	// model the configuration no longer offers can stay.
+	if patch.Model != nil || patch.Effort != nil {
+		if err := harness.CheckModel(settings.Model, settings.Effort); err != nil {
+			done(&codedError{jsonrpc.InvalidParams, err.Error()})
+			return
+		}
+	}
+	if sess.agent == nil {
+		if sess.isArchived() {
+			done(errArchived)
+			return
+		}
+		sess.adopt(settings)
+		done(nil)
+		return
+	}
+	sess.agent.Configure(patch, func(err error) {
+		if errors.Is(err, agent.ErrExited) {
+			// Retain any changes the harness made in the meantime.
+			sess.adopt(patch.Apply(sess.settings))
+			err = nil
+		}
+		done(err)
+	})
 }
 
 // deleteImages deletes the images of a prompt that was dropped or never sent.
