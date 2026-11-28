@@ -15,10 +15,11 @@ import {
   columns,
   dropZone,
   type FileMode,
-  findGroup,
   findTab,
   fits,
   focus,
+  focusedGroup,
+  focusedTab,
   type Group,
   groups,
   type Layout,
@@ -71,7 +72,7 @@ export function TabArea(props: Props) {
   // over is where the drag in progress would drop, the page's own fact.
   const [over, setOver] = createSignal<{ group: number; target: Target }>();
   const area: Area = { props, layout, edit, over, setOver, dragging: {} };
-  const focused = () => findGroup(layout(), layout().focused) as Group;
+  const focused = () => focusedGroup(layout());
   return (
     <Show when={!props.panels.narrow()} fallback={<GroupView area={area} group={focused()} phone />}>
       <div class="tab-area">
@@ -146,6 +147,14 @@ function GroupView(props: { area: Area; group: Group; phone?: boolean }) {
   const shownPath = () => {
     const tab = active();
     return tab.kind === "file" ? tab.path : undefined;
+  };
+  const reveal = () => {
+    const tab = active();
+    return tab.kind === "changes" ? tab.reveal : undefined;
+  };
+  const mode = () => {
+    const tab = active();
+    return tab.kind === "file" ? modeOf(tab) : "source";
   };
   let body!: HTMLDivElement;
   let strip: HTMLDivElement | undefined;
@@ -234,25 +243,12 @@ function GroupView(props: { area: Area; group: Group; phone?: boolean }) {
             <ChangesView
               listing={area.props.listing}
               wrap={area.props.wrap}
-              reveal={(() => {
-                const tab = active();
-                return tab.kind === "changes" ? tab.reveal : undefined;
-              })()}
+              reveal={reveal()}
               onOpen={(path) => area.edit((l) => openTab(l, { kind: "file", path }))}
             />
           </Match>
           <Match when={shownPath()} keyed>
-            {(path) => (
-              <FileView
-                root={area.props.root}
-                path={path}
-                mode={(() => {
-                  const tab = active();
-                  return tab.kind === "file" ? modeOf(tab) : "source";
-                })()}
-                wrap={area.props.wrap}
-              />
-            )}
+            {(path) => <FileView root={area.props.root} path={path} mode={mode()} wrap={area.props.wrap} />}
           </Match>
         </Switch>
         <Show when={preview()}>{(zone) => <div class={["drop-preview", zone()]} />}</Show>
@@ -431,11 +427,7 @@ function PhoneBar(props: { area: Area }) {
       })),
     );
   });
-  const focused = () => {
-    const layout = area.layout();
-    const group = findGroup(layout, layout.focused) as Group;
-    return group.tabs[group.active];
-  };
+  const focused = () => focusedTab(area.layout());
   return (
     <div class="strip phone" role="toolbar" aria-label="Tabs">
       <SessionsToggle panels={area.props.panels} />

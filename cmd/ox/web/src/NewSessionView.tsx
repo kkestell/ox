@@ -1,9 +1,10 @@
 import { createSignal, Show } from "solid-js";
-import { AttachButton, createImageDrop, pasteImages, Thumbnails } from "./Attachments";
+import { createImageDrop } from "./Attachments";
+import { PromptBox } from "./Composer";
 import { newID } from "./id";
 import { useOx } from "./ox";
 import type { Defaults } from "./protocol";
-import { keepPromptFocus, SubmittedPrompt, sendOnEnter } from "./SessionView";
+import { SubmittedPrompt } from "./SessionView";
 import { type ModelChoice, ModelPicker, Select } from "./SettingsFields";
 
 // A submitted draft lives on the page through navigation and reconnect. Its
@@ -74,30 +75,15 @@ export function NewSessionView(props: { draft: Draft; onCreated(): void }) {
         onDragLeave={drop.handlers.onDragLeave}
         onDrop={drop.handlers.onDrop}
       >
-        <form class={["box", { dragging: drop.dragging() }]} onSubmit={create} onPointerDown={keepPromptFocus}>
-          <Thumbnails control={draft.control} />
-          <div class="field">
-            <AttachButton control={draft.control} />
-            <textarea
-              value={draft.control.text()}
-              onInput={(event) => draft.control.setText(event.currentTarget.value)}
-              name="text"
-              rows="1"
-              aria-label="Prompt"
-              required={!draft.control.images().length}
-              autofocus
-              onKeyDown={sendOnEnter}
-              onPaste={pasteImages(draft.control)}
-            />
-            <button
-              type="submit"
-              class="icon send"
-              aria-label="Send"
-              title="Send"
-              disabled={!draft.control.canCreate()}
-            />
-          </div>
-        </form>
+        <PromptBox control={draft.control} onSubmit={create} dragging={drop.dragging()} autofocus>
+          <button
+            type="submit"
+            class="icon send"
+            aria-label="Send"
+            title="Send"
+            disabled={!draft.control.canCreate()}
+          />
+        </PromptBox>
         <Show when={draft.choice()}>
           {(choice) => (
             <div class="settings">
