@@ -202,21 +202,31 @@ func upgrade(db *sql.DB) error {
 	if upgraded {
 		return nil
 	}
+	return withTx(db, func(tx *sql.Tx) error {
+		for _, statement := range []string{
+			`ALTER TABLE sessions ADD COLUMN directory TEXT NOT NULL DEFAULT ''`,
+			`UPDATE sessions SET directory = (SELECT path FROM workspaces WHERE id = sessions.workspace_id)`,
+			`UPDATE sessions SET directory = (SELECT directory FROM children WHERE session_id = sessions.id)
+				WHERE id IN (SELECT session_id FROM children)`,
+			`ALTER TABLE children DROP COLUMN directory`,
+		} {
+			if _, err := tx.Exec(statement); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// withTx runs f in a transaction that commits only when f returns nil.
+func withTx(db *sql.DB, f func(*sql.Tx) error) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	for _, statement := range []string{
-		`ALTER TABLE sessions ADD COLUMN directory TEXT NOT NULL DEFAULT ''`,
-		`UPDATE sessions SET directory = (SELECT path FROM workspaces WHERE id = sessions.workspace_id)`,
-		`UPDATE sessions SET directory = (SELECT directory FROM children WHERE session_id = sessions.id)
-			WHERE id IN (SELECT session_id FROM children)`,
-		`ALTER TABLE children DROP COLUMN directory`,
-	} {
-		if _, err := tx.Exec(statement); err != nil {
-			return err
-		}
+	if err := f(tx); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -228,30 +238,16 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) Workspaces() ([]*Workspace, error) {
-	rows, err := s.db.Query(`SELECT id, path, created_at FROM workspaces ORDER BY created_at, rowid`)
+	workspaces, err := s.loadWorkspaces()
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	workspaces := []*Workspace{}
 	byID := map[string]*Workspace{}
-	for rows.Next() {
-		w := &Workspace{Sessions: []*Session{}}
-		var created string
-		if err := rows.Scan(&w.ID, &w.Path, &created); err != nil {
-			return nil, err
-		}
-		if w.CreatedAt, err = parseTime(created); err != nil {
-			return nil, err
-		}
-		workspaces = append(workspaces, w)
+	for _, w := range workspaces {
 		byID[w.ID] = w
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
 
-	rows, err = s.db.Query(`SELECT s.id, s.workspace_id, s.harness, s.model, s.effort, s.permission_mode, s.resume_token, s.created_at, s.directory,
+	rows, err := s.db.Query(`SELECT s.id, s.workspace_id, s.harness, s.model, s.effort, s.permission_mode, s.resume_token, s.created_at, s.directory,
 			c.parent_id, c.name, c.title, coalesce(cr.creator_id, ''), a.session_id IS NOT NULL, coalesce(t.title, ''), coalesce(wt.worktree, '')
 		FROM sessions s LEFT JOIN children c ON c.session_id = s.id LEFT JOIN creators cr ON cr.session_id = s.id
 			LEFT JOIN archived a ON a.session_id = s.id LEFT JOIN titles t ON t.session_id = s.id LEFT JOIN worktrees wt ON wt.session_id = s.id
@@ -280,6 +276,30 @@ func (s *Store) Workspaces() ([]*Workspace, error) {
 	return workspaces, rows.Err()
 }
 
+// loadWorkspaces reads the workspaces without their sessions. It closes its
+// result set before it returns, so the caller's next query finds the store's
+// one connection free.
+func (s *Store) loadWorkspaces() ([]*Workspace, error) {
+	rows, err := s.db.Query(`SELECT id, path, created_at FROM workspaces ORDER BY created_at, rowid`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	workspaces := []*Workspace{}
+	for rows.Next() {
+		w := &Workspace{Sessions: []*Session{}}
+		var created string
+		if err := rows.Scan(&w.ID, &w.Path, &created); err != nil {
+			return nil, err
+		}
+		if w.CreatedAt, err = parseTime(created); err != nil {
+			return nil, err
+		}
+		workspaces = append(workspaces, w)
+	}
+	return workspaces, rows.Err()
+}
+
 func (s *Store) AddWorkspace(w *Workspace) error {
 	_, err := s.db.Exec(`INSERT INTO workspaces (id, path, created_at) VALUES (?, ?, ?)`,
 		w.ID, w.Path, formatTime(w.CreatedAt))
@@ -298,38 +318,35 @@ func (s *Store) AddSession(workspaceID string, r *Session) error {
 	if r.Child != nil && r.Creator != "" {
 		return errors.New("a child session cannot have a creator")
 	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.Exec(`INSERT INTO sessions (id, workspace_id, harness, model, effort, permission_mode, resume_token, created_at, directory)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, workspaceID, r.Harness, r.Model, r.Effort, r.PermissionMode, r.ResumeToken, formatTime(r.CreatedAt), r.Directory); err != nil {
-		return err
-	}
-	if c := r.Child; c != nil {
-		if _, err := tx.Exec(`INSERT INTO children (session_id, parent_id, name, title) VALUES (?, ?, ?, ?)`,
-			r.ID, c.ParentID, c.Name, c.Title); err != nil {
+	return withTx(s.db, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`INSERT INTO sessions (id, workspace_id, harness, model, effort, permission_mode, resume_token, created_at, directory)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, workspaceID, r.Harness, r.Model, r.Effort, r.PermissionMode, r.ResumeToken, formatTime(r.CreatedAt), r.Directory); err != nil {
 			return err
 		}
-	}
-	if r.Creator != "" {
-		if _, err := tx.Exec(`INSERT INTO creators (session_id, creator_id) VALUES (?, ?)`, r.ID, r.Creator); err != nil {
-			return err
+		if c := r.Child; c != nil {
+			if _, err := tx.Exec(`INSERT INTO children (session_id, parent_id, name, title) VALUES (?, ?, ?, ?)`,
+				r.ID, c.ParentID, c.Name, c.Title); err != nil {
+				return err
+			}
 		}
-	}
-	if r.Title != "" {
-		if _, err := tx.Exec(`INSERT INTO titles (session_id, title) VALUES (?, ?)`, r.ID, r.Title); err != nil {
-			return err
+		if r.Creator != "" {
+			if _, err := tx.Exec(`INSERT INTO creators (session_id, creator_id) VALUES (?, ?)`, r.ID, r.Creator); err != nil {
+				return err
+			}
 		}
-	}
-	if r.Worktree != "" {
-		if _, err := tx.Exec(`INSERT INTO worktrees (session_id, worktree) VALUES (?, ?)`, r.ID, r.Worktree); err != nil {
-			return err
+		if r.Title != "" {
+			if _, err := tx.Exec(`INSERT INTO titles (session_id, title) VALUES (?, ?)`, r.ID, r.Title); err != nil {
+				return err
+			}
 		}
-	}
-	return tx.Commit()
+		if r.Worktree != "" {
+			if _, err := tx.Exec(`INSERT INTO worktrees (session_id, worktree) VALUES (?, ?)`, r.ID, r.Worktree); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (s *Store) SaveSession(r *Session) error {
@@ -346,21 +363,18 @@ func (s *Store) SetTitle(sessionID, title string) error {
 
 // SetArchived archives or unarchives the sessions together.
 func (s *Store) SetArchived(ids []string, archived bool) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	query := `DELETE FROM archived WHERE session_id = ?`
 	if archived {
 		query = `INSERT OR IGNORE INTO archived (session_id) VALUES (?)`
 	}
-	for _, id := range ids {
-		if _, err := tx.Exec(query, id); err != nil {
-			return err
+	return withTx(s.db, func(tx *sql.Tx) error {
+		for _, id := range ids {
+			if _, err := tx.Exec(query, id); err != nil {
+				return err
+			}
 		}
-	}
-	return tx.Commit()
+		return nil
+	})
 }
 
 func (s *Store) DeleteWorkspace(id string) error {
@@ -462,18 +476,15 @@ func (s *Store) UserPrompts(sessionID string) iter.Seq2[string, error] {
 
 // AddImages stores a session's images together.
 func (s *Store) AddImages(sessionID string, images []Image) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	for _, image := range images {
-		if _, err := tx.Exec(`INSERT INTO images (id, session_id, mime_type, data) VALUES (?, ?, ?, ?)`,
-			image.ID, sessionID, image.MimeType, image.Data); err != nil {
-			return err
+	return withTx(s.db, func(tx *sql.Tx) error {
+		for _, image := range images {
+			if _, err := tx.Exec(`INSERT INTO images (id, session_id, mime_type, data) VALUES (?, ?, ?, ?)`,
+				image.ID, sessionID, image.MimeType, image.Data); err != nil {
+				return err
+			}
 		}
-	}
-	return tx.Commit()
+		return nil
+	})
 }
 
 // Image returns the session's image with the ID, or nil when it has none.
@@ -489,17 +500,14 @@ func (s *Store) Image(sessionID, id string) (*Image, error) {
 
 // DeleteImages deletes the images with the IDs.
 func (s *Store) DeleteImages(ids []string) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	for _, id := range ids {
-		if _, err := tx.Exec(`DELETE FROM images WHERE id = ?`, id); err != nil {
-			return err
+	return withTx(s.db, func(tx *sql.Tx) error {
+		for _, id := range ids {
+			if _, err := tx.Exec(`DELETE FROM images WHERE id = ?`, id); err != nil {
+				return err
+			}
 		}
-	}
-	return tx.Commit()
+		return nil
+	})
 }
 
 // Times are stored as fixed-width UTC RFC 3339 text, so they sort as text.
