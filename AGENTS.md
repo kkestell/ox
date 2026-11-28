@@ -130,13 +130,16 @@ We test with `make dev`. Ox's test state is disposable.
 │       ├── agent.go           # adapter from ur's reports to an Agent
 │       ├── ask.go             # ur -ask
 │       ├── engine             # the ur program
-│       │   ├── engine_test.go # end-of-input test
-│       │   ├── engine.go      # turn loop and conversation file
+│       │   ├── conversation.go # conversation file and request messages
+│       │   ├── engine_test.go # input, command, and stale-output tests
+│       │   ├── engine.go      # event loop, commands, and stop
 │       │   ├── instructions.go # system message
+│       │   ├── main.go        # flags and entry points
 │       │   ├── mcp.go         # Ox's MCP forwarder and its tools
 │       │   ├── shell_test.go  # shell tool tests
 │       │   ├── shell.go       # shell tool
-│       │   └── stream.go      # OpenRouter requests and streams
+│       │   ├── stream.go      # OpenRouter requests and streams
+│       │   └── turn.go        # the turn and its steps
 │       ├── harness.go         # harness and checks
 │       ├── ur_test.go         # Ur tests
 │       └── wire

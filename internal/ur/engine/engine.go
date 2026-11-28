@@ -1,177 +1,92 @@
-// Package engine is the ur program, Ox's built-in harness, which chats through
-// OpenRouter's chat completions API and runs the model's shell commands. oxd
-// drives it over stdin and stdout with the wire protocol. Each turn is a
-// streamed request carrying Ur's instructions and then the conversation so
-// far, which ur keeps in a file of its own, then a request after each
-// response's calls have been answered. Given Ox's MCP forwarder, ur also
-// offers Ox's tools, which it calls through the forwarder.
 package engine
 
 import (
-	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"slices"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/kkestell/ox/internal/agent"
 	"github.com/kkestell/ox/internal/ur/wire"
 )
 
-// Endpoint is OpenRouter's chat completions API.
-const Endpoint = "https://openrouter.ai/api/v1/chat/completions"
-
-// Main runs ur with args, the command line without the program name, and
-// returns its exit status.
-//
-// Agent mode, run in the session's workspace:
-//
-//	ur -dir <conversations> [-resume <token>] -model <id> [-effort <e>] -permission-mode <m> [-providers <json>] [-endpoint <url>] [-mcp <json> -session-id <id>]
-//
-// reads Commands on stdin and writes Events on stdout until stdin ends or
-// SIGTERM. With -mcp, an agent.MCPServer as JSON, it starts the forwarder
-// and offers Ox's tools as session -session-id. Ask mode:
-//
-//	ur -ask -model <id> [-effort <e>] -instructions <text> [-providers <json>] [-endpoint <url>]
-//
-// sends the text on stdin and prints the reply.
-func Main(args []string) int {
-	// A Ctrl-C in oxd's terminal reaches ur only as oxd's orderly stop. A
-	// write to an oxd that has gone fails instead of killing ur before it has
-	// killed its commands. The signals are handled rather than ignored, so
-	// each command starts with their defaults.
-	signal.Notify(make(chan os.Signal, 1), syscall.SIGINT, syscall.SIGPIPE)
-	return run(args, os.Stdin, os.Stdout, os.Stderr)
-}
-
-func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	flags := flag.NewFlagSet("ur", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	askMode := flags.Bool("ask", false, "send the text on stdin once and print the reply")
-	dir := flags.String("dir", "", "the directory of conversation files")
-	resume := flags.String("resume", "", "the token of the conversation to resume")
-	model := flags.String("model", "", "the model's ID")
-	effort := flags.String("effort", "", "the reasoning effort")
-	mode := flags.String("permission-mode", "manual", "manual or auto")
-	system := flags.String("instructions", "", "ask mode's system message")
-	providersJSON := flags.String("providers", "", "a JSON object from model ID to provider order")
-	endpoint := flags.String("endpoint", Endpoint, "the chat completions endpoint")
-	mcpJSON := flags.String("mcp", "", "Ox's MCP server for the session, as JSON")
-	sessionID := flags.String("session-id", "", "the Ox session ID, which -mcp acts for")
-	if err := flags.Parse(args); err != nil {
-		return 2
-	}
-	permissionMode, err := agent.ParsePermissionMode(*mode)
-	if err != nil {
-		fmt.Fprintf(stderr, "-permission-mode: %v\n", err)
-		return 2
-	}
-	var providers map[string][]string
-	if *providersJSON != "" {
-		if err := json.Unmarshal([]byte(*providersJSON), &providers); err != nil {
-			fmt.Fprintf(stderr, "-providers: %v\n", err)
-			return 2
-		}
-	}
-	key := os.Getenv("OPENROUTER_API_KEY")
-	if key == "" {
-		fmt.Fprintln(stderr, "OPENROUTER_API_KEY is not set")
-		return 1
-	}
-	if *askMode {
-		text, err := io.ReadAll(stdin)
-		if err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-		reply, err := ask(context.Background(), *endpoint, key, providers, *model, *effort, *system, string(text))
-		if err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-		fmt.Fprint(stdout, reply)
-		return 0
-	}
-	if *dir == "" {
-		fmt.Fprintln(stderr, "-dir is required")
-		return 2
-	}
-	var mcp *agent.MCPServer
-	if *mcpJSON != "" {
-		mcp = new(agent.MCPServer)
-		if err := json.Unmarshal([]byte(*mcpJSON), mcp); err != nil || mcp.Command == "" {
-			fmt.Fprintf(stderr, "-mcp: %q is not an MCP server with a command\n", *mcpJSON)
-			return 2
-		}
-		if *sessionID == "" {
-			fmt.Fprintln(stderr, "-session-id is required with -mcp")
-			return 2
-		}
-	}
-	workspace, err := os.Getwd()
-	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-	e := &engine{
-		endpoint: *endpoint, key: key, providers: providers, dir: *dir, id: *resume, workspace: workspace,
-		out: json.NewEncoder(stdout), stderr: stderr,
-		events: make(chan any), stopped: make(chan struct{}),
-		settings: agent.Settings{Model: *model, Effort: *effort, PermissionMode: permissionMode},
-	}
-	return e.serve(stdin, mcp, *sessionID)
-}
-
-// engine holds one conversation, which it appends to the file <dir>/<id>.jsonl
-// and announces by its ID as the resume token. Every field is owned by the
-// loop goroutine, except those set at start, which the request goroutines
-// read.
+// engine runs one conversation. Its client, workspace, forwarder, and output
+// are set before the loop starts, and request and command goroutines read
+// them; loopState is the loop's own.
 type engine struct {
-	endpoint  string
-	key       string
-	providers map[string][]string
-	dir       string
-	id        string
+	client    client
 	workspace string
 	ox        *forwarder    // nil without -mcp
 	out       *json.Encoder // ur's stdout
 	stderr    io.Writer
-	events    chan any      // the turn's own goroutines' output
+	events    chan event    // every goroutine's output, read only by the loop
 	stopped   chan struct{} // closed once the loop has stopped, so a goroutine delivers nothing after it
-
-	settings agent.Settings
-	history  []message    // exactly the file's entries; only save adds to it
-	queued   []wire.Input // read and not yet taken, oldest first
-	turn     *turn        // the running turn; nil while idle
 	// shells counts the commands whose process groups have not been killed
 	// and reaped. Only the loop goroutine adds to it, before it stops.
 	shells sync.WaitGroup
+
+	loopState
 }
+
+// loopState is the state only the loop goroutine touches.
+type loopState struct {
+	settings agent.Settings
+	conv     *conversation
+	queued   []wire.Input // read and not yet taken, oldest first
+	turn     *turn        // the running turn; nil while idle
+}
+
+// event is what the loop takes from the other goroutines.
+//
+//sumtype:decl
+type event interface{ isEvent() }
+
+// input is an input command's input.
+type input struct{ wire.Input }
+
+// approval answers the pending call named by requestID. Only allow runs it.
+type approval struct {
+	requestID string
+	allow     bool
+	message   string // a denial's message for the model
+}
+
+// interruption is an interrupt command.
+type interruption struct{}
+
+// configuration is a configure command's settings, for the next request.
+type configuration struct{ agent.Settings }
+
+// inputEnded ends stdin, with the error that ended it, or nil at its end.
+type inputEnded struct{ err error }
+
+func (input) isEvent()           {}
+func (approval) isEvent()        {}
+func (interruption) isEvent()    {}
+func (configuration) isEvent()   {}
+func (inputEnded) isEvent()      {}
+func (delta) isEvent()           {}
+func (streamed) isEvent()        {}
+func (ran) isEvent()             {}
+func (answered) isEvent()        {}
+func (forwarderExited) isEvent() {}
 
 // serve runs the conversation until stdin ends, SIGTERM arrives, or the
 // forwarder of mcp, when given, exits, then ends the turn, which kills each
 // command's process group, and returns once every command is reaped and the
 // forwarder has exited.
-func (e *engine) serve(stdin io.Reader, mcp *agent.MCPServer, sessionID string) int {
+func (e *engine) serve(stdin io.Reader, dir, token string, mcp *agent.MCPServer, sessionID string) int {
 	terminate := make(chan os.Signal, 1)
 	signal.Notify(terminate, syscall.SIGTERM)
 	defer signal.Stop(terminate)
-	commands, readErr := e.read(stdin)
+	go e.read(stdin)
 
-	status := 0
-	if e.id == "" {
-		e.id = rand.Text()
-	} else if err := e.load(); err != nil {
+	conv, err := openConversation(dir, token)
+	if err != nil {
 		// oxd ends the session with the lost conversation, and ur waits to
 		// be stopped, reading its input meanwhile so that no write to it
 		// blocks or fails.
@@ -180,8 +95,8 @@ func (e *engine) serve(stdin io.Reader, mcp *agent.MCPServer, sessionID string) 
 		defer close(e.stopped)
 		for {
 			select {
-			case _, ok := <-commands:
-				if !ok {
+			case ev := <-e.events:
+				if _, ok := ev.(inputEnded); ok {
 					return 1
 				}
 			case <-terminate:
@@ -189,7 +104,7 @@ func (e *engine) serve(stdin io.Reader, mcp *agent.MCPServer, sessionID string) 
 			}
 		}
 	}
-	var forwarderExited <-chan struct{}
+	e.conv = conv
 	if mcp != nil {
 		f, err := startForwarder(*mcp, sessionID, e.stderr)
 		if err != nil {
@@ -197,67 +112,122 @@ func (e *engine) serve(stdin io.Reader, mcp *agent.MCPServer, sessionID string) 
 			close(e.stopped)
 			return 1
 		}
-		e.ox, forwarderExited = f, f.exited
+		e.ox = f
 		go f.read(e.deliver)
 	}
+	err = e.loop(terminate)
+	e.stop()
+	if err != nil {
+		fmt.Fprintln(e.stderr, err)
+		return 1
+	}
+	return 0
+}
+
+// loop handles events until one stops ur, and returns the error ur stops
+// with, or nil when it stops cleanly. A step's error ends the running turn.
+func (e *engine) loop(terminate <-chan os.Signal) error {
 	for {
 		select {
-		case c, ok := <-commands:
-			if !ok {
-				if err := *readErr; err != nil {
-					fmt.Fprintf(e.stderr, "read command: %v\n", err)
-					status = 1
-				}
-				e.stop()
-				return status
-			}
-			if err := e.command(c); err != nil {
-				fmt.Fprintln(e.stderr, err)
-				e.stop()
-				return 1
-			}
-		case event := <-e.events:
-			e.handle(event)
 		case <-terminate:
-			e.stop()
-			return status
-		case <-forwarderExited:
-			if err := e.ox.err; err != nil {
-				fmt.Fprintf(e.stderr, "ox-mcp exited: %v\n", err)
-			} else {
-				fmt.Fprintln(e.stderr, "ox-mcp exited")
+			return nil
+		case ev := <-e.events:
+			switch ev := ev.(type) {
+			case inputEnded:
+				return ev.err
+			case forwarderExited:
+				if ev.err != nil {
+					return fmt.Errorf("ox-mcp exited: %w", ev.err)
+				}
+				return errors.New("ox-mcp exited")
+			default:
+				if err := e.handle(ev); err != nil {
+					e.fail(err)
+				}
+				e.startNext()
 			}
-			e.stop()
-			return 1
+		}
+	}
+}
+
+// handle carries out a command or takes a request's, command's, or call's
+// output. An error it returns is the running turn's.
+func (e *engine) handle(ev event) error {
+	switch ev := ev.(type) {
+	case input:
+		e.queued = append(e.queued, ev.Input)
+	case approval:
+		return e.approve(ev)
+	case interruption:
+		e.interrupt()
+	case configuration:
+		e.settings = ev.Settings
+	case delta:
+		return e.onDelta(ev)
+	case streamed:
+		return e.onStreamed(ev)
+	case ran:
+		return e.onRan(ev)
+	case answered:
+		return e.onAnswered(ev)
+	case inputEnded, forwarderExited:
+		// The loop stops on these before it would handle them.
+	}
+	return nil
+}
+
+// startNext begins a turn with the queued inputs while none runs.
+func (e *engine) startNext() {
+	for e.turn == nil && len(e.queued) > 0 {
+		if err := e.begin(); err != nil {
+			e.fail(err)
 		}
 	}
 }
 
 // read reads commands from stdin on its own goroutine, so that oxd's writes
-// never wait on the loop, until stdin ends or the loop stops. Once commands is
-// closed, readErr holds the error that ended a stdin that did not reach EOF.
-func (e *engine) read(stdin io.Reader) (commands <-chan wire.Command, readErr *error) {
-	c := make(chan wire.Command)
-	readErr = new(error)
-	go func() {
-		defer close(c)
-		decoder := json.NewDecoder(stdin)
-		for {
-			var command wire.Command
-			if err := decoder.Decode(&command); err != nil {
-				if !errors.Is(err, io.EOF) {
-					*readErr = err
-				}
-				return
+// never wait on the loop, and delivers each one until stdin ends or a line is
+// not a command, which it delivers as inputEnded.
+func (e *engine) read(stdin io.Reader) {
+	decoder := json.NewDecoder(stdin)
+	for {
+		var c wire.Command
+		if err := decoder.Decode(&c); err != nil {
+			if errors.Is(err, io.EOF) {
+				e.deliver(inputEnded{})
+			} else {
+				e.deliver(inputEnded{fmt.Errorf("read command: %w", err)})
 			}
-			select {
-			case c <- command:
-			case <-e.stopped:
-				return
-			}
+			return
 		}
-	}()
-	return c, readErr
+		ev, err := command(c)
+		if err != nil {
+			e.deliver(inputEnded{err})
+			return
+		}
+		e.deliver(ev)
+	}
+}
+
+// command checks c and converts it to its event.
+func command(c wire.Command) (event, error) {
+	switch c.Type {
+	case wire.CommandInput:
+		if c.Input == nil {
+			return nil, errors.New("input command without an input")
+		}
+		return input{*c.Input}, nil
+	case wire.CommandApprove:
+		return approval{requestID: c.RequestID, allow: c.Behavior == "allow", message: c.Message}, nil
+	case wire.CommandInterrupt:
+		return interruption{}, nil
+	case wire.CommandConfigure:
+		if c.Settings == nil {
+			return nil, errors.New("configure command without settings")
+		}
+		return configuration{*c.Settings}, nil
+	}
+	return nil, fmt.Errorf("unknown command %q", c.Type)
 }
 
 // stop ends the running turn, waits for its commands' process groups to be
@@ -274,30 +244,12 @@ func (e *engine) stop() {
 	}
 }
 
-// command carries out a command from oxd.
-func (e *engine) command(c wire.Command) error {
-	switch c.Type {
-	case wire.CommandInput:
-		if c.Input == nil {
-			return errors.New("input command without an input")
-		}
-		e.queued = append(e.queued, *c.Input)
-		if e.turn == nil {
-			e.begin()
-		}
-	case wire.CommandApprove:
-		e.approve(c.RequestID, c.Behavior, c.Message)
-	case wire.CommandInterrupt:
-		e.interrupt()
-	case wire.CommandConfigure:
-		if c.Settings == nil {
-			return errors.New("configure command without settings")
-		}
-		e.settings = *c.Settings
-	default:
-		return fmt.Errorf("unknown command %q", c.Type)
+// deliver passes ev to the loop unless it has stopped.
+func (e *engine) deliver(ev event) {
+	select {
+	case e.events <- ev:
+	case <-e.stopped:
 	}
-	return nil
 }
 
 // emit writes event to oxd. A write that fails means oxd has gone, and stdin
@@ -314,355 +266,16 @@ func (e *engine) state(state string) {
 	e.emit(wire.Event{Type: wire.EventState, State: state})
 }
 
-// deliver passes event to the loop unless it has stopped.
-func (e *engine) deliver(event any) {
-	select {
-	case e.events <- event:
-	case <-e.stopped:
-	}
-}
-
-func (e *engine) path() string {
-	return filepath.Join(e.dir, e.id+".jsonl")
-}
-
-// load reads the conversation file into history.
-func (e *engine) load() error {
-	f, err := os.Open(e.path())
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	decoder := json.NewDecoder(f)
-	for {
-		var m message
-		err := decoder.Decode(&m)
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		e.history = append(e.history, m)
-	}
-}
-
-// save appends m to the conversation file, and to history once it is
-// written. Saving the first entry makes the conversation resumable.
+// save appends m to the conversation. Saving the first entry makes the
+// conversation resumable.
 func (e *engine) save(m message) error {
-	if err := os.MkdirAll(e.dir, 0o700); err != nil {
+	if err := e.conv.append(m); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(e.path(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	data, _ := json.Marshal(m) // strings always marshal
-	_, err = f.Write(append(data, '\n'))
-	if closeErr := f.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	e.history = append(e.history, m)
-	if len(e.history) == 1 {
-		e.emit(wire.Event{Type: wire.EventResumable, Token: e.id})
+	if len(e.conv.entries) == 1 {
+		e.emit(wire.Event{Type: wire.EventResumable, Token: e.conv.token})
 	}
 	return nil
-}
-
-// turn is the running turn. Canceling its context ends its request or command.
-type turn struct {
-	start  int // the length of history when the turn began; later entries are the turn's
-	ctx    context.Context
-	cancel context.CancelFunc
-	step   step
-}
-
-// step is what the turn waits on.
-//
-//sumtype:decl
-type step interface{ isStep() }
-
-// streaming waits on the request.
-type streaming struct{}
-
-// asking waits on the approval of calls[0], the first of the response's calls
-// not yet answered.
-type asking struct {
-	calls     []toolCall
-	command   shellCommand // calls[0]'s arguments
-	requestID string
-}
-
-// executing waits on calls[0]'s command, the first of the response's calls not
-// yet answered.
-type executing struct {
-	calls []toolCall
-}
-
-// calling waits on the answer to calls[0], the first of the response's calls
-// not yet answered, a call of one of Ox's tools written as request id.
-type calling struct {
-	calls []toolCall
-	id    int
-}
-
-func (streaming) isStep()  {}
-func (*asking) isStep()    {}
-func (*executing) isStep() {}
-func (*calling) isStep()   {}
-
-// delta is a chunk's reply text and reasoning fragments streamed for a turn.
-type delta struct {
-	turn      *turn
-	text      string
-	reasoning []reasoningDetail
-}
-
-// ended ends a turn's request, with the response's tool calls or the error
-// that ended it early.
-type ended struct {
-	turn  *turn
-	calls []toolCall
-	err   error
-}
-
-// ran ends a step's command, whose process group, group, has been killed and
-// reaped.
-type ran struct {
-	step    *executing
-	group   int
-	outcome outcome
-}
-
-// handle takes a request's or command's output. Output for a turn that is no
-// longer running is ignored.
-func (e *engine) handle(event any) {
-	switch ev := event.(type) {
-	case delta:
-		if ev.turn != e.turn {
-			return
-		}
-		if err := e.save(message{Role: "assistant", Content: content{Text: ev.text}, ReasoningDetails: ev.reasoning}); err != nil {
-			e.finish(agent.Result{Text: "Ur could not save the reply: " + err.Error(), IsError: true})
-			return
-		}
-		var reasoning []byte
-		for _, d := range ev.reasoning {
-			reasoning = append(reasoning, d.display()...)
-		}
-		if len(reasoning) > 0 {
-			e.publish(agent.Update{Type: agent.UpdateReasoningDelta, Text: string(reasoning)})
-		}
-		if ev.text != "" {
-			e.publish(agent.Update{Type: agent.UpdateTextDelta, Text: ev.text})
-		}
-	case ended:
-		if ev.turn != e.turn {
-			return
-		}
-		switch {
-		case ev.err != nil:
-			e.finish(agent.Result{Text: ev.err.Error(), IsError: true})
-		case len(ev.calls) == 0:
-			var reply string
-			if messages := conversation(e.history); messages[len(messages)-1].Role == "assistant" {
-				reply = messages[len(messages)-1].Content.Text
-			}
-			e.finish(agent.Result{Text: reply})
-		default:
-			if err := e.save(message{Role: "assistant", ToolCalls: ev.calls}); err != nil {
-				e.finish(agent.Result{Text: "Ur could not save the reply: " + err.Error(), IsError: true})
-				return
-			}
-			e.next(ev.calls)
-		}
-	case ran:
-		e.emit(wire.Event{Type: wire.EventCommandEnded, Group: ev.group})
-		if e.turn == nil || e.turn.step != ev.step {
-			return
-		}
-		e.answer(ev.step.calls, ev.outcome)
-	case answered:
-		// Any other answer is to a call whose turn an interrupt or stop
-		// ended.
-		if e.turn == nil {
-			return
-		}
-		if s, ok := e.turn.step.(*calling); ok && s.id == ev.id {
-			e.answer(s.calls, ev.outcome)
-		}
-	}
-}
-
-// begin starts a turn with the first queued input. An input read during a turn
-// is taken before the turn's next request, after the commands of the response
-// before it, or waits for the turn to end if the response was its last.
-func (e *engine) begin() {
-	ctx, cancel := context.WithCancel(context.Background())
-	e.turn = &turn{start: len(e.history), ctx: ctx, cancel: cancel}
-	e.request()
-}
-
-// request takes every queued input into the turn and posts the next request.
-func (e *engine) request() {
-	for len(e.queued) > 0 {
-		input := e.queued[0]
-		e.queued = e.queued[1:]
-		e.emit(wire.Event{Type: wire.EventTaken, MessageID: input.MessageID})
-		var images []string
-		for _, image := range input.Images {
-			images = append(images, "data:"+image.MimeType+";base64,"+base64.StdEncoding.EncodeToString(image.Data))
-		}
-		if err := e.save(message{Role: "user", Content: content{Text: input.Content, Images: images}}); err != nil {
-			e.finish(agent.Result{Text: "Ur could not save the prompt: " + err.Error(), IsError: true})
-			return
-		}
-	}
-	body, err := e.body()
-	if err != nil {
-		e.finish(agent.Result{Text: "Ur could not read AGENTS.md: " + err.Error(), IsError: true})
-		return
-	}
-	e.turn.step = streaming{}
-	go e.stream(e.turn.ctx, e.turn, body)
-}
-
-// next takes up calls, the response's calls not yet answered, oldest first,
-// and posts the next request once every call is answered. A call whose
-// arguments are invalid is answered at once. A call of one of Ox's tools runs
-// without asking; a shell call runs at once when the auto permission mode
-// lets it, and asks for approval otherwise.
-func (e *engine) next(calls []toolCall) {
-	if len(calls) == 0 {
-		e.request()
-		return
-	}
-	call := calls[0]
-	if e.ox.offers(call.Function.Name) {
-		e.callOx(calls)
-		return
-	}
-	command, err := parseCall(call)
-	var input json.RawMessage
-	if err == nil {
-		input, _ = json.Marshal(command) // strings and integers always marshal
-	} else {
-		input = shown(call.Function.Arguments)
-	}
-	e.publish(agent.Update{Type: agent.UpdateToolUse, ToolUseID: call.ID, ToolName: call.Function.Name, Input: input})
-	if err != nil {
-		e.answer(calls, outcome{err.Error(), true})
-		return
-	}
-	if e.settings.PermissionMode == agent.Auto && agent.AutoRuns(command.Command) {
-		e.execute(calls, command)
-		return
-	}
-	s := &asking{calls: calls, command: command, requestID: rand.Text()}
-	e.turn.step = s
-	e.state(agent.StateRequiresAction)
-	request, _ := json.Marshal(map[string]any{"tool_name": "shell", "input": s.command, "tool_use_id": s.calls[0].ID}) // strings and valid JSON always marshal
-	e.publish(agent.Update{Type: agent.UpdateApproval, RequestID: s.requestID, Request: request})
-}
-
-// shown is a call's arguments as the transcript shows them: the arguments
-// when they are one JSON object, and an empty object otherwise.
-func shown(arguments string) json.RawMessage {
-	var object map[string]json.RawMessage
-	if json.Unmarshal([]byte(arguments), &object) != nil || object == nil {
-		return json.RawMessage("{}")
-	}
-	return json.RawMessage(arguments)
-}
-
-// callOx writes calls[0], a call of one of Ox's tools, to the forwarder, and
-// waits on its answer. Arguments that are not one JSON object are answered at
-// once.
-func (e *engine) callOx(calls []toolCall) {
-	call := calls[0]
-	input := shown(call.Function.Arguments)
-	e.publish(agent.Update{Type: agent.UpdateToolUse, ToolUseID: call.ID, ToolName: call.Function.Name, Input: input})
-	if string(input) != call.Function.Arguments {
-		e.answer(calls, outcome{"arguments: must be one JSON object", true})
-		return
-	}
-	id, err := e.ox.call(call.Function.Name, input, call.ID)
-	if err != nil {
-		e.answer(calls, outcome{"Could not reach ox-mcp: " + err.Error(), true})
-		return
-	}
-	e.turn.step = &calling{calls: calls, id: id}
-}
-
-// parseCall checks that call is a shell call with valid arguments.
-func parseCall(call toolCall) (shellCommand, error) {
-	if call.Function.Name != "shell" {
-		return shellCommand{}, fmt.Errorf("Ur has no tool %q", call.Function.Name)
-	}
-	return parseShell(call.Function.Arguments)
-}
-
-// execute runs calls[0]'s command on its own goroutine, which delivers its
-// outcome.
-func (e *engine) execute(calls []toolCall, command shellCommand) {
-	sh, err := startShell(e.turn.ctx, e.workspace, command)
-	if err != nil {
-		e.answer(calls, outcome{"Could not start bash: " + err.Error(), true})
-		return
-	}
-	s := &executing{calls: calls}
-	e.turn.step = s
-	e.emit(wire.Event{Type: wire.EventCommandStarted, Group: sh.cmd.Process.Pid})
-	e.shells.Add(1)
-	go func() {
-		o := sh.wait()
-		e.shells.Done()
-		e.deliver(ran{s, sh.cmd.Process.Pid, o})
-	}()
-}
-
-// answer publishes and saves calls[0]'s outcome and takes up the rest. An
-// outcome that cannot be saved is published, then ends the turn.
-func (e *engine) answer(calls []toolCall, o outcome) {
-	e.publish(agent.Update{Type: agent.UpdateToolResult, ToolUseID: calls[0].ID, Result: &agent.Result{Text: o.text, IsError: o.isError}})
-	if err := e.save(message{Role: "tool", ToolCallID: calls[0].ID, Content: content{Text: o.text}}); err != nil {
-		e.finish(agent.Result{Text: "Ur could not save the command's result: " + err.Error(), IsError: true})
-		return
-	}
-	e.next(calls[1:])
-}
-
-// body builds the next request from Ur's instructions, read now, and the
-// conversation, with the current settings. The instructions are not part of
-// the saved conversation.
-func (e *engine) body() ([]byte, error) {
-	var oxSession string
-	if e.ox != nil {
-		oxSession = e.ox.sessionID
-	}
-	text, err := instructions(e.workspace, oxSession, time.Now())
-	if err != nil {
-		return nil, err
-	}
-	// Reasoning models need the current turn's reasoning back in its tool
-	// loop. Earlier turns' reasoning stays out.
-	history := slices.Clone(e.history)
-	for i := range e.turn.start {
-		history[i].ReasoningDetails = nil
-	}
-	messages := append([]message{{Role: "system", Content: content{Text: text}}}, conversation(history)...)
-	body := request{Model: e.settings.Model, Messages: messages, Tools: e.tools(), Stream: true}
-	if e.settings.Effort != "" {
-		body.Reasoning = &reasoning{Effort: e.settings.Effort}
-	}
-	if order := e.providers[e.settings.Model]; len(order) > 0 {
-		body.Provider = &provider{Order: order}
-	}
-	data, _ := json.Marshal(body) // strings, slices of them, and valid JSON always marshal
-	return data, nil
 }
 
 // tools is every request's tools: shell, then Ox's.
@@ -672,90 +285,4 @@ func (e *engine) tools() []json.RawMessage {
 		tools = append(tools, e.ox.definitions...)
 	}
 	return tools
-}
-
-// stopped answers a call whose command did not finish: an interrupt, a stop,
-// or oxd exiting during it.
-const stopped = "The user stopped this command before it finished."
-
-// conversation joins each run of assistant entries in history, the deltas,
-// reasoning, and tool calls of one response, into one message, and answers
-// each call left without a tool entry before the next user entry with stopped.
-func conversation(history []message) []message {
-	var messages []message
-	var open []string // IDs of the latest response's calls without a tool entry
-	for _, m := range history {
-		last := len(messages) - 1
-		// The merge writes into the message's details, which must not be
-		// history's.
-		m.ReasoningDetails = appendReasoning(nil, m.ReasoningDetails)
-		switch {
-		case m.Role == "assistant" && last >= 0 && messages[last].Role == "assistant":
-			messages[last].Content.Text += m.Content.Text
-			messages[last].ReasoningDetails = appendReasoning(messages[last].ReasoningDetails, m.ReasoningDetails)
-			messages[last].ToolCalls = append(messages[last].ToolCalls, m.ToolCalls...)
-		case m.Role == "tool":
-			open = slices.DeleteFunc(open, func(id string) bool { return id == m.ToolCallID })
-			messages = append(messages, m)
-		default:
-			if m.Role == "user" {
-				for _, id := range open {
-					messages = append(messages, message{Role: "tool", ToolCallID: id, Content: content{Text: stopped}})
-				}
-				open = nil
-			}
-			messages = append(messages, m)
-		}
-		for _, call := range m.ToolCalls {
-			open = append(open, call.ID)
-		}
-	}
-	return messages
-}
-
-// finish ends the running turn with result and begins the next queued input.
-func (e *engine) finish(result agent.Result) {
-	e.publish(agent.Update{Type: agent.UpdateResult, Result: &result})
-	e.state(agent.StateIdle)
-	e.turn.cancel()
-	e.turn = nil
-	if len(e.queued) > 0 {
-		e.begin()
-	}
-}
-
-// approve answers the pending shell call's approval when requestID names it.
-// Allow runs the command as the model wrote it; deny tells the model the
-// user's message.
-func (e *engine) approve(requestID, behavior, msg string) {
-	var s *asking
-	if e.turn != nil {
-		s, _ = e.turn.step.(*asking)
-	}
-	if s == nil || s.requestID != requestID {
-		return
-	}
-	e.state(agent.StateRunning)
-	if behavior == "allow" {
-		e.execute(s.calls, s.command)
-	} else {
-		e.answer(s.calls, outcome{"The user denied this command: " + msg, true})
-	}
-}
-
-// interrupt drops every queued input and ends the turn at once. A call it
-// leaves without a result is answered with stopped in the next request, and
-// the page shows it stopped.
-func (e *engine) interrupt() {
-	for _, input := range e.queued {
-		e.emit(wire.Event{Type: wire.EventDropped, MessageID: input.MessageID})
-	}
-	e.queued = nil
-	if e.turn != nil {
-		if s, ok := e.turn.step.(*asking); ok {
-			e.publish(agent.Update{Type: agent.UpdateApprovalCancelled, RequestID: s.requestID})
-		}
-		e.finish(agent.Result{Text: "Interrupted", IsError: true})
-	}
-	e.emit(wire.Event{Type: wire.EventInterrupted})
 }

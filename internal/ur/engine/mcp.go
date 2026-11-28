@@ -27,10 +27,7 @@ type forwarder struct {
 	definitions []json.RawMessage // the tools' function definitions, which every request offers
 	names       []string          // the tools' names, which the model calls them by
 	lastID      int               // the latest request's ID
-	// exited is closed once the forwarder has exited and its output is read;
-	// err is then its exit's error.
-	exited chan struct{}
-	err    error
+	exited      chan struct{}     // closed once the forwarder has exited and its output is read
 }
 
 // answered is the forwarder's answer to the tools/call request id.
@@ -38,6 +35,10 @@ type answered struct {
 	id      int
 	outcome outcome
 }
+
+// forwarderExited reports that the forwarder has exited, with its exit's
+// error.
+type forwarderExited struct{ err error }
 
 // response is a JSON-RPC response from the forwarder.
 type response struct {
@@ -164,9 +165,9 @@ func (f *forwarder) call(name string, arguments json.RawMessage, toolUseID strin
 	})
 }
 
-// read delivers each answer until the forwarder's output ends, then reaps it
-// and closes exited.
-func (f *forwarder) read(deliver func(any)) {
+// read delivers each answer until the forwarder's output ends, then reaps it,
+// closes exited, and delivers its exit.
+func (f *forwarder) read(deliver func(event)) {
 	for {
 		line, err := f.stdout.ReadBytes('\n')
 		var r response
@@ -177,8 +178,9 @@ func (f *forwarder) read(deliver func(any)) {
 			break
 		}
 	}
-	f.err = f.cmd.Wait()
+	err := f.cmd.Wait()
 	close(f.exited)
+	deliver(forwarderExited{err})
 }
 
 // outcome is a tools/call response's outcome: the result's text, or the
