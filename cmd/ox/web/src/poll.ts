@@ -3,7 +3,7 @@ import { Disconnected } from "./connection";
 import { useOx } from "./ox";
 
 // Polled is a repeated request's latest answer: its value or its error.
-type Polled<T> = { kind: "value"; value: T } | { kind: "error"; message: string };
+export type Polled<T> = { kind: "value"; value: T } | { kind: "error"; message: string };
 
 // createPoll runs request now and on each tick of the page's clock while the
 // page is connected, and returns its latest answer, undefined until the first.
