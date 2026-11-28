@@ -1,9 +1,9 @@
 import { Show, untrack } from "solid-js";
 import { createListing } from "./Changes";
 import { FileTree } from "./FileTree";
-import type { SessionControl } from "./ox";
 import { type Panels, PanelToggle, Sash } from "./Panels";
 import type { FileRoot } from "./protocol";
+import type { SessionControl } from "./sessionControl";
 import { type Chat, TabArea } from "./TabArea";
 import { focusedTab, openTab, reveal } from "./tabs";
 

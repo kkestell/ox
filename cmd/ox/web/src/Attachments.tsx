@@ -1,5 +1,5 @@
 import { createSignal, For, onCleanup, Show, untrack } from "solid-js";
-import { imageTypes, type SessionControl } from "./ox";
+import { imageTypes, type SessionControl } from "./sessionControl";
 
 // filesOf is the files a drag or paste carries.
 const filesOf = (data: DataTransfer | null) => [...(data?.files ?? [])];

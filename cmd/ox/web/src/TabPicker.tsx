@@ -1,6 +1,6 @@
 import { createUniqueId, For, Show } from "solid-js";
 import { Counts } from "./Changes";
-import type { Attention } from "./ox";
+import type { Attention } from "./sessionControl";
 
 // attentionLabel is the text of the mark a hidden chat tab carries.
 const attentionLabel = (attention: Attention) => (attention.kind === "waiting" ? "Waiting on you" : attention.text);

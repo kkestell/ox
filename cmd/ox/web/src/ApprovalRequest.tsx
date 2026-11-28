@@ -1,6 +1,7 @@
 import { createUniqueId, For, flush, Show, snapshot, untrack } from "solid-js";
-import type { Approval, CardDraft, QuestionAnswer, SessionControl } from "./ox";
 import type { ApprovalResponse } from "./protocol";
+import type { CardDraft, QuestionAnswer, SessionControl } from "./sessionControl";
+import type { Approval } from "./snapshot";
 import { type Question, questionsOf, toolInputJSON, toolLabel, toolSubject } from "./toolInput";
 
 type Choice = NonNullable<CardDraft["choice"]>;
