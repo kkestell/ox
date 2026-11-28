@@ -445,6 +445,12 @@ that can observe the change ran.
   `make live`. Ur's live test, `TestLiveUr`, uses the built-in DeepSeek model
   through OpenRouter with `OPENROUTER_API_KEY` from `.env`.
 - Keep test setup simple; avoid elaborate mocks and fake runtimes.
+- A test passes or fails on the behavior it checks alone; a test that can
+  fail without a defect in the code is itself a defect. Each step waits for
+  the event it needs, such as a file, a line of output, or a process's exit.
+  A stand-in process moves on when the test tells it to, and a deadline only
+  bounds a wait for an event that comes on its own. A stand-in that handles
+  signals is a Node or Go program, whose handlers see every signal delivered.
 - One session at a time runs `make e2e` or Playwright in a worktree.
 - `make test`, `make e2e`, and `make dev` build with the race detector. A data race fails
   the test, or stops `oxd` with the race's report.
