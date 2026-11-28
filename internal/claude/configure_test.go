@@ -41,20 +41,20 @@ func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 	a.Handle(initialized)
 	*updates = nil
 	decoder := json.NewDecoder(input)
-	patch := agent.SettingsPatch{Model: new("haiku"), Effort: new("low"), PermissionMode: new("plan")}
+	patch := agent.SettingsPatch{Model: new("haiku"), Effort: new("low"), PermissionMode: new(agent.Auto)}
 	result := make(chan error, 1)
 	a.Configure(patch, replyTo(result))
 	held := prompt("hello")
 
+	// The permission mode needs no acknowledgement, and is applied first.
 	expectedSettings := []agent.Settings{
-		{Model: "haiku"},
-		{Model: "haiku", Effort: "low"},
-		{Model: "haiku", Effort: "low", PermissionMode: "plan"},
+		{PermissionMode: agent.Auto},
+		{Model: "haiku", PermissionMode: agent.Auto},
+		{Model: "haiku", Effort: "low", PermissionMode: agent.Auto},
 	}
 	for i, expected := range []map[string]any{
 		{"subtype": "set_model", "model": "haiku"},
 		{"subtype": "apply_flag_settings", "settings": map[string]any{"effortLevel": "low"}},
-		{"subtype": "set_permission_mode", "mode": "plan"},
 	} {
 		var wire struct {
 			Type      string         `json:"type"`
@@ -69,7 +69,7 @@ func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 		}
 		// A prompt sent during the configuration is accepted, and the
 		// requests that follow it show it is not written.
-		if i == 1 {
+		if i == 0 {
 			if err := a.Send(held); err != nil {
 				t.Fatalf("prompt refused during configuration: %v", err)
 			}
@@ -91,11 +91,11 @@ func TestConfigureWaitsForAcknowledgements(t *testing.T) {
 			t.Fatalf("configuration finished before its acknowledgement: %v", err)
 		default:
 		}
-		if len(applied) != i {
+		if len(applied) != i+1 {
 			t.Fatalf("unacknowledged settings were reported: %+v", applied)
 		}
 		acknowledge(t, a, wire.RequestID, "success")
-		if !reflect.DeepEqual(applied, expectedSettings[:i+1]) {
+		if !reflect.DeepEqual(applied, expectedSettings[:i+2]) {
 			t.Fatalf("acknowledged settings were not reported: %+v", applied)
 		}
 	}
@@ -260,28 +260,26 @@ func TestConfigureTimeoutStopsProcess(t *testing.T) {
 	var reported []agent.Settings
 	a.onConfigured = func(s agent.Settings) { reported = append(reported, s) }
 	result := make(chan error, 1)
-	a.Configure(agent.SettingsPatch{Model: new("haiku"), Effort: new("low"), PermissionMode: new("plan")}, replyTo(result))
+	a.Configure(agent.SettingsPatch{Model: new("haiku"), Effort: new("low")}, replyTo(result))
 	first := controlRequestID(t, input)
 	acknowledge(t, a, first, "success")
 	second := controlRequestID(t, input)
 
 	a.Handle(controlTimeout{first})
 	a.Handle(controlTimeout{"stale"})
-	acknowledge(t, a, second, "success")
-	if len(reported) != 2 {
+	if _, configuring := a.phase.(*configuring); !configuring || len(reported) != 1 {
 		t.Fatalf("a timeout for an acknowledged request stopped the configuration: %+v", reported)
 	}
-	third := controlRequestID(t, input)
 
-	a.Handle(controlTimeout{third})
+	a.Handle(controlTimeout{second})
 	exit := <-a.Events()
-	acknowledge(t, a, third, "success")
+	acknowledge(t, a, second, "success")
 	select {
 	case err := <-result:
 		t.Fatalf("configuration ended before the process exited: %v", err)
 	default:
 	}
-	if len(reported) != 2 {
+	if len(reported) != 1 {
 		t.Fatalf("an acknowledgement after the timeout reported settings: %+v", reported)
 	}
 	id, err := sendTestPrompt(a, "hello")
@@ -299,7 +297,7 @@ func TestConfigureTimeoutStopsProcess(t *testing.T) {
 }
 
 func TestConfigureRequiresIdle(t *testing.T) {
-	for _, busy := range []string{"running", "requires_action", "prompt not taken", "prompt taken"} {
+	for _, busy := range []string{"running", "approval", "prompt not taken", "prompt taken"} {
 		t.Run(busy, func(t *testing.T) {
 			a, _, _ := testAgent()
 			switch busy {
@@ -309,39 +307,54 @@ func TestConfigureRequiresIdle(t *testing.T) {
 				}
 			case "prompt taken":
 				a, _, _, _ = promptingAgent(t)
+			case "approval":
+				output(t, a, `{"type":"control_request","request_id":"request","request":{"subtype":"can_use_tool"}}`)
 			default:
 				state(t, a, busy)
 			}
 			result := make(chan error, 1)
-			if a.Configure(agent.SettingsPatch{Model: new("haiku")}, replyTo(result)); !errors.Is(<-result, agent.ErrBusy) {
+			a.Configure(agent.SettingsPatch{Model: new("haiku")}, replyTo(result))
+			select {
+			case err := <-result:
+				if !errors.Is(err, agent.ErrBusy) {
+					t.Fatalf("configuration accepted in %s: %v", busy, err)
+				}
+			default:
 				t.Fatalf("configuration accepted in %s", busy)
 			}
 		})
 	}
 }
 
-func TestClaudeReportsPermissionMode(t *testing.T) {
+// Claude always runs in its own manual mode, so a permission mode change is
+// the agent's alone: it writes no control request and is reported at once,
+// and a model change beside it sends only set_model.
+func TestPermissionModeNeedsNoControl(t *testing.T) {
 	input := new(bytes.Buffer)
-	var adopted []agent.Settings
+	var applied []agent.Settings
 	a := newAgent(newWriter(input), make(chan agent.Event), make(chan struct{}), nil, agent.Options{
-		Settings:     agent.Settings{Model: "haiku", Effort: "low", PermissionMode: "plan"},
+		Settings:     agent.Settings{Model: "haiku", Effort: "low", PermissionMode: agent.Manual},
 		OnUpdate:     func(agent.Update) {},
-		OnConfigured: func(s agent.Settings) { adopted = append(adopted, s) },
+		OnConfigured: func(s agent.Settings) { applied = append(applied, s) },
 	})
 	a.Handle(initialized)
-
-	output(t, a, `{"type":"system","subtype":"status","status":null,"permissionMode":"default"}`)
-	if want := []agent.Settings{{Model: "haiku", Effort: "low", PermissionMode: "manual"}}; !reflect.DeepEqual(adopted, want) {
-		t.Fatalf("a change to default was adopted as %+v", adopted)
-	}
-	output(t, a, `{"type":"system","subtype":"init","permissionMode":"default"}`)
-	output(t, a, `{"type":"system","subtype":"session_state_changed","state":"idle"}`)
-	if len(adopted) != 1 {
-		t.Fatalf("a report of the current mode changed settings: %+v", adopted)
-	}
+	input.Reset()
 
 	result := make(chan error, 1)
-	a.Configure(agent.SettingsPatch{PermissionMode: new("plan")}, replyTo(result))
+	a.Configure(agent.SettingsPatch{PermissionMode: new(agent.Auto)}, replyTo(result))
+	select {
+	case err := <-result:
+		if err != nil || input.Len() != 0 {
+			t.Fatalf("a permission mode change wrote to Claude: %v, %s", err, input)
+		}
+	default:
+		t.Fatalf("a permission mode change waited on Claude: %s", input)
+	}
+	if want := []agent.Settings{{Model: "haiku", Effort: "low", PermissionMode: agent.Auto}}; !reflect.DeepEqual(applied, want) {
+		t.Fatalf("the permission mode change was reported as %+v", applied)
+	}
+
+	a.Configure(agent.SettingsPatch{Model: new("sonnet"), PermissionMode: new(agent.Manual)}, replyTo(result))
 	var wire struct {
 		RequestID string         `json:"request_id"`
 		Request   map[string]any `json:"request"`
@@ -349,12 +362,16 @@ func TestClaudeReportsPermissionMode(t *testing.T) {
 	if err := json.NewDecoder(input).Decode(&wire); err != nil {
 		t.Fatal(err)
 	}
-	if wire.Request["subtype"] != "set_permission_mode" || wire.Request["mode"] != "plan" {
-		t.Fatalf("configuration did not leave the mode Claude reported: %+v", wire)
+	if wire.Request["subtype"] != "set_model" {
+		t.Fatalf("a model and mode change did not send set_model: %+v", wire)
 	}
 	acknowledge(t, a, wire.RequestID, "success")
-	output(t, a, `{"type":"system","subtype":"status","status":null,"permissionMode":"plan"}`)
-	if err := <-result; err != nil || len(adopted) != 2 || adopted[1].PermissionMode != "plan" {
-		t.Fatalf("the mode change was not reported exactly once: %v, %+v", err, adopted)
+	select {
+	case err := <-result:
+		if err != nil || input.Len() != 0 || len(applied) != 3 || applied[2] != (agent.Settings{Model: "sonnet", Effort: "low", PermissionMode: agent.Manual}) {
+			t.Fatalf("the model and mode change was reported as %v, %+v, %s", err, applied, input)
+		}
+	default:
+		t.Fatalf("a model and mode change sent more than set_model: %s", input)
 	}
 }

@@ -89,7 +89,7 @@ flowchart TD
 | `cmd/ur`     | Running the `ur` program, which `oxd` starts for each running Ur session and for each one-shot Ur request.                                                                                                              |
 | `cmd/oxd`    | Resolving socket, database, and config paths, checking configured harnesses, and holding the socket until sessions stop and every process in `children` exits. A second stop signal kills `children` and exits at once. |
 | `paths`      | XDG locations of the configuration, database, socket, Ur conversation directory, and session worktrees (`cmd/oxd` flags can override them; `cmd/ox` uses `paths` for the socket and config).                            |
-| `config`     | Writing the built-in default to a missing config file, loading each harness's models, efforts, permission modes, defaults, and titling model, and validating settings against them.                                     |
+| `config`     | Writing the built-in default to a missing config file, loading each harness's models and efforts, the defaults, and the titling model, and validating settings against them.                                            |
 | `server`     | Client and MCP connections, each session's goroutine and agent, method dispatch, and error codes. Each connection writes through its own queue so sessions never wait on a client.                                      |
 | `store`      | SQLite database of workspaces, sessions, `children`, `worktrees`, `archived`, session events, and prompt images, held exclusively through an adjacent lock file from open to close.                                     |
 | `jsonrpc`    | Request validation and the response and notification types.                                                                                                                                                             |
@@ -352,8 +352,7 @@ the agent with a reason. `Stop` ends the agent at once.
   both from the tracker.
 - **MCP server:** Each harness receives Ox's MCP server for its session—the
   `ox-mcp` binary beside `oxd`, environment naming the socket and session, and
-  the tools allowed without an approval prompt where the permission mode
-  permits.
+  the tools allowed without an approval prompt.
 
 ### The Claude agent
 
@@ -412,6 +411,14 @@ stateDiagram-v2
   input. In `startTimedOut` or `timedOut`, it sends nothing. The interrupt's
   reply waits until Claude reports `idle`, Claude takes an input other than the
   one written when the interrupt was sent, or the agent ends.
+- **Permissions:** Claude always runs in its own manual mode, and the agent
+  applies Ox's permission mode to each `can_use_tool` request. In `auto` it
+  answers a request itself, allowing its input unchanged, unless the request
+  needs the user or is a `Bash` or `Monitor` command `agent.AutoRuns` refuses;
+  that request, and every request in `manual`, becomes an approval. Claude
+  reports `requires_action` before every request, so the agent ignores it and
+  reports `requires_action` itself when it publishes an approval. A permission
+  mode change needs no control request.
 - **Parking:** `Parkable` is derived from phase, state, pending approvals, and
   [Claude's reports of background work](harnesses/claude-code.md#8-background-work-and-schedules).
   On a resume whose history has a `CronCreate` call, or after a scheduling tool
@@ -438,7 +445,8 @@ The `ur` process:
   modes, and its answer is matched by request ID; an answer whose call the turn
   no longer waits on, after an interrupt, is dropped.
 - Validates each shell call's arguments once, so the transcript, approval card,
-  and executed command share one value.
+  and executed command share one value. In `auto` it runs a call
+  `agent.AutoRuns` allows at once, and asks for approval otherwise.
 - Runs each shell call in the session's workspace inside its own process group,
   ending with the call or its turn.
 - Appends prompts, streamed reply deltas, tool calls, and finished outcomes to
@@ -518,7 +526,7 @@ on a free port, and prints the URL.
 | `diff.ts`                                                                                                                                                                                                                                                                                       | Diff line counts, and changed files' and folders' statuses.                                                                                                                                                                                                                                 |
 | `tabs.ts`, `drag.ts`                                                                                                                                                                                                                                                                            | The tab layout as one value: tabs, groups, splits, and the operations on them (open, close, move, split by edge drop, sizes), and the drop zone of a pointer; the data types a drag carries.                                                                                                |
 | `id.ts`                                                                                                                                                                                                                                                                                         | The random IDs the page gives the sessions and prompts it creates.                                                                                                                                                                                                                          |
-| `toolInput.ts`                                                                                                                                                                                                                                                                                  | Readers of tool calls: label, subject, `ExitPlanMode` plan, `AskUserQuestion` questions, and JSON input.                                                                                                                                                                                    |
+| `toolInput.ts`                                                                                                                                                                                                                                                                                  | Readers of tool calls: label, subject, `AskUserQuestion` questions, and JSON input.                                                                                                                                                                                                         |
 | `App.tsx`, `Panels.tsx`, `Sidebar.tsx`, `SessionView.tsx`, `NewSessionView.tsx`, `Attachments.tsx`, `Workspace.tsx`, `TabArea.tsx`, `TabPicker.tsx`, `FileTree.tsx`, `FileView.tsx`, `Changes.tsx`, `ApprovalRequest.tsx`, `SettingsFields.tsx`, `HarnessIcon.tsx`, `Markdown.tsx`, `Usage.tsx` | UI components. `Layout` in `App.tsx`, through `createPanels`, owns the session list's and the right panel's visibility (wide layout), the panel's mode (files or changes), the panel widths, the open drawer (narrow layout, `< 768 px`), and file view word wrap for the life of the page. |
 
 ### Connection and reload

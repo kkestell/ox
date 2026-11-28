@@ -26,15 +26,6 @@ func checkEfforts(model string, efforts []string) error {
 	return nil
 }
 
-// checkPermissionMode reports whether Ur takes mode: manual, where every shell
-// call asks first, or auto, where every call runs without asking.
-func checkPermissionMode(mode string) error {
-	if mode != "manual" && mode != "auto" {
-		return fmt.Errorf("Ur has no permission mode %q", mode)
-	}
-	return nil
-}
-
 // Harness starts agents that run command, the ur executable, posting to
 // endpoint and keeping their conversations in dir, which is relative to
 // oxd's working directory. An empty endpoint leaves
@@ -45,9 +36,8 @@ func Harness(command, endpoint, dir string, providers map[string][]string) agent
 		Start: func(options agent.Options) (agent.Agent, error) {
 			return startAgent(command, endpoint, dir, providers, options)
 		},
-		CheckEfforts:        checkEfforts,
-		CheckPermissionMode: checkPermissionMode,
-		TakesProviders:      true,
+		CheckEfforts:   checkEfforts,
+		TakesProviders: true,
 		Ask: func(ctx context.Context, model, effort, instructions, text string) (string, error) {
 			return ask(ctx, command, endpoint, providers, model, effort, instructions, text)
 		},

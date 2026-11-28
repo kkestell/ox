@@ -211,13 +211,12 @@ func (a *Agent) handleOutput(m message) {
 			a.commandCancelled(m.CommandUUID)
 		}
 	case "system":
-		if m.PermissionMode != "" {
-			a.permissionMode(m.PermissionMode)
-		}
 		switch m.Subtype {
 		case "session_state_changed":
+			// The agent reports requires_action itself, when it publishes
+			// an approval.
 			switch m.State {
-			case agent.StateRunning, agent.StateRequiresAction, agent.StateIdle:
+			case agent.StateRunning, agent.StateIdle:
 				a.sessionState(m.State)
 			}
 		case "background_tasks_changed":
@@ -283,18 +282,6 @@ func (a *Agent) handleOutput(m message) {
 			p.turn = ""
 		}
 	}
-}
-
-// permissionMode adopts the mode Claude reports, which it changes itself when
-// a plan is approved or when it enters plan mode.
-func (a *Agent) permissionMode(reported string) {
-	// Claude reports manual as default.
-	if reported == "default" {
-		reported = "manual"
-	}
-	settings := a.settings
-	settings.PermissionMode = reported
-	a.configured(settings)
 }
 
 func (a *Agent) configured(settings agent.Settings) {

@@ -36,12 +36,6 @@
           ]
         }
       ],
-      "permission_modes": [
-        { "id": "manual", "name": "Manual" },
-        { "id": "auto", "name": "Auto" },
-        { "id": "acceptEdits", "name": "Accept edits" },
-        { "id": "plan", "name": "Plan" }
-      ],
       "thinking_summaries": false
     },
     "ur": {
@@ -79,10 +73,6 @@
           ],
           "providers": ["meta"]
         }
-      ],
-      "permission_modes": [
-        { "id": "manual", "name": "Manual" },
-        { "id": "auto", "name": "Auto" }
       ]
     }
   },
@@ -90,7 +80,7 @@
     "harness": "claude",
     "model": "claude-haiku-5-5",
     "effort": "low",
-    "permission_mode": "acceptEdits"
+    "permission_mode": "manual"
   },
   "titling": {
     "harness": "claude",

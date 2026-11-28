@@ -1,6 +1,6 @@
 // Approvals against real Claude with Haiku. They run only with OX_LIVE=1, as
 // make live does.
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { haikuConfig } from "./services";
 import { allow, expect, newDraft, permissionMode, prompt, stop, test, toolCall, waiting } from "./ui";
@@ -8,13 +8,6 @@ import { allow, expect, newDraft, permissionMode, prompt, stop, test, toolCall, 
 test.skip(!process.env.OX_LIVE, "set OX_LIVE=1 to run against real Claude with Haiku");
 test.setTimeout(180_000);
 test.use({ config: haikuConfig });
-
-// Claude writes plan files under the test's workspace, which the services
-// fixture removes, rather than in the user's ~/.claude/plans.
-test.beforeEach(({ services }) => {
-  mkdirSync(join(services.workspace, ".claude"));
-  writeFileSync(join(services.workspace, ".claude", "settings.json"), '{"plansDirectory": ".claude/plans"}');
-});
 
 test("Allow runs the tool", async ({ ox: page, services }) => {
   await newDraft(page);
@@ -44,26 +37,6 @@ test("a typed reply denies with that message", async ({ ox: page, services }) =>
   await expect(stop(page)).toHaveCount(0, { timeout: 120_000 });
   await expect(toolCall(page, "Bash")).toContainText("Do not create files.");
   expect(existsSync(join(services.workspace, "denied.txt"))).toBe(false);
-});
-
-test("an ExitPlanMode plan renders as Markdown", async ({ ox: page }) => {
-  await newDraft(page);
-  await permissionMode(page).selectOption("plan");
-  const approval = waiting(page).getByRole("article", { name: "Allow ExitPlanMode?" });
-  await prompt(page).fill(
-    "Load and call the ExitPlanMode tool now with this plan, as a Markdown list of exactly two items: first step, second step.",
-  );
-  await prompt(page).press("Enter");
-  await expect(approval.getByRole("listitem")).toHaveCount(2, { timeout: 120_000 });
-  await expect(approval.getByText("Input", { exact: true })).toBeVisible();
-  await approval.getByRole("radio", { name: "Deny" }).check();
-  await approval.getByRole("button", { name: "Submit" }).click();
-  await expect(approval).toHaveCount(0);
-  await expect(stop(page)).toHaveCount(0, { timeout: 120_000 });
-
-  const tool = toolCall(page, "ExitPlanMode");
-  await tool.getByText("ExitPlanMode", { exact: true }).click();
-  await expect(tool.getByRole("listitem").first()).toBeVisible();
 });
 
 test("an AskUserQuestion is answered from its form", async ({ ox: page }) => {

@@ -1,7 +1,6 @@
 package server
 
 import (
-	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -66,10 +65,7 @@ func (s *Server) handleMCP(reply replyFunc, sessionID string, request jsonrpc.Re
 	case "tools/list":
 		list := make([]map[string]any, len(tools))
 		for i, t := range tools {
-			list[i] = map[string]any{
-				"name": t.name, "description": t.description, "inputSchema": t.inputSchema,
-				"annotations": map[string]any{"readOnlyHint": t.readOnly},
-			}
+			list[i] = map[string]any{"name": t.name, "description": t.description, "inputSchema": t.inputSchema}
 		}
 		reply(jsonrpc.Success(id, map[string]any{"tools": list}))
 	case "tools/call":
@@ -123,9 +119,6 @@ type tool struct {
 	name        string
 	description string
 	inputSchema map[string]any
-	// readOnly annotates the tool readOnlyHint. Claude's plan mode prompts
-	// for an MCP tool its --allowedTools names unless the tool is read-only.
-	readOnly bool
 	// call runs the tool. toolUseID is the ID of the call's tool_use, which
 	// Claude Code sends in the request's _meta, or "".
 	call func(s *Server, caller *session, arguments json.RawMessage, toolUseID string, respond func(text string, err error))
@@ -139,9 +132,8 @@ func init() {
 	tools = []tool{
 		{
 			name:        "list_models",
-			description: "List the harnesses Ox offers, with their models, effort levels, and permission modes, and the defaults for a new session.",
+			description: "List the harnesses Ox offers, with their models and effort levels, the permission modes, and the defaults for a new session.",
 			inputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
-			readOnly:    true,
 			call:        listModels,
 		},
 		{
@@ -149,7 +141,6 @@ func init() {
 			description: "List Ox's other sessions that are not archived, with each one's ID, label, workspace, directory, worktree if it has one, harness, settings, and state. " +
 				"A parked session has no process running; a message to it starts it.",
 			inputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
-			readOnly:    true,
 			call:        listSessions,
 		},
 		{
@@ -182,8 +173,7 @@ func init() {
 				},
 				"required": []string{"to"},
 			},
-			readOnly: true,
-			call:     readSession,
+			call: readSession,
 		},
 		{
 			name: "create_session",
@@ -239,8 +229,7 @@ func init() {
 	}
 }
 
-// approvedTools are every tool, which run without an approval prompt where
-// the permission mode allows.
+// approvedTools are every tool, which run without an approval prompt.
 func approvedTools() []string {
 	names := make([]string, len(tools))
 	for i, t := range tools {
@@ -672,12 +661,11 @@ func (s *Server) startedRecord(caller *session, harnessName, model, effort strin
 	if effort == "" {
 		effort = harness.Effort(model, caller.settings.Effort)
 	}
-	mode := caller.settings.PermissionMode
-	if err := cmp.Or(harness.CheckModel(model, effort), harness.CheckPermissionMode(mode)); err != nil {
+	if err := harness.CheckModel(model, effort); err != nil {
 		return nil, err
 	}
 	return &store.Session{
-		ID: newID(), Harness: harnessName, Model: model, Effort: effort, PermissionMode: mode,
+		ID: newID(), Harness: harnessName, Model: model, Effort: effort, PermissionMode: caller.settings.PermissionMode,
 	}, nil
 }
 

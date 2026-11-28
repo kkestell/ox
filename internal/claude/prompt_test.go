@@ -320,9 +320,9 @@ func TestPromptSentWhileClaudeWorks(t *testing.T) {
 	}
 	*updates = nil
 
-	state(t, a, "requires_action")
+	output(t, a, `{"type":"control_request","request_id":"request","request":{"subtype":"can_use_tool"}}`)
 	state(t, a, "idle")
-	if len(*updates) != 2 || (*updates)[0].State != "requires_action" || (*updates)[1].State != "running" || len(a.Snapshot().Queued) != 3 {
+	if len(*updates) != 4 || (*updates)[0].State != "requires_action" || (*updates)[3].State != "running" || len(a.Snapshot().Queued) != 3 {
 		t.Fatalf("a stale idle released a queued prompt or left it idle: %+v", *updates)
 	}
 	*updates = nil
@@ -499,9 +499,9 @@ func TestSnapshotReturnsStateAndApprovals(t *testing.T) {
 	output(t, a, `{"type":"control_request","request_id":"pending","request":`+request+`}`)
 
 	snapshot := a.Snapshot()
-	if snapshot.State != "running" || len(snapshot.Approvals) != 1 || snapshot.Approvals[0].RequestID != "pending" ||
+	if snapshot.State != "requires_action" || len(snapshot.Approvals) != 1 || snapshot.Approvals[0].RequestID != "pending" ||
 		string(snapshot.Approvals[0].Request) != request {
-		t.Fatalf("snapshot missing the running state or approval: %+v", snapshot)
+		t.Fatalf("snapshot missing the requires_action state or approval: %+v", snapshot)
 	}
 }
 

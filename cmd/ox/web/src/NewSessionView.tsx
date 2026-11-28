@@ -4,7 +4,7 @@ import { newID } from "./id";
 import { useOx } from "./ox";
 import type { Defaults } from "./protocol";
 import { keepPromptFocus, SubmittedPrompt, sendOnEnter } from "./SessionView";
-import { defaultPermissionMode, type ModelChoice, ModelPicker, Select } from "./SettingsFields";
+import { type ModelChoice, ModelPicker, Select } from "./SettingsFields";
 
 // A submitted draft lives on the page through navigation and reconnect. Its
 // composer belongs to the same control that the new session will use.
@@ -32,14 +32,11 @@ export function NewSessionView(props: { draft: Draft; onCreated(): void }) {
   const creating = () => {
     return draft.control.creating() ? draft.control.outgoing() : undefined;
   };
+  // A draft keeps its permission mode through a change of harness, since
+  // every harness takes every mode.
   const pick = (value: ModelChoice) => {
-    const catalog = ox.state.harnesses[value.harness];
-    const currentMode = draft.choice()?.permission_mode;
-    const mode =
-      currentMode && catalog.permission_modes.some((m) => m.id === currentMode)
-        ? currentMode
-        : defaultPermissionMode(value.harness, catalog, ox.state.defaults);
-    draft.setChoice({ ...value, permission_mode: mode });
+    const choice = draft.choice();
+    if (choice) draft.setChoice({ ...choice, ...value });
   };
   const create = (event: SubmitEvent) => {
     event.preventDefault();
@@ -113,7 +110,7 @@ export function NewSessionView(props: { draft: Draft; onCreated(): void }) {
               <Select
                 name="permission_mode"
                 label="Permission mode"
-                options={ox.state.harnesses[choice().harness]?.permission_modes ?? []}
+                options={ox.state.permission_modes}
                 value={choice().permission_mode}
                 disabled={!draft.control.canCreate()}
                 onChange={(mode) => draft.setChoice({ ...choice(), permission_mode: mode })}

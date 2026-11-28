@@ -11,6 +11,8 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+
+	"github.com/kkestell/ox/internal/agent"
 )
 
 // tailscaleRange is the CGNAT range Tailscale assigns IPv4 addresses from.
@@ -32,10 +34,10 @@ type Config struct {
 }
 
 type Defaults struct {
-	Harness        string `json:"harness"`
-	Model          string `json:"model"`
-	Effort         string `json:"effort"`
-	PermissionMode string `json:"permission_mode"`
+	Harness        string               `json:"harness"`
+	Model          string               `json:"model"`
+	Effort         string               `json:"effort"`
+	PermissionMode agent.PermissionMode `json:"permission_mode"`
 }
 
 // Titling is the harness, model, and effort that title top-level sessions.
@@ -46,8 +48,7 @@ type Titling struct {
 }
 
 type Harness struct {
-	Models          []Model  `json:"models"`
-	PermissionModes []Option `json:"permission_modes"`
+	Models []Model `json:"models"`
 	// ThinkingSummaries is whether Claude streams a summary of its thinking
 	// to show in the transcript.
 	ThinkingSummaries bool `json:"thinking_summaries,omitempty"`
@@ -132,12 +133,11 @@ func writeDefault(path string) error {
 	return nil
 }
 
-// check requires every list a client reads, and an ID and a name for every
-// choice. The harness receives the ID as a flag. A model without effort levels is served an
+// check requires models, and an ID and a name for every choice. The harness receives the ID as a flag. A model without effort levels is served an
 // empty list.
 func (h Harness) check() error {
-	if len(h.Models) == 0 || len(h.PermissionModes) == 0 {
-		return errors.New("needs models and permission_modes")
+	if len(h.Models) == 0 {
+		return errors.New("needs models")
 	}
 	models := make(map[string]bool)
 	for i, m := range h.Models {
@@ -151,7 +151,7 @@ func (h Harness) check() error {
 			return fmt.Errorf("model %q: %w", m.ID, err)
 		}
 	}
-	return checkOptions("permission mode", h.PermissionModes)
+	return nil
 }
 
 func checkOptions(kind string, options []Option) error {
@@ -186,7 +186,10 @@ func (d Defaults) check(harnesses map[string]Harness) error {
 	if err := harness.CheckModel(d.Model, d.Effort); err != nil {
 		return err
 	}
-	return harness.CheckPermissionMode(d.PermissionMode)
+	if d.PermissionMode == "" {
+		return errors.New("permission_mode is required")
+	}
+	return nil
 }
 
 func (t Titling) check(harnesses map[string]Harness) error {
@@ -245,14 +248,6 @@ func (h Harness) Providers() map[string][]string {
 		}
 	}
 	return providers
-}
-
-// CheckPermissionMode reports whether mode is one of h's permission modes.
-func (h Harness) CheckPermissionMode(mode string) error {
-	if !has(h.PermissionModes, mode) {
-		return fmt.Errorf("permission mode %q is not configured", mode)
-	}
-	return nil
 }
 
 func has(options []Option, id string) bool {

@@ -31,12 +31,16 @@ type replyFunc func(*jsonrpc.Response)
 
 // catalog is the choices `harness/list` and the `list_models` tool serve.
 type catalog struct {
-	Harnesses map[string]config.Harness `json:"harnesses"`
-	Defaults  config.Defaults           `json:"defaults"`
+	Harnesses       map[string]config.Harness `json:"harnesses"`
+	PermissionModes []config.Option           `json:"permission_modes"`
+	Defaults        config.Defaults           `json:"defaults"`
 }
 
+// permissionModes are the permission modes Ox offers for every harness.
+var permissionModes = []config.Option{{ID: string(agent.Manual), Name: "Manual"}, {ID: string(agent.Auto), Name: "Auto"}}
+
 func (s *Server) catalog() catalog {
-	return catalog{Harnesses: s.config.Harnesses, Defaults: s.config.Defaults}
+	return catalog{Harnesses: s.config.Harnesses, PermissionModes: permissionModes, Defaults: s.config.Defaults}
 }
 
 // handle runs one request. Each method queues its own response through
@@ -389,7 +393,11 @@ func (s *Server) createSession(reply replyFunc, id, params json.RawMessage) {
 		Worktree    bool   `json:"worktree"`
 		agent.Settings
 	}
-	if err := json.Unmarshal(params, &input); err != nil || input.WorkspaceID == "" || input.Harness == "" {
+	if err := json.Unmarshal(params, &input); err != nil {
+		reply(invalidParams(id, err.Error()))
+		return
+	}
+	if input.WorkspaceID == "" || input.Harness == "" || input.PermissionMode == "" {
 		reply(invalidParams(id, "workspace_id, harness, model, and permission_mode are required"))
 		return
 	}
@@ -524,7 +532,7 @@ func (s *Server) admitSessionLocked(workspaceID string, record *store.Session) (
 	if !offered {
 		return nil, false, &codedError{jsonrpc.InvalidParams, fmt.Sprintf("harness %q is not configured", record.Harness)}
 	}
-	if err := cmp.Or(harness.CheckModel(record.Model, record.Effort), harness.CheckPermissionMode(record.PermissionMode)); err != nil {
+	if err := harness.CheckModel(record.Model, record.Effort); err != nil {
 		return nil, false, &codedError{jsonrpc.InvalidParams, err.Error()}
 	}
 	if w == nil {
@@ -741,8 +749,11 @@ func (s *Server) configureSession(reply replyFunc, id, params json.RawMessage) {
 		SessionID string `json:"session_id"`
 		agent.SettingsPatch
 	}
-	if err := json.Unmarshal(params, &input); err != nil || input.SessionID == "" ||
-		(input.Model == nil && input.Effort == nil && input.PermissionMode == nil) {
+	if err := json.Unmarshal(params, &input); err != nil {
+		reply(invalidParams(id, err.Error()))
+		return
+	}
+	if input.SessionID == "" || (input.Model == nil && input.Effort == nil && input.PermissionMode == nil) {
 		reply(invalidParams(id, "session_id and at least one of model, effort, and permission_mode are required"))
 		return
 	}
@@ -756,18 +767,13 @@ func (s *Server) configureSession(reply replyFunc, id, params json.RawMessage) {
 			}
 		}
 		settings := input.Apply(sess.settings)
-		// Only the settings the request changes are checked, so a stored
-		// setting the configuration no longer offers can stay.
-		var err error
+		// Only the model and effort the request changes are checked, so a
+		// stored model the configuration no longer offers can stay.
 		if input.Model != nil || input.Effort != nil {
-			err = harness.CheckModel(settings.Model, settings.Effort)
-		}
-		if input.PermissionMode != nil {
-			err = cmp.Or(err, harness.CheckPermissionMode(settings.PermissionMode))
-		}
-		if err != nil {
-			reply(invalidParams(id, err.Error()))
-			return
+			if err := harness.CheckModel(settings.Model, settings.Effort); err != nil {
+				reply(invalidParams(id, err.Error()))
+				return
+			}
 		}
 		if sess.agent == nil {
 			if sess.isArchived() {

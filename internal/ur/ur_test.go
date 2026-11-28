@@ -395,7 +395,7 @@ func TestLastLineWithoutNewline(t *testing.T) {
 		"finish chunk": "data: {\"choices\":[{\"delta\":{\"content\":\"o\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"k\"},\"finish_reason\":\"stop\"}]}",
 	} {
 		t.Run(name, func(t *testing.T) {
-			r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
+			r := start(t, agent.Settings{Model: model, PermissionMode: agent.Manual}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
 				fmt.Fprint(w, stream)
 			})
 			r.send("p1", "hi")
@@ -408,7 +408,7 @@ func TestLastLineWithoutNewline(t *testing.T) {
 
 // A reply that finishes without text ends the turn with an empty result.
 func TestEmptyReply(t *testing.T) {
-	r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
+	r := start(t, agent.Settings{Model: model, PermissionMode: agent.Manual}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
 		sse(w)
 	})
 	r.send("p1", "hi")
@@ -480,7 +480,7 @@ func TestStreamErrors(t *testing.T) {
 		}, "malformed OpenRouter stream chunk: unexpected end of JSON input", []string{"user", "user"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			r := start(t, agent.Settings{Model: model}, nil, c.handle)
+			r := start(t, agent.Settings{Model: model, PermissionMode: agent.Manual}, nil, c.handle)
 			r.send("p1", "hi")
 			if result := r.result(); !result.IsError || result.Text != c.want {
 				t.Errorf("result %+v, not the error %q", result, c.want)
@@ -519,7 +519,7 @@ func interrupt(t *testing.T, r *run) {
 }
 
 func TestInterrupt(t *testing.T) {
-	r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, req *http.Request, n int) {
+	r := start(t, agent.Settings{Model: model, PermissionMode: agent.Manual}, nil, func(w http.ResponseWriter, req *http.Request, n int) {
 		if n > 0 {
 			sse(w, "ok")
 			return
@@ -576,7 +576,7 @@ func TestInterrupt(t *testing.T) {
 
 func TestInputDuringTurnRunsNext(t *testing.T) {
 	release := make(chan struct{})
-	r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, _ *http.Request, n int) {
+	r := start(t, agent.Settings{Model: model, PermissionMode: agent.Manual}, nil, func(w http.ResponseWriter, _ *http.Request, n int) {
 		if n == 0 {
 			<-release
 		}
@@ -629,7 +629,7 @@ func TestInputDuringTurnRunsNext(t *testing.T) {
 
 func TestConfigure(t *testing.T) {
 	release := make(chan struct{})
-	r := start(t, agent.Settings{Model: model, Effort: "low"}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
+	r := start(t, agent.Settings{Model: model, Effort: "low", PermissionMode: agent.Manual}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
 		<-release
 		sse(w, "ok")
 	})
@@ -655,7 +655,7 @@ func TestConfigure(t *testing.T) {
 	if got != nil {
 		t.Fatalf("Configure while idle: %v", got)
 	}
-	want := agent.Settings{Model: other, Effort: high}
+	want := agent.Settings{Model: other, Effort: high, PermissionMode: agent.Manual}
 	if !slices.Equal(r.configured, []agent.Settings{want}) {
 		t.Errorf("OnConfigured got %+v, not %+v", r.configured, want)
 	}
@@ -743,7 +743,7 @@ func TestStartWithoutKey(t *testing.T) {
 // Stop ends the running turn and drops waiting inputs. Its reply has already
 // been saved as far as it streamed.
 func TestStopDuringTurn(t *testing.T) {
-	r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, req *http.Request, n int) {
+	r := start(t, agent.Settings{Model: model, PermissionMode: agent.Manual}, nil, func(w http.ResponseWriter, req *http.Request, n int) {
 		if n > 0 {
 			sse(w, "ok")
 			return
@@ -783,7 +783,7 @@ func TestStopDuringTurn(t *testing.T) {
 // input that starts the next, still ends a running turn.
 func TestStopBetweenTurns(t *testing.T) {
 	release := make(chan struct{})
-	r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, req *http.Request, n int) {
+	r := start(t, agent.Settings{Model: model, PermissionMode: agent.Manual}, nil, func(w http.ResponseWriter, req *http.Request, n int) {
 		if n > 0 {
 			<-req.Context().Done()
 			return
@@ -811,7 +811,7 @@ func TestStopBetweenTurns(t *testing.T) {
 
 // A second agent sees the streamed reply while the first request is still open.
 func TestResumeDuringTurn(t *testing.T) {
-	r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, req *http.Request, n int) {
+	r := start(t, agent.Settings{Model: model, PermissionMode: agent.Manual}, nil, func(w http.ResponseWriter, req *http.Request, n int) {
 		if n > 0 {
 			sse(w, "ok")
 			return
@@ -841,7 +841,7 @@ func TestResumeDuringTurn(t *testing.T) {
 
 // A conversation survives a new agent, which sends each reply as one message.
 func TestResume(t *testing.T) {
-	r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, _ *http.Request, n int) {
+	r := start(t, agent.Settings{Model: model, PermissionMode: agent.Manual}, nil, func(w http.ResponseWriter, _ *http.Request, n int) {
 		sse(w, [][]string{{"o", "ne"}, {"two"}, {"three"}}[n]...)
 	})
 	r.send("p1", "hi")
@@ -878,7 +878,7 @@ func TestResume(t *testing.T) {
 // A prompt's images reach the model as image_url parts before its text, in
 // every later request of the conversation and after it resumes.
 func TestImages(t *testing.T) {
-	r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
+	r := start(t, agent.Settings{Model: model, PermissionMode: agent.Manual}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
 		sse(w, "seen")
 	})
 	png := agent.Image{ID: "i1", MimeType: "image/png", Data: []byte("png bytes")}
@@ -954,7 +954,7 @@ func TestInstructions(t *testing.T) {
 	}
 
 	t.Run("fresh each request", func(t *testing.T) {
-		r := start(t, agent.Settings{Model: model}, nil, answer)
+		r := start(t, agent.Settings{Model: model, PermissionMode: agent.Manual}, nil, answer)
 		path := filepath.Join(r.workspace, "AGENTS.md")
 		if err := os.WriteFile(path, []byte("marker-one"), 0o600); err != nil {
 			t.Fatal(err)
@@ -983,7 +983,7 @@ func TestInstructions(t *testing.T) {
 	})
 
 	t.Run("no AGENTS.md", func(t *testing.T) {
-		r := start(t, agent.Settings{Model: model}, nil, answer)
+		r := start(t, agent.Settings{Model: model, PermissionMode: agent.Manual}, nil, answer)
 		got, _ := system(t, r)
 		if !strings.Contains(got, r.workspace) || strings.Contains(got, "Instructions from the workspace's") {
 			t.Errorf("system message:\n%s", got)
@@ -991,7 +991,7 @@ func TestInstructions(t *testing.T) {
 	})
 
 	t.Run("unreadable AGENTS.md", func(t *testing.T) {
-		r := start(t, agent.Settings{Model: model}, nil, answer)
+		r := start(t, agent.Settings{Model: model, PermissionMode: agent.Manual}, nil, answer)
 		if err := os.Mkdir(filepath.Join(r.workspace, "AGENTS.md"), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -1016,7 +1016,7 @@ func TestResumeLost(t *testing.T) {
 		"truncated last line": new("{\"role\":\"user\",\"content\":\"hi\"}\n{\"role\":\"assis"),
 	} {
 		t.Run(name, func(t *testing.T) {
-			r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
+			r := start(t, agent.Settings{Model: model, PermissionMode: agent.Manual}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
 				sse(w, "ok")
 			})
 			if content != nil {
@@ -1055,7 +1055,7 @@ func TestResumeLost(t *testing.T) {
 // never published.
 func TestSaveFailure(t *testing.T) {
 	t.Run("prompt", func(t *testing.T) {
-		r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
+		r := start(t, agent.Settings{Model: model, PermissionMode: agent.Manual}, nil, func(w http.ResponseWriter, _ *http.Request, _ int) {
 			sse(w, "ok")
 		})
 		if err := os.WriteFile(r.dir, nil, 0o600); err != nil {
@@ -1076,7 +1076,7 @@ func TestSaveFailure(t *testing.T) {
 
 	t.Run("reply", func(t *testing.T) {
 		release := make(chan struct{})
-		r := start(t, agent.Settings{Model: model}, nil, func(w http.ResponseWriter, req *http.Request, n int) {
+		r := start(t, agent.Settings{Model: model, PermissionMode: agent.Manual}, nil, func(w http.ResponseWriter, req *http.Request, n int) {
 			if n > 0 {
 				sse(w, "ok")
 				return
@@ -1390,6 +1390,38 @@ func TestShellAuto(t *testing.T) {
 	}
 }
 
+// In auto mode a command that starts with rm asks for approval and waits, as
+// in manual mode, and the commands before it run at once.
+func TestShellAutoAsksForRm(t *testing.T) {
+	r := start(t, agent.Settings{Model: model, PermissionMode: agent.Auto}, nil, func(w http.ResponseWriter, _ *http.Request, n int) {
+		if n == 0 {
+			sseCalls(w, "", call{"call_1", "shell", `{"command":"echo hi"}`}, call{"call_2", "shell", `{"command":"rm notes.txt"}`})
+			return
+		}
+		sse(w, "ok")
+	})
+	if err := os.WriteFile(filepath.Join(r.workspace, "notes.txt"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.send("p1", "clean up")
+	if result := r.until(func(u agent.Update) bool { return u.Type == agent.UpdateToolResult }); result.ToolUseID != "call_1" || result.Result.Text != "Exit code: 0\n\nhi\n" {
+		t.Errorf("echo hi did not run at once: %+v", result)
+	}
+	approval := r.until(func(u agent.Update) bool { return u.Type == agent.UpdateApproval })
+	if !strings.Contains(string(approval.Request), `"rm notes.txt"`) || r.agent.Snapshot().State != agent.StateRequiresAction {
+		t.Errorf("rm notes.txt did not wait for approval: %s, %+v", approval.Request, r.agent.Snapshot())
+	}
+	if _, err := os.Stat(filepath.Join(r.workspace, "notes.txt")); err != nil {
+		t.Errorf("rm notes.txt ran before its approval: %v", err)
+	}
+	if err := r.agent.Approve(approval.RequestID, json.RawMessage(`{"behavior":"deny","message":"keep it"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if result := r.result(); result.IsError || result.Text != "ok" {
+		t.Errorf("result %+v", result)
+	}
+}
+
 // A command starts with the default signal handling: a writer into a closed
 // pipe dies of SIGPIPE, and SIGINT stops a child.
 func TestShellSignals(t *testing.T) {
@@ -1691,20 +1723,6 @@ func TestShellInputBetweenSteps(t *testing.T) {
 	}
 }
 
-func TestPermissionModes(t *testing.T) {
-	check := urHarness(t, "http://unused", t.TempDir(), nil).CheckPermissionMode
-	for _, mode := range []string{"manual", "auto"} {
-		if err := check(mode); err != nil {
-			t.Errorf("%s refused: %v", mode, err)
-		}
-	}
-	for _, mode := range []string{"acceptEdits", "plan"} {
-		if err := check(mode); err == nil {
-			t.Errorf("%s accepted", mode)
-		}
-	}
-}
-
 // stopped is ur's answer to a call whose command did not finish.
 const stopped = "The user stopped this command before it finished."
 
@@ -1787,7 +1805,7 @@ func TestUnexpectedExit(t *testing.T) {
 			if err := os.WriteFile(command, []byte("#!/bin/sh\n"+c.script), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			r := &run{t: t, harness: Harness(command, "", t.TempDir(), nil), workspace: t.TempDir(), settings: agent.Settings{Model: model}}
+			r := &run{t: t, harness: Harness(command, "", t.TempDir(), nil), workspace: t.TempDir(), settings: agent.Settings{Model: model, PermissionMode: agent.Manual}}
 			if err := r.launch(""); err != nil {
 				t.Fatal(err)
 			}
@@ -1819,7 +1837,7 @@ func TestSendToGoneUr(t *testing.T) {
 	if err := os.WriteFile(command, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	r := &run{t: t, harness: Harness(command, "", t.TempDir(), nil), workspace: t.TempDir(), settings: agent.Settings{Model: model}}
+	r := &run{t: t, harness: Harness(command, "", t.TempDir(), nil), workspace: t.TempDir(), settings: agent.Settings{Model: model, PermissionMode: agent.Manual}}
 	if err := r.launch(""); err != nil {
 		t.Fatal(err)
 	}
@@ -1879,7 +1897,7 @@ func TestRelativeConversationDirectory(t *testing.T) {
 	t.Cleanup(server.Close)
 	cwd := t.TempDir()
 	t.Chdir(cwd)
-	r := &run{t: t, harness: urHarness(t, server.URL, "urdata", nil), workspace: t.TempDir(), settings: agent.Settings{Model: model}}
+	r := &run{t: t, harness: urHarness(t, server.URL, "urdata", nil), workspace: t.TempDir(), settings: agent.Settings{Model: model, PermissionMode: agent.Manual}}
 	if err := r.launch(""); err != nil {
 		t.Fatal(err)
 	}
@@ -2031,7 +2049,7 @@ func TestOxTools(t *testing.T) {
 
 	t.Run("ended with ur", func(t *testing.T) {
 		pidFile := filepath.Join(t.TempDir(), "pid")
-		r := startMCP(t, agent.Settings{Model: model}, nil, standIn(pidFile), func(w http.ResponseWriter, _ *http.Request, _ int) {
+		r := startMCP(t, agent.Settings{Model: model, PermissionMode: agent.Manual}, nil, standIn(pidFile), func(w http.ResponseWriter, _ *http.Request, _ int) {
 			sse(w, "ok")
 		})
 		r.send("p1", "hi")
@@ -2067,7 +2085,7 @@ func TestOxTools(t *testing.T) {
 	})
 
 	t.Run("forwarder fails", func(t *testing.T) {
-		r := startMCP(t, agent.Settings{Model: model}, nil, agent.MCPServer{Command: "false"}, func(w http.ResponseWriter, _ *http.Request, _ int) {
+		r := startMCP(t, agent.Settings{Model: model, PermissionMode: agent.Manual}, nil, agent.MCPServer{Command: "false"}, func(w http.ResponseWriter, _ *http.Request, _ int) {
 			sse(w, "ok")
 		})
 		r.send("p1", "hi")
