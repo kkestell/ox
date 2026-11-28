@@ -22,6 +22,10 @@ function timeLeft(minutes: number) {
 // shows an open ring of the limit used with a marker for how much of the
 // window has passed. The button is named "Subscription usage" followed by its
 // content, so its visible text stays part of its name.
+//
+// The popover opens over the button, longest window first, so the shortest
+// window's row stays where the button showed it. The button lays out every
+// window in hidden rows, so its columns are as wide as the popover's.
 export function Usage(props: { harness: string; windows: UsageWindow[] }) {
   const id = createUniqueId();
   return (
@@ -37,7 +41,9 @@ export function Usage(props: { harness: string; windows: UsageWindow[] }) {
         popovertarget={id}
         style={{ "anchor-name": `--${id}` }}
       >
-        <WindowRow harness={props.harness} window={props.windows[0]} />
+        <For each={props.windows}>
+          {(window, i) => <WindowRow harness={props.harness} window={window} hidden={i() > 0} />}
+        </For>
       </button>
       <div
         id={id}
@@ -46,9 +52,12 @@ export function Usage(props: { harness: string; windows: UsageWindow[] }) {
         aria-label="Subscription usage"
         class="usage-windows"
         style={{ "position-anchor": `--${id}` }}
+        onClick={(e) => e.currentTarget.hidePopover()}
       >
         <div class="rows">
-          <For each={props.windows}>{(window) => <WindowRow harness={props.harness} window={window} />}</For>
+          <For each={props.windows.toReversed()}>
+            {(window) => <WindowRow harness={props.harness} window={window} />}
+          </For>
         </div>
       </div>
     </>
@@ -57,8 +66,9 @@ export function Usage(props: { harness: string; windows: UsageWindow[] }) {
 
 // WindowRow fills one row of its container's four-column grid: the window's
 // length, its ring, the percent used, and the time until it resets. A window
-// that has reset dims until the harness reports a new reading.
-function WindowRow(props: { harness: string; window: UsageWindow }) {
+// that has reset dims until the harness reports a new reading. A hidden row
+// takes space in the grid's columns and shows nothing.
+function WindowRow(props: { harness: string; window: UsageWindow; hidden?: boolean }) {
   const ox = useOx();
   const label = () => windowLabel(props.window.interval_seconds);
   const used = () => Math.round(props.window.used_percent);
@@ -70,7 +80,7 @@ function WindowRow(props: { harness: string; window: UsageWindow }) {
       ? `${used()}% last reported; this window reset. Waiting for a new reading from ${harnessName(props.harness)}.`
       : undefined;
   const level = () => (used() >= 90 ? "high" : used() >= 75 ? "warn" : undefined);
-  const cell = (name: string) => [name, { reset: reset() }];
+  const cell = (name: string) => [name, { reset: reset(), hidden: props.hidden }];
   return (
     <>
       <span class={cell("label")} title={waiting()}>
