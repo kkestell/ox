@@ -68,7 +68,7 @@ Keep this work in this session:
     - The path from the page to `oxd` through the relay: a `cmd/ox` test of the headers the relay receives, and a check in headless Chrome through `make dev` in the change's worktree, at the page URL it prints.
     - Claude Code behavior: a small `TestLive` case or `approval.spec.ts` check with Haiku.
 
-    Put each case in an existing test whose setup already reaches it, and add a new test only when none does. Each new test fails on the code before the change. A change that replaces behavior replaces the tests of the old behavior.
+    Put each case in an existing test whose setup already reaches it, and add a new test only when none does. A change that replaces behavior replaces the tests of the old behavior.
 
 ## Write
 

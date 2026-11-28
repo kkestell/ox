@@ -300,7 +300,7 @@ rule, copy, a contained bug fix with an obvious cause, or a contained change in
 how the page shows something. A small change may alter a requirement; the
 top-level agent brings the user the new text and commits it once the user
 approves. The top-level agent makes a small change itself in its worktree,
-with the test that fails without it, runs the checks that observe it, and opens
+with a test of it, runs the checks that observe it, and opens
 and merges the pull request as steps 7 and 8 say, with no plan or review
 session. Coral reviews every pull request.
 Every other change takes the steps below. When in doubt, a change is not
@@ -444,8 +444,8 @@ that can observe the change ran.
 
 ## Verification
 
-- Each behavior a change adds or fixes keeps a test that fails without it, at
-  the cheapest layer that observes it. A probe that confirms a behavior becomes
+- Each behavior a change adds or fixes has a test at the cheapest layer
+  that observes it. A probe that confirms a behavior becomes
   that test. Tests check behavior through public interfaces, not the
   implementation.
 - Prefer small live tests against real Claude Code processes, using Haiku only.
