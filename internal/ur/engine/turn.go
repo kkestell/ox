@@ -213,7 +213,7 @@ func (e *engine) next(calls []toolCall) error {
 	if err == nil {
 		shownInput, _ = json.Marshal(command) // strings and integers always marshal
 	} else {
-		shownInput = shown(p.call.Function.Arguments)
+		shownInput, _ = shown(p.call.Function.Arguments)
 	}
 	e.publish(agent.Update{Type: agent.UpdateToolUse, ToolUseID: p.call.ID, ToolName: p.call.Function.Name, Input: shownInput})
 	if err != nil {
@@ -230,23 +230,23 @@ func (e *engine) next(calls []toolCall) error {
 	return nil
 }
 
-// shown is a call's arguments as the transcript shows them: the arguments
-// when they are one JSON object, and an empty object otherwise.
-func shown(arguments string) json.RawMessage {
+// shown is a call's arguments as the transcript shows them, and whether they
+// are one JSON object. Arguments that are not are shown as an empty object.
+func shown(arguments string) (json.RawMessage, bool) {
 	var object map[string]json.RawMessage
 	if json.Unmarshal([]byte(arguments), &object) != nil || object == nil {
-		return json.RawMessage("{}")
+		return json.RawMessage("{}"), false
 	}
-	return json.RawMessage(arguments)
+	return json.RawMessage(arguments), true
 }
 
 // callOx writes p's call, a call of one of Ox's tools, to the forwarder, and
 // waits on its answer. Arguments that are not one JSON object are answered at
 // once.
 func (e *engine) callOx(p pending) error {
-	arguments := shown(p.call.Function.Arguments)
+	arguments, ok := shown(p.call.Function.Arguments)
 	e.publish(agent.Update{Type: agent.UpdateToolUse, ToolUseID: p.call.ID, ToolName: p.call.Function.Name, Input: arguments})
-	if string(arguments) != p.call.Function.Arguments {
+	if !ok {
 		return e.answer(p, outcome{"arguments: must be one JSON object", true})
 	}
 	id, err := e.ox.call(p.call.Function.Name, arguments, p.call.ID)
