@@ -133,7 +133,7 @@ test("a failed build restarts nothing", async () => {
   input.write("\n");
   await until(() => lines.some((line) => line.startsWith("build failed")));
   assert.deepEqual(snapshot(paths), before);
-  appendFileSync(paths.ox, "#\n");
+  appendFileSync(paths.ox, "//\n");
   input.write("\n");
   await until(() => lines.filter((line) => line.startsWith("build failed")).length === 2);
   assert.deepEqual(snapshot(paths), before);
