@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log"
 	"slices"
+	"time"
 
 	"github.com/kkestell/ox/internal/agent"
 )
@@ -50,8 +51,9 @@ func (sess *session) hold() (held, bool) {
 // child is created only on its parent's goroutine, so the children read while
 // their parent is running this or held are all of them. An archive posts only
 // from an ancestor to its descendants, so two in one family cannot wait on
-// each other.
-func (sess *session) archive() error {
+// each other. An auto archive also requires the family to be idle, checked
+// with the flags set, so a pin, prompt, or unarchive since the sweep wins.
+func (sess *session) archive(auto bool) error {
 	s := sess.server
 	members, holds := []*session{sess}, []held{}
 	for i := 0; i < len(members); i++ {
@@ -68,7 +70,12 @@ func (sess *session) archive() error {
 		if !sess.free() || slices.ContainsFunc(holds, func(h held) bool { return !h.free }) {
 			return agent.ErrBusy
 		}
-		return s.setArchived(members, true)
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if auto && !s.familyIdleLocked(members) {
+			return errNotIdle
+		}
+		return s.setArchivedLocked(members, true)
 	}()
 	if err == nil && sess.agent != nil {
 		sess.stop()
@@ -80,6 +87,80 @@ func (sess *session) archive() error {
 		<-h.done
 	}
 	return err
+}
+
+var errNotIdle = errors.New("session family is not idle")
+
+// familyIdleLocked reports whether the family, a top-level session followed
+// by every session beneath it, is due to be archived automatically: the
+// top-level session is neither archived nor pinned, and every member is
+// parked, not deleting, and unused for archiveAfter. The caller holds s.mu.
+func (s *Server) familyIdleLocked(members []*session) bool {
+	top := members[0]
+	if top.archived || top.pinned {
+		return false
+	}
+	var latest time.Time
+	for _, m := range members {
+		if m.state != agent.StateParked || m.deleting != nil {
+			return false
+		}
+		if m.activeAt.After(latest) {
+			latest = m.activeAt
+		}
+	}
+	return time.Since(latest) >= s.archiveAfter
+}
+
+// familyLocked is sess followed by every session beneath it, breadth-first.
+// The caller holds s.mu.
+func (s *Server) familyLocked(sess *session) []*session {
+	members := []*session{sess}
+	for i := 0; i < len(members); i++ {
+		members = append(members, s.children(members[i])...)
+	}
+	return members
+}
+
+// autoArchive archives each idle family, checking every tick until quit is
+// closed.
+func (s *Server) autoArchive() {
+	defer close(s.swept)
+	ticker := time.NewTicker(min(s.archiveAfter/10, time.Minute))
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.quit:
+			return
+		case <-ticker.C:
+		}
+		s.mu.Lock()
+		var idle []*session
+		for _, w := range s.workspaces {
+			for _, sess := range w.sessions {
+				if sess.child == nil && s.familyIdleLocked(s.familyLocked(sess)) {
+					idle = append(idle, sess)
+				}
+			}
+		}
+		s.mu.Unlock()
+		for _, sess := range idle {
+			select {
+			case <-s.quit:
+				return
+			default:
+			}
+			done := make(chan error, 1)
+			if !sess.post(func() { done <- sess.archive(true) }) {
+				continue
+			}
+			// A busy or no longer idle family is decided again next tick.
+			err := <-done
+			if err != nil && !errors.Is(err, agent.ErrBusy) && !errors.Is(err, errNotIdle) && !errors.Is(err, errShuttingDown) {
+				log.Printf("session %s: auto-archive: %v", sess.id, err)
+			}
+		}
+	}
 }
 
 func (sess *session) isArchived() bool {
@@ -101,17 +182,15 @@ func (s *Server) unarchiveLocked(sessionID string) error {
 			return errors.New("parent session is archived")
 		}
 	}
-	members := []*session{sess}
-	for i := 0; i < len(members); i++ {
-		members = append(members, s.children(members[i])...)
+	members := s.familyLocked(sess)
+	if err := s.setArchivedLocked(members, false); err != nil {
+		return err
 	}
-	return s.setArchivedLocked(members, false)
-}
-
-func (s *Server) setArchived(members []*session, archived bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.setArchivedLocked(members, archived)
+	now := time.Now()
+	for _, m := range members {
+		m.activeAt = now
+	}
+	return nil
 }
 
 // setArchivedLocked stores and sets the members' archived flags and tells

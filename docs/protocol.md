@@ -129,9 +129,10 @@ Returns every workspace with its sessions, each oldest first. Each session has
 its `label`, as [`list_sessions`](#tools) gives it, its `directory`, a worktree
 session its `worktree`, its `state`, as the
 [`state` and `parked` updates](#session-updates) last published it, a child
-session its `child` object, and an archived session `"archived": true`. The list
-follows every `state` and `parked` update it reflects and precedes every one it
-does not. A session's settings come from `session/get`.
+session its `child` object, an archived session `"archived": true`, and a pinned
+session `"pinned": true`. The list follows every `state` and `parked` update it
+reflects and precedes every one it does not. A session's settings come from
+`session/get`.
 
 ```json
 {"jsonrpc":"2.0","id":2,"method":"workspace/list","params":{}}
@@ -543,7 +544,10 @@ session keeps its history; it refuses `session/send`, `session/configure`, and
 [`send_message`](#tools), and [`list_sessions`](#tools) leaves it out.
 `session/get`, `session/interrupt`, `session/destroy`, and
 [`read_session`](#tools) work on it as on any parked session. Archived sessions
-stay archived when the daemon restarts.
+stay archived when the daemon restarts. `oxd` also archives a top-level session
+and every session beneath it on its own, once the family is idle as
+[Configuration](configuration.md) sets and the top-level session is not pinned,
+and announces it the same way.
 
 ```json
 {"jsonrpc":"2.0","id":10,"method":"session/archive","params":{"session_id":"session-id"}}
@@ -566,6 +570,23 @@ session that is not archived succeeds.
 
 ```json
 {"jsonrpc":"2.0","id":11,"result":{}}
+```
+
+### `session/pin` and `session/unpin`
+
+Require `session_id`. Pin or unpin a top-level session, announcing it with
+`session/pinned` or `session/unpinned` before the response. A pin lasts through
+daemon restarts and keeps the session's family from being archived
+automatically. A child returns `-32000` `only a top-level session can be
+pinned`. Pinning a pinned or archived session, and unpinning an unpinned one,
+succeed.
+
+```json
+{"jsonrpc":"2.0","id":12,"method":"session/pin","params":{"session_id":"session-id"}}
+```
+
+```json
+{"jsonrpc":"2.0","id":12,"result":{}}
 ```
 
 ## Session updates
@@ -684,6 +705,8 @@ Every connection is told when workspaces and sessions come and go:
 | `session/destroyed`  | `session_id`                                                                                                                                                                                                             | A session was destroyed, after its last update.                                                                                                                                                                                           |
 | `session/archived`   | `session_id`                                                                                                                                                                                                             | A session was archived, before the `parked` update that stops its process.                                                                                                                                                                |
 | `session/unarchived` | `session_id`                                                                                                                                                                                                             | A session was unarchived.                                                                                                                                                                                                                 |
+| `session/pinned`     | `session_id`                                                                                                                                                                                                             | A top-level session was pinned.                                                                                                                                                                                                           |
+| `session/unpinned`   | `session_id`                                                                                                                                                                                                             | A top-level session was unpinned.                                                                                                                                                                                                         |
 
 ```json
 {"jsonrpc":"2.0","method":"session/created","params":{"session_id":"session-id","workspace_id":"workspace-id","label":"session-","harness":"claude","created_at":"2026-11-18T19:53:48.416Z","directory":"/Users/kyle/src/ox","state":"parked"}}

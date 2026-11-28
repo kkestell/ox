@@ -156,7 +156,7 @@ var worktreeConfig = &config.Config{
 // worktrees.
 func worktreeServer(t *testing.T, st *store.Store, worktrees string) *Server {
 	t.Helper()
-	s, err := New(st, worktreeConfig, 0, map[string]agent.Harness{"fake": {Start: fake.Start, Ask: fake.Ask}}, MCP{}, worktrees)
+	s, err := New(st, worktreeConfig, 0, 0, map[string]agent.Harness{"fake": {Start: fake.Start, Ask: fake.Ask}}, MCP{}, worktrees)
 	if err != nil {
 		t.Fatal(err)
 	}

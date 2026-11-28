@@ -155,7 +155,7 @@ func startOxd(t *testing.T) (s *server.Server, socket string, p *page, sessionID
 	}
 	// The built-in configuration titles with Claude; this one echoes.
 	harnesses := map[string]agent.Harness{cfg.Titling.Harness: {Ask: fake.Ask}}
-	s, err = server.New(st, cfg, 0, harnesses, server.MCP{}, t.TempDir())
+	s, err = server.New(st, cfg, 0, 0, harnesses, server.MCP{}, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -602,7 +602,7 @@ func TestUr(t *testing.T) {
 		"ur":   ur.Harness(urCommand, endpoint.URL, filepath.Join(dir, "conversations"), nil),
 	}
 	socket := filepath.Join(dir, "s.sock")
-	s, err := server.New(st, cfg, 0, harnesses, server.MCP{Forwarder: forwarderCommand, Socket: socket}, t.TempDir())
+	s, err := server.New(st, cfg, 0, 0, harnesses, server.MCP{Forwarder: forwarderCommand, Socket: socket}, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

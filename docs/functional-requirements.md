@@ -15,9 +15,10 @@ title.
 
 ## Session list
 
-- **Session order.** Each workspace lists its top-level sessions newest first,
-  each followed by its child sessions, oldest first and indented beneath it; a
-  child's own children follow it the same way, indented one level further.
+- **Session order.** Each workspace lists its pinned top-level sessions first
+  and then the others, each group newest first, each session followed by its
+  child sessions, oldest first and indented beneath it; a child's own children
+  follow it the same way, indented one level further.
 - **Session labels.** A child session, or a session another session started, is
   labeled with the title it was created with. Any other session is labeled with
   a short title the configured titling model writes from the first prompt with
@@ -28,6 +29,9 @@ title.
 - **Session status.** Each session shows whether it is parked, idle, idle while
   background work Claude started still runs, running, waiting on the user, or
   archived, as soon as the session list shows it.
+- **Pinning sessions.** The user pins or unpins a top-level session from its
+  menu. A pinned session's label shows in bold, in a stronger color than the
+  others', on every page and through `oxd` restarts.
 - **Collapsing child sessions.** A session with child sessions has a control on
   its row that hides or shows every session beneath it; clicking elsewhere on
   the row opens the session. Children start shown, a child created under a
@@ -282,6 +286,13 @@ title.
   schedules, and background tasks. Unarchiving a session unarchives the sessions
   beneath it; a child can be archived without its parent, but not unarchived
   while its parent is archived.
+- **Archiving idle sessions.** Ox archives a top-level session, with every
+  session beneath it, once all of them are parked and none has been used for the
+  time the configuration sets, an hour in the configuration Ox writes, unless it
+  is pinned. Prompts, messages, replies, tool calls, setting changes,
+  unarchiving, and unpinning count as use; viewing a session does not. The
+  configuration can turn this off. A pinned session can still be archived by
+  hand.
 - **Archived sessions.** An archived session keeps its transcript and shows it
   with an Unarchive button in place of the composer and settings, refuses
   prompts, messages, and setting changes, and stays archived through `oxd`

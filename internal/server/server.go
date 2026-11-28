@@ -23,15 +23,18 @@ type Server struct {
 	config    *config.Config
 	harnesses map[string]agent.Harness
 	parkAfter time.Duration
-	mcp       MCP
-	worktrees string // the absolute directory new worktrees are made in
+	// archiveAfter is how long a family stays idle before it is archived, 0
+	// for never.
+	archiveAfter time.Duration
+	mcp          MCP
+	worktrees    string // the absolute directory new worktrees are made in
 	// ask is the titling harness's Ask.
 	ask func(ctx context.Context, model, effort, instructions, text string) (string, error)
 
 	// mu guards which workspaces and sessions exist, which sessions are
-	// archived, and closed. A change to them is broadcast, and an answer
-	// listing them is queued, while it is held, so every connection sees both
-	// in one order. Nothing posts to a session, launches a harness, or hands
+	// archived or pinned, when each was last used, and closed. A change to
+	// them is broadcast, and an answer listing them is queued, while it is
+	// held, so every connection sees both in one order. Nothing posts to a session, launches a harness, or hands
 	// an agent input while holding it.
 	mu         sync.Mutex
 	workspaces []*workspace
@@ -42,6 +45,10 @@ type Server struct {
 	// closed that have not returned, so Close waits for each to publish or
 	// discard its session and worktree.
 	creations sync.WaitGroup
+
+	// quit is closed with closed to stop the auto-archive sweep, which
+	// closes swept when it returns. Without a sweep, swept starts closed.
+	quit, swept chan struct{}
 
 	connsMu sync.Mutex // guards conns; taken after mu
 	conns   map[*conn]struct{}
@@ -58,7 +65,7 @@ type workspace struct {
 // socket it reaches oxd on.
 type MCP struct{ Forwarder, Socket string }
 
-func New(st *store.Store, cfg *config.Config, parkAfter time.Duration, harnesses map[string]agent.Harness, mcp MCP, worktrees string) (*Server, error) {
+func New(st *store.Store, cfg *config.Config, parkAfter, archiveAfter time.Duration, harnesses map[string]agent.Harness, mcp MCP, worktrees string) (*Server, error) {
 	titler := harnesses[cfg.Titling.Harness].Ask
 	if titler == nil {
 		return nil, fmt.Errorf("titling harness %q cannot title sessions", cfg.Titling.Harness)
@@ -68,8 +75,9 @@ func New(st *store.Store, cfg *config.Config, parkAfter time.Duration, harnesses
 		return nil, err
 	}
 	s := &Server{
-		store: st, config: cfg, harnesses: harnesses, parkAfter: parkAfter, mcp: mcp, worktrees: worktrees, ask: titler,
+		store: st, config: cfg, harnesses: harnesses, parkAfter: parkAfter, archiveAfter: archiveAfter, mcp: mcp, worktrees: worktrees, ask: titler,
 		sessions: make(map[string]*session), conns: make(map[*conn]struct{}),
+		quit: make(chan struct{}), swept: make(chan struct{}),
 	}
 	for _, w := range stored {
 		ws := &workspace{id: w.ID, path: w.Path, createdAt: w.CreatedAt}
@@ -93,6 +101,11 @@ func New(st *store.Store, cfg *config.Config, parkAfter time.Duration, harnesses
 			s.sessions[record.ID] = sess
 		}
 		s.workspaces = append(s.workspaces, ws)
+	}
+	if archiveAfter > 0 {
+		go s.autoArchive()
+	} else {
+		close(s.swept)
 	}
 	return s, nil
 }
@@ -159,12 +172,16 @@ func (s *Server) serveConn(netConn net.Conn) {
 
 func (s *Server) Close() {
 	s.mu.Lock()
+	if !s.closed {
+		close(s.quit)
+	}
 	s.closed = true
 	sessions := make([]*session, 0, len(s.sessions))
 	for _, sess := range s.sessions {
 		sessions = append(sessions, sess)
 	}
 	s.mu.Unlock()
+	<-s.swept
 
 	for _, sess := range sessions {
 		sess.post(sess.end)

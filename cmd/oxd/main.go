@@ -69,12 +69,12 @@ func main() {
 		log.Fatalf("%s: %v", *configPath, err)
 	}
 
-	if err := run(*dbPath, cfg, *parkAfter, harnesses, server.MCP{Forwarder: forwarder, Socket: socket}, worktrees); err != nil {
+	if err := run(*dbPath, cfg, *parkAfter, cfg.ArchiveAfter(), harnesses, server.MCP{Forwarder: forwarder, Socket: socket}, worktrees); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(dbPath string, cfg *config.Config, parkAfter time.Duration, harnesses map[string]agent.Harness, mcp server.MCP, worktrees string) error {
+func run(dbPath string, cfg *config.Config, parkAfter, archiveAfter time.Duration, harnesses map[string]agent.Harness, mcp server.MCP, worktrees string) error {
 	// Hold the socket until every session has stopped and every child
 	// process has exited. The store's lock on the database protects the
 	// history repair that loading the server does.
@@ -88,7 +88,7 @@ func run(dbPath string, cfg *config.Config, parkAfter time.Duration, harnesses m
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer st.Close()
-	s, err := server.New(st, cfg, parkAfter, harnesses, mcp, worktrees)
+	s, err := server.New(st, cfg, parkAfter, archiveAfter, harnesses, mcp, worktrees)
 	if err != nil {
 		return fmt.Errorf("load database: %w", err)
 	}

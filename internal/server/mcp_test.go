@@ -1276,6 +1276,191 @@ func TestArchive(t *testing.T) {
 	refused(c.request("session/unarchive", map[string]string{"session_id": g}), notFound, "session not found")
 }
 
+// oxd archives a whole family once every member has been parked and unused
+// for archiveAfter, and keeps a pinned top-level session's family. Unpinning
+// and unarchiving restart the period, only a top-level session can be pinned,
+// and a pin survives a restart.
+func TestAutoArchive(t *testing.T) {
+	const archiveAfter = 300 * time.Millisecond
+	cfg := &config.Config{Harnesses: map[string]config.Harness{"fake": {Models: []config.Model{{ID: "m"}}}},
+		Titling: config.Titling{Harness: "fake", Model: "m"}, MaxChildDepth: 1}
+	harnesses := map[string]agent.Harness{"fake": {Start: fake.Start, Ask: fake.Ask}}
+	st := openStore(t)
+	s, err := New(st, cfg, 10*time.Millisecond, archiveAfter, harnesses, MCP{}, os.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	c := connect(t, s)
+	var workspace struct {
+		WorkspaceID string `json:"workspace_id"`
+	}
+	json.Unmarshal(c.call("workspace/create", map[string]string{"path": t.TempDir()}), &workspace)
+	newSession := func() string {
+		var created struct {
+			SessionID string `json:"session_id"`
+		}
+		json.Unmarshal(c.call("session/create", map[string]string{
+			"workspace_id": workspace.WorkspaceID, "harness": "fake", "model": "m", "permission_mode": "manual",
+		}), &created)
+		return created.SessionID
+	}
+	// archivedAfter waits for the session's archive and fails when it came
+	// sooner than archiveAfter past since.
+	archivedAfter := func(id string, since time.Time) {
+		t.Helper()
+		c.next(func(m message) bool { return m.Method == "session/archived" && m.sessionID() == id })
+		if waited := time.Since(since); waited < archiveAfter {
+			t.Fatalf("session %s was archived %v after its last use", id, waited)
+		}
+	}
+	pinnedIn := func(c *client) map[string]bool {
+		t.Helper()
+		var listed struct {
+			Workspaces []struct {
+				Sessions []struct {
+					SessionID string `json:"session_id"`
+					Pinned    bool   `json:"pinned"`
+				} `json:"sessions"`
+			} `json:"workspaces"`
+		}
+		json.Unmarshal(c.call("workspace/list", map[string]any{}), &listed)
+		pinned := map[string]bool{}
+		for _, w := range listed.Workspaces {
+			for _, sess := range w.Sessions {
+				pinned[sess.SessionID] = sess.Pinned
+			}
+		}
+		return pinned
+	}
+
+	t.Log("a pinned session is kept, and a waiting one is kept until its last use is a period past")
+	a := newSession()
+	c.call("session/pin", map[string]string{"session_id": a})
+	c.next(func(m message) bool { return m.Method == "session/pinned" && m.sessionID() == a })
+	if !pinnedIn(c)[a] {
+		t.Fatal("workspace/list does not list the pin")
+	}
+	b := newSession()
+	c.call("session/send", map[string]string{"session_id": b, "text": "approve Bash {}"})
+	asked := c.update(b, agent.UpdateApproval)
+	// An unused session's archive marks a full period since b's creation.
+	created := time.Now()
+	archivedAfter(newSession(), created)
+	answered := time.Now()
+	c.call("session/approve", map[string]any{"session_id": b, "request_id": asked.RequestID, "response": json.RawMessage(`{"behavior":"allow"}`)})
+	archivedAfter(b, answered)
+	for _, m := range c.received(a) {
+		if m.Method == "session/archived" {
+			t.Fatal("the pinned session was archived")
+		}
+	}
+
+	t.Log("unpinning gives a session the full period")
+	unpinned := time.Now()
+	c.call("session/unpin", map[string]string{"session_id": a})
+	archivedAfter(a, unpinned)
+
+	t.Log("unarchiving gives a session the full period")
+	unarchived := time.Now()
+	c.call("session/unarchive", map[string]string{"session_id": b})
+	archivedAfter(b, unarchived)
+
+	t.Log("a session with a background task is kept")
+	g := newSession()
+	c.call("session/send", map[string]string{"session_id": g, "text": "background 60000"})
+	for c.update(g, agent.UpdateState).State != agent.StateBackground {
+	}
+	created = time.Now()
+	archivedAfter(newSession(), created)
+	for _, m := range c.received(g) {
+		if m.Method == "session/archived" {
+			t.Fatal("the session with a background task was archived")
+		}
+	}
+
+	t.Log("a setting change gives a session the full period")
+	// A child waiting on approval keeps its parent's family until the child
+	// is deleted, which counts as no use of the parent.
+	q := newSession()
+	c.call("session/send", map[string]string{"session_id": q, "text": "parent"})
+	for c.update(q, agent.UpdateState).State != agent.StateIdle {
+	}
+	text, isError := attach(t, s, q).tool("create_session", map[string]string{"name": "holder", "title": "Holder", "message": "hello"})
+	var holder struct {
+		SessionID string `json:"session_id"`
+	}
+	if json.Unmarshal([]byte(text), &holder) != nil || isError {
+		t.Fatalf("create_session returned %q", text)
+	}
+	reportsTaken(t, c, q, map[string]int{holder.SessionID: 1})
+	c.update(q, agent.UpdateParked)
+	c.call("session/send", map[string]string{"session_id": holder.SessionID, "text": "approve Bash {}"})
+	c.update(holder.SessionID, agent.UpdateApproval)
+	created = time.Now()
+	archivedAfter(newSession(), created)
+	configured := time.Now()
+	c.call("session/configure", map[string]string{"session_id": q, "permission_mode": "auto"})
+	c.call("session/destroy", map[string]string{"session_id": holder.SessionID})
+	archivedAfter(q, configured)
+
+	t.Log("a parent and its child are archived together")
+	p := newSession()
+	c.call("session/send", map[string]string{"session_id": p, "text": "parent"})
+	for c.update(p, agent.UpdateState).State != agent.StateIdle {
+	}
+	used := time.Now()
+	text, isError = attach(t, s, p).tool("create_session", map[string]string{"name": "kid", "title": "Kid", "message": "hello"})
+	var kid struct {
+		SessionID string `json:"session_id"`
+	}
+	if json.Unmarshal([]byte(text), &kid) != nil || isError {
+		t.Fatalf("create_session returned %q", text)
+	}
+	k := kid.SessionID
+	// One archive announces the parent and then its child, with nothing
+	// between them.
+	var previous message
+	c.next(func(m message) bool {
+		if m.Method == "session/archived" && m.sessionID() == k {
+			return true
+		}
+		previous = m
+		return false
+	})
+	if previous.Method != "session/archived" || previous.sessionID() != p {
+		t.Fatalf("the child was archived apart from its parent, after %+v", previous)
+	}
+	if waited := time.Since(used); waited < archiveAfter {
+		t.Fatalf("the family was archived %v after its last use", waited)
+	}
+
+	t.Log("only a top-level session can be pinned")
+	for _, method := range []string{"session/pin", "session/unpin"} {
+		response := c.request(method, map[string]string{"session_id": k})
+		if response.Error == nil || response.Error.Code != operationFailed || response.Error.Message != "only a top-level session can be pinned" {
+			t.Fatalf("%s on a child: %+v", method, response.Error)
+		}
+	}
+	for _, m := range c.received(k) {
+		if m.Method == "session/pinned" || m.Method == "session/unpinned" {
+			t.Fatalf("a refused pin sent %s", m.Method)
+		}
+	}
+
+	t.Log("a pin survives a restart")
+	c.call("session/pin", map[string]string{"session_id": a})
+	s.Close()
+	restarted, err := New(st, cfg, 0, 0, harnesses, MCP{}, os.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restarted.Close)
+	if got := pinnedIn(connect(t, restarted)); !got[a] || got[b] || got[p] || got[k] {
+		t.Fatalf("after a restart workspace/list pinned %v", got)
+	}
+}
+
 // When a child's turn ends, its parent takes the child's reply as a report,
 // once the parent is free, whatever its other children are doing, after any
 // message already waiting, in one input with every other report waiting; a
@@ -1527,7 +1712,7 @@ func TestChildReports(t *testing.T) {
 	go pSession.post(func() {
 		close(entered)
 		<-childIdle
-		archived <- pSession.archive()
+		archived <- pSession.archive(false)
 	})
 	<-entered
 	c.forget(two)
@@ -1803,7 +1988,7 @@ func TestCreateTopLevelSession(t *testing.T) {
 	st := openStore(t)
 	serve := func() (*Server, *client) {
 		t.Helper()
-		s, err := New(st, cfg, 0, harnesses, MCP{}, worktrees)
+		s, err := New(st, cfg, 0, 0, harnesses, MCP{}, worktrees)
 		if err != nil {
 			t.Fatal(err)
 		}

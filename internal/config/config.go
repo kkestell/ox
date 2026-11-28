@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/kkestell/ox/internal/agent"
 )
@@ -28,6 +29,10 @@ type Config struct {
 	// MaxChildDepth is how many levels of child sessions a top-level session
 	// can have beneath it.
 	MaxChildDepth int `json:"max_child_depth"`
+	// AutoArchiveMinutes is how long a session family stays parked and unused
+	// before oxd archives it, 0 for never. A pointer, so a missing field is
+	// told from 0.
+	AutoArchiveMinutes *int `json:"auto_archive_minutes"`
 	// TailscaleIP, when valid, is this machine's Tailscale IPv4 address, where
 	// ox also serves the web UI.
 	TailscaleIP netip.Addr `json:"tailscale_ip,omitzero"`
@@ -101,10 +106,22 @@ func Load(path string) (*Config, error) {
 	if config.MaxChildDepth < 1 {
 		return nil, fmt.Errorf("%s: max_child_depth must be at least 1", path)
 	}
+	if config.AutoArchiveMinutes == nil {
+		return nil, fmt.Errorf("%s: auto_archive_minutes is required", path)
+	}
+	if *config.AutoArchiveMinutes < 0 {
+		return nil, fmt.Errorf("%s: auto_archive_minutes must be 0 or more", path)
+	}
 	if ip := config.TailscaleIP; ip.IsValid() && !tailscaleRange.Contains(ip) {
 		return nil, fmt.Errorf("%s: tailscale_ip %s is not an IPv4 address in %s", path, ip, tailscaleRange)
 	}
 	return &config, nil
+}
+
+// ArchiveAfter is how long a session family stays parked and unused before
+// oxd archives it, 0 for never.
+func (c *Config) ArchiveAfter() time.Duration {
+	return time.Duration(*c.AutoArchiveMinutes) * time.Minute
 }
 
 // writeDefault creates path with the built-in configuration. The file is

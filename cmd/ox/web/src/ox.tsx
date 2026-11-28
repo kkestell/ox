@@ -17,7 +17,7 @@ import { apply, type SessionSnapshot, settingsOf, snapshotOf } from "./snapshot"
 // StoredWorkspace and StoredSession are oxd's session list as the page holds
 // it. Views read the list through createOx's projections, which show the
 // requests the page has in flight, so they receive Workspace and Session,
-// which leave out the raw membership and archived flag.
+// which leave out the raw membership and the archived and pinned flags.
 type StoredWorkspace = { id: string; path: string; sessions: StoredSession[] };
 
 type StoredSession = {
@@ -31,6 +31,8 @@ type StoredSession = {
   // label is the session's label, as oxd lists and announces it.
   label: string;
   archived: boolean;
+  // pinned is set only for a top-level session.
+  pinned: boolean;
   // state is the state oxd last published for the session, which the page
   // follows whether or not the session is loaded. Only the session the page
   // shows has a snapshot.
@@ -45,13 +47,13 @@ type StoredSession = {
 
 export type Workspace = Omit<StoredWorkspace, "sessions">;
 
-export type Session = Omit<StoredSession, "archived">;
+export type Session = Omit<StoredSession, "archived" | "pinned">;
 
 // directoryName is the name of a directory.
 export const directoryName = (path: string) => path.replace(/\/+$/, "").split("/").at(-1) || path;
 
 // ListRequest is a session list request the page has in flight for a session.
-type ListRequest = "archive" | "unarchive" | "destroy";
+type ListRequest = "archive" | "unarchive" | "destroy" | "pin" | "unpin";
 
 function createOx() {
   const [state, setStore] = createStore<{
@@ -93,7 +95,7 @@ function createOx() {
   // The page shows a session list request's result while it is in flight: a
   // session being deleted and a workspace being removed are gone, and a
   // session being archived or unarchived, with every session beneath it,
-  // shows as it will be.
+  // shows as it will be, as does a session being pinned or unpinned.
   const session = (id: string): Session | undefined => (listing.sessions[id] === "destroy" ? undefined : stored(id));
   const workspaces = (): Workspace[] => state.workspaces.filter((w) => listing.workspaces[w.id] === undefined);
   const sessionsOf = (workspace: Workspace): Session[] =>
@@ -105,6 +107,12 @@ function createOx() {
       if (request === "unarchive") return false;
     }
     return stored(session.id)?.archived ?? false;
+  };
+  const pinned = (session: Session) => {
+    const request = listing.sessions[session.id];
+    if (request === "pin") return true;
+    if (request === "unpin") return false;
+    return stored(session.id)?.pinned ?? false;
   };
   // busy is whether a session or an ancestor has a session list request in
   // flight.
@@ -291,12 +299,24 @@ function createOx() {
         id: w.workspace_id,
         path: w.path,
         sessions: w.sessions.map(
-          ({ session_id: id, label, harness, directory, worktree, child, archived = false, state }) => {
+          ({ session_id: id, label, harness, directory, worktree, child, archived = false, pinned = false, state }) => {
             const session = previous.get(id);
             if (!session)
-              return { id, harness, directory, worktree, child, label, archived, state, load: { kind: "unloaded" } };
+              return {
+                id,
+                harness,
+                directory,
+                worktree,
+                child,
+                label,
+                archived,
+                pinned,
+                state,
+                load: { kind: "unloaded" },
+              };
             session.label = label;
             session.archived = archived;
+            session.pinned = pinned;
             return session;
           },
         ),
@@ -343,6 +363,7 @@ function createOx() {
             child: params.child,
             label: params.label,
             archived: false,
+            pinned: false,
             state: params.state,
             load: { kind: "unloaded" },
           });
@@ -364,6 +385,12 @@ function createOx() {
         return setStore((s) => {
           const session = sessionIn(s.workspaces, params.session_id);
           if (session) session.archived = method === "session/archived";
+        });
+      case "session/pinned":
+      case "session/unpinned":
+        return setStore((s) => {
+          const session = sessionIn(s.workspaces, params.session_id);
+          if (session) session.pinned = method === "session/pinned";
         });
       case "session/destroyed":
         controls.delete(params.session_id);
@@ -415,6 +442,7 @@ function createOx() {
     workspaces,
     sessionsOf,
     archived,
+    pinned,
     busy,
     workspaceBusy,
     listsWorkspace,
@@ -439,6 +467,8 @@ function createOx() {
     destroy: (id: string) => requestFor(id, "destroy"),
     archive: (id: string) => requestFor(id, "archive"),
     unarchive,
+    pin: (id: string) => requestFor(id, "pin"),
+    unpin: (id: string) => requestFor(id, "unpin"),
   };
 }
 

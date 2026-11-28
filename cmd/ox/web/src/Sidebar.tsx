@@ -103,11 +103,11 @@ type Row = {
 };
 
 // rowsOf flattens the shown sessions depth-first in oxd's creation order:
-// top-level sessions newest first, and each session's children oldest first
-// beneath it. It does not descend into a collapsed session. A shown session's
-// ancestors are shown, since the sessions beneath an archived session are
-// archived.
-function rowsOf(shown: Session[], collapsed: Set<string>): Row[] {
+// pinned top-level sessions and then the others, each newest first, and each
+// session's children oldest first beneath it. It does not descend into a
+// collapsed session. A shown session's ancestors are shown, since the sessions
+// beneath an archived session are archived.
+function rowsOf(shown: Session[], collapsed: Set<string>, pinned: (session: Session) => boolean): Row[] {
   const rows: Row[] = [];
   const childrenOf = (parentId: string | undefined) => shown.filter((session) => session.child?.parent_id === parentId);
   const add = (children: Session[], depth: number, parentRow: number) => {
@@ -128,7 +128,8 @@ function rowsOf(shown: Session[], collapsed: Set<string>): Row[] {
       if (state === "shown") add(own, depth + 1, index);
     });
   };
-  add(childrenOf(undefined).reverse(), 0, -1);
+  const top = childrenOf(undefined).reverse();
+  add([...top.filter(pinned), ...top.filter((session) => !pinned(session))], 0, -1);
   return rows;
 }
 
@@ -159,6 +160,7 @@ function SessionRow(props: {
         first: props.row.first,
         last: props.row.last,
         archived: archived(),
+        pinned: ox.pinned(session()),
       }}
       style={{ "--depth": props.row.depth, "--rise": props.row.rise }}
       onClick={(event) => {
@@ -357,7 +359,17 @@ export function Sidebar(props: {
           disabledBecause: waiting ?? archiveBlocked(session),
           onChoose: () => attempt(ox.archive(session.id)),
         };
+    const pinItems: MenuItem[] = session.child
+      ? []
+      : [
+          {
+            label: ox.pinned(session) ? "Unpin" : "Pin",
+            disabledBecause: waiting ?? (ox.ready() ? undefined : "Not connected"),
+            onChoose: () => attempt(ox.pinned(session) ? ox.unpin(session.id) : ox.pin(session.id)),
+          },
+        ];
     return [
+      ...pinItems,
       archiveItem,
       {
         label: "Delete",
@@ -452,6 +464,7 @@ export function Sidebar(props: {
               rowsOf(
                 ox.sessionsOf(workspace).filter((session) => visible(workspace.id, session)),
                 collapsed(),
+                ox.pinned,
               ),
             );
             const id = createUniqueId();

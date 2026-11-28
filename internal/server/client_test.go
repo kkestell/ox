@@ -30,7 +30,7 @@ func newServer(st *store.Store, cfg *config.Config, parkAfter time.Duration, har
 		}
 		harnesses["titler"] = agent.Harness{Ask: fake.Ask}
 	}
-	return New(st, cfg, parkAfter, harnesses, mcp, os.TempDir())
+	return New(st, cfg, parkAfter, 0, harnesses, mcp, os.TempDir())
 }
 
 type message struct {

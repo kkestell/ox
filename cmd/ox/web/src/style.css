@@ -417,6 +417,7 @@ nav li .head {
 }
 nav li button.open { max-width: 100%; height: 100%; justify-content: flex-start; gap: var(--space-1-5); cursor: default; text-align: left; }
 nav li .title { min-width: 0; overflow: hidden; white-space: nowrap; }
+nav li.pinned .title { font-weight: var(--font-semibold); color: var(--foreground); }
 nav li button.icon { width: var(--control-height-sm); height: var(--control-height-sm); color: var(--muted-foreground); }
 nav li button.icon:hover { color: inherit; }
 nav li.archived button.open, nav li:has(.status.parked) button.open { opacity: var(--opacity-dim); }

@@ -362,7 +362,7 @@ func newLifecycle(t *testing.T) *lifecycle {
 			return errors.New("first message refused")
 		}}, nil
 	}
-	s, err := New(l.st, lifecycleConfig, 0, map[string]agent.Harness{"fake": {Start: start, Ask: fake.Ask}}, MCP{}, l.worktrees)
+	s, err := New(l.st, lifecycleConfig, 0, 0, map[string]agent.Harness{"fake": {Start: start, Ask: fake.Ask}}, MCP{}, l.worktrees)
 	if err != nil {
 		t.Fatal(err)
 	}

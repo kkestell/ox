@@ -254,6 +254,68 @@ func TestTitles(t *testing.T) {
 	}
 }
 
+// A pin survives a reopen and goes with its session's unpin. A session's
+// ActiveAt is its last event other than parked, or its creation without one.
+func TestPinnedAndActiveAt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ox.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { st.Close() }()
+	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := st.AddWorkspace(&Workspace{ID: "w", Path: "/w", CreatedAt: created}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"used", "unused"} {
+		if err := st.AddSession("w", &Session{ID: id, Directory: "/w", CreatedAt: created}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prompted := created.Add(time.Minute)
+	for _, e := range []Event{
+		{created.Add(time.Second), []byte(`{"type":"state","state":"working"}`)},
+		{prompted, []byte(`{"type":"prompt","text":"hi"}`)},
+		{created.Add(time.Hour), []byte(`{"type":"parked"}`)},
+	} {
+		if err := st.AddEvent("used", e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.AddEvent("unused", Event{created.Add(time.Hour), []byte(`{"type":"parked"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetPinned("used", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if st, err = Open(path); err != nil {
+		t.Fatal(err)
+	}
+	workspaces, err := st.Workspaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	used, unused := workspaces[0].Sessions[0], workspaces[0].Sessions[1]
+	if !used.Pinned || unused.Pinned {
+		t.Errorf("pinned: used %v, unused %v", used.Pinned, unused.Pinned)
+	}
+	if !used.ActiveAt.Equal(prompted) {
+		t.Errorf("used ActiveAt = %v, want %v", used.ActiveAt, prompted)
+	}
+	if !unused.ActiveAt.Equal(created) {
+		t.Errorf("unused ActiveAt = %v, want %v", unused.ActiveAt, created)
+	}
+	if err := st.SetPinned("used", false); err != nil {
+		t.Fatal(err)
+	}
+	if workspaces, err = st.Workspaces(); err != nil || workspaces[0].Sessions[0].Pinned {
+		t.Errorf("unpinned session listed pinned: %v", err)
+	}
+}
+
 // Opening a database turns a session stored in a permission mode Ox no
 // longer offers to manual, and keeps manual and auto.
 func TestOpenRetiresPermissionModes(t *testing.T) {

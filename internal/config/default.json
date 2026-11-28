@@ -87,5 +87,6 @@
     "model": "claude-haiku-5-5",
     "effort": "low"
   },
-  "max_child_depth": 2
+  "max_child_depth": 2,
+  "auto_archive_minutes": 60
 }

@@ -1582,6 +1582,7 @@ test("a session whose harness is no longer offered shows its settings", async ({
     defaults: { harness: "ur", model: ur.models[0].id, effort: "low", permission_mode: "manual" },
     titling: { harness: "ur", model: ur.models[0].id, effort: "low" },
     max_child_depth: 2,
+    auto_archive_minutes: 60,
   });
   await expect(model(page)).toContainText("echo");
   await expect(permissionMode(page)).toHaveValue("manual");
@@ -2233,6 +2234,33 @@ test("archived sessions show with an archived marker when shown", async ({ ox: p
   await expect(sessionButton(page, "archive me")).toHaveAccessibleDescription("archived");
 });
 
+test("a pinned session lists first, also before oxd answers and after a reload", async ({ ox: page, services }) => {
+  await newSession(page, "older");
+  await newSession(page, "newer");
+  const rows = workspaceSection(page, services.workspace).getByRole("listitem");
+  await expect(rows).toHaveText(["newer", "older"]);
+  const pin = await hold(page, "session/pin");
+  await sessionItem(page, "older").click({ button: "right" });
+  await menuItem(page.getByRole("menu"), "Pin").click();
+  await pin.arrived;
+  await expect(rows).toHaveText(["older", "newer"]);
+  pin.release();
+  await expect(menuItem(await openMenu(sessionItem(page, "older")), "Unpin")).toBeEnabled();
+  await page.keyboard.press("Escape");
+  await page.reload();
+  await expect(rows).toHaveText(["older", "newer"]);
+  await menuItem(await openMenu(sessionItem(page, "older")), "Unpin").click();
+  await expect(rows).toHaveText(["newer", "older"]);
+});
+
+test("a child session's menu offers no Pin", async ({ ox: page, services }) => {
+  await newSession(page, "Parent");
+  await createChild(services, sessionId(page), "Child");
+  const menu = await openMenu(sessionItem(page, "Child"));
+  await expect(menuItem(menu, "Archive")).toBeVisible();
+  await expect(menuItem(menu, "Pin")).toHaveCount(0);
+});
+
 test("deleting a family from the leaves up enables each parent's Delete", async ({ ox: page, services }) => {
   await family(page, services);
   for (const title of ["Parent", "Child"]) {
@@ -2353,7 +2381,10 @@ test("opening a menu while another is open shows the new one", async ({ ox: page
 });
 
 test("a menu opened near the bottom edge stays on screen as it grows", async ({ ox: page, services }) => {
+  // Newer sessions list above the row, leaving the menu room to open upward.
   await newSession(page, "menu row");
+  await newSession(page, "above");
+  await newSession(page, "further above");
   const item = sessionItem(page, "menu row");
   const viewport = page.viewportSize();
   const box = await item.boundingBox();

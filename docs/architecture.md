@@ -91,7 +91,7 @@ flowchart TD
 | `paths`      | XDG locations of the configuration, database, socket, Ur conversation directory, and session worktrees (`cmd/oxd` flags can override them; `cmd/ox` uses `paths` for the socket and config).                            |
 | `config`     | Writing the built-in default to a missing config file, loading each harness's models and efforts, the defaults, and the titling model, and validating settings against them.                                            |
 | `server`     | Client and MCP connections, each session's goroutine and agent, method dispatch, and error codes. Each connection writes through its own queue so sessions never wait on a client.                                      |
-| `store`      | SQLite database of workspaces, sessions, `children`, `worktrees`, `archived`, session events, and prompt images, held exclusively through an adjacent lock file from open to close.                                     |
+| `store`      | SQLite database of workspaces, sessions, `children`, `worktrees`, `archived`, `pinned`, session events, and prompt images, held exclusively through an adjacent lock file from open to close.                           |
 | `jsonrpc`    | Request validation and the response and notification types.                                                                                                                                                             |
 | `agent`      | The `Agent` interface, `Start` and one-shot `Ask` functions, prompt and config checks, options, and shared updates, snapshots, settings, and errors.                                                                    |
 | `children`   | The set of child processes `oxd` waits for on shutdown and kills on a second stop signal. A process joins on start and leaves once reaped; none can start after the set is killed.                                      |
@@ -110,11 +110,11 @@ Session state is split strictly between `Server.mu` and per-session goroutines.
 Each connection handles incoming requests on separate goroutines, and each
 connection writes through its own queue.
 
-| Owner             | Owns                                                                                                                                                                       | Access rule                                                                                                                                                                                                                                                                                                         |
-| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Server.mu`       | Workspace and session membership, untaken reports, archived flags, `deleting` (written only by the session goroutine), shutdown flag, and admission to `Server.creations`. | Membership and archive changes and `workspace/list` queue messages under this lock so every connection sees one order. Never held while posting to a session, launching a harness, running git, or handing input to an agent.                                                                                       |
-| Session goroutine | Settings, resume token, history, active agent, park timer, a reporting session's step and accepted `send_message` IDs, and `exiting`.                                      | Every request reading or changing this state (including archive) posts an operation here. Responses are queued from here—at once, on the finishing event for Claude config changes, or after all members stop for archive—so each response lands strictly after updates it reflects and before updates it does not. |
-| Unarchive         | Archived flags only (under `Server.mu`).                                                                                                                                   | Looks up the session, refuses a child with an archived parent, clears flags across its subtree, and queues its response in one critical section without posting to a goroutine.                                                                                                                                     |
+| Owner                     | Owns                                                                                                                                                                                                             | Access rule                                                                                                                                                                                                                                                                                                         |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Server.mu`               | Workspace and session membership, untaken reports, archived and pinned flags, each session's `activeAt`, `deleting` (written only by the session goroutine), shutdown flag, and admission to `Server.creations`. | Membership and archive changes and `workspace/list` queue messages under this lock so every connection sees one order. Never held while posting to a session, launching a harness, running git, or handing input to an agent.                                                                                       |
+| Session goroutine         | Settings, resume token, history, active agent, park timer, a reporting session's step and accepted `send_message` IDs, and `exiting`.                                                                            | Every request reading or changing this state (including archive) posts an operation here. Responses are queued from here—at once, on the finishing event for Claude config changes, or after all members stop for archive—so each response lands strictly after updates it reflects and before updates it does not. |
+| Unarchive, Pin, and Unpin | Archived and pinned flags and `activeAt` (under `Server.mu`).                                                                                                                                                    | Look up the session, refuse what they refuse (a child with an archived parent for unarchive; a child for pin and unpin), set the flags and `activeAt` across the sessions they change, and queue the response in one critical section without posting to a goroutine.                                               |
 
 Synchronous waits between session goroutines flow in one direction only, so
 cycles cannot happen:
@@ -182,6 +182,19 @@ is archived.
 
 The single path that starts a parked session on input refuses archived sessions,
 and `create_session` refuses an archived caller.
+
+**Auto-archive.** When the configuration sets a period, a `Server` goroutine
+started by `New` sweeps at a tenth of the period, at most a minute apart. Under
+`Server.mu` it collects the top-level sessions whose family is idle by
+`familyIdleLocked`: the top-level session is neither archived nor pinned, and
+every member is `parked`, not deleting, and has had no activity for the period.
+A session's `activeAt` moves on every update except `parked`, on a settings
+change, on unarchive, and on unpin; at load it is the time of its last stored
+event other than `parked`. The sweep posts an archive to each such session in
+turn and waits for it. That archive runs the hold walk above and checks
+`familyIdleLocked` again in the critical section that sets the flags, so a pin,
+prompt, or unarchive since the sweep wins. `Close` stops the sweep before it
+ends the sessions.
 
 ### Child sessions and reports
 
@@ -569,9 +582,9 @@ on a free port, and prints the URL.
     took it returns (with its images) to the sending page's composer ahead of
     anything typed since.
 - **List actions:** The provider tracks at most one in-flight delete, remove,
-  archive, or unarchive per session or workspace and applies it optimistically
-  (including descendants on archive/unarchive). Available menu actions follow
-  `oxd`'s store.
+  archive, unarchive, pin, or unpin per session or workspace and applies it
+  optimistically (including descendants on archive/unarchive). Available menu
+  actions follow `oxd`'s store.
 - **Workspace drafts:** One draft per workspace; its ID and composer carry over
   to the created session, sending submitted text once. If the create reply is
   lost, the page recognizes the session after reconnect, restores the composer,
